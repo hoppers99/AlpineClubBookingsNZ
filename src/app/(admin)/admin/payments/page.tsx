@@ -83,6 +83,7 @@ import type { DiagnosticsPageErrorCode } from "@/lib/diagnostics/page-context/re
 import {
   isAppliedPaymentStatus,
   isAppliedPaymentsDate,
+  isAppliedPaymentsSearch,
   type AppliedPaymentStatus,
 } from "./_applied-query-vocabulary";
 import { StatusChip } from "@/components/ui/status-chip";
@@ -453,7 +454,10 @@ export default function PaymentsPage() {
   } else {
     const filters: Record<string, string> = {};
     if (source !== "all") filters.source = source;
-    if (search.trim()) filters.search = search.trim();
+    // The LENGTH is part of the vocabulary too (review finding, 14 Aug 2026): the
+    // schema's `max(100)` 400s the whole query, so a 101-character search narrowed
+    // nothing and the rows on screen belong to the last request that succeeded.
+    if (isAppliedPaymentsSearch(search)) filters.search = search.trim();
     if (isAppliedPaymentsDate(lastUpdatedFrom)) {
       filters.lastUpdatedFrom = lastUpdatedFrom;
     }

@@ -46,3 +46,24 @@ export const APPLIED_PAYMENTS_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 export function isAppliedPaymentsDate(value: string): boolean {
   return APPLIED_PAYMENTS_DATE_PATTERN.test(value);
 }
+
+/**
+ * The schema's own bound on `search` (`z.string().trim().max(100)`), mirrored
+ * because the first cut of this module left it out (review finding, 14 Aug 2026).
+ *
+ * IT IS A LENGTH THE REQUEST FAILS ON, not a display nicety. `search` is applied on
+ * every keystroke here — no debounce, no submit — so a 101st character 400s the
+ * whole query, `fetchData` ignores the response, and the rows on screen stay the
+ * ones the 100-character search returned. Publishing the 101-character value would
+ * report a narrowing the API refused.
+ */
+export const APPLIED_PAYMENTS_SEARCH_MAX_CHARS = 100;
+
+/** True when the payments API will apply this search rather than refuse the query. */
+export function isAppliedPaymentsSearch(value: string): boolean {
+  // The schema TRIMS before it measures, and so does the page before it publishes.
+  const trimmed = value.trim();
+  return (
+    trimmed.length > 0 && trimmed.length <= APPLIED_PAYMENTS_SEARCH_MAX_CHARS
+  );
+}

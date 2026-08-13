@@ -20,7 +20,7 @@ import {
   UPCOMING_CHECK_IN_BOOKING_STATUSES,
 } from "@/lib/booking-status";
 import { bookingsOverlap, sameLodgeNullTolerant } from "@/lib/capacity";
-import { DIAGNOSTICS_PAGE_CONTEXT_BOUNDS } from "@/lib/diagnostics/page-context/types";
+import { isPublishableDiagnosticsFilterValue } from "@/lib/diagnostics/page-context/types";
 import {
   buildBookingDeletedWhere,
   parseBookingDeletedVisibility,
@@ -404,22 +404,17 @@ export function appliedBookingViewFilters(query: AdminBookingsQuery): {
    * would tell the model the operator filtered by something they did not.
    *
    * THE LENGTH CHECK IS ON EVERY KEY, not just the unknown-status one (review
-   * finding, 14 Aug 2026). The ask route drops a value over
-   * `filterValueMaxChars`, so publishing one is publishing to be dropped: the
-   * model is then told nothing about a filter that IS narrowing the list, which
-   * is the worst available answer to "why is this list empty?" and worse than
-   * saying nothing. `lodgeId` is the live case —
+   * finding, 14 Aug 2026), and it asks
+   * `isPublishableDiagnosticsFilterValue` rather than restating the bound: the
+   * ask route drops a value over `filterValueMaxChars`, so publishing one is
+   * publishing to be dropped, and the model is then told nothing about a filter
+   * that IS narrowing the list. `lodgeId` is the live case —
    * `adminBookingsQuerySchema` bounds `search` to 100 characters and fails the
    * WHOLE parse above that, but it bounds `lodgeId` only to non-empty, so a
    * crafted link can apply an arbitrarily long one.
    */
   const publish = (key: string, value: string) => {
-    if (
-      value.length === 0 ||
-      value.length > DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterValueMaxChars
-    ) {
-      return;
-    }
+    if (!isPublishableDiagnosticsFilterValue(value)) return;
     filters[key] = value;
   };
 

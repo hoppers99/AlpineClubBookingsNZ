@@ -76,6 +76,31 @@ export const DIAGNOSTICS_PAGE_CONTEXT_BOUNDS = {
   renderedBlockMaxChars: 4000,
 } as const;
 
+/**
+ * True when a filter value is one the ask route will actually CARRY, so a page
+ * publishing its applied state can tell "applied" from "applied and about to be
+ * thrown away" (review finding, 14 Aug 2026).
+ *
+ * The route drops a value over `filterValueMaxChars` rather than truncating it — a
+ * truncated value would tell the model the operator filtered by something they did
+ * not — so a page that publishes one has told the model NOTHING about a filter that
+ * is genuinely narrowing the list. That is worse than the header's partial-list
+ * caveat, which at least stops it concluding the filter is unset. Each publisher
+ * therefore drops the value here, and the bound has ONE owner rather than a copy per
+ * page: a page checking `120` by hand is a page that keeps checking `120` after this
+ * constant changes.
+ *
+ * A page whose own API bounds a value more tightly (`/admin/payments` bounds `search`
+ * to 100 characters and 400s the whole request above that) checks THAT bound as well,
+ * because the value was never applied at all.
+ */
+export function isPublishableDiagnosticsFilterValue(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterValueMaxChars
+  );
+}
+
 /** The record kinds a page-context re-fetch may read. Closed set, server-owned. */
 export const DIAGNOSTICS_RECORD_KINDS = [
   "booking",

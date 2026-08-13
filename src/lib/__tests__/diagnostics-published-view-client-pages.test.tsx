@@ -23,9 +23,11 @@ import {
   HelpWidgetProvider,
   useDiagnosticsViewState,
 } from "@/components/help-widget/help-widget-context";
+import { APPLIED_PAYMENTS_SEARCH_MAX_CHARS } from "@/app/(admin)/admin/payments/_applied-query-vocabulary";
 import { getPaymentsDatasetDefaults } from "@/lib/admin-dataset-reset-state";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 import { getDiagnosticsPageContextRoute } from "@/lib/diagnostics/page-context/registry";
+import { DIAGNOSTICS_PAGE_CONTEXT_BOUNDS } from "@/lib/diagnostics/page-context/types";
 
 const routerMocks = vi.hoisted(() => ({
   replace: vi.fn(),
@@ -319,6 +321,57 @@ describe("/admin/payments publishes the window it applied (#2816)", () => {
     expect(JSON.stringify(published())).not.toContain(clubToday);
   });
 
+  it("does not publish a search longer than the one the API will accept", async () => {
+    // `search` is applied on every keystroke here — no debounce, no submit — so a
+    // 101st character 400s the whole query and the rows on screen belong to the
+    // last request that succeeded. The mirror left the schema's `max(100)` out, so
+    // that value published as applied (review finding, 14 Aug 2026). The fetch is
+    // left OK on purpose: this pins the derivation, not the failure path the
+    // sibling test above covers.
+    const tooLong = "n".repeat(APPLIED_PAYMENTS_SEARCH_MAX_CHARS + 1);
+    routerMocks.search = `search=${tooLong}`;
+    const { default: PaymentsPage } = await import(
+      "@/app/(admin)/admin/payments/page"
+    );
+    const clubToday = todayDateOnlyForTimeZone();
+    const defaults = getPaymentsDatasetDefaults(clubToday);
+
+    render(
+      <HelpWidgetProvider>
+        <PaymentsPage />
+        <PublishedViewProbe />
+      </HelpWidgetProvider>,
+    );
+
+    // The window it DID apply still travels; only the refused search is withheld.
+    await waitFor(() =>
+      expect(published()).toEqual({
+        filters: {
+          lastUpdatedFrom: defaults.lastUpdatedFrom,
+          lastUpdatedTo: clubToday,
+        },
+      }),
+    );
+    expect(JSON.stringify(published())).not.toContain(tooLong);
+  });
+
+  it("publishes a search of exactly the accepted length, so the bound is not off by one", async () => {
+    const exact = "n".repeat(APPLIED_PAYMENTS_SEARCH_MAX_CHARS);
+    routerMocks.search = `search=${exact}`;
+    const { default: PaymentsPage } = await import(
+      "@/app/(admin)/admin/payments/page"
+    );
+
+    render(
+      <HelpWidgetProvider>
+        <PaymentsPage />
+        <PublishedViewProbe />
+      </HelpWidgetProvider>,
+    );
+
+    await waitFor(() => expect(published()?.filters?.search).toBe(exact));
+  });
+
   it("publishes the failure code, not the filters, when the list could not load", async () => {
     respondWith({ error: "boom" }, { ok: false, status: 500 });
     routerMocks.search = "status=SUCCEEDED&search=ngata";
@@ -477,6 +530,36 @@ describe("/admin/members publishes the search that FILTERED, not the one being t
     );
 
     await waitFor(() => expect(published()).toEqual({}));
+  });
+
+  it("does not publish a search the ask route would drop for length", async () => {
+    // `q` is UNBOUNDED server-side (`optionalSearchParam` is a bare `z.string()`),
+    // so this one really is applied and really does empty the list — and the ask
+    // route drops a filter value over `filterValueMaxChars`. Publishing it tells
+    // the model nothing about the narrowing that emptied the screen, which is the
+    // worst available answer to "why is nobody here?" (review, 14 Aug 2026).
+    const tooLong = "n".repeat(
+      DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterValueMaxChars + 1,
+    );
+    membersQueryState.search = tooLong
+    membersQueryState.debouncedSearch = tooLong
+    membersQueryState.filters = { ageTier: "ADULT" }
+    const { default: MembersPage } = await import(
+      "@/app/(admin)/admin/members/page"
+    );
+
+    render(
+      <HelpWidgetProvider>
+        <MembersPage />
+        <PublishedViewProbe />
+      </HelpWidgetProvider>,
+    );
+
+    // The tier it DID apply still travels.
+    await waitFor(() =>
+      expect(published()).toEqual({ filters: { ageTier: "ADULT" } }),
+    );
+    expect(JSON.stringify(published())).not.toContain(tooLong);
   });
 
   it("publishes the failure code, not the search, when the list could not load", async () => {

@@ -35,6 +35,7 @@ import {
   diagnosticsPageErrorCodeForStatus,
 } from "@/lib/diagnostics/page-context/error-code"
 import type { DiagnosticsPageErrorCode } from "@/lib/diagnostics/page-context/registry"
+import { isPublishableDiagnosticsFilterValue } from "@/lib/diagnostics/page-context/types"
 import { isAppliedMemberAgeTier } from "./_age-tier-filter-values"
 import { MemberBulkActionBar } from "./_components/member-bulk-action-bar"
 import { MemberBulkDialog } from "./_components/member-bulk-dialog"
@@ -216,7 +217,14 @@ export default function MembersPage() {
     publishedView.errorCode = loadErrorCode
   } else {
     const applied: Record<string, string> = {}
-    if (debouncedSearch) applied.q = debouncedSearch
+    // `q` IS UNBOUNDED SERVER-SIDE (`optionalSearchParam` is a bare
+    // `z.string()`), so an arbitrarily long one is genuinely applied and the only
+    // bound that matters is the ask route's own: over it, the route drops the
+    // value, and a dropped filter published as applied tells the model nothing
+    // about the narrowing that emptied the list (review finding, 14 Aug 2026).
+    if (isPublishableDiagnosticsFilterValue(debouncedSearch)) {
+      applied.q = debouncedSearch
+    }
     if (filters.ageTier && isAppliedMemberAgeTier(filters.ageTier)) {
       applied.ageTier = filters.ageTier
     }
