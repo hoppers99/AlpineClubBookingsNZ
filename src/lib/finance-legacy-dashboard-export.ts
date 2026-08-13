@@ -186,10 +186,12 @@ function toLegacyDashboardBookingRow(input: {
     start_date: toIsoDate(input.overlapStart),
     end_date: toIsoDate(input.overlapEndExclusive),
     // `createdAt` is a `DateTime` instant, unlike every other date in this row.
-    // Truncating it to its UTC day reported the booking as created a day early
-    // for every booking made before ~midday NZ, and mixed two definitions of
-    // "day" inside one payload (#2697). The club calendar is the one this export
-    // means everywhere else (INV-DATE-010).
+    // Truncating an instant to its UTC day is the pattern INV-DATE-019 forbids:
+    // it reported the booking as created a day early for every booking made
+    // before ~midday NZ, and mixed two definitions of "day" inside one payload
+    // (#2697). The other dates here are true `@db.Date` lodge nights, whose UTC
+    // midnight IS the encoding of a calendar day (INV-DATE-010), so they are
+    // correctly left on truncation.
     created_date: formatDateOnlyForTimeZone(input.booking.createdAt),
     status: input.booking.status,
     guests: guestCount,

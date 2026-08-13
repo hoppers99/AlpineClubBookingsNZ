@@ -1192,7 +1192,16 @@ export async function updateXeroBookingInvoiceForBooking(
         nights
       ),
       date: getBookingInvoiceIssueDate(booking),
-      dueDate: getBookingInvoiceDueDate(booking),
+      // Preserve the due date the invoice was ISSUED with, exactly like
+      // `reference`, `invoiceNumber` and `lineAmountTypes` below.
+      //
+      // `createdAt` never changes, so recomputing this was a value-stable no-op
+      // until #2697 corrected the derivation. From that point on, recomputing it
+      // would silently move an already-issued invoice's due date by a day the
+      // next time an unrelated edit synced — and the owner decision on #2697 is
+      // that already-issued invoices are untouched, with no write-back. Only
+      // newly created invoices get the corrected date.
+      dueDate: currentInvoice.dueDate ?? getBookingInvoiceDueDate(booking),
       reference: currentInvoice.reference ?? `Booking ${bookingId.slice(0, 8)}`,
       invoiceNumber: currentInvoice.invoiceNumber,
       lineAmountTypes: currentInvoice.lineAmountTypes ?? LineAmountTypes.Inclusive,
