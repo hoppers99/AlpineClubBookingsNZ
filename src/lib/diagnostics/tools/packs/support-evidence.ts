@@ -79,18 +79,20 @@ import {
   getAdminCronJobDefinitions,
 } from "@/lib/admin-cron-health";
 import { getCronRunsForAdminHealth } from "@/lib/admin-cron-runs";
-import { getDiagnosticsReadiness } from "@/lib/ai-diagnostics-config";
+import {
+  getDiagnosticsReadiness,
+  readDiagnosticsModuleFlag,
+} from "@/lib/ai-diagnostics-config";
 import {
   DIAGNOSTICS_MAX_TOOL_ROUNDS,
   WORST_CASE_ROUNDTRIP_CENTS,
   getDiagnosticsUsageSummary,
 } from "@/lib/ai-diagnostics-usage";
-import { loadEffectiveModuleFlags } from "@/lib/module-settings";
-import { prisma } from "@/lib/prisma";
 
 import { loadKnowledgeBundle } from "../../knowledge/load";
 import { isVerifiedCommitSha } from "../../knowledge/verify";
 import type { DiagnosticsToolRawRow } from "../define";
+import { withBoundedReadOnlyTransaction } from "../read-only-transaction";
 
 /** The stable "nothing to report" code, so an empty list is never an empty string. */
 export const NO_CODES = "none";
@@ -114,18 +116,28 @@ function isoOrNull(value: Date | string | null | undefined): string | null {
  *
  * `getDiagnosticsReadiness` never throws: a fault resolves to `ready: false` with a
  * `resolve_error` blocker, which is the honest evidence an operator needs.
+ *
+ * NEITHER READ MAY BECOME A REJECTION (#2803). The module flag is read through
+ * `readDiagnosticsModuleFlag`, which uses the STRICT loader and catches, so a narrow
+ * failure of that one query reports `module_enabled: null` beside a
+ * `module_flags_unreadable` blocker — an answer an operator can tell apart from a
+ * club that genuinely switched diagnostics off. It is deliberately NOT an
+ * `evidence_unavailable`: this entry has to keep answering in exactly the case where
+ * the application database is the fault, which is the whole reason it is
+ * `server_owned` and carries the `readiness-module-flags-fault-tolerant` exemption.
  */
 export async function readDiagnosticsReadinessEvidence(): Promise<
   readonly DiagnosticsToolRawRow[]
 > {
-  const flags = await loadEffectiveModuleFlags();
   const readiness = await getDiagnosticsReadiness({
-    aiDiagnostics: flags.aiDiagnostics,
+    aiDiagnostics: await readDiagnosticsModuleFlag(),
   });
 
   return [
     {
       readiness_state: readiness.ready ? "ready" : "not_ready",
+      // `null` when the flags could not be read — NEVER coerced to a boolean here.
+      // `blocker_codes` carries `module_flags_unreadable` beside it.
       module_enabled: readiness.moduleEnabled,
       credential_state: readiness.keyState,
       monthly_budget_cents: readiness.monthlyBudgetCents,
@@ -271,24 +283,41 @@ export async function readDiagnosticsDeploymentEvidence(
 export async function readDiagnosticsUsageHealthEvidence(
   now: Date = new Date(),
 ): Promise<readonly DiagnosticsToolRawRow[]> {
+  // THE SUMMARY RUNS BEFORE THE SEAM OPENS, and that ordering is the decision
+  // (#2786, exemption `usage-summary-no-tx-client`). `getDiagnosticsUsageSummary`
+  // is the admin usage panel's OWN shared calculation: it reads the global client
+  // and accepts no transaction client, so threading it would mean changing a
+  // non-diagnostics surface to satisfy a diagnostics contract. Calling it first
+  // rather than inside the callback is what keeps its reads from being a second
+  // statement inside a transaction that has already begun — the transaction stays
+  // as short as the reads it actually bounds.
+  //
+  // WHAT THAT COSTS, SAID PLAINLY: the summary's instant and the three reads below
+  // are not the same instant, so `stale_reservation_count` can be measured a moment
+  // after `active_reserved_cents`. It is the honest residual of an exemption rather
+  // than a hidden one, and it is narrow — these are monitoring counters about
+  // spend, not a reconciliation identity anyone acts on the difference of.
   const summary = await getDiagnosticsUsageSummary(now);
   const month = summary.month.month;
 
-  const [staleReservationCount, latestSuccess, latestFailure] = await Promise.all([
-    prisma.diagnosticsBudgetReservation.count({
-      where: { month, expiresAt: { lte: now } },
-    }),
-    prisma.diagnosticsUsageEvent.findFirst({
-      where: { month, success: true },
-      orderBy: { createdAt: "desc" },
-      select: { createdAt: true },
-    }),
-    prisma.diagnosticsUsageEvent.findFirst({
-      where: { month, success: false },
-      orderBy: { createdAt: "desc" },
-      select: { createdAt: true, errorCode: true },
-    }),
-  ]);
+  const [staleReservationCount, latestSuccess, latestFailure] =
+    await withBoundedReadOnlyTransaction((tx) =>
+      Promise.all([
+        tx.diagnosticsBudgetReservation.count({
+          where: { month, expiresAt: { lte: now } },
+        }),
+        tx.diagnosticsUsageEvent.findFirst({
+          where: { month, success: true },
+          orderBy: { createdAt: "desc" },
+          select: { createdAt: true },
+        }),
+        tx.diagnosticsUsageEvent.findFirst({
+          where: { month, success: false },
+          orderBy: { createdAt: "desc" },
+          select: { createdAt: true, errorCode: true },
+        }),
+      ]),
+    );
 
   return [
     {
@@ -350,7 +379,7 @@ const CRON_SEVERITY_RANK: Record<string, number> = {
  * THE READ IS BOUNDED IN CONCURRENCY AND IN TIME, which the substrate cannot do for
  * it. `select_only_sql` entries get `BEGIN READ ONLY`, a 5-second `statement_timeout`
  * and a 2-second `lock_timeout` from the executor; a first-party calculation gets none
- * of that, and the executor's 15-second race abandons a slow read without cancelling
+ * of that, and the executor's outer race abandons a slow read without cancelling
  * it. So this passes `getCronRunsForAdminHealth` a batch width and a deadline of its
  * own, set below the executor's so the refusal comes from here — where it is a clean
  * throw the executor reports as `evidence_unavailable` — rather than from a race whose

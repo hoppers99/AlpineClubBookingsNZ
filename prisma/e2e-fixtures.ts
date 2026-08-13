@@ -205,6 +205,25 @@ export const DUAL_HAT_ADMIN = {
   lastName: "Dualhat",
 } as const;
 
+// The subscription-locked member (#2779). Seeded exactly like WAITLISTER — a
+// COMPLETE, self-confirmed profile so no onboarding modal blocks their pages —
+// except that their current-season subscription is UNPAID, so the club's
+// default HARD_BLOCK lockout refuses them their own bookings.
+//
+// They also carry a `xeroContactId`. Without one, the create route refuses a
+// self-booking with XERO_CONTACT_REQUIRED *before* it ever reaches the
+// subscription gate, and the spec's control assertion ("this member really is
+// locked out, for the subscription reason") would be testing the wrong refusal.
+//
+// Nobody else logs in as them or asserts on their bookings, so
+// e2e/locked-out-pickup-and-pay.spec.ts can turn the club's lockout mode and
+// the Xero module on for its own run without perturbing the serial suite.
+export const LOCKED_OUT_MEMBER = {
+  email: demoEmail("lyle-lockedout"),
+  firstName: "Lyle",
+  lastName: "Lockedout",
+} as const;
+
 // Second paid-up, nomination-eligible member (alice is the first). Needed so
 // the public membership-application POST has two valid nominators.
 export const NOMINATOR_TWO = {

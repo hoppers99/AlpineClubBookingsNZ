@@ -191,8 +191,9 @@ nine were held for a decision, because their destinations are member-visible and
 move would publish the row on a member-facing surface.
 [**The `admin` audit category, reviewed site by site**](audit-admin-category-review.md)
 records the verdict and the reason for every one of them, the alternative reading where
-there was a real one, and the fifteen lodge-gated sites that are an open question rather
-than a settled keep.
+there was a real one, and the fifteen lodge-gated sites — an open question when that
+page was written, settled as keeps by #2765, with the four locker sites confirmed on
+their own reasoning by #2777 (`INV-PRIV-013`).
 
 **One of those nine was resolved in #2755, and it moved TWO more writers IN rather than
 out.** Editing, activating, deactivating or re-roling a member's record from an officer
@@ -250,7 +251,7 @@ sites that passed no category** when #2581 opened: 69 through `logAudit`, 11 thr
 `createStructuredAuditLog`. Those same 82 were still uncategorised on `main`
 immediately before this change, out of **426** write sites in total.
 
-**All 82 have now been classified at the source.** The census reads **429 write sites and
+**All 82 have now been classified at the source.** The census reads **434 write sites and
 zero uncategorised**, so no *new* audit row is born invisible to these five entries. What
 each site was given is recorded site by site in `APPLIED_AUDIT_CATEGORIES`
 (`scripts/audit/audit-writer-census-manifest.ts`), and the contract test compares that
@@ -282,7 +283,7 @@ What the census still uniquely catches is the writer the compiler cannot see —
 reverted.
 
 **Scope the two compile-time and runtime layers honestly**: they cover writes that go
-through `src/lib/audit.ts`, which is every one of the 429 sites in the tree. A write that
+through `src/lib/audit.ts`, which is every one of the 434 sites in the tree. A write that
 never reaches the helper — hand-built Prisma, raw SQL, a migration — is outside them by
 construction, which is what the census is for, and the census is a heuristic AST walk
 rather than a proof.
@@ -369,6 +370,16 @@ SELECT-only database, and each has a specific reason:
   is the blocker. So the tool reads `getDiagnosticsReadiness`, the same function
   `GET /api/admin/ai-diagnostics/readiness` renders. There is no second readiness
   calculation that can drift from the admin screen.
+
+  The **module flag** it needs is read through `readDiagnosticsModuleFlag`, which
+  calls the *strict* loader and catches at the call site (#2803). The tolerance is
+  still there — this entry has to answer while the application database is
+  unreachable — but the failure is now visible instead of laundered:
+  `moduleEnabled: null` and a `module_flags_unreadable` blocker, which the
+  model-facing catalogue states in as many words is **not** evidence that the module
+  is off. It used to read `module_enabled: false`, `blocker_codes: module_off`,
+  `database_role_state: verified` — a row with no fault marker anywhere on it, which
+  sent operators to switch on a module that was already on.
 - **Deployment identity** lives in the image and on disk, not in the database.
 - **Budget and usage health** takes its money from `getDiagnosticsUsageSummary`, the
   admin panel's own numbers including the live reservation total the budget gate
@@ -405,7 +416,7 @@ further is #2375's own: a future source that *could* be a column-granted `SELECT
 be one.
 
 Two bounds the SQL arm gets for free are supplied by hand here, because a first-party
-calculation gets no `statement_timeout` and the executor's 15-second race abandons a
+calculation gets no `statement_timeout` and the executor's outer race abandons a
 slow read without cancelling it:
 
 - **Bounded fan-out.** Job health reads three queries per tracked job. At 34 jobs that
@@ -492,7 +503,7 @@ deliberate friction ADR-007 asks for.
 | Job health rows | 18, **worst severity first**, with the registered job count on every row. |
 | Job health bytes | 16 384, measured the same way. |
 | Single-row tools | Readiness, deployment and usage health return exactly one row. |
-| Server-owned read | 15 s deadline on the **wait**; job health carries its own 10 s deadline on the **work**. Expiry and refusal are both `evidence_unavailable` with no rows. |
+| Server-owned read | The executor's outer race bounds the **wait**; job health carries its own deadline on the **work**, both derived from the one ladder in `types.ts` (#2804). Expiry and refusal are `evidence_unavailable`; a read that never got a connection is `evidence_database_busy`. |
 
 Three of those deserve their reasoning, and all three numbers are measured rather than
 estimated — an earlier revision of this page estimated them and got both ceilings
@@ -614,6 +625,7 @@ instruction to obey.
 | Every correlation tool fails; readiness says `under_provisioned` | The release added a grant and provisioning has not been re-run | `npm run diagnostics:provision-role`, then re-check readiness |
 | Readiness says `not_configured` for the database role | `AI_DIAGNOSTICS_DATABASE_URL` is unset | Provision the role and set the variable ([deployment.md](deployment.md)) |
 | `diagnostics.readiness` answers, but no other tool will run | The diagnostics credential is the blocker | Read the `databaseRoleState` and `blockerCodes` this tool returns; that is what it is for |
+| Readiness says `module_flags_unreadable`, and `moduleEnabled` is `null` | The club's module settings could not be read — a transient database timeout, or a deploy window where the running code expects a `ClubModuleSettings` column the database does not have yet | Do **not** switch the module on; it may already be on. Check application database health and re-check readiness. `module_off` is the code that means someone really did switch it off |
 | A correlation tool returns nothing for a request id you can see in the admin audit log | The event is older than the window | Re-ask with a wider window, up to `7d` |
 | `evidence_unavailable` from a system tool | The application's own database or the deployed bundle could not be read | Check application health; this is not the diagnostics credential |
 | `knowledgeBundleState` is not `verified` | The deployed knowledge bundle is missing or failed verification | See [the bundle guide](../diagnostics/KNOWLEDGE_BUNDLE.md); code answers stay unavailable until it verifies |
@@ -624,8 +636,10 @@ Incident response: the audit trail for tool use is
 `sensitive_access` (24 months). It records the acting administrator, the tool id, the
 areas checked, the allow/deny outcome, the stable failure reason, a non-reversible
 hash of the accepted arguments and of the result, row and byte counts, duration,
-round index and the observed-at instant — and never the arguments, the results, the
-question or the answer. There is no per-tool version field: a tool's contract is its
+round index and the observed-at instant — and, since AID-7a (#2785), the invocation
+channel, the ADR-004 §1 inclusion decision, the KIND and provenance of the record it
+was about, and the two per-request ticks (personal details, people search).
+Seventeen fields, and never the arguments, the results, the question or the answer. There is no per-tool version field: a tool's contract is its
 code, so the release identifier — which `diagnostics.deployment_evidence` reports —
 is what ties an audit row to the exact definition that produced it. To answer "what did this administrator look at",
 query that action for their member id; to answer "was this the same answer twice",

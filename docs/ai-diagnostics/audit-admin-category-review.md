@@ -12,10 +12,18 @@ to look like the absence of a decision.
 way.** #2755 unified the three writers of *an officer editing somebody else's
 member record* on `admin` by moving the two bulk-screen branches IN, rather than
 moving the member-page writer out into a member-visible category. Eight of the
-nine remain held. `admin` therefore reads 98 sites now, not 96, and the rule that
+nine remain held. `admin` therefore reads 101 sites now, not 96, and the rule that
 came out of it is `INV-PRIV-012` — which is also where the fifteen lodge-gated
-sites and the unresolved `lockers` group are now recorded, instead of only in the
-open-question section at the foot of this page.
+sites and the `lockers` group (unresolved then, settled by #2777) are now
+recorded, instead of only in the open-question section at the foot of this page.
+
+**And the open question at the foot of this page is closed: they stay (#2765).**
+The test that decided it — *did this site split a subsystem*, not *does it name a
+lodge* — is `INV-PRIV-013`, and the fifteen are pinned per site in
+`LODGE_GATED_ADMIN_CATEGORIES_2765` so the keep no longer depends on the next
+author reading this page. `lockers` went back as its own filed decision, **#2777**,
+not as a sentence here, and was decided on 11 August 2026: the four stay `admin`.
+#2765 records why in terms that can be re-measured rather than re-argued.
 
 **What this page is not.** It is a record of where the platform FILES new rows. It
 changed no row already in the database, which left bed-allocation history split by
@@ -286,6 +294,20 @@ word). The lockers writers are the odd ones out: their routes are gated
 `membership:*` and a locker is allocated to a named member, so `lodge` is not
 obviously their answer either.
 
+**Both halves of that were decided on #2765 (11 August 2026), and the group is now
+pinned per site.** The fifteen stay `admin` under the rule they were always
+measured against — *did this site split a subsystem* — which is written down as
+`INV-PRIV-013` and enforced by `LODGE_GATED_ADMIN_CATEGORIES_2765`
+(`scripts/audit/audit-writer-census-manifest.ts`), measured from the tree, so a
+third pass that disagrees fails CI instead of landing the change and finding the
+argument afterwards. **`lockers` was decided for `membership`, the move was
+refused on measurement — the intended destination turned out to be
+member-visible, reaching the acting officer's own activity page — and the
+question went back as its own filed decision, #2777, which the owner settled on
+11 August 2026: the four stay `admin`.** The measurement, the declined
+extend-the-taxonomy alternative and the accepted cost are recorded once, in
+`INV-PRIV-013`, with the full option set on #2777 itself.
+
 **Why `LODGE_DISPLAY_CONFIG_UPDATED` moved and `LODGE_UPDATED` did not**, since
 both name a Lodge on a `lodge:edit` route: the display writer was closing a
 **split** — ten siblings in the same subsystem already said `lodge` — whereas
@@ -530,11 +552,20 @@ same set. That was a real gap — "when was this lodge deactivated" returned
 nothing from the Lodge entry with no warning — and it is fixed whichever way the
 decision goes.
 
+**#2765 closed this open question, and the answer was "they stay".** The rule that
+decided it is now `INV-PRIV-013` and the fifteen are pinned per site in
+`LODGE_GATED_ADMIN_CATEGORIES_2765`, so the keep is enforced rather than argued
+each time. `lockers` was the one subgroup that needed its own decision, for a
+measured reason rather than a stylistic one; it was carried as a filed decision
+(**#2777**) rather than as an open question on a page, and decided on 11 August
+2026: the four stay `admin` — see the section above. Read the two paragraphs
+below as the history of how it got there.
+
 **#2755 promoted both halves of that from a page note to an invariant, and left
 them at `admin`.** `INV-PRIV-012` records the fifteen as a deliberate keep with
 the rule they were measured against — *did this site split a subsystem*, not *does
 it name a lodge* and not *is the route gated `lodge:edit`* — and records that
-`lockers` (4 of the fifteen) is **unresolved rather than settled**, because its
+`lockers` (4 of the fifteen) was, at that point, **unresolved rather than settled**, because its
 routes are gated `membership:*` and a locker is allocated to a named member, so
 `lodge` is not obviously its answer either. The point of moving it into the
 invariant is that a decision recorded only in a page attached to a closed issue is
@@ -551,9 +582,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  429
+row-producing sites:  434
 uncategorised:        0
-category values: admin 98, booking 101, xero 34, family 34, payment 35,
+category values: admin 101, booking 101, xero 34, family 34, payment 37,
                  lodge 52, account 19, security 18, privacy 19,
                  communication 14, system 4
 ```
@@ -562,7 +593,10 @@ category values: admin 98, booking 101, xero 34, family 34, payment 35,
 after #2755 moved the two `bulk-update/route.ts` branches in, against `account`
 20 → 19 and `security` 19 → 18. #2755 moved categories and added no writer;
 #2760 then added the late-capture auto-refund record writer (`payment` 34 → 35),
-which is what took the total from 428 to its current figure above. The 22 moves are pinned **per site**, not only by that
+taking the total from 428 to 429. Since then #2749 added the three Other Lodges
+admin CRUD writers (`admin` 98 → 101, 429 → 432) and #2773/#2774 added the two
+late-capture writers this page's own subject depends on (`payment` 35 → 37,
+432 → 434), which is the figure above. The 22 moves are pinned **per site**, not only by that
 distribution: `REVIEWED_ADMIN_CATEGORIES_2730` in
 `scripts/audit/audit-writer-census-manifest.ts` records each one, and the census
 contract test measures the tree against it. A distribution cannot see a swap —

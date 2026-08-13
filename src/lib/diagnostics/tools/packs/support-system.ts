@@ -41,6 +41,11 @@ import "server-only";
 
 import { z } from "zod";
 
+import {
+  DIAGNOSTICS_BLOCKER_CODES,
+  DIAGNOSTICS_BLOCKER_DESCRIPTIONS,
+} from "@/lib/ai-diagnostics-blockers";
+
 import { defineDiagnosticsTool, type DiagnosticsToolEntry } from "../define";
 import {
   readBackgroundJobHealthEvidence,
@@ -67,6 +72,34 @@ function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+/**
+ * A projected TRI-STATE flag: the boolean when the source established one, `null`
+ * when it did not (#2803).
+ *
+ * Deliberately not `value === true`. That test answers "is it on?" with `false` for
+ * both "it is off" and "nobody could tell", which is the exact conflation this
+ * projection stopped making — and it is the fail-SAFE direction here as well, since
+ * an absent or malformed field now reads as unknown rather than as a settled "off".
+ */
+function booleanOrNull(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+/**
+ * The readiness blocker catalogue as ONE server-owned block of text, in the priority
+ * order the aggregate emits.
+ *
+ * The model is handed the codes AND their meanings for the same reason the finance
+ * and booking packs do it: a stable code with no catalogue is a token the model
+ * paraphrases, and the paraphrase is where a wrong operator instruction comes from.
+ * `module_flags_unreadable` is the case in point — its whole value is that it does
+ * NOT mean `module_off`, and only a sentence can carry that. A test pins that every
+ * code in `DIAGNOSTICS_BLOCKER_CODES` appears here.
+ */
+const READINESS_BLOCKER_CATALOGUE_TEXT = DIAGNOSTICS_BLOCKER_CODES.map(
+  (code) => `${code} = ${DIAGNOSTICS_BLOCKER_DESCRIPTIONS[code]}`,
+).join(" ");
+
 export const DIAGNOSTICS_READINESS_TOOL_ID = "diagnostics.readiness";
 export const DIAGNOSTICS_DEPLOYMENT_TOOL_ID = "diagnostics.deployment_evidence";
 export const DIAGNOSTICS_USAGE_HEALTH_TOOL_ID = "diagnostics.usage_health";
@@ -91,20 +124,32 @@ export const DIAGNOSTICS_BACKGROUND_JOB_HEALTH_TOOL_ID =
  * incomplete. Deliberately the state only: the underlying privilege report names
  * roles and counts relations, and the readiness contract withholds that from the
  * admin API for good reason. This channel is not the looser of the two.
+ *
+ * `moduleEnabled` IS TRI-STATE (#2803): `true` on, `false` off, and `null` when the
+ * club's module settings could not be read at all. A `null` never travels alone — it
+ * always comes with the `module_flags_unreadable` blocker, which the catalogue in the
+ * description tells the model is explicitly NOT evidence that the module is off. The
+ * conflated version of this row sent operators to switch on a module that was
+ * already on.
  */
 const readinessTool = defineDiagnosticsTool({
   id: DIAGNOSTICS_READINESS_TOOL_ID,
   source: "server_owned",
+  // It opens no transaction of its own AT ALL, and that is the point: both of its
+  // reads must survive the application database being the very fault it reports.
+  readOnlySeam: {
+    threadsOwnReads: false,
+    exemptions: ["readiness-own-pool", "readiness-module-flags-fault-tolerant"],
+  },
   label: "AI Diagnostics readiness",
-  description:
-    "Reports whether AI Diagnostics itself is fully set up, and what is still blocking it if not: whether the module is on, whether the dedicated Anthropic credential is stored and usable (state only, never the key), the configured monthly budget in cents, the verified state of the read-only diagnostics database role, and stable blocker codes. Returns no secret value of any kind. Use it when asked why diagnostics is unavailable, degraded, or refusing to run tools.",
+  description: `Reports whether AI Diagnostics itself is fully set up, and what is still blocking it if not: whether the module is on, whether the dedicated Anthropic credential is stored and usable (state only, never the key), the configured monthly budget in cents, the verified state of the read-only diagnostics database role, and stable blocker codes. Returns no secret value of any kind. Use it when asked why diagnostics is unavailable, degraded, or refusing to run tools. moduleEnabled is true, false, or NULL — null means the club's module settings could not be read, so whether the module is on is unknown; never report a null as "the module is off". BLOCKER CODES, in priority order — report the first one as the primary problem and mention the rest as also true, "none" means nothing is blocking, and use these exact meanings without paraphrasing them: ${READINESS_BLOCKER_CATALOGUE_TEXT}`,
   requiredAreas: ["support"],
   argsSchema: NO_ARGS,
   inputSchema: NO_ARGS_SCHEMA,
   readEvidence: () => readDiagnosticsReadinessEvidence(),
   project: (row) => ({
     readinessState: stringOrNull(row.readiness_state) ?? "unknown",
-    moduleEnabled: row.module_enabled === true,
+    moduleEnabled: booleanOrNull(row.module_enabled),
     credentialState: stringOrNull(row.credential_state) ?? "unknown",
     monthlyBudgetCents: numberOr(row.monthly_budget_cents, 0),
     databaseRoleState: stringOrNull(row.database_role_state) ?? "unknown",
@@ -127,6 +172,12 @@ const readinessTool = defineDiagnosticsTool({
 const deploymentTool = defineDiagnosticsTool({
   id: DIAGNOSTICS_DEPLOYMENT_TOOL_ID,
   source: "server_owned",
+  // The only entry that reaches no database on any path, so there is nothing here
+  // for a transaction to bound.
+  readOnlySeam: {
+    threadsOwnReads: false,
+    exemptions: ["deployment-no-database"],
+  },
   label: "Deployment and release evidence",
   description:
     "Reports which release is running and whether its deployed code-knowledge bundle verified: the release identifier and where it came from, the application version, the Node version, the runtime role (for example web-blue or web-green), how long this container has been up, and the bundle's state, commit, build instant and entry count. Returns no configuration values and no secrets. Use it when asked what version is deployed, or why code explanations are unavailable.",
@@ -171,6 +222,12 @@ const deploymentTool = defineDiagnosticsTool({
 const usageHealthTool = defineDiagnosticsTool({
   id: DIAGNOSTICS_USAGE_HEALTH_TOOL_ID,
   source: "server_owned",
+  // BOTH, and the combination is the honest description: its own three reads run
+  // inside the seam, while the shared usage summary runs before it opens.
+  readOnlySeam: {
+    threadsOwnReads: true,
+    exemptions: ["usage-summary-no-tx-client"],
+  },
   label: "AI Diagnostics budget and usage health",
   description:
     "Reports this calendar month's AI Diagnostics spend and budget health in NZD cents: the configured monthly budget, settled cost, cost currently reserved by in-flight calls, remaining budget, budget status, request/roundtrip/failure counts, how many budget reservations have expired without settling, and the latest successful and failed call instants with the failure's stable code. Returns no prompt, answer, tool argument, tool result or provider error text. Use it when asked what diagnostics is costing, or why a diagnostics request was refused on budget.",
@@ -249,6 +306,12 @@ const usageHealthTool = defineDiagnosticsTool({
 const backgroundJobHealthTool = defineDiagnosticsTool({
   id: DIAGNOSTICS_BACKGROUND_JOB_HEALTH_TOOL_ID,
   source: "server_owned",
+  // Its every read belongs to the shared Admin > Health helper, which enforces a
+  // deadline of its own that a transaction-scoped timeout would race.
+  readOnlySeam: {
+    threadsOwnReads: false,
+    exemptions: ["cron-runs-own-budget"],
+  },
   label: "Background job health",
   description:
     "Reports the health of the scheduled background jobs, worst problems first: each job's name, classified status (current, stale, failed, skipped, missing, disabled or untracked), severity, whether it is enabled, its cron schedule, its staleness threshold in minutes, and the instants of its latest run, latest success and latest failure. Whether cron scheduling is enabled reflects this container's own configuration. Returns no job error text and no job result payloads. Use it when asked whether a scheduled job is running, late or failing.",

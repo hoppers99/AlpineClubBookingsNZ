@@ -943,6 +943,59 @@ describe("confirmWaitlistOffer", () => {
     expect(result.newStatus).toBe("PAYMENT_PENDING");
   });
 
+  /**
+   * #2810: PROVES THE WIDENED DOUBLE CAN STILL FAIL.
+   *
+   * Every confirm in this suite passes partly BECAUSE the fence's under-lock
+   * re-read agrees with the row the reconciliation planned from — that is what
+   * `recordingBookingDouble` arranges, and it is the right default. But a double
+   * that can only ever agree is a rubber stamp, and a rubber stamp is
+   * indistinguishable from a working fence when you are reading a green suite.
+   *
+   * So drive it the other way once. The owner of the source booking changes
+   * between the plan and the re-read, and the confirm must refuse with the stable
+   * retry rather than claim the offer against an owner that moved underneath it.
+   * With the fence bypassed this confirm succeeds — which is precisely the state
+   * #2619 found the code in.
+   */
+  it("refuses the confirm when the source booking's owner drifts under the fence", async () => {
+    const { confirmWaitlistOffer } = await import("@/lib/waitlist");
+    const { checkCapacityForGuestRanges: mockCheckCapacity } = await import("@/lib/capacity");
+
+    mockTxBookingFindUnique.mockResolvedValue({
+      id: "booking1",
+      memberId: "m1",
+      lodgeId: "lodge-1",
+      status: "WAITLIST_OFFERED",
+      waitlistOfferExpiresAt: new Date(Date.now() + 86400000),
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+      guests: offerGuests(new Date("2026-07-01"), new Date("2026-07-03")),
+    });
+    (mockCheckCapacity as ReturnType<typeof vi.fn>).mockResolvedValue({ available: true });
+    mockTx.booking.update.mockResolvedValue({});
+    // The post-lock truth. `drift` is consulted only by the fence's re-read, so
+    // the plan still sees `m1` and the disagreement is genuine rather than a
+    // fixture that was inconsistent from the start.
+    fenceBooking.drift("booking1", {
+      id: "booking1",
+      memberId: "someone-else",
+      lodgeId: "lodge-1",
+    });
+
+    const result = await confirmWaitlistOffer("booking1", "m1");
+
+    expect(result).toEqual({
+      success: false,
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+    });
+    // And it refused BEFORE writing, not after. A fence that detects drift but
+    // has already transitioned the booking has not protected anything.
+    expect(mockBookingUpdate).not.toHaveBeenCalled();
+    expect(mockBookingUpdateMany).not.toHaveBeenCalled();
+  });
+
   it("transitions to PENDING for non-member bookings far from check-in", async () => {
     const { confirmWaitlistOffer } = await import("@/lib/waitlist");
     const { checkCapacityForGuestRanges: mockCheckCapacity } = await import("@/lib/capacity");

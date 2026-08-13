@@ -1153,6 +1153,48 @@ export default function AdminBookPage() {
             </div>
           )}
 
+          {/* #2779 — what "Save as Draft" actually means for the owner, stated
+              where the officer chooses it. Two facts an officer cannot see from
+              the button: the member pays for the draft themselves (this is the
+              supported way to get a booking to a member whose unpaid
+              subscription blocks them from booking), and the draft is DELETED
+              72 hours after it is saved.
+
+              SPLIT BY OWNER TYPE, because the member sentence is FALSE for the
+              other one. This same wizard books a non-login non-member owner
+              (#1935), who has no account, can never open a dashboard, and is not
+              emailed about a draft — so "Save as Draft" for them produces a
+              booking nobody can pay, which `draft-cleanup` then DELETES after 72
+              hours. The officer walks away believing a bed is held. The button
+              is left enabled (a draft for such an owner is still a legitimate
+              hold an ADMIN comes back and confirms); what changes is that the
+              screen stops promising a pick-up that cannot happen. */}
+          <div className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
+            {selectedMember?.isNonMember ? (
+              <p data-testid="save-as-draft-nonmember-note">
+                <strong>Save as Draft</strong> will not reach this owner. They
+                are a non-member with no account, so they cannot sign in, open
+                the booking or pay it, and nothing is emailed about a draft.
+                Drafts are removed <strong>72 hours</strong> after they are
+                saved, so a draft nobody confirms simply disappears — and the
+                beds are not held. Use <strong>Confirm Booking</strong> instead,
+                or save the draft only if you are coming back to confirm it
+                yourself within three days.
+              </p>
+            ) : (
+              <p data-testid="save-as-draft-member-note">
+                <strong>Save as Draft</strong> leaves the booking for the member
+                to pay for themselves. It appears on their dashboard as{" "}
+                &ldquo;Saved for you by the club&rdquo;, and paying it confirms
+                the booking — which still works if an unpaid subscription is
+                blocking them from making their own bookings. Drafts are removed{" "}
+                <strong>72 hours</strong> after they are saved, so tell the
+                member it is waiting. A $0 booking has nothing to pay: confirm
+                that one here instead.
+              </p>
+            )}
+          </div>
+
           <div className="flex justify-between">
             <Button variant="outline" onClick={() => setStep("guests")}>
               Back

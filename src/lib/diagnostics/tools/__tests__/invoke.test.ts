@@ -25,6 +25,10 @@ import {
   runDiagnosticsReadOnlyQuery,
 } from "../database";
 import { recordDiagnosticsToolAudit } from "../audit";
+import {
+  createDiagnosticsConsentLedger,
+  createEmptyDiagnosticsConsentLedger,
+} from "../consent";
 import { invokeDiagnosticsTool } from "../invoke";
 import {
   DIAGNOSTICS_CORRELATION_CATEGORY_SETS,
@@ -135,6 +139,10 @@ function invoke(
     args: {},
     actingMemberId: ACTOR,
     session: openSession(),
+    // The default is the hostile channel and no consent, on purpose: a test that
+    // wants either has to say so, exactly as a production caller does.
+    invocationChannel: "model_tool_use",
+    consent: createEmptyDiagnosticsConsentLedger(),
     observedAt: OBSERVED_AT,
     ...overrides,
   });
@@ -206,12 +214,18 @@ describe("invokeDiagnosticsTool — the happy path (#2374)", () => {
       "argsHash",
       "authOutcome",
       "byteCount",
+      "consentRecordKind",
+      "consentRecordOrigin",
       "durationMs",
       "failureReason",
+      "invocationChannel",
       "observedAt",
+      "peopleSearchTick",
+      "recordConsentTick",
       "resultHash",
       "roundIndex",
       "rowCount",
+      "sensitiveInclusion",
       "toolId",
     ]);
     // Nothing from the raw row, the projected row, or the arguments is in it.
@@ -708,5 +722,55 @@ describe("invokeDiagnosticsTool — every gate fails closed (#2374)", () => {
     // what `DiagnosticsToolAudit.areasChecked` documents ("recorded even when the
     // check denied").
     expect(result.audit.areasChecked).toEqual(["support"]);
+  });
+});
+
+describe("the consent gates, on the entries that actually ship (#2785)", () => {
+  // The fixture-driven proof of the gates is `invoke-consent.test.ts`; this is the
+  // half that would still be missing if a real entry lost its declaration — the
+  // gates run against the REAL registry here, with no `findDiagnosticsTool` stub.
+  const BOOKING_A = "ckbooking0000000000000001";
+
+  it("refuses a real per-record entry when the operator included no record", async () => {
+    const result = await invoke({
+      toolId: "diagnostics.booking_diagnostic_summary",
+      args: { bookingId: BOOKING_A },
+    });
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.reason).toBe("sensitive_consent_required");
+    expect(runQueryMock).not.toHaveBeenCalled();
+
+    // …and runs for the same operator once that record is included, so the refusal
+    // above is the consent gate and not something else refusing first.
+    const allowed = await invoke({
+      toolId: "diagnostics.booking_diagnostic_summary",
+      args: { bookingId: BOOKING_A },
+      consent: createDiagnosticsConsentLedger({
+        recordConsentGranted: true,
+        peopleSearchGranted: false,
+        selectedRecords: [{ kind: "booking", id: BOOKING_A }],
+      }),
+    });
+    expect(allowed.status).toBe("ok");
+  });
+
+  it("refuses a real search entry to the model until the operator ticks", async () => {
+    const args = { kind: "member_id", recordId: "ckmember00000000000000001" };
+    const refused = await invoke({ toolId: "diagnostics.member_search", args });
+    expect(refused.status).toBe("error");
+    if (refused.status !== "error") return;
+    expect(refused.reason).toBe("operator_action_required");
+
+    const ticked = await invoke({
+      toolId: "diagnostics.member_search",
+      args,
+      consent: createDiagnosticsConsentLedger({
+        recordConsentGranted: false,
+        peopleSearchGranted: true,
+        selectedRecords: [],
+      }),
+    });
+    expect(ticked.status).toBe("ok");
   });
 });

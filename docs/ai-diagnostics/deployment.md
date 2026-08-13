@@ -42,6 +42,14 @@ dedicated key is stored and decryptable, the monthly budget is positive, and the
 SELECT-only role is **verified** least-privilege. Any fault while resolving those
 returns `ready: false` with a `resolve_error` blocker rather than throwing.
 
+`moduleEnabled` is **tri-state**: `true`, `false`, or `null` when the club's module
+settings could not be read at all — reported with a `module_flags_unreadable` blocker
+(#2803). It is not the same finding as `module_off` and must not be shown as one: a
+single transient timeout on that query, or a blue/green window where the running code
+expects a settings column the database does not have yet, is not evidence that anyone
+switched AI Diagnostics off. Readiness still **answers** in that case, as it does
+during a full outage; what it will not do is claim a setting it could not read.
+
 ## The dedicated SELECT-only database role
 
 ### Why it is mandatory
@@ -465,6 +473,16 @@ every restriction at the same time.
 | `verified` | The server itself confirmed the named role is a non-superuser that can only `SELECT`, and only from the declared allowlist. | Nothing. |
 
 The response never contains the connection string, the password, or the role name.
+
+The `blockers` array carries the same closed codes the `diagnostics.readiness` tool
+reports, in priority order; the meanings are declared once, in
+`src/lib/ai-diagnostics-blockers.ts`. Two of them are easy to confuse and are
+deliberately distinct:
+
+| Blocker | Meaning | Operator action |
+| --- | --- | --- |
+| `module_off` | The module settings were read, and AI Diagnostics is switched **off** in Admin > Modules. | Switch the module on. |
+| `module_flags_unreadable` | The module settings could not be **read**, so whether the module is on is unknown (`moduleEnabled: null`). | Do **not** switch anything on — it may already be on. Investigate the settings read: a transient database timeout, or a deploy window where the running code expects a `ClubModuleSettings` column the database does not have yet. |
 
 Every state except `verified` blocks readiness, and every diagnostics tool call is
 refused independently of readiness — the credential gate is the control, and readiness

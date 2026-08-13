@@ -34,6 +34,12 @@ const audit: DiagnosticsToolAudit = {
   durationMs: 3,
   roundIndex: 0,
   observedAt: "2026-08-02T00:00:00.000Z",
+  invocationChannel: "model_tool_use",
+  sensitiveInclusion: "not_applicable",
+  consentRecordKind: null,
+  consentRecordOrigin: null,
+  peopleSearchTick: "withheld",
+  recordConsentTick: "withheld",
 };
 
 function success(rows: DiagnosticsToolRow[], truncated = false): DiagnosticsToolSuccess {

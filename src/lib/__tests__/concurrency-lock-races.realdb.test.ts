@@ -37,6 +37,15 @@ import "./minimum-stay-policy-trigger.realdb.test";
 // import adds the over-budget race proof to the explicit CI race command without
 // making ordinary `npm test` depend on a database.
 import "./ai-diagnostics-budget-race.realdb.test";
+// #2786 reuses the same guarded harness to prove the AI Diagnostics read-only
+// SEAM against a real server rather than a double: that the transaction really is
+// READ ONLY and REPEATABLE READ inside the callback, that the statement timeout
+// really took, that an INSERT is refused with 25006 on a connection whose
+// privileges would otherwise permit it, and that the timeout is released at commit
+// instead of leaking onto the pooled application connection. The unit suite can
+// only prove the statements were SENT. Same envelope: a no-op unless
+// RUN_CONCURRENCY_RACE_TESTS=1.
+import "./ai-diagnostics-readonly-seam.realdb.test";
 // #2597 reuses this suite's guarded PostgreSQL to force ordinary-queue/member-
 // merge winner orders, whole-transaction NOWAIT rollback, under-lock fan-out
 // drift, and the existing policy/config/merge lock order against production

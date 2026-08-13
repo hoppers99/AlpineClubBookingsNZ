@@ -21,6 +21,7 @@ import { recordDiagnosticsToolAudit } from "../audit";
 import { authorizeDiagnosticsToolCall } from "../authorize";
 import { getDiagnosticsDatabase, runDiagnosticsReadOnlyQuery } from "../database";
 import type { DiagnosticsToolEntry, DiagnosticsToolRawRow } from "../define";
+import { createEmptyDiagnosticsConsentLedger } from "../consent";
 import { invokeDiagnosticsTool } from "../invoke";
 import { findDiagnosticsTool } from "../registry";
 import { createDiagnosticsToolSession } from "../session";
@@ -57,6 +58,14 @@ function serverOwnedEntry(options: {
   return {
     id: TOOL_ID,
     source: "server_owned",
+    // The fixture's `read` is a stub that touches no database, so it declares the
+    // same thing the one real entry in that position declares (#2786). Having to
+    // write this line at all is the forcing function doing its job: a server-owned
+    // entry cannot be constructed, even in a test, without saying where it reads.
+    readOnlySeam: {
+      threadsOwnReads: false,
+      exemptions: ["deployment-no-database"],
+    },
     label: "Server-owned fixture",
     description: "A registry entry that exists only to exercise the gates.",
     requiredAreas: ["support"],
@@ -84,6 +93,8 @@ function invoke() {
     args: {},
     actingMemberId: "member-1",
     session,
+    invocationChannel: "model_tool_use",
+    consent: createEmptyDiagnosticsConsentLedger(),
     observedAt: OBSERVED_AT,
   });
 }
@@ -180,6 +191,53 @@ describe("server-owned evidence: the gates that still apply (#2375)", () => {
       "evidence_unavailable",
     );
     // Audited as what it was: an ALLOWED call that then failed, not a permission block.
+    expect(auditMock.mock.calls[0][0].audit.authOutcome).toBe("allowed");
+  });
+
+  it("reports a BUSY POOL as its own reason, not as a fault (#2804)", async () => {
+    // The owner raised the wait for a connection from 2 s to 8 s so an admin
+    // waits for a busy database rather than being told to try again. An admin who
+    // has waited that long is then owed an accurate reason: nothing is broken,
+    // every connection was simply in use. Folding this into
+    // `evidence_unavailable` would send them looking for a fault that does not
+    // exist — the message for that one says the evidence "could not be gathered".
+    findToolMock.mockReturnValue(
+      serverOwnedEntry({
+        read: async () => {
+          throw Object.assign(
+            new Error(
+              "Unable to start a transaction in the given time",
+            ),
+            { code: "P2028" },
+          );
+        },
+      }),
+    );
+
+    const result = await invoke();
+
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.reason).toBe("evidence_database_busy");
+    expect(result.reason).not.toBe("evidence_unavailable");
+    // The operator sentence has to carry the distinction, not just the code —
+    // the code is what the model sees, the sentence is what the human reads.
+    expect(result.message).toMatch(/busy/i);
+    expect(result.message).toMatch(/nothing is broken/i);
+    // The flag is set ONLY by the source's own P2028 rejection, never by the
+    // deadline arm — "we waited for a connection and gave up" and "the whole graph
+    // overran" are different answers. The existing "gives up on a source that never
+    // answers" test below pins that the deadline still reports
+    // `evidence_unavailable`, so this does not need a duplicate of it (and a
+    // duplicate without fake timers would have cost CI the whole outer deadline
+    // in real time).
+    // Still fails closed — the failure type carries no rows at all, which is the
+    // type system enforcing what the contract says — and still audited as an
+    // allowed call that then failed rather than as a permission block.
+    expect("rows" in result).toBe(false);
+    expect(auditMock.mock.calls[0][0].audit.failureReason).toBe(
+      "evidence_database_busy",
+    );
     expect(auditMock.mock.calls[0][0].audit.authOutcome).toBe("allowed");
   });
 
@@ -346,6 +404,8 @@ describe("server-owned evidence: the gates that still apply (#2375)", () => {
         args: {},
         actingMemberId: "member-1",
         session,
+        invocationChannel: "model_tool_use",
+        consent: createEmptyDiagnosticsConsentLedger(),
         observedAt: OBSERVED_AT,
       });
       expect(result.status).toBe("ok");
@@ -355,6 +415,8 @@ describe("server-owned evidence: the gates that still apply (#2375)", () => {
       args: {},
       actingMemberId: "member-1",
       session,
+      invocationChannel: "model_tool_use",
+      consent: createEmptyDiagnosticsConsentLedger(),
       observedAt: OBSERVED_AT,
     });
     expect(exhausted.status).toBe("error");
