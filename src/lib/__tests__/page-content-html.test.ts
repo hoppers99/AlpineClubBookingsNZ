@@ -401,6 +401,105 @@ describe("listWebsiteMenuPages", () => {
 
     expect(pages.map((page) => page.slug)).toEqual(["about", "trips/pay"]);
   });
+
+  // #2818 decisions 1 and 2. The two form pages live in `(website-dynamic)`, so
+  // `isCmsServablePageSlug` refuses them — a real code-backed route serves each
+  // address, but the catch-all will never store one. Advertising them is opt-in:
+  // the seeded rows carry an EMPTY menu title, so a club that does nothing keeps
+  // the unlisted behaviour of #2421.
+  it.each(["booking-requests", "school-bookings"])(
+    "keeps %s out of the nav while its menu title is empty",
+    async (slug) => {
+      mocks.pageContentFindMany.mockResolvedValue([
+        { slug: "about", menuTitle: "About", title: "About", path: `/about` },
+        { slug, menuTitle: "", title: "Form", path: `/${slug}` },
+      ]);
+
+      const pages = await listWebsiteMenuPages();
+
+      expect(pages.map((page) => page.slug)).toEqual(["about"]);
+    },
+  );
+
+  it.each(["booking-requests", "school-bookings"])(
+    "lists %s once the club sets a menu title, even though the catch-all refuses the slug",
+    async (slug) => {
+      // The decoupling itself. Before `BUILT_IN_DYNAMIC_PAGE_SLUGS` the only way
+      // to get a menu entry here was to move the page into the fixed-nonce route
+      // group, which is the CSP widening decision 2 reversed.
+      mocks.pageContentFindMany.mockResolvedValue([
+        { slug, menuTitle: "Request a stay", title: "Form", path: `/${slug}` },
+      ]);
+
+      const pages = await listWebsiteMenuPages();
+
+      expect(pages.map((page) => page.slug)).toEqual([slug]);
+      expect(pages[0]!.menuTitle).toBe("Request a stay");
+    },
+  );
+
+  it("does not list a whitespace-only menu title as an opt-in", async () => {
+    mocks.pageContentFindMany.mockResolvedValue([
+      {
+        slug: "booking-requests",
+        menuTitle: "   ",
+        title: "Form",
+        path: "/booking-requests",
+      },
+    ]);
+
+    expect(await listWebsiteMenuPages()).toEqual([]);
+  });
+
+  it("does not let the allowlist widen to any other per-request page", async () => {
+    // `/hut-leader-instructions` is `(website-dynamic)` too, and must stay
+    // unlistable: it is PIN-gated and per-assignment, so a nav link would refuse
+    // everyone who followed it. This is why the allowlist is written down rather
+    // than derived from PER_REQUEST_WEBSITE_ROUTES.
+    mocks.pageContentFindMany.mockResolvedValue([
+      {
+        slug: "hut-leader-instructions",
+        menuTitle: "Hut Leader",
+        title: "Hut Leader",
+        path: "/hut-leader-instructions",
+      },
+    ]);
+
+    expect(await listWebsiteMenuPages()).toEqual([]);
+  });
+
+  it("still drops an UNPUBLISHED built-in form page, because the query filters first", async () => {
+    // The allowlist relaxes filter 3 only. `published` is enforced in the query,
+    // and these rows cannot be unpublished through any supported write path
+    // (`canUnpublishPage`), so this pins that the relaxation did not reach it.
+    mocks.pageContentFindMany.mockResolvedValue([]);
+
+    expect(await listWebsiteMenuPages()).toEqual([]);
+    expect(mocks.pageContentFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { published: true } }),
+    );
+  });
+});
+
+describe("listPublishedCmsPagePaths excludes the built-in dynamic pages (#2818 decision 4)", () => {
+  beforeEach(() => {
+    mocks.pageContentFindMany.mockReset();
+  });
+
+  it("never warms a page that is never stored, so no CRITICAL_PUBLIC_ROUTES entry is needed", async () => {
+    // The warm-up census cross-check is what turned CI red on the first cut: a
+    // discovered route with no declaration fails it. These two must not be
+    // discovered at all — they are `force-dynamic`, so warming them would fill
+    // nothing. The menu asks a WIDER question than this on purpose, and this test
+    // is what stops the two questions being merged back together.
+    mocks.pageContentFindMany.mockResolvedValue([
+      { slug: "about", path: "/about" },
+      { slug: "booking-requests", path: "/booking-requests" },
+      { slug: "school-bookings", path: "/school-bookings" },
+    ]);
+
+    expect(await listPublishedCmsPagePaths()).toEqual(["/about"]);
+  });
 });
 
 describe("listPublishedCmsPagePaths (#2566 warm-up discovery)", () => {
