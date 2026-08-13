@@ -5,10 +5,15 @@ Diagnostics is an **optional, admin-only, default-off** module (epic
 [#2369](README.md)).
 
 This guide covers what has landed: the module flag, the dedicated Anthropic
-credential, the monthly budget and limits (AID-2, #2371), and the dedicated
-SELECT-only database role (AID-5, #2374). Provider disclosure, zero-retention
-posture, and the private knowledge overlay are documented by AID-8 (#2379) when it
-lands.
+credential, the monthly budget and limits (AID-2, #2371), the dedicated
+SELECT-only database role (AID-5, #2374), and — now that AID-7 (#2378) has shipped
+the surface — the live question-and-answer product itself. The end-to-end
+[architecture](architecture.md) and the [security verification matrix](e2e-matrix.md)
+are AID-8's (#2379) reference documents.
+
+Three ADR-006 postures — **provider/data-residency disclosure**, an optional
+**zero-retention** provider posture, and the **private knowledge overlay** — are
+**not implemented in this release**; see [deferred below](#deferred-provider-disclosure-zero-retention-and-the-private-overlay).
 
 Extends [`DEPLOYMENT.md`](../../DEPLOYMENT.md) and
 [`CONFIGURATION.md`](../../CONFIGURATION.md).
@@ -419,19 +424,34 @@ required. The three `server_owned` entries in AID-6B do not read through this
 credential and are unaffected, so a deployment that has not been re-provisioned can
 still be misread as partly working: check readiness rather than a single tool.
 
-**THE ONLY PRODUCTION CHANGE THIS RELEASE MAKES IS THE GRANT, and it is worth
-stating plainly rather than leaving it to be inferred.** `invokeDiagnosticsTool`
-has no production call site: there is no `/admin/ai-diagnostics` page and nothing
-in the shipped runtime calls a tool. The pack therefore ships **dormant** — every
-entry is registered, reviewed and tested, and none of them can be reached by an
-operator until #2378 builds the surface. What *does* change on deploy is the
-database credential: after `npm run diagnostics:provision-role`, `ai_diagnostics_ro`
-holds SELECT on thirteen new relations and on a `Member` widened from two columns to
-twenty-three, none of which any tool can use yet. The credential's blast radius
-therefore grows one release ahead of the feature. That is defensible and it is
-ADR-007's own trade — the friction requires the grant to ship with the tool it
-belongs to, not with the page — but it means the grant, and not the pack, is what a
-production incident in this release could touch.
+**The tool packs are now reachable, and the SELECT grant is what an operator
+provisions to let them read.** An earlier release note here said the packs shipped
+"dormant" with "no production call site" because there was no `/admin/ai-diagnostics`
+page — that was true up to AID-6C and is **false now**. AID-7 (#2378) shipped the
+surface: the admin page at `src/app/(admin)/admin/ai-diagnostics/page.tsx`, the ask
+route at `src/app/api/admin/ai-diagnostics/ask/route.ts`, and the bounded answer loop
+(`src/lib/diagnostics/answer/loop.ts`), which calls `invokeDiagnosticsTool` on every
+tool round the model asks for. An admin reaches it from the Help bubble on any admin
+screen. So when Diagnostics is enabled and provisioned, the packs are live, not
+dormant.
+
+**What has NOT changed is the fail-closed framing, and it is the reason this is
+still safe.** The module ships **default-off**; every tool reads only through the
+dedicated **SELECT-only** role, verified least-privilege against the server on a
+one-minute clock; and turning the product on is an explicit **owner action** —
+enable the module, store the dedicated key, set a positive budget, and run
+`npm run diagnostics:provision-role`. Until an operator does all four, the ask route
+refuses before a provider is ever contacted (readiness is fail-closed), and every
+tool call refuses independently of readiness because the credential gate is the
+control. Enabling the module alone authorises no spend and no read.
+
+So on an upgrade the **grant is still the production change to reason about**: after
+`npm run diagnostics:provision-role`, `ai_diagnostics_ro` holds SELECT on the
+thirteen relations AID-6B added and on a `Member` widened from two columns to
+twenty-three. The difference from the earlier note is only that a provisioned,
+enabled deployment can now *use* that grant through the shipped UI — which is the
+whole point of the release — rather than holding it against a feature that cannot
+yet reach it.
 
 ### Adding a relation grant later
 
@@ -522,8 +542,30 @@ whose name lacks the dedicated marker. **Never point it at a live database**: it
 provisions and drops a cluster role and temporarily revokes
 `TEMPORARY … FROM PUBLIC`.
 
+## Deferred: provider disclosure, zero-retention, and the private overlay
+
+[ADR-006](decisions/ADR-006-deployment-provider-disclosure-private-overlay-config-non-travel.md)
+names three deployment postures that are **not implemented in this release**. They
+are documented here honestly rather than described as if they shipped, because an
+operator making a data-governance decision must not be told a control exists when it
+does not. The owner is deciding the private overlay's scope; a follow-up will track
+all three against ADR-006. Until then:
+
+| ADR-006 posture | State in this release | What that means for an operator |
+| --- | --- | --- |
+| §2 Provider / data-residency **disclosure** | **Not built.** There is no shipped disclosure surface on the admin configuration page, and no operator-facing statement that enabling Diagnostics sends bounded excerpts to Anthropic for processing outside New Zealand. | Enabling Diagnostics still has that data-governance consequence — it is described in this guide and the [architecture](architecture.md), but not surfaced in the product. Treat enabling it as an informed decision you make from these docs. |
+| §3 Optional **zero-retention** provider posture | **Not built.** The provider client (`src/lib/diagnostics/answer/provider.ts`) sends no no-retention / no-training header, and nothing reads a zero-retention setting. A comment in `src/lib/ai-diagnostics-config.ts` references the posture aspirationally; it is not enforced. | A deployment cannot yet require zero-retention through configuration. A club with that requirement should arrange it at the Anthropic workspace/account level for the dedicated diagnostics key, out of band, until this ships. |
+| §4 Deployment-owned **private knowledge overlay** | **Partially built, and not the ADR-006 shape.** A build-time *allowlist overlay* (`config/diagnostics-knowledge.json`, honoured by `scripts/diagnostics/generate-knowledge-bundle.ts`) can widen or narrow **which of the repository's own files** enter the knowledge bundle — see [`KNOWLEDGE_BUNDLE.md`](../diagnostics/KNOWLEDGE_BUNDLE.md). The ADR-006 contract is broader: a deployment supplying **extra, private diagnostic knowledge** layered on the public bundle. That supply contract is **not built**. | You can tune which shipped files are indexed, but you cannot yet inject private deployment-specific knowledge. Do not add a Tokoroa-specific path to public code to work around this ([ADR-006 §4](decisions/ADR-006-deployment-provider-disclosure-private-overlay-config-non-travel.md)). |
+
+None of the three weakens any shipped control: Diagnostics is fully functional on the
+public bundle alone, and every read still runs through the SELECT-only role and the
+fail-closed gates described above.
+
 ## Related
 
+- [Architecture](architecture.md) — the end-to-end shell/route/loop/provider path,
+  the evidence channels, and where each control lives.
+- [Security verification matrix](e2e-matrix.md) — what AID-8 proved, and how.
 - [Tool substrate reference](tools.md) — the gates, bounds, audit, and the rules
   for adding a tool.
 - [Support tool pack (AID-6A)](tool-pack-support.md) — what is registered today, the

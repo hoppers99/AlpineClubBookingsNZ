@@ -306,6 +306,15 @@ module boundaries, data model, integrations, cron jobs, and the mermaid maps.
   deterministic, fail-closed deployed-code knowledge bundle (AID-3, #2372) that
   lets AI Diagnostics answer code/docs/schema questions from the running
   artifact, with cited-evidence retrieval and the deployment-owned overlay.
+- [`ai-diagnostics/architecture.md`](ai-diagnostics/architecture.md) — the
+  end-to-end AI Diagnostics architecture (AID-8, #2379): the shell/route/loop/
+  provider path, the tool substrate and its two read-only seams, the knowledge
+  bundle, the consent ledger and permission model, the untrusted-text defusal
+  boundary across all five evidence channels, and budget/rate/recovery.
+- [`ai-diagnostics/e2e-matrix.md`](ai-diagnostics/e2e-matrix.md) — the security
+  verification matrix (AID-8, #2379): each adversarial property with its test
+  files and proof tier (mocked-provider unit, real-Postgres, Playwright E2E), and
+  the live browser/model gaps stated plainly.
 - [`ai-diagnostics/page-context.md`](ai-diagnostics/page-context.md) — the typed
   structured page context (AID-4, #2373): the untrusted selector, the route
   registry, the fresh permission-checked server re-fetch, the personal-detail
@@ -395,10 +404,12 @@ Larger subsystems keep their own hub. Each links back to this page.
 - **Member photos (design)** — storage, visibility, and what a member merge does
   to a photo:
   [`member-photos/decisions/ADR-001-member-photos.md`](member-photos/decisions/ADR-001-member-photos.md).
-- **AI Diagnostics (design/foundation)** — the admin-only, read-only diagnostics
-  assistant's security, privacy, authority, and evidence contracts: ADRs, the
-  STRIDE threat model, the permission matrix, and the documentation plan. Start
-  with [`ai-diagnostics/README.md`](ai-diagnostics/README.md). Separate from the
+- **AI Diagnostics (delivered; in release hardening)** — the admin-only, read-only
+  diagnostics assistant: its [architecture](ai-diagnostics/architecture.md), the
+  [security verification matrix](ai-diagnostics/e2e-matrix.md), and the security,
+  privacy, authority, and evidence contracts (ADRs, the STRIDE threat model, the
+  permission matrix). Off by default. Start with
+  [`ai-diagnostics/README.md`](ai-diagnostics/README.md). Separate from the
   member-facing [AI Help Assistant](guides/ai-help.md).
 
 ## Release notes
