@@ -3,16 +3,18 @@ import { WebsiteChrome } from "@/components/website/website-chrome";
 import { CSP_NONCE_HEADER } from "@/lib/csp";
 
 /**
- * The PER-REQUEST public route group: the three public-website pages that keep a
- * freshly minted CSP nonce (#2352, owner decision 3 Aug 2026).
+ * The PER-REQUEST public route group: the eight public-website routes that keep a
+ * freshly minted CSP nonce (#2352, owner decision 3 Aug 2026; widened by #2818).
  *
- * `/hut-leader-instructions`, `/join/[code]` and `/join/verify/[token]`. They look
- * and behave exactly like the rest of the public site — same header, footer,
- * banners, help widget, theme and pre-setup holding screen, all from the one
- * shared `WebsiteChrome` — and they differ from `(website)` in exactly one
- * respect: the nonce below is minted for this request, not for this release.
+ * `/hut-leader-instructions`, `/join/[code]`, `/join/verify/[token]`,
+ * `/booking-requests` and `/school-bookings`, plus the three tokenised
+ * confirmation pages under the last two. They look and behave exactly like the
+ * rest of the public site — same header, footer, banners, help widget, theme and
+ * pre-setup holding screen, all from the one shared `WebsiteChrome` — and they
+ * differ from `(website)` in exactly one respect: the nonce below is minted for
+ * this request, not for this release.
  *
- * ## Why these three are here rather than in `(website)`
+ * ## Why these are here rather than in `(website)`
  *
  * The first cut of D1 gave the fixed per-release nonce to the whole `(website)`
  * group, on the structural argument that one shared layout can stamp only one
@@ -20,16 +22,32 @@ import { CSP_NONCE_HEADER } from "@/lib/csp";
  * loss of defence — the value is readable in the page source, so it no longer
  * stops a fully injected `<script>` tag — and it was accepted only for the five
  * pages whose content is double-sanitised admin HTML and whose benefit is a stored
- * page. These three get none of that benefit:
+ * page. Nothing here gets that benefit:
  *
  *  • `/hut-leader-instructions` is per-assignment and PIN-gated (`?a=` from an
  *    assignment email), so there is no shared copy to store;
- *  • `/join/[code]` and `/join/verify/[token]` carry a group code and a one-time
- *    token in the URL, and a stored copy is a page that skips its own re-check.
+ *  • `/join/[code]` and the four `[token]` pages carry a group code or a one-time
+ *    token in the URL, and a stored copy is a page that skips its own re-check;
+ *  • `/booking-requests` and `/school-bookings` are database-backed built-in CMS
+ *    pages and would have fitted the fixed-nonce group perfectly well. They are
+ *    here because D1's census is an owner decision at five and widening it is a
+ *    CSP decision, not a routing detail (#2818 decision 2) — and because these are
+ *    the two pages where an anonymous visitor enters the most personal
+ *    information, so keeping the unguessable nonce is worth more than a stored
+ *    copy of a form. Both are `force-dynamic` anyway, so nothing is given up.
  *
- * All three are `force-dynamic`, so nothing about them is ever stored, so nothing
+ * All eight are `force-dynamic`, so nothing about them is ever stored, so nothing
  * about them needs a nonce that outlives a request — and paying the fixed nonce's
  * cost for no benefit is the trade the owner reversed.
+ *
+ * ## Google Analytics never loads here, and that is a decision rather than a
+ * side effect
+ *
+ * `isAnalyticsEligiblePath()` keys on `isFixedNonceWebsitePath()`, so every route
+ * in this group is refused. For the booking-request and school-booking forms the
+ * owner ratified that deliberately (#2818 decision 3): they are the two pages
+ * where an anonymous visitor types the most personal information, so no page-view
+ * or URL from them reaches Google.
  *
  * ## Why the group-level declaration, and why reading the request here is safe
  *

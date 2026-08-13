@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const DB_CAPACITY = 47;
 
 import type { ClubIdentity } from "@/config/club-identity-types";
-import { BookingRequestForm } from "@/app/(website)/booking-requests/booking-request-form";
+import { BookingRequestForm } from "@/app/(website-dynamic)/booking-requests/booking-request-form";
 
 // The club identity the resolving server page injects into the form, with the
 // DB-resolved default lodge capacity spread over it (#1982 R1). Only the fields

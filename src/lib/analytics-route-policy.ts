@@ -19,7 +19,7 @@ import { isFixedNonceWebsitePath } from "@/lib/public-website-paths";
  * 1. **{@link isFixedNonceWebsitePath} must say yes.** That predicate is derived
  *    from the real route tree (`src/lib/public-website-paths.ts`, kept exhaustive
  *    by `setup-gate.test.ts` walking `src/app`), and it answers "is this an address
- *    one of the seven approved `(website)` routes serves". Every excluded class the
+ *    one of the five approved `(website)` routes serves". Every excluded class the
  *    owner listed falls out of it already: `/admin/*`, every authenticated member
  *    and dashboard route, and — because each is a `NON_WEBSITE_ROOT_SEGMENTS`
  *    entry — `/login`, `/register`, `/forgot-password`, `/reset-password`,
@@ -250,7 +250,7 @@ export function isAnalyticsEligiblePath(pathname: string): boolean {
 
   const path = normalisePathname(pathname);
 
-  // Gate 1: the address must be served by one of the seven approved public routes.
+  // Gate 1: the address must be served by one of the five approved public routes.
   if (!isFixedNonceWebsitePath(path)) {
     return false;
   }

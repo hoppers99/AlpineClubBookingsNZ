@@ -28,7 +28,7 @@ import { pathToFileURL } from "node:url";
  *    return to the cost slice 1 removed, with no failing test anywhere.
  *
  * The 3 Aug narrowing added a second class of silent change, and it is a security
- * one. The fixed per-release CSP nonce now covers exactly seven approved addresses;
+ * one. The fixed per-release CSP nonce now covers exactly five approved addresses;
  * everything else on the site mints one per request. Which group a page file sits
  * in is what decides that, and a route group is invisible in a URL — so a new page
  * dropped into `(website)` would be handed the weaker fixed nonce with nothing
@@ -391,7 +391,8 @@ export function auditPublicWebsiteStructure({
       '(website-dynamic)/layout.tsx must declare `export const dynamic = "force-dynamic"` ' +
         "for the whole group, so a page added later is per-request by default rather than " +
         "by remembering. Nothing in this group may ever be stored: it holds a PIN-gated " +
-        "per-assignment page and two token-bearing screens.",
+        "per-assignment page, four token-bearing screens, a group-code page, and two " +
+        "public forms an anonymous visitor types personal details into.",
     );
   }
 
@@ -458,7 +459,7 @@ export function auditPublicWebsiteStructure({
 
   if (!fixedLayout) {
     problems.push(
-      "src/app/(website)/layout.tsx is missing. It is what hands the seven approved " +
+      "src/app/(website)/layout.tsx is missing. It is what hands the five approved " +
         "routes the fixed per-release CSP nonce.",
     );
   } else {
@@ -481,7 +482,7 @@ export function auditPublicWebsiteStructure({
       if (pattern.test(fixedLayout)) {
         problems.push(
           `(website)/layout.tsx calls ${name}. Any request read here opts every one of the ` +
-            "seven approved routes out of static rendering (#2352 slice 1) — including the " +
+            "five approved routes out of static rendering (#2352 slice 1) — including the " +
             "CMS catch-all, which then stops being stored at all.",
         );
       }
@@ -493,15 +494,15 @@ export function auditPublicWebsiteStructure({
       problems.push(
         "(website-dynamic)/layout.tsx must read the per-request CSP nonce from " +
           "CSP_NONCE_HEADER. That is the entire reason this group exists: the owner " +
-          "narrowed the fixed per-release nonce back to the approved routes on " +
-          "3 Aug 2026, and these three pages get the same freshly minted nonce every " +
-          "member and admin page gets.",
+          "narrowed the fixed per-release nonce back to the five approved routes on " +
+          "3 Aug 2026, and every route in this group gets the same freshly minted " +
+          "nonce every member and admin page gets.",
       );
     }
     if (perRequestLayout.includes("getPublicWebsiteNonce")) {
       problems.push(
         "(website-dynamic)/layout.tsx reaches for getPublicWebsiteNonce(). That is the " +
-          "fixed per-release value, and handing it to these three pages is exactly the " +
+          "fixed per-release value, and handing it to this group is exactly the " +
           "widening the owner reversed on 3 Aug 2026 — it costs them the unguessable-nonce " +
           "defence and buys nothing, because none of them is ever stored.",
       );
@@ -592,7 +593,7 @@ export function auditPublicWebsiteStructure({
     for (const [token, why] of [
       [
         "getPublicWebsiteNonce",
-        "the FIXED per-release value, which would reach the six per-request pages " +
+        "the FIXED per-release value, which would reach every per-request public page " +
           "through the shared component and undo the owner's 3 Aug 2026 narrowing",
       ],
       [

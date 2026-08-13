@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { BookingRequestForm } from "@/app/(website)/booking-requests/booking-request-form";
+import { BookingRequestForm } from "@/app/(website-dynamic)/booking-requests/booking-request-form";
 import { EmbeddedPageContentParts } from "@/components/website/embedded-page-content-parts";
 import {
   getCachedClubIdentity,
@@ -13,19 +13,33 @@ import {
 } from "@/lib/page-content-html";
 
 /**
- * The public booking-request page, a database-backed built-in CMS page with the
- * same makeup as `/join/apply`: a code-backed `(website)` route that renders its
+ * The public booking-request page: a database-backed built-in CMS page with the
+ * same makeup as `/join/apply` — a code-backed route that renders its
  * `/booking-requests` PageContent row through the token pipeline. Its seeded body
  * is `{{booking-requests}}`, which renders the request-to-book form.
  *
- * Held back from static rendering (#2352 slice 1, owner decision D4). See
- * `(website)/page.tsx` for why the line is required rather than tidy: with the
- * shared layout no longer reading the request, a fixed route without it is
- * prerendered at build, with no database and no CSP nonce.
+ * ## Why it sits in `(website-dynamic)` rather than `(website)` (#2818 decision 2)
+ *
+ * Everything about the page says fixed-nonce group: it is CMS-backed, its content
+ * is twice-sanitised admin HTML, and it sits beside `/contact` and `/join/apply`
+ * in the admin's Page Content list. It is here anyway for two reasons. D1's
+ * fixed-nonce census is an owner decision pinned at five addresses, and widening
+ * it is a decision about the CSP rather than a routing detail. And this is one of
+ * the two pages where an anonymous visitor types the most personal information,
+ * so the unguessable per-request nonce is worth more here than a stored copy of a
+ * form that is `force-dynamic` regardless.
+ *
+ * The consequences of that placement are all deliberate: no Google Analytics
+ * (decision 3), no warm-up declaration (decision 4), and the pre-setup holding
+ * screen in front of it exactly as before.
+ *
+ * `force-dynamic` is declared here as well as on the group layout, because each
+ * route in this group is per-request for a permanent reason of its own and the
+ * reason belongs next to the route (`check-website-render-modes.mjs` requires
+ * both).
  *
  * The two tokenised confirmation flows — `respond/[token]` and `verify/[token]` —
- * live in `(website-dynamic)/booking-requests/` so they keep a per-request nonce
- * and stay noindex; their URLs are unchanged.
+ * are siblings under this same directory; their URLs are unchanged.
  */
 export const dynamic = "force-dynamic";
 

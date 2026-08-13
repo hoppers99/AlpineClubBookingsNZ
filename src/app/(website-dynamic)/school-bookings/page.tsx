@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { SchoolBookingForm } from "@/app/(website)/school-bookings/school-booking-form";
+import { SchoolBookingForm } from "@/app/(website-dynamic)/school-bookings/school-booking-form";
 import { EmbeddedPageContentParts } from "@/components/website/embedded-page-content-parts";
 import {
   getCachedClubIdentity,
@@ -13,18 +13,20 @@ import {
 } from "@/lib/page-content-html";
 
 /**
- * The public school-group booking page, a database-backed built-in CMS page with
- * the same makeup as `/join/apply` and `/booking-requests`: a code-backed
- * `(website)` route that renders its `/school-bookings` PageContent row through
- * the token pipeline. Its seeded body is `{{school-bookings}}`, which renders the
- * school-group request form.
+ * The public school-group booking page: a database-backed built-in CMS page with
+ * the same makeup as `/join/apply` and `/booking-requests` — a code-backed route
+ * that renders its `/school-bookings` PageContent row through the token pipeline.
+ * Its seeded body is `{{school-bookings}}`, which renders the school-group
+ * request form.
  *
- * Held back from static rendering (#2352 slice 1, owner decision D4). See
- * `(website)/page.tsx` for why the line is required rather than tidy.
+ * It sits in `(website-dynamic)` for the same reasons `/booking-requests` does;
+ * that file's docblock carries the argument in full (#2818 decision 2). The short
+ * version: D1's fixed-nonce census is an owner decision pinned at five, and this
+ * is a page anonymous visitors type personal details into, so it keeps the
+ * per-request nonce, no analytics, and no warm-up declaration.
  *
- * The tokenised attendee-confirmation flow — `confirm/[token]` — lives in
- * `(website-dynamic)/school-bookings/` so it keeps a per-request nonce and stays
- * noindex; its URL is unchanged.
+ * The tokenised attendee-confirmation flow — `confirm/[token]` — is a sibling
+ * under this same directory; its URL is unchanged.
  */
 export const dynamic = "force-dynamic";
 

@@ -57,8 +57,8 @@ vi.mock("@/lib/finance-legacy-dashboard-export", () => ({
 }));
 
 import type { ClubIdentity } from "@/config/club-identity-types";
-import { BookingRequestForm } from "@/app/(website)/booking-requests/booking-request-form";
-import { SchoolBookingForm } from "@/app/(website)/school-bookings/school-booking-form";
+import { BookingRequestForm } from "@/app/(website-dynamic)/booking-requests/booking-request-form";
+import { SchoolBookingForm } from "@/app/(website-dynamic)/school-bookings/school-booking-form";
 
 // Only the fields the forms read need real values; the cast satisfies the type.
 const STUB_CLUB = {
@@ -233,8 +233,8 @@ describe("#2682 no surface derives today from UTC any more", () => {
     for (const page of [
       // The booking date pickers live in the extracted form components, now under
       // the (website) group (both are real website pages).
-      "src/app/(website)/booking-requests/booking-request-form.tsx",
-      "src/app/(website)/school-bookings/school-booking-form.tsx",
+      "src/app/(website-dynamic)/booking-requests/booking-request-form.tsx",
+      "src/app/(website-dynamic)/school-bookings/school-booking-form.tsx",
     ]) {
       const source = fs.readFileSync(path.resolve(process.cwd(), page), "utf8");
       // The byte-identical private `todayDateOnly()` in both files is what made
