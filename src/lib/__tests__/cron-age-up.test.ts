@@ -561,6 +561,55 @@ describe("checkAgeUpMembers", () => {
     expect(mockTriggerGroupSync).not.toHaveBeenCalled();
   });
 
+  it("abandons the upgrade when only the CHOICE says they inherit (#2716)", async () => {
+    // The third half of the disjunction, and the one #2716 created. INV-LIFE-036
+    // withholds a login from a member whose email is inherited, and "inherited"
+    // used to be exactly `inheritEmailFromId != null`. After the two-column
+    // split it is not: a null pointer beside a live CHOICE is the ordinary state
+    // of somebody still inheriting whose source has gone temporarily
+    // unreachable. Testing the pointer alone aged them up, gave them a login,
+    // and sent the invitation to whatever stale copy sat in their own `email`
+    // column — an address that is somebody else's mailbox.
+    //
+    // Every other test in this file seeds `inheritEmailChoiceId: null`, which is
+    // why the gap survived review of the change that opened it.
+    const member = {
+      id: "m-choice-only",
+      email: "choice@example.com",
+      firstName: "Cass",
+      lastName: "Choice",
+      dateOfBirth: dobForAge(18),
+      parentMemberId: null,
+      inheritParentEmail: false,
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+      parent: null,
+    };
+
+    mockedFindMany.mockResolvedValue([member] as any);
+    mockedEmailLogFind.mockResolvedValue(null);
+    mockedUpdate.mockResolvedValue({} as any);
+    mockedCreateToken.mockResolvedValue({} as any);
+    mockedSendEmail.mockResolvedValue(undefined);
+    mockTxMemberFindUnique.mockResolvedValue({
+      canLogin: false,
+      ageTier: "YOUTH",
+      // Pointer null, choice live — the state the split makes normal.
+      inheritEmailFromId: null,
+      inheritEmailChoiceId: "chosen-parent",
+      inheritParentEmail: false,
+      parentMemberId: null,
+    });
+
+    const result = await checkAgeUpMembers();
+
+    expect(result.upgraded).toBe(0);
+    expect(mockedUpdate).not.toHaveBeenCalled();
+    expect(mockedCreateToken).not.toHaveBeenCalled();
+    expect(mockedSendEmail).not.toHaveBeenCalled();
+    expect(mockTriggerGroupSync).not.toHaveBeenCalled();
+  });
+
   it("abandons the upgrade on a LEGACY inheritance appearing mid-run", async () => {
     // The second half of the same disjunction — `inheritParentEmail` with a
     // parent but no resolved source — so deleting either half fails a test.

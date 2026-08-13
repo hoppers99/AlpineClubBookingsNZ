@@ -133,6 +133,14 @@ async function resolveAgeUpParentEmailHandoff(
     };
   }
 
+  // #2716: a live CHOICE with no pointer means the club decided who receives
+  // this member's mail and that person currently cannot. Falling through to
+  // `member.email` here would send the age-up notice to a stale copy of the
+  // chosen member's old address. Declining lets the shared-login fallback below
+  // have its chance, and if that finds nobody the member is simply not aged up
+  // — which is the visible-gap failure direction this issue chose.
+  if (member.inheritEmailChoiceId) return null;
+
   if (member.inheritParentEmail && member.parentMemberId) {
     // #2282: RESOLVED, not read one hop. This branch used to mail
     // `member.parent.email` outright. That was safe only while a parent link
@@ -437,6 +445,16 @@ export async function checkAgeUpMembers(): Promise<{
           // re-check it inside the transaction alongside the ADULT short-circuit.
           currentMember.ageTier === "NOT_APPLICABLE" ||
           currentMember.inheritEmailFromId ||
+          currentMember.inheritEmailChoiceId ||
+          // #2716: the CHOICE counts as inheriting, and after this issue it is
+          // the state that matters most. INV-LIFE-036 withholds a login from a
+          // member whose email is inherited, and before the two-column split
+          // "inherited" was exactly `inheritEmailFromId != null`. It is not any
+          // more: a null pointer beside a live choice is the NORMAL state of a
+          // member who is still inheriting and whose source has temporarily gone
+          // unreachable. Testing the pointer alone let such a member age up,
+          // take a login, and have the invitation sent to whatever stale copy
+          // sat in their own `email` column.
           (currentMember.inheritParentEmail && currentMember.parentMemberId)
         ) {
           return null;
