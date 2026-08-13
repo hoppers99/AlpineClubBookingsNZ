@@ -94,6 +94,7 @@ import {
 import type { AdminPermissionArea } from "@/lib/admin-permissions";
 import { DELETED_CONTACT_EMAIL_DOMAIN } from "@/lib/placeholder-contact-email";
 
+import { defuseRoleLabels, foldUntrustedText } from "../../untrusted-text";
 import { FINANCE_UNPARSEABLE_VALUE } from "./finance-shared";
 
 /**
@@ -441,14 +442,18 @@ export const PERSON_NAME_MAX_CHARS = 60;
  */
 export function personNameOrNull(value: unknown): string | null {
   if (value === null || value === undefined) return null;
-  const cleaned = String(value)
-    // Stripping control characters is the point: nothing here is source code, so
-    // the strip costs no fidelity, and a control character in a durable audit hash
-    // input is worth removing at the source.
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/["<>;=]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  // `foldUntrustedText` + `defuseRoleLabels` REPLACE the old narrow control class
+  // (which missed the C1 block, notably U+0085 NEL) and add role-label defusal, so
+  // this database-derived path is no weaker than the page-context renderer (#2832,
+  // #2831). The ANYWHERE-in-span defusal is the right one because the collapse
+  // renders a name on ONE line: no line start to anchor to; the fold runs BEFORE
+  // the bracket strip so a folded fullwidth `<` (U+FF1C) is removed.
+  const cleaned = defuseRoleLabels(
+    foldUntrustedText(String(value), "flatten")
+      .replace(/["<>;=]/g, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
   if (cleaned.length === 0) return null;
   if (cleaned.length <= PERSON_NAME_MAX_CHARS) return cleaned;
   return `${cleaned.slice(0, PERSON_NAME_MAX_CHARS - 1)}…`;
