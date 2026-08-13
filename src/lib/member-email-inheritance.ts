@@ -1,3 +1,4 @@
+import { createStructuredAuditLog } from "@/lib/audit";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
@@ -313,6 +314,120 @@ function mergeReconciliations(
 }
 
 /**
+ * WHY a re-resolution ran, threaded THROUGH the reconciler rather than guessed
+ * from a route or action name afterwards (#2822). Exactly one value per causal
+ * write; the reconciler copies it verbatim into the audit event, so "what moved
+ * this member's email source, and why?" is answerable without parsing strings.
+ *
+ * The bucket boundaries follow the WRITE that caused the reconciliation, not the
+ * field that happened to change:
+ *  - `source-member-change` — a direct human/member/admin edit of a member's own
+ *    record (address added/changed/removed, a hand-picked source set or cleared,
+ *    a self-service or delegated profile save);
+ *  - `family-link-change` — a family relationship changed (dependant link, a
+ *    login-holder transfer that re-homes a cluster);
+ *  - `lifecycle-eligibility-change` — a lifecycle transition moved a member
+ *    across the usable-source line (age tier up or down, a seasonal roll-forward,
+ *    a departure/anonymisation that revokes source eligibility);
+ *  - `nomination-promotion` — an application/nomination promotion turned a
+ *    dependant into a usable source of their own;
+ *  - `member-merge` — a merge absorbed one member's pointers/choices onto another;
+ *  - `scheduled-sweep` — the daily full-convergence backstop found stale state.
+ */
+export type EmailInheritanceReconcileTrigger =
+  | "source-member-change"
+  | "family-link-change"
+  | "lifecycle-eligibility-change"
+  | "nomination-promotion"
+  | "member-merge"
+  | "scheduled-sweep";
+
+/**
+ * The causal origin of a reconciliation: its {@link
+ * EmailInheritanceReconcileTrigger} and, when a HUMAN write originated it and
+ * that provenance is genuinely known, the acting member. Omit `actorMemberId`
+ * (or pass `null`) for cron/system-origin convergence — the audit event then
+ * records the synthetic system actor rather than claiming a human found the
+ * stale state, which for a sweep or an age-up cron is the only true provenance.
+ */
+export type EmailInheritanceReconcileOrigin = {
+  trigger: EmailInheritanceReconcileTrigger;
+  actorMemberId?: string | null;
+};
+
+/**
+ * The synthetic actor id for cron/system-origin convergence. It is not a Member
+ * row; the audit display renders every `system:`-prefixed actor as "System"
+ * (`SYSTEM_ACTOR_ID_PREFIX`, `src/lib/audit-query.ts`), and `AuditLog.actorMemberId`
+ * carries no foreign key, so it stores as written — the same convention the
+ * config-bootstrap importer uses (`system:config-bootstrap`).
+ */
+export const SYSTEM_EMAIL_INHERITANCE_AUDIT_ACTOR = "system:email-inheritance";
+
+/**
+ * ONE stable action family for both a REPOINT and a CLEAR (#2822, owner
+ * decision). Typed metadata (`previousSourceMemberId` / `newSourceMemberId`, a
+ * null on either side) distinguishes the two rather than a second action name.
+ */
+export const EMAIL_INHERITANCE_SOURCE_CHANGED_ACTION =
+  "member.email-inheritance-source.changed";
+
+/**
+ * Record ONE structured audit event for an effective-source change, on the SAME
+ * client the pointer update used (#2822).
+ *
+ * ATOMICITY. For the in-transaction callers `db` is the write's `tx`, so the
+ * event and the pointer commit or roll back together — and because it is written
+ * only AFTER `member.update` above has returned, a rolled-back or refused write
+ * can never leave an event behind. For the daily sweep `db` is the top-level
+ * client (each update its own implicit transaction); the event rides that same
+ * client immediately after the update it describes, so it still cannot precede a
+ * pointer change that did not land.
+ *
+ * WHAT IT STORES, and what it must never (owner decisions D2/D3/D4):
+ *  - category `family` — the affected domain is the family contact relationship,
+ *    NOT the initiator; do not reclassify to `admin`/`system` to hide it;
+ *  - retention `standard` — durable operational explanation, not diagnostics;
+ *  - metadata is member IDs and provenance ONLY — the subject, the previous and
+ *    new source member ids (either may be null), and the typed trigger. NEVER an
+ *    old or new email-address string;
+ *  - `summary` is generic and names no source and no address, because it is the
+ *    only event text a member may see on their own timeline.
+ */
+async function auditEmailInheritanceSourceChange(
+  db: EmailInheritanceClient,
+  origin: EmailInheritanceReconcileOrigin,
+  change: {
+    subjectMemberId: string;
+    previousSourceMemberId: string | null;
+    newSourceMemberId: string | null;
+  },
+): Promise<void> {
+  await createStructuredAuditLog(
+    {
+      action: EMAIL_INHERITANCE_SOURCE_CHANGED_ACTION,
+      actor: {
+        memberId: origin.actorMemberId ?? SYSTEM_EMAIL_INHERITANCE_AUDIT_ACTOR,
+      },
+      subject: { memberId: change.subjectMemberId },
+      entity: { type: "Member", id: change.subjectMemberId },
+      category: "family",
+      severity: "info",
+      outcome: "success",
+      retentionClass: "standard",
+      summary: "Email inheritance source updated",
+      metadata: {
+        subjectMemberId: change.subjectMemberId,
+        previousSourceMemberId: change.previousSourceMemberId,
+        newSourceMemberId: change.newSourceMemberId,
+        trigger: origin.trigger,
+      },
+    },
+    db,
+  );
+}
+
+/**
  * Converge one batch of members onto {@link effectiveEmailSourceId}.
  *
  * Writes ONLY `inheritEmailFromId`, and only where the value would change. Not
@@ -340,7 +455,17 @@ async function convergeSubjects(
    * at all, and a caught error there would turn that guarantee into a best
    * effort silently.
    */
-  options: { skipRowsThatMoved?: boolean } = {},
+  options: {
+    skipRowsThatMoved?: boolean;
+    /**
+     * The causal origin to stamp on the audit event for every row this pass
+     * actually re-points or clears (#2822). Omitted only by callers that write
+     * no pointer — there is then nothing to audit — but every reconciliation
+     * entry point threads one through, so in practice a real change is always
+     * accompanied by its provenance.
+     */
+    audit?: EmailInheritanceReconcileOrigin;
+  } = {},
 ): Promise<EmailInheritanceReconciliation> {
   if (subjects.length === 0) return EMPTY_RECONCILIATION;
 
@@ -389,6 +514,10 @@ async function convergeSubjects(
     }
     if (next === before.inheritEmailFromId && !choiceChanged) continue;
 
+    // The EFFECTIVE SOURCE moves only when the pointer does; a choice-only
+    // adoption (pointer unchanged) writes the choice column but is not an
+    // effective-source change and is deliberately NOT audited (#2822 owner D1).
+    const pointerChanged = next !== before.inheritEmailFromId;
     try {
       await db.member.update({
         where: { id: subject.id },
@@ -399,6 +528,17 @@ async function convergeSubjects(
             : {}),
         },
       });
+      // In the SAME client as the update above, and only after it has returned:
+      // a rolled-back transaction takes the event with the pointer, and a
+      // success event is never written before the pointer change is known to
+      // land (#2822).
+      if (pointerChanged && options.audit) {
+        await auditEmailInheritanceSourceChange(db, options.audit, {
+          subjectMemberId: subject.id,
+          previousSourceMemberId: before.inheritEmailFromId,
+          newSourceMemberId: next,
+        });
+      }
     } catch (error) {
       if (!options.skipRowsThatMoved) throw error;
       // The member was merged or deleted between this batch's read and now, or
@@ -410,7 +550,7 @@ async function convergeSubjects(
       );
       continue;
     }
-    if (next === before.inheritEmailFromId) continue;
+    if (!pointerChanged) continue;
     if (next === null) {
       result.cleared += 1;
     } else {
@@ -425,6 +565,7 @@ async function convergeSubjects(
 export async function reconcileEmailInheritanceForMembers(
   db: EmailInheritanceClient,
   memberIds: string[],
+  origin: EmailInheritanceReconcileOrigin,
 ): Promise<EmailInheritanceReconciliation> {
   const ids = Array.from(new Set(memberIds.filter(Boolean)));
   if (ids.length === 0) return EMPTY_RECONCILIATION;
@@ -432,7 +573,7 @@ export async function reconcileEmailInheritanceForMembers(
     where: { id: { in: ids } },
     select: EMAIL_INHERITANCE_SUBJECT_SELECT,
   });
-  return convergeSubjects(db, subjects);
+  return convergeSubjects(db, subjects, { audit: origin });
 }
 
 /**
@@ -459,6 +600,7 @@ export async function reconcileEmailInheritanceForMembers(
 export async function reconcileEmailInheritanceAfterSourceChange(
   db: EmailInheritanceClient,
   sourceMemberIds: string[],
+  origin: EmailInheritanceReconcileOrigin,
 ): Promise<EmailInheritanceReconciliation> {
   const ids = Array.from(new Set(sourceMemberIds.filter(Boolean)));
   if (ids.length === 0) return EMPTY_RECONCILIATION;
@@ -479,7 +621,7 @@ export async function reconcileEmailInheritanceAfterSourceChange(
     },
     select: EMAIL_INHERITANCE_SUBJECT_SELECT,
   });
-  return convergeSubjects(db, subjects);
+  return convergeSubjects(db, subjects, { audit: origin });
 }
 
 /**
@@ -525,11 +667,13 @@ export async function reconcileEmailInheritanceAfterSourceChange(
 export async function reconcileEmailInheritanceForMemberChange(
   db: EmailInheritanceClient,
   memberIds: string[],
+  origin: EmailInheritanceReconcileOrigin,
 ): Promise<EmailInheritanceReconciliation> {
-  const own = await reconcileEmailInheritanceForMembers(db, memberIds);
+  const own = await reconcileEmailInheritanceForMembers(db, memberIds, origin);
   const dependants = await reconcileEmailInheritanceAfterSourceChange(
     db,
     memberIds,
+    origin,
   );
   return mergeReconciliations(own, dependants);
 }
@@ -654,8 +798,13 @@ export async function reconcileAllEmailInheritance(
     result = mergeReconciliations(
       result,
       // The only caller that passes this: the sweep is a backstop, so one
-      // member whose row moved must not cost the rest of the tree its pass.
-      await convergeSubjects(db, subjects, { skipRowsThatMoved: true }),
+      // member whose row moved must not cost the rest of the tree its pass. Its
+      // audit provenance is the sweep itself — a system-origin repair with no
+      // human actor to claim (#2822).
+      await convergeSubjects(db, subjects, {
+        skipRowsThatMoved: true,
+        audit: { trigger: "scheduled-sweep" },
+      }),
     );
     if (subjects.length < RECONCILE_BATCH_SIZE) break;
     cursor = subjects[subjects.length - 1]?.id;
