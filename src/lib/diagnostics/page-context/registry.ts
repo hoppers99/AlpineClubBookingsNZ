@@ -34,6 +34,7 @@
  * deliberate decision.
  */
 
+import { BOOKING_REQUESTS_TABS } from "@/lib/admin-booking-requests-path";
 import type { AdminPermissionArea } from "@/lib/admin-permissions";
 import type { StuckStateSeverity } from "@/lib/stuck-state-dashboard";
 
@@ -173,12 +174,29 @@ const ROUTES: readonly DiagnosticsPageContextRoute[] = [
     filterKeys: ["lodgeId", "status", "from", "to", "search"],
   }),
   route({
-    key: "admin.booking-approvals",
-    pathname: "/admin/booking-approvals",
-    label: "Booking approvals queue",
+    // #2812: this row used to be `admin.booking-approvals` at
+    // `/admin/booking-approvals` — a pathname whose page is a fifteen-line
+    // redirect() shim, so the row could never match a live page and the
+    // approvals queue (the single most likely place to ask "why will this
+    // booking not confirm?") had no page context at all. It now names the page
+    // an operator actually stands on. The tab list is the page's own canonical
+    // set, imported rather than retyped (owner decision 13 Aug 2026: every
+    // tab, not approvals-only).
+    key: "admin.booking-requests",
+    pathname: "/admin/booking-requests",
+    label: "Booking requests and approvals",
     requiredAreas: ["bookings"],
     recordKind: "booking",
-    statuses: BOOKING_STATUS_TOKENS,
+    tabs: BOOKING_REQUESTS_TABS,
+    // NO status vocabulary, deliberately (review finding, 13 Aug 2026). The dead
+    // row carried BOOKING_STATUS_TOKENS, but this page's own `?status=` values are
+    // REVIEW filters (`PENDING`/`APPROVED`/`REJECTED`/`ALL`, plus `REQUESTED` on
+    // the exceptions deep link) — a different vocabulary, and the booking-status
+    // census forces any non-empty list here to equal the whole BookingStatus enum.
+    // Advertising tokens the page never uses would cost an operator their entire
+    // context the moment #2816 wires view state (rejection is total). Empty means
+    // refused, which is the registry's honest fail-closed default; widening it is
+    // a decision for whoever wires this page's view state.
     errorCodes: DIAGNOSTICS_PAGE_ERROR_CODES,
   }),
   route({
