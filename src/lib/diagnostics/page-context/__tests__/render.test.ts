@@ -86,8 +86,12 @@ describe("the evidence channel is the user turn, never system authority", () => 
   it("is the only assembly helper the module offers", async () => {
     // Placing page context in the system role must take a deliberate act of
     // stripping the role off, not merely calling the other exported function.
+    // `PAGE_CONTEXT_EVIDENCE_TAG` is a constant, not an assembly helper — it is
+    // exported only so the system-prompt census (#2379) reads the wrapper token
+    // from its single source rather than re-typing the string.
     const renderModule = await import("../render");
     expect(Object.keys(renderModule).sort()).toEqual([
+      "PAGE_CONTEXT_EVIDENCE_TAG",
       "buildPageContextUserTurn",
       "renderPageContextEvidenceBlock",
     ]);
