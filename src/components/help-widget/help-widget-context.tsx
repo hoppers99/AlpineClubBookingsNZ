@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import type { HelpQuestion, HelpSection } from "@/lib/contextual-help";
+import type { DiagnosticsAskRequest } from "@/lib/diagnostics/answer/contract";
 
 /**
  * Cross-tree channel that lets a page register EXTRA help — sections and curated
@@ -50,20 +51,21 @@ export type DiagnosticsRecordSelection = { id: string; nonce: number };
 
 /**
  * The filter state a registered admin list ACTUALLY APPLIED (#2816, owner decision
- * 13 Aug 2026: published applied state, not the raw address bar). Shape matches the
- * wire contract's `view`; the page publishes post-parse values, defaults included —
- * the payments activity window that never reaches the URL, the bookings parse that
- * silently dropped every filter — so the model is told what the page DID, not what
- * the address claimed. The server still narrows whatever arrives to the registry
- * row's own allowlists.
+ * 13 Aug 2026: published applied state, not the raw address bar). The page
+ * publishes post-parse values, defaults included — the payments activity window
+ * that never reaches the URL, the bookings parse that silently dropped every
+ * filter — so the model is told what the page DID, not what the address claimed.
+ * The server still narrows whatever arrives to the registry row's own allowlists.
+ *
+ * IT IS THE WIRE SHAPE ITSELF, not a copy of it. This channel's only destination is
+ * `DiagnosticsAskRequest.view`, so deriving it from the contract leaves that module
+ * the ONE author of the shape: a field added, renamed or retyped there fails to
+ * compile here and at every publishing page, instead of drifting silently into a
+ * value the route's zod schema then rejects as a 400 the client can only misreport
+ * as a network fault. The import is type-only, so nothing about the contract module
+ * reaches this client bundle at runtime.
  */
-export type DiagnosticsViewState = {
-  tab?: string;
-  step?: string;
-  status?: string;
-  errorCode?: string;
-  filters?: Record<string, string>;
-};
+export type DiagnosticsViewState = NonNullable<DiagnosticsAskRequest["view"]>;
 
 type HelpWidgetContextValue = {
   /** Merged extras from every live registration (registration order). */
@@ -265,8 +267,13 @@ export function usePublishDiagnosticsAvailable(available: boolean): void {
  * Call it with post-parse values, defaults included — publishing the raw address
  * would re-create exactly the divergences the owner decision rejected: a default
  * window that never reaches the URL, a malformed URL whose filters the page
- * silently dropped while still displaying them. Clears on unmount. No-op without
- * a provider, so a page renders fine on surfaces without the widget.
+ * silently dropped while still displaying them. Clears on unmount — so the next
+ * page cannot inherit the last one's filters. No-op without a provider, so a page
+ * renders fine on surfaces without the widget.
+ *
+ * `{}` AND `undefined` ARE DIFFERENT ANSWERS. `{}` is "I applied nothing", and it
+ * suppresses the widget's URL fallback; `undefined` is "I publish nothing", which
+ * invites it. A wired page passes an object, empty or not.
  *
  * THE DEP IS THE SERIALISED VALUE, deliberately: pages build the view object in
  * render, so an object dep would republish every render and loop through the

@@ -71,6 +71,7 @@ import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { SortHeader } from "@/components/admin/sort-header";
 import { Pagination } from "@/components/admin/admin-pagination";
 import { DiagnosticsRecordButton } from "@/components/help-widget/diagnostics-record-button";
+import { usePublishDiagnosticsViewState } from "@/components/help-widget/help-widget-context";
 import { StatusChip } from "@/components/ui/status-chip";
 import { MiniChip } from "@/components/ui/mini-chip";
 import { type ChipTone } from "@/lib/chip-tones";
@@ -374,6 +375,49 @@ export default function PaymentsPage() {
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState({ totalRevenueCents: 0, refundedCents: 0, count: 0 });
   const [loading, setLoading] = useState(false);
+
+  // WHAT THIS PAGE ACTUALLY FILTERED BY, published for AI Diagnostics (#2816,
+  // owner decision 13 Aug 2026). This is the page the channel was designed for.
+  //
+  // THE ACTIVITY WINDOW IS APPLIED WITHOUT EVER REACHING THE ADDRESS BAR. On a
+  // bare `/admin/payments` the two `useState` initialisers above fall back to
+  // `getPaymentsDatasetDefaults(clubToday).lastUpdatedFrom` and `clubToday`, and
+  // `buildPaymentsSearchParams` puts both into the request — so the list an
+  // operator sees is the last three club-timezone months, and nothing in the URL
+  // says so. `page-context/registry.ts` calls that window "the single most common
+  // reason a payment an operator expects is not on screen"; reading the address
+  // instead of this state is precisely how that answer would be lost.
+  //
+  // Everything here is the state that feeds `buildPaymentsSearchParams` →
+  // `fetchData`, so it is applied by construction. The keys the registry row does
+  // not allowlist (`xeroState`, `settlement`, the amount bounds, sort, page) are
+  // not published; the server would drop them anyway, and publishing junk to be
+  // dropped is not a contract.
+  //
+  // `search` is applied on every keystroke (there is no debounce and no submit —
+  // changing it rebuilds `buildPaymentsSearchParams`, which re-runs `fetchData`),
+  // so the trimmed value below is genuinely what the list was filtered by. It
+  // travels per the owner decision, with the Diagnostics panel disclosing it
+  // beside the input.
+  //
+  // Always an OBJECT, empty when nothing is applied — `undefined` would mean
+  // "this page publishes nothing" and hand the widget back to its URL fallback.
+  usePublishDiagnosticsViewState(
+    (() => {
+      const filters: Record<string, string> = {};
+      if (source !== "all") filters.source = source;
+      if (search.trim()) filters.search = search.trim();
+      if (lastUpdatedFrom) filters.lastUpdatedFrom = lastUpdatedFrom;
+      if (lastUpdatedTo) filters.lastUpdatedTo = lastUpdatedTo;
+      if (checkInFrom) filters.checkInFrom = checkInFrom;
+      if (checkInTo) filters.checkInTo = checkInTo;
+      return {
+        // `all` is the absence of a status filter, not a status.
+        ...(status !== "all" ? { status } : {}),
+        ...(Object.keys(filters).length > 0 ? { filters } : {}),
+      };
+    })(),
+  );
 
   const buildPaymentsSearchParams = useCallback(() => {
     const params = withoutDatasetQueryKeys(

@@ -179,13 +179,28 @@ export function DiagnosticsView({
     const question = draft.trim();
     if (!question) return;
     setDraft("");
-    // Published APPLIED state wins; the raw URL is only the fallback for pages
-    // that publish nothing (owner decision, 13 Aug 2026).
+    // THE PRECEDENCE, and there are only these two paths (owner decision,
+    // 13 Aug 2026):
+    //
+    //   a published object  the page's APPLIED state, and it is the answer even
+    //                       when it is EMPTY. A wired page that applied no
+    //                       filters publishes `{}`, and that must SUPPRESS the
+    //                       address read rather than invite it — the page has
+    //                       already said the address is not the state, which is
+    //                       exactly the case where the address is a lie (a
+    //                       malformed parameter the page's parser rejected, so
+    //                       the list is unfiltered while the URL still shows
+    //                       every filter).
+    //   nothing published   the URL fallback, for pages nobody has wired.
+    //
+    // An empty view is then dropped rather than sent: `view: {}` costs a wire
+    // field and tells the model nothing.
     const view = publishedView ?? viewFromLocationSearch();
+    const hasView = view !== undefined && Object.keys(view).length > 0;
     void chat.ask(question, {
       pathname,
       ...(recordId ? { recordId } : {}),
-      ...(view ? { view } : {}),
+      ...(hasView ? { view } : {}),
     });
   };
 

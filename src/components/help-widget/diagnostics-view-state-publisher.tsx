@@ -18,6 +18,11 @@ import {
  * channel (over the widget's URL fallback) is that a malformed URL whose filters
  * the page rejected, or a default the page applied without a URL trace, is
  * reported as what the operator is actually looking at.
+ *
+ * PASS `{}` FOR "NOTHING WAS APPLIED", NOT `undefined`. `undefined` means "this
+ * page publishes nothing at all", which returns the widget to its URL fallback —
+ * re-reading the address a page that got this far has already decided not to
+ * trust. An empty view suppresses the fallback and sends no `view` field.
  */
 export function DiagnosticsViewStatePublisher({
   view,

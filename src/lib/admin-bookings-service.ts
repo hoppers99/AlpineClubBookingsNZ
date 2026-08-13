@@ -297,18 +297,38 @@ function sortValue(booking: BookingCandidate, sortBy: BookingSortBy) {
   }
 }
 
+/**
+ * The lifecycle statuses this list actually NARROWS to, in the order the URL asked
+ * for them. Empty means "no status narrowing was applied" — either none was asked
+ * for, or `all` was.
+ *
+ * Exported for AI Diagnostics (#2816), which publishes the filter state the page
+ * APPLIED rather than the one the address bar shows, and must therefore ask the
+ * same code that builds the query rather than re-deriving the vocabulary. Note an
+ * empty result is NOT the same thing as an empty query clause: `?status=BOGUS`
+ * asks for narrowing and gets `{ in: [] }` below, which matches nothing — see
+ * `bookingStatusWhere`, and the caller's own comment on why that case publishes
+ * nothing.
+ */
+export function appliedBookingStatuses(
+  statusFilter: string | undefined,
+): BookingStatus[] {
+  if (!statusFilter || statusFilter === "all") return [];
+  return statusFilter
+    .split(",")
+    .map((status) => status.trim())
+    .filter((status): status is BookingStatus =>
+      validBookingStatuses.has(status as BookingStatus)
+    );
+}
+
 function bookingStatusWhere(statusFilter: string | undefined): Prisma.BookingWhereInput["status"] {
   if (statusFilter === "DRAFT") {
     return BookingStatus.DRAFT;
   }
 
   if (statusFilter && statusFilter !== "all") {
-    const statuses = statusFilter
-      .split(",")
-      .map((status) => status.trim())
-      .filter((status): status is BookingStatus =>
-        validBookingStatuses.has(status as BookingStatus)
-      );
+    const statuses = appliedBookingStatuses(statusFilter);
     return statuses.length === 1 ? statuses[0] : { in: statuses };
   }
 

@@ -8,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { DiagnosticsRecordButton } from "@/components/help-widget/diagnostics-record-button";
+import { usePublishDiagnosticsViewState } from "@/components/help-widget/help-widget-context";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AdminPageHeader } from "@/components/admin/admin-page-header";
@@ -284,6 +285,42 @@ export default function AdminWaitlistPage() {
     pageSize: queryPageSize,
     total: 0,
   });
+
+  // WHAT THIS QUEUE ACTUALLY FILTERED BY, published for AI Diagnostics (#2816,
+  // owner decision 13 Aug 2026).
+  //
+  // `from`/`to` STATE IS A DRAFT — the two inputs only reach the list when
+  // "Apply filters" writes them to the URL, so the applied values are
+  // `fromParam`/`toParam`, which is exactly what `queryString` sent to the API.
+  // Publishing the draft would report a window the operator has typed but not
+  // applied.
+  //
+  // AND ONLY WHEN THE LOAD SUCCEEDED. `/api/admin/waitlist` validates the window
+  // with zod and answers 400 on a malformed or over-long one, so the rows on
+  // screen are then not a filtered list at all — they are no list. That is the
+  // same total-rejection trap the bookings page has, arriving over the wire
+  // instead of in a `safeParse`.
+  //
+  // NO STATUS is published: the route pins `status: { in: [WAITLISTED,
+  // WAITLIST_OFFERED] }` and the wire's `status` holds one token, so naming
+  // either one alone would tell the model half the queue is not on screen.
+  //
+  // Always an OBJECT, empty when no window applied — never `undefined`, which
+  // means "this page publishes nothing" and hands the widget back to its URL
+  // fallback, re-reading the address this page has just declined to trust.
+  //
+  // The object is rebuilt every render on purpose — the publish hook's dependency
+  // is the SERIALISED value, so an unchanged window republishes nothing.
+  usePublishDiagnosticsViewState(
+    (() => {
+      if (error) return {};
+      const filters = {
+        ...(fromParam ? { from: fromParam } : {}),
+        ...(toParam ? { to: toParam } : {}),
+      };
+      return Object.keys(filters).length > 0 ? { filters } : {};
+    })(),
+  );
 
   const totalPages = Math.max(1, Math.ceil(pagination.total / pagination.pageSize));
   const resultStart =

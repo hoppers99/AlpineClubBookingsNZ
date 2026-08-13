@@ -26,6 +26,7 @@ import {
 } from "@/lib/xero-partial-success"
 import type { XeroActionRecovery } from "@/lib/admin-member-xero-actions"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
+import { usePublishDiagnosticsViewState } from "@/components/help-widget/help-widget-context"
 import { MemberBulkActionBar } from "./_components/member-bulk-action-bar"
 import { MemberBulkDialog } from "./_components/member-bulk-dialog"
 import { MemberBulkMembershipDialog } from "./_components/member-bulk-membership-dialog"
@@ -153,6 +154,35 @@ export default function MembersPage() {
   useEffect(() => {
     void fetchMembers()
   }, [fetchMembers])
+
+  // WHAT THIS LIST ACTUALLY FILTERED BY, published for AI Diagnostics (#2816,
+  // owner decision 13 Aug 2026).
+  //
+  // `q` IS `debouncedSearch`, NOT `search`. `search` is the raw keystroke draft
+  // in the box; `useMembersQueryState` only promotes it 300ms later, and only
+  // `debouncedSearch` reaches `buildMembersSearchParams` and therefore the fetch.
+  // Publishing the draft would report a search that has filtered nothing —
+  // including the whole of the window in which an operator types a name and
+  // immediately asks why nobody is showing up. The member search is free text
+  // over names and emails and it travels per the owner decision, disclosed
+  // beside the Diagnostics input.
+  //
+  // `ageTier` is applied the moment it is set. This row allowlists no statuses
+  // and no other filter keys, so the rest of the toolbar's filters (role,
+  // lifecycle, membership type, family group, Xero) are not published — the
+  // server would drop them, and publishing to be dropped is not a contract.
+  //
+  // Always an OBJECT, empty when nothing is applied: `undefined` would mean "this
+  // page publishes nothing" and hand the widget back to its URL fallback.
+  usePublishDiagnosticsViewState(
+    (() => {
+      const applied = {
+        ...(debouncedSearch ? { q: debouncedSearch } : {}),
+        ...(filters.ageTier ? { ageTier: filters.ageTier } : {}),
+      }
+      return Object.keys(applied).length > 0 ? { filters: applied } : {}
+    })(),
+  )
 
   const {
     xeroConnected,
