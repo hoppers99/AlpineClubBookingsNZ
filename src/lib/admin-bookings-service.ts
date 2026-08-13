@@ -405,14 +405,22 @@ export function appliedBookingViewFilters(query: AdminBookingsQuery): {
     if (unknown.length <= DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterValueMaxChars) {
       filters.status = unknown;
     }
-  } else if (upcomingApplied) {
+  } else if (upcomingApplied && !query.status) {
     // `?upcoming=N` (the dashboard's "Bookings" card) narrows check-in to
-    // [today, today+N] AND pins a status set — but only when no explicit status
-    // was asked for. The status half IS expressible here, so it is published.
+    // [today, today+N] AND pins a status set. The status half IS expressible
+    // here, so it is published — but the builder's guard is `if (!query.status)`,
+    // and `?status=all` is TRUTHY there: it leaves the default `{ not: DRAFT }`
+    // standing and pins nothing. The guard is repeated exactly rather than
+    // approximated, or `?upcoming=7&status=all` would report a status set the
+    // list is not using.
     filters.status = [...UPCOMING_CHECK_IN_BOOKING_STATUSES]
       .map(diagnosticsStatusToken)
       .join(",");
   }
+
+  // THE DATE BOUNDS, in `buildBookingWhere`'s own assignment order, because there
+  // the LAST writer to each field wins: `?upcoming=` seeds both check-in bounds,
+  // `?month=` overwrites both, then each explicit named bound overwrites its own.
   let checkInFrom: string | undefined;
   let checkInTo: string | undefined;
   if (upcomingApplied) {

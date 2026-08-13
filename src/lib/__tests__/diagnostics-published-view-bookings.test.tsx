@@ -247,6 +247,20 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
     });
   });
 
+  it("does not pin `?upcoming=`'s statuses for `status=all` either, which is TRUTHY", async () => {
+    // The builder's guard is `if (!query.status)`, and `"all"` passes it — so the
+    // default `{ not: DRAFT }` stands and nothing is pinned. Approximating that
+    // guard as "no real status was applied" would report a status set the list is
+    // not using.
+    expect(await publishedViewFor({ upcoming: "7", status: "all" })).toEqual({
+      filters: { from: "2026-07-01", to: "2026-07-08" },
+    });
+    // And the where-builder really did leave the default standing.
+    const where = vi.mocked(prisma.booking.findMany).mock
+      .calls[0][0] as unknown as { where: { status?: unknown } };
+    expect(where.where.status).toEqual({ not: "DRAFT" });
+  });
+
   it("publishes the month window `?month=` applied, which is nowhere in the address as dates", async () => {
     expect(await publishedViewFor({ month: "2026-09" })).toEqual({
       filters: { from: "2026-09-01", to: "2026-09-30" },
