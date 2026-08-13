@@ -322,7 +322,7 @@ more people, not fewer.
 
 `Category` is optional in the database, and **82 of the platform's places that
 record an audit entry used not to set one**. As of this release **none do**: all
-434 now record a category, measured on every build rather than estimated.
+435 now record a category, measured on every build rather than estimated.
 
 **And a new one can no longer forget.** Recording an entry without a category is
 now refused three separate ways. Giving the 82 places a category and stopping the
@@ -344,7 +344,7 @@ that order and both landing in this release; this is the second:
    maintenance script outside the normal path.
 
 The practical effect for you: an entry recorded the ordinary way — through the
-platform's own recording step, which is how every one of the 434 places does it —
+platform's own recording step, which is how every one of the 435 places does it —
 cannot be born without a category any more. **It is not a mathematical
 guarantee**, and it is worth saying so rather than overclaiming: someone writing
 directly to the database table in a migration, or building a query by hand, is
@@ -478,6 +478,49 @@ Entries are written only after the change is saved, so a refused change records
 nothing at all — a time outside the allowed values (the field takes the hour or
 the half hour), a booking already past its check-in date, a cancelled or
 completed booking, or a caller without permission.
+
+### Email inheritance source entries (#2822)
+
+A member with no address of their own can inherit one from a direct parent, and
+that routing **re-resolves automatically** — when the parent's address is added,
+changed or removed, when a lifecycle change moves someone across the "can be a
+contact of record" line, when a family link changes, or when the nightly sweep
+repairs a stale pointer. From this release, every time that automatic
+re-resolution actually **moves a member's effective email source**, it records
+one `member.email-inheritance-source.changed` entry in the **Family** category.
+
+Read it as "who this member's mail now routes to, and why it changed":
+
+- **It records only real changes.** A reconciliation that recomputes the same
+  source writes nothing, and the daily sweep records only the members it actually
+  re-pointed — not every member it examined. No entry on a member does not mean
+  the routing was never checked; it means it never moved.
+- **What it changed from and to, by member id.** The **Metadata** carries the
+  subject member, the previous effective source member id (or none), the new
+  source member id (or none), and the trigger. A **clear** is the same action
+  with no new source — that entry is the record that a member stopped inheriting
+  and now needs a contact of record chosen. **No email address is ever stored**
+  in the entry: it explains who the routing moved between by id, not by address.
+- **Why it ran, from a fixed vocabulary** rather than guessed from a screen
+  name: `source-member-change` (a member's own record was edited — address,
+  hand-picked source, a self-service or delegated save), `family-link-change`
+  (a dependant link or a login-holder transfer), `lifecycle-eligibility-change`
+  (an age-tier move, a seasonal roll-forward, a departure/anonymisation),
+  `nomination-promotion` (an application promotion made someone a usable source),
+  `member-merge`, and `scheduled-sweep` (the nightly backstop).
+- **Who caused it.** A human-triggered change names the acting member or officer.
+  A change the nightly sweep or the age-up cron found has **no human to name**, so
+  the actor is recorded as **System** rather than a person who did not do it.
+- **It is atomic with the routing change.** The entry is written inside the same
+  database transaction as the pointer it describes, so a change that rolls back
+  takes its entry with it — there is never an entry for a routing change that did
+  not commit, nor a committed change without one.
+
+Category **Family** means membership access correlates it in AI Diagnostics, and
+that the subject member may see it on their own timeline — as the **generic
+event only**. A member's view shows the summary and never the source member ids,
+the metadata, the request id or any drill-down; those stay on the admin screen.
+Retention is **standard** (the normal audit archive lifecycle).
 
 ### Member-guest entries (#2308 / #2388)
 
