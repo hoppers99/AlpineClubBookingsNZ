@@ -31,6 +31,24 @@ the full environment and club config contract.
 - Read the Next.js versioned docs in `node_modules/next/dist/docs/` before
   changing framework APIs.
 - Keep money values in integer cents.
+- Build those cents at one of two boundaries, never inline (#2685). An amount a
+  PERSON typed goes through `parseDecimalDollarsToCents` in
+  `src/lib/money-input.ts` (or `parseSignedDecimalDollarsToCents` where a
+  negative is a real amount), which reads the digit groups as integers rather
+  than scaling a decimal through a double. It returns `null` for anything
+  outside the grammar, and that `null` must reach the person as a visible
+  validation error — never a substituted `0`, a `null` payload field, or a
+  silently retained previous value. An amount an accounting provider has already
+  parsed into a number, such as a Xero API amount, has no decimal text left to
+  read, so it goes through `providerAmountToCents` in
+  `src/lib/money-provider-amount.ts` instead; its `Math.round(value * 100)` is
+  frozen, because that is what live reconciliation computes. Lint and
+  `src/lib/__tests__/money-cents-guard.test.ts` enforce this over non-test code
+  in `src/`, `scripts/` and `prisma/`. The rule matches the composition, not
+  `parseFloat` by name, so percentages and `Math.round(n * 100) / 100` rounding
+  stay legal. A site that genuinely needs an exemption is added to the
+  money-helper list in `eslint.config.mjs` with a reason — never an
+  `eslint-disable`.
 - Keep booking dates as New Zealand date-only values unless a feature explicitly
   requires time-of-day semantics.
 - Keep external payment, accounting, and email calls outside long database
