@@ -1,12 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
+import { ESLint } from "eslint";
 import ts from "typescript";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import eslintConfig, {
+  DATE_GUARD_ARMS,
   MANDATORY_SRC_RESTRICTIONS,
   SRC_RESTRICTION_EXEMPTIONS,
 } from "../../../eslint.config.mjs";
+import {
+  auditEnforcedGuardCoverage,
+  auditResolvedGuardCoverage,
+  PRODUCTION_GUARD_ROSTER,
+} from "./support/eslint-guard-coverage";
 
 /**
  * #2684 — the date-only ENCODING guard, second arm.
@@ -109,89 +116,67 @@ const DATE_ONLY_IN_DATETIME_COLUMN: Record<string, string> = {
 /**
  * Call sites that encode a real instant, or the raw clock, as a calendar day.
  *
- * EVERY ENTRY HERE IS A LIVE DEFECT, not a permitted pattern, and every one
- * attributed to **#2834** is fixed by it. #2834 merges BEFORE this branch but is
- * NOT in this branch's base — the base is #2685's money-guard branch, which does
- * not contain it — so the census below still finds them and they are still
- * listed. A census that silently omitted them would look like a rule that never
- * saw them, when in fact finding them is what the rule was built to do.
+ * EVERY ENTRY HERE IS A LIVE DEFECT, not a permitted pattern. #2684 decision 2
+ * says this map ships EMPTY, and it very nearly does: it carried nineteen
+ * entries while #2834 was still unmerged, eighteen of them that issue's own Xero
+ * document dates, and rebasing onto a base containing #2834 made the staleness
+ * assertion below name all eighteen so they could be DELETED rather than
+ * re-anchored. What remains is one site, in its own filed issue, and whether
+ * that is acceptable or whether **#2839** must land first is the owner's call —
+ * it is flagged in the pull request rather than settled here.
  *
- * THEY MUST ALL BE GONE ONCE #2834 IS IN THE BASE, and nothing needs
- * remembering to make that happen: the moment a site stops encoding an instant,
- * the "keeps the reviewed lists honest" assertion below reports its entry as
- * stale and fails until it is deleted. An enforcement change may not ship
- * blessing the thing it exists to forbid (#2684 decision 2 — the exclusion list
- * ships EMPTY), so if this map is not empty by the time the guard merges, the
- * guard is not ready.
+ * AN ENTRY IS A LINE PLUS THE DEFECT IT BLESSES, never a bare line. The line
+ * alone was enough to make this list lie: changing a site from
+ * `formatDateOnly(new Date())` to `formatDateOnly(params.cancelledAt)` is a
+ * different defect of a different KIND, and the suite stayed green because the
+ * entry blessed whatever happened to sit on line N. The recorded `kind` (and,
+ * for an instant read, the `field`) is asserted against what the scanner
+ * actually classified, so a site that changes what it does stops being covered.
  *
- * AT THE FINAL REBASE, ONTO A BASE THAT CONTAINS #2834: expect this assertion to
- * fail, naming every `#2834` entry. DELETE them — do not re-anchor them. The two
- * cases cannot be confused, because the scanner only reports a site that still
- * encodes an instant: an entry it names is either a site that MOVED (re-anchor
- * the line) or a site that was FIXED (delete the entry), and a fixed site has no
- * line left to re-anchor to. The four entries whose lines already moved once,
- * when this branch was rebased onto #2685, were re-anchored on exactly that
- * basis — #2685 added an import above them and the encodings themselves were
- * untouched.
- *
- * WHY THEY WERE INVISIBLE. `xero-invoice-helpers` exported `formatDate`, one
- * line delegating to the canonical encoder. Roughly eighteen Xero document dates
- * reached the forbidden pattern through it, so neither a grep for the truncation
- * spellings nor #2682's regex census could see a single one. One rename defeated
- * the entire existing control. That is why this file follows wrappers — both
- * same-file and imported — rather than only inspecting call sites, and why an
- * exported bare rename is refused outright further down.
+ * WHY THE #2834 FAMILY WAS INVISIBLE, since the reason outlives the entries.
+ * `xero-invoice-helpers` exported `formatDate`, one line delegating to the
+ * canonical encoder. Roughly eighteen Xero document dates reached the forbidden
+ * pattern through it, so neither a grep for the truncation spellings nor #2682's
+ * regex census could see a single one. One rename defeated the entire existing
+ * control. That is why this file follows wrappers — same-file, imported, and
+ * hand-written — rather than only inspecting call sites, why an exported bare
+ * rename is refused outright further down, and why #2684 deleted the wrapper.
  */
-const FIXED_BY_2834 = "fixed by #2834, which lands before this branch";
+type ReviewedEncoding = {
+  /** What the scanner must still classify this site as. */
+  kind: "clock" | "instant";
+  /** For an instant read, the field name that must still be the one read. */
+  field?: string;
+  why: string;
+};
 
-const KNOWN_INSTANT_ENCODING_DEFECTS: Record<string, string> = {
-  // --- The raw clock as a Xero/accounting document date (INV-DATE-019). ------
-  // `formatDateOnly(new Date())` is the UTC day. New Zealand runs 12-13 hours
-  // ahead, so every document raised between NZ midnight and NZ midday is dated
-  // YESTERDAY in Xero — across a month boundary, the wrong accounting period.
-  "src/lib/membership-cancellation-xero.ts:717": `membership cancellation credit-note date — ${FIXED_BY_2834}`,
-  "src/lib/membership-cancellation-xero.ts:943": `membership cancellation payment date — ${FIXED_BY_2834}`,
-  "src/lib/xero-applied-credit-allocation.ts:272": `applied-credit allocation date — ${FIXED_BY_2834}`,
-  "src/lib/xero-applied-credit-deallocation.ts:863": `applied-credit deallocation date — ${FIXED_BY_2834}`,
-  "src/lib/xero-booking-invoices.ts:700": `booking invoice payment date — ${FIXED_BY_2834}`,
-  "src/lib/xero-credit-notes.ts:264": `refund credit-note date — ${FIXED_BY_2834}`,
-  "src/lib/xero-credit-notes.ts:644": `account-credit credit-note date — ${FIXED_BY_2834}`,
-  "src/lib/xero-credit-notes.ts:859": `credit-note allocation date — ${FIXED_BY_2834}`,
-  "src/lib/xero-entrance-fee-invoices.ts:353": `entrance-fee invoice issue date — ${FIXED_BY_2834}`,
-  "src/lib/xero-entrance-fee-invoices.ts:354": `entrance-fee invoice due date (issue + 30 days) — ${FIXED_BY_2834}`,
-  "src/lib/xero-invoice-payments.ts:53": `invoice payment date — ${FIXED_BY_2834}`,
-  "src/lib/xero-invoice-payments.ts:134": `invoice payment date (second entry point) — ${FIXED_BY_2834}`,
-  "src/lib/xero-modification-credit-notes.ts:105": `modification credit-note date — ${FIXED_BY_2834}`,
-  "src/lib/xero-modification-credit-notes.ts:207": `modification credit-note allocation date — ${FIXED_BY_2834}`,
-  "src/lib/xero-supplementary-invoices.ts:170": `supplementary invoice issue date — ${FIXED_BY_2834}`,
-  "src/lib/xero-supplementary-invoices.ts:276": `supplementary credit-note date — ${FIXED_BY_2834}`,
-
-  // --- A `DateTime` instant truncated to a UTC day (INV-DATE-019). ----------
-  // Exactly the #2697 defect, on the two sibling documents #2697 did not reach.
-  "src/lib/xero-group-settlement-invoices.ts:330": `GroupSettlement.createdAt as the settlement invoice DUE DATE — ${FIXED_BY_2834}`,
-  "src/lib/xero-supplementary-invoices.ts:162": `BookingModification.createdAt as the supplementary invoice DUE DATE — ${FIXED_BY_2834}`,
-
-  // --- OUTSIDE the #2834 family, and the one entry that will still be here ---
-  // after #2834 lands. "Details last confirmed by X on <date>" on the profile
-  // page (#2284 S3). `Member.detailsConfirmedAt` is stamped `now` when a
-  // delegate confirms, so its UTC day is yesterday's for a confirmation made
-  // before NZ midday — the member is shown a date one day before the one they
-  // acted on. Nothing accounting-side reads it and no Xero document carries it,
-  // so #2834 does not cover it: it is filed as **#2839** and fixed there, not
-  // here. This branch is an enforcement change, and changing what a member sees
-  // is a product behaviour change that belongs in its own reviewed PR (#2684
+const KNOWN_INSTANT_ENCODING_DEFECTS: Record<string, ReviewedEncoding> = {
+  // "Details last confirmed by X on <date>" on the profile page (#2284 S3).
+  // `Member.detailsConfirmedAt` is stamped `now` when a delegate confirms, so
+  // its UTC day is yesterday's for a confirmation made before NZ midday — the
+  // member is shown a date one day before the one they acted on. Nothing
+  // accounting-side reads it and no Xero document carries it, so #2834 does not
+  // cover it: it is filed as **#2839** and fixed there, not here. This branch is
+  // an enforcement change, and changing what a member sees is a product
+  // behaviour change that belongs in its own reviewed pull request (#2684
   // required implementation step 5).
-  "src/lib/member-family-service.ts:515":
-    "Member.detailsConfirmedAt rendered as the confirmation DAY on the profile page — filed as #2839; not part of #2834",
+  "src/lib/member-family-service.ts:515": {
+    kind: "instant",
+    field: "detailsConfirmedAt",
+    why: "Member.detailsConfirmedAt rendered as the confirmation DAY on the profile page — filed as #2839; not part of #2834",
+  },
 };
 
 /**
  * Instant-typed field names read back as a calendar day where the VALUE at that
  * site is known to be date-only, even though the column is mixed.
  */
-const REVIEWED_INSTANT_READS: Record<string, string> = {
-  "src/app/api/admin/members/import/route.ts:654":
-    "Member.cancelledAt is mixed — the admin cancellation flow writes `now`, but the CSV import writes a parsed date-only value, and this audit-metadata line reads back the value the import itself just parsed",
+const REVIEWED_INSTANT_READS: Record<string, ReviewedEncoding> = {
+  "src/app/api/admin/members/import/route.ts:654": {
+    kind: "instant",
+    field: "cancelledAt",
+    why: "Member.cancelledAt is mixed — the admin cancellation flow writes `now`, but the CSV import writes a parsed date-only value, and this audit-metadata line reads back the value the import itself just parsed",
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -267,12 +252,34 @@ function isClockRead(node: ts.Node): boolean {
   return /\bDate\.now\(\s*\)/.test(node.arguments[0].getText());
 }
 
+/** `x.toISOString()` / `x["toJSON"]()` — the ISO SERIALISATION of `x`. */
+function isoSerialisationReceiver(n: ts.Node): ts.Expression | null {
+  if (!ts.isCallExpression(n)) return null;
+  const callee = n.expression;
+  if (
+    ts.isPropertyAccessExpression(callee) &&
+    (callee.name.text === "toISOString" || callee.name.text === "toJSON")
+  ) {
+    return callee.expression;
+  }
+  if (
+    ts.isElementAccessExpression(callee) &&
+    ts.isStringLiteralLike(callee.argumentExpression) &&
+    (callee.argumentExpression.text === "toISOString" ||
+      callee.argumentExpression.text === "toJSON")
+  ) {
+    return callee.expression;
+  }
+  return null;
+}
+
 /**
  * The property name a value was read from, looking through the wrappers that do
  * not change WHICH field is being read: non-null assertions, parentheses, casts,
- * a `new Date(...)` reparse, and the `??` / `||` fallbacks a nullable column is
- * usually read behind. Anything else (a local, a call result, a parameter)
- * returns null and is left alone — this guard reports what it can PROVE.
+ * a `new Date(...)` reparse, an ISO SERIALISATION, and the `??` / `||` fallbacks
+ * a nullable column is usually read behind. Anything else (a local, a call
+ * result, a parameter) returns null and is left alone — this guard reports what
+ * it can PROVE.
  */
 function readFieldNames(node: ts.Node, depth = 0): string[] {
   if (depth > 6) return [];
@@ -284,6 +291,14 @@ function readFieldNames(node: ts.Node, depth = 0): string[] {
   ) {
     n = n.expression;
   }
+  // `dateOnlyFromIsoString(booking.createdAt.toISOString())` — an instant fed
+  // through this guard's OWN sanctioned helper. It was lint-clean (no bare
+  // truncation) and census-green (a CallExpression classified as nothing), which
+  // made the string encoder a documented route around the very rule it belongs
+  // to. Serialising an instant does not stop it being an instant, so the read is
+  // followed through it.
+  const serialised = isoSerialisationReceiver(n);
+  if (serialised) return readFieldNames(serialised, depth + 1);
   if (
     ts.isNewExpression(n) &&
     ts.isIdentifier(n.expression) &&
@@ -310,9 +325,53 @@ function readFieldNames(node: ts.Node, depth = 0): string[] {
   return [];
 }
 
+/**
+ * Names bound to a clock read in the function (or module) enclosing `node`.
+ *
+ * `const d = new Date(); formatDateOnly(d)` is the SAME defect as
+ * `formatDateOnly(new Date())` and was invisible to this scanner, which only
+ * recognised the clock written inline as the encoder's argument. #2834 happens
+ * to have fixed the two sites that wore this shape — but once the reviewed list
+ * empties, an extracted local is the spelling under which the whole class walks
+ * straight back in, and it is what a developer writes innocently while pulling a
+ * repeated `new Date()` out of a function.
+ *
+ * Scoped to the nearest enclosing function so a `new Date()` in a NEIGHBOURING
+ * function cannot make an unrelated identifier look like a clock read.
+ */
+function clockBoundNames(node: ts.Node): Set<string> {
+  let scope: ts.Node = node;
+  while (
+    scope.parent &&
+    !ts.isFunctionDeclaration(scope) &&
+    !ts.isFunctionExpression(scope) &&
+    !ts.isArrowFunction(scope) &&
+    !ts.isMethodDeclaration(scope) &&
+    !ts.isSourceFile(scope)
+  ) {
+    scope = scope.parent;
+  }
+
+  const names = new Set<string>();
+  const walk = (n: ts.Node) => {
+    if (
+      ts.isVariableDeclaration(n) &&
+      ts.isIdentifier(n.name) &&
+      n.initializer &&
+      isClockRead(n.initializer)
+    ) {
+      names.add(n.name.text);
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(scope);
+  return names;
+}
+
 /** Does this expression, or anything it falls back to, read the raw clock? */
-function readsClock(node: ts.Node, depth = 0): boolean {
+function readsClock(node: ts.Node, depth = 0, bound?: Set<string>): boolean {
   if (depth > 6) return false;
+  const clockNames = bound ?? clockBoundNames(node);
   let n: ts.Node = node;
   while (
     ts.isNonNullExpression(n) ||
@@ -322,23 +381,124 @@ function readsClock(node: ts.Node, depth = 0): boolean {
     n = n.expression;
   }
   if (isClockRead(n)) return true;
+  // A local standing in for the clock: `const now = new Date();`.
+  if (ts.isIdentifier(n) && clockNames.has(n.text)) return true;
+  // `now.toISOString()` handed to the string encoder is the same read one
+  // serialisation later.
+  const serialised = isoSerialisationReceiver(n);
+  if (serialised) return readsClock(serialised, depth + 1, clockNames);
   if (
     ts.isBinaryExpression(n) &&
     (n.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
       n.operatorToken.kind === ts.SyntaxKind.BarBarToken)
   ) {
-    return readsClock(n.left, depth + 1) || readsClock(n.right, depth + 1);
+    return (
+      readsClock(n.left, depth + 1, clockNames) ||
+      readsClock(n.right, depth + 1, clockNames)
+    );
   }
   if (ts.isConditionalExpression(n)) {
-    return readsClock(n.whenTrue, depth + 1) || readsClock(n.whenFalse, depth + 1);
+    return (
+      readsClock(n.whenTrue, depth + 1, clockNames) ||
+      readsClock(n.whenFalse, depth + 1, clockNames)
+    );
   }
   return false;
+}
+
+/** `X.split("T")` — returns `X`, or null. */
+function splitOnTReceiver(node: ts.Node): ts.Expression | null {
+  if (!ts.isCallExpression(node)) return null;
+  if (!ts.isPropertyAccessExpression(node.expression)) return null;
+  if (node.expression.name.text !== "split") return null;
+  const arg = node.arguments[0];
+  if (!arg) return null;
+  const isT =
+    (ts.isStringLiteralLike(arg) && arg.text === "T") ||
+    (ts.isRegularExpressionLiteral(arg) && /^\/T\/[a-z]*$/.test(arg.text));
+  return isT ? node.expression.expression : null;
+}
+
+/** Names bound to an ISO serialisation in the function enclosing `node`. */
+function isoBoundReceivers(node: ts.Node): Map<string, ts.Expression> {
+  let scope: ts.Node = node;
+  while (
+    scope.parent &&
+    !ts.isFunctionDeclaration(scope) &&
+    !ts.isFunctionExpression(scope) &&
+    !ts.isArrowFunction(scope) &&
+    !ts.isMethodDeclaration(scope) &&
+    !ts.isSourceFile(scope)
+  ) {
+    scope = scope.parent;
+  }
+  const out = new Map<string, ts.Expression>();
+  const walk = (n: ts.Node) => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
+      const receiver = isoSerialisationReceiver(n.initializer);
+      if (receiver) out.set(n.name.text, receiver);
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(scope);
+  return out;
+}
+
+/**
+ * The value a HAND-WRITTEN date-only encoding is applied to, or null.
+ *
+ * `X.toISOString().slice(0, 10)`, `X.toISOString().split("T")[0]`, and the same
+ * with `.at(0)` / `.shift()` / `substring` / `substr` — plus the two-step form
+ * that hid from everything, `const iso = X.toISOString(); iso.slice(0, 10)`.
+ *
+ * Recognising these is what stops a wrapper being an escape hatch. The census
+ * used to follow only DELEGATIONS to a canonical encoder, so a wrapper whose
+ * body wrote the truncation itself was neither followed (its call sites went
+ * unclassified) nor refused as an exported alias — which is `formatDate`
+ * reconstituted, and harder to spot than the original.
+ */
+function handWrittenEncodingReceiver(leaf: ts.Expression): ts.Expression | null {
+  const throughLocal = (candidate: ts.Expression): ts.Expression | null => {
+    const direct = isoSerialisationReceiver(candidate);
+    if (direct) return direct;
+    if (ts.isIdentifier(candidate)) {
+      return isoBoundReceivers(leaf).get(candidate.text) ?? null;
+    }
+    return null;
+  };
+
+  // `parts[0]`
+  if (
+    ts.isElementAccessExpression(leaf) &&
+    ts.isNumericLiteral(leaf.argumentExpression) &&
+    leaf.argumentExpression.text === "0"
+  ) {
+    const split = splitOnTReceiver(leaf.expression);
+    if (split) return throughLocal(split) ?? split;
+  }
+
+  if (ts.isCallExpression(leaf) && ts.isPropertyAccessExpression(leaf.expression)) {
+    const method = leaf.expression.name.text;
+    const receiver = leaf.expression.expression;
+    if (method === "slice" || method === "substring" || method === "substr") {
+      return throughLocal(receiver);
+    }
+    if (method === "at" || method === "shift") {
+      const split = splitOnTReceiver(receiver);
+      if (split) return throughLocal(split) ?? split;
+    }
+    if (method === "replace") {
+      return throughLocal(receiver);
+    }
+  }
+
+  return null;
 }
 
 /**
  * Functions in this file that are a BARE DELEGATION to a canonical encoder —
  * `f(value) => formatDateOnly(value)`, the encoder called on the function's own
- * parameter and nothing else.
+ * parameter and nothing else — or that write the same encoding out by hand.
  *
  * They are resolved so a call site written through one is classified as if it
  * called the encoder directly. This is not stylistic tidiness: an alias is
@@ -459,6 +619,14 @@ function localEncoderAliases(sf: ts.SourceFile): {
       ts.isIdentifier(leaf.expression) &&
       CANONICAL_ENCODERS.has(leaf.expression.text);
 
+    /** What this leaf encodes — through a named encoder or written out. */
+    const encodedValue = (leaf: ts.Expression): ts.Expression | null => {
+      if (isEncoderCall(leaf)) {
+        return (leaf as ts.CallExpression).arguments[0] ?? null;
+      }
+      return handWrittenEncodingReceiver(leaf);
+    };
+
     // A null/empty guard is the only thing a RENAME may add. Anything else in
     // the result — a branch that trims a string, narrows an `unknown`, or hands
     // off to another helper — makes the function a normaliser rather than a
@@ -469,22 +637,24 @@ function localEncoderAliases(sf: ts.SourceFile): {
       ts.isStringLiteral(leaf) ||
       ts.isNumericLiteral(leaf);
 
-    const encoderLeaves = leaves.filter(isEncoderCall) as ts.CallExpression[];
-    const passThrough = encoderLeaves.filter(
-      (call) => call.arguments[0] != null && reducesToParam(call.arguments[0], paramNames),
-    );
+    const encoderLeaves = leaves.filter((leaf) => encodedValue(leaf) != null);
+    const passThrough = encoderLeaves.filter((leaf) => {
+      const value = encodedValue(leaf);
+      return value != null && reducesToParam(value, paramNames);
+    });
 
     return {
       // GENEROUS, for the census: any function that hands a caller's own value
-      // to an encoder is worth following, so the receiver at its call sites gets
-      // classified. Resolving one that turns out to be harmless costs a reviewed
-      // list entry; failing to resolve one costs a defect nobody sees.
+      // to an encoder — named OR hand-written — is worth following, so the
+      // receiver at its call sites gets classified. Resolving one that turns out
+      // to be harmless costs a reviewed list entry; failing to resolve one costs
+      // a defect nobody sees.
       resolvable: passThrough.length > 0,
       // STRICT, for the ban: only a pure rename. A normaliser earns its name.
       rename:
         encoderLeaves.length > 0 &&
         encoderLeaves.length === passThrough.length &&
-        leaves.every((leaf) => isEncoderCall(leaf) || isTrivial(leaf)),
+        leaves.every((leaf) => encodedValue(leaf) != null || isTrivial(leaf)),
     };
   };
 
@@ -572,15 +742,34 @@ function namedImports(
   return out;
 }
 
-function scanEncodings(): { encodings: Encoding[]; exportedAliases: string[] } {
+/** Every production source file in `src/`, parsed. The real input. */
+function readTreeSources(): Array<{ rel: string; text: string }> {
+  return listSourceFiles(path.join(ROOT, "src")).map((file) => ({
+    rel: path.relative(ROOT, file).split(path.sep).join("/"),
+    text: fs.readFileSync(file, "utf8"),
+  }));
+}
+
+/**
+ * The census, over whatever sources it is handed.
+ *
+ * Parameterised so the classifier can be exercised on FIXTURES as well as on the
+ * tree. Both matter and they answer different questions: the tree run says "no
+ * unreviewed encoding exists today", and the fixture run says "and this scanner
+ * would notice one". The second is not implied by the first — a scanner that
+ * classified nothing at all would pass the tree run perfectly.
+ */
+function scanEncodings(
+  sources: Array<{ rel: string; text: string }> = readTreeSources(),
+): { encodings: Encoding[]; exportedAliases: string[] } {
   const encodings: Encoding[] = [];
   const exportedAliases: string[] = [];
 
-  const files = listSourceFiles(path.join(ROOT, "src")).map((file) => {
-    const rel = path.relative(ROOT, file).split(path.sep).join("/");
-    const text = fs.readFileSync(file, "utf8");
-    return { rel, text, sf: parse(rel, text) };
-  });
+  const files = sources.map(({ rel, text }) => ({
+    rel,
+    text,
+    sf: parse(rel, text),
+  }));
 
   // Pass 1 — which functions in each file hand a caller's own value to an
   // encoder. Collected for EVERY file, including the helper module, so pass 2
@@ -762,6 +951,45 @@ describe("an instant is never encoded as a calendar day by accident (#2684)", ()
         "that is the list doing its job. If the code merely moved, re-anchor it.",
     ).toEqual([]);
 
+    // AND THAT IT IS STILL THE SAME DEFECT ON THAT LINE. Anchoring on the line
+    // alone blessed whatever the line happened to say: swapping
+    // `formatDateOnly(new Date())` for `formatDateOnly(params.cancelledAt)` is a
+    // clock read replaced by an instant read — a different defect, of a
+    // different kind, on a different value — and the suite passed. The entry
+    // records what it is excusing, and that is what is checked.
+    const drifted: string[] = [];
+    for (const [site, reviewed] of [
+      ...Object.entries(KNOWN_INSTANT_ENCODING_DEFECTS),
+      ...Object.entries(REVIEWED_INSTANT_READS),
+    ]) {
+      const found = ENCODINGS.filter((e) => e.site === site);
+      const matches = found.filter(
+        (e) =>
+          e.kind === reviewed.kind &&
+          (reviewed.field === undefined || e.field === reviewed.field),
+      );
+      if (matches.length === 0) {
+        drifted.push(
+          `${site}: listed as ${reviewed.kind}` +
+            `${reviewed.field ? ` on .${reviewed.field}` : ""}, but the tree now has ` +
+            (found.length === 0
+              ? "no classified encoding there"
+              : found
+                  .map((e) => `${e.kind}${e.field ? ` on .${e.field}` : ""}`)
+                  .join(" / ")),
+        );
+      }
+    }
+
+    expect(
+      drifted,
+      "INV-DATE-019: A reviewed entry no longer describes what its line does. " +
+        "The excuse was written for one defect and is now covering another — " +
+        "which is exactly how a blanket line-number opt-out stops being a " +
+        "record and becomes a hole. Re-read the site, and either update the " +
+        "entry's `kind`/`field` deliberately or delete it.",
+    ).toEqual([]);
+
     for (const field of Object.keys(DATE_ONLY_IN_DATETIME_COLUMN)) {
       expect(
         INSTANT_FIELDS.has(field),
@@ -770,6 +998,102 @@ describe("an instant is never encoded as a calendar day by accident (#2684)", ()
           "exception has been fixed properly — delete the entry.",
       ).toBe(true);
     }
+  });
+
+  /*
+    AND THE SCANNER WOULD NOTICE ONE. Every assertion above is "the tree contains
+    nothing unreviewed", which a classifier that recognised nothing would pass
+    perfectly. These run the same census over FIXTURES, one per shape a review
+    proved could walk past it.
+
+    All three were lint-clean AND census-green when they were reported. None of
+    them is exotic: the first is what a developer writes while extracting a
+    repeated `new Date()`, the second is this guard's own sanctioned helper being
+    handed an instant, and the third is `formatDate` rebuilt one statement at a
+    time.
+  */
+  const censusOf = (source: string) =>
+    scanEncodings([{ rel: "src/lib/date-guard-fixture.ts", text: source }]);
+
+  it("classifies a clock read that has been extracted into a local", () => {
+    const { encodings } = censusOf(
+      `import { formatDateOnly } from "@/lib/date-only";
+export function stamp() {
+  const now = new Date();
+  return formatDateOnly(now);
+}
+`,
+    );
+
+    expect(
+      encodings.map((e) => e.kind),
+      "INV-DATE-019: `const d = new Date(); formatDateOnly(d)` is the same " +
+        "defect as `formatDateOnly(new Date())`, and the census used to see " +
+        "only the inline spelling. Once the reviewed list is empty, the " +
+        "extracted local is the shape under which the whole class walks back in.",
+    ).toEqual(["clock"]);
+  });
+
+  it("classifies an instant fed through the guard's own string encoder", () => {
+    const { encodings } = censusOf(
+      `import { dateOnlyFromIsoString } from "@/lib/date-only";
+export function due(booking: { createdAt: Date }) {
+  return dateOnlyFromIsoString(booking.createdAt.toISOString());
+}
+`,
+    );
+
+    expect(
+      encodings.map((e) => `${e.kind}:${e.field}`),
+      "INV-DATE-019: Serialising an instant does not stop it being an instant. " +
+        "`dateOnlyFromIsoString(x.createdAt.toISOString())` is lint-clean by " +
+        "construction — there is no bare truncation in it — so if the census " +
+        "cannot see through the serialisation, this guard's own sanctioned " +
+        "helper is a documented route around the rule it belongs to.",
+    ).toEqual(["instant:createdAt"]);
+  });
+
+  it("refuses an exported wrapper that writes the truncation out by hand", () => {
+    const { exportedAliases, encodings } = censusOf(
+      `export function formatDocumentDate(date: Date): string {
+  const iso = date.toISOString();
+  return iso.slice(0, 10);
+}
+export function due(booking: { createdAt: Date }) {
+  return formatDocumentDate(booking.createdAt);
+}
+`,
+    );
+
+    expect(
+      exportedAliases,
+      "INV-DATE-019: This is `formatDate` reconstituted, and harder to spot. " +
+        "The alias ban used to recognise only a delegation to a CANONICAL " +
+        "encoder, so a wrapper whose body wrote the truncation itself was " +
+        "neither refused nor followed — which is exactly the blind spot that " +
+        "hid roughly eighteen Xero document dates.",
+    ).toEqual(["src/lib/date-guard-fixture.ts: formatDocumentDate"]);
+
+    // And, having recognised it, the census follows it: the instant handed to it
+    // one line later is classified as if the encoder were called directly.
+    expect(encodings.map((e) => `${e.kind}:${e.field}`)).toEqual([
+      "instant:createdAt",
+    ]);
+  });
+
+  it("leaves a wrapper that adds MEANING alone", () => {
+    // The ban is on a bare RENAME. A helper that decides WHICH field is a lodge
+    // night is naming a decision rather than hiding one, and banning it would
+    // push authors back to inlining the encoder at every call site.
+    const { exportedAliases } = censusOf(
+      `import { formatDateOnly } from "@/lib/date-only";
+export function getIssueDate(booking: { checkIn: Date }) {
+  return formatDateOnly(booking.checkIn);
+}
+`,
+    );
+
+    expect(exportedAliases).toEqual([]);
   });
 
   it("lets no module hide an encoder behind an exported alias", () => {
@@ -808,7 +1132,79 @@ function isTestOnlyGlobList(files: readonly string[]): boolean {
   );
 }
 
-describe("the lint guard cannot be dropped by a neighbouring config block (#2684)", () => {
+/*
+  THE GUARD'S REACH, declared once and asserted through ESLint itself.
+
+  `src/**` and `scripts/**` carry the encoding restrictions; `src/lib/date-only.ts`
+  is the encoder's own home and `prisma/**` holds two seed files that cannot obey
+  it, both recorded on SRC_RESTRICTION_EXEMPTIONS. The zoned-formatter rule has no
+  exemption anywhere.
+
+  Returning `[]` for a path outside the reach matters: the shared roster carries
+  `scripts/x.ts` and `prisma/seed-x.ts` for the money guard, and requiring the
+  date arms of `prisma/` would report a problem the config is right about.
+*/
+const DATE_GUARD_EXEMPT_PATHS = (file: string) =>
+  file === "src/lib/date-only.ts" || file.startsWith("prisma/");
+
+const DATE_GUARD_APPLIES = (file: string) =>
+  (file.startsWith("src/") || file.startsWith("scripts/")) &&
+  !DATE_GUARD_EXEMPT_PATHS(file);
+
+const ENCODING_RULE_ID = "INV-DATE-019";
+const ZONED_RULE_ID = "INV-DATE-015";
+
+/** A known violation of each arm, linted at every roster path. */
+const ENCODING_VIOLATION = "export const day = value.toISOString().slice(0, 10);\n";
+const UNZONED_FORMATTER_VIOLATION =
+  'export const fmt = new Intl.DateTimeFormat("en-CA");\n';
+
+const BOOTSTRAP_TIMEOUT_MS = 60_000;
+const CASE_TIMEOUT_MS = 20_000;
+
+vi.setConfig({
+  testTimeout: CASE_TIMEOUT_MS,
+  hookTimeout: BOOTSTRAP_TIMEOUT_MS,
+});
+
+let eslint: ESLint;
+
+beforeAll(async () => {
+  eslint = new ESLint({ cwd: ROOT, warnIgnored: false });
+  // Resolving the flat config, the Next presets and every plugin costs seconds
+  // and none of it happens until the first `lintText`. Pay it here, and make the
+  // warm-up a CANARY: every "reports nothing" expectation below would pass
+  // vacuously if the config bootstrap silently produced an empty rule set.
+  const results = await eslint.lintText(ENCODING_VIOLATION, {
+    filePath: path.join(ROOT, "src/lib/date-guard-fixture.ts"),
+  });
+  const messages = results.flatMap((result) => result.messages);
+  const fatal = messages.filter((message) => message.fatal);
+  if (fatal.length > 0) {
+    throw new Error(
+      `${ENCODING_RULE_ID} canary did not parse, so the coverage audits would have passed vacuously: ${fatal[0]?.message}`,
+    );
+  }
+  const hits = messages.filter(
+    (message) =>
+      message.ruleId === "no-restricted-syntax" &&
+      typeof message.message === "string" &&
+      message.message.startsWith(ENCODING_RULE_ID),
+  );
+  if (hits.length !== 1) {
+    throw new Error(
+      `${ENCODING_RULE_ID} canary produced ${hits.length} report(s), expected exactly 1. The guard is not running, so every audit below would have been vacuous. Messages seen: ${JSON.stringify(
+        messages.map((message) => ({
+          ruleId: message.ruleId,
+          severity: message.severity,
+          message: message.message?.slice(0, 120),
+        })),
+      )}`,
+    );
+  }
+}, BOOTSTRAP_TIMEOUT_MS);
+
+describe("the lint guard reaches every production path, and no block can drop it (#2684)", () => {
   type Restriction = { selector: string; message: string };
   type ConfigEntry = { files?: string[]; rules?: Record<string, unknown> };
 
@@ -816,22 +1212,8 @@ describe("the lint guard cannot be dropped by a neighbouring config block (#2684
     (entry) => entry?.rules?.["no-restricted-syntax"] !== undefined,
   );
 
-  const selectorsOf = (option: unknown): Set<string> | null => {
-    if (!Array.isArray(option)) return null;
-    return new Set(
-      option
-        .slice(1)
-        .map((r) => (typeof r === "string" ? r : (r as Restriction)?.selector))
-        .filter((s): s is string => typeof s === "string"),
-    );
-  };
-
   const sameFiles = (a: readonly string[], b: readonly string[]) =>
     a.length === b.length && a.every((f, i) => f === b[i]);
-
-  /** Covers production code: names a `src/` path and is not entirely tests. */
-  const coversSrcProduction = (files: string[]) =>
-    files.some((f) => f.startsWith("src/")) && !isTestOnlyGlobList(files);
 
   it("sees the config it is meant to be pinning", () => {
     // Vacuity guard. If this file stops resolving the config, every assertion
@@ -857,6 +1239,14 @@ describe("the lint guard cannot be dropped by a neighbouring config block (#2684
     const required: Array<[string, RegExp]> = [
       ["#2684 date-only truncation", /toISOString\|toJSON/],
       ["#2684 ISO split on T", /'split'/],
+      // The four arms added after the first review measured real escapes past
+      // the two above. Each is named because each closed a spelling that was
+      // proven, by a lint run, to be clean before it existed.
+      ["#2684 the split head taken with .at(0) or .shift()", /"(at|shift)"/],
+      ["#2684 the time half stripped with .replace()", /"replace"/],
+      ["#2684 the truncation assembled through a local", /:has\(VariableDeclarator/],
+      ["#2684 a date key built from UTC parts", /getUTCFullYear/],
+      ["#2264 an Intl.DateTimeFormat with no timeZone", /DateTimeFormat/],
       ["#2289 raw-SQL result cast", /queryRaw\|executeRaw/],
       // #2685's money guard rides the same array since the two branches were
       // folded onto one path. Naming it here is what makes this file fail if a
@@ -875,53 +1265,117 @@ describe("the lint guard cannot be dropped by a neighbouring config block (#2684
     }
   });
 
-  it("carries every mandatory restriction in every src/** production block", () => {
-    // Flat config REPLACES a rule's option list; it does not merge. A block
-    // added to lift ONE restriction silently takes the others down with it for
-    // the files it matches, and lint still passes. This walks the RESOLVED
-    // config — what ESLint actually runs — and measures each block against the
-    // config's OWN mandatory array, so a guard added later is covered here
-    // without this test being touched.
-    const gaps: string[] = [];
+  /*
+    THE STRUCTURAL AUDIT — through ESLint's own config resolution, not glob text.
 
-    for (const entry of entries) {
-      const files = entry.files ?? [];
-      if (!coversSrcProduction(files)) continue;
+    This used to walk the config's blocks and decide which ones "cover production"
+    by asking whether a glob string began with `src/`. That is a string test on a
+    PATTERN rather than a match against a path, and #2685's lane proved three
+    ordinary edits walk straight through it: a glob rooted on `**` that names a
+    real screen directory, a block with no `files` key at all (flat config applies
+    it everywhere), and a severity downgrade to `warn` (which `npm run lint`
+    ignores entirely, having no `--max-warnings`).
 
-      const exemption = SRC_RESTRICTION_EXEMPTIONS.find((e) =>
-        sameFiles(e.files, files),
-      );
-      const omitted = new Set(
-        (exemption?.omits ?? []).map((r: Restriction) => r.selector),
-      );
+    `auditResolvedGuardCoverage` asks ESLint what the rule IS at a roster of real
+    production paths, so no glob spelling, block ordering, missing `files` key or
+    severity can change the answer without changing the result. The roster is
+    shared with the money suite: a path belongs in `eslint-guard-coverage.ts`, not
+    in one suite's copy of the list.
+  */
+  it("resolves to the date restrictions at every production path on the shared roster", async () => {
+    // Vacuity guard: an empty arm list would make "carries every arm" trivial.
+    expect(
+      DATE_GUARD_ARMS.encoding.length,
+      "The date-only ENCODING arm family is empty, so requiring it of every " +
+        "path requires nothing.",
+    ).toBeGreaterThanOrEqual(8);
+    expect(DATE_GUARD_ARMS.zonedFormatter.length).toBeGreaterThan(0);
 
-      const selectors = selectorsOf(entry.rules!["no-restricted-syntax"]);
-      if (!selectors) {
-        gaps.push(
-          `${JSON.stringify(files)}: sets the rule to ` +
-            `${JSON.stringify(entry.rules!["no-restricted-syntax"])} over production code`,
-        );
-        continue;
-      }
-      for (const restriction of MANDATORY_SRC_RESTRICTIONS as Restriction[]) {
-        if (omitted.has(restriction.selector)) continue;
-        if (!selectors.has(restriction.selector)) {
-          gaps.push(`${JSON.stringify(files)}: missing ${restriction.selector}`);
-        }
-      }
-    }
+    const problems = await auditResolvedGuardCoverage({
+      eslint,
+      repoRoot: ROOT,
+      requiredSelectorsFor: (file) => [
+        // The zoned-formatter rule has no exemption anywhere.
+        ...DATE_GUARD_ARMS.zonedFormatter,
+        ...(DATE_GUARD_APPLIES(file) ? DATE_GUARD_ARMS.encoding : []),
+      ],
+    });
 
     expect(
-      gaps,
-      "INV-DATE-019 and INV-OPS-001: An ESLint block covering `src/**` " +
-        "production code drops a restriction the rest of the config relies on. " +
-        "Flat config replaces the whole option list rather than merging it, so " +
-        "a block written to lift one rule removes the others by omission and " +
-        "lint goes green over an unguarded file. Build the value with " +
-        "`srcRestrictedSyntax(...)`, or `srcRestrictedSyntaxWithout(GROUP)` " +
-        "when a block genuinely cannot obey one guard — and record that in " +
-        "SRC_RESTRICTION_EXEMPTIONS with a reason.",
+      problems,
+      "INV-DATE-019: The date guard does not resolve to `error` with every arm " +
+        "at a production path the roster names. Flat config REPLACES a rule's " +
+        "option list rather than merging it, so a block written to lift one " +
+        "guard removes the others by omission and lint goes green over an " +
+        "unguarded file. Build the value with `srcRestrictedSyntax(...)`, or " +
+        "`srcRestrictedSyntaxWithout(GROUP)` when a block genuinely cannot obey " +
+        "one guard — and record that in SRC_RESTRICTION_EXEMPTIONS with a reason.",
     ).toEqual([]);
+  });
+
+  /*
+    THE BEHAVIOURAL AUDIT. The one above compares selector STRINGS; this lints a
+    real violation at every roster path, so it also catches an arm that is present
+    but no longer matches anything. A config edit that disarms the guard has to
+    survive both.
+  */
+  it("actually fires on a hand-written encoding at every production path", async () => {
+    const problems = await auditEnforcedGuardCoverage({
+      eslint,
+      repoRoot: ROOT,
+      violatingCode: ENCODING_VIOLATION,
+      messagePrefix: ENCODING_RULE_ID,
+      isExempt: DATE_GUARD_EXEMPT_PATHS,
+    });
+
+    expect(
+      problems,
+      "INV-DATE-019: `value.toISOString().slice(0, 10)` is either not reported " +
+        "where the guard must apply, or reported on a path the config declares " +
+        "exempt. The exempt paths are `src/lib/date-only.ts` (the encoder's own " +
+        "home) and `prisma/**` (the two seed files), both on " +
+        "SRC_RESTRICTION_EXEMPTIONS — nothing else.",
+    ).toEqual([]);
+  });
+
+  it("refuses an unzoned Intl.DateTimeFormat everywhere, including scripts and prisma", async () => {
+    // The #2264 rule bans `toLocaleDateString()` because it renders in the
+    // VIEWER's zone — and then sends the author to an `Intl.DateTimeFormat`,
+    // which has the identical defect when no `timeZone` is passed and was clean
+    // under every arm. `en-CA` numeric IS `yyyy-MM-dd`, so it is also the
+    // obvious workaround for anyone tripping the ban, and it produces a
+    // date-only encoding on the reader's calendar rather than the club's.
+    const problems = await auditEnforcedGuardCoverage({
+      eslint,
+      repoRoot: ROOT,
+      violatingCode: UNZONED_FORMATTER_VIOLATION,
+      messagePrefix: ZONED_RULE_ID,
+    });
+
+    expect(
+      problems,
+      "INV-DATE-015: `new Intl.DateTimeFormat(...)` with no `timeZone` is not " +
+        "refused at a path the roster names. This rule has no exemptions: the " +
+        "date and money helper modules all pass a timeZone already.",
+    ).toEqual([]);
+  });
+
+  it("keeps the mandatory set reaching outside src/, which a glob-text walk could not see", async () => {
+    // The old audit skipped any block whose globs did not start with `src/`, so
+    // the `scripts/` and `prisma/` blocks were never measured at all — and those
+    // are exactly the blocks `operatorScriptRestrictedSyntax()` hand-wrote its
+    // own shortened list into, four lines under a comment promising that adding
+    // an array to the shared list was "the only edit needed". Naming the two
+    // paths here is what keeps that closed.
+    const outsideSrc = PRODUCTION_GUARD_ROSTER.filter(
+      (entry) => !entry.file.startsWith("src/"),
+    ).map((entry) => entry.file);
+
+    expect(
+      outsideSrc,
+      "The shared roster no longer carries a `scripts/` and a `prisma/` path, " +
+        "so nothing measures the guards outside `src/`.",
+    ).toEqual(expect.arrayContaining(["scripts/x.ts", "prisma/seed-x.ts"]));
   });
 
   it("switches the rule off only for blocks that are entirely tests", () => {
@@ -976,18 +1430,25 @@ describe("the lint guard cannot be dropped by a neighbouring config block (#2684
     }
   });
 
-  it("exempts only the encoder's own module from the encoding restrictions", () => {
+  it("exempts only the encoder's own module and the prisma seeds from the encoding restrictions", () => {
     const exemptFromEncoding = SRC_RESTRICTION_EXEMPTIONS.filter((e) =>
       (e.omits as Restriction[]).some((r) =>
-        /toISOString\|toJSON|'split'/.test(r.selector),
+        /toISOString\|toJSON|'split'|getUTCFullYear/.test(r.selector),
       ),
     ).map((e) => JSON.stringify(e.files));
 
     expect(
       exemptFromEncoding,
-      "Only `src/lib/date-only.ts` may be exempt from the #2684 encoding " +
-        "restrictions — it is where the truncation is supposed to live. Another " +
-        "file needing an exemption is a site that was never classified.",
-    ).toEqual([JSON.stringify(["src/lib/date-only.ts"])]);
+      "Exactly two paths may be exempt from the #2684 encoding restrictions: " +
+        "`src/lib/date-only.ts`, where the truncation is supposed to live, and " +
+        "`prisma/**`, whose two seed files synthesise date strings for a " +
+        "throwaway database and one of which is contractually import-free. " +
+        "`scripts/**` is deliberately NOT among them — it carries the full set, " +
+        "and it has zero truncations today. Anything else appearing here is a " +
+        "site that was never classified.",
+    ).toEqual([
+      JSON.stringify(["src/lib/date-only.ts"]),
+      JSON.stringify(["prisma/**/*.{ts,tsx}"]),
+    ]);
   });
 });
