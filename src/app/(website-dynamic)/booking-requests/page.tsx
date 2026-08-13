@@ -107,7 +107,7 @@ export default async function BookingRequestsPage() {
   const caption = page?.caption ?? "Request a stay";
   const title = page?.title ?? "Booking Requests";
   // Only a GENUINE stored `headerText` may reach the HTML sink. It is admin HTML,
-  // sanitised on write and again on read by `getSanitizedPageContentByPath()`.
+  // sanitised on write and again on read by the published-row reader used above.
   const storedHeaderHtml = page?.headerText.trim() ? page.headerText : null;
   // The fallback is a string this code COMPOSES, and it interpolates a club-set
   // value (`lodgeName`) that no sanitiser has ever seen. It renders as an escaped

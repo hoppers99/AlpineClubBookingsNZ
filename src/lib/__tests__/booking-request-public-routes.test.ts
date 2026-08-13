@@ -64,9 +64,29 @@ vi.mock("@/lib/payment-link", () => ({
 vi.mock("@/lib/lodge-capacity", () => ({
   getLodgeCapacity: vi.fn().mockResolvedValue(20),
   getDefaultLodgeCapacity: vi.fn().mockResolvedValue(20),
+  // Completes the mock: the settings route below now reads the DB-resolved
+  // default capacity through `public-layout-config` (#2818 decision 7), which
+  // pulls in `club-identity.ts` — and that module reads this constant at import
+  // time, so an incomplete factory throws "No FALLBACK_LODGE_CAPACITY export"
+  // before a single test runs.
+  FALLBACK_LODGE_CAPACITY: 20,
 }));
 vi.mock("@/lib/lodge-settings", () => ({
   loadSchoolGroupSoftCap: vi.fn().mockResolvedValue(25),
+}));
+
+/**
+ * `getCachedDefaultLodgeCapacity` is an `unstable_cache` wrapper, and Next's
+ * incremental cache only exists inside a real request — called from a unit test
+ * it throws "Invariant: incrementalCache missing" before the route can answer.
+ * Override that ONE read with the figure the mocked `getDefaultLodgeCapacity`
+ * would have resolved, and keep the rest of the module real: a bare factory
+ * listing only this export would break the moment anything else in the route
+ * graph imports a sibling cached read.
+ */
+vi.mock("@/lib/public-layout-config", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/public-layout-config")>()),
+  getCachedDefaultLodgeCapacity: vi.fn().mockResolvedValue(20),
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -613,7 +633,10 @@ describe("GET /api/booking-requests/settings", () => {
     expect(mockedGetSettings).not.toHaveBeenCalled();
   });
 
-  it("returns the public pricing visibility flag", async () => {
+  // `defaultLodgeCapacity` is the DB-resolved figure both forms prefer over the
+  // static `club.lodgeCapacity` prop (#2818 decision 7); here it comes from the
+  // mocked `getDefaultLodgeCapacity` via the cached read.
+  it("returns the public pricing visibility flag and the default lodge capacity", async () => {
     mockedGetSettings.mockResolvedValue({ showPricingToNonMembers: true, quoteResponseTtlDays: 14, quoteReminderLeadDays: 3, attendeeConfirmationLeadDays: 14, attendeeConfirmationReminderDays: 3 });
     mockedGetPublicLodges.mockResolvedValueOnce([]);
     mockedGetPublicOtherLodges.mockResolvedValueOnce([]);
@@ -633,6 +656,7 @@ describe("GET /api/booking-requests/settings", () => {
       lodges: [],
       otherLodges: [],
       schoolGroupSoftCap: 25,
+      defaultLodgeCapacity: 20,
     });
   });
 
