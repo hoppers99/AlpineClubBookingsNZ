@@ -1360,7 +1360,12 @@ re-runnable by design.** `reconcileAllEmailInheritance`, scheduled as
 converges every member who holds a choice or a pointer.
 
 It exists because "every write re-resolves" is a claim about a codebase, and this
-one decides which adult receives a minor's notifications. The specific hazard is a
+one decides which adult receives a minor's notifications. That claim was false
+when first made — six age-tier writers did not call the reconciler (#2821) — so
+it is now mechanically enforced for the age-tier half by
+`src/lib/__tests__/age-tier-writers-reconcile-census.test.ts`, which discovers
+every file that resolves an enforced tier and writes a member, and fails if one
+of them does not invoke `reconcileEmailInheritanceForMemberChange`. The specific hazard is a
 re-resolution that fires on the wrong event or fails partway, which would leave a
 pointer naming somebody nobody chose: the original defect with extra steps.
 Because the rule is a pure, total function of the family tree, a second run always
