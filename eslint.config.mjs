@@ -392,6 +392,97 @@ const RAW_SQL_RESTRICTIONS = [
 // `src/lib/__tests__/money-cents-guard.test.ts` fails the build if one ever
 // does (#2685).
 
+// #2684 — the date-only ENCODING must be written once, in `src/lib/date-only.ts`.
+//
+// A lodge night, a stay bound, a finance window edge and a Xero document date
+// are all `yyyy-MM-dd`, and the codebase had 119 hand-written copies of the
+// truncation that produces one, in five spellings: `.slice(0, 10)`,
+// `.substring(0, 10)`, `.substr(0, 10)`, and `.split("T")[0]` in either quote
+// style. That is a maintainability problem on its own, but the reason it is a
+// LINT rule rather than a style note is what the duplication hides.
+//
+// The truncation is only correct for a DATE-ONLY receiver. A `@db.Date` column
+// is pinned to UTC midnight as the ENCODING of an NZ calendar day, so reading
+// the UTC day back returns the day it encodes (INV-DATE-010). A bare `DateTime`
+// is a real instant, and New Zealand runs 12-13 hours ahead of UTC, so its UTC
+// day is the PREVIOUS NZ day for roughly the first half of every NZ day — which
+// is how a Xero invoice due date and a finance export both landed a day early
+// (#2697, INV-DATE-019), and how #2682's fifteen "today" sites went wrong before
+// them. The two cases are indistinguishable at a glance and identical in syntax;
+// the only thing that separates them is what the value MEANS.
+//
+// Scattered across 119 sites nobody could audit that. Routed through named
+// helpers, the choice is written down at every call: `formatDateOnly` for a
+// date-only value, `formatDateOnlyForTimeZone` for an instant,
+// `todayDateOnlyForTimeZone` / `getTodayDateOnly` for "today" (INV-DATE-019).
+// This rule only enforces that the choice is MADE somewhere named; which one is
+// right for a given receiver is what `date-only-encoding-guard.test.ts` checks,
+// because a syntactic rule cannot see a Prisma column type.
+//
+// A WRAPPER CANNOT ESCAPE THIS. The rule is over the syntax wherever it appears
+// in `src/**`, so the forbidden pattern is illegal inside a helper's own body
+// too, not merely at a call site — which matters, because one exported
+// `formatDate` one-liner in `xero-invoice-helpers` was enough to put roughly
+// eighteen live Xero document dates beyond reach of the #2682 spelling census.
+// The only body in `src/` allowed to contain the truncation is the helper module
+// exempted below. What is left for a wrapper to do is delegate to a canonical
+// helper, and the guard test refuses an EXPORTED bare delegation so the same
+// blind spot cannot re-form under a new name.
+//
+// KNOWN LIMITATION (accepted, and the same one INV-DATE-015's rule carries): the
+// selectors are syntactic. A truncation reached through computed access
+// (`d["toISOString"]()`), a detached method alias, or a value already serialised
+// to a string and cut with a bare `.slice(0, 10)` all slip past. The last of
+// those is deliberate rather than an oversight — `.slice(0, 10)` on a string is
+// indistinguishable from an array take-10 or an ordinary truncation, and this
+// tree has both, so banning it would be a false-positive generator. Every
+// self-identifying spelling IS covered, including `.split("T")[0]` on a plain
+// string, which can only ever mean "the date part of an ISO value".
+const NO_HAND_WRITTEN_DATE_ONLY_TRUNCATION = {
+  selector:
+    "CallExpression[callee.property.name=/^(slice|substring|substr)$/][callee.object.callee.property.name=/^(toISOString|toJSON)$/]",
+  message:
+    "INV-DATE-019: Do not hand-write an ISO date truncation (#2684). Use formatDateOnly / formatMonthOnly from @/lib/date-only for a DATE-ONLY value (a `@db.Date` column, whose UTC midnight IS the NZ calendar day — INV-DATE-010) — and formatDateOnlyForTimeZone for a real instant such as `createdAt`, whose UTC day is the PREVIOUS New Zealand day all morning (#2697). Asking for today? todayDateOnlyForTimeZone() / getTodayDateOnly().",
+};
+
+// `x.split("T")[0]` — including on a value that is ALREADY a string, because
+// splitting on a capital T and taking the head has exactly one meaning.
+const NO_ISO_DATE_SPLIT_ON_T = {
+  selector:
+    "MemberExpression[computed=true][property.value=0][object.callee.property.name='split'][object.arguments.0.value='T']",
+  message:
+    "INV-DATE-019: Do not hand-write an ISO date truncation (#2684). Holding a Date? formatDateOnly (a date-only value — INV-DATE-010) or formatDateOnlyForTimeZone (a real instant) from @/lib/date-only. Holding a value already serialised to a string? dateOnlyFromIsoString.",
+};
+
+const DATE_ONLY_ENCODING_RESTRICTIONS = [
+  NO_HAND_WRITTEN_DATE_ONLY_TRUNCATION,
+  NO_ISO_DATE_SPLIT_ON_T,
+];
+
+// Every restriction that must survive in EVERY `src/**` block, whatever else
+// that block is there to lift.
+//
+// A comment saying "re-state these" was the whole mechanism until now, and it
+// only holds while everyone reads it — flat config replaces the option list
+// silently, so a new block written to lift one rule takes every other rule down
+// with it and lint still passes. Two things make that structural instead:
+// `srcRestrictedSyntax()` builds the list so a block cannot forget them by
+// omission, and `date-only-encoding-guard.test.ts` walks the RESOLVED config and
+// fails if any `src/**` block's list is missing one of these selectors. Adding a
+// block is therefore safe by default and loud when it is not.
+const ALWAYS_RESTRICTED_IN_SRC = [
+  ...RAW_SQL_RESTRICTIONS,
+  ...DATE_ONLY_ENCODING_RESTRICTIONS,
+];
+
+/**
+ * `no-restricted-syntax` for a `src/**` block: the mandatory restrictions,
+ * plus whatever that block adds. Prefer this over writing the array by hand.
+ */
+function srcRestrictedSyntax(...additional) {
+  return ["error", ...ALWAYS_RESTRICTED_IN_SRC, ...additional];
+}
+
 const eslintConfig = defineConfig([
   ...fixupConfigRules(nextVitals),
   ...fixupConfigRules(nextTs),
@@ -504,14 +595,12 @@ const eslintConfig = defineConfig([
     //     an `off` block for `e2e/**`.
     files: ["src/**/*.{ts,tsx}"],
     rules: {
-      "no-restricted-syntax": [
-        "error",
+      "no-restricted-syntax": srcRestrictedSyntax(
         NO_BARE_TO_LOCALE_DATE_STRING,
         NO_BARE_TO_LOCALE_TIME_STRING,
         NO_BARE_TO_LOCALE_STRING,
-        ...RAW_SQL_RESTRICTIONS,
         ...MONEY_CENTS_RESTRICTIONS,
-      ],
+      ),
     },
   },
   {
@@ -532,6 +621,15 @@ const eslintConfig = defineConfig([
     // are exempt for the same reason `src/**/__tests__/**` is (see the last
     // block) — a test's raw statement runs against a throwaway database and its
     // result is asserted on the spot.
+    //
+    // The #2684 date-only ENCODING restrictions are deliberately NOT extended
+    // here, and both files that would trip them say why: `prisma/demo-seed.ts`
+    // and `prisma/e2e-fixtures.ts` synthesise date STRINGS for a throwaway
+    // database rather than reading a domain column, and `e2e-fixtures.ts`
+    // declares itself "a pure constants module: no Playwright, no Prisma, no
+    // `server-only` imports" — importing `@/lib/date-only` would pull
+    // `@/config/operational` into a module whose whole contract is that it
+    // imports nothing. The guard follows the DOMAIN, which lives in `src/`.
     files: ["scripts/**/*.{ts,tsx}", "prisma/**/*.{ts,tsx}"],
     rules: {
       "no-restricted-syntax": [
@@ -545,17 +643,31 @@ const eslintConfig = defineConfig([
     },
   },
   {
-    // The date helpers themselves, and the one documented format exclusion.
+    // The rendering helper, and the one documented format exclusion.
     // Flat config replaces a rule's whole option list rather than merging it, so
-    // this block re-states the raw-SQL restrictions (#2289) instead of switching
-    // `no-restricted-syntax` off outright: none of these three files contains
-    // raw SQL, and the exemption they need is from the DATE rules only. Same
-    // reasoning in the Number-formatting block below.
-    files: [
-      "src/lib/nzst-date.ts",
-      "src/lib/date-only.ts",
-      "src/lib/email-templates.ts",
-    ],
+    // this block re-states the mandatory restrictions (#2289, #2684) instead of
+    // switching `no-restricted-syntax` off outright: neither file contains raw
+    // SQL or a hand-written date truncation, and the exemption they need is from
+    // the toLocale* DATE-RENDERING rules only. Same reasoning in the
+    // Number-formatting block below.
+    files: ["src/lib/nzst-date.ts", "src/lib/email-templates.ts"],
+    rules: {
+      "no-restricted-syntax": srcRestrictedSyntax(),
+    },
+  },
+  {
+    // `src/lib/date-only.ts` is the ONE file exempt from the #2684 encoding
+    // restrictions, because it is the sanctioned home for the truncation: the
+    // rule exists to make every other file call `formatDateOnly` instead of
+    // writing `toISOString().slice(0, 10)`, and that helper has to write it
+    // somewhere. It is exempt from the toLocale* rules for the same reason
+    // (it formats with a pinned `Intl.DateTimeFormat`), and still carries the
+    // raw-SQL restrictions, which have nothing to do with either.
+    //
+    // This is the only entry `date-only-encoding-guard.test.ts` accepts on its
+    // exemption list. A second file added here is a site that was never
+    // classified, not a file that needs an exemption.
+    files: ["src/lib/date-only.ts"],
     rules: {
       "no-restricted-syntax": [
         "error",
@@ -577,13 +689,11 @@ const eslintConfig = defineConfig([
       "src/app/(admin)/admin/promo-codes/promo-redemptions-panel.tsx",
     ],
     rules: {
-      "no-restricted-syntax": [
-        "error",
+      "no-restricted-syntax": srcRestrictedSyntax(
         NO_BARE_TO_LOCALE_DATE_STRING,
         NO_BARE_TO_LOCALE_TIME_STRING,
-        ...RAW_SQL_RESTRICTIONS,
         ...MONEY_CENTS_RESTRICTIONS,
-      ],
+      ),
     },
   },
   {
@@ -613,6 +723,11 @@ const eslintConfig = defineConfig([
         NO_BARE_TO_LOCALE_TIME_STRING,
         NO_BARE_TO_LOCALE_STRING,
         ...RAW_SQL_RESTRICTIONS,
+        // #2684's encoding restrictions come here too. Without them this block
+        // would lift the date guard from every Xero, finance, payment, credit
+        // and API-route module — the exact files the guard was written for —
+        // and lint would stay green over it.
+        ...DATE_ONLY_ENCODING_RESTRICTIONS,
         ...MONEY_MODULE_RESTRICTIONS,
       ],
     },
@@ -630,6 +745,7 @@ const eslintConfig = defineConfig([
         NO_BARE_TO_LOCALE_TIME_STRING,
         NO_BARE_TO_LOCALE_STRING,
         ...RAW_SQL_RESTRICTIONS,
+        ...DATE_ONLY_ENCODING_RESTRICTIONS,
       ],
     },
   },
