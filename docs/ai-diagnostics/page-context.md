@@ -131,7 +131,7 @@ no filters, no record" and widens one field at a time.
 | --- | --- | --- | --- |
 | `admin.dashboard` | `/admin/dashboard` | `overview` | — |
 | `admin.bookings` | `/admin/bookings` | `bookings` | booking |
-| `admin.booking-approvals` | `/admin/booking-approvals` | `bookings` | booking |
+| `admin.booking-requests` | `/admin/booking-requests` | `bookings` | booking |
 | `admin.waitlist` | `/admin/waitlist` | `bookings` | booking |
 | `admin.bed-allocation` | `/admin/bed-allocation` | `bookings` **and** `lodge` | — |
 | `admin.members` | `/admin/members` | `membership` | member |

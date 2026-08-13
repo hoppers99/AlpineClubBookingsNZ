@@ -34,6 +34,7 @@
  * deliberate decision.
  */
 
+import { BOOKING_REQUESTS_TABS } from "@/lib/admin-booking-requests-path";
 import type { AdminPermissionArea } from "@/lib/admin-permissions";
 import type { StuckStateSeverity } from "@/lib/stuck-state-dashboard";
 
@@ -173,11 +174,20 @@ const ROUTES: readonly DiagnosticsPageContextRoute[] = [
     filterKeys: ["lodgeId", "status", "from", "to", "search"],
   }),
   route({
-    key: "admin.booking-approvals",
-    pathname: "/admin/booking-approvals",
-    label: "Booking approvals queue",
+    // #2812: this row used to be `admin.booking-approvals` at
+    // `/admin/booking-approvals` — a pathname whose page is a fifteen-line
+    // redirect() shim, so the row could never match a live page and the
+    // approvals queue (the single most likely place to ask "why will this
+    // booking not confirm?") had no page context at all. It now names the page
+    // an operator actually stands on. The tab list is the page's own canonical
+    // set, imported rather than retyped (owner decision 13 Aug 2026: every
+    // tab, not approvals-only).
+    key: "admin.booking-requests",
+    pathname: "/admin/booking-requests",
+    label: "Booking requests and approvals",
     requiredAreas: ["bookings"],
     recordKind: "booking",
+    tabs: BOOKING_REQUESTS_TABS,
     statuses: BOOKING_STATUS_TOKENS,
     errorCodes: DIAGNOSTICS_PAGE_ERROR_CODES,
   }),

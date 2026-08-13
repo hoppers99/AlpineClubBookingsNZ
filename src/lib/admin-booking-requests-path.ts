@@ -4,11 +4,20 @@
  * locked-period change request is an acknowledgement an admin then applies by
  * hand, while approving a policy exception EXECUTES the reviewed proposal.
  */
-export type BookingRequestsTab =
-  | "approvals"
-  | "changes"
-  | "exceptions"
-  | "public";
+/**
+ * The runtime list exists so consumers that need the tokens as VALUES — the
+ * diagnostics page-context registry's tab allowlist (#2812, owner decision
+ * 13 Aug 2026: every tab), and the page's own query-param parser — share ONE
+ * authority with the type instead of hand-copying a union that drifts.
+ */
+export const BOOKING_REQUESTS_TABS = [
+  "approvals",
+  "changes",
+  "exceptions",
+  "public",
+] as const;
+
+export type BookingRequestsTab = (typeof BOOKING_REQUESTS_TABS)[number];
 
 type SearchParamValue = string | string[] | undefined;
 

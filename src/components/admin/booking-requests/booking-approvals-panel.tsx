@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { DiagnosticsRecordButton } from "@/components/help-widget/diagnostics-record-button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -441,9 +442,20 @@ export function BookingApprovalsPanel({
                         </Link>
                       </p>
                     </div>
-                    <Badge variant="outline" className={statusBadgeClass(booking.adminReviewStatus)}>
-                      {booking.adminReviewStatus ?? "—"}
-                    </Badge>
+                    <div className="flex items-center gap-1">
+                      <Badge variant="outline" className={statusBadgeClass(booking.adminReviewStatus)}>
+                        {booking.adminReviewStatus ?? "—"}
+                      </Badge>
+                      {/* #2812 — the approvals queue is the single most likely
+                          place to ask "why will this booking not confirm?", and
+                          it was the one review surface #2378's D11 wiring left
+                          out (its registry row pointed at a redirect). Beside
+                          the review status, same as the other three lists. */}
+                      <DiagnosticsRecordButton
+                        recordId={booking.id}
+                        subject={`the booking for ${booking.member.firstName} ${booking.member.lastName} awaiting review`}
+                      />
+                    </div>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
