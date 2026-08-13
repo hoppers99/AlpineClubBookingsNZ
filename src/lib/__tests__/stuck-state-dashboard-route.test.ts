@@ -66,6 +66,37 @@ describe("GET /api/admin/stuck-states", () => {
     });
   });
 
+  // #2823: a Full Admin holds membership:view, so the named member /
+  // booking-owner detail rows are requested.
+  it("passes viewerCanViewMembership=true for a caller with membership:view", async () => {
+    await GET();
+
+    expect(mocks.getStuckStateDashboard).toHaveBeenCalledWith({
+      viewerCanViewMembership: true,
+    });
+  });
+
+  // #2823: a support-only admin (support:view, membership:none) reaches the
+  // dashboard but must not receive the membership-roll rows. The guard admits
+  // them (support portal access); the route drops the names.
+  it("passes viewerCanViewMembership=false for a support-only admin without membership:view", async () => {
+    mocks.auth.mockResolvedValue({
+      user: {
+        id: "support-1",
+        role: "MEMBER",
+        accessRoles: [],
+        adminPermissionMatrix: { support: "view" },
+      },
+    });
+
+    const response = await GET();
+
+    expect(response.status).toBe(200);
+    expect(mocks.getStuckStateDashboard).toHaveBeenCalledWith({
+      viewerCanViewMembership: false,
+    });
+  });
+
   it("rejects non-admin sessions", async () => {
     mocks.auth.mockResolvedValue({
       user: {
