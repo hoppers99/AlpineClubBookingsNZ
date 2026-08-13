@@ -316,3 +316,78 @@ describe("the loop is bounded (#2378)", () => {
     expect(result).toMatchObject({ ok: false, reason: "provider_unavailable" });
   });
 });
+
+describe("stored provider evidence is never presented as ok (#2815)", () => {
+  /**
+   * `states.ts` names the answer loop as `provider_check_required`'s producer:
+   * a tool whose evidenceScope carries the finance pack's stored-provider
+   * disclosure read what the platform last WROTE DOWN, and a stored SUCCEEDED
+   * presented as `ok` is a stored state presented as live provider truth —
+   * the gap AID-7's contract review found. The membership test is the
+   * disclosure text itself (`diagnosticsToolRequiresProviderCheck`), so these
+   * cases run against the REAL registry, not a mock of it.
+   */
+  it("folds provider_check_required onto an ok read from a disclosure-carrying tool", async () => {
+    const toolId = "diagnostics.payment_diagnostic_summary";
+    mocks.runRound
+      .mockResolvedValueOnce(toolRound(toolId))
+      .mockResolvedValueOnce(answerRound("the stored state is SUCCEEDED"));
+    mocks.invoke.mockResolvedValue(okResult(toolId));
+
+    const result = await runDiagnosticsAnswer(input());
+    expect(result.ok).toBe(true);
+    expect(result.sources[0]).toMatchObject({
+      toolId,
+      state: "provider_check_required",
+    });
+  });
+
+  it("leaves an ok read from an unmarked tool alone", async () => {
+    // A REAL registered id, deliberately: the first cut used the unregistered
+    // "member_search", which only exercised the unknown-id short-circuit — a
+    // mutant marking EVERY registered tool passed it (#2815 review).
+    mocks.runRound
+      .mockResolvedValueOnce(toolRound("diagnostics.member_search"))
+      .mockResolvedValueOnce(answerRound("found them"));
+    mocks.invoke.mockResolvedValue(okResult("diagnostics.member_search"));
+
+    const result = await runDiagnosticsAnswer(input());
+    expect(result.sources[0]).toMatchObject({ state: "ok" });
+  });
+
+  it("keeps result_truncated on a truncated finance read — the fold takes only ok", async () => {
+    // Dropping the `=== "ok"` guard would turn this into provider_check_required
+    // (index 6 beats result_truncated's 1 under worstEvidenceState) and the
+    // "part of a longer result was left out" caveat would vanish. The console
+    // caveat still reaches the operator for this source — provenance keys it on
+    // the TOOL, not the folded state.
+    const toolId = "diagnostics.payment_diagnostic_summary";
+    mocks.runRound
+      .mockResolvedValueOnce(toolRound(toolId))
+      .mockResolvedValueOnce(answerRound("part of the ledger"));
+    mocks.invoke.mockResolvedValue({ ...okResult(toolId), truncated: true });
+
+    const result = await runDiagnosticsAnswer(input());
+    expect(result.sources[0]).toMatchObject({ state: "result_truncated" });
+  });
+
+  it("never overrides a more specific state — a denial stays a denial", async () => {
+    const toolId = "diagnostics.payment_diagnostic_summary";
+    mocks.runRound
+      .mockResolvedValueOnce(toolRound(toolId))
+      .mockResolvedValueOnce(answerRound("that was not available"));
+    mocks.invoke.mockResolvedValue({
+      schemaVersion: 1,
+      status: "error" as const,
+      toolId,
+      reason: "permission_denied",
+      message: "finance access required",
+      missingAreas: ["finance"],
+      observedAt: "2026-08-12T00:00:00.000Z",
+      audit: { areasChecked: ["finance"], toolId },
+    });
+
+    const result = await runDiagnosticsAnswer(input());
+    expect(result.sources[0]).toMatchObject({ state: "permission_denied" });
+  });
+});
