@@ -704,6 +704,19 @@ labels themselves, so text forging an operator turn label cannot become a turn
 boundary. That last one is mutation-verified: deleting the turn-label defusal fails
 exactly the forged-label test.
 
+Every untrusted span is **folded first** (`diagnostics/untrusted-text.ts`), because a
+line-anchored defusal is only as good as its idea of a line and a label match only as
+good as its idea of a colon. U+0085 is a line terminator to every reader and to no
+JavaScript `\s`, and `assistant<ZWSP>:` or `assistant：` matched no pattern at all. The
+fold drops the invisible and default-ignorable code points, NFKC-normalises, folds the
+colon look-alikes NFKC does not reach, and turns every line terminator and control
+character into a newline or a space — so the defusal sees the text the model will. The
+same fold runs in the page-context renderer, where the re-read database facts (a
+booking note, a member's name) pass no input boundary at all. The ask route refuses
+C0/DEL/C1 characters in the question and in a replayed turn on top of that: a request
+carrying a non-printing character there is malformed, and repairing it silently is how
+a bypass gets built.
+
 This deliberately differs from `anthropic-client.ts`, which replays prior turns in
 their original roles. That is correct there and would be wrong here.
 

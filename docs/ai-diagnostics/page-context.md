@@ -170,9 +170,18 @@ Five drift guards keep this table honest, all in
 
 **Filter keys are the page's real query parameters**, and a deliberate subset of
 them: pagination and sort keys are excluded because they say nothing about why a
-page shows what it shows. Because rejection is total, a client must send only
-allowlisted keys — one unlisted key costs the operator their whole page context, so
-this is a contract AID-7 (#2378) builds against, not a hint.
+page shows what it shows. Because rejection in `parse.ts` is total, a client must
+send only allowlisted keys — one unlisted key would cost the operator their whole
+page context, so this is a contract AID-7 (#2378) builds against, not a hint. (The
+ask route's `view` path therefore **pre-narrows** to the matched row's allowlists and
+drops what the row does not permit, rather than handing the parser a live URL to
+refuse outright; what survives is re-validated there, so the filter can only narrow.
+Total rejection governs the direct selector path.)
+
+A key must also mean exactly one thing to a model, which is why the bookings row
+allowlists `checkInFrom`/`checkInTo`/`checkOutFrom`/`checkOutTo` and not the legacy
+`from`/`to` pair the page still accepts — see "Where the view state comes from"
+below.
 
 Unlike the four guards above, the filter keys are **not** pinned by a test. Each
 page reads its parameters its own way — a typed `searchParams` object on a server

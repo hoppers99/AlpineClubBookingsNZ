@@ -19,10 +19,25 @@
  * that repairs a selector this module is contractually required to refuse. Only
  * `parseDiagnosticsPageSelector` and the `DiagnosticsPageSelector` type leave here.
  *
- * Rejection is total, never partial. A selector carrying one bad token does not
- * quietly lose that token and proceed — it is refused, and the caller reports
- * `invalid_selector`. Silently repairing malformed input is how a bypass gets
- * built: the client learns which fields are dropped and which survive.
+ * REJECTION HERE IS TOTAL, NEVER PARTIAL. A selector reaching this module with one
+ * bad token does not quietly lose that token and proceed — it is refused, and the
+ * caller reports `invalid_selector`. Silently repairing malformed input is how a
+ * bypass gets built: the client learns which fields are dropped and which survive.
+ *
+ * THE ASK ROUTE'S `view` PATH PRE-NARROWS BEFORE IT GETS HERE, and that is a
+ * different thing from this module going partial (#2816; docblock corrected in the
+ * re-review of PR #2831, 14 Aug 2026). A browser sends its LIVE URL state, which
+ * carries pagination keys, uppercase enum spellings and whatever the previous screen
+ * left behind — and because rejection here is total, one of those would cost the
+ * operator their entire page context. So the route filters that input against the
+ * matched row's own allowlists first and DROPS what the row does not permit, exactly
+ * as it drops an ill-formed record id. What survives is then re-validated here, so
+ * the filter can only ever narrow what reaches this module and never widen it.
+ *
+ * The total rejection therefore governs the DIRECT selector path — a caller that
+ * hands this module a selector of its own — while the view path degrades by dropping
+ * upstream. Both end in the same place: nothing a client sent is trusted, and
+ * anything this module is not certain of does not become evidence.
  *
  * NOTHING IS ECHOED. Issues are stable machine codes naming the FIELD, never the
  * value, so a rejected selector cannot use the error path as an output channel

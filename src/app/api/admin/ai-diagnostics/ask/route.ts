@@ -83,17 +83,62 @@ import { DIAGNOSTICS_ANSWER_BOUNDS } from "@/lib/diagnostics/answer/prompt";
  * silently introduce persistence to avoid that UX cost."
  */
 
+/**
+ * Refuse a control character in the two free-text fields — the SAME C0/DEL/C1 class
+ * the view filter below uses and `page-context/parse.ts` refuses, minus the three
+ * characters a typed question legitimately contains (tab, newline, carriage return).
+ *
+ * WHY IT IS HERE AT ALL, given `answer/prompt.ts` renders both fields through a fold
+ * that neutralises them (security re-review of PR #2831, 14 Aug 2026). U+0085 is a
+ * line terminator to every reader and to no JavaScript `\s`, so the line-anchored
+ * role-label defusal in that module did not anchor after one — and the two-hop path
+ * is real: a crafted filter value influences an answer, the browser stores it, and it
+ * comes back next turn as an untrusted `assistant` span through that exact renderer.
+ * The renderer is now folded, so this is the boundary half of the same fix: a request
+ * carrying a non-printing character in its question or its history is MALFORMED, and
+ * silently repairing malformed input is how a bypass gets built.
+ *
+ * The cost is stated rather than hidden: a transcript turn whose text somehow holds a
+ * control character makes that conversation unanswerable until the operator starts a
+ * new one. Provider text does not contain C1 characters in practice, and the failure
+ * is a visible 400 rather than a silently altered history.
+ *
+ * An explicit scan, not a regex, for the reason `parse.ts` gives: no escape sequence
+ * has to survive a future edit intact.
+ */
+function noControlCharacters(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x09 || code === 0x0a || code === 0x0d) continue;
+    if (code < 0x20 || code === 0x7f) return false;
+    if (code >= 0x80 && code <= 0x9f) return false;
+  }
+  return true;
+}
+
+const CONTROL_CHARACTER_MESSAGE = "must not contain control characters";
+
 /** Wire caps mirror the prompt module's own bounds, so we never over-send. */
 const bodySchema = z
   .object({
     pathname: z.string().min(1).max(300).regex(/^\//, "pathname must start with /"),
-    question: z.string().min(1).max(DIAGNOSTICS_ANSWER_BOUNDS.questionMaxChars),
+    question: z
+      .string()
+      .min(1)
+      .max(DIAGNOSTICS_ANSWER_BOUNDS.questionMaxChars)
+      .refine(noControlCharacters, { message: CONTROL_CHARACTER_MESSAGE }),
     transcript: z
       .array(
         z
           .object({
             role: z.enum(["operator", "assistant"]),
-            text: z.string().min(1).max(DIAGNOSTICS_ANSWER_BOUNDS.turnMaxChars),
+            text: z
+              .string()
+              .min(1)
+              .max(DIAGNOSTICS_ANSWER_BOUNDS.turnMaxChars)
+              .refine(noControlCharacters, {
+                message: CONTROL_CHARACTER_MESSAGE,
+              }),
           })
           .strict(),
       )
@@ -365,7 +410,18 @@ export async function POST(request: Request) {
   // (`PAYMENT_PENDING`) to the registry's token vocabulary (`payment-pending`)
   // before the allowlist test — a mapping, not a loosening: an unknown token
   // still matches nothing and is dropped.
-  const allowlistedView = (() => {
+  //
+  // The type is written on the CONST, not left to inference, because the selector
+  // below names these five fields one by one rather than spreading them: an inferred
+  // `{}` from the early return would make `allowlistedView.tab` a compile error and
+  // invite the spread back.
+  const allowlistedView: {
+    tab?: string;
+    step?: string;
+    status?: string;
+    errorCode?: string;
+    filters?: Record<string, string>;
+  } = (() => {
     if (!matched || !view) return {};
     const token = (value: string | undefined): string | undefined => {
       const normalised = value?.trim().toLowerCase().replace(/_/g, "-");
@@ -432,12 +488,25 @@ export async function POST(request: Request) {
     }
     return out;
   })();
+  // THE FIVE VIEW FIELDS ARE WRITTEN OUT, never spread (hardening finding, 14 Aug
+  // 2026). `...allowlistedView` after `routeKey` was safe only because that object
+  // is a fresh literal built four lines up with exactly these five keys: the day an
+  // edit lets a sixth through — `routeKey`, `recordId`, `includeSensitiveRecord` —
+  // a client-derived value would re-point the route, name another record, or turn on
+  // the personal-details opt-in, and the spread's position is the only thing
+  // deciding it. Naming the fields makes that structurally impossible instead of
+  // conventionally unlikely. (Undefined is what the parser's `.optional()` fields
+  // already expect; it is not a key the selector carries.)
   const pageContext = await resolveDiagnosticsPageContext({
     selector: matched
       ? {
           routeKey: matched.route.key,
           ...(selectedRecordId ? { recordId: selectedRecordId } : {}),
-          ...allowlistedView,
+          tab: allowlistedView.tab,
+          step: allowlistedView.step,
+          status: allowlistedView.status,
+          errorCode: allowlistedView.errorCode,
+          filters: allowlistedView.filters,
           includeSensitiveRecord: allowRecordPersonalDetails,
         }
       : { routeKey: null },
