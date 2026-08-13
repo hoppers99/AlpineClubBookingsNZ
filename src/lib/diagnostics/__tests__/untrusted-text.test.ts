@@ -58,6 +58,17 @@ const COLONS: ReadonlyArray<readonly [string, number]> = [
   ["TWO DOT PUNCTUATION U+205A", 0x205a],
   ["RATIO U+2236", 0x2236],
   ["MODIFIER LETTER COLON U+A789", 0xa789],
+  // Script punctuation with no NFKC decomposition that a reader/model sees as a
+  // colon — the gap the delta re-review of #2831 found in the first fold set.
+  ["ARMENIAN FULL STOP U+0589", 0x0589],
+  ["HEBREW PUNCTUATION SOF PASUQ U+05C3", 0x05c3],
+  ["SYRIAC SUPRALINEAR COLON U+0703", 0x0703],
+  ["SYRIAC SUBLINEAR COLON U+0704", 0x0704],
+  ["ETHIOPIC PREFACE COLON U+1365", 0x1365],
+  ["MONGOLIAN COLON U+1804", 0x1804],
+  ["TRICOLON U+205D", 0x205d],
+  ["TWO DOTS OVER ONE DOT PUNCTUATION U+2AF6", 0x2af6],
+  ["BAMUM COLON U+A6F4", 0xa6f4],
 ];
 
 /** U+0085 (NEL): a line terminator to every reader, and to no JavaScript `\s`. */

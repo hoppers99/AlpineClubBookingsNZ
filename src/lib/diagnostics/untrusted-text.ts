@@ -80,12 +80,23 @@ const ROLE_LABEL_ANYWHERE = new RegExp(`\\b(${ROLE_WORDS})(\\s*):`, "gi");
 const INVISIBLE_CODE_POINTS = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
 
 /**
- * Colon forms NFKC does not fold: MODIFIER LETTER RAISED COLON (U+02F8), TWO DOT
- * PUNCTUATION (U+205A), RATIO (U+2236), MODIFIER LETTER COLON (U+A789). The
- * fullwidth (U+FF1A), small (U+FE55) and vertical (U+FE13) forms need no entry
+ * Colon forms NFKC does not fold, in two groups. First, the ones that read as
+ * two stacked dots but do not decompose to U+003A: MODIFIER LETTER RAISED COLON
+ * (U+02F8), TWO DOT PUNCTUATION (U+205A), RATIO (U+2236), MODIFIER LETTER COLON
+ * (U+A789). Second, script punctuation a reader — and a model — sees AS a colon
+ * though it is a full stop / word separator in its own script and has no NFKC
+ * decomposition at all: ARMENIAN FULL STOP (U+0589), HEBREW PUNCTUATION SOF PASUQ
+ * (U+05C3), SYRIAC SUPRALINEAR/SUBLINEAR COLON (U+0703, U+0704), ETHIOPIC PREFACE
+ * COLON (U+1365), MONGOLIAN COLON (U+1804), TRICOLON (U+205D), TWO DOTS OVER ONE
+ * DOT PUNCTUATION (U+2AF6) and BAMUM COLON (U+A6F4). Folding these to U+003A is
+ * what lets the defusal below see `assistant<any of them>` as a role label; the
+ * only cost is that one of these exotic stops renders as a colon inside an
+ * untrusted-evidence span, the right trade there. The fullwidth (U+FF1A), small
+ * (U+FE55) and vertical (U+FE13) forms — plus U+2A74 — need no entry
  * here — NFKC already maps all three to U+003A.
  */
-const COLON_LOOKALIKES = /[\u02f8\u205a\u2236\ua789]/g;
+const COLON_LOOKALIKES =
+  /[\u02f8\u0589\u05c3\u0703\u0704\u1365\u1804\u205a\u205d\u2236\u2af6\ua6f4\ua789]/g;
 
 /**
  * Every line terminator, INCLUDING U+0085 (NEL) — the one JavaScript's `\s` does
