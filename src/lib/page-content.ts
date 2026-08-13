@@ -149,16 +149,41 @@ const PAGE_SLUG_PATTERN =
 // "home", "privacy", "terms", and "faq" are intentionally NOT reserved:
 // their code-backed routes or the catch-all read the matching PageContent
 // record, which is how those pages are edited.
+//
+// `booking-requests` and `school-bookings` are reserved (#2818 decision 9), and
+// they are the exception to the sentence above rather than a contradiction of
+// it. Rule 2 below already refuses the BARE addresses, because real
+// `(website-dynamic)` routes claim them — but it refuses only the exact
+// addresses a route claims, and the emailed credential URLs are one segment
+// deeper. `/booking-requests/verify` and `/booking-requests/respond` are claimed
+// by nothing (the routes are `/booking-requests/verify/[token]`, three segments),
+// so without this an admin could create CMS pages sitting directly above every
+// one-time token link the club emails. Reserving the WORD closes the whole
+// namespace in one rule, which is what "the emailed token address space is
+// code-owned" requires.
+//
+// The cost is the usual one for this set: it matches in EVERY segment position,
+// so `trips/booking-requests` is refused too. Accepted deliberately — the
+// alternative is enumerating the sub-paths, which is a list that rots the moment
+// a token route is added.
+//
+// Editing the two BUILT-IN rows is unaffected: `isReservedPageSlug` gates
+// admin-CREATED pages, and the admin PUT route exempts a built-in row whose slug
+// is unchanged (see `src/app/api/admin/page-content/route.ts`). Without that
+// exemption a club could not set the menu title that opts the pages into the
+// navigation, which is the whole of decision 1.
 const RESERVED_PAGE_SLUGS = new Set([
   "admin",
   "api",
   "book",
+  "booking-requests",
   "dashboard",
   "login",
   "logout",
   "register",
   "forgot-password",
   "reset-password",
+  "school-bookings",
 ]);
 
 export function normalizePageSlug(value: string): string {

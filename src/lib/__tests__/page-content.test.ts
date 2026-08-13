@@ -90,18 +90,38 @@ describe("isBuiltinPageSlug", () => {
   });
 
   it.each(["booking-requests", "school-bookings"])(
-    "treats %s as a listed, built-in website page",
+    "treats %s as a built-in page whose whole namespace is code-owned",
     (slug) => {
-      // These are code-backed `(website)` pages (the same makeup as join/apply)
-      // whose seeded bodies are their {{...}} tokens. Built-in keeps them from
-      // being hidden or deleted; being real website slugs they are NOT reserved,
-      // so they can carry a menu title and appear in the public navigation.
+      // Code-backed `(website-dynamic)` pages whose seeded bodies are their
+      // {{...}} tokens. Built-in keeps the rows from being hidden or deleted;
+      // RESERVED keeps an admin from creating a CMS page anywhere in the
+      // namespace, because the emailed one-time token links live one segment
+      // below (#2818 decision 9).
       expect(isBuiltinPageSlug(slug)).toBe(true);
-      expect(isReservedPageSlug(slug)).toBe(false);
+      expect(isReservedPageSlug(slug)).toBe(true);
       expect(canUnpublishPage(slug)).toBe(false);
       expect(canDeletePage(slug)).toBe(false);
     },
   );
+
+  it.each([
+    // The bare addresses.
+    "booking-requests",
+    "school-bookings",
+    // One segment above the emailed credential URLs — the shape the review
+    // found creatable, and the reason a WORD is reserved rather than the exact
+    // addresses real routes happen to claim.
+    "booking-requests/verify",
+    "booking-requests/respond",
+    "school-bookings/confirm",
+    // Deeper still, and in a non-leading position.
+    "booking-requests/verify/anything",
+    "school-bookings/confirm/anything/else",
+    "trips/booking-requests",
+  ])("refuses %s as an admin-created CMS page", (slug) => {
+    expect(isValidPageSlug(slug), "the slug is otherwise well-formed").toBe(true);
+    expect(isReservedPageSlug(slug)).toBe(true);
+  });
 
   it("does not match admin-created pages", () => {
     expect(isBuiltinPageSlug("trip-reports")).toBe(false);

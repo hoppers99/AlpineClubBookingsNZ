@@ -172,6 +172,22 @@ describe("POST /api/admin/page-content", () => {
     const response = await POST(jsonRequest("POST", baseCreateBody));
     expect(response.status).toBe(409);
   });
+
+  it.each([
+    "booking-requests",
+    "school-bookings",
+    "booking-requests/verify",
+    "school-bookings/confirm",
+  ])("refuses to CREATE a page at %s (#2818 decision 9)", async (slug) => {
+    // The emailed one-time token links live under these prefixes, so the whole
+    // namespace is code-owned. `booking-requests/verify` is the shape the review
+    // found creatable: no route claims that exact address, so only the reserved
+    // WORD closes it.
+    const response = await POST(jsonRequest("POST", { ...baseCreateBody, slug }));
+
+    expect(response.status).toBe(400);
+    expect(mocks.pageContentCreate).not.toHaveBeenCalled();
+  });
 });
 
 describe("PUT /api/admin/page-content", () => {
@@ -227,6 +243,69 @@ describe("PUT /api/admin/page-content", () => {
     expect(response.status).toBe(400);
     expect(mocks.pageContentUpdate).not.toHaveBeenCalled();
     expect(mocks.revalidatePublicPageContent).not.toHaveBeenCalled();
+  });
+
+  it.each(["booking-requests", "school-bookings"])(
+    "still lets an admin EDIT the built-in %s row, whose slug is reserved (#2818)",
+    async (slug) => {
+      // The opt-in model depends on this: `/booking-requests` and
+      // `/school-bookings` are reserved twice over — by the reserved word
+      // (decision 9) and because real `(website-dynamic)` routes claim the
+      // addresses — and a club that cannot save the row cannot set the menu title
+      // that opts the page into the navigation and into search (decision 1).
+      mocks.pageContentFindUnique.mockResolvedValue({
+        id: "page-1",
+        slug,
+        contentHtml: "<p>Old</p>",
+      });
+
+      const response = await PUT(
+        jsonRequest("PUT", {
+          ...baseUpdateBody,
+          slug,
+          menuTitle: "Request a stay",
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(mocks.pageContentUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ menuTitle: "Request a stay" }),
+        }),
+      );
+    },
+  );
+
+  it("does not let the exemption MOVE an ordinary page onto a reserved slug", async () => {
+    // The exemption is for a built-in row keeping its own slug, nothing wider.
+    // An admin-created page renamed onto the reserved namespace is still refused.
+    mocks.pageContentFindUnique.mockResolvedValue({
+      id: "page-1",
+      slug: "trip-reports",
+      contentHtml: "<p>Old</p>",
+    });
+
+    const response = await PUT(
+      jsonRequest("PUT", { ...baseUpdateBody, slug: "booking-requests/verify" }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.pageContentUpdate).not.toHaveBeenCalled();
+  });
+
+  it("does not let a BUILT-IN row be renamed onto another reserved slug", async () => {
+    mocks.pageContentFindUnique.mockResolvedValue({
+      id: "page-1",
+      slug: "booking-requests",
+      contentHtml: "<p>Old</p>",
+    });
+
+    const response = await PUT(
+      jsonRequest("PUT", { ...baseUpdateBody, slug: "admin/settings" }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.pageContentUpdate).not.toHaveBeenCalled();
   });
 });
 
