@@ -360,7 +360,7 @@ export function JoinApplyPageClient({
 
       <section className="bg-brand-mist/40 pb-16 pt-6 sm:pb-20">
         <div className="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
-          <Card id="joinApplyForm" className="border-brand-ridge/20 bg-card shadow-[0_22px_46px_-34px_rgba(47,47,43,0.38)]">
+          <Card className="border-brand-ridge/20 bg-card shadow-[0_22px_46px_-34px_rgba(47,47,43,0.38)]">
             <CardHeader className="space-y-2">
               <CardTitle className="font-heading text-3xl text-brand-charcoal">
                 Enter your details
