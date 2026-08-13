@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { validateGuestChoreToken } from "@/lib/guest-chore-token";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 import { isActionTokenFormat } from "@/lib/action-tokens";
+import { formatDateOnly } from "@/lib/date-only";
 
 /**
  * GET /api/chores/[token]
@@ -34,7 +35,7 @@ export async function GET(
   }
 
   return NextResponse.json({
-    date: result.date.toISOString().split("T")[0],
+    date: formatDateOnly(result.date),
     guest: result.guest,
     assignments: result.assignments,
   });

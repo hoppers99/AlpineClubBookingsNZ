@@ -1,5 +1,6 @@
 import { prisma } from "./prisma";
 import { hashActionToken, issueActionToken } from "./action-tokens";
+import { formatDateOnly } from "@/lib/date-only";
 
 const TOKEN_EXPIRY_HOURS = 48;
 
@@ -59,7 +60,7 @@ export async function validateGuestChoreToken(token: string) {
 
   // Filter assignments to only those matching the token's date
   const dateAssignments = record.bookingGuest.choreAssignments.filter(
-    (a) => a.date.toISOString().split("T")[0] === record.date.toISOString().split("T")[0]
+    (a) => formatDateOnly(a.date) === formatDateOnly(record.date)
   );
 
   return {
