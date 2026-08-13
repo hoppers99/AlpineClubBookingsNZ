@@ -867,8 +867,12 @@ there rather than on the parent link.
 ## INV-LIFE-032
 
 So the only things recording a young parent grants are the word "Parent" on an
-admin card and a mail-routing question, and the second is answered by the
-transitive resolver walking **past** them to the nearest adult ancestor. The
+admin card and a mail-routing question — and since #2716 that question is
+**unanswerable** rather than answered. There is no transitive resolver to walk
+past a young parent any more: `isUsableEmailSource` requires `ageTier === "ADULT"`,
+inheritance is one hop, so a dependant whose only parent is young inherits
+**nobody** and appears on the unreachable surface for an admin to resolve. That
+is the accepted cost recorded in `INV-LIFE-047`, not a defect. The
 lowering of the ADULT tier's minimum age to 16 was considered and **rejected**:
 the boundaries are admin-configurable, but moving them would change fees,
 subscription requirements and booking rules for every 16–17 year old in the club
