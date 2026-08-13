@@ -178,8 +178,17 @@ test("the conversation survives a navigation but the chosen record does not", as
 
   // Page guide is page-specific and genuinely stale after a move; an open
   // investigation is not, so the tab stays put (owner decision D8).
-  await page.goto("/admin/payments");
-  await launcher(page).click();
+  //
+  // The move must be IN-APP — the sidebar link, not page.goto(). D8's promise is
+  // about navigating while investigating: the widget lives in the admin layout,
+  // which Next preserves across soft navigations, so the panel and transcript
+  // survive. A goto() is a full reload, and losing the conversation there is the
+  // documented, owner-accepted Q5 cost ("do not silently introduce persistence
+  // to avoid that UX cost") — the first cut of this test asserted D8 through a
+  // reload and was testing Q5's cost instead.
+  await page.getByRole("link", { name: "Payments" }).click();
+  await page.waitForURL("**/admin/payments");
+  // No launcher click: the panel never closed. It is still on Diagnostics.
   await expect(page.getByTestId("diagnostics-input")).toBeVisible();
 
   // Payments rows offer their own record, of the kind THIS route declares.
