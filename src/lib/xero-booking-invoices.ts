@@ -57,6 +57,7 @@ import {
   getBookingInvoiceDueDate,
   getBookingInvoiceIssueDate,
 } from "./xero-invoice-helpers";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 
 // #1765 — the aggregate Payment statuses that prove cash was captured at some
 // point. Settlement gating must pair one of these with a positive NET capture
@@ -678,10 +679,9 @@ export async function createXeroInvoiceForBooking(
           : "Zero-total invoice does not require Xero payment recording.";
 
     if (shouldRecordStripeInvoicePayment) {
-      const invoiceAmountDueCents =
-        typeof createdInvoice.amountDue === "number"
-          ? Math.round(createdInvoice.amountDue * 100)
-          : null;
+      const invoiceAmountDueCents = providerAmountToCents(
+        createdInvoice.amountDue,
+      );
       const invoicePaymentCents =
         invoiceAmountDueCents === null
           ? netCapturedCents

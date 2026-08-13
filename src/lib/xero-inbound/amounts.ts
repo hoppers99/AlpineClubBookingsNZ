@@ -1,6 +1,7 @@
 import { type CreditNote as XeroCreditNote, type Payment as XeroPayment } from "xero-node";
 import { PaymentStatus } from "@prisma/client";
 import { buildXeroIdempotencyKey } from "@/lib/xero-sync";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 import { type AccountCreditAllocationTarget, type CreditNoteAmounts } from "./types";
 
 export function buildSyntheticAllocationLinkId(
@@ -18,11 +19,14 @@ export function buildSyntheticAllocationLinkId(
 }
 
 function getPositiveCurrencyAmountCents(value: number | null | undefined): number | null {
+  // The positivity test stays on the DOLLARS, ahead of the conversion, exactly
+  // where it was: an amount of 0.001 is rejected here for being sub-cent, and
+  // testing the rounded cents instead would let it through as a zero (#2685).
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return null;
   }
 
-  return Math.round(value * 100);
+  return providerAmountToCents(value);
 }
 
 export function getCreditNoteAmountCents(
@@ -125,13 +129,20 @@ export function buildCreditNoteAllocationTargets(
     const invoiceId = allocation.invoice?.invoiceID ?? null;
     const amount = allocation.amount;
 
+    // Same ordering point as above: a non-positive allocation is dropped on the
+    // dollars, before rounding, so a sub-cent allocation stays dropped.
     if (!invoiceId || typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+      continue;
+    }
+
+    const amountCents = providerAmountToCents(amount);
+    if (amountCents === null) {
       continue;
     }
 
     allocationTotals.set(
       invoiceId,
-      (allocationTotals.get(invoiceId) ?? 0) + Math.round(amount * 100)
+      (allocationTotals.get(invoiceId) ?? 0) + amountCents
     );
   }
 

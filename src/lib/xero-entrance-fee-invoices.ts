@@ -47,6 +47,7 @@ import {
   parseDateOnly,
 } from "@/lib/date-only";
 import { buildJoiningFeeNarration } from "./joining-fee-narration";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 
 export interface CreateXeroEntranceFeeInvoiceOptions
   extends FindOrCreateXeroContactOptions {
@@ -140,14 +141,17 @@ async function deriveLegacyEntranceFeeCategoryLabel(
 // `total`; falls back to summing line amounts for summary payloads. Mirrors the
 // subscription path's `invoiceCents`.
 function entranceFeeInvoiceCents(invoice: Invoice): number {
-  if (typeof invoice.total === "number") return Math.round(invoice.total * 100);
-  return Math.round(
-    (invoice.lineItems ?? []).reduce(
-      (sum, line) =>
-        sum +
-        (line.lineAmount ?? (line.quantity ?? 1) * (line.unitAmount ?? 0)),
-      0,
-    ) * 100,
+  const totalCents = providerAmountToCents(invoice.total);
+  if (totalCents !== null) return totalCents;
+  return (
+    providerAmountToCents(
+      (invoice.lineItems ?? []).reduce(
+        (sum, line) =>
+          sum +
+          (line.lineAmount ?? (line.quantity ?? 1) * (line.unitAmount ?? 0)),
+        0,
+      ),
+    ) ?? 0
   );
 }
 

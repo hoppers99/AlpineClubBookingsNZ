@@ -15,6 +15,7 @@ import {
   type XeroState,
 } from "@/lib/admin-operational-state";
 import logger from "@/lib/logger";
+import { parseDecimalDollarsToCents } from "@/lib/money-input";
 import { prisma } from "@/lib/prisma";
 import {
   endOfDateOnlyForTimeZone,
@@ -23,7 +24,32 @@ import {
 } from "@/lib/date-only";
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-const amountSchema = z.string().trim().regex(/^\d+(\.\d{1,2})?$/);
+/**
+ * An amount filter typed into the payments search box, in integer cents.
+ *
+ * The string is parsed by the canonical exact parser (#2685) rather than by
+ * `parseFloat` arithmetic, and an amount the parser refuses — including one
+ * above the int32 cent range the `amountCents` column holds, which used to reach
+ * Prisma and fail the whole request with a 500 — becomes an ordinary 400 with a
+ * message. Parsing here, in the schema, is what makes the null case impossible
+ * downstream: `amountExact`/`amountMin`/`amountMax` are already cents by the
+ * time any query is built.
+ */
+const amountSchema = z
+  .string()
+  .trim()
+  .regex(/^\d+(\.\d{1,2})?$/)
+  .transform((value, ctx) => {
+    const cents = parseDecimalDollarsToCents(value);
+    if (cents === null) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Amount is outside the supported range",
+      });
+      return z.NEVER;
+    }
+    return cents;
+  });
 const sortBySchema = z
   .enum([
     "lastUpdated",
@@ -63,7 +89,7 @@ export const adminPaymentsQuerySchema = z.object({
     value.amountExact === undefined &&
     value.amountMin !== undefined &&
     value.amountMax !== undefined &&
-    moneyStringToCents(value.amountMin) > moneyStringToCents(value.amountMax)
+    value.amountMin > value.amountMax
   ) {
     ctx.addIssue({
       code: "custom",
@@ -120,11 +146,6 @@ type EnrichedPaymentCandidate = PaymentCandidate & {
 
 function jsonResult(body: unknown, init?: ResponseInit): JsonRouteResult {
   return { body, init };
-}
-
-function moneyStringToCents(value: string) {
-  const [dollars, cents = ""] = value.split(".");
-  return Number(dollars) * 100 + Number(cents.padEnd(2, "0"));
 }
 
 function startOfInputDateTime(date: string) {
@@ -243,15 +264,17 @@ export async function listAdminPayments(query: AdminPaymentsQuery): Promise<Json
       where.source = source;
     }
 
-    if (amountExact) {
-      where.amountCents = moneyStringToCents(amountExact);
-    } else if (amountMin || amountMax) {
+    // `!== undefined`, not truthiness: these are cents now, and a deliberate
+    // "$0.00" filter is the falsy value 0 (#2685).
+    if (amountExact !== undefined) {
+      where.amountCents = amountExact;
+    } else if (amountMin !== undefined || amountMax !== undefined) {
       const amountFilter: Prisma.IntFilter = {};
-      if (amountMin) {
-        amountFilter.gte = moneyStringToCents(amountMin);
+      if (amountMin !== undefined) {
+        amountFilter.gte = amountMin;
       }
-      if (amountMax) {
-        amountFilter.lte = moneyStringToCents(amountMax);
+      if (amountMax !== undefined) {
+        amountFilter.lte = amountMax;
       }
       where.amountCents = amountFilter;
     }

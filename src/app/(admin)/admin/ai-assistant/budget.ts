@@ -1,3 +1,5 @@
+import { parseDecimalDollarsToCents } from "@/lib/money-input";
+
 // Money helpers for the AI assistant monthly spend cap. All money is NZD integer
 // cents; the editor shows dollars-and-cents. Bounds mirror the settings route's
 // zod contract (0..100_000 cents = NZ$0..NZ$1,000). Cap 0 disables all paid
@@ -24,15 +26,16 @@ export function parseDollarsToCents(input: string): ParseBudgetResult {
   if (trimmed === "") {
     return { ok: false, error: "Enter a monthly spend cap." };
   }
-  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) {
+  // #2685: the canonical exact parser owns the grammar AND the conversion, so
+  // this file no longer keeps a private copy of either. It refuses anything the
+  // repository refuses everywhere else — a negative, a stray "$", a suffix, more
+  // than two decimal places — and never turns one into a silent zero.
+  const cents = parseDecimalDollarsToCents(trimmed);
+  if (cents === null) {
     return {
       ok: false,
       error: "Enter a dollar amount with up to two decimal places (e.g. 10.00).",
     };
-  }
-  const cents = Math.round(Number.parseFloat(trimmed) * 100);
-  if (!Number.isFinite(cents) || cents < 0) {
-    return { ok: false, error: "Enter a valid monthly spend cap." };
   }
   if (cents > MAX_BUDGET_CENTS) {
     return {

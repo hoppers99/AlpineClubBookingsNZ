@@ -22,11 +22,20 @@ import {
   startXeroSyncOperation,
 } from "@/lib/xero-sync";
 import { XERO_OUTBOX_SUBSCRIPTION_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 
 function invoiceCents(invoice: Invoice) {
-  if (typeof invoice.total === "number") return Math.round(invoice.total * 100);
-  return Math.round((invoice.lineItems ?? []).reduce((sum, line) =>
-    sum + (line.lineAmount ?? ((line.quantity ?? 1) * (line.unitAmount ?? 0))), 0) * 100);
+  const totalCents = providerAmountToCents(invoice.total);
+  if (totalCents !== null) return totalCents;
+  return (
+    providerAmountToCents(
+      (invoice.lineItems ?? []).reduce(
+        (sum, line) =>
+          sum + (line.lineAmount ?? (line.quantity ?? 1) * (line.unitAmount ?? 0)),
+        0,
+      ),
+    ) ?? 0
+  );
 }
 
 /**
@@ -73,7 +82,7 @@ export type SubscriptionInvoiceLine = {
 
 function lineCents(line: NonNullable<Invoice["lineItems"]>[number]) {
   const amount = line.lineAmount ?? ((line.quantity ?? 1) * (line.unitAmount ?? 0));
-  return Math.round(amount * 100);
+  return providerAmountToCents(amount) ?? 0;
 }
 
 // Adoption/idempotency guard (#1932, E6): the immutable charge now snapshots one
