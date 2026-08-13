@@ -16,8 +16,10 @@ import { parseDecimalDollarsToCents } from "@/lib/money-input";
  *   `Number.isFinite`. Everything else — `null`, `undefined`, a string, `NaN`,
  *   `Infinity` — returns `null`. The boundary is fail-closed: a caller that
  *   needs a figure must handle the `null`, never substitute a zero.
- * - **Rounding:** `Math.round(value * 100)` — half away from zero at the
- *   boundary the binary double actually lands on. This is deliberately the exact
+ * - **Rounding:** `Math.round(value * 100)` — which is half-UP (toward positive
+ *   infinity, so `-1234.5` becomes `-1234`, not `-1235`), applied at whatever
+ *   value the binary double actually lands on rather than at the decimal the
+ *   provider printed. This is deliberately the exact
  *   arithmetic every call site this replaced already performed, character for
  *   character, so no Xero reconciliation, credit allocation or invoice total
  *   moves by a cent when the call sites are routed through here. It is the rule

@@ -143,6 +143,10 @@ async function deriveLegacyEntranceFeeCategoryLabel(
 function entranceFeeInvoiceCents(invoice: Invoice): number {
   const totalCents = providerAmountToCents(invoice.total);
   if (totalCents !== null) return totalCents;
+  // A line-item sum can only be unreadable if the payload carried a non-number
+  // where a number belongs, which JSON from the Xero SDK cannot produce. Zero is
+  // the fail-closed answer if it ever does: this figure is an ADOPTION guard, so
+  // zero means "does not match" and the invoice is not adopted (#2685).
   return (
     providerAmountToCents(
       (invoice.lineItems ?? []).reduce(

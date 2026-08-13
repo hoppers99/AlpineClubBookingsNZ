@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useId, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -43,6 +43,13 @@ export function CancellationRulesEditor({
   */
   const [feeDrafts, setFeeDrafts] = useState<Record<string, string>>({})
   const [feeErrors, setFeeErrors] = useState<Record<string, string>>({})
+  // Both booking-policy sections can render an editor on the same page, so the
+  // error element ids are scoped per instance rather than by row index alone.
+  const instanceId = useId()
+
+  function feeErrorId(index: number, field: FeeField): string {
+    return `${instanceId}-${index}-${field}-error`
+  }
 
   const hasInvalidAmounts = Object.keys(feeErrors).length > 0
   useEffect(() => {
@@ -182,7 +189,7 @@ export function CancellationRulesEditor({
                     aria-invalid={feeErrors[feeKey(index, "fixedFeeCents")] ? true : undefined}
                     aria-describedby={
                       feeErrors[feeKey(index, "fixedFeeCents")]
-                        ? feeKey(index, "fixedFeeCents")
+                        ? feeErrorId(index, "fixedFeeCents")
                         : undefined
                     }
                     className={`w-24 ${disabled ? "bg-muted text-muted-foreground" : ""}`}
@@ -191,7 +198,7 @@ export function CancellationRulesEditor({
                 </div>
                 {feeErrors[feeKey(index, "fixedFeeCents")] && (
                   <p
-                    id={feeKey(index, "fixedFeeCents")}
+                    id={feeErrorId(index, "fixedFeeCents")}
                     role="alert"
                     className="text-destructive mt-1 text-sm"
                   >
@@ -215,7 +222,7 @@ export function CancellationRulesEditor({
                     }
                     aria-describedby={
                       feeErrors[feeKey(index, "creditFixedFeeCents")]
-                        ? feeKey(index, "creditFixedFeeCents")
+                        ? feeErrorId(index, "creditFixedFeeCents")
                         : undefined
                     }
                     className={`w-24 ${disabled ? "bg-muted text-muted-foreground" : ""}`}
@@ -224,7 +231,7 @@ export function CancellationRulesEditor({
                 </div>
                 {feeErrors[feeKey(index, "creditFixedFeeCents")] && (
                   <p
-                    id={feeKey(index, "creditFixedFeeCents")}
+                    id={feeErrorId(index, "creditFixedFeeCents")}
                     role="alert"
                     className="text-destructive mt-1 text-sm"
                   >
