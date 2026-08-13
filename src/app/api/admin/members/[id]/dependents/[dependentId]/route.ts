@@ -82,22 +82,37 @@ export async function DELETE(
       // the audit entry both said `clearedEmailInheritance: false`, as if that
       // were the correct outcome.
       //
-      // `inheritParentEmail` is the provenance flag: every pointer this system
-      // derives from a parent link sets it true, and a manually-chosen source
-      // sets it false. So a DERIVED pointer is re-resolved on unlink whatever
-      // it names, and a MANUAL one is left alone — the distinction the manual
-      // case in dependent-unlink.test.ts pins.
+      // WHAT DECIDES THIS IS WHO THE DECISION NAMED, not the provenance flag.
       //
-      // #2716: the CHOICE counts, not just the pointer. A dependant whose
-      // chosen parent has temporarily lost their address holds a live choice
-      // beside a NULL pointer, and unlinking that parent has to retire the
-      // decision — testing the pointer alone would leave the choice naming a
-      // member who is no longer a parent, which resolves to nobody forever
-      // while the audit entry reports nothing was cleared.
+      // The rule used to gate on `inheritParentEmail`, on the stated grounds
+      // that "a manually-chosen source sets it false". Review established that
+      // it does not: the admin member-edit hand-pick writes the pointer and
+      // choice WITHOUT touching the flag, which carries `@default(true)`, so a
+      // hand-picked guardian is indistinguishable from a derived pointer by that
+      // flag alone. This PR's own migration says so in as many words and uses an
+      // ancestry test instead. Gating on the flag therefore silently replaced an
+      // admin's hand-picked guardian with a parent on the next unlink — the
+      // consent question this feature must not answer by itself.
+      //
+      // #2716: the CHOICE counts, not just the pointer. A dependant whose chosen
+      // parent has temporarily lost their address holds a live choice beside a
+      // NULL pointer, and unlinking that parent has to retire the decision —
+      // testing the pointer alone would leave the choice naming a member who is
+      // no longer a parent, resolving to nobody forever while the audit entry
+      // reports nothing was cleared.
+      //
+      // So: retire the decision exactly when the decision named the parent being
+      // unlinked. A hand-picked guardian is never that member, so it survives. A
+      // pointer naming somebody who is neither parent is the retired transitive
+      // shape, which the migration re-seated and the daily sweep converges; it
+      // is deliberately not special-cased here.
+      const unlinkedParentId = isPrimaryParent
+        ? dependent.parentMemberId
+        : dependent.secondaryParentId;
+      const decisionSourceId =
+        dependent.inheritEmailChoiceId ?? dependent.inheritEmailFromId;
       const shouldClearEmailInheritance =
-        dependent.inheritParentEmail &&
-        (dependent.inheritEmailFromId !== null ||
-          dependent.inheritEmailChoiceId !== null);
+        decisionSourceId !== null && decisionSourceId === unlinkedParentId;
       const remainingParent = isPrimaryParent
         ? dependent.secondaryParent
         : dependent.parent;

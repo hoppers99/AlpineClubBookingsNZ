@@ -187,11 +187,19 @@ describe("DELETE /api/admin/members/[id]/dependents/[dependentId]", () => {
   });
 
   it("keeps manual email inheritance when unlinking the parent", async () => {
+    // #2716: a hand-pick is expressed by the CHOICE, which is what the admin
+    // member-edit writer actually sets. This fixture used to leave
+    // `inheritEmailChoiceId` at its default of "parent-1" while calling itself
+    // manual — a state no writer produces, and one that reads as a derived
+    // decision naming the very parent being unlinked. The route now asks who
+    // the decision named rather than trusting `inheritParentEmail`, which the
+    // hand-pick writer never sets, so the fixture has to say what it means.
     const tx = setupTransaction([
       makeParent(),
       makeDependent({
         inheritParentEmail: false,
         inheritEmailFromId: "manual-source",
+        inheritEmailChoiceId: "manual-source",
       }),
     ]);
 
@@ -363,13 +371,46 @@ describe("DELETE /api/admin/members/[id]/dependents/[dependentId]", () => {
     });
 
     it("still leaves a MANUAL source alone even when it names an ancestor", async () => {
-      // The distinguishing case for the provenance flag: the stored id is one
-      // the derived path could also have produced, but the admin chose it, so
-      // unlinking a parent must not touch it.
+      // The distinguishing case: the stored id is one the derived path could
+      // also have produced, but the admin chose it, so unlinking a parent must
+      // not touch it. #2716 — the CHOICE is what records that, and it names the
+      // grandparent rather than the parent being unlinked. That is now the whole
+      // test: the flag is no longer consulted, because the hand-pick writer does
+      // not set it.
       const tx = setupTransaction([
         makeParent({ parentMemberId: "gp-1" }),
         makeParent({ id: "gp-1", email: "gp@example.com" }),
-        makeDependent({ inheritParentEmail: false, inheritEmailFromId: "gp-1" }),
+        makeDependent({
+          inheritParentEmail: false,
+          inheritEmailFromId: "gp-1",
+          inheritEmailChoiceId: "gp-1",
+        }),
+      ]);
+
+      const res = await unlinkDependent();
+
+      expect(res.status).toBe(200);
+      expect(tx.member.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { parent: { disconnect: true } },
+        })
+      );
+      expect((await res.json()).clearedEmailInheritance).toBe(false);
+    });
+
+    it("keeps a hand-picked guardian whose address is temporarily gone", async () => {
+      // The regression review caught. A hand-picked guardian whose mailbox has
+      // gone away holds a live CHOICE beside a NULL pointer — the ordinary
+      // shape after #2716. The route's old test also fired on
+      // `inheritEmailChoiceId !== null`, so unlinking a parent re-pointed the
+      // child at that parent and silently replaced the admin's guardian: the
+      // consent question this feature must not answer by itself.
+      const tx = setupTransaction([
+        makeParent(),
+        makeDependent({
+          inheritEmailFromId: null,
+          inheritEmailChoiceId: "guardian-1",
+        }),
       ]);
 
       const res = await unlinkDependent();
