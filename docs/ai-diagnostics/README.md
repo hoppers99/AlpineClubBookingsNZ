@@ -644,13 +644,13 @@ follows here is the part that is a security argument rather than a screen.
 
 ### Naming the record (owner decision D11)
 
-The page-context registry declares a `recordKind` on the bookings, waitlist and
-payments lists, but a list does not say WHICH row the operator means, and there is no
-`/admin/bookings/[id]` page in this codebase — admin rows link out to the
-member-facing `/bookings/{id}`, which is not an admin route and not in the registry.
-Only `/admin/members/[id]` names its record in the address.
+The page-context registry declares a `recordKind` on the bookings, booking-requests
+(#2812), waitlist and payments lists, but a list does not say WHICH row the operator
+means, and there is no `/admin/bookings/[id]` page in this codebase — admin rows link
+out to the member-facing `/bookings/{id}`, which is not an admin route and not in the
+registry. Only `/admin/members/[id]` names its record in the address.
 
-So each row on those three lists carries a stethoscope control that makes that row the
+So each row on those four lists carries a stethoscope control that makes that row the
 subject and opens the bubble on Diagnostics. It was chosen over a picker inside the
 panel because it adds **no new way to reach a record**: the operator picks something
 already on their screen, on a page whose own guard already checked `bookings:view` or
@@ -668,10 +668,14 @@ conversation does. The asymmetry is the honest one: the server derives the recor
 kind from whatever route they are on now, so a booking id carried onto the payments
 list could only ever ask about a payment that does not exist.
 
-`/admin/booking-approvals` is deliberately **not** wired. Its registry row names a path
-that only `redirect()`s to `/admin/booking-requests`, so no operator is ever on it and
-the row is dead — see **#2812**, which owns retargeting it and the tab-allowlist
-decision that needs.
+The booking-requests page (approvals, change requests, exceptions, public queue) is
+wired through the `admin.booking-requests` registry row — **#2812**. Its first
+registration named `/admin/booking-approvals`, a path that only `redirect()`s, so the
+row could never match a live page; the owner's 13 Aug 2026 decision retargeted it with
+**every tab** of the page in its allowlist, and the approvals queue carries the same
+per-row stethoscope as the other three list surfaces. A census now fails any registry
+row whose pathname has no rendering page, so the dead-row form of this bug cannot
+ship again.
 
 ### The answer loop
 

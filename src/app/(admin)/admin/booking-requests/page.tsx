@@ -16,7 +16,10 @@ import { BookingChangeRequestsPanel } from "@/components/admin/booking-requests/
 import { PolicyExceptionRequestsPanel } from "@/components/admin/booking-requests/policy-exception-requests-panel";
 import { PublicBookingRequestsPanel } from "@/components/admin/booking-requests/public-booking-requests-panel";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
-import type { BookingRequestsTab } from "@/lib/admin-booking-requests-path";
+import {
+  BOOKING_REQUESTS_TABS,
+  type BookingRequestsTab,
+} from "@/lib/admin-booking-requests-path";
 
 const APPROVALS_SEARCH_PARAMS = { tab: "approvals" } satisfies Record<
   string,
@@ -32,10 +35,14 @@ const PUBLIC_SEARCH_PARAMS = { tab: "public" } satisfies Record<
 >;
 
 function parseBookingRequestsTab(value: string | null): BookingRequestsTab {
-  if (value === "changes") return "changes";
-  if (value === "exceptions") return "exceptions";
-  if (value === "public") return "public";
-  return "approvals";
+  // Reads the shared BOOKING_REQUESTS_TABS array — the same authority the
+  // diagnostics page-context allowlist imports (#2812) — so a new tab added
+  // there is parsed here on the same edit, instead of silently mapping its
+  // ?tab= value to approvals while the allowlist already admits it.
+  return value !== null &&
+    (BOOKING_REQUESTS_TABS as readonly string[]).includes(value)
+    ? (value as BookingRequestsTab)
+    : "approvals";
 }
 
 export default function BookingRequestsPage() {

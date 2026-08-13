@@ -131,7 +131,7 @@ no filters, no record" and widens one field at a time.
 | --- | --- | --- | --- |
 | `admin.dashboard` | `/admin/dashboard` | `overview` | — |
 | `admin.bookings` | `/admin/bookings` | `bookings` | booking |
-| `admin.booking-approvals` | `/admin/booking-approvals` | `bookings` | booking |
+| `admin.booking-requests` | `/admin/booking-requests` | `bookings` | booking |
 | `admin.waitlist` | `/admin/waitlist` | `bookings` | booking |
 | `admin.bed-allocation` | `/admin/bed-allocation` | `bookings` **and** `lodge` | — |
 | `admin.members` | `/admin/members` | `membership` | member |
@@ -142,8 +142,14 @@ no filters, no record" and widens one field at a time.
 | `admin.setup-finance` | `/admin/setup/finance` | `finance` | — |
 | `admin.health` | `/admin/health` | `support` | — |
 
-Four drift guards keep this table honest, all in
+Five drift guards keep this table honest, all in
 `src/lib/diagnostics/page-context/__tests__/registry.test.ts`:
+
+- **Every pathname is a page an operator can stand on (#2812).** Each row's
+  pathname must map to a real `page.tsx` under `(admin)` whose source returns
+  JSX — a `redirect()`/`notFound()` shim or null-only page fails with the row
+  named. The original `admin.booking-approvals` row named a redirect shim, so it
+  could never match a live page while the docs described it as reachable.
 
 - **Never weaker than the admin UI.** Each `pathname` is resolved through
   `getAdminRouteRequirement` and the lattice's own area must appear in
@@ -181,7 +187,9 @@ selection and nothing else.
 ### Adding a page
 
 1. Add a row with `requiredAreas` matching (or exceeding) the admin route
-   lattice, and every token list left empty.
+   lattice, and every token list left empty. The `pathname` must be a page that
+   RENDERS — a redirect shim fails the census, because a row nothing can match
+   is a claim the code does not implement (#2812).
 2. Widen one field at a time, with a reason.
 3. If it takes a record, use an existing record kind or add a reader in
    `projections.ts` with an explicit column allowlist and an opt-in split.
