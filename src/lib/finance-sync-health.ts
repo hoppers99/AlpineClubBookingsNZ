@@ -14,6 +14,7 @@ import {
   type XeroAdminHealthSnapshot,
 } from "@/lib/xero-admin-health";
 import { prisma } from "@/lib/prisma";
+import { formatMonthOnly } from "@/lib/date-only";
 
 /**
  * Treasurer sync-confidence view: aggregates the health signals the platform
@@ -414,7 +415,7 @@ async function loadFactFreshness(
     kind,
     maxSyncedAt: aggregate._max.syncedAt,
     latestFinalMonth: latestFinal
-      ? latestFinal.month.toISOString().slice(0, 7)
+      ? formatMonthOnly(latestFinal.month)
       : null,
   };
 }

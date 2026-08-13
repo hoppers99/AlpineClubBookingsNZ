@@ -38,6 +38,7 @@ import {
   readPnlReportPayload,
   type PnlLineItem,
 } from "@/lib/finance-pnl-snapshot";
+import { formatDateOnly, formatMonthOnly } from "@/lib/date-only";
 
 const INCOME_SECTION_KEYWORDS = ["income", "revenue"];
 const INCOME_SUMMARY_KEYWORDS = ["total income", "total revenue"];
@@ -126,7 +127,7 @@ function resolvePeriodBounds(snapshot: FinanceSnapshotRecord): {
 /** Key a snapshot by its calendar month so we keep one row per month. */
 function periodKey(snapshot: FinanceSnapshotRecord): string {
   const { start } = resolvePeriodBounds(snapshot);
-  return start.toISOString().slice(0, 7);
+  return formatMonthOnly(start);
 }
 
 function sumMatchingLineItems(
@@ -353,8 +354,8 @@ async function buildPeriod(
 
   return {
     periodLabel,
-    periodStart: start.toISOString().slice(0, 10),
-    periodEnd: end.toISOString().slice(0, 10),
+    periodStart: formatDateOnly(start),
+    periodEnd: formatDateOnly(end),
     xeroHutFeesIncomeCents: xero.hutFeesCents,
     xeroSubscriptionIncomeCents: xero.subscriptionCents,
     xeroTotalIncomeCents: xero.totalCents,

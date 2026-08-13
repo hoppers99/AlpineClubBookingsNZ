@@ -1,3 +1,5 @@
+import { formatDateOnly } from "@/lib/date-only";
+
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const MILLISECONDS_PER_DAY = 86_400_000;
 
@@ -10,7 +12,7 @@ export function parseFinanceBookingMetricDate(
   }
 
   const parsed = new Date(`${value}T00:00:00.000Z`);
-  if (parsed.toISOString().slice(0, 10) !== value) {
+  if (formatDateOnly(parsed) !== value) {
     throw new Error(`${fieldName} must be a valid date`);
   }
 
@@ -43,7 +45,7 @@ export function getFinanceBookingMetricsWindowDayCount(
 }
 
 export function toIsoDate(value: Date): string {
-  return value.toISOString().slice(0, 10);
+  return formatDateOnly(value);
 }
 
 export function buildIsoDateRange(

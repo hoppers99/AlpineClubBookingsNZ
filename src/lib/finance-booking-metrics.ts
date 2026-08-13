@@ -11,7 +11,7 @@ import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { countActiveGuestsForNight } from "@/lib/booking-guest-stay-ranges";
-import { todayDateOnlyForTimeZone } from "@/lib/date-only";
+import { formatDateOnly, todayDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   OPERATIONAL_STAY_BOOKING_STATUSES,
   PAYMENT_OWED_BOOKING_STATUSES,
@@ -834,9 +834,9 @@ function accumulateBookingIntoBucket<Status extends string>(input: {
 
 function getBookingDateRange(booking: BookingMetricsRecord) {
   return {
-    checkInDate: new Date(booking.checkIn.toISOString().slice(0, 10) + "T00:00:00.000Z"),
+    checkInDate: new Date(formatDateOnly(booking.checkIn) + "T00:00:00.000Z"),
     checkOutDate: new Date(
-      booking.checkOut.toISOString().slice(0, 10) + "T00:00:00.000Z"
+      formatDateOnly(booking.checkOut) + "T00:00:00.000Z"
     ),
   };
 }
