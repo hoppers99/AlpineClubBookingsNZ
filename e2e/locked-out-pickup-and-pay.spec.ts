@@ -305,9 +305,11 @@ test("the member finds it on their dashboard and it carries a pay action", async
     // The pay door itself, on the page that takes the money. Asserted by ROLE
     // and LEVEL, not by text: a member who navigates by headings has to be able
     // to land on this card, and #2779 is the issue about this surface being
-    // findable. `CardTitle` renders a bare <div>, so the card carries explicit
-    // `role="heading" aria-level={2}` — losing that silently would leave the
-    // pay door invisible to assistive technology while still reading fine.
+    // findable. `CardTitle` renders a bare <div> by default, so the card opts
+    // in with `<CardTitle headingLevel={2}>` (#2796) — losing that silently
+    // would leave the pay door invisible to assistive technology while still
+    // reading fine. Asserting by role and level here is what makes the loss
+    // visible rather than silent.
     await expect(
       page.getByRole("heading", { name: "Complete Booking", level: 2 }),
     ).toBeVisible();
