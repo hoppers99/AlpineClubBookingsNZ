@@ -8,6 +8,14 @@
  * such write called it. Six did not. This file exists so the claim and the code
  * cannot drift again.
  *
+ * A WRITER IS ANY MEMBER-WRITE THAT SETS THE AGE TIER, not only one that reaches
+ * it through `resolveEnforcedAgeTier` (#2821 review). The age-up cron writes
+ * `ageTier: "ADULT"` from a computed tier and the nomination promotion writes it
+ * from a mapping application; neither calls that resolver, so keying discovery
+ * on the resolver alone would have let a `data: { ageTier }` write add itself
+ * with no reconcile call and no test to notice. Discovery is now derivation-
+ * blind: it reads the `data` object of every `member.update`/`updateMany`.
+ *
  * IT IS A SOURCE CENSUS BECAUSE A BEHAVIOURAL TEST CANNOT BE ONE. A seventh
  * writer added next year with no reconcile call passes every existing test: the
  * tier is written, the response is right, the page renders. What is wrong is who
@@ -52,20 +60,105 @@ function executableCode(source: string): string {
 }
 
 /**
- * A file that both DECIDES an enforced age tier and WRITES a member.
+ * The `{...}` object that opens at or after `from`, brace-balanced. Returns
+ * `null` when there is no `{` left. Strings/regexes are not tokenised, which is
+ * safe here: the census reads real member-write call sites, none of which carry
+ * a `{` or `}` inside a string literal between the call and its `data` object.
+ */
+function balancedObject(
+  code: string,
+  from: number,
+): { start: number; end: number; text: string } | null {
+  const start = code.indexOf("{", from);
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < code.length; i++) {
+    if (code[i] === "{") depth++;
+    else if (code[i] === "}") {
+      depth--;
+      if (depth === 0) return { start, end: i, text: code.slice(start, i + 1) };
+    }
+  }
+  return null;
+}
+
+/**
+ * The text of an update call's `data` value: the inline object literal, or —
+ * when `data` is a bare identifier — that identifier's `const/let NAME = {...}`
+ * definition resolved in the same file. Returns "" when neither is found.
  *
- * Both halves are required, and the second is what keeps the census honest.
+ * Resolving the identifier is what stops `data: updateData` from being read as
+ * "no age tier here" when `updateData` is a literal that sets one, and stops the
+ * naive "next `{` after `data:`" from mistaking a following `select: {...}`
+ * block (which routinely lists `ageTier: true`) for the write.
+ */
+function dataExpressionText(code: string, callArgText: string): string {
+  const m = /\bdata\s*:\s*/.exec(callArgText);
+  if (!m) return "";
+  const after = m.index + m[0].length;
+  if (callArgText[after] === "{") {
+    return balancedObject(callArgText, after)?.text ?? "";
+  }
+  const id = /^([A-Za-z_$][\w$]*)/.exec(callArgText.slice(after));
+  if (!id) return "";
+  const defRe = new RegExp(
+    `\\b(?:const|let|var)\\s+${id[1]}\\s*(?::[^=]*)?=\\s*`,
+  );
+  const def = defRe.exec(code);
+  if (!def) return "";
+  return balancedObject(code, def.index + def[0].length)?.text ?? "";
+}
+
+/**
+ * A file that WRITES a member's age tier — the census's real subject.
+ *
+ * `isUsableEmailSource` keys on `ageTier === "ADULT"`, so the write that decides
+ * whether a member may be somebody's contact of record is the one that MOVES
+ * them across that line — however the new tier was derived. Two shapes reach
+ * that write and both must be discovered:
+ *
+ *  - `writesAgeTier`: a `member.update`/`updateMany` whose `data` sets
+ *    `ageTier`, whether the value came from `resolveEnforcedAgeTier`,
+ *    `computeAgeTierWithSettings` (the age-up cron), a mapping application
+ *    (nomination approval), or a literal. This is DERIVATION-BLIND on purpose:
+ *    #2821 first keyed discovery on `resolveEnforcedAgeTier(` alone, so it could
+ *    not see the cron writing `ageTier: "ADULT"` from a computed tier or the
+ *    nomination promotion writing it from a mapping — neither calls that
+ *    resolver, and a future writer need not either.
+ *  - `resolvesAndWritesMember`: the original pair, kept because two writers
+ *    (self-service profile, admin member detail) build their `data` object by
+ *    dynamic property assignment (`updateData.ageTier = …`) that no static read
+ *    of a literal can see; the `resolveEnforcedAgeTier(` + member-write pair
+ *    still catches them.
+ *
+ * A WRITE is required either way, and that is what keeps the census honest.
  * `age-tier-enforcement.ts` and `admin-members-service.ts` resolve a tier and
  * write nothing — one computes the rule, the other reads for a list — so
  * demanding a reconcile call from them would be demanding a call with nothing to
  * reconcile, and the next person would delete the assertion rather than the
- * confusion.
+ * confusion. `member.create` is excluded by construction (only `update`/
+ * `updateMany` are scanned): a brand-new member has no dependants to re-resolve.
  */
-function isAgeTierWriter(code: string): boolean {
+function writesAgeTier(code: string): boolean {
+  const re = /\.member\.(update|updateMany)\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(code)) !== null) {
+    const arg = balancedObject(code, m.index);
+    if (!arg) continue;
+    if (/\bageTier\b/.test(dataExpressionText(code, arg.text))) return true;
+  }
+  return false;
+}
+
+function resolvesAndWritesMember(code: string): boolean {
   const resolves = code.includes("resolveEnforcedAgeTier(");
   const writes =
     /\.member\.update\(/.test(code) || /\.member\.updateMany\(/.test(code);
   return resolves && writes;
+}
+
+function isAgeTierWriter(code: string): boolean {
+  return writesAgeTier(code) || resolvesAndWritesMember(code);
 }
 
 const RECONCILE_CALL = "reconcileEmailInheritanceForMemberChange(";
@@ -77,9 +170,12 @@ describe("every age-tier writer re-resolves email inheritance (#2821)", () => {
 
   it("found the writers, so the assertion below is not vacuous", () => {
     // The failure this guards is a census that quietly matches nothing — which
-    // this repo has shipped before. If a rename makes `resolveEnforcedAgeTier`
-    // undiscoverable, this fails loudly instead of passing silently.
-    expect(writers.length).toBeGreaterThanOrEqual(5);
+    // this repo has shipped before. If a rename makes both `resolveEnforcedAgeTier`
+    // and the `data: { ageTier }` shape undiscoverable, this fails loudly instead
+    // of passing silently. The floor is the current true count (5 resolver-based
+    // writers + the age-up cron + the nomination promotion); a deletion from
+    // discovery drops below it and trips here.
+    expect(writers.length).toBeGreaterThanOrEqual(7);
   });
 
   it("calls the reconciler in every one of them", () => {
