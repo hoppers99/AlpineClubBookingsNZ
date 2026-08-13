@@ -299,8 +299,10 @@ per-record entry also names the record it reads — `payment_summary` and
 `memberId`, `booking_finance_state` on `bookingId` — and the executor refuses the
 invocation with `sensitive_consent_required` unless the operator included that
 record in this investigation. The two search entries are declared `operatorOnly`
-instead: they run as the operator's own record-picker action, or as a model tool call
-only on a request where the operator ticked people-search. `payment_summary` declares
+instead: they run as an `operator_action` invocation, or as a model tool call
+only on a request where the operator ticked people-search. (The `operator_action`
+channel is test-only today — AID-8 F5, see `tools.md` — so in practice these are
+reached only via a model tool call with the box ticked.) `payment_summary` declares
 its projected `bookingId`, and `booking_finance_state` its projected `paymentRef`, as
 related-record refs, so an investigation opened on either one can follow the money to
 the other. The provider references beside them (Stripe ids, Xero invoice numbers,

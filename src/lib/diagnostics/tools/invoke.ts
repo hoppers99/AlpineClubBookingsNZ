@@ -729,13 +729,22 @@ export async function invokeDiagnosticsTool(
     //     AFTER argument parsing so a malformed call is still `invalid_args`, and
     //     BEFORE metering and the read so a refused search costs no database work.
     //
-    //     Two invocations pass: the operator's own record-picker action, which
-    //     renders to their browser and sends nothing to the provider; and a model
+    //     Two invocations pass: an `operator_action` invocation, which would render
+    //     to the operator's browser and send nothing to the provider; and a model
     //     tool call on a request where the operator ticked the people-search box
     //     (owner decision, #2378 Q2, 11 Aug 2026 — the owner overrode a stricter
     //     operator-only recommendation, and this gate is what makes that tick
     //     enforceable rather than advisory). The tick is per request and is never
     //     persisted, so the identical request tomorrow refuses again.
+    //
+    //     BUT `operator_action` IS TEST-ONLY TODAY (AID-8 F5). No production caller
+    //     passes it: the only invoker, the answer loop (`answer/loop.ts`), always
+    //     passes `model_tool_use`, and the operator "record picker" this bypass
+    //     describes is not wired. The channel and its bypass exist, and are
+    //     exercised by tests, so the day an operator-action invoker IS built the
+    //     control is already here — but that new path's authorization and consent
+    //     MUST be re-verified end to end before it ships, because nothing exercises
+    //     them in production now.
     //
     //     Withholding the DEFINITION from the model is courtesy layered on top of
     //     this; `definitions.ts` is explicit that it may never be the only thing
@@ -772,7 +781,9 @@ export async function invokeDiagnosticsTool(
     //     per-record entry is gated exactly as a model one is — no caller in this
     //     substrate needs the looser rule, and "the operator asked for it directly"
     //     is not the same fact as "the operator included this record", which is what
-    //     ADR-004 §1 requires.
+    //     ADR-004 §1 requires. (This is proved only by tests today: `operator_action`
+    //     has no production caller — see gate 4a — so a future operator-action
+    //     invoker must re-verify this holds on its path.)
     //
     //     A SEARCH entry is governed by gate 4a instead and is deliberately not
     //     re-checked here: it is about no single record, so there is no record to

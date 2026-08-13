@@ -264,10 +264,18 @@ Four rules keep the investigation bounded:
    withdrawn. Building a fresh ledger per submission is the only thing that works.
 
 **Record search is separately gated.** The four search entries carry
-`operatorOnly: true`. They run as the operator's own record-picker action — which
-renders to the browser and sends nothing to the provider — or, on the owner's
-decision of 11 Aug 2026 (#2378 Q2), as a model tool call on a request where the
-operator ticked an explicit **people-search** box. That tick is off by default,
+`operatorOnly: true`. They run as an `operator_action` invocation — which would
+render to the operator's browser and send nothing to the provider — or, on the
+owner's decision of 11 Aug 2026 (#2378 Q2), as a model tool call on a request where
+the operator ticked an explicit **people-search** box.
+
+> **The `operator_action` channel is test-only today (AID-8 F5).** No production
+> caller passes it: the only invoker, the answer loop, always uses
+> `model_tool_use`, and the operator "record picker" described here and below is not
+> built. The channel and its gate-4a bypass exist and are exercised by tests, so if
+> an operator-action invoker is ever wired, its authorization and consent must be
+> re-verified on that path rather than assumed from those tests. Until then, in
+> practice these entries are reached only via a model tool call with the box ticked. That tick is off by default,
 covers one request, is never persisted, and is recorded in the audit row. The two
 ticks are independent: an included record does not permit searching, and a permitted
 search does not include a record.

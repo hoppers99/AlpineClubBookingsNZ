@@ -251,10 +251,13 @@ interface DiagnosticsToolSpecBase<TArgs> {
    * decides who to look up" is a capability that has to be granted, not assumed.
    *
    * WHAT IT ACTUALLY GATES, after the owner's Q2 decision (#2378, 11 Aug 2026):
-   * the operator's own record-picker action always may (it renders to their browser
-   * and sends nothing to the provider), and the MODEL may only when the operator
-   * ticked the per-request people-search box. Unticked, `invoke.ts` refuses with
-   * `operator_action_required`. The tick is per request and never persisted.
+   * an `operator_action` invocation always may (it would render to the operator's
+   * browser and send nothing to the provider), and the MODEL may only when the
+   * operator ticked the per-request people-search box. Unticked, `invoke.ts` refuses
+   * with `operator_action_required`. The tick is per request and never persisted.
+   * NB: the `operator_action` channel is TEST-ONLY today (AID-8 F5) — no production
+   * caller passes it and the record picker it describes is not built — so in
+   * practice this gate refuses whenever the model asks unticked.
    *
    * Withholding the DEFINITION from the model is courtesy on top of this, never the
    * control — `definitions.ts` is explicit that withholding "may never become the
