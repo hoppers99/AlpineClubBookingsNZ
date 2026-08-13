@@ -109,19 +109,30 @@ const DATE_ONLY_IN_DATETIME_COLUMN: Record<string, string> = {
 /**
  * Call sites that encode a real instant, or the raw clock, as a calendar day.
  *
- * EVERY ENTRY HERE IS A LIVE DEFECT, not a permitted pattern, and every one of
- * them is fixed by **#2834**, which lands BEFORE this branch. They are listed
- * because this branch is not yet rebased onto it and the census below is run
- * against the tree as it stands — a census that silently omitted them would look
- * like a rule that never saw them, when in fact finding them is what the rule
- * was built to do.
+ * EVERY ENTRY HERE IS A LIVE DEFECT, not a permitted pattern, and every one
+ * attributed to **#2834** is fixed by it. #2834 merges BEFORE this branch but is
+ * NOT in this branch's base — the base is #2685's money-guard branch, which does
+ * not contain it — so the census below still finds them and they are still
+ * listed. A census that silently omitted them would look like a rule that never
+ * saw them, when in fact finding them is what the rule was built to do.
  *
- * THEY MUST ALL BE GONE ONCE #2834 IS IN THE BASE. Nothing needs remembering to
- * make that happen: the moment a site stops encoding an instant, the "keeps the
- * reviewed lists honest" assertion below reports its entry as stale and fails
- * until it is deleted. An enforcement change may not ship blessing the thing it
- * exists to forbid (#2684 decision 2 — the exclusion list ships EMPTY), so if
- * this map is not empty by the time the guard merges, the guard is not ready.
+ * THEY MUST ALL BE GONE ONCE #2834 IS IN THE BASE, and nothing needs
+ * remembering to make that happen: the moment a site stops encoding an instant,
+ * the "keeps the reviewed lists honest" assertion below reports its entry as
+ * stale and fails until it is deleted. An enforcement change may not ship
+ * blessing the thing it exists to forbid (#2684 decision 2 — the exclusion list
+ * ships EMPTY), so if this map is not empty by the time the guard merges, the
+ * guard is not ready.
+ *
+ * AT THE FINAL REBASE, ONTO A BASE THAT CONTAINS #2834: expect this assertion to
+ * fail, naming every `#2834` entry. DELETE them — do not re-anchor them. The two
+ * cases cannot be confused, because the scanner only reports a site that still
+ * encodes an instant: an entry it names is either a site that MOVED (re-anchor
+ * the line) or a site that was FIXED (delete the entry), and a fixed site has no
+ * line left to re-anchor to. The four entries whose lines already moved once,
+ * when this branch was rebased onto #2685, were re-anchored on exactly that
+ * basis — #2685 added an import above them and the encodings themselves were
+ * untouched.
  *
  * WHY THEY WERE INVISIBLE. `xero-invoice-helpers` exported `formatDate`, one
  * line delegating to the canonical encoder. Roughly eighteen Xero document dates
@@ -141,13 +152,13 @@ const KNOWN_INSTANT_ENCODING_DEFECTS: Record<string, string> = {
   "src/lib/membership-cancellation-xero.ts:717": `membership cancellation credit-note date — ${FIXED_BY_2834}`,
   "src/lib/membership-cancellation-xero.ts:943": `membership cancellation payment date — ${FIXED_BY_2834}`,
   "src/lib/xero-applied-credit-allocation.ts:272": `applied-credit allocation date — ${FIXED_BY_2834}`,
-  "src/lib/xero-applied-credit-deallocation.ts:861": `applied-credit deallocation date — ${FIXED_BY_2834}`,
-  "src/lib/xero-booking-invoices.ts:692": `booking invoice payment date — ${FIXED_BY_2834}`,
+  "src/lib/xero-applied-credit-deallocation.ts:863": `applied-credit deallocation date — ${FIXED_BY_2834}`,
+  "src/lib/xero-booking-invoices.ts:700": `booking invoice payment date — ${FIXED_BY_2834}`,
   "src/lib/xero-credit-notes.ts:264": `refund credit-note date — ${FIXED_BY_2834}`,
   "src/lib/xero-credit-notes.ts:644": `account-credit credit-note date — ${FIXED_BY_2834}`,
   "src/lib/xero-credit-notes.ts:859": `credit-note allocation date — ${FIXED_BY_2834}`,
-  "src/lib/xero-entrance-fee-invoices.ts:348": `entrance-fee invoice issue date — ${FIXED_BY_2834}`,
-  "src/lib/xero-entrance-fee-invoices.ts:349": `entrance-fee invoice due date (issue + 30 days) — ${FIXED_BY_2834}`,
+  "src/lib/xero-entrance-fee-invoices.ts:353": `entrance-fee invoice issue date — ${FIXED_BY_2834}`,
+  "src/lib/xero-entrance-fee-invoices.ts:354": `entrance-fee invoice due date (issue + 30 days) — ${FIXED_BY_2834}`,
   "src/lib/xero-invoice-payments.ts:53": `invoice payment date — ${FIXED_BY_2834}`,
   "src/lib/xero-invoice-payments.ts:134": `invoice payment date (second entry point) — ${FIXED_BY_2834}`,
   "src/lib/xero-modification-credit-notes.ts:105": `modification credit-note date — ${FIXED_BY_2834}`,
@@ -161,15 +172,17 @@ const KNOWN_INSTANT_ENCODING_DEFECTS: Record<string, string> = {
   "src/lib/xero-supplementary-invoices.ts:162": `BookingModification.createdAt as the supplementary invoice DUE DATE — ${FIXED_BY_2834}`,
 
   // --- OUTSIDE the #2834 family, and the one entry that will still be here ---
-  // after the rebase. "Details last confirmed by X on <date>" on the profile
+  // after #2834 lands. "Details last confirmed by X on <date>" on the profile
   // page (#2284 S3). `Member.detailsConfirmedAt` is stamped `now` when a
   // delegate confirms, so its UTC day is yesterday's for a confirmation made
   // before NZ midday — the member is shown a date one day before the one they
   // acted on. Nothing accounting-side reads it and no Xero document carries it,
-  // so #2834 does not cover it; it is reported to the orchestrator for its own
-  // routing and this entry carries no issue number until it has one.
+  // so #2834 does not cover it: it is filed as **#2839** and fixed there, not
+  // here. This branch is an enforcement change, and changing what a member sees
+  // is a product behaviour change that belongs in its own reviewed PR (#2684
+  // required implementation step 5).
   "src/lib/member-family-service.ts:515":
-    "Member.detailsConfirmedAt rendered as the confirmation DAY on the profile page — REPORTED, awaiting an issue; not part of #2834",
+    "Member.detailsConfirmedAt rendered as the confirmation DAY on the profile page — filed as #2839; not part of #2834",
 };
 
 /**
@@ -845,6 +858,12 @@ describe("the lint guard cannot be dropped by a neighbouring config block (#2684
       ["#2684 date-only truncation", /toISOString\|toJSON/],
       ["#2684 ISO split on T", /'split'/],
       ["#2289 raw-SQL result cast", /queryRaw\|executeRaw/],
+      // #2685's money guard rides the same array since the two branches were
+      // folded onto one path. Naming it here is what makes this file fail if a
+      // future edit quietly drops the money group out of the mandatory set —
+      // the failure mode the fold exists to prevent.
+      ["#2685 an inline parse scaled to cents", /parseFloat\|parseInt/],
+      ["#2685 a division by a hundredth", /right\.value=0\.01/],
     ];
     for (const [label, pattern] of required) {
       expect(

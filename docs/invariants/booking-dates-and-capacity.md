@@ -369,7 +369,12 @@ derivation).
   `src/lib/date-only.ts`), never a raw `new Date()` or a local-midnight
   (`setHours(0,0,0,0)`) instant: under the `TZ=Pacific/Auckland` server pin the
   latter resolves to `(D-1)T12:00Z` and shifts the boundary by a day for the
-  first ~13h of each NZ day (F8/F32, #1888).
+  first ~13h of each NZ day (F8/F32, #1888). Three sites still do it —
+  `src/app/(authenticated)/dashboard/page.tsx`,
+  `src/app/(authenticated)/layout.tsx` and
+  `src/app/api/admin/age-tier-settings/route.ts` — surfaced by #2684's inventory
+  and filed as **#2838**. #2684's lint rule does not catch them: `setHours` is
+  not an ISO truncation, so this stays a prose rule until #2838 lands.
 
 ### INV-DATE-019
 

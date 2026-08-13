@@ -8,7 +8,6 @@ import {
   readQueueType,
 } from "@/lib/xero-operation-outbox-payload";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
-import { formatDateOnly } from "@/lib/date-only";
 
 export function makeLocalKey(localModel: string, localId: string) {
   return `${localModel}:${localId}`;

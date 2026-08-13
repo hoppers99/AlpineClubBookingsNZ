@@ -30,5 +30,17 @@
   "details last confirmed on" date has it too. **None of those are changed
   here**, because changing which day reaches the club's accounts is a decision
   for the treasurer rather than a side effect of a tidy-up; they are recorded,
-  reported, and fixed under their own change. The shortcut that hid them is
-  gone, so they cannot slip out of view again.
+  reported, and fixed under their own change — the Xero document dates under
+  #2834, the "details last confirmed on" line under #2839, and three related
+  "today" comparisons under #2838. The shortcut that hid them is gone, so they
+  cannot slip out of view again.
+
+  The two automatic checks the build now runs — this one and the money-rounding
+  one added alongside it (#2685) — are built on one shared list rather than two
+  copies. That is not tidiness. The tool that runs them replaces a rule's whole
+  configuration rather than adding to it, so a change written to relax one check
+  silently switches the others off for the same files while the build stays
+  green; when the two changes were first brought together, an automated merge
+  lined the two up so that accepting one side would have deleted the other's
+  money check outright, with nothing failing. One shared list, and each check
+  measuring itself against it, is what makes that impossible now.
