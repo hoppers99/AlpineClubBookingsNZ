@@ -214,6 +214,16 @@ export const CRITICAL_PUBLIC_ROUTES: readonly CriticalRouteDeclaration[] = [
     expected: "render-only",
     why: "The contact page, and the only way a non-member reaches the club.",
   },
+  {
+    path: "/booking-requests",
+    expected: "render-only",
+    why: "The public booking-request form — a non-member's entry to requesting a stay.",
+  },
+  {
+    path: "/school-bookings",
+    expected: "render-only",
+    why: "The public school-group booking-request form.",
+  },
 ];
 
 /** Where a planned route came from, for the operator-facing report. */

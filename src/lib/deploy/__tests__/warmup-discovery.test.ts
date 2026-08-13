@@ -48,6 +48,8 @@ function writeManifests(
     "/(website)/join/page": "/join",
     "/(website)/join/apply/page": "/join/apply",
     "/(website)/contact/page": "/contact",
+    "/(website)/booking-requests/page": "/booking-requests",
+    "/(website)/school-bookings/page": "/school-bookings",
     "/api/health/ready/route": "/api/health/ready",
   },
 ) {
@@ -177,6 +179,8 @@ describe("discoverWarmupRoutes", () => {
       "/join",
       "/join/apply",
       "/contact",
+      "/booking-requests",
+      "/school-bookings",
       "/about",
       "/faq",
     ]);

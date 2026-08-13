@@ -30,6 +30,8 @@ function routeTable(
       "/contact",
       "/join",
       "/join/apply",
+      "/booking-requests",
+      "/school-bookings",
       "/join/[code]",
       "/join/verify/[token]",
       "/hut-leader-instructions",
@@ -168,19 +170,21 @@ describe("buildWarmupPlan", () => {
       "/join",
       "/join/apply",
       "/contact",
+      "/booking-requests",
+      "/school-bookings",
       "/about",
       "/faq",
     ]);
     // Critical first, so the overall deadline cannot leave a blocking route
     // unattempted while a content page was warmed instead.
     expect(
-      plan.routes.slice(0, 4).every((route) => route.tier === "critical"),
+      plan.routes.slice(0, 6).every((route) => route.tier === "critical"),
     ).toBe(true);
-    expect(plan.routes.slice(4).every((route) => route.tier === "cms")).toBe(
+    expect(plan.routes.slice(6).every((route) => route.tier === "cms")).toBe(
       true,
     );
     expect(
-      plan.routes.slice(4).every((route) => route.cacheClass === "isr"),
+      plan.routes.slice(6).every((route) => route.cacheClass === "isr"),
     ).toBe(true);
   });
 
@@ -403,6 +407,8 @@ describe("CRITICAL_PUBLIC_ROUTES", () => {
       "/join",
       "/join/apply",
       "/contact",
+      "/booking-requests",
+      "/school-bookings",
     ]);
   });
 
