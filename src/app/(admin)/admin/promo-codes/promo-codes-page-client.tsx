@@ -31,7 +31,7 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
-import { parseDecimalDollarsToCents } from "@/lib/money-input";
+import { MONEY_INPUT_PROPS, parseDecimalDollarsToCents } from "@/lib/money-input";
 import { PromoRedemptionsPanel } from "./promo-redemptions-panel";
 
 interface RedemptionsPromoSummary {
@@ -1041,9 +1041,7 @@ export function PromoCodesPageClient({
                       </span>
                       <Input
                         id="valueDollars"
-                        type="number"
-                        step="0.01"
-                        min="0.01"
+                        {...MONEY_INPUT_PROPS}
                         className="pl-7"
                         value={valueDollars}
                         onChange={(e) => setValueDollars(e.target.value)}
@@ -1113,9 +1111,7 @@ export function PromoCodesPageClient({
                         </span>
                         <Input
                           id="fixedNightlyPrice"
-                          type="number"
-                          step="0.01"
-                          min="0.01"
+                          {...MONEY_INPUT_PROPS}
                           className="pl-7"
                           value={fixedNightlyPriceDollars}
                           onChange={(e) => setFixedNightlyPriceDollars(e.target.value)}
@@ -1162,9 +1158,7 @@ export function PromoCodesPageClient({
                     </span>
                     <Input
                       id="maxNightlyValue"
-                      type="number"
-                      step="0.01"
-                      min="0"
+                      {...MONEY_INPUT_PROPS}
                       className="pl-7"
                       value={maxNightlyValueDollars}
                       onChange={(e) => setMaxNightlyValueDollars(e.target.value)}

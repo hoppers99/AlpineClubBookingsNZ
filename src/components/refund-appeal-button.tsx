@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { formatNZDate } from "@/lib/nzst-date"
-import { parseDecimalDollarsToCents } from "@/lib/money-input"
+import { MONEY_INPUT_PROPS, parseDecimalDollarsToCents } from "@/lib/money-input"
 
 interface RefundAppealButtonProps {
   bookingId: string
@@ -76,6 +76,18 @@ export function RefundAppealButton({
         const cents = parseDecimalDollarsToCents(requestedAmount)
         if (cents === null) {
           setError("Enter an amount in dollars and cents, for example 45.00.")
+          return
+        }
+        /*
+          The box is `type="text"` now (#2685), so the browser no longer refuses
+          an over-cap amount on its own — a `max` attribute only constrains a
+          number input. That constraint was worth keeping, so it is stated here
+          instead, where it can also say what the cap actually is.
+        */
+        if (cents > maxRefundableCents) {
+          setError(
+            `That is more than can be refunded on this booking. The most you can ask for is $${(maxRefundableCents / 100).toFixed(2)}.`,
+          )
           return
         }
         body.requestedAmountCents = cents
@@ -191,10 +203,7 @@ export function RefundAppealButton({
                 <span className="text-sm">$</span>
                 <Input
                   id="amount"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max={(maxRefundableCents / 100).toFixed(2)}
+                  {...MONEY_INPUT_PROPS}
                   value={requestedAmount}
                   onChange={(e) => setRequestedAmount(e.target.value)}
                   className="w-32"

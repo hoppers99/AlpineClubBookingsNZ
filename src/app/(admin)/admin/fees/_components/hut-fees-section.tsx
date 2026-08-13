@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { APP_CURRENCY } from "@/config/operational";
 import { formatCents } from "@/lib/pricing";
-import { parseDecimalDollarsToCents } from "@/lib/money-input";
+import { MONEY_INPUT_PROPS, parseDecimalDollarsToCents } from "@/lib/money-input";
 import { formatNZDate } from "@/lib/nzst-date";
 import {
   AdminViewOnlyNotice,
@@ -570,18 +570,23 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                                           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
                                           <Input
                                             id={`rate-${key}`}
-                                            type="number"
-                                            step="0.01"
-                                            min="0"
+                                            {...MONEY_INPUT_PROPS}
                                             className="pl-7"
                                             value={amountFieldValue(rateDrafts[key], rates[key])}
                                             onChange={(e) => handleRateChange(key, e.target.value)}
                                             aria-invalid={rateErrors[key] ? true : undefined}
-                                            aria-describedby={
-                                              rateErrors[key]
-                                                ? rateErrorId(key)
-                                                : describedByFieldHint(rateHintId(rt.id))
-                                            }
+                                            /*
+                                              #2685: the error id FIRST, then the
+                                              hint — both, always. Pointing only
+                                              at the error dropped "Example:
+                                              45.00" for a screen-reader user at
+                                              exactly the moment the example is
+                                              what they need.
+                                            */
+                                            aria-describedby={describedByFieldHint(
+                                              rateHintId(rt.id),
+                                              rateErrors[key] ? rateErrorId(key) : undefined,
+                                            )}
                                           />
                                         </div>
                                         {rateErrors[key] && (
@@ -604,9 +609,7 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
                                     <Input
                                       id={`rate-${rateKey(rt.id, FLAT_KEY)}`}
-                                      type="number"
-                                      step="0.01"
-                                      min="0"
+                                      {...MONEY_INPUT_PROPS}
                                       className="pl-7"
                                       value={amountFieldValue(
                                         rateDrafts[rateKey(rt.id, FLAT_KEY)],
@@ -614,11 +617,12 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                                       )}
                                       onChange={(e) => handleRateChange(rateKey(rt.id, FLAT_KEY), e.target.value)}
                                       aria-invalid={rateErrors[rateKey(rt.id, FLAT_KEY)] ? true : undefined}
-                                      aria-describedby={
+                                      aria-describedby={describedByFieldHint(
+                                        rateHintId(rt.id),
                                         rateErrors[rateKey(rt.id, FLAT_KEY)]
                                           ? rateErrorId(rateKey(rt.id, FLAT_KEY))
-                                          : describedByFieldHint(rateHintId(rt.id))
-                                      }
+                                          : undefined,
+                                      )}
                                     />
                                   </div>
                                   {rateErrors[rateKey(rt.id, FLAT_KEY)] && (
@@ -663,9 +667,7 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                         <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
                         <Input
                           id="flat-whole-lodge-rate"
-                          type="number"
-                          step="0.01"
-                          min="0"
+                          {...MONEY_INPUT_PROPS}
                           className="pl-7"
                           value={
                             flatWholeLodgeDraft ??
@@ -675,11 +677,12 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                           }
                           onChange={(e) => handleFlatWholeLodgeChange(e.target.value)}
                           aria-invalid={flatWholeLodgeError ? true : undefined}
-                          aria-describedby={
+                          aria-describedby={describedByFieldHint(
+                            "flat-whole-lodge-rate-hint",
                             flatWholeLodgeError
                               ? "flat-whole-lodge-rate-error"
-                              : "flat-whole-lodge-rate-hint"
-                          }
+                              : undefined,
+                          )}
                         />
                       </div>
                       {flatWholeLodgeError && (

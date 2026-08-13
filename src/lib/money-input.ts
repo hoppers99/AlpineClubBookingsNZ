@@ -13,6 +13,39 @@
  * through `@/lib/money-provider-amount` instead. Do not send them here.
  */
 
+/**
+ * What a dollars box must be, for the parser above to ever see what was typed.
+ *
+ * A money box is `type="text"` with a decimal keypad, NOT `type="number"`
+ * (owner decision, 14 Aug 2026). This is not a style preference — it is what
+ * makes the validation in this module reachable at all.
+ *
+ * HTML's value-sanitization algorithm strips a `type="number"` control's value
+ * to the empty string the moment it does not parse as a floating-point number.
+ * `"50abc"`, `"$45.00"`, `"1,000.00"`, `"1,200"`, `"50e"` and `"50."` all arrive
+ * at an `onChange` handler as `""` — indistinguishable from the box having been
+ * deliberately cleared. Every handler in this repository reads `""` as "no
+ * value", so a mistyped nightly rate saved as $0.00, a flat whole-lodge rate
+ * reverted to per-guest pricing, and an error already on screen was wiped by the
+ * next keystroke, with the save button re-enabled. The parser never ran, because
+ * the browser had already thrown the evidence away.
+ *
+ * With `type="text"` the typed text survives, the parser sees it, and the
+ * `null` it returns becomes the visible error the owner's 9 Aug decision asked
+ * for. `inputMode="decimal"` still brings up a decimal keypad on a phone.
+ *
+ * The considered alternative was reading `validity.badInput` on the number
+ * input. It was rejected: jsdom reports `badInput` as `false` unconditionally,
+ * so it cannot be unit-tested at all, and this repository already ships the
+ * text+`inputMode` pattern on the payments amount filter.
+ *
+ * ACCEPTED COST: no spinner arrows, and a decimal rather than numeric keypad.
+ */
+export const MONEY_INPUT_PROPS = {
+  type: "text",
+  inputMode: "decimal",
+} as const;
+
 /** Parse a non-negative decimal NZD input exactly, without binary float math. */
 export function parseDecimalDollarsToCents(value: string): number | null {
   const match = /^(0|[1-9]\d*)(?:\.(\d{1,2}))?$/.exec(value.trim());

@@ -4,7 +4,7 @@ import { useEffect, useId, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { parseDecimalDollarsToCents } from "@/lib/money-input"
+import { MONEY_INPUT_PROPS, parseDecimalDollarsToCents } from "@/lib/money-input"
 import type { PolicyRule } from "./types"
 
 /** What a refused fixed-fee box says (#2685). */
@@ -181,9 +181,7 @@ export function CancellationRulesEditor({
                 <div className="flex items-center space-x-2">
                   <span className="text-sm text-muted-foreground">$</span>
                   <Input
-                    type="number"
-                    min="0"
-                    step="0.01"
+                    {...MONEY_INPUT_PROPS}
                     value={feeValue(index, "fixedFeeCents")}
                     onChange={(e) => handleFeeChange(index, "fixedFeeCents", e.target.value)}
                     aria-invalid={feeErrors[feeKey(index, "fixedFeeCents")] ? true : undefined}
@@ -210,9 +208,7 @@ export function CancellationRulesEditor({
                 <div className="flex items-center space-x-2">
                   <span className="text-sm text-muted-foreground">$</span>
                   <Input
-                    type="number"
-                    min="0"
-                    step="0.01"
+                    {...MONEY_INPUT_PROPS}
                     value={feeValue(index, "creditFixedFeeCents")}
                     onChange={(e) =>
                       handleFeeChange(index, "creditFixedFeeCents", e.target.value)

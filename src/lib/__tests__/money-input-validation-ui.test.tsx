@@ -47,14 +47,92 @@ function Harness({
   );
 }
 
-/** The card fixed-fee box is the fourth number input in the row. */
+/**
+ * The card fixed-fee box is the FIRST TEXT input in the row.
+ *
+ * The row's first three boxes — days before stay, refund %, credit refund % —
+ * are still `type="number"`, because they are counts and percentages rather than
+ * money. Only the two money boxes are `type="text" inputMode="decimal"`
+ * (#2685, owner decision 14 Aug 2026), which is what lets a malformed amount
+ * reach the parser at all instead of being sanitized to "" by the browser.
+ *
+ * So this selector is also a load-bearing assertion: if someone reverts the
+ * money boxes to `type="number"`, there is no textbox here and every test in
+ * this file fails loudly rather than silently stopping testing the defect.
+ */
 function feeBox(): HTMLInputElement {
-  return screen.getAllByRole("spinbutton")[3] as HTMLInputElement;
+  return screen.getAllByRole("textbox")[0] as HTMLInputElement;
 }
 
 function typeInto(value: string) {
   fireEvent.change(feeBox(), { target: { value } });
 }
+
+describe("the defect the owner decision was actually about", () => {
+  /*
+    A stray character was the single most common malformed entry, and until the
+    money boxes became `type="text"` it was the ONE case that never reached any
+    of this. HTML's value-sanitization algorithm strips a number input's value to
+    "" the moment it does not parse as a floating-point number, and every handler
+    reads "" as "the admin cleared the box". So `"4a5"` in a cancellation fee
+    silently saved $0.00, with the save button re-enabled and nothing on screen —
+    and worse, it wiped an error that was already showing.
+
+    These cases would all have passed against the old `type="number"` markup
+    while the product was broken, because the assertion they make is about what
+    the browser hands the handler. That is why the type matters and why
+    `feeBox()` selects a textbox.
+  */
+  const STRAY_CHARACTER_ENTRIES = [
+    "4a5",       // a mistyped digit
+    "$45.00",    // a currency symbol, which admins type by habit
+    "1,000.00",  // a thousands separator, likewise
+    "45.00x",    // a trailing character
+  ];
+
+  it.each(STRAY_CHARACTER_ENTRIES)(
+    "refuses %s instead of silently saving $0.00",
+    (entry) => {
+      const onInvalidAmountsChange = vi.fn();
+      const onRulesChange = vi.fn();
+
+      render(
+        <Harness
+          onInvalidAmountsChange={onInvalidAmountsChange}
+          onRulesChange={onRulesChange}
+        />,
+      );
+
+      typeInto(entry);
+
+      // The admin is told, rather than left with a silently zeroed fee.
+      expect(screen.getByRole("alert").textContent).toContain(
+        "Enter a fee in dollars and cents",
+      );
+      // What they typed is still on screen to correct.
+      expect(feeBox().value).toBe(entry);
+      // No fee was written at all — not 0, not a partial parse.
+      expect(onRulesChange).not.toHaveBeenCalled();
+      // And the section is told to refuse the save.
+      expect(onInvalidAmountsChange).toHaveBeenLastCalledWith(true);
+    },
+  );
+
+  it("does not wipe an existing error when the next keystroke is also bad", () => {
+    const onInvalidAmountsChange = vi.fn();
+    render(<Harness onInvalidAmountsChange={onInvalidAmountsChange} />);
+
+    typeInto("25.005");
+    expect(screen.getByRole("alert")).toBeTruthy();
+
+    // The old clear-branch ran unconditionally, so one more character made the
+    // error vanish and the fee become $0.00 with save re-enabled.
+    typeInto("25.005x");
+
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(onInvalidAmountsChange).toHaveBeenLastCalledWith(true);
+  });
+});
 
 describe("a refused money amount is visible in the UI", () => {
   it("shows an error, keeps the stored cents, and blocks the section's save", () => {
