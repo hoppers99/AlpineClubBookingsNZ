@@ -24,7 +24,7 @@ import {
   getAuthenticatedXeroClient,
 } from "./xero-api-client";
 import { getAccountMapping } from "./xero-mappings";
-import { formatDate } from "./xero-invoice-helpers";
+import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 
 export const REFUND_CREDIT_NOTE_ALLOCATION_SKIP_REASON =
   "Refund credit notes are settled via a credit-note payment instead of invoice allocation.";
@@ -50,7 +50,10 @@ export async function createXeroPaymentForInvoice(
     invoice: { invoiceID: params.invoiceId },
     account: { code: bankCode },
     amount: params.amountCents / 100,
-    date: formatDate(new Date()),
+    // A payment date is bank-reconciliation input and decides the GST period the
+    // cash falls in, so it is the club's calendar day rather than the UTC one,
+    // which is still yesterday all New Zealand morning (INV-DATE-019, #2834).
+    date: formatDateOnlyForTimeZone(new Date()),
     reference: params.reference,
   };
 
@@ -131,7 +134,8 @@ export function buildRefundCreditNotePayment(params: {
     creditNote: { creditNoteID: params.creditNoteId },
     account: { code: params.bankCode },
     amount: params.refundAmountCents / 100,
-    date: formatDate(new Date()),
+    // Club calendar day, as for the invoice payment above (INV-DATE-019, #2834).
+    date: formatDateOnlyForTimeZone(new Date()),
     reference: `Stripe Refund - ${CLUB_NAME} payment ${params.paymentId.slice(0, 8)}`,
     isReconciled: false,
   };

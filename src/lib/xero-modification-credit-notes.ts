@@ -26,10 +26,8 @@ import {
   findOrCreateXeroContact,
   retryXeroWriteWithContactRepair,
 } from "./xero-contacts";
-import {
-  buildSyntheticAllocationId,
-  formatDate,
-} from "./xero-invoice-helpers";
+import { formatDateOnlyForTimeZone } from "@/lib/date-only";
+import { buildSyntheticAllocationId } from "./xero-invoice-helpers";
 
 export async function createXeroCreditNoteForModification(params: {
   bookingId: string;
@@ -99,10 +97,16 @@ export async function createXeroCreditNoteForModification(params: {
     modRefundLineItem.accountCode = accountCode;
   }
 
+  // The credit note and the allocation that settles it are both dated on the
+  // club's calendar, not the UTC day, which is still yesterday for roughly the
+  // first half of every New Zealand day (INV-DATE-019, #2834). Read once so the
+  // recorded payload, every contact-repair attempt and the allocation all agree.
+  const modificationCreditNoteDate = formatDateOnlyForTimeZone(new Date());
+
   const buildCreditNote = (resolvedContactId: string): CreditNote => ({
     type: CreditNote.TypeEnum.ACCRECCREDIT,
     contact: { contactID: resolvedContactId },
-    date: formatDate(new Date()),
+    date: modificationCreditNoteDate,
     lineAmountTypes: LineAmountTypes.Inclusive,
     lineItems: [modRefundLineItem],
     reference: `Modification refund - Booking ${bookingId.slice(0, 8)}`,
@@ -204,7 +208,7 @@ export async function createXeroCreditNoteForModification(params: {
                 {
                   invoice: { invoiceID: originalInvoiceId },
                   amount: refundAmountCents / 100,
-                  date: formatDate(new Date()),
+                  date: modificationCreditNoteDate,
                 },
               ],
             },
