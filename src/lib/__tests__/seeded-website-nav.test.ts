@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { starterPageContent } from "../../../prisma/starter-page-content";
+import { buildWebsiteNavLinks } from "@/lib/website-nav";
 
 vi.mock("server-only", () => ({}));
 
@@ -19,18 +20,16 @@ import { listWebsiteMenuPages } from "@/lib/page-content-html";
  * What a freshly seeded club's public navigation contains (#2818 decision 5).
  *
  * The header used to append a hard-coded `{ href: "/contact", label: "Contact" }`
- * after the CMS-driven links. #2813 deleted it so the navigation is entirely the
- * club's to arrange — which is right, and which would silently have removed the
- * Contact link from every deployment, because the contact row has always seeded
- * an empty `menuTitle`.
+ * after the CMS-driven links, unconditionally. #2813 replaced that with a code
+ * FALLBACK: `buildWebsiteNavLinks` appends Contact only when no CMS entry already
+ * points at `/contact` (deduped by href). The contact row keeps its seeded empty
+ * `menuTitle`, so there is no data migration — the fallback is the whole
+ * mechanism.
  *
- * So the seed now carries the label and a backfill repairs deployed rows. The
- * risk this suite exists to pin is that the DATA and the DELETION drift apart
- * again: nothing else fails if `starterPageContent` loses that value, and the
- * symptom is a missing link on a live site rather than a red build.
- *
- * The nav is derived from the seed rather than from a hand-written expectation,
- * so a page added to the seed with a menu title is covered the day it lands.
+ * The risk this suite pins is twofold: that Contact silently vanishes (the
+ * fallback stops firing), and that it doubles up when a club opts its Contact
+ * page into the CMS menu (the dedupe stops working) — the latent duplicate this
+ * change also fixed on `main`.
  */
 
 /** The seeded rows as `listWebsiteMenuPages` reads them from the database. */
@@ -45,16 +44,52 @@ function seededRows() {
   }));
 }
 
+/** The full header nav for the seeded rows: CMS menu entries + code fallbacks. */
+async function seededNav() {
+  const dynamic = (await listWebsiteMenuPages()).map((page) => ({
+    href: page.path,
+    label: page.menuTitle.trim(),
+  }));
+  return buildWebsiteNavLinks(dynamic);
+}
+
 describe("a seeded deployment's public navigation", () => {
-  it("shows Contact, which the deleted hard-coded link used to provide", async () => {
+  it("shows Contact exactly once, supplied by the code fallback", async () => {
+    // The seeded contact row carries an EMPTY menu title, so it is not in the CMS
+    // menu; `buildWebsiteNavLinks` is what puts Contact in the nav.
     mocks.pageContentFindMany.mockResolvedValue(seededRows());
 
-    const pages = await listWebsiteMenuPages();
+    const contactLinks = (await seededNav()).filter(
+      (link) => link.href === "/contact",
+    );
 
-    const contact = pages.find((page) => page.slug === "contact");
-    expect(contact, "Contact must appear in a seeded club's nav").toBeDefined();
-    expect(contact!.menuTitle).toBe("Contact");
-    expect(contact!.path).toBe("/contact");
+    expect(
+      contactLinks,
+      "Contact must appear exactly once in a seeded club's nav",
+    ).toHaveLength(1);
+    expect(contactLinks[0]!.label).toBe("Contact");
+
+    // And it does NOT come from the CMS menu list — that is the fallback's job.
+    const menuSlugs = (await listWebsiteMenuPages()).map((page) => page.slug);
+    expect(menuSlugs).not.toContain("contact");
+  });
+
+  it("does not duplicate Contact when a club opts it into the CMS menu", async () => {
+    // A club that types a menu title for its Contact page gets a CMS-driven
+    // entry; the fallback must then step aside so the link shows once, not twice.
+    mocks.pageContentFindMany.mockResolvedValue(
+      seededRows().map((row) =>
+        row.slug === "contact" ? { ...row, menuTitle: "Kōrero mai" } : row,
+      ),
+    );
+
+    const contactLinks = (await seededNav()).filter(
+      (link) => link.href === "/contact",
+    );
+
+    expect(contactLinks).toHaveLength(1);
+    // The club's own label wins — the fallback did not fire.
+    expect(contactLinks[0]!.label).toBe("Kōrero mai");
   });
 
   it("shows every seeded page that carries a menu title, and only those", async () => {
@@ -83,9 +118,10 @@ describe("a seeded deployment's public navigation", () => {
     expect(slugs).not.toContain("school-bookings");
   });
 
-  it("no longer needs a hard-coded Contact entry in the header", () => {
-    // The deletion half of the same decision. A re-added static link would show
-    // Contact TWICE on a seeded site now that the row supplies it.
+  it("no longer hard-codes an unconditional Contact entry in the header", () => {
+    // Contact now comes from `buildWebsiteNavLinks`, which the header delegates
+    // to. A re-added static `{ href: "/contact" }` in the header would show
+    // Contact twice the moment a club opts its Contact page into the CMS menu.
     const header = readFileSync(
       join(process.cwd(), "src", "components", "website-header.tsx"),
       "utf8",
@@ -93,6 +129,6 @@ describe("a seeded deployment's public navigation", () => {
 
     expect(header).not.toContain("staticNavLinks");
     expect(header).not.toMatch(/href:\s*["']\/contact["']/);
+    expect(header).toContain("buildWebsiteNavLinks");
   });
 });
-

@@ -137,14 +137,14 @@ export const starterPageContent: StarterPageContent[] = [
     slug: "contact",
     path: "/contact",
     caption: "Get in touch",
-    // The public header used to add a hard-coded "Contact" link beside the
-    // CMS-driven ones. #2813 deleted that (rightly — the nav is the club's to
-    // arrange), which would have made the link vanish from every deployment. It
-    // is a real menu entry instead, so the nav is fully CMS-driven AND every
-    // existing site keeps its Contact link (#2818 decision 5). The backfill that
-    // repairs already-deployed rows is
-    // 20260813010000_backfill_contact_menu_title.
-    menuTitle: "Contact",
+    // EMPTY on purpose. The public header renders the Contact link itself, as a
+    // code fallback appended only when no CMS menu entry already points at
+    // `/contact` (`src/components/website-header.tsx`, #2818 decision 5). So the
+    // nav stays fully the club's to arrange — a club that gives this page a menu
+    // title takes over the link and the fallback steps aside, deduped by href —
+    // while a club that does nothing still shows Contact exactly once. There is
+    // no data migration: the fallback needs no seeded label.
+    menuTitle: "",
     title: "Contact Us",
     headerText:
       "Have a question about the club, the lodge, or booking a stay? Get in touch and we'll get back to you.",

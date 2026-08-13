@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { starterPageContent } from "../../../prisma/starter-page-content";
@@ -49,18 +49,6 @@ const SCHOOL_BOOKINGS_MIGRATION_PATH = join(
   "prisma",
   "migrations",
   "20260812010000_backfill_school_bookings_page_content",
-  "migration.sql",
-);
-
-// The built-in "/contact" row's menu title, backfilled when the public header
-// stopped appending a hard-coded Contact link (#2818 decision 5). An UPDATE, so
-// it belongs in `combinedSql` but must stay OUT of `allInsertSql` — that set is
-// asserted to contain no UPDATE or DELETE at all.
-const CONTACT_MENU_TITLE_MIGRATION_PATH = join(
-  process.cwd(),
-  "prisma",
-  "migrations",
-  "20260813010000_backfill_contact_menu_title",
   "migration.sql",
 );
 
@@ -292,12 +280,8 @@ describe("starter page content backfill migration", () => {
   const homeGuestCopySql = statementsOnly(
     readFileSync(HOME_GUEST_COPY_MIGRATION_PATH, "utf8"),
   );
-  const contactMenuTitleSql = readFileSync(
-    CONTACT_MENU_TITLE_MIGRATION_PATH,
-    "utf8",
-  );
   const allInsertSql = `${insertSql}\n${backfill404Sql}\n${policyPagesSql}\n${bookingRequestsSql}\n${schoolBookingsSql}`;
-  const combinedSql = `${allInsertSql}\n${updateSql}\n${faqUpdateSql}\n${privacyUpdateSql}\n${nonMemberHoldCopyUpdateSql}\n${genericiseLodgeCopySql}\n${homeGuestCopySql}\n${contactMenuTitleSql}`;
+  const combinedSql = `${allInsertSql}\n${updateSql}\n${faqUpdateSql}\n${privacyUpdateSql}\n${nonMemberHoldCopyUpdateSql}\n${genericiseLodgeCopySql}\n${homeGuestCopySql}`;
 
   it("inserts exactly the starter pages defined for the seed", () => {
     const insertedIds = [
@@ -372,54 +356,26 @@ describe("starter page content backfill migration", () => {
   });
 });
 
-describe("contact menu-title backfill migration (#2818)", () => {
-  const statements = statementsOnly(
-    readFileSync(CONTACT_MENU_TITLE_MIGRATION_PATH, "utf8"),
-  );
+describe("the contact page keeps an empty seeded menu title (#2818 decision 5)", () => {
   const contact = starterPageContent.find((page) => page.slug === "contact");
 
-  it("only updates, and only the PageContent table", () => {
-    expect(statements).toMatch(/UPDATE\s+"PageContent"/);
-    expect(statements).not.toMatch(/\bDELETE\b/i);
-    expect(statements).not.toMatch(/\bINSERT\b/i);
-    // Exactly one statement, and pure DML: no schema change for a draining old
-    // colour's compiled queries to miss.
-    expect(statements.match(/;/g) ?? []).toHaveLength(1);
-    expect(statements).not.toMatch(/\b(CREATE|ALTER|DROP|TRUNCATE)\b/i);
-  });
-
-  it("is value-scoped, so a club's own menu label is untouched", () => {
-    // The predicate that does the work. Without the menuTitle equality this
-    // would overwrite the label of every install that had typed one.
-    expect(statements).toMatch(/WHERE\s+"slug" = 'contact'/);
-    expect(statements).toContain(`AND "menuTitle" = ''`);
-  });
-
-  it("writes exactly the menu title the seed now carries", () => {
+  it("seeds no menu label — the header code fallback supplies the link instead", () => {
+    // #2813 first backfilled a "Contact" menu title so a fully CMS-driven nav
+    // still showed the link. The owner replaced that data migration with a code
+    // fallback in `buildWebsiteNavLinks` (src/lib/website-nav.ts), so the row
+    // must go back to seeding an EMPTY menu title. A re-added seed label would
+    // double the link the moment a club opts Contact into the CMS menu, and
+    // would need a migration this release deliberately does not ship.
     expect(contact).toBeDefined();
-    expect(contact!.menuTitle).toBe("Contact");
-    expect(statements).toContain(
-      `SET "menuTitle" = ${sqlQuote(contact!.menuTitle)}`,
-    );
+    expect(contact!.menuTitle).toBe("");
   });
 
-  it("is idempotent: the value it writes is not the value it matches", () => {
-    expect(contact!.menuTitle).not.toBe("");
-  });
-
-  it("writes no session clock into the payload (#1627/#1656)", () => {
-    expect(statements).not.toMatch(/CURRENT_TIMESTAMP/i);
-    expect(statements).not.toMatch(/\bnow\s*\(/i);
-    // "updatedAt" is deliberately left alone: a system repair of a seeded
-    // default, not an admin edit — matching 20260802110000 and 20260802140000.
-    expect(statements).not.toContain('"updatedAt"');
-  });
-
-  it("sorts after every migration already on main", () => {
-    expect(
-      "20260813010000_backfill_contact_menu_title" >
-        "20260812010000_backfill_school_bookings_page_content",
-    ).toBe(true);
+  it("ships no contact menu-title backfill migration", () => {
+    // The deletion half of the same decision: the data migration and its
+    // verification fixture were removed, so nothing here should reference it.
+    const migrationsDir = join(process.cwd(), "prisma", "migrations");
+    const names = readdirSync(migrationsDir);
+    expect(names).not.toContain("20260813010000_backfill_contact_menu_title");
   });
 });
 

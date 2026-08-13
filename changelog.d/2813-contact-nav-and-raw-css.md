@@ -1,11 +1,10 @@
-- **Your site menu is now entirely yours to arrange, including the Contact
-  link (#2818).** The Contact entry used to be added by the code, after your own
-  menu items, so it was the one link you could not reorder, rename or remove.
-  It is now an ordinary menu entry like the rest, and the upgrade fills it in
-  for you: any club that had never given its Contact page a menu title gets
-  "Contact", so your menu looks exactly as it did. If you had already typed your
-  own label, that is left untouched. From here you can rename it, move it, or
-  clear the menu title to take Contact out of the menu entirely.
+- **You can now put the Contact link wherever you like in your menu (#2818).**
+  Contact always appears in your navigation, exactly once, with no setup needed —
+  the site adds it for you whenever your own menu does not already include it. To
+  take it over, give your Contact page a menu title under Site Appearance &
+  Content → Page Content: your entry then replaces the automatic one (so it is
+  never shown twice) and you can name it, reorder it, or move it wherever you
+  want. Nothing about your existing menu changes on upgrade.
 
 - **The Raw CSS box in Site Style is bigger and easier to work in (#2818).**
   The advanced custom-CSS editor is taller by default, can be dragged to
