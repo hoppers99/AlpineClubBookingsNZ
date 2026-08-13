@@ -181,9 +181,12 @@ const TIMES_100_SELECTORS = [
 // broad arm below cover the payment modules without making the obvious fix to
 // `xero-api-usage.ts`'s fractional `usagePercent` illegal to write.
 //
-// The narrow residue this gives up: `(a / b) * 100` that really is money AND is
-// not stored in a `…Cents` binding. Anything a quotient scales INTO a `…Cents`
-// binding is still caught, by the ratio arm below.
+// The residue this gives up is narrow, but it is only narrow because the two
+// arms below put the rest back: a quotient of PARSED TEXT scaled to cents, and a
+// quotient of anything else scaled INTO a `…Cents` binding, are both still
+// caught. What is genuinely given up is `(a / b) * 100` that really is money,
+// built from neither typed text nor a `…Cents` destination — indistinguishable,
+// by shape or by name, from the occupancy percentage two lines above it.
 const TIMES_100_NOT_A_RATIO_SELECTORS = [
   'BinaryExpression[operator="*"][right.value=100]:not([left.type="BinaryExpression"][left.operator="/"])',
   'BinaryExpression[operator="*"][left.value=100]:not([right.type="BinaryExpression"][right.operator="/"])',
@@ -235,21 +238,72 @@ const MONEY_CENTS_RESTRICTIONS = [
 // the shape-based arms above cannot see because the parse and the scaling are in
 // different statements.
 //
-// This arm SUBSUMES arms 1–3 for these files: every `x * 100` matches whatever x
-// happens to be, so re-stating the narrower arms here would only report the same
-// node two and three times over. The one thing it does not subsume is a ratio,
-// which it excludes on purpose — so the ratio arm below puts back exactly the
-// case that matters, a quotient scaled into a `…Cents` binding.
+// WHAT THE BROAD ARM DOES AND DOES NOT COVER — stated exactly, because getting
+// this wrong is what opened a hole. It covers arms 1–3 for ANY `x * 100` whose
+// scaled operand is not a division: whatever `x` is, the broad selector already
+// matches the same node, so re-stating the narrower arms for that shape would
+// only report one mistake two and three times over. It does NOT cover the shape
+// its own `:not(...)` exclusion removes — a division sitting inside the
+// multiplication — and there the narrower arms are the only cover there ever
+// was. Both arms below put that back:
+//
+//   * RATIO_OF_PARSE_SELECTORS — a quotient of PARSED TEXT scaled to cents,
+//     `(parseFloat(gross) / 1.15) * 100` (GST-exclusive), `(parseFloat(raw) /
+//     guests) * 100` (per-guest share), `(parseFloat(line.total) / line.qty) *
+//     100` (unit price). Every one of those is money built from typed text, and
+//     without this arm all three converted unguarded in every money module and
+//     every API route while the identical line was caught in an ordinary
+//     `src/lib` file — the guard at its weakest exactly where money lives.
+//   * RATIO_INTO_CENTS_SELECTORS — a quotient of anything else scaled INTO a
+//     `…Cents` binding, where the repository's own naming convention says the
+//     result is money.
+//
+// A ratio with NEITHER a parse inside it nor a `…Cents` destination stays legal,
+// which is the whole point of the exclusion: `(calls / budget) * 100` and
+// `(beds / capacity) * 100` are percentages, and they are spelled this way
+// inside these very files.
+const PARSE_CALL_MATCHES = `:matches(${PARSE_CALL_SELECTORS.join(", ")})`;
+
+const RATIO_OF_PARSE_SELECTORS = [
+  `BinaryExpression[operator="*"][right.value=100][left.type="BinaryExpression"][left.operator="/"] ${PARSE_CALL_MATCHES}`,
+  `BinaryExpression[operator="*"][left.value=100][right.type="BinaryExpression"][right.operator="/"] ${PARSE_CALL_MATCHES}`,
+];
+
+// The same exclusion arm 3 carries, and for the same reason: a parse anywhere
+// inside the quotient is reported by the arm above, anchored on the parse call.
+// Without it, `const amountCents = Math.round((parseFloat(x) / n) * 100);`
+// printed the identical message twice — once at the multiplication and once at
+// the parse one column along — which is the duplicate-reporting defect the
+// earlier review already made this config fix once (#2685 review).
 const RATIO_INTO_CENTS_SELECTORS = [
-  `${CENTS_TARGET_SELECTOR} BinaryExpression[operator="*"][right.value=100][left.type="BinaryExpression"][left.operator="/"]`,
-  `${CENTS_TARGET_SELECTOR} BinaryExpression[operator="*"][left.value=100][right.type="BinaryExpression"][right.operator="/"]`,
+  `${CENTS_TARGET_SELECTOR} BinaryExpression[operator="*"][right.value=100][left.type="BinaryExpression"][left.operator="/"]:not(:has(${PARSE_CALL_MATCHES}))`,
+  `${CENTS_TARGET_SELECTOR} BinaryExpression[operator="*"][left.value=100][right.type="BinaryExpression"][right.operator="/"]:not(:has(${PARSE_CALL_MATCHES}))`,
 ];
 
 const MONEY_MODULE_RESTRICTIONS = [
   ...TIMES_100_NOT_A_RATIO_SELECTORS,
+  ...RATIO_OF_PARSE_SELECTORS,
   ...RATIO_INTO_CENTS_SELECTORS,
   ...SCALED_TO_CENTS_WITHOUT_TIMES_100_SELECTORS,
 ].map((selector) => ({ selector, message: MONEY_CENTS_MESSAGE }));
+
+/**
+ * The two money arm families as bare selector strings, for
+ * `money-cents-guard.test.ts`.
+ *
+ * The suite resolves this config through ESLint's own
+ * `calculateConfigForFile()` at a roster of real production paths and checks the
+ * resolved rule still carries every selector the family declares. It reads them
+ * from HERE rather than from a copy, because a copied list passes happily while
+ * the config that ships has dropped the rule — which is the whole failure mode
+ * this file's guards exist to prevent. The suite pins a floor on the LENGTH of
+ * each family, and its lint-a-real-fixture cases pin the behaviour, so emptying
+ * one of these arrays does not quietly empty the expectation with it.
+ */
+export const MONEY_GUARD_ARMS = {
+  standard: MONEY_CENTS_RESTRICTIONS.map((entry) => entry.selector),
+  moneyModule: MONEY_MODULE_RESTRICTIONS.map((entry) => entry.selector),
+};
 
 /**
  * THE ESCAPE HATCH, and the only one. Each entry lifts the money restrictions
@@ -534,13 +588,23 @@ const eslintConfig = defineConfig([
   },
   {
     // #2685 — inside the money-domain modules a bare `x * 100` is a cents
-    // conversion by construction, so the broad selector REPLACES the narrower
-    // shape-based arms rather than joining them. It matches everything they
-    // match, so listing both made the commonest real mistake report two and
-    // three times at the same line and column; a 25-site regression printed
-    // sixty identical messages and read far worse than it was (#2685 review).
-    // These files compute no percentages: that is what makes this safe here and
-    // unsafe anywhere else.
+    // conversion by construction, so the broad selector replaces the narrower
+    // shape-based arms FOR THAT SHAPE rather than joining them: it matches the
+    // same node they do, and listing both made the commonest real mistake report
+    // two and three times at the same line and column; a 25-site regression
+    // printed sixty identical messages and read far worse than it was (#2685
+    // review). These files compute no percentages: that is what makes the broad
+    // selector safe here and unsafe anywhere else.
+    //
+    // IT IS NOT, HOWEVER, STRICTLY STRONGER THAN THE NARROW ARMS, and this
+    // config used to claim it was. The broad arm excludes a division inside the
+    // multiplication so that a genuine percentage stays writable, and for a
+    // while that exclusion was the only money rule these files had — so a typed
+    // amount that was DIVIDED and then scaled, `(parseFloat(gross) / 1.15) * 100`
+    // or `(parseFloat(raw) / guests) * 100`, was caught in an ordinary
+    // `src/lib` file and caught nowhere at all in a Xero module, a payment
+    // module or an API route. `MONEY_MODULE_RESTRICTIONS` therefore states the
+    // ratio-of-a-parse arm explicitly; see the comment above it.
     files: MONEY_DOMAIN_MODULES,
     rules: {
       "no-restricted-syntax": [

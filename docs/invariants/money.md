@@ -98,18 +98,45 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   the multiplication happens there is nothing left in it to recognise. Inside
   those modules ONE shape is excluded on purpose: a division sitting directly
   inside the multiplication (`(calls / budget) * 100`) is a percentage by
-  construction, and nothing here builds cents from a quotient. A quotient scaled
-  into a `…Cents` binding is still caught.
+  construction, and nothing here builds cents from a quotient.
+
+  That exclusion is narrow only because the money-domain block states the arms
+  the broad one does not cover. It does NOT subsume them, and while the config
+  claimed it did, a typed amount that was DIVIDED and then scaled — a GST split
+  `(parseFloat(gross) / 1.15) * 100`, a per-guest share
+  `(parseFloat(raw) / guests) * 100`, a unit price
+  `(parseFloat(line.total) / line.qty) * 100` — was caught in an ordinary
+  `src/lib` file and caught nowhere at all in a Xero module, a payment module or
+  an API route, which is the guard at its weakest exactly where money lives.
+  Both give-backs are therefore explicit: a quotient of PARSED TEXT, and a
+  quotient scaled into a `…Cents` binding. What stays legal is a quotient that
+  is neither.
 
   Percentages, `Math.round(n * 100) / 100` two-decimal rounding and date-key
-  packing are deliberately untouched, and are pinned as negative fixtures in
-  `src/lib/__tests__/money-cents-guard.test.ts`, which runs the REAL config and
-  also fails if any config block stops re-stating the rule. The exported
-  `MONEY_GUARD_EXEMPTIONS` array in `eslint.config.mjs` is the only escape
-  hatch — never an `eslint-disable`, and the guard test asserts there are none
-  in the tree. Each entry names a path and states in writing why it is allowed
-  to build cents itself; the test READS that array rather than a copy of it, so
-  adding an entry passes CI. It currently holds exactly the two helper modules.
+  packing are deliberately untouched OUTSIDE the money-domain modules. Inside
+  them a bare `x * 100` IS reported, whatever it computes — that is what the
+  narrower glob buys, and it is why the glob covers only files that compute no
+  percentages. All of it is pinned as fixtures in
+  `src/lib/__tests__/money-cents-guard.test.ts`, which runs the REAL config.
+
+  That suite decides whether the guard reaches production code by asking ESLint,
+  never by reading glob text. It resolves `no-restricted-syntax` through
+  `calculateConfigForFile()` at a roster of representative production paths,
+  requires an `error`-severity rule still carrying every arm that path needs, and
+  then lints an actual violation at each of them. A glob that avoids the `src/`
+  prefix, a config block with no `files` key at all, and a severity quietly
+  downgraded to `warn` each disarm the guard while leaving a glob-text check
+  green, so none of the three is trusted. The roster and both audits live in
+  `src/lib/__tests__/support/eslint-guard-coverage.ts`, shared with the date
+  guard, which has the same hazard.
+
+  The exported `MONEY_GUARD_EXEMPTIONS` array in `eslint.config.mjs` is the only
+  escape hatch — never an `eslint-disable`, and the guard test asserts there are
+  none in the tree. Each entry names a path and states in writing why it is
+  allowed to build cents itself; the test READS that array rather than a copy of
+  it, so adding an entry passes CI. It currently holds exactly the two helper
+  modules, and both are on the roster, so an exemption still has to resolve to an
+  armed `error` rule carrying the date and raw-SQL restrictions.
 
 ## INV-MONEY-004
 

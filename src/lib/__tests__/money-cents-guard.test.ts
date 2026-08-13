@@ -1,17 +1,29 @@
 import path from "path";
 import { ESLint } from "eslint";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  auditEnforcedGuardCoverage,
+  auditResolvedGuardCoverage,
+  PRODUCTION_GUARD_ROSTER,
+  resolveRestrictedSyntax,
+} from "./support/eslint-guard-coverage";
 
 /*
-  The flat-config bootstrap — resolving `eslint.config.mjs`, its Next presets and
-  every plugin — costs 5–6 seconds, and `new ESLint(...)` does none of it: the
-  work happens on the FIRST `lintText`. Left to itself the first `it.each` case
-  paid the whole bill against vitest's 5000 ms default and this file failed
-  roughly two runs in three, on a machine faster than CI's (#2685 review).
+  THE COST, AND WHERE IT IS PAID.
 
-  `beforeAll` now warms the linter with a throwaway lint, and both it and the
-  file get an explicit budget. That moves the cost somewhere it is affordable
-  instead of pretending it is not there.
+  The flat-config bootstrap — resolving `eslint.config.mjs`, its Next presets and
+  every plugin — happens on the FIRST `lintText`. `new ESLint(...)` does none of
+  it. Left to itself the first `it.each` case paid that whole bill against
+  vitest's 5000 ms default, and this file failed roughly two runs in three
+  (#2685 review).
+
+  `beforeAll` pays it instead, against budgets with real headroom. Measured on
+  this tree: the bootstrap lint is ~1.2 s against the 60 s hook budget, and every
+  `lintText` after it is ~5 ms against the 20 s per-case budget — so a machine
+  would have to be fifty times slower to trip the hook, and thousands of times
+  slower to trip a case. Whatever remains after that is not a clock problem,
+  which is why the hook also asserts the guard is genuinely running: see the
+  canary below.
 */
 const BOOTSTRAP_TIMEOUT_MS = 60_000;
 const CASE_TIMEOUT_MS = 20_000;
@@ -87,16 +99,61 @@ const MONEY_RULE_ID = "INV-MONEY-003";
 
 let eslint: ESLint;
 
+/*
+  THE CANARY. Every negative fixture in this file asserts "zero money errors",
+  so ANY condition that makes ESLint return no rule messages at all — a fixture
+  that fails to parse, a path that turns out to be ignored, a bootstrap that
+  silently produced an empty config — passes every one of them vacuously while
+  failing the positive ones. That is a failure mode which reads as a partial
+  flake rather than as "the guard is not running", and a reviewer on another lane
+  saw exactly that: 26 then 44 failures in a single file, then three clean runs
+  (#2685 review).
+
+  So the warm-up lints a known violation instead of an inert `const`, and the
+  hook THROWS unless it produces exactly one report. A cold, broken or ignored
+  run now fails loudly in the hook, before a single vacuous green is printed.
+*/
+const CANARY_CODE = "export const amountCents = Math.round(parseFloat(raw) * 100);\n";
+
 beforeAll(async () => {
   eslint = new ESLint({ cwd: REPO_ROOT, warnIgnored: false });
-  // Force the config/plugin bootstrap here rather than inside the first case.
-  await eslint.lintText("export const warm = 1;\n", {
+  // Force the config/plugin bootstrap here rather than inside the first case:
+  // resolving the flat config, the Next presets and every plugin costs 5–6
+  // seconds and none of it happens until the first `lintText`.
+  const results = await eslint.lintText(CANARY_CODE, {
     filePath: ORDINARY_SRC_FILE,
   });
+  const messages = results.flatMap((result) => result.messages);
+
+  const fatal = messages.filter((message) => message.fatal);
+  if (fatal.length > 0) {
+    throw new Error(
+      `${MONEY_RULE_ID} canary did not parse, so every negative fixture in this file would have passed vacuously: ${fatal[0]?.message}`,
+    );
+  }
+
+  const hits = messages.filter(
+    (message) =>
+      message.ruleId === "no-restricted-syntax" &&
+      typeof message.message === "string" &&
+      message.message.startsWith(MONEY_RULE_ID),
+  );
+  if (hits.length !== 1) {
+    throw new Error(
+      `${MONEY_RULE_ID} canary produced ${hits.length} report(s), expected exactly 1. The guard is not running against ${ORDINARY_SRC_FILE}, so the negative fixtures below would have passed vacuously. Messages seen: ${JSON.stringify(
+        messages.map((message) => ({
+          ruleId: message.ruleId,
+          severity: message.severity,
+          message: message.message?.slice(0, 120),
+        })),
+      )}`,
+    );
+  }
 }, BOOTSTRAP_TIMEOUT_MS);
 
 type ConfigBlock = { files?: string[]; rules?: Record<string, unknown> };
 type GuardExemption = { file: string; reason: string };
+type MoneyGuardArms = { standard: string[]; moneyModule: string[] };
 
 /**
  * Whether a glob can only ever match a TEST file.
@@ -114,15 +171,17 @@ function isTestOnlyGlob(glob: string): boolean {
   );
 }
 
-/** The real `eslint.config.mjs`: its blocks, and its declared exemption list. */
+/** The real `eslint.config.mjs`: its blocks, arms, and declared exemption list. */
 async function loadEslintConfig(): Promise<{
   blocks: ConfigBlock[];
+  arms: MoneyGuardArms;
   exemptions: GuardExemption[];
   exemptFiles: Set<string>;
 }> {
   const { pathToFileURL } = await import("url");
   const configModule: {
     default: unknown;
+    MONEY_GUARD_ARMS?: unknown;
     MONEY_GUARD_EXEMPTIONS?: unknown;
   } = await import(
     pathToFileURL(path.join(REPO_ROOT, "eslint.config.mjs")).href
@@ -133,6 +192,10 @@ async function loadEslintConfig(): Promise<{
 
   return {
     blocks: configModule.default as ConfigBlock[],
+    arms: (configModule.MONEY_GUARD_ARMS ?? {
+      standard: [],
+      moneyModule: [],
+    }) as MoneyGuardArms,
     exemptions,
     exemptFiles: new Set(exemptions.map((entry) => entry.file)),
   };
@@ -158,6 +221,28 @@ async function moneyErrorLocationsIn(
 async function moneyErrorsIn(code: string, filePath: string): Promise<number> {
   return (await moneyErrorLocationsIn(code, filePath)).length;
 }
+
+/** The line numbers complained about, in order — one entry per report. */
+async function moneyErrorLinesIn(
+  code: string,
+  filePath: string,
+): Promise<number[]> {
+  return (await moneyErrorLocationsIn(code, filePath)).map((location) =>
+    Number(location.split(":")[0]),
+  );
+}
+
+/** Every money-domain module the roster covers, plus an ordinary file as control. */
+const MONEY_MODULE_CASES: ReadonlyArray<readonly [string, string]> = [
+  ["an ordinary src file (the control)", ORDINARY_SRC_FILE],
+  ["a Xero module", XERO_MODULE_FILE],
+  ["the Xero facade", XERO_FACADE_FILE],
+  ["a finance module", FINANCE_MODULE_FILE],
+  ["the pricing module", path.join(REPO_ROOT, "src/lib/pricing.ts")],
+  ["the admin payments service", ADMIN_PAYMENTS_FILE],
+  ["the Stripe client", STRIPE_FILE],
+  ["an API route", API_ROUTE_FILE],
+];
 
 describe("money cents-conversion guard: positive fixtures", () => {
   /*
@@ -249,6 +334,53 @@ describe("money cents-conversion guard: positive fixtures", () => {
     ].join("\n");
     await expect(moneyErrorsIn(code, filePath)).resolves.toBeGreaterThan(0);
   });
+
+  /*
+    A TYPED AMOUNT DIVIDED, AND THEN SCALED — the hole this fix closes.
+
+    The broad money-module arm excludes a division sitting inside the
+    multiplication, so a genuine percentage stays writable inside these files.
+    For a while that exclusion was the ONLY money rule those files had, because
+    the config claimed the broad arm "subsumed" the narrow ones. It does not: a
+    GST-exclusive split, a per-guest share and a unit price all convert typed
+    text to cents THROUGH a division, and every one of them converted unguarded
+    in every money module and every API route while the identical line was caught
+    in an ordinary `src/lib` file — the guard at its weakest exactly where money
+    lives (#2685 review).
+
+    All four must be reported, once each, everywhere — including in the ordinary
+    file, which is the control that proves the fixture really is a violation.
+  */
+  const RATIO_OF_PARSE_PROBE = [
+    "export function f(gross: string, raw: string, guests: number, line: { total: string; qty: number }) {",
+    "  const gstExclusive = Math.round((parseFloat(gross) / 1.15) * 100);",
+    "  const perGuest = Math.round((parseFloat(raw) / guests) * 100);",
+    "  const mirrored = Math.round(100 * (Number(raw) / guests));",
+    "  const unitPrice = Math.round((parseFloat(line.total) / line.qty) * 100);",
+    "  return gstExclusive + perGuest + mirrored + unitPrice;",
+    "}",
+    "",
+  ].join("\n");
+
+  it.each(MONEY_MODULE_CASES)(
+    "catches a typed amount divided then scaled, once per line, inside %s",
+    async (_label, filePath) => {
+      await expect(
+        moneyErrorLinesIn(RATIO_OF_PARSE_PROBE, filePath),
+      ).resolves.toEqual([2, 3, 4, 5]);
+    },
+  );
+
+  it.each(MONEY_MODULE_CASES)(
+    "reports a divided parse into a `…Cents` binding exactly once in %s",
+    async (_label, filePath) => {
+      // Two arms can see this shape — the parse arm and the ratio-into-`…Cents`
+      // arm — and they anchor one column apart, which is precisely the
+      // duplicate-message defect the earlier review made this config fix once.
+      const code = "export const amountCents = Math.round((parseFloat(x) / n) * 100);\n";
+      await expect(moneyErrorLocationsIn(code, filePath)).resolves.toHaveLength(1);
+    },
+  );
 
   it("catches a money property whose key does not end in Cents", async () => {
     // `{ unit_amount: … }` for Stripe and `{ amount: … }` for a webhook are real
@@ -432,6 +564,11 @@ describe("money cents-conversion guard: the approved helper modules", () => {
     rule, and the day somebody adds a block for an unrelated exemption is the
     day the money guard silently stops existing for those files — with lint
     still green. This test is what makes that fail instead.
+
+    IT READS DECLARATIONS, so it is the weaker of the two halves and is kept for
+    what it says plainly: which blocks name which guard. Whether the guard
+    actually REACHES production code is settled by the roster audits below, which
+    ask ESLint rather than reading glob text.
   */
   it("is re-stated by every block that sets no-restricted-syntax", async () => {
     const { blocks, exemptFiles } = await loadEslintConfig();
@@ -444,6 +581,7 @@ describe("money cents-conversion guard: the approved helper modules", () => {
 
     const withoutMoneyRule: string[] = [];
     const withoutRawSqlRule: string[] = [];
+    const belowErrorSeverity: string[] = [];
 
     for (const block of setters) {
       const option = block.rules!["no-restricted-syntax"];
@@ -470,6 +608,15 @@ describe("money cents-conversion guard: the approved helper modules", () => {
         typeof entry === "string" ? entry : (entry.message ?? ""),
       );
 
+      // The severity slot, which this test used to skip straight past. A block
+      // spelled `["warn", ...]` states every restriction and enforces none:
+      // `npm run lint` runs bare `eslint` with no `--max-warnings`, and the tree
+      // already exits 0 carrying warnings (#2685 review).
+      const severity = (option as Array<unknown>)[0];
+      if (severity !== "error" && severity !== 2) {
+        belowErrorSeverity.push(`${label} => ${String(severity)}`);
+      }
+
       if (!messages.some((message) => message.startsWith(MONEY_RULE_ID))) {
         withoutMoneyRule.push(label);
       }
@@ -486,6 +633,7 @@ describe("money cents-conversion guard: the approved helper modules", () => {
       ),
     ).toEqual([]);
     expect(withoutRawSqlRule).toEqual([]);
+    expect(belowErrorSeverity).toEqual([]);
   });
 
   /*
@@ -543,5 +691,165 @@ describe("money cents-conversion guard: the approved helper modules", () => {
       .split("\n")
       .filter((line) => line.includes("no-restricted-syntax"));
     expect(moneyDisables).toEqual([]);
+  });
+});
+
+/*
+  THE GUARD MUST REACH REAL PATHS — asked of ESLint, not of the glob text.
+
+  The declaration test above, and its counterpart on the date lane, both used to
+  decide "is this block production code?" with
+  `files.some((f) => f.startsWith("src/"))`. That is a string test on a PATTERN.
+  Three ordinary-looking edits walked through it while both suites stayed green,
+  and all three were reproduced (#2685 review):
+
+    1. A glob rooted on a double star rather than on `src/` — one naming the
+       kiosk and lodge-display directories — paired with a shortened restriction
+       list. Real screens lose the guard; neither glob begins with `src/`, so
+       the block was skipped as irrelevant.
+    2. A block with NO `files` key. Flat config applies it to every file, so it
+       replaces the rule everywhere — and `files ?? []` made `.some()` false.
+    3. `["warn", ...]` instead of `["error", ...]`. `option.slice(1)` never
+       looked at `option[0]`, and a warn-level guard blocks nothing.
+
+  The two audits below close all three at once, because neither one reads a glob:
+  the first resolves the config ESLint would really use at a roster of production
+  paths, the second lints an actual violation there. Both live in
+  `./support/eslint-guard-coverage`, shared with the #2684 date-guard suite,
+  which needs the identical treatment for the identical reason.
+*/
+describe("money cents-conversion guard: the paths it must reach", () => {
+  /**
+   * Which arm family each roster path must carry — declared HERE, as the test's
+   * own statement of intent, and checked against what ESLint resolves. Reading
+   * it out of the config's globs instead would just re-assert the config against
+   * itself.
+   */
+  const MONEY_ARM_EXPECTATIONS: Readonly<
+    Record<string, "standard" | "moneyModule" | "exempt">
+  > = {
+    "src/lib/x.ts": "standard",
+    "src/lib/theme/x.ts": "standard",
+    "src/components/x.tsx": "standard",
+    "src/app/(admin)/admin/x/page.tsx": "standard",
+    "src/app/(lodge)/lodge/kiosk/x.tsx": "standard",
+    "src/app/(lodge)/lodge/lodge-display/x.tsx": "standard",
+    "src/app/(finance)/finance/x/page.tsx": "standard",
+    "src/app/(public)/x/page.tsx": "standard",
+    "src/app/(admin)/admin/xero/_components/x.tsx": "standard",
+    "scripts/x.ts": "standard",
+    "prisma/seed-x.ts": "standard",
+    "src/lib/nzst-date.ts": "standard",
+    "src/lib/date-only.ts": "standard",
+    "src/lib/email-templates.ts": "standard",
+    "src/app/(admin)/admin/site-style/site-style-wizard.tsx": "standard",
+    "src/components/admin/notice-editor.tsx": "standard",
+    "src/app/(admin)/admin/promo-codes/promo-redemptions-panel.tsx": "standard",
+    "src/lib/xero-x.ts": "moneyModule",
+    "src/lib/xero.ts": "moneyModule",
+    "src/lib/xero-inbound/x.ts": "moneyModule",
+    "src/lib/finance-x.ts": "moneyModule",
+    "src/lib/membership-cancellation-x.ts": "moneyModule",
+    "src/lib/pricing.ts": "moneyModule",
+    "src/lib/stripe.ts": "moneyModule",
+    "src/lib/admin-payments-service.ts": "moneyModule",
+    "src/app/api/admin/x/route.ts": "moneyModule",
+    "src/lib/money-input.ts": "exempt",
+    "src/lib/money-provider-amount.ts": "exempt",
+  };
+
+  it("has an arm expectation for every roster path, and no stale ones", () => {
+    const roster = PRODUCTION_GUARD_ROSTER.map((entry) => entry.file);
+    // A new roster path forces a decision about which arms it needs, rather
+    // than defaulting into whichever family happens to be checked.
+    expect(roster.filter((file) => !(file in MONEY_ARM_EXPECTATIONS))).toEqual(
+      [],
+    );
+    expect(
+      Object.keys(MONEY_ARM_EXPECTATIONS).filter(
+        (file) => !roster.includes(file),
+      ),
+    ).toEqual([]);
+  });
+
+  it("keeps both arm families populated", async () => {
+    const { arms } = await loadEslintConfig();
+    /*
+      A FLOOR UNDER THE BASELINE. The audit below compares the resolved config
+      against these arrays, so emptying an array would empty the expectation with
+      it. The floors are the arms as designed: ten standard (four parse × two
+      operand orders, two unary `+`, two `…Cents`, two no-`* 100` spellings) and
+      eight money-module (two broad, two ratio-of-a-parse, two ratio-into-cents,
+      two no-`* 100`).
+    */
+    expect(arms.standard.length).toBeGreaterThanOrEqual(10);
+    expect(arms.moneyModule.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it("resolves to an armed `error` rule at every production path", async () => {
+    const { arms, exemptFiles } = await loadEslintConfig();
+
+    const problems = await auditResolvedGuardCoverage({
+      eslint,
+      repoRoot: REPO_ROOT,
+      requiredSelectorsFor: (file) => {
+        if (exemptFiles.has(file)) return [];
+        return MONEY_ARM_EXPECTATIONS[file] === "moneyModule"
+          ? arms.moneyModule
+          : arms.standard;
+      },
+    });
+
+    expect(problems).toEqual([]);
+  });
+
+  it("actually fires on a real violation at every production path", async () => {
+    // The audit above compares selector STRINGS; this one compares outcomes, so
+    // a selector that is still listed but no longer matches anything fails too.
+    const { exemptFiles } = await loadEslintConfig();
+
+    const problems = await auditEnforcedGuardCoverage({
+      eslint,
+      repoRoot: REPO_ROOT,
+      violatingCode:
+        "export function f(raw: string) {\n  return Math.round(parseFloat(raw) * 100);\n}\n",
+      messagePrefix: MONEY_RULE_ID,
+      isExempt: (file) => exemptFiles.has(file),
+    });
+
+    expect(problems).toEqual([]);
+  });
+
+  it("holds the declared exemptions to exactly the two helper modules", async () => {
+    const { exemptFiles } = await loadEslintConfig();
+
+    // Every exempt path is on the roster, so the audits above check it rather
+    // than skipping it: an exemption must still resolve to an `error` rule
+    // carrying the date and raw-SQL restrictions, and must report nothing for
+    // the money one. A third entry appearing here is a deliberate act that has
+    // to be argued for, not a config edit nobody notices.
+    const roster = new Set(PRODUCTION_GUARD_ROSTER.map((entry) => entry.file));
+    for (const file of exemptFiles) {
+      expect({ file, onRoster: roster.has(file) }).toEqual({
+        file,
+        onRoster: true,
+      });
+    }
+
+    const resolved = await resolveRestrictedSyntax(
+      eslint,
+      REPO_ROOT,
+      "src/lib/money-input.ts",
+    );
+    expect(resolved.severity).toBe(2);
+    expect(
+      resolved.messages.some((message) => message.startsWith("INV-DATE-015")),
+    ).toBe(true);
+    expect(
+      resolved.messages.some((message) => message.startsWith("INV-OPS-001")),
+    ).toBe(true);
+    expect(
+      resolved.messages.some((message) => message.startsWith(MONEY_RULE_ID)),
+    ).toBe(false);
   });
 });
