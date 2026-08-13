@@ -62,8 +62,12 @@ describe("deployment image contracts", () => {
     it("runs the repository's own Semgrep rules in the blocking gate, without dropping the registry packs", () => {
       const workflow = readRepoFile(".github/workflows/ci.yml");
 
-      // The custom rules must be IN the blocking scan...
-      expect(workflow).toContain("--config .semgrep/rules");
+      // The custom rules must be IN the blocking scan. Matched as the
+      // backslash-continued argument line, because `--config .semgrep/rules`
+      // also appears in the fixture-test step above it — so the plain substring
+      // stayed green when the flag was deleted from the scan itself, which is
+      // the only place that makes the rules blocking. Mutation-testing found it.
+      expect(workflow).toMatch(/^ +--config \.semgrep\/rules \\$/m);
       // ...and the four registry packs must still be there beside them. Wiring
       // custom rules in by REPLACING the packs is the silent-coverage-loss the
       // issue's review focus names.
@@ -96,10 +100,11 @@ describe("deployment image contracts", () => {
       // Non-zero exit on a finding, and no secret echoed into a public log.
       expect(workflow).toContain("--exit-code=1");
       expect(workflow).toContain("--redact");
-      // The action is gone: it installed a DIFFERENT gitleaks (8.24.3 by
-      // default) than the pinned container, so the two jobs disagreed about
-      // which tool was enforcing the gate.
-      expect(workflow).not.toContain("gitleaks/gitleaks-action");
+      // The action is no longer USED: it installed a DIFFERENT gitleaks (8.24.3
+      // by default) than the pinned container, so the two jobs disagreed about
+      // which tool was enforcing the gate. Matched on `uses:` rather than on the
+      // bare name, because the job's own comment explains why it went.
+      expect(workflow).not.toMatch(/uses:\s*gitleaks\/gitleaks-action/);
       // The SHAs reach the script through `env:`, not through `${{ }}` spliced
       // into the shell program.
       expect(workflow).toContain("PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}");
@@ -119,7 +124,7 @@ describe("deployment image contracts", () => {
       // unmergeable. The PR-range scan is therefore conditional at STEP level,
       // where a skip leaves the job (and so the check context) intact.
       expect(job).not.toMatch(/^ {4}if:/m);
-      expect(job).toContain("    if: github.event_name == 'pull_request'");
+      expect(job).toMatch(/^ {8}if: github\.event_name == 'pull_request'$/m);
     });
 
     it("names the Trivy gate for what it blocks and keeps it off the verify critical path", () => {
@@ -139,7 +144,11 @@ describe("deployment image contracts", () => {
       expect(job).toContain(
         "name: Trivy HIGH report (ADVISORY — never blocks the merge)",
       );
-      expect(job).toContain("continue-on-error: true");
+      // Anchored: the step's own comment quotes `continue-on-error: true` while
+      // explaining why it must stay, so the plain substring survived deleting
+      // the directive. Third instance of that defect in this block, all three
+      // found by mutation-testing rather than by reading.
+      expect(job).toMatch(/^ +continue-on-error: true$/m);
       // `needs: verify` here would put a REQUIRED image scan behind a ~17-minute
       // job, making it the new critical path for every merge.
       expect(job).not.toMatch(/needs:\s*\n\s*- verify/);
@@ -151,8 +160,14 @@ describe("deployment image contracts", () => {
       // Without this, the config REPLACES the built-in rules with the empty set
       // this file declares, and every gitleaks job in CI passes unconditionally.
       // That is exactly what shipped before #2686.
-      expect(config).toContain("[extend]");
-      expect(config).toMatch(/useDefault\s*=\s*true/);
+      //
+      // Anchored to the start of a line on purpose. `toContain("[extend]")`
+      // passes on the COMMENT above the directive, which explains at length why
+      // the directive must never be removed — so deleting the directive left
+      // this test green when it was first written. Mutation-testing it is what
+      // found that; the file's own prose was satisfying the guard.
+      expect(config).toMatch(/^\[extend\]$/m);
+      expect(config).toMatch(/^useDefault\s*=\s*true$/m);
       // Allowlists stay content-scoped: a global allowlist carrying `paths`
       // suppresses EVERYTHING under those paths in gitleaks 8.28.0, whatever
       // else the entry says.
