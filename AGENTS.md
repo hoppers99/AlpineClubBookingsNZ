@@ -595,7 +595,8 @@ For each issue: **implement → review → fix → verify-fix → validate → P
 CI-green → evidence**.
 
 - **Split local validation from CI.** Before push, run `npm run db:generate`,
-  `npm run lint`, `npm run typecheck`, focused tests for the touched and adjacent
+  `npm run lint`, `npm run typecheck`, `npm run test:related -- $(git diff
+  --name-only main...HEAD)`, focused tests for the touched and adjacent
   contracts, and mutation checks for every new guard. Run
   `npm run docs:linkcheck` and `npm run docs:indexcheck` when docs or invariant
   citations change, and `npm run knip` when files or exports change. Then push a
@@ -605,6 +606,50 @@ CI-green → evidence**.
   locally only to diagnose a CI failure or when CI is unavailable, and record
   that reason and result. Compare unexpected failures with `main`'s latest CI
   before classifying them as branch regressions.
+- **`npm run test:related` is what makes "adjacent" mechanical, and it is not
+  optional** (#2836). Choosing test files by reading the diff's own filenames
+  cannot find the suite a change breaks through the **module graph**. Adding one
+  import to a route drags new modules into the graph of tests that name none of
+  the changed files, and a `vi.mock` factory that was complete for the old graph
+  now throws at import — killing the whole file before a single test runs:
+
+  ```
+  Error: [vitest] No "FALLBACK_LODGE_CAPACITY" export is defined on the
+  "@/lib/lodge-capacity" mock.
+  ```
+
+  That is PR #2813, which passed a focused local gate and went red on CI.
+  `vitest related` selects by walking the graph instead, and on that very
+  failure it picked the broken suite — 42 tests — in **0.8 seconds**. Two
+  recurring shapes to expect once it points you at a file: complete the mock
+  factory with whatever the widened graph now reads at import time, and
+  remember that an `unstable_cache` wrapper has no incremental cache outside a
+  real request (`Invariant: incrementalCache missing`) — partial-mock the module
+  with `importOriginal` rather than replacing it, so a sibling cached read
+  arriving later cannot break the file the same way.
+
+  Feed it the whole diff — it is safe to. A docs-only branch, or a path that the
+  diff lists because the file was **deleted**, prints `No test files found` and
+  **exits 0**. That is a pass, not a breakage, so no lane needs to pre-filter the
+  file list before running it.
+- **What `test:related` does NOT cover: tests that scan the source tree from
+  disk.** A contract or census test reading `src/` with `fs.readFile` has no
+  import edge to the files it scans, so the graph cannot reach it and **this
+  class stays CI-caught by design.** PR #2813's second failure was exactly this:
+  the #2440 published-PageContent contract bans a *call* of the unfiltered
+  by-path read, its regex matches `name(`, and so naming the function with
+  parentheses **inside a comment** tripped it. When a change edits any file
+  under `src/`, re-read the diff for text that a scanner might match — an added
+  route, a new exported name, a comment naming a banned symbol — rather than
+  assuming the local gate spoke for it.
+
+  Running those suites locally instead was measured and **rejected on
+  evidence**: all 186 of them take ~3 minutes natively on Windows and produce
+  false failures. `public-page-content-published-contract.test.ts` and
+  `booking-no-emails-ui-contract.test.ts` both time out at 5000 ms under
+  parallel load and both pass in isolation — the gate would red-light the very
+  test it exists to protect. A gate that cries wolf trains its reader to ignore
+  it, so the honest arrangement is a fast gate with a stated blind spot.
 - **Validation traps that have produced confident false results here.** Every one
   of these has already cost a wave real time; treat a clean result that skipped
   them as unverified.
