@@ -679,6 +679,14 @@ export async function createXeroInvoiceForBooking(
           : "Zero-total invoice does not require Xero payment recording.";
 
     if (shouldRecordStripeInvoicePayment) {
+      // THE ONE BEHAVIOUR DELTA IN THIS CONVERSION, stated for the record
+      // (#2685 review). The test this replaced was `typeof … === "number"`;
+      // `providerAmountToCents` also requires the number to be FINITE. The only
+      // inputs that differ are `NaN` and `±Infinity`, which Xero's JSON cannot
+      // produce — and for those the old code took the `Math.min` branch and sent
+      // `amount: NaN` to Xero, while this one falls to `netCapturedCents`, the
+      // same figure an absent `amountDue` has always produced. No finite
+      // provider amount converts to a different cent value.
       const invoiceAmountDueCents = providerAmountToCents(
         createdInvoice.amountDue,
       );

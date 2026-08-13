@@ -34,7 +34,13 @@ export function parseDollarsToCents(input: string): ParseBudgetResult {
   if (cents === null) {
     return {
       ok: false,
-      error: "Enter a dollar amount with up to two decimal places (e.g. 10.00).",
+      // The message names every reason the parser actually refuses, not just
+      // the decimal places. It also turns down a leading zero ("007.50"), a
+      // currency symbol and a thousands separator, and an operator told only
+      // about decimal places has no way to see what is wrong with "007.50"
+      // (#2685 review).
+      error:
+        "Enter an amount in dollars and cents, for example 10.00 — no currency symbol, thousands separator, or leading zero.",
     };
   }
   if (cents > MAX_BUDGET_CENTS) {

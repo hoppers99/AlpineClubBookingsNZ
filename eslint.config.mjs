@@ -146,10 +146,10 @@ const NO_SELECT_STAR_IN_PRISMA_SQL = {
 // are two dozen of those and they are all legitimate; the negative fixtures in
 // `money-cents-guard.test.ts` pin every shape.
 //
-// All three enforce INV-MONEY-003 (`docs/invariants/money.md`) and open with
+// All of them enforce INV-MONEY-003 (`docs/invariants/money.md`) and open with
 // that id, so whoever trips one is handed the rule (#2691).
 const MONEY_CENTS_MESSAGE =
-  "INV-MONEY-003: Do not build cents inline. Money a PERSON typed goes through parseDecimalDollarsToCents (or parseSignedDecimalDollarsToCents where a negative is a real amount) from @/lib/money-input — it parses the decimal digits exactly and returns null, which you must surface as a validation error rather than a silent $0.00. An ALREADY-NUMERIC provider amount, such as a Xero API number, goes through providerAmountToCents from @/lib/money-provider-amount, the one reviewed rounding boundary. Computing a PERCENTAGE rather than cents? Then this rule has misfired: add the file to the money-helper block in eslint.config.mjs with a one-line reason, never an eslint-disable comment (#2685).";
+  "INV-MONEY-003: Do not build cents inline. Money a PERSON typed goes through parseDecimalDollarsToCents (or parseSignedDecimalDollarsToCents where a negative is a real amount) from @/lib/money-input — it parses the decimal digits exactly and returns null, which you must surface as a validation error rather than a silent $0.00. An ALREADY-NUMERIC provider amount, such as a Xero API number, goes through providerAmountToCents from @/lib/money-provider-amount, the one reviewed rounding boundary. Xero REPORT cell text, which arrives with thousands separators and accountants' bracket negatives, goes through parseProviderReportAmountToCents from the same module — the typed-money parser refuses both of those. Computing a PERCENTAGE rather than cents, or otherwise sure this rule has misfired? Add the file to MONEY_GUARD_EXEMPTIONS in eslint.config.mjs with a written reason — that list is the escape hatch and it is read by money-cents-guard.test.ts, so adding to it passes CI. Never an eslint-disable comment (#2685).";
 
 // A numeric-parse call anywhere inside an expression that is multiplied by 100.
 // The descendant combinator is what makes alternate spellings and compositions
@@ -173,6 +173,35 @@ const TIMES_100_SELECTORS = [
   'BinaryExpression[operator="*"][left.value=100]',
 ];
 
+// The same multiplication, minus the one shape that is a percentage by
+// construction: a DIVISION sitting directly inside it. `(calls / budget) * 100`,
+// `(beds / capacity) * 100` and `(settled / limit) * 100` are ratios scaled to a
+// percentage, and nothing in this repository builds cents that way — a cents
+// conversion scales an amount, not a quotient. Excluding it is what lets the
+// broad arm below cover the payment modules without making the obvious fix to
+// `xero-api-usage.ts`'s fractional `usagePercent` illegal to write.
+//
+// The narrow residue this gives up: `(a / b) * 100` that really is money AND is
+// not stored in a `…Cents` binding. Anything a quotient scales INTO a `…Cents`
+// binding is still caught, by the ratio arm below.
+const TIMES_100_NOT_A_RATIO_SELECTORS = [
+  'BinaryExpression[operator="*"][right.value=100]:not([left.type="BinaryExpression"][left.operator="/"])',
+  'BinaryExpression[operator="*"][left.value=100]:not([right.type="BinaryExpression"][right.operator="/"])',
+];
+
+// Scaling to cents WITHOUT a `* 100` anywhere in the source.
+//
+//   * `c *= 100` is the compound-assignment spelling, and it escaped every arm —
+//     including the broad money-module one — because there is no
+//     `BinaryExpression` to match. It is the shape one refactoring step away
+//     from `const c = parseFloat(raw); c *= 100;`.
+//   * `x / 0.01` is `x * 100` written as a division. Dividing by a hundredth is
+//     never anything else.
+const SCALED_TO_CENTS_WITHOUT_TIMES_100_SELECTORS = [
+  'AssignmentExpression[operator="*="][right.value=100]',
+  'BinaryExpression[operator="/"][right.value=0.01]',
+];
+
 const MONEY_CENTS_RESTRICTIONS = [
   // Arm 1 — an inline numeric parse scaled to cents.
   ...TIMES_100_SELECTORS.flatMap((times100) =>
@@ -181,8 +210,20 @@ const MONEY_CENTS_RESTRICTIONS = [
   // Arm 2 — a unary `+` coercion scaled to cents (`+input * 100`).
   'BinaryExpression[operator="*"][right.value=100][left.type="UnaryExpression"][left.operator="+"]',
   'BinaryExpression[operator="*"][left.value=100][right.type="UnaryExpression"][right.operator="+"]',
-  // Arm 3 — anything scaled to cents ON THE WAY INTO a `…Cents` binding.
-  ...TIMES_100_SELECTORS.map((times100) => `${CENTS_TARGET_SELECTOR} ${times100}`),
+  // Arm 3 — anything scaled to cents ON THE WAY INTO a `…Cents` binding, MINUS
+  // the two shapes arms 1 and 2 have already reported. `parseFloat(raw) * 100`
+  // and `parseFloat(raw)` begin at the same column, so without these exclusions
+  // the commonest real mistake printed the identical message twice at the
+  // identical line:column, and a 25-site regression printed fifty of them
+  // (#2685 review). The exclusions mirror arms 1 and 2 exactly — a parse call
+  // anywhere inside, or a unary `+` as the scaled operand — so nothing stops
+  // being reported, it is reported once.
+  ...[
+    `BinaryExpression[operator="*"][right.value=100]:not(:has(:matches(${PARSE_CALL_SELECTORS.join(", ")}))):not([left.type="UnaryExpression"][left.operator="+"])`,
+    `BinaryExpression[operator="*"][left.value=100]:not(:has(:matches(${PARSE_CALL_SELECTORS.join(", ")}))):not([right.type="UnaryExpression"][right.operator="+"])`,
+  ].map((times100) => `${CENTS_TARGET_SELECTOR} ${times100}`),
+  // Arm 5 — the two spellings that carry no `* 100` at all.
+  ...SCALED_TO_CENTS_WITHOUT_TIMES_100_SELECTORS,
 ].map((selector) => ({ selector, message: MONEY_CENTS_MESSAGE }));
 
 // Inside the money-domain modules themselves, a bare `x * 100` is a cents
@@ -190,37 +231,91 @@ const MONEY_CENTS_RESTRICTIONS = [
 // no theme ratios, which is exactly why the broad selector is safe here and
 // nowhere else. This is the arm that catches a fresh
 // `return Math.round(invoice.total * 100)` written straight into a Xero module,
-// which the three shape-based arms above cannot see.
-const MONEY_MODULE_RESTRICTIONS = TIMES_100_SELECTORS.map((selector) => ({
-  selector,
-  message: MONEY_CENTS_MESSAGE,
-}));
-
-// The files the money rules are lifted from, each for a stated reason. This list
-// IS the escape hatch — there are no `eslint-disable` comments for this rule and
-// a new one should be read as a site that was never classified.
+// and equally `const d = parseFloat(raw); const c = Math.round(d * 100);`, which
+// the shape-based arms above cannot see because the parse and the scaling are in
+// different statements.
 //
-//   * `src/lib/money-input.ts` — the canonical exact text parser. It combines
-//     the integer dollar and cent groups with `dollars * 100 + cents`, which is
-//     the arithmetic every other file is being sent here to use.
-//   * `src/lib/money-provider-amount.ts` — the reviewed provider boundary. It
-//     owns `Math.round(value * 100)` for already-numeric amounts, and the
-//     documented legacy float fallback for a Xero report cell whose magnitude
-//     falls outside the canonical grammar.
-const MONEY_HELPER_MODULES = [
-  "src/lib/money-input.ts",
-  "src/lib/money-provider-amount.ts",
+// This arm SUBSUMES arms 1–3 for these files: every `x * 100` matches whatever x
+// happens to be, so re-stating the narrower arms here would only report the same
+// node two and three times over. The one thing it does not subsume is a ratio,
+// which it excludes on purpose — so the ratio arm below puts back exactly the
+// case that matters, a quotient scaled into a `…Cents` binding.
+const RATIO_INTO_CENTS_SELECTORS = [
+  `${CENTS_TARGET_SELECTOR} BinaryExpression[operator="*"][right.value=100][left.type="BinaryExpression"][left.operator="/"]`,
+  `${CENTS_TARGET_SELECTOR} BinaryExpression[operator="*"][left.value=100][right.type="BinaryExpression"][right.operator="/"]`,
 ];
 
-// Where a bare `x * 100` is money by construction. Deliberately `src/lib/`-only:
-// the Xero ADMIN SCREENS under `src/app/(admin)/admin/xero/` render API-budget
-// percentages with the same `usagePercent * 100` shape, and they are correct.
+const MONEY_MODULE_RESTRICTIONS = [
+  ...TIMES_100_NOT_A_RATIO_SELECTORS,
+  ...RATIO_INTO_CENTS_SELECTORS,
+  ...SCALED_TO_CENTS_WITHOUT_TIMES_100_SELECTORS,
+].map((selector) => ({ selector, message: MONEY_CENTS_MESSAGE }));
+
+/**
+ * THE ESCAPE HATCH, and the only one. Each entry lifts the money restrictions
+ * from one path and states in writing why that path is allowed to build cents
+ * itself. There are no `eslint-disable` comments for this rule, and a new entry
+ * here should be read as a site that was never classified.
+ *
+ * `money-cents-guard.test.ts` reads THIS array rather than a copy of it, and
+ * fails on an entry with no reason — so the instruction the rule's own message
+ * gives ("add the file with a written reason") is a move that actually passes
+ * CI. It did not used to be: the test hard-coded the two helper paths, so a
+ * developer told to add a third had no legal option at all (#2685 review).
+ */
+export const MONEY_GUARD_EXEMPTIONS = [
+  {
+    file: "src/lib/money-input.ts",
+    reason:
+      "The canonical exact text parser. It combines the integer dollar and cent groups with `dollars * 100 + cents`, which is the arithmetic every other file is being sent here to use.",
+  },
+  {
+    file: "src/lib/money-provider-amount.ts",
+    reason:
+      "The reviewed provider boundary. It owns `Math.round(value * 100)` for already-numeric amounts, and the documented legacy float fallback for a Xero report cell whose magnitude falls outside the canonical grammar.",
+  },
+];
+
+const MONEY_HELPER_MODULES = MONEY_GUARD_EXEMPTIONS.map((entry) => entry.file);
+
+// Where a bare `x * 100` is money by construction.
+//
+// The families are matched by PREFIX so the guard follows the code through an
+// ordinary rename or a split into a directory — the earlier hand-written list
+// missed `src/lib/xero.ts` (the facade: `xero-*` does not match `xero`), had no
+// `/**` form for `membership-cancellation-*` although the other two families
+// did, and matched `.ts` only, so moving one module to `.tsx` would have dropped
+// it silently (#2685 review).
+//
+// The named modules are the rest of the money surface the census found: the
+// payment, credit, promo, fee, invoice and pricing modules, plus every API
+// route, all of which convert money and none of which computes a percentage.
+// `src/lib/admin-payments-service.ts` is the one the issue itself calls
+// "invisible to any rule keyed off parseFloat or Math.round" — it is visible to
+// this arm.
+//
+// Still deliberately NOT here: the Xero ADMIN SCREENS under
+// `src/app/(admin)/admin/xero/`, which render API-budget percentages with the
+// same `usagePercent * 100` shape, and are correct.
 const MONEY_DOMAIN_MODULES = [
-  "src/lib/xero-*.ts",
+  "src/lib/xero.ts",
+  "src/lib/xero-*.{ts,tsx}",
   "src/lib/xero-*/**/*.{ts,tsx}",
-  "src/lib/finance-*.ts",
+  "src/lib/finance-*.{ts,tsx}",
   "src/lib/finance-*/**/*.{ts,tsx}",
-  "src/lib/membership-cancellation-*.ts",
+  "src/lib/membership-cancellation-*.{ts,tsx}",
+  "src/lib/membership-cancellation-*/**/*.{ts,tsx}",
+  "src/lib/*payment*.{ts,tsx}",
+  "src/lib/*credit*.{ts,tsx}",
+  "src/lib/*refund*.{ts,tsx}",
+  "src/lib/*promo*.{ts,tsx}",
+  "src/lib/*fee*.{ts,tsx}",
+  "src/lib/*invoice*.{ts,tsx}",
+  "src/lib/*subscription*.{ts,tsx}",
+  "src/lib/pricing.ts",
+  "src/lib/stripe.ts",
+  "src/lib/stripe-*.{ts,tsx}",
+  "src/app/api/**/*.{ts,tsx}",
 ];
 
 // Flat config REPLACES a rule's whole option list rather than merging it, so
@@ -240,7 +335,8 @@ const RAW_SQL_RESTRICTIONS = [
 // The same hazard, one rule later: every block below that sets
 // `no-restricted-syntax` must re-state the money restrictions as well, or the
 // block silently lifts them along with whatever it meant to lift.
-// `eslint-config-money-guard.test.ts` fails the build if one ever does (#2685).
+// `src/lib/__tests__/money-cents-guard.test.ts` fails the build if one ever
+// does (#2685).
 
 const eslintConfig = defineConfig([
   ...fixupConfigRules(nextVitals),
@@ -438,9 +534,13 @@ const eslintConfig = defineConfig([
   },
   {
     // #2685 — inside the money-domain modules a bare `x * 100` is a cents
-    // conversion by construction, so the broad selector is added on top of
-    // everything the `src/**` block already applies. These files compute no
-    // percentages: that is what makes this safe here and unsafe anywhere else.
+    // conversion by construction, so the broad selector REPLACES the narrower
+    // shape-based arms rather than joining them. It matches everything they
+    // match, so listing both made the commonest real mistake report two and
+    // three times at the same line and column; a 25-site regression printed
+    // sixty identical messages and read far worse than it was (#2685 review).
+    // These files compute no percentages: that is what makes this safe here and
+    // unsafe anywhere else.
     files: MONEY_DOMAIN_MODULES,
     rules: {
       "no-restricted-syntax": [
@@ -449,14 +549,13 @@ const eslintConfig = defineConfig([
         NO_BARE_TO_LOCALE_TIME_STRING,
         NO_BARE_TO_LOCALE_STRING,
         ...RAW_SQL_RESTRICTIONS,
-        ...MONEY_CENTS_RESTRICTIONS,
         ...MONEY_MODULE_RESTRICTIONS,
       ],
     },
   },
   {
-    // #2685 — the two canonical money boundaries. The money restrictions are
-    // lifted here and ONLY here (reasons on `MONEY_HELPER_MODULES` above); the
+    // #2685 — the exempt paths. The money restrictions are lifted here and ONLY
+    // here, each with its written reason on `MONEY_GUARD_EXEMPTIONS` above; the
     // date and raw-SQL restrictions still apply, which is why this block
     // re-states them rather than switching the rule off.
     files: MONEY_HELPER_MODULES,

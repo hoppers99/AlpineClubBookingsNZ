@@ -84,7 +84,15 @@ export function MemberCreditCard({
       </CardHeader>
       <CardContent>
         {adjustmentError && (
-          <div className="mb-4 p-2 bg-danger-3 border border-danger-6 text-danger-11 rounded text-sm">{adjustmentError}</div>
+          // `role="alert"` (#2685 review): a refused credit-adjustment amount was
+          // shown but never announced, so a screen-reader user pressing Submit
+          // got silence and a form that had not saved.
+          <div
+            role="alert"
+            className="mb-4 p-2 bg-danger-3 border border-danger-6 text-danger-11 rounded text-sm"
+          >
+            {adjustmentError}
+          </div>
         )}
         {showAdjustmentForm && (
           <div className="mb-4 p-4 border border-border rounded-md bg-muted space-y-3">

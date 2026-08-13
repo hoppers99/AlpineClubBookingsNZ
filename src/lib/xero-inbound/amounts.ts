@@ -19,9 +19,17 @@ export function buildSyntheticAllocationLinkId(
 }
 
 function getPositiveCurrencyAmountCents(value: number | null | undefined): number | null {
-  // The positivity test stays on the DOLLARS, ahead of the conversion, exactly
-  // where it was: an amount of 0.001 is rejected here for being sub-cent, and
-  // testing the rounded cents instead would let it through as a zero (#2685).
+  // THE POSITIVITY TEST STAYS ON THE DOLLARS, ahead of the conversion, exactly
+  // where it was — this is a frozen behaviour, not a preference (#2685).
+  //
+  // What that ordering actually does, stated the right way round: a positive
+  // sub-cent amount such as 0.001 PASSES this test and converts to `0` cents,
+  // because 0.001 > 0 and `Math.round(0.1)` is 0. Testing the ROUNDED cents
+  // instead (`cents <= 0`) would reject it. So the two orderings differ, this
+  // one is the more permissive of them, and it is the one every call site this
+  // helper replaced already used. Swapping them would change what a Xero credit
+  // note is worth, which is a money-behaviour decision for the owner rather
+  // than something to tidy up in a refactor.
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return null;
   }
@@ -129,12 +137,24 @@ export function buildCreditNoteAllocationTargets(
     const invoiceId = allocation.invoice?.invoiceID ?? null;
     const amount = allocation.amount;
 
-    // Same ordering point as above: a non-positive allocation is dropped on the
-    // dollars, before rounding, so a sub-cent allocation stays dropped.
+    // Same ordering point as above, and the same correction: a NON-POSITIVE
+    // allocation is dropped here on the dollars. A positive SUB-cent allocation
+    // is not — it passes this test and rounds to `0`, and what removes it is the
+    // `amountCents > 0` filter on the way out, after the per-invoice totals have
+    // been summed. That ordering matters and is deliberate: two 0.006 allocations
+    // against the same invoice each round to 1 cent and total 2, which is what
+    // the code this replaced did (#2685).
     if (!invoiceId || typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
       continue;
     }
 
+    // UNREACHABLE, and kept anyway. The guard above has already proved `amount`
+    // is a finite `number`, which is the whole of `providerAmountToCents`'s
+    // validity contract, so this branch cannot be taken at runtime. It stays
+    // because the helper's return type is `number | null` and this boundary
+    // must stay fail-closed by construction: if that contract is ever widened,
+    // an unreadable allocation is dropped rather than added to a total as
+    // `null` (#2685 review).
     const amountCents = providerAmountToCents(amount);
     if (amountCents === null) {
       continue;

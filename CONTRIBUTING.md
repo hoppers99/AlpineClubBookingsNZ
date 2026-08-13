@@ -46,9 +46,11 @@ the full environment and club config contract.
   `src/lib/__tests__/money-cents-guard.test.ts` enforce this over non-test code
   in `src/`, `scripts/` and `prisma/`. The rule matches the composition, not
   `parseFloat` by name, so percentages and `Math.round(n * 100) / 100` rounding
-  stay legal. A site that genuinely needs an exemption is added to the
-  money-helper list in `eslint.config.mjs` with a reason — never an
-  `eslint-disable`.
+  stay legal. A site that genuinely needs an exemption is added to the exported
+  `MONEY_GUARD_EXEMPTIONS` array in `eslint.config.mjs` with a written reason —
+  never an `eslint-disable`. That array is the list the guard test READS, so
+  adding an entry is a move that passes CI rather than one that trades a lint
+  failure for a test failure.
 - Keep booking dates as New Zealand date-only values unless a feature explicitly
   requires time-of-day semantics.
 - Keep external payment, accounting, and email calls outside long database

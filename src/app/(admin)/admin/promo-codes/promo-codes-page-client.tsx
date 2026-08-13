@@ -10,6 +10,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
+import { FocusedActionError } from "@/components/focused-action-error";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -152,6 +153,25 @@ export function PromoCodesPageClient({
   const [archivedCodes, setArchivedCodes] = useState<PromoCode[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  /*
+    #2685 review — the Save button on this form sits roughly 630 lines of markup
+    BELOW the error banner, so a refused amount put its explanation somewhere
+    the admin could not see, in a plain `<div>` with no role and no live region:
+    nothing was announced, nothing took focus, and nothing scrolled. The banner
+    is now `FocusedActionError`, which is a permanently mounted assertive live
+    region that takes focus and scrolls itself into view.
+
+    The counter is what makes it work the SECOND time. Pressing Save again with
+    the same amount still in the box produces the identical message string, so
+    `error` does not change and the effect keyed on it would not re-fire. Every
+    submit-time refusal bumps this.
+  */
+  const [errorAttention, setErrorAttention] = useState(0);
+  /** Record a failure AND re-announce it, even when the text has not changed. */
+  const raiseError = useCallback((message: string) => {
+    setError(message);
+    setErrorAttention((version) => version + 1);
+  }, []);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -499,7 +519,11 @@ export function PromoCodesPageClient({
     const amountField = (raw: string, label: string): number | null => {
       const cents = parseDecimalDollarsToCents(raw);
       if (cents === null) {
-        setError(`Enter ${label} in dollars and cents, for example 25.00.`);
+        // `raiseError`, not `setError`: pressing Save twice with the same bad
+        // amount produces the identical string, and the banner is ~630 lines of
+        // markup above the button, so it has to re-announce and re-scroll each
+        // time rather than sit there unchanged (#2685 review).
+        raiseError(`Enter ${label} in dollars and cents, for example 25.00.`);
         // The caller returns straight away, so release the Save button here.
         setSaving(false);
       }
@@ -573,7 +597,7 @@ export function PromoCodesPageClient({
       resetForm();
       fetchPromoCodes();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
+      raiseError(err instanceof Error ? err.message : "Unknown error");
     } finally {
       setSaving(false);
     }
@@ -951,11 +975,13 @@ export function PromoCodesPageClient({
         )}
       </div>
 
-      {error && (
-        <div className="bg-destructive/10 text-destructive px-4 py-3 rounded-md">
-          {error}
-        </div>
-      )}
+      <FocusedActionError
+        id="promo-codes-error"
+        error={error}
+        attentionKey={errorAttention}
+        className="scroll-mt-20"
+      />
+
 
       {showForm && (
         <Card>

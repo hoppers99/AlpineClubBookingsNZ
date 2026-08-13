@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useId, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -47,6 +47,45 @@ export function CancellationRulesEditor({
   // error element ids are scoped per instance rather than by row index alone.
   const instanceId = useId()
 
+  /*
+    #2685 review — A DRAFT MUST NOT OUTLIVE THE RULES IT WAS TYPED AGAINST.
+
+    `feeDrafts` and `feeErrors` are keyed by ROW INDEX, and index 0 of the next
+    thing to arrive is a different fee entirely. Nothing cleared them when the
+    surrounding section replaced `rules`, so:
+
+      * press Cancel and the abandoned text was still in the box, the complaint
+        was still on screen, and `onInvalidAmountsChange` still said "invalid",
+        which latched Save off for a policy the admin had just reverted;
+      * switch the policy scope and the boxes showed the PREVIOUS lodge's typed
+        text over the new lodge's stored fees.
+
+    The section owns `rules`, so the honest signal is its IDENTITY — but the
+    editor is what changes it on every keystroke, and wiping the draft then
+    would make the box untypable. So the editor remembers the array it last
+    emitted: an array that is not that one came from outside, and the drafts
+    belong to something that is gone.
+
+    Both consumers pass the array straight back (`section.setDraft({ rules })`
+    spreads it onto the draft object unchanged), which is what makes the
+    identity test reliable rather than a guess.
+  */
+  const emittedRulesRef = useRef<PolicyRule[] | null>(null)
+  useEffect(() => {
+    if (rules === emittedRulesRef.current) return
+    emittedRulesRef.current = rules
+    // Keep the existing object when there is nothing to drop, so an ordinary
+    // reload does not force a re-render for no reason.
+    setFeeDrafts((prev) => (Object.keys(prev).length === 0 ? prev : {}))
+    setFeeErrors((prev) => (Object.keys(prev).length === 0 ? prev : {}))
+  }, [rules])
+
+  /** Every `onChange` goes through here, so the editor knows its own output. */
+  function emitRules(next: PolicyRule[]) {
+    emittedRulesRef.current = next
+    onChange(next)
+  }
+
   function feeErrorId(index: number, field: FeeField): string {
     return `${instanceId}-${index}-${field}-error`
   }
@@ -82,7 +121,7 @@ export function CancellationRulesEditor({
     updateRule(index, field, cents)
   }
   function addRule() {
-    onChange([
+    emitRules([
       ...rules,
       {
         daysBeforeStay: 0,
@@ -108,10 +147,10 @@ export function CancellationRulesEditor({
     }
     setFeeDrafts(reindex)
     setFeeErrors(reindex)
-    onChange(rules.filter((_, i) => i !== index))
+    emitRules(rules.filter((_, i) => i !== index))
   }
   function updateRule(index: number, field: keyof PolicyRule, value: number) {
-    onChange(rules.map((r, i) => (i === index ? { ...r, [field]: value } : r)))
+    emitRules(rules.map((r, i) => (i === index ? { ...r, [field]: value } : r)))
   }
 
   return (

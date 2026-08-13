@@ -35,16 +35,40 @@ const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
  * downstream: `amountExact`/`amountMin`/`amountMax` are already cents by the
  * time any query is built.
  */
+/**
+ * What an amount filter must look like, said in the operator's words.
+ *
+ * Exported because the payments screen renders it beside the amount boxes when
+ * the API refuses the query — the operator should not have to open a network
+ * panel to find out why the table stopped changing (#2685 review).
+ */
+export const AMOUNT_FILTER_GRAMMAR_MESSAGE =
+  "Enter an amount in dollars and cents, for example 125.00 — no currency symbol, thousands separator, or leading zero.";
+
+/** The only refusal a well-formed amount can still earn. */
+export const AMOUNT_FILTER_RANGE_MESSAGE =
+  "That amount is larger than any payment this system can hold.";
+
 const amountSchema = z
   .string()
   .trim()
-  .regex(/^\d+(\.\d{1,2})?$/)
+  // THE SAME GRAMMAR THE CANONICAL PARSER ENFORCES, not a looser one.
+  //
+  // `\d+` admitted `"007.50"`, which `parseDecimalDollarsToCents` then refused —
+  // so a leading zero fell through to the range message below and told the
+  // operator their amount was "outside the supported range", which was not what
+  // was wrong with it (#2685 review). Leading zeros stay rejected (owner
+  // decision, 14 Aug 2026); what changes is that the refusal now says so.
+  .regex(/^(0|[1-9]\d*)(\.\d{1,2})?$/, AMOUNT_FILTER_GRAMMAR_MESSAGE)
   .transform((value, ctx) => {
     const cents = parseDecimalDollarsToCents(value);
     if (cents === null) {
+      // Reachable only for a well-formed amount above the int32 cent range the
+      // `amountCents` column holds — which used to reach Prisma and fail the
+      // whole request with a 500. Every other refusal is the grammar's, above.
       ctx.addIssue({
         code: "custom",
-        message: "Amount is outside the supported range",
+        message: AMOUNT_FILTER_RANGE_MESSAGE,
       });
       return z.NEVER;
     }

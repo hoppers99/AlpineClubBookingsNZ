@@ -160,7 +160,14 @@ export function RefundAppealButton({
         )}
 
         {error && (
-          <div className="bg-destructive/10 text-destructive px-3 py-2 rounded-md text-sm">
+          // `role="alert"` (#2685 review): this banner carries the refusal for a
+          // refund amount a member typed, and without it a screen-reader user
+          // pressing Submit heard nothing at all — the message was drawn and
+          // never announced.
+          <div
+            role="alert"
+            className="bg-destructive/10 text-destructive px-3 py-2 rounded-md text-sm"
+          >
             {error}
           </div>
         )}

@@ -1,6 +1,25 @@
 import path from "path";
 import { ESLint } from "eslint";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+
+/*
+  The flat-config bootstrap — resolving `eslint.config.mjs`, its Next presets and
+  every plugin — costs 5–6 seconds, and `new ESLint(...)` does none of it: the
+  work happens on the FIRST `lintText`. Left to itself the first `it.each` case
+  paid the whole bill against vitest's 5000 ms default and this file failed
+  roughly two runs in three, on a machine faster than CI's (#2685 review).
+
+  `beforeAll` now warms the linter with a throwaway lint, and both it and the
+  file get an explicit budget. That moves the cost somewhere it is affordable
+  instead of pretending it is not there.
+*/
+const BOOTSTRAP_TIMEOUT_MS = 60_000;
+const CASE_TIMEOUT_MS = 20_000;
+
+vi.setConfig({
+  testTimeout: CASE_TIMEOUT_MS,
+  hookTimeout: BOOTSTRAP_TIMEOUT_MS,
+});
 
 /**
  * #2685 — the money cents-conversion lint rule, exercised through the REAL
@@ -33,23 +52,111 @@ const XERO_ADMIN_SCREEN_FILE = path.join(
 const HELPER_TEXT_FILE = path.join(REPO_ROOT, "src/lib/money-input.ts");
 const HELPER_PROVIDER_FILE = path.join(REPO_ROOT, "src/lib/money-provider-amount.ts");
 
+/*
+  The paths the module list was WIDENED to (#2685 review). Each was a silent hole
+  before: `xero.ts` because `xero-*` does not match `xero`; the
+  `membership-cancellation-*` directory because that family had no `/**` form
+  although the other two did; `.tsx` at the lib root because the globs said `.ts`;
+  and the payment/promo/credit modules plus every API route because the arm was
+  confined to three `src/lib/` families, leaving the very module the issue calls
+  "invisible to any rule keyed off parseFloat or Math.round" invisible to this
+  rule too.
+*/
+const XERO_FACADE_FILE = path.join(REPO_ROOT, "src/lib/xero.ts");
+const XERO_LIB_ROOT_TSX_FILE = path.join(
+  REPO_ROOT,
+  "src/lib/xero-money-guard-fixture.tsx",
+);
+const MEMBERSHIP_CANCELLATION_DIR_FILE = path.join(
+  REPO_ROOT,
+  "src/lib/membership-cancellation-money-guard/fixture.ts",
+);
+const ADMIN_PAYMENTS_FILE = path.join(
+  REPO_ROOT,
+  "src/lib/admin-payments-service.ts",
+);
+const STRIPE_FILE = path.join(REPO_ROOT, "src/lib/stripe.ts");
+const PROMO_FILE = path.join(REPO_ROOT, "src/lib/promo.ts");
+const JOINING_FEE_FILE = path.join(REPO_ROOT, "src/lib/joining-fee.ts");
+const API_ROUTE_FILE = path.join(
+  REPO_ROOT,
+  "src/app/api/admin/money-guard-fixture/route.ts",
+);
+
 const MONEY_RULE_ID = "INV-MONEY-003";
 
 let eslint: ESLint;
 
-beforeAll(() => {
+beforeAll(async () => {
   eslint = new ESLint({ cwd: REPO_ROOT, warnIgnored: false });
-});
+  // Force the config/plugin bootstrap here rather than inside the first case.
+  await eslint.lintText("export const warm = 1;\n", {
+    filePath: ORDINARY_SRC_FILE,
+  });
+}, BOOTSTRAP_TIMEOUT_MS);
+
+type ConfigBlock = { files?: string[]; rules?: Record<string, unknown> };
+type GuardExemption = { file: string; reason: string };
+
+/**
+ * Whether a glob can only ever match a TEST file.
+ *
+ * `__tests__/` directories and `*.test.ts` / `*.spec.ts` filenames are the two
+ * spellings this repository uses. Anything else in an `off` block is production
+ * code with the guard switched off.
+ */
+function isTestOnlyGlob(glob: string): boolean {
+  return (
+    glob.includes("__tests__") ||
+    /\*\.(test|spec)\./.test(glob) ||
+    glob.includes(".test.") ||
+    glob.includes(".spec.")
+  );
+}
+
+/** The real `eslint.config.mjs`: its blocks, and its declared exemption list. */
+async function loadEslintConfig(): Promise<{
+  blocks: ConfigBlock[];
+  exemptions: GuardExemption[];
+  exemptFiles: Set<string>;
+}> {
+  const { pathToFileURL } = await import("url");
+  const configModule: {
+    default: unknown;
+    MONEY_GUARD_EXEMPTIONS?: unknown;
+  } = await import(
+    pathToFileURL(path.join(REPO_ROOT, "eslint.config.mjs")).href
+  );
+
+  const exemptions = (configModule.MONEY_GUARD_EXEMPTIONS ??
+    []) as GuardExemption[];
+
+  return {
+    blocks: configModule.default as ConfigBlock[],
+    exemptions,
+    exemptFiles: new Set(exemptions.map((entry) => entry.file)),
+  };
+}
+
+/** Every money-rule complaint in `code`, as `line:column` strings. */
+async function moneyErrorLocationsIn(
+  code: string,
+  filePath: string,
+): Promise<string[]> {
+  const results = await eslint.lintText(code, { filePath });
+  return results
+    .flatMap((result) => result.messages)
+    .filter(
+      (message) =>
+        message.ruleId === "no-restricted-syntax" &&
+        typeof message.message === "string" &&
+        message.message.startsWith(MONEY_RULE_ID),
+    )
+    .map((message) => `${message.line}:${message.column}`);
+}
 
 async function moneyErrorsIn(code: string, filePath: string): Promise<number> {
-  const results = await eslint.lintText(code, { filePath });
-  const messages = results.flatMap((result) => result.messages);
-  return messages.filter(
-    (message) =>
-      message.ruleId === "no-restricted-syntax" &&
-      typeof message.message === "string" &&
-      message.message.startsWith(MONEY_RULE_ID),
-  ).length;
+  return (await moneyErrorLocationsIn(code, filePath)).length;
 }
 
 describe("money cents-conversion guard: positive fixtures", () => {
@@ -90,17 +197,96 @@ describe("money cents-conversion guard: positive fixtures", () => {
     await expect(moneyErrorsIn(code, ORDINARY_SRC_FILE)).resolves.toBeGreaterThan(0);
   });
 
+  /*
+    The two spellings that scale to cents with no `* 100` in the source at all.
+    `c *= 100` escaped every arm — including the broad money-module one, which
+    matches a `BinaryExpression` that a compound assignment does not create — and
+    it is one refactoring step from the shape this whole issue is about (#2685
+    review).
+  */
+  it.each([
+    ["a compound `*= 100`", "let c = parseFloat(raw); c *= 100;"],
+    ["a division by a hundredth", "const c = Math.round(Number(raw) / 0.01);"],
+  ])("catches %s", async (_label, body) => {
+    const code = `export function f(raw: string) {\n  ${body}\n  return 1;\n}\n`;
+    await expect(moneyErrorsIn(code, ORDINARY_SRC_FILE)).resolves.toBeGreaterThan(0);
+  });
+
   it.each([
     ["a Xero module", XERO_MODULE_FILE],
+    ["the Xero facade, which `xero-*` does not match", XERO_FACADE_FILE],
+    ["a `.tsx` at the lib root", XERO_LIB_ROOT_TSX_FILE],
     ["a finance module", FINANCE_MODULE_FILE],
+    ["a membership-cancellation directory", MEMBERSHIP_CANCELLATION_DIR_FILE],
+    ["the admin payments service", ADMIN_PAYMENTS_FILE],
+    ["the Stripe client", STRIPE_FILE],
+    ["the promo module", PROMO_FILE],
+    ["the joining-fee module", JOINING_FEE_FILE],
+    ["an API route", API_ROUTE_FILE],
   ])("catches a bare `x * 100` inside %s", async (_label, filePath) => {
     const code = "export function f(total: number) {\n  return Math.round(total * 100);\n}\n";
     await expect(moneyErrorsIn(code, filePath)).resolves.toBeGreaterThan(0);
   });
 
+  /*
+    The intermediate-variable form — the parse and the scaling in different
+    statements — is the defect class the issue describes, one refactoring step
+    removed. No shape-based arm can see it, because there is nothing in the
+    multiplication to recognise; only the module-scoped arm catches it, which is
+    the concrete reason that arm was widened past three `src/lib/` families.
+  */
+  it.each([
+    ["a Xero module", XERO_MODULE_FILE],
+    ["the admin payments service", ADMIN_PAYMENTS_FILE],
+    ["an API route", API_ROUTE_FILE],
+  ])("catches a parse held in a variable first, inside %s", async (_label, filePath) => {
+    const code = [
+      "export function f(raw: string) {",
+      "  const dollars = Number.parseFloat(raw);",
+      "  return Math.round(dollars * 100);",
+      "}",
+      "",
+    ].join("\n");
+    await expect(moneyErrorsIn(code, filePath)).resolves.toBeGreaterThan(0);
+  });
+
+  it("catches a money property whose key does not end in Cents", async () => {
+    // `{ unit_amount: … }` for Stripe and `{ amount: … }` for a webhook are real
+    // shapes that arm 3's `…Cents` convention cannot see; the module arm can.
+    const code = "export const price = { unit_amount: Math.round(dollars * 100) };\n";
+    await expect(moneyErrorsIn(code, STRIPE_FILE)).resolves.toBeGreaterThan(0);
+  });
+
   it("reaches scripts/, where the money-adjacent backfills live", async () => {
     const code = "export function f(raw: string) {\n  return Math.round(parseFloat(raw) * 100);\n}\n";
     await expect(moneyErrorsIn(code, SCRIPTS_FILE)).resolves.toBeGreaterThan(0);
+  });
+
+  /*
+    ONE complaint per mistake. The arms overlap by design — the same
+    `parseFloat(raw) * 100` matches the parse arm, the `…Cents` arm and, in a
+    money module, the broad arm — and `parseFloat(raw)` starts at the same column
+    as `parseFloat(raw) * 100`, so the overlap printed the identical message two
+    and three times at the identical line:column. A 25-site regression printed
+    about sixty of them and read far worse than it was (#2685 review).
+  */
+  it.each([
+    ["an ordinary src file", ORDINARY_SRC_FILE],
+    ["a money-domain module", XERO_MODULE_FILE],
+  ])("reports a parse scaled into a `…Cents` binding once in %s", async (_label, filePath) => {
+    const code = "export const amountCents = Math.round(parseFloat(raw) * 100);\n";
+    await expect(moneyErrorLocationsIn(code, filePath)).resolves.toHaveLength(1);
+  });
+
+  it.each([
+    ["a unary + coercion", "export const amountCents = Math.round(+raw * 100);"],
+    ["a plain variable", "export const amountCents = Math.round(dollars * 100);"],
+    ["the operands reversed", "export const amountCents = Math.round(100 * dollars);"],
+    ["a nested unary +", "export const amountCents = Math.round((a + +b) * 100);"],
+  ])("still reports %s into a `…Cents` binding exactly once", async (_label, code) => {
+    await expect(
+      moneyErrorLocationsIn(`${code}\n`, ORDINARY_SRC_FILE),
+    ).resolves.toHaveLength(1);
   });
 
   it("names both canonical helpers in its message", async () => {
@@ -115,6 +301,27 @@ describe("money cents-conversion guard: positive fixtures", () => {
     expect(message).toContain("@/lib/money-input");
     expect(message).toContain("providerAmountToCents");
     expect(message).toContain("@/lib/money-provider-amount");
+    /*
+      And the THIRD helper. An author holding a Xero report cell has text, so the
+      first sentence sends them to the typed-money parser — which refuses the
+      thousands separators and bracket negatives a report cell is full of, with
+      nothing to say a report-cell parser exists (#2685 review).
+    */
+    expect(message).toContain("parseProviderReportAmountToCents");
+  });
+
+  it("points its escape hatch at a move that actually passes CI", async () => {
+    const code = "export const c = Math.round(parseFloat('1') * 100);\n";
+    const results = await eslint.lintText(code, { filePath: ORDINARY_SRC_FILE });
+    const message = results
+      .flatMap((result) => result.messages)
+      .find((entry) => entry.message?.startsWith(MONEY_RULE_ID))?.message;
+
+    // The named list is the one the integrity test above reads, so following
+    // this instruction is legal. Naming a list the test hard-coded was not.
+    expect(message).toContain("MONEY_GUARD_EXEMPTIONS");
+    expect(message).toContain("eslint.config.mjs");
+    expect(message).toContain("Never an eslint-disable comment");
   });
 });
 
@@ -156,10 +363,47 @@ describe("money cents-conversion guard: negative fixtures", () => {
   });
 
   it("does not reach the Xero ADMIN SCREENS, which render budget percentages", async () => {
-    // The broad `x * 100` arm is scoped to `src/lib/` money modules precisely so
-    // this stays legal: it is a percentage, and it is spelled the same way.
+    // The broad `x * 100` arm is scoped to money modules precisely so this stays
+    // legal: it is a percentage, and it is spelled the same way.
     const code = "export function f(usagePercent: number) {\n  return Math.round(usagePercent * 100);\n}\n";
     await expect(moneyErrorsIn(code, XERO_ADMIN_SCREEN_FILE)).resolves.toBe(0);
+  });
+
+  /*
+    A RATIO SCALED TO A PERCENTAGE STAYS LEGAL EVEN IN A MONEY MODULE.
+
+    A division sitting directly inside the multiplication is a percentage by
+    construction — nothing in this repository builds cents from a quotient — and
+    the shape is real inside the very files the broad arm covers.
+    `src/lib/xero-api-usage.ts` computes `usagePercent` as `calls / budget`, and
+    the obvious fix for the dashboard that renders it as `${usagePercent}%` is a
+    `* 100` at source; without this exclusion that fix would be lint-illegal, and
+    a rule whose only answer is "suppress me" trains maintainers to suppress it
+    (#2685 review).
+  */
+  it.each([
+    ["a Xero module", XERO_MODULE_FILE],
+    ["a finance module", FINANCE_MODULE_FILE],
+    ["the admin payments service", ADMIN_PAYMENTS_FILE],
+    ["an API route", API_ROUTE_FILE],
+  ])("does not flag a ratio scaled to a percentage inside %s", async (_label, filePath) => {
+    const code = [
+      "export function f(calls: number, budget: number) {",
+      "  const used = Math.round((calls / budget) * 100);",
+      "  const share = (calls / Math.max(budget, 1)) * 100;",
+      "  return used + share;",
+      "}",
+      "",
+    ].join("\n");
+    await expect(moneyErrorsIn(code, filePath)).resolves.toBe(0);
+  });
+
+  it("still flags a ratio scaled INTO a `…Cents` binding", async () => {
+    // The exclusion above gives up exactly one thing, and this is the half of it
+    // that matters: the `…Cents` convention says the result is money.
+    const code = "export const amountCents = Math.round((total / nights) * 100);\n";
+    await expect(moneyErrorsIn(code, XERO_MODULE_FILE)).resolves.toBeGreaterThan(0);
+    await expect(moneyErrorsIn(code, ORDINARY_SRC_FILE)).resolves.toBeGreaterThan(0);
   });
 });
 
@@ -190,19 +434,7 @@ describe("money cents-conversion guard: the approved helper modules", () => {
     still green. This test is what makes that fail instead.
   */
   it("is re-stated by every block that sets no-restricted-syntax", async () => {
-    const { pathToFileURL } = await import("url");
-    const configModule: { default: unknown } = await import(
-      pathToFileURL(path.join(REPO_ROOT, "eslint.config.mjs")).href
-    );
-    const blocks = configModule.default as Array<{
-      files?: string[];
-      rules?: Record<string, unknown>;
-    }>;
-
-    const helperModules = new Set([
-      "src/lib/money-input.ts",
-      "src/lib/money-provider-amount.ts",
-    ]);
+    const { blocks, exemptFiles } = await loadEslintConfig();
 
     const setters = blocks.filter(
       (block) => block?.rules && "no-restricted-syntax" in block.rules,
@@ -215,11 +447,21 @@ describe("money cents-conversion guard: the approved helper modules", () => {
 
     for (const block of setters) {
       const option = block.rules!["no-restricted-syntax"];
-      const label = (block.files ?? ["<no files glob>"]).join(", ");
+      const globs = block.files ?? ["<no files glob>"];
+      const label = globs.join(", ");
 
       if (option === "off") {
-        // Only the test-file block may switch the rule off outright.
-        expect(label).toContain("__tests__");
+        // Only a TEST-file block may switch the rule off outright — and EVERY
+        // glob in it has to be one, not just the joined string. Asserting on
+        // the join let a two-glob block pair an ordinary `src/lib` glob with a
+        // `__tests__` one and pass, disarming the guard for all of `src/lib`
+        // while reading as a test exemption (#2685 review).
+        for (const glob of globs) {
+          expect({ glob, isTestGlob: isTestOnlyGlob(glob) }).toEqual({
+            glob,
+            isTestGlob: true,
+          });
+        }
         continue;
       }
 
@@ -236,14 +478,56 @@ describe("money cents-conversion guard: the approved helper modules", () => {
       }
     }
 
-    // The two canonical helpers are the ONLY blocks allowed to drop the money
-    // restrictions, and even they keep the raw-SQL ones.
+    // Only a path on the declared exemption list may drop the money
+    // restrictions, and even it keeps the raw-SQL ones.
     expect(
       withoutMoneyRule.filter(
-        (label) => !label.split(", ").every((file) => helperModules.has(file)),
+        (label) => !label.split(", ").every((file) => exemptFiles.has(file)),
       ),
     ).toEqual([]);
     expect(withoutRawSqlRule).toEqual([]);
+  });
+
+  /*
+    THE ESCAPE HATCH HAS TO OPEN.
+
+    The rule's message, CONTRIBUTING.md and docs/invariants/money.md all tell an
+    author hit by a false positive to add their file to the exemption list with a
+    reason. Before this test the list was hard-coded HERE as well as in the
+    config, so following that instruction failed CI — leaving a developer with no
+    legal move at all, since `eslint-disable` is banned by the same rule (#2685
+    review). The test now reads the config's own list, so adding an entry passes;
+    what it still insists on is that the entry says WHY.
+  */
+  it("reads its exemption list from the config, and every entry states a reason", async () => {
+    const { exemptions } = await loadEslintConfig();
+
+    expect(exemptions.length).toBeGreaterThan(0);
+    for (const entry of exemptions) {
+      expect(typeof entry.file).toBe("string");
+      expect(entry.file.trim().length).toBeGreaterThan(0);
+      // A reason, not a placeholder: one real sentence about why this path is
+      // allowed to build cents itself.
+      expect(typeof entry.reason).toBe("string");
+      expect(entry.reason.trim().length).toBeGreaterThanOrEqual(40);
+    }
+
+    // And the block that lifts the rule covers exactly that list — an entry with
+    // a reason but no block, or a block with no entry, is the same silent hole.
+    const { blocks } = await loadEslintConfig();
+    const liftingBlocks = blocks.filter((block) => {
+      const option = block?.rules?.["no-restricted-syntax"];
+      if (!option || option === "off") return false;
+      const entries = (option as Array<string | { message?: string }>).slice(1);
+      return !entries.some(
+        (entry) =>
+          typeof entry !== "string" &&
+          (entry.message ?? "").startsWith(MONEY_RULE_ID),
+      );
+    });
+    expect(liftingBlocks.flatMap((block) => block.files ?? []).sort()).toEqual(
+      exemptions.map((entry) => entry.file).sort(),
+    );
   });
 
   it("carries no eslint-disable for this rule anywhere in the tree", async () => {

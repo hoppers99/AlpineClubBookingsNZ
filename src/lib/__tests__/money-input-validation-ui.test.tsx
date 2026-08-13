@@ -230,3 +230,81 @@ describe("a refused money amount is visible in the UI", () => {
     expect(feeBox().getAttribute("aria-invalid")).toBe("true");
   });
 });
+
+/**
+ * #2685 review — the drafts belong to the rules that were on screen when they
+ * were typed, and to nothing else.
+ *
+ * `feeDrafts` and `feeErrors` are keyed by ROW INDEX, so when the surrounding
+ * section replaced `rules` — Cancel restoring the saved policy, or a switch to a
+ * different lodge's policy scope — index 0's abandoned text and its complaint
+ * carried straight over onto the rules that arrived. That left the admin looking
+ * at the previous scope's typed text over the new scope's stored fees, and,
+ * after Cancel, at a complaint about a policy they had just put back with Save
+ * still latched off.
+ *
+ * The harness below is the section: it owns `rules` and can replace them from
+ * outside, which is the thing the component has to notice.
+ */
+describe("a draft does not outlive the rules it was typed against", () => {
+  const OTHER_RULE: PolicyRule = {
+    daysBeforeStay: 30,
+    refundPercentage: 100,
+    creditRefundPercentage: 100,
+    fixedFeeCents: 9900,
+    creditFixedFeeCents: 100,
+  };
+
+  function ReplaceableHarness() {
+    const [rules, setRules] = useState<PolicyRule[]>([BASE_RULE]);
+    return (
+      <>
+        <button onClick={() => setRules([BASE_RULE])}>restore saved</button>
+        <button onClick={() => setRules([OTHER_RULE])}>switch scope</button>
+        <CancellationRulesEditor rules={rules} onChange={setRules} />
+      </>
+    );
+  }
+
+  it("drops an abandoned amount and its error when the section restores the saved rules", () => {
+    render(<ReplaceableHarness />);
+
+    typeInto("4a5");
+    expect(screen.getByRole("alert")).toBeTruthy();
+
+    // `[BASE_RULE]` is a NEW array holding the same rule — exactly what
+    // `cancelEditing` does when it restores the saved snapshot.
+    fireEvent.click(screen.getByText("restore saved"));
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(feeBox().value).toBe("25.00");
+  });
+
+  it("drops the previous scope's typed text when a different policy arrives", () => {
+    render(<ReplaceableHarness />);
+
+    typeInto("12.50");
+    expect(feeBox().value).toBe("12.50");
+
+    fireEvent.click(screen.getByText("switch scope"));
+
+    // The new scope's stored fee, not the last scope's half-finished edit.
+    expect(feeBox().value).toBe("99.00");
+  });
+
+  it("keeps what is being typed while the rules change on every keystroke", () => {
+    // The guard above must not fire on the editor's OWN output: every accepted
+    // keystroke hands the section a new array, and wiping the draft then would
+    // make the box impossible to type in.
+    render(<ReplaceableHarness />);
+
+    typeInto("3");
+    expect(feeBox().value).toBe("3");
+    typeInto("3.");
+    expect(feeBox().value).toBe("3.");
+    typeInto("3.7");
+    expect(feeBox().value).toBe("3.7");
+    typeInto("3.75");
+    expect(feeBox().value).toBe("3.75");
+  });
+});

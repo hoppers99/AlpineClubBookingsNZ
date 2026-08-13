@@ -67,7 +67,12 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   (a member credit debit adjustment). It returns `null` for anything outside the
   grammar, and **that `null` must reach the person as a validation error**: no
   caller may substitute a zero, a `null` payload field, or a previous value
-  silently. An amount an accounting provider has ALREADY parsed into a number —
+  silently. A money box is therefore spelled `type="text"` with
+  `inputMode="decimal"` — `MONEY_INPUT_PROPS` from the same module (owner
+  decision 14 Aug 2026): a `type="number"` control's value-sanitization strips
+  anything that is not a floating-point number to `""` before any handler runs,
+  so the parser never saw `"50abc"`, `"$45.00"` or `"1,000.00"` and the box read
+  as deliberately cleared. An amount an accounting provider has ALREADY parsed into a number —
   a Xero API amount — cannot use that parser, because the decimal text is gone;
   it goes through `providerAmountToCents` in `src/lib/money-provider-amount.ts`,
   whose rounding is `Math.round(value * 100)` and is FROZEN at that, since it is
@@ -79,16 +84,32 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   An `eslint` `no-restricted-syntax` rule enforces this over `src/`, `scripts/`
   and `prisma/`. It matches the dangerous COMPOSITION rather than a function
   name — an inline numeric parse scaled by 100, a unary `+` coercion scaled by
-  100, and anything scaled by 100 on the way into a `…Cents` binding — plus, in
-  the `src/lib/` money-domain modules only, a bare `x * 100`. Banning
-  `parseFloat` by name was measured on this tree and rejected: it added no
-  coverage and four false positives. Percentages, `Math.round(n * 100) / 100`
-  two-decimal rounding and date-key packing are deliberately untouched, and are
-  pinned as negative fixtures in
-  `src/lib/__tests__/money-cents-guard.test.ts`, which also fails if any config
-  block stops re-stating the rule. The two helper modules in
-  `eslint.config.mjs` are the only exemption, and that list — not an
-  `eslint-disable` — is the escape hatch. There are no disables in the tree.
+  100, anything scaled by 100 on the way into a `…Cents` binding, and the two
+  spellings that carry no `* 100` at all (`c *= 100` and `x / 0.01`) — plus, in
+  the money-domain modules, a bare `x * 100`. Banning `parseFloat` by name was
+  measured on this tree and rejected: it added no coverage and four false
+  positives.
+
+  The money-domain glob is the Xero, finance, membership-cancellation, payment,
+  credit, refund, promo, fee, invoice, subscription, pricing and Stripe modules
+  under `src/lib/`, plus every route under `src/app/api/`. That breadth is what
+  catches the intermediate-variable form — `const d = parseFloat(raw); const c =
+  Math.round(d * 100);` — which no shape-based arm can see, because by the time
+  the multiplication happens there is nothing left in it to recognise. Inside
+  those modules ONE shape is excluded on purpose: a division sitting directly
+  inside the multiplication (`(calls / budget) * 100`) is a percentage by
+  construction, and nothing here builds cents from a quotient. A quotient scaled
+  into a `…Cents` binding is still caught.
+
+  Percentages, `Math.round(n * 100) / 100` two-decimal rounding and date-key
+  packing are deliberately untouched, and are pinned as negative fixtures in
+  `src/lib/__tests__/money-cents-guard.test.ts`, which runs the REAL config and
+  also fails if any config block stops re-stating the rule. The exported
+  `MONEY_GUARD_EXEMPTIONS` array in `eslint.config.mjs` is the only escape
+  hatch — never an `eslint-disable`, and the guard test asserts there are none
+  in the tree. Each entry names a path and states in writing why it is allowed
+  to build cents itself; the test READS that array rather than a copy of it, so
+  adding an entry passes CI. It currently holds exactly the two helper modules.
 
 ## INV-MONEY-004
 

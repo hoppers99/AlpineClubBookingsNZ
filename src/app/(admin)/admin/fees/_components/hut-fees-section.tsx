@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { FieldHint, describedByFieldHint, useFieldHint } from "@/components/ui/field-hint";
+import { FocusedActionError } from "@/components/focused-action-error";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -148,6 +149,25 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
   const [rateTypes, setRateTypes] = useState<RateType[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  /*
+    #2685 review — "Fix the highlighted amounts before saving." was raised from
+    a submit handler about 200 lines of markup BELOW the banner that shows it.
+    The banner carried `role="alert"`, so a screen reader heard it, but nothing
+    took focus and nothing scrolled: a sighted admin pressed Save on a long
+    seasons form, the page did not visibly move, and the only sign the save had
+    been refused was off the top of the screen.
+
+    `FocusedActionError` is the repository's answer to exactly that — an
+    assertive live region that focuses itself and scrolls into view — and the
+    counter re-fires it when the same message is raised twice, which pressing
+    Save again without fixing the box does every time.
+  */
+  const [errorAttention, setErrorAttention] = useState(0);
+  /** Record a failure AND re-announce it, even when the text has not changed. */
+  const raiseError = useCallback((message: string) => {
+    setError(message);
+    setErrorAttention((version) => version + 1);
+  }, []);
   // Cross-area read: /api/admin/seasons is bookings-gated, so a finance-only
   // operator on the shared /admin/fees console gets a 403 here. Surface that as
   // a friendly read-only notice instead of a raw fetch-failed error (E7 review,
@@ -307,7 +327,10 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
     // #2685: never save around an amount the parser refused — the stored cents
     // for that field are the PREVIOUS value, which is not what the admin typed.
     if (Object.keys(rateErrors).length > 0 || flatWholeLodgeError) {
-      setError("Fix the highlighted amounts before saving.");
+      // `raiseError`, not `setError`: this exact sentence is what a second Save
+      // press produces too, so the banner has to re-announce and re-scroll
+      // rather than sit unchanged far above the button (#2685 review).
+      raiseError("Fix the highlighted amounts before saving.");
       return;
     }
 
@@ -358,7 +381,7 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
       resetForm();
       fetchSeasons();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
+      raiseError(err instanceof Error ? err.message : "Unknown error");
     } finally {
       setSaving(false);
     }
@@ -495,10 +518,13 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
         </div>
         )}
 
-        {!forbidden && error && (
-          <div role="alert" className="bg-destructive/10 text-destructive px-4 py-3 rounded-md">
-            {error}
-          </div>
+        {!forbidden && (
+          <FocusedActionError
+            id="hut-fees-error"
+            error={error}
+            attentionKey={errorAttention}
+            className="scroll-mt-20"
+          />
         )}
 
         {forbidden ? null : loading ? (

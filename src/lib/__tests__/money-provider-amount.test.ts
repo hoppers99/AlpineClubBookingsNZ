@@ -151,6 +151,18 @@ describe("parseProviderReportAmountToCents", () => {
     "007.50",
     "1e5",
     "99999999999.99",
+    // A SIGN DETACHED FROM ITS DIGITS. `parseFloat` reads none of these, so the
+    // parser this replaced returned `null` for every one — and the exact path
+    // must too. Before the fix it read `"- 5"` as -500, and `"(- 5)"` came back
+    // POSITIVE because the bracket negated an already-negative magnitude
+    // (#2685 review). These four are the reason the equality assertion below
+    // is worth running rather than assumed.
+    "- 5",
+    "+ 5",
+    "(- 5)",
+    "(+ 5)",
+    "-  1,234.50",
+    "- ",
     // Not amounts at all.
     "Total",
     "abc",
@@ -185,6 +197,17 @@ describe("parseProviderReportAmountToCents", () => {
   it("returns null for a cell that is not an amount", () => {
     for (const cell of [null, "", "   ", "Total", "abc", "()"]) {
       expect(parseProviderReportAmountToCents(cell)).toBeNull();
+    }
+  });
+
+  it("refuses a sign detached from its digits, as the parser it replaced did", () => {
+    // Pinned separately from the corpus equality above because both halves are
+    // load-bearing: an exact path that accepted `"- 5"` would widen what counts
+    // as an amount — and `readRowAmountCents` picks the RIGHT-MOST cell that
+    // parses, so widening changes WHICH cell is read — while the bracketed form
+    // came back with the sign INVERTED (#2685 review).
+    for (const cell of ["- 5", "+ 5", "(- 5)", "(+ 5)", "- ", "-  1,234.50"]) {
+      expect([cell, parseProviderReportAmountToCents(cell)]).toEqual([cell, null]);
     }
   });
 

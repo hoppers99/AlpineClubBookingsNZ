@@ -136,8 +136,27 @@ export function parseProviderReportAmountToCents(
 function parseExactReportMagnitude(normalized: string): number | null {
   const signed = normalized.trim();
   const negative = signed.startsWith("-");
-  const magnitude =
-    negative || signed.startsWith("+") ? signed.slice(1).trim() : signed;
+  const hasSign = negative || signed.startsWith("+");
+  const magnitude = hasSign ? signed.slice(1) : signed;
+
+  // A SIGN ONLY COUNTS WHEN IT IS JOINED TO THE DIGITS.
+  //
+  // `Number.parseFloat` — the fallback below, and the six legacy snapshot
+  // parsers this module replaced — reads `"- 5"` as `NaN`, so every one of them
+  // returned `null` for it. `parseDecimalDollarsToCents` trims its own input,
+  // so handing it `" 5"` would read `"- 5"` as -500 and quietly widen what
+  // counts as an amount. That is not free: `readRowAmountCents` picks the
+  // RIGHT-MOST cell of a report row that parses as an amount, so a cell that
+  // newly parses can change which cell is read. Worse, bracketed the sign came
+  // out INVERTED — `"(- 5)"` became +500, because the bracket then negates a
+  // magnitude that had already been made negative (#2685 review).
+  //
+  // Refusing the space here keeps the fallback's answer, which is what the
+  // "byte-identical" claim in this module and in the changelog depends on.
+  // `money-provider-amount.test.ts` runs these cells through both parsers.
+  if (hasSign && /^\s/.test(magnitude)) {
+    return null;
+  }
 
   // The canonical parser owns the grammar, precision and range rules; this
   // function only carries back the affixes it stripped.

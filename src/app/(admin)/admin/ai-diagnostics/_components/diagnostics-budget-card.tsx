@@ -216,7 +216,12 @@ export function DiagnosticsBudgetCard({
   const handleSave = async () => {
     const cents = dollarsToCents(draft);
     if (cents === null) {
-      setSaveError("Enter an amount in dollars, like 25.00.");
+      // Names what is actually refused. A leading "$" is stripped before the
+      // parser sees it, so it is not listed; a thousands separator and a leading
+      // zero are refused and were previously unexplained (#2685 review).
+      setSaveError(
+        "Enter an amount in dollars and cents, for example 25.00 — no thousands separator or leading zero.",
+      );
       return;
     }
     if (cents > state.maxMonthlyBudgetCents) {
