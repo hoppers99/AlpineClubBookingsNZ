@@ -44,10 +44,6 @@ export function getFinanceBookingMetricsWindowDayCount(
   return differenceInUtcDays(fromDate, addUtcDays(toDate, 1));
 }
 
-export function toIsoDate(value: Date): string {
-  return formatDateOnly(value);
-}
-
 export function buildIsoDateRange(
   start: Date,
   endInclusive: Date
@@ -59,7 +55,7 @@ export function buildIsoDateRange(
     cursor.getTime() <= endInclusive.getTime();
     cursor = addUtcDays(cursor, 1)
   ) {
-    dates.push(toIsoDate(cursor));
+    dates.push(formatDateOnly(cursor));
   }
 
   return dates;

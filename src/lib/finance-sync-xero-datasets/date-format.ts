@@ -97,10 +97,6 @@ export function toOptionalDate(value: Date | string | null | undefined): Date | 
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-export function toDateOnlyString(value: Date | null): string | null {
-  return value ? formatDateOnly(value) : null;
-}
-
 export function toOptionalText(value: unknown): string | null {
   if (value === null || value === undefined) {
     return null;
@@ -120,7 +116,7 @@ export function toOptionalDateOnlyText(value: unknown): string | null {
   }
 
   if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : toDateOnlyString(value);
+    return Number.isNaN(value.getTime()) ? null : formatDateOnly(value);
   }
 
   if (typeof value === "string") {

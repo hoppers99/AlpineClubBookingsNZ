@@ -14,12 +14,12 @@ import {
 } from "./invoice-helpers";
 import {
   parseOptionalDateOnly,
-  toDateOnlyString,
   toOptionalDate,
   toOptionalDateOnlyText,
   toOptionalText,
 } from "./date-format";
 import type { FinanceOpenInvoiceType } from "./types";
+import { formatDateOnly } from "@/lib/date-only";
 
 interface FinanceAccountsReceivableInvoicePayload {
   invoiceId: string | null;
@@ -200,8 +200,8 @@ function buildFinanceOpenInvoicesSnapshot<
         currency: contact.currency,
         invoiceCount: contact.invoiceCount,
         totalAmountDue: contact.totalAmountDue,
-        oldestDueDate: toDateOnlyString(contact.oldestDueDate),
-        latestDueDate: toDateOnlyString(contact.latestDueDate),
+        oldestDueDate: contact.oldestDueDate ? formatDateOnly(contact.oldestDueDate) : null,
+        latestDueDate: contact.latestDueDate ? formatDateOnly(contact.latestDueDate) : null,
         invoices: contact.invoices.sort((left, right) =>
           compareOpenInvoicePayloadsByDueDate(left, right)
         ),
@@ -232,7 +232,7 @@ function buildFinanceOpenInvoicesSnapshot<
     .sort((left, right) => compareNullableStrings(left.currency, right.currency));
 
   const payload = {
-    asOfDate: toDateOnlyString(input.asOfDate),
+    asOfDate: input.asOfDate ? formatDateOnly(input.asOfDate) : null,
     invoiceCount,
     contactCount: contactPayloads.length,
     currencies: currencyPayloads.map((currency) => currency.currency),

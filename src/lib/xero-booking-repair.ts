@@ -37,7 +37,8 @@ import {
   applyActionsForPass,
   buildPassReport,
 } from "./xero-booking-repair-passes";
-import { createCountMap, toDateOnly } from "./xero-booking-repair-utils";
+import { createCountMap } from "./xero-booking-repair-utils";
+import { formatDateOnly } from "@/lib/date-only";
 
 const MAX_APPLY_PASSES = 3;
 
@@ -135,8 +136,8 @@ export async function runBookingXeroRepair(options?: {
     mode: apply ? "apply" : "dry-run",
     scope: {
       bookingId: scope.bookingId ?? null,
-      from: scope.from ? toDateOnly(scope.from) : null,
-      to: scope.to ? toDateOnly(scope.to) : null,
+      from: scope.from ? formatDateOnly(scope.from) : null,
+      to: scope.to ? formatDateOnly(scope.to) : null,
       all: Boolean(scope.all || (!scope.bookingId && !scope.from && !scope.to)),
     },
     startedAt: startedAt.toISOString(),

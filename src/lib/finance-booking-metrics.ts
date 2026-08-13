@@ -23,7 +23,6 @@ import {
   differenceInUtcDays,
   getFinanceBookingMetricsWindowDayCount,
   parseFinanceBookingMetricDate as parseIsoDate,
-  toIsoDate,
 } from "@/lib/finance-booking-metric-calculations";
 
 export const MAX_FINANCE_BOOKING_METRICS_WINDOW_DAYS = 366;
@@ -475,7 +474,7 @@ function normalizeRealizedWindow(
     cutoffDate,
     effectiveFrom: effectiveToDate ? base.from : null,
     effectiveFromDate: effectiveToDate ? base.fromDate : null,
-    effectiveTo: effectiveToDate ? toIsoDate(effectiveToDate) : null,
+    effectiveTo: effectiveToDate ? formatDateOnly(effectiveToDate) : null,
     effectiveToDate,
     dayCount: effectiveToDate
       ? differenceInUtcDays(base.fromDate, addUtcDays(effectiveToDate, 1))
@@ -496,7 +495,7 @@ function normalizeForwardWindow(
   return {
     ...base,
     asOfDate,
-    effectiveFrom: hasEffectiveWindow ? toIsoDate(effectiveFromDate) : null,
+    effectiveFrom: hasEffectiveWindow ? formatDateOnly(effectiveFromDate) : null,
     effectiveFromDate: hasEffectiveWindow ? effectiveFromDate : null,
     effectiveTo: hasEffectiveWindow ? base.to : null,
     effectiveToDate: hasEffectiveWindow ? base.toDate : null,
