@@ -23,7 +23,7 @@ import { type ChipTone } from "@/lib/chip-tones";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   adminBookingsQuerySchema,
-  appliedBookingStatuses,
+  appliedBookingViewFilters,
   buildAdminBookingsWhere,
   getDefaultAdminBookingSortDir,
   listAdminBookings,
@@ -207,47 +207,32 @@ export default async function AdminBookingsPage({
   // `undefined`. `undefined` means "this page publishes nothing", which hands the
   // widget back to its URL fallback and would re-read the very address this page
   // just refused.
-  const appliedView: DiagnosticsViewState = (() => {
-    // The attention queue REPLACES the bookings table with the per-guest consent
-    // exceptions table, and `listMemberGuestConsentExceptions()` takes no filter
-    // arguments at all. Nothing on screen is filtered by these values, so nothing
-    // about them is published. (`consentState` is not in this row's allowlist
-    // either, so the swap itself cannot be described here — it would need a
-    // registry decision.)
-    if (consentState === "attention") return {};
-
-    const view: DiagnosticsViewState = {};
-    const filters: Record<string, string> = {};
-
-    // `status` is a comma-list in the URL and the where-builder keeps only the
-    // spellings that are real `BookingStatus` values. One applied status is the
-    // registry's `status` token (the route lowercases `PAYMENT_PENDING` to the
-    // registry vocabulary); several go in the allowlisted `status` FILTER,
-    // because the token field holds one value and silently sending the first
-    // would misstate the selection. `?status=BOGUS` applies `{ in: [] }` — a
-    // narrowing that matches nothing — and publishes neither: there is no honest
-    // way to say "narrowed to a status that does not exist" in this vocabulary.
-    const statuses = appliedBookingStatuses(query.status);
-    if (statuses.length === 1) view.status = statuses[0];
-    else if (statuses.length > 1) filters.status = statuses.join(",");
-
-    // `from`/`to` are LEGACY aliases that the where-builder only honours when the
-    // explicit named bounds are absent (`checkInFrom ?? from`, and `to` yields to
-    // either `checkInTo` or `checkOutTo`). An alias that lost is in the address
-    // and not in the query, so it is not published.
-    const appliedFrom = query.checkInFrom ? undefined : query.from;
-    const appliedTo = query.checkInTo || query.checkOutTo ? undefined : query.to;
-    if (appliedFrom) filters.from = appliedFrom;
-    if (appliedTo) filters.to = appliedTo;
-    // The free-text search travels, per the owner decision of 13 Aug 2026, and
-    // the Diagnostics panel says so beside the input. Published post-trim,
-    // because the trim is what the query used.
-    if (query.search) filters.search = query.search;
-    if (query.lodgeId) filters.lodgeId = query.lodgeId;
-
-    if (Object.keys(filters).length > 0) view.filters = filters;
-    return view;
-  })();
+  //
+  // THE DERIVATION ITSELF IS `appliedBookingViewFilters`, in the service beside
+  // `buildBookingWhere`. It has to be maintained in the same edit as the builder
+  // it describes — the first cut of this block lived here, suppressed the LOSING
+  // legacy alias but never published the WINNING bound, and so reported
+  // `?checkOutTo=<today>` (a URL two dashboard cards deep-link to) as no window at
+  // all. The free-text search travels, per the owner decision, and the Diagnostics
+  // panel says so beside the input.
+  //
+  // ASSIGNED BY NAME ONTO A TYPED EMPTY OBJECT, never built as a spread literal.
+  // That is what makes the compiler-drift claim in `help-widget-context.tsx` true:
+  // a conditional spread or an IIFE loses object-literal freshness, so TypeScript
+  // runs no excess-property check and a field renamed in the contract compiles
+  // clean here (mutation-proven, review 13 Aug 2026).
+  const appliedView: DiagnosticsViewState = {};
+  // The attention queue REPLACES the bookings table with the per-guest consent
+  // exceptions table, and `listMemberGuestConsentExceptions()` takes no filter
+  // arguments at all. Nothing on screen is filtered by these values, so nothing
+  // about them is published. (`consentState` is not in this row's allowlist
+  // either, so the swap itself cannot be described here — it would need a registry
+  // decision.)
+  if (consentState !== "attention") {
+    const applied = appliedBookingViewFilters(query);
+    if (applied.status) appliedView.status = applied.status;
+    if (applied.filters) appliedView.filters = applied.filters;
+  }
   // #2576: the Booking Officer's durable queue belongs in the bookings
   // permission area, not only on the support dashboard.
   const [hostingCoverageIncidentCount, hostingCoverageIncidents] =

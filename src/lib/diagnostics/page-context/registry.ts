@@ -58,6 +58,10 @@ export const DIAGNOSTICS_PAGE_ERROR_CODES = [
   "network-error",
 ] as const;
 
+/** One of the closed set above. Exported so a publishing page can be typed by it. */
+export type DiagnosticsPageErrorCode =
+  (typeof DIAGNOSTICS_PAGE_ERROR_CODES)[number];
+
 /**
  * Booking lifecycle statuses, mirrored from the `BookingStatus` Prisma enum.
  * Held as a literal (rather than imported from `@prisma/client`) so this module

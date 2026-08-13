@@ -77,10 +77,18 @@ export interface DiagnosticsAskOptions {
    * The contract's own shape, not a loose `Record<string, string>` — the loose type
    * was assignable to the request while letting `{ filters: "oops" }` compile, which
    * defeated the "compiler catches the disagreement" property this hook claims
-   * (correctness review, 13 Aug 2026). #2816 wires it: the view is read from the
-   * URL at ask time (these list pages are server components whose filter state IS
-   * the query string) and the route filters it to the matched registry row's own
-   * allowlists — sent raw here, narrowed there, re-validated by the parser after.
+   * (correctness review, 13 Aug 2026).
+   *
+   * #2816 wires it, and the URL-at-ask-time design this comment used to describe
+   * was SUPERSEDED by the owner decision of 13 Aug 2026: the primary channel is the
+   * page's own PUBLISHED APPLIED state (`usePublishDiagnosticsViewState`), read by
+   * `DiagnosticsView` from the help-widget context. Reading the address is the
+   * FALLBACK, for pages nobody has wired. (The earlier note also called these list
+   * pages server components; three of the four — payments, members, waitlist — are
+   * client components, and their applied state never reaches a query string at all
+   * until their own sync effect commits.) Either way the value is sent raw and the
+   * route narrows it to the matched registry row's allowlists, which
+   * `parseDiagnosticsPageSelector` then re-validates.
    */
   view?: DiagnosticsAskRequest["view"];
 }

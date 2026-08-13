@@ -43,6 +43,8 @@
 
 import "server-only";
 
+import { defuseRoleLabelLines } from "../untrusted-text";
+
 import { DIAGNOSTICS_WIRE_BOUNDS } from "./contract";
 
 /** The wrapper for the replayed conversation. */
@@ -156,10 +158,10 @@ function neutralize(value: string): string {
   // `system:`, `user:`…), not only the two this module writes. Line-anchored so an
   // operator legitimately writing "the assistant: replied…" mid-sentence is left
   // alone; only a line that PARSES as a role prefix is defused.
-  out = out.replace(
-    /^(\s*)(assistant|operator|system|user|human|model)(\s*):/gim,
-    "$1$2$3․",
-  );
+  //
+  // Shared with the page-context renderer since #2816, which had no defusal at all
+  // while gaining a link-supplied free-text channel into the same conversation.
+  out = defuseRoleLabelLines(out);
   return out.trim();
 }
 

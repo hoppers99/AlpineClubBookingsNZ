@@ -59,11 +59,26 @@ export type DiagnosticsRecordSelection = { id: string; nonce: number };
  *
  * IT IS THE WIRE SHAPE ITSELF, not a copy of it. This channel's only destination is
  * `DiagnosticsAskRequest.view`, so deriving it from the contract leaves that module
- * the ONE author of the shape: a field added, renamed or retyped there fails to
- * compile here and at every publishing page, instead of drifting silently into a
- * value the route's zod schema then rejects as a 400 the client can only misreport
- * as a network fault. The import is type-only, so nothing about the contract module
- * reaches this client bundle at runtime.
+ * the ONE author of the shape, instead of a second declaration drifting silently
+ * into a value the route's zod schema then rejects as a 400 the client can only
+ * misreport as a network fault. The import is type-only, so nothing about the
+ * contract module reaches this client bundle at runtime.
+ *
+ * WHAT THE COMPILER ACTUALLY CATCHES, measured rather than assumed (review,
+ * 13 Aug 2026 — the earlier claim that "a field added, renamed or retyped fails to
+ * compile here and at every publishing page" was mutation-proven FALSE):
+ *
+ *  - A field RENAMED, REMOVED or RETYPED in the contract fails to compile at every
+ *    publisher that names it — but only because each publisher now assigns by name
+ *    onto a `const view: DiagnosticsViewState = {}`. The three client pages used to
+ *    build the object with conditional spreads inside an IIFE, which loses
+ *    object-literal freshness: TypeScript then runs no excess-property check, and a
+ *    renamed `status` compiled clean on `/admin/payments` while failing everywhere
+ *    else. Keep the assign-by-name shape; it is the mechanism, not a style choice.
+ *  - A field ADDED to the contract fails NOWHERE, here or anywhere, and no shape of
+ *    publisher can change that: nothing references a field that did not exist. The
+ *    drift this type prevents is the reverse direction — a publisher sending a field
+ *    the contract does not have.
  */
 export type DiagnosticsViewState = NonNullable<DiagnosticsAskRequest["view"]>;
 

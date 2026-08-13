@@ -22,6 +22,10 @@ import {
   LOGIN_STAGE_LABELS,
   type MemberLoginStage,
 } from "@/lib/member-login-stage"
+import {
+  MEMBER_AGE_TIER_FILTER_LABELS,
+  MEMBER_AGE_TIER_FILTER_VALUES,
+} from "../_age-tier-filter-values"
 import type { Filters, XeroContactGroup, XeroFeatureFlags } from "../_types"
 import { filterLabelMap, filterValueLabels } from "../_utils"
 
@@ -199,11 +203,13 @@ export function MemberFilterToolbar({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Tiers</SelectItem>
-              <SelectItem value="INFANT">Infant</SelectItem>
-              <SelectItem value="CHILD">Child</SelectItem>
-              <SelectItem value="YOUTH">Youth</SelectItem>
-              <SelectItem value="ADULT">Adult</SelectItem>
-              <SelectItem value="NOT_APPLICABLE">N/A</SelectItem>
+              {/* One vocabulary, shared with the page's AI Diagnostics
+                  publication and pinned to the Prisma enum by a test (#2816). */}
+              {MEMBER_AGE_TIER_FILTER_VALUES.map((tier) => (
+                <SelectItem key={tier} value={tier}>
+                  {MEMBER_AGE_TIER_FILTER_LABELS[tier]}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
           <Select

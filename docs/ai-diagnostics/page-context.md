@@ -209,10 +209,23 @@ Wired so far, each publishing only what its own row allowlists:
 
 | page | what diverges from the address |
 | --- | --- |
-| `/admin/bookings` | the query schema's `safeParse` is total, so one malformed value drops **every** filter to defaults while the URL still shows them; `from`/`to` are legacy aliases that lose to `checkInFrom`/`checkInTo`/`checkOutTo`; the consent *attention* queue replaces the table with an exceptions list no booking filter touches |
-| `/admin/payments` | the activity window defaults to the last three club-timezone months in React state and is applied without ever reaching the URL |
+| `/admin/bookings` | the query schema's `safeParse` is total, so one malformed value drops **every** filter to defaults while the URL still shows them; the applied date window is whichever of the legacy aliases, the named `checkIn*`/`checkOut*` bounds, `?month=` or `?upcoming=` won, and `?upcoming=` also pins a status set that is nowhere in the address; the consent *attention* queue replaces the table with an exceptions list no booking filter touches |
+| `/admin/payments` | the activity window defaults to the last three club-timezone months in **React state**, so it is applied before the address names it and the page's own `router.replace` sync effect only writes it afterwards; the address also carries sort, pagination and leftover keys the query did not apply, and an out-of-vocabulary value there (`?status=succeeded`) 400s the whole request while the previous rows stay on screen |
 | `/admin/waitlist` | the `from`/`to` inputs are a draft until *Apply* writes them to the URL, and a malformed window is refused by the API with a 400, so the rows are then not a filtered list at all |
-| `/admin/members` | `q` is the **debounced** search, 300 ms behind the box; the draft has filtered nothing |
+| `/admin/members` | `q` is the **debounced** search, 300 ms behind the box; the draft has filtered nothing. `ageTier` is applied only when it is a real tier — the service ignores anything else silently, with no 400 |
+
+**A failed load publishes its error code, not `{}`.** A page that could not load has no
+list to be filtered, and `{}` asserts "I applied no filters" — which sends a model
+hunting for a filtering explanation for an outage. Every registry row allowlists the
+whole `DIAGNOSTICS_PAGE_ERROR_CODES` set, so `errorCode` always survives the route's
+filter. `page-context/error-code.ts` maps an HTTP status onto it.
+
+**The rendered selection is always a subset, and the evidence header says so.** A row
+allowlists a handful of a page's filter keys; the bookings list alone has a dozen more
+(`paymentSource`, `xeroState`, `bedState`, `additionalOwed`, `changeState`,
+`updatedFrom`/`updatedTo`, `deleted`, …). The block's header therefore tells the model
+never to conclude from a filter's absence that it is unset, and never to state that the
+listed filters are the only ones applied.
 
 Two things a page must not do. It must not publish a value it did not apply — the
 model would be told the operator narrowed a list they are seeing unnarrowed — and it

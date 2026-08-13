@@ -15,7 +15,7 @@
  */
 
 import "@testing-library/jest-dom/vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -25,6 +25,7 @@ import {
 } from "@/components/help-widget/help-widget-context";
 import { getPaymentsDatasetDefaults } from "@/lib/admin-dataset-reset-state";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
+import { getDiagnosticsPageContextRoute } from "@/lib/diagnostics/page-context/registry";
 
 const routerMocks = vi.hoisted(() => ({
   replace: vi.fn(),
@@ -143,6 +144,22 @@ vi.mock(
   () => ({ XeroGroupsRefreshHint: () => null }),
 );
 
+/**
+ * THE DRIFT GUARD. A page and its registry row are hand-matched, and the route
+ * drops an unlisted key — so a page publishing one has published nothing. This
+ * pins the match at close to zero cost.
+ */
+function assertFilterKeysAreAllowlisted(
+  routeKey: string,
+  view: { filters?: Record<string, string> } | null,
+) {
+  const row = getDiagnosticsPageContextRoute(routeKey);
+  expect(row).toBeDefined();
+  const keys = Object.keys(view?.filters ?? {});
+  expect(keys.length).toBeGreaterThan(0);
+  for (const key of keys) expect(row?.filterKeys).toContain(key);
+}
+
 /** Reads the published state back out of the provider, as the widget does. */
 function PublishedViewProbe() {
   const view = useDiagnosticsViewState();
@@ -217,9 +234,23 @@ describe("/admin/payments publishes the window it applied (#2816)", () => {
         },
       }),
     );
-    // And it really is invisible in the address: the page's own URL sync writes
-    // no query at all for the default dataset.
-    expect(defaults.lastUpdatedFrom).not.toEqual(clubToday);
+
+    // WHAT THE ADDRESS ACTUALLY DOES, pinned rather than assumed. An earlier
+    // version of this test claimed the URL sync "writes no query at all for the
+    // default dataset" and asserted `defaults.lastUpdatedFrom !== clubToday`,
+    // which is a non-sequitur that passes whatever the sync does. It does the
+    // opposite: `buildPaymentsSearchParams` sets both bounds unconditionally, so
+    // the page REWRITES a bare `/admin/payments` to name the window (correctness
+    // review, 13 Aug 2026).
+    const replaced = routerMocks.replace.mock.calls.at(-1)?.[0] as string;
+    expect(replaced).toContain(`lastUpdatedFrom=${defaults.lastUpdatedFrom}`);
+    expect(replaced).toContain(`lastUpdatedTo=${clubToday}`);
+    // So the case for publishing is NOT "the address never learns the window".
+    // It is that the window is applied by React state one commit BEFORE the
+    // address learns it, that this is exactly the allowlisted applied set where
+    // the address also carries sort/pagination/leftovers, and that a value the
+    // page did not apply is never published as though it had been — the three
+    // properties the rest of this file pins.
   });
 
   it("publishes the status, source and search it applied, and not the keys its row does not allow", async () => {
@@ -255,6 +286,57 @@ describe("/admin/payments publishes the window it applied (#2816)", () => {
     // contract, so they never leave the page.
     expect(JSON.stringify(published())).not.toContain("xeroState");
     expect(JSON.stringify(published())).not.toContain("sortBy");
+    // And the drift guard: every key really is one the row declares.
+    assertFilterKeysAreAllowlisted("admin.payments", published());
+  });
+
+  it("publishes NEITHER a status the API refuses NOR a malformed date", async () => {
+    // `adminPaymentsQuerySchema` is strict, so `?status=succeeded` (wrong case)
+    // and `?lastUpdatedFrom=13-45-2026` each 400 the WHOLE query while
+    // `fetchData` keeps whatever rows were there. Publishing them raw would tell
+    // the model a filter was applied by a request that was refused.
+    routerMocks.search = "status=succeeded&lastUpdatedFrom=13-45-2026";
+    respondWith({ error: "Invalid query parameters" }, { ok: false, status: 400 });
+    const { default: PaymentsPage } = await import(
+      "@/app/(admin)/admin/payments/page"
+    );
+    const clubToday = todayDateOnlyForTimeZone();
+
+    render(
+      <HelpWidgetProvider>
+        <PaymentsPage />
+        <PublishedViewProbe />
+      </HelpWidgetProvider>,
+    );
+
+    // The load failed, so what is published is the FAILURE — not `{}`, which
+    // would assert "I applied no filters" about a screen that has no list.
+    await waitFor(() =>
+      expect(published()).toEqual({ errorCode: "validation-failed" }),
+    );
+    expect(JSON.stringify(published())).not.toContain("succeeded");
+    expect(JSON.stringify(published())).not.toContain("13-45-2026");
+    expect(JSON.stringify(published())).not.toContain(clubToday);
+  });
+
+  it("publishes the failure code, not the filters, when the list could not load", async () => {
+    respondWith({ error: "boom" }, { ok: false, status: 500 });
+    routerMocks.search = "status=SUCCEEDED&search=ngata";
+    const { default: PaymentsPage } = await import(
+      "@/app/(admin)/admin/payments/page"
+    );
+
+    render(
+      <HelpWidgetProvider>
+        <PaymentsPage />
+        <PublishedViewProbe />
+      </HelpWidgetProvider>,
+    );
+
+    // Without this, Diagnostics is handed a full filter set for a list that does
+    // not exist, and answers "why is this payment not here?" by blaming the
+    // activity window for an outage.
+    await waitFor(() => expect(published()).toEqual({ errorCode: "server-error" }));
   });
 });
 
@@ -279,11 +361,51 @@ describe("/admin/waitlist publishes the window it applied (#2816)", () => {
     );
   });
 
-  it("publishes NOTHING once the API refused the window", async () => {
+  it("keeps publishing the APPLIED window while the operator edits the draft one", async () => {
+    // THE DRAFT/APPLIED TEST THAT WAS MISSING. The other cases seed
+    // `routerMocks.search` and the draft is initialised FROM those params, so
+    // draft and applied are equal by construction and a mutation publishing the
+    // draft instead of `fromParam`/`toParam` survived all six tests green
+    // (review finding, 13 Aug 2026). Typing into the From box makes them
+    // genuinely diverge: the two inputs only reach the list when "Apply filters"
+    // writes them to the URL.
+    routerMocks.search = "from=2026-08-01&to=2026-08-31";
+    const { default: AdminWaitlistPage } = await import(
+      "@/app/(admin)/admin/waitlist/page"
+    );
+
+    render(
+      <HelpWidgetProvider>
+        <AdminWaitlistPage />
+        <PublishedViewProbe />
+      </HelpWidgetProvider>,
+    );
+
+    await waitFor(() =>
+      expect(published()).toEqual({
+        filters: { from: "2026-08-01", to: "2026-08-31" },
+      }),
+    );
+
+    fireEvent.change(screen.getByLabelText("From"), {
+      target: { value: "2026-12-25" },
+    });
+
+    // The box now says December and the list is still the August one, so the
+    // question must still carry August.
+    expect(screen.getByLabelText("From")).toHaveValue("2026-12-25");
+    expect(published()).toEqual({
+      filters: { from: "2026-08-01", to: "2026-08-31" },
+    });
+    assertFilterKeysAreAllowlisted("admin.waitlist", published());
+  });
+
+  it("publishes the API's REFUSAL, not an empty view, once the window was rejected", async () => {
     // `/api/admin/waitlist` validates the window with zod and answers 400 on a
     // malformed or over-long one, so the rows on screen are then not a filtered
     // list at all — they are no list. Same total-rejection trap the bookings
-    // page has, arriving over the wire instead of in a `safeParse`.
+    // page has, arriving over the wire instead of in a `safeParse`. `{}` would
+    // assert "I applied no filters"; the code says "there is no list, and why".
     respondWith(
       { error: "Invalid query parameters" },
       { ok: false, status: 400 },
@@ -300,7 +422,9 @@ describe("/admin/waitlist publishes the window it applied (#2816)", () => {
       </HelpWidgetProvider>,
     );
 
-    await waitFor(() => expect(published()).toEqual({}));
+    await waitFor(() =>
+      expect(published()).toEqual({ errorCode: "validation-failed" }),
+    );
   });
 });
 
@@ -330,6 +454,48 @@ describe("/admin/members publishes the search that FILTERED, not the one being t
       expect(published()).toEqual({ filters: { q: "ngata", ageTier: "ADULT" } }),
     );
     expect(JSON.stringify(published())).not.toContain("still-typing");
+    assertFilterKeysAreAllowlisted("admin.members", published());
+  });
+
+  it("does not publish an age tier the query silently ignored", async () => {
+    // `buildMembersWhere` applies `ageTier` only when it is a real `AgeTier` and
+    // otherwise IGNORES it — no 400, no narrowing. A bare truthiness test here
+    // published `?ageTier=<120 arbitrary characters>` as an applied filter for a
+    // list it had not narrowed at all (review finding, 13 Aug 2026).
+    membersQueryState.search = ""
+    membersQueryState.debouncedSearch = ""
+    membersQueryState.filters = { ageTier: "GROWN_UPS" }
+    const { default: MembersPage } = await import(
+      "@/app/(admin)/admin/members/page"
+    );
+
+    render(
+      <HelpWidgetProvider>
+        <MembersPage />
+        <PublishedViewProbe />
+      </HelpWidgetProvider>,
+    );
+
+    await waitFor(() => expect(published()).toEqual({}));
+  });
+
+  it("publishes the failure code, not the search, when the list could not load", async () => {
+    respondWith({ error: "nope" }, { ok: false, status: 403 });
+    membersQueryState.search = "ngata"
+    membersQueryState.debouncedSearch = "ngata"
+    membersQueryState.filters = {}
+    const { default: MembersPage } = await import(
+      "@/app/(admin)/admin/members/page"
+    );
+
+    render(
+      <HelpWidgetProvider>
+        <MembersPage />
+        <PublishedViewProbe />
+      </HelpWidgetProvider>,
+    );
+
+    await waitFor(() => expect(published()).toEqual({ errorCode: "forbidden" }));
   });
 
   it("publishes an empty view when nothing is filtered, not `undefined`", async () => {

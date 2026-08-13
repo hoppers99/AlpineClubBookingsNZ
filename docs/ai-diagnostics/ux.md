@@ -55,10 +55,13 @@ the rest silently, because one stray pagination key must never cost the whole co
 
 The address bar was rejected as the channel because on these pages it is routinely
 not what the operator is looking at. Payments defaults its activity window to the last
-three club-timezone months in React state, so a bare `/admin/payments` is already
-filtered and the URL says nothing about it — and that window is the single most common
-reason a payment an operator expects is not on screen. The bookings parse is total, so
-one malformed date drops **every** filter while the URL still displays them all.
+three club-timezone months in **React state**: a bare `/admin/payments` is already
+filtered by a window nothing in the address named, and the page's own URL sync effect
+only writes it there afterwards — and that window is the single most common reason a
+payment an operator expects is not on screen. The bookings parse is total, so one
+malformed date drops **every** filter while the URL still displays them all. And a
+page whose load failed publishes that failure, where the address cannot express it at
+all: it still shows the filters, on a screen with no list behind them.
 
 **The operator is told, beside the input, that this happens.** The disclosure sits in
 the Diagnostics panel above the question box rather than in a document, because that is

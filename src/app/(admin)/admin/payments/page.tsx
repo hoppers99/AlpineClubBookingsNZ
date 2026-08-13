@@ -71,7 +71,20 @@ import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { SortHeader } from "@/components/admin/sort-header";
 import { Pagination } from "@/components/admin/admin-pagination";
 import { DiagnosticsRecordButton } from "@/components/help-widget/diagnostics-record-button";
-import { usePublishDiagnosticsViewState } from "@/components/help-widget/help-widget-context";
+import {
+  usePublishDiagnosticsViewState,
+  type DiagnosticsViewState,
+} from "@/components/help-widget/help-widget-context";
+import {
+  DIAGNOSTICS_PAGE_NETWORK_ERROR_CODE,
+  diagnosticsPageErrorCodeForStatus,
+} from "@/lib/diagnostics/page-context/error-code";
+import type { DiagnosticsPageErrorCode } from "@/lib/diagnostics/page-context/registry";
+import {
+  isAppliedPaymentStatus,
+  isAppliedPaymentsDate,
+  type AppliedPaymentStatus,
+} from "./_applied-query-vocabulary";
 import { StatusChip } from "@/components/ui/status-chip";
 import { MiniChip } from "@/components/ui/mini-chip";
 import { type ChipTone } from "@/lib/chip-tones";
@@ -123,7 +136,7 @@ const paymentSortColumns = new Set<PaymentSortBy>([
 // Human labels for the active-filter chips. These mirror the option labels shown
 // in the filter selects; they are display-only and never affect which rows the
 // API returns.
-const PAYMENT_STATUS_FILTER_LABELS: Record<string, string> = {
+const PAYMENT_STATUS_FILTER_LABELS: Record<AppliedPaymentStatus, string> = {
   PENDING: "Pending",
   PROCESSING: "Processing (awaiting Stripe)",
   SUCCEEDED: "Succeeded",
@@ -376,23 +389,46 @@ export default function PaymentsPage() {
   const [summary, setSummary] = useState({ totalRevenueCents: 0, refundedCents: 0, count: 0 });
   const [loading, setLoading] = useState(false);
 
+  // The code the last load failed with, or null. It is state rather than a
+  // derivation because the failure is the response's, and it is deliberately NOT
+  // the existing `invoiceError`: an invoice action that failed says nothing about
+  // whether the list on screen is a list.
+  const [loadErrorCode, setLoadErrorCode] =
+    useState<DiagnosticsPageErrorCode | null>(null);
+
   // WHAT THIS PAGE ACTUALLY FILTERED BY, published for AI Diagnostics (#2816,
-  // owner decision 13 Aug 2026). This is the page the channel was designed for.
+  // owner decision 13 Aug 2026).
   //
-  // THE ACTIVITY WINDOW IS APPLIED WITHOUT EVER REACHING THE ADDRESS BAR. On a
-  // bare `/admin/payments` the two `useState` initialisers above fall back to
-  // `getPaymentsDatasetDefaults(clubToday).lastUpdatedFrom` and `clubToday`, and
-  // `buildPaymentsSearchParams` puts both into the request — so the list an
-  // operator sees is the last three club-timezone months, and nothing in the URL
-  // says so. `page-context/registry.ts` calls that window "the single most common
-  // reason a payment an operator expects is not on screen"; reading the address
-  // instead of this state is precisely how that answer would be lost.
+  // WHAT PUBLICATION BUYS OVER READING THE ADDRESS, stated precisely, because the
+  // first version of this comment claimed the activity window "is applied without
+  // ever reaching the address bar" and that is FALSE (correctness review, 13 Aug
+  // 2026): `buildPaymentsSearchParams` sets both bounds unconditionally and the
+  // sync effect below `router.replace`s them, so a bare `/admin/payments` rewrites
+  // itself to `?lastUpdatedFrom=…&lastUpdatedTo=…` on mount. What is true is
+  // narrower and still decisive:
+  //   * the window is applied by REACT STATE, and the address only catches up
+  //     when that effect commits — every render before it, and any load the
+  //     operator asks about in between, is filtered by a window the address does
+  //     not name;
+  //   * this is exactly the applied, allowlisted set, where the address also
+  //     carries `sortBy`, `page`, the amount bounds and any unrelated query keys
+  //     the previous screen left behind;
+  //   * a value in the address that this page did NOT apply — an unknown status
+  //     spelling, a malformed date — is never published as though it had been;
+  //   * and when the load FAILED there is no filtered list at all, which the
+  //     address cannot express.
+  // The default window itself is still the point: `page-context/registry.ts` calls
+  // it "the single most common reason a payment an operator expects is not on
+  // screen", and it is nowhere in a URL an operator typed or was linked.
   //
-  // Everything here is the state that feeds `buildPaymentsSearchParams` →
-  // `fetchData`, so it is applied by construction. The keys the registry row does
-  // not allowlist (`xeroState`, `settlement`, the amount bounds, sort, page) are
-  // not published; the server would drop them anyway, and publishing junk to be
-  // dropped is not a contract.
+  // VALUES ARE CHECKED AGAINST THE API'S OWN VOCABULARY FIRST. `adminPaymentsQuerySchema`
+  // is strict, so `?status=succeeded` (wrong case) or `?lastUpdatedFrom=13-45-2026`
+  // 400s the WHOLE query and `fetchData` keeps the previous rows — publishing those
+  // raw would tell the model a filter was applied by a request that was refused.
+  //
+  // The keys the registry row does not allowlist (`xeroState`, `settlement`, the
+  // amount bounds, sort, page) are not published; the route would drop them, and
+  // publishing to be dropped is not a contract.
   //
   // `search` is applied on every keystroke (there is no debounce and no submit —
   // changing it rebuilds `buildPaymentsSearchParams`, which re-runs `fetchData`),
@@ -402,22 +438,37 @@ export default function PaymentsPage() {
   //
   // Always an OBJECT, empty when nothing is applied — `undefined` would mean
   // "this page publishes nothing" and hand the widget back to its URL fallback.
-  usePublishDiagnosticsViewState(
-    (() => {
-      const filters: Record<string, string> = {};
-      if (source !== "all") filters.source = source;
-      if (search.trim()) filters.search = search.trim();
-      if (lastUpdatedFrom) filters.lastUpdatedFrom = lastUpdatedFrom;
-      if (lastUpdatedTo) filters.lastUpdatedTo = lastUpdatedTo;
-      if (checkInFrom) filters.checkInFrom = checkInFrom;
-      if (checkInTo) filters.checkInTo = checkInTo;
-      return {
-        // `all` is the absence of a status filter, not a status.
-        ...(status !== "all" ? { status } : {}),
-        ...(Object.keys(filters).length > 0 ? { filters } : {}),
-      };
-    })(),
-  );
+  //
+  // ASSIGNED BY NAME onto a typed empty object rather than built as a spread
+  // literal: a conditional spread loses object-literal freshness, so TypeScript
+  // runs no excess-property check and a field renamed in the wire contract would
+  // compile clean here (mutation-proven, review 13 Aug 2026).
+  const publishedView: DiagnosticsViewState = {};
+  if (loadErrorCode) {
+    // NO FILTERS ON A FAILED LOAD. `{}` would assert "I applied nothing", so a
+    // question about a missing payment would be answered against the activity
+    // window when the real cause is an outage; the error code says "there is no
+    // list, and here is why". Every registry row allowlists these codes.
+    publishedView.errorCode = loadErrorCode;
+  } else {
+    const filters: Record<string, string> = {};
+    if (source !== "all") filters.source = source;
+    if (search.trim()) filters.search = search.trim();
+    if (isAppliedPaymentsDate(lastUpdatedFrom)) {
+      filters.lastUpdatedFrom = lastUpdatedFrom;
+    }
+    if (isAppliedPaymentsDate(lastUpdatedTo)) {
+      filters.lastUpdatedTo = lastUpdatedTo;
+    }
+    if (isAppliedPaymentsDate(checkInFrom)) filters.checkInFrom = checkInFrom;
+    if (isAppliedPaymentsDate(checkInTo)) filters.checkInTo = checkInTo;
+    // `all` is the absence of a status filter, not a status.
+    if (status !== "all" && isAppliedPaymentStatus(status)) {
+      publishedView.status = status;
+    }
+    if (Object.keys(filters).length > 0) publishedView.filters = filters;
+  }
+  usePublishDiagnosticsViewState(publishedView);
 
   const buildPaymentsSearchParams = useCallback(() => {
     const params = withoutDatasetQueryKeys(
@@ -469,6 +520,11 @@ export default function PaymentsPage() {
 
   const fetchData = useCallback(async () => {
     setLoading(true);
+    // #2816: the outcome is recorded so the page can publish "there is no list,
+    // and here is why" instead of publishing filters it did not get to apply.
+    // A non-ok response has always been ignored here — the rows on screen are
+    // then the PREVIOUS query's, or none at all.
+    let failure: DiagnosticsPageErrorCode | null = null;
     try {
       const params = buildPaymentsSearchParams();
       params.set("status", status);
@@ -483,8 +539,15 @@ export default function PaymentsPage() {
       if (res.ok) {
         const json = await res.json();
         setData(json.data); setTotal(json.total); setSummary(json.summary);
+      } else {
+        failure = diagnosticsPageErrorCodeForStatus(res.status);
       }
-    } finally { setLoading(false); }
+    } catch {
+      failure = DIAGNOSTICS_PAGE_NETWORK_ERROR_CODE;
+    } finally {
+      setLoadErrorCode(failure);
+      setLoading(false);
+    }
   }, [
     status,
     source,
@@ -641,7 +704,9 @@ export default function PaymentsPage() {
     filterChips.push({
       key: "status",
       label: "Status",
-      value: PAYMENT_STATUS_FILTER_LABELS[status] ?? status,
+      value: isAppliedPaymentStatus(status)
+        ? PAYMENT_STATUS_FILTER_LABELS[status]
+        : status,
       onRemove: () => { setStatus("all"); resetPage(); },
     });
   }

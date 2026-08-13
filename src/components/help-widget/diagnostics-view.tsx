@@ -137,6 +137,8 @@ export function DiagnosticsView({
 }) {
   const [draft, setDraft] = useState("");
   const searchTickId = useId();
+  /** Ties the "your filters travel" notice to the question box for a screen reader. */
+  const viewDisclosureId = useId();
   const recordTickId = useId();
   const threadEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -350,7 +352,13 @@ export function DiagnosticsView({
             unwired one falls back to the address. And it names the ticks, because
             a control that sits directly above something it does not govern is
             read as governing it. */}
+        {/* IT IS WIRED TO THE BOX, not merely placed near it (review finding,
+            13 Aug 2026). Without the `id`/`aria-describedby` pair a screen-reader
+            user tabbing straight into the textarea never hears the notice at all,
+            which is the one audience the owner decision's "always send and SAY SO"
+            most obviously covers. */}
         <p
+          id={viewDisclosureId}
           data-testid="diagnostics-view-disclosure"
           className="px-1 text-xs text-muted-foreground"
         >
@@ -364,6 +372,7 @@ export function DiagnosticsView({
         </label>
         <textarea
           id="diagnostics-question"
+          aria-describedby={viewDisclosureId}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           rows={2}

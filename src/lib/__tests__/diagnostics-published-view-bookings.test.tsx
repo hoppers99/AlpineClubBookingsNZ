@@ -53,6 +53,8 @@ vi.mock("@/lib/module-settings", async (importOriginal) => {
 import AdminBookingsPage from "@/app/(admin)/admin/bookings/page";
 import { DiagnosticsViewStatePublisher } from "@/components/help-widget/diagnostics-view-state-publisher";
 import type { DiagnosticsViewState } from "@/components/help-widget/help-widget-context";
+import { getDiagnosticsPageContextRoute } from "@/lib/diagnostics/page-context/registry";
+import { buildUnpaidFinishedStaysHref } from "@/lib/unpaid-finished-stays";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
@@ -138,7 +140,9 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
         page: "3",
       }),
     ).toEqual({
-      status: "CONFIRMED",
+      // The registry's token vocabulary, so the ONE spelling reaches the model
+      // whether a status arrives in the token field or in the status filter.
+      status: "confirmed",
       filters: {
         from: "2026-08-01",
         to: "2026-08-31",
@@ -148,6 +152,12 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
       },
       // `page` is pagination: not in the row's allowlist, and it says nothing
       // about why the page shows what it shows.
+    });
+  });
+
+  it("publishes `PAYMENT_PENDING` in the registry's spelling, not the enum's", async () => {
+    expect(await publishedViewFor({ status: "PAYMENT_PENDING" })).toEqual({
+      status: "payment-pending",
     });
   });
 
@@ -178,9 +188,11 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
     expect(await publishedViewFor({ from: "13-45-2026" })).not.toBeUndefined();
   });
 
-  it("does not publish a legacy `from`/`to` that lost to an explicit named bound", async () => {
-    // `checkInFrom ?? from`, and `to` yields to either `checkInTo` or
-    // `checkOutTo`. An alias that lost is in the address and not in the query.
+  it("publishes the WINNING bound when a legacy alias lost to an explicit one", async () => {
+    // The bug this replaces: the first cut suppressed the LOSING alias and never
+    // published the winner, so a narrowed list was reported as unnarrowed.
+    // `checkInFrom ?? from` for the lower bound; `checkInTo` takes the upper one
+    // and pushes the legacy `to` out of the query entirely.
     expect(
       await publishedViewFor({
         from: "2026-08-01",
@@ -188,7 +200,57 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
         to: "2026-08-31",
         checkInTo: "2026-09-30",
       }),
-    ).toEqual({});
+    ).toEqual({ filters: { from: "2026-09-01", to: "2026-09-30" } });
+  });
+
+  it("publishes a check-out bound, which is the only window two dashboard cards send", async () => {
+    // `buildUnpaidFinishedStaysHref` deep-links here; the sibling
+    // `additionalOwed` card sends the same `checkOutTo` with no status at all,
+    // and used to publish `{}`.
+    const href = buildUnpaidFinishedStaysHref("2026-07-01");
+    const params = Object.fromEntries(
+      new URLSearchParams(href.split("?")[1]).entries(),
+    );
+    expect(await publishedViewFor(params)).toEqual({
+      status: "payment-pending",
+      filters: { to: "2026-07-01" },
+    });
+    expect(
+      await publishedViewFor({
+        additionalOwed: "owed",
+        checkOutTo: "2026-07-01",
+      }),
+    ).toEqual({ filters: { to: "2026-07-01" } });
+  });
+
+  it("publishes the computed window and pinned statuses of `?upcoming=`", async () => {
+    // The dashboard's "Bookings" card. Neither half is in the address: the window
+    // is [today, today+N] and the status set is pinned only because no explicit
+    // status was asked for. The clock is frozen at 2026-07-01 (NZ) for every
+    // suite, so these are stable.
+    expect(await publishedViewFor({ upcoming: "7" })).toEqual({
+      filters: {
+        status: "payment-pending,confirmed,paid,pending",
+        from: "2026-07-01",
+        to: "2026-07-08",
+      },
+    });
+  });
+
+  it("does not pin `?upcoming=`'s statuses when the URL named one", async () => {
+    // `buildBookingWhere` only pins the set `if (!query.status)`.
+    expect(
+      await publishedViewFor({ upcoming: "7", status: "CONFIRMED" }),
+    ).toEqual({
+      status: "confirmed",
+      filters: { from: "2026-07-01", to: "2026-07-08" },
+    });
+  });
+
+  it("publishes the month window `?month=` applied, which is nowhere in the address as dates", async () => {
+    expect(await publishedViewFor({ month: "2026-09" })).toEqual({
+      filters: { from: "2026-09-01", to: "2026-09-30" },
+    });
   });
 
   it("publishes several applied statuses as the allowlisted filter, not as one token", async () => {
@@ -196,13 +258,16 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
     // misstate a two-status selection.
     expect(
       await publishedViewFor({ status: "CONFIRMED,PAID" }),
-    ).toEqual({ filters: { status: "CONFIRMED,PAID" } });
+    ).toEqual({ filters: { status: "confirmed,paid" } });
   });
 
-  it("publishes no status for one that is not a real booking status", async () => {
-    // `?status=BOGUS` applies `{ in: [] }` — a narrowing that matches nothing —
-    // and there is no honest way to say that in this vocabulary.
-    expect(await publishedViewFor({ status: "BOGUS" })).toEqual({});
+  it("publishes a status that is not a real one, because it is why the list is empty", async () => {
+    // `?status=BOGUS` applies `{ in: [] }` — a narrowing that matches NOTHING.
+    // This is the one URL where the list is empty BECAUSE OF the filter, so
+    // saying nothing about it is the worst available answer.
+    expect(await publishedViewFor({ status: "BOGUS" })).toEqual({
+      filters: { status: "bogus" },
+    });
   });
 
   it("publishes nothing while the consent ATTENTION queue has replaced the table", async () => {
@@ -211,5 +276,32 @@ describe("the bookings list publishes its APPLIED filters (#2816)", () => {
     expect(
       await publishedViewFor({ consentState: "attention", status: "CONFIRMED" }),
     ).toEqual({});
+  });
+
+  it("never publishes a key this page's registry row does not allowlist", async () => {
+    // THE DRIFT GUARD. The row and the page are hand-matched, so this pins the
+    // one thing that hand-matching can silently break: the route drops an
+    // unlisted key, and a page publishing one has published nothing.
+    const row = getDiagnosticsPageContextRoute("admin.bookings");
+    expect(row).toBeDefined();
+    const view = await publishedViewFor({
+      status: "CONFIRMED,PAID",
+      checkInFrom: "2026-08-01",
+      checkOutTo: "2026-08-31",
+      search: "ngata",
+      lodgeId: "lodge-1",
+      // Applied, and deliberately unpublishable: none is in the row.
+      paymentSource: "STRIPE",
+      xeroState: "invoiceLinked",
+      bedState: "partial",
+      additionalOwed: "owed",
+      changeState: "requiresReview",
+      updatedFrom: "2026-08-01",
+      deleted: "all",
+    });
+    expect(Object.keys(view?.filters ?? {})).not.toHaveLength(0);
+    for (const key of Object.keys(view?.filters ?? {})) {
+      expect(row?.filterKeys).toContain(key);
+    }
   });
 });

@@ -26,7 +26,16 @@ import {
 } from "@/lib/xero-partial-success"
 import type { XeroActionRecovery } from "@/lib/admin-member-xero-actions"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
-import { usePublishDiagnosticsViewState } from "@/components/help-widget/help-widget-context"
+import {
+  usePublishDiagnosticsViewState,
+  type DiagnosticsViewState,
+} from "@/components/help-widget/help-widget-context"
+import {
+  DIAGNOSTICS_PAGE_NETWORK_ERROR_CODE,
+  diagnosticsPageErrorCodeForStatus,
+} from "@/lib/diagnostics/page-context/error-code"
+import type { DiagnosticsPageErrorCode } from "@/lib/diagnostics/page-context/registry"
+import { isAppliedMemberAgeTier } from "./_age-tier-filter-values"
 import { MemberBulkActionBar } from "./_components/member-bulk-action-bar"
 import { MemberBulkDialog } from "./_components/member-bulk-dialog"
 import { MemberBulkMembershipDialog } from "./_components/member-bulk-membership-dialog"
@@ -77,6 +86,9 @@ export default function MembersPage() {
   const [totalPages, setTotalPages] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  /** The code the last list load failed with, or null (#2816). */
+  const [loadErrorCode, setLoadErrorCode] =
+    useState<DiagnosticsPageErrorCode | null>(null)
   const [xeroRecoveryError, setXeroRecoveryError] = useState("")
   const [xeroRecoveryAttention, setXeroRecoveryAttention] = useState(0)
   const [xeroRecoveryMemberId, setXeroRecoveryMemberId] = useState<string | null>(null)
@@ -106,6 +118,11 @@ export default function MembersPage() {
   }, [error, scrollToError, xeroRecoveryError])
 
   const fetchMembersWithResult = useCallback(async (): Promise<boolean> => {
+    // #2816: the outcome is recorded so the page can publish "there is no list,
+    // and here is why" rather than filters that produced nothing on screen. It is
+    // separate from `error`, which also carries bulk-action and Xero failures that
+    // say nothing about whether the list is a list.
+    let failure: DiagnosticsPageErrorCode | null = null
     try {
       const params = buildMembersSearchParams()
       params.set("page", String(page))
@@ -113,16 +130,21 @@ export default function MembersPage() {
       params.set("sortBy", sortBy)
       params.set("sortDir", sortDir)
       const res = await fetch(`/api/admin/members?${params.toString()}`)
-      if (!res.ok) throw new Error("Failed to fetch members")
+      if (!res.ok) {
+        failure = diagnosticsPageErrorCodeForStatus(res.status)
+        throw new Error("Failed to fetch members")
+      }
       const data = (await res.json()) as MembersResponse
       setMembers(data.members)
       setTotal(data.total)
       setTotalPages(data.totalPages)
       return true
     } catch {
+      failure = failure ?? DIAGNOSTICS_PAGE_NETWORK_ERROR_CODE
       setError("Failed to load members")
       return false
     } finally {
+      setLoadErrorCode(failure)
       setLoading(false)
     }
   }, [buildMembersSearchParams, page, pageSize, sortBy, sortDir])
@@ -167,22 +189,40 @@ export default function MembersPage() {
   // over names and emails and it travels per the owner decision, disclosed
   // beside the Diagnostics input.
   //
-  // `ageTier` is applied the moment it is set. This row allowlists no statuses
-  // and no other filter keys, so the rest of the toolbar's filters (role,
-  // lifecycle, membership type, family group, Xero) are not published — the
-  // server would drop them, and publishing to be dropped is not a contract.
+  // `ageTier` IS CHECKED AGAINST THE VOCABULARY FIRST. `buildMembersWhere` applies
+  // it only when it is a real `AgeTier` and otherwise IGNORES it — no 400, no
+  // narrowing — so `?ageTier=<junk>` leaves the list unfiltered while the toolbar
+  // still displays a tier. A bare truthiness test here published that junk as an
+  // applied filter (review finding, 13 Aug 2026).
+  //
+  // This row allowlists no statuses and no other filter keys, so the rest of the
+  // toolbar's filters (role, lifecycle, membership type, family group, Xero) are
+  // not published — the route would drop them, and publishing to be dropped is not
+  // a contract. The evidence block's header tells the model the selection is
+  // always a partial list.
   //
   // Always an OBJECT, empty when nothing is applied: `undefined` would mean "this
   // page publishes nothing" and hand the widget back to its URL fallback.
-  usePublishDiagnosticsViewState(
-    (() => {
-      const applied = {
-        ...(debouncedSearch ? { q: debouncedSearch } : {}),
-        ...(filters.ageTier ? { ageTier: filters.ageTier } : {}),
-      }
-      return Object.keys(applied).length > 0 ? { filters: applied } : {}
-    })(),
-  )
+  //
+  // ASSIGNED BY NAME onto a typed empty object rather than built as a spread
+  // literal: a conditional spread loses object-literal freshness, so TypeScript
+  // runs no excess-property check and a field renamed in the wire contract would
+  // compile clean here (mutation-proven, review 13 Aug 2026).
+  const publishedView: DiagnosticsViewState = {}
+  if (loadErrorCode) {
+    // A FAILED LOAD IS NOT AN UNFILTERED LIST. `{}` would assert "I applied
+    // nothing", so "why is this member not here?" would be answered against the
+    // search when the real cause is that there is no list at all.
+    publishedView.errorCode = loadErrorCode
+  } else {
+    const applied: Record<string, string> = {}
+    if (debouncedSearch) applied.q = debouncedSearch
+    if (filters.ageTier && isAppliedMemberAgeTier(filters.ageTier)) {
+      applied.ageTier = filters.ageTier
+    }
+    if (Object.keys(applied).length > 0) publishedView.filters = applied
+  }
+  usePublishDiagnosticsViewState(publishedView)
 
   const {
     xeroConnected,

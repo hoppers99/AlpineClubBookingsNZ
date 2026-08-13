@@ -33,6 +33,7 @@ import { readFreshAdminPermissionMatrix } from "@/lib/diagnostics/page-context/a
 import { matchDiagnosticsPageRoute } from "@/lib/diagnostics/page-context/match";
 import { buildPageContextUserTurn } from "@/lib/diagnostics/page-context/render";
 import { resolveDiagnosticsPageContext } from "@/lib/diagnostics/page-context/resolve";
+import { DIAGNOSTICS_PAGE_CONTEXT_BOUNDS } from "@/lib/diagnostics/page-context/types";
 import { createDiagnosticsConsentLedger } from "@/lib/diagnostics/tools/consent";
 import type { DiagnosticsConsentRecordRef } from "@/lib/diagnostics/tools/consent";
 import { createDiagnosticsToolSession } from "@/lib/diagnostics/tools/session";
@@ -398,16 +399,29 @@ export async function POST(request: Request) {
       const filters: Record<string, string> = {};
       let kept = 0;
       for (const [key, value] of Object.entries(view.filters)) {
-        if (kept >= 8) break; // the selector's own maxFilters
+        // The bounds are IMPORTED, never restated (review finding, 13 Aug 2026).
+        // The selector parser's rejection is total, so tightening `maxFilters` or
+        // `filterValueMaxChars` there and not here would silently cost every
+        // question its page context — the exact failure this filter exists to
+        // avoid.
+        if (kept >= DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.maxFilters) break;
         if (!matched.route.filterKeys.includes(key)) continue;
         const trimmed = value.trim();
         // An overlong or control-carrying value is DROPPED, not truncated: a
         // truncated filter value would tell the model the operator filtered by
         // something they did not.
+        //
+        // The C1 block (U+0080–U+009F) is in the class below because U+0085 is a
+        // line terminator that JavaScript's `\s` does NOT match, so it survives
+        // the evidence renderer's newline collapse and can fake a new bullet
+        // inside the block. `page-context/parse.ts` refuses the same range; this
+        // filter must never be the looser of the two, or a value kept here would
+        // sink the whole selector there.
         if (
           trimmed.length === 0 ||
-          trimmed.length > 120 ||
-          /[\u0000-\u001f\u007f]/.test(trimmed)
+          trimmed.length >
+            DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterValueMaxChars ||
+          /[\u0000-\u001f\u007f\u0080-\u009f]/.test(trimmed)
         ) {
           continue;
         }

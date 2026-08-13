@@ -20,6 +20,7 @@ import {
   UPCOMING_CHECK_IN_BOOKING_STATUSES,
 } from "@/lib/booking-status";
 import { bookingsOverlap, sameLodgeNullTolerant } from "@/lib/capacity";
+import { DIAGNOSTICS_PAGE_CONTEXT_BOUNDS } from "@/lib/diagnostics/page-context/types";
 import {
   buildBookingDeletedWhere,
   parseBookingDeletedVisibility,
@@ -302,15 +303,15 @@ function sortValue(booking: BookingCandidate, sortBy: BookingSortBy) {
  * for them. Empty means "no status narrowing was applied" — either none was asked
  * for, or `all` was.
  *
- * Exported for AI Diagnostics (#2816), which publishes the filter state the page
- * APPLIED rather than the one the address bar shows, and must therefore ask the
- * same code that builds the query rather than re-deriving the vocabulary. Note an
- * empty result is NOT the same thing as an empty query clause: `?status=BOGUS`
- * asks for narrowing and gets `{ in: [] }` below, which matches nothing — see
- * `bookingStatusWhere`, and the caller's own comment on why that case publishes
- * nothing.
+ * Shared with `appliedBookingViewFilters` (AI Diagnostics, #2816), which publishes
+ * the filter state the page APPLIED rather than the one the address bar shows and
+ * must therefore ask the same code that builds the query rather than re-deriving
+ * the vocabulary. Note an empty result is NOT the same thing as an empty query
+ * clause: `?status=BOGUS` asks for narrowing and gets `{ in: [] }` below, which
+ * matches nothing — see `bookingStatusWhere`, and `appliedBookingViewFilters` for
+ * how that case is reported.
  */
-export function appliedBookingStatuses(
+function appliedBookingStatuses(
   statusFilter: string | undefined,
 ): BookingStatus[] {
   if (!statusFilter || statusFilter === "all") return [];
@@ -333,6 +334,119 @@ function bookingStatusWhere(statusFilter: string | undefined): Prisma.BookingWhe
   }
 
   return { not: BookingStatus.DRAFT };
+}
+
+/**
+ * The AI Diagnostics registry vocabulary for one booking status: lowercase, with
+ * underscores hyphenated (`PAYMENT_PENDING` → `payment-pending`). It is the SAME
+ * mapping the ask route applies to the wire's `status` token, applied here so the
+ * two spellings the model can be shown — `- status: confirmed` for one applied
+ * status, `- filter status: confirmed,paid` for several — are one vocabulary
+ * rather than two (review finding, 13 Aug 2026).
+ */
+function diagnosticsStatusToken(status: string): string {
+  return status.trim().toLowerCase().replace(/_/g, "-");
+}
+
+/**
+ * THE VIEW STATE THIS LIST ACTUALLY APPLIED, in the AI Diagnostics registry row's
+ * own vocabulary (#2816, owner decision 13 Aug 2026).
+ *
+ * IT LIVES HERE, BESIDE `buildBookingWhere`, because it is a claim about what that
+ * function did. The first cut derived it in the page from `query` alone and got the
+ * date window wrong in both directions: it suppressed the LOSING legacy alias but
+ * never published the WINNING bound, so `?checkOutTo=2026-08-14` — a URL two
+ * dashboard cards deep-link to (`unpaid-finished-stays.ts`) — reported a narrowed
+ * list as unnarrowed. Anything that reads `query` and claims to describe the query
+ * has to be maintained in the same edit as the builder, so it is in the same file.
+ *
+ * WHAT IT PUBLISHES, and the precedence is `buildBookingWhere`'s own, field by
+ * field (last writer wins there, so last writer wins here):
+ *  - `status` — the ONE token the wire's status field holds, when exactly one
+ *    lifecycle status was applied. Several go in the allowlisted `status` FILTER
+ *    instead, because sending the first would misstate the selection.
+ *  - `filters.from` / `filters.to` — the effective LOWER and UPPER date bounds,
+ *    whichever parameter produced them: the legacy aliases, the explicit named
+ *    bounds, `?month=`, or `?upcoming=` (whose window is computed, not in the URL
+ *    at all). The row has two date keys and the builder has four bounds, so a
+ *    check-in bound is reported in preference to a check-out one; the evidence
+ *    block's own header tells the model the selection is always a partial list.
+ *  - `filters.search` / `filters.lodgeId` — post-parse, so post-trim.
+ *
+ * WHAT IT DELIBERATELY DOES NOT PUBLISH. The default `status: { not: DRAFT }` — a
+ * real narrowing, and inexpressible as an inclusion token. Every filter key this
+ * page has that the registry row does not list (`paymentSource`, `xeroState`,
+ * `bedState`, `additionalOwed`, `changeState`, `updatedFrom`/`updatedTo`,
+ * `deleted`, `consentState`): the route drops an unlisted key, and publishing to be
+ * dropped is not a contract.
+ */
+export function appliedBookingViewFilters(query: AdminBookingsQuery): {
+  status?: string;
+  filters?: Record<string, string>;
+} {
+  const filters: Record<string, string> = {};
+  const statuses = appliedBookingStatuses(query.status);
+  const upcomingDays = query.upcoming ? parseInt(query.upcoming, 10) : null;
+  const upcomingApplied = upcomingDays !== null && !isNaN(upcomingDays);
+
+  let singleStatus: string | undefined;
+  if (statuses.length === 1) {
+    singleStatus = diagnosticsStatusToken(statuses[0]);
+  } else if (statuses.length > 1) {
+    filters.status = statuses.map(diagnosticsStatusToken).join(",");
+  } else if (query.status && query.status !== "all") {
+    // `?status=BOGUS` applies `{ in: [] }` — a narrowing that matches NOTHING.
+    // This is the one URL where the list is empty BECAUSE OF the filter, so
+    // saying nothing about it is the worst possible answer to "why is this list
+    // empty?". It goes in the free-text filter rather than the token field
+    // because it is, by construction, not in the token vocabulary. Overlong junk
+    // is dropped rather than published, because the route would drop it anyway.
+    const unknown = diagnosticsStatusToken(query.status);
+    if (unknown.length <= DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterValueMaxChars) {
+      filters.status = unknown;
+    }
+  } else if (upcomingApplied) {
+    // `?upcoming=N` (the dashboard's "Bookings" card) narrows check-in to
+    // [today, today+N] AND pins a status set — but only when no explicit status
+    // was asked for. The status half IS expressible here, so it is published.
+    filters.status = [...UPCOMING_CHECK_IN_BOOKING_STATUSES]
+      .map(diagnosticsStatusToken)
+      .join(",");
+  }
+  let checkInFrom: string | undefined;
+  let checkInTo: string | undefined;
+  if (upcomingApplied) {
+    const today = getTodayDateOnly();
+    checkInFrom = formatDateOnly(today);
+    checkInTo = formatDateOnly(addDaysDateOnly(today, upcomingDays));
+  }
+  if (query.month && /^\d{4}-\d{2}$/.test(query.month)) {
+    const [year, month] = query.month.split("-").map(Number);
+    checkInFrom = `${year}-${String(month).padStart(2, "0")}-01`;
+    checkInTo = monthEndDateOnly(year, month);
+  }
+  // `checkInFrom ?? from`: the legacy alias only ever feeds the check-in lower
+  // bound, and loses to the explicit one.
+  const explicitCheckInFrom = query.checkInFrom ?? query.from;
+  if (explicitCheckInFrom) checkInFrom = explicitCheckInFrom;
+  if (query.checkInTo) checkInTo = query.checkInTo;
+
+  // Legacy `to` bounds CHECK-OUT, and only when neither named upper bound is set.
+  const checkOutTo =
+    query.checkOutTo ?? (query.checkInTo ? undefined : query.to);
+
+  const from = checkInFrom ?? query.checkOutFrom;
+  const to = checkInTo ?? checkOutTo;
+  if (from) filters.from = from;
+  if (to) filters.to = to;
+
+  if (query.search) filters.search = query.search;
+  if (query.lodgeId) filters.lodgeId = query.lodgeId;
+
+  return {
+    ...(singleStatus ? { status: singleStatus } : {}),
+    ...(Object.keys(filters).length > 0 ? { filters } : {}),
+  };
 }
 
 function buildBookingWhere(query: AdminBookingsQuery): Prisma.BookingWhereInput {

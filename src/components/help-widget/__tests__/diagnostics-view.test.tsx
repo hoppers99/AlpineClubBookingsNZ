@@ -477,6 +477,19 @@ describe("the operator is told the filters travel (#2816, owner decision)", () =
     // It sits with the input, not somewhere the operator has to go looking.
     expect(screen.getByTestId("diagnostics-input")).toBeTruthy();
   });
+
+  it("wires the disclosure to the question box, so it is announced on focus", () => {
+    // Placing it next to the box is not enough: a screen-reader user tabbing
+    // straight into the textarea never hears an unassociated paragraph, and they
+    // are the audience the owner decision's "always send and SAY SO" most
+    // obviously covers (review finding, 13 Aug 2026).
+    renderWidget();
+    openDiagnostics();
+    const disclosure = screen.getByTestId("diagnostics-view-disclosure");
+    const input = screen.getByTestId("diagnostics-input");
+    expect(disclosure.id).toBeTruthy();
+    expect(input.getAttribute("aria-describedby")).toBe(disclosure.id);
+  });
 });
 
 describe("page help never gains the admin view state (#2816)", () => {
