@@ -347,10 +347,34 @@ At the successful end of a meaningful piece of work:
    passes. When knip flags a genuinely-used file or export it cannot statically
    trace, add a justified `entry` or file-scoped `ignoreIssues` carve-out to
    `knip.jsonc` (see CONTRIBUTING.md "Dead-code gate") rather than deleting live
-   code. `main` is branch-protected: the `verify`,
-   `Migration drift check`, `Playwright E2E`, `E2E multi-lodge`, and
-   `Static analysis gate` checks
-   must pass to merge, and force-pushes and branch deletions are blocked.
+   code. `main` is branch-protected. **These eight checks must pass to merge**,
+   and force-pushes and branch deletions are blocked:
+
+   | Required check | Job | What it gates |
+   | --- | --- | --- |
+   | `verify` | `ci.yml` → `verify` | lint, typecheck, knip, `npm test`, build, PR-body gates |
+   | `Migration drift check` | `ci.yml` → `migration-drift` | migrations reproduce `schema.prisma`; real-Postgres lock harnesses |
+   | `Data migration verification` | `ci.yml` → `data-migration-verification` | data-rewriting migrations against realistic pre-state |
+   | `Static analysis gate` | `ci.yml` → `static-analysis` | Semgrep: four registry packs **plus** `.semgrep/rules/**` and their fixtures |
+   | `Secret scan (gitleaks)` | `ci.yml` → `secret-scan` | the PR's own commits **and** the full repository history (#2686) |
+   | `Image security gate (Trivy CRITICAL)` | `ci.yml` → `docker-image-security` | CRITICAL image vulnerabilities. HIGH stays advisory (#2686) |
+   | `Playwright E2E` | `e2e.yml` → `e2e` | the browser suite |
+   | `E2E multi-lodge` | `e2e.yml` → `e2e-multi-lodge` | the multi-lodge browser suite |
+
+   **Advisory, and deliberately NOT required** — a finding is investigated, but
+   it cannot block a merge: `CodeQL`, `Analyze (javascript-typescript)` and
+   `Analyze (actions)` (GitHub code scanning **default setup**, configured in
+   repository settings rather than in a workflow file — there is no `codeql.yml`
+   and adding one would first require disabling default setup); `Semgrep OSS`
+   (the code-scanning results check GitHub raises from the SARIF that
+   `Static analysis gate` uploads — not a second scan);
+   `semgrep-cloud-platform/scan` (a Semgrep AppSec Platform GitHub App
+   integration configured outside this repository); `dependency-review`;
+   `Markdown relative-link check (offline)`; and the clock-rollover canary, which
+   its own workflow comment says must never become a pull-request check.
+   Measured on fork pull requests #2782 and #2813: the CodeQL contexts do not
+   appear at all, which is a second reason they can never be required.
+
    Because `enforce_admins` is off and no review approval is required, an admin
    merge can still occasionally land `main` red, so investigate before assuming
    a failure is pre-existing and compare against `main`'s own latest CI when a

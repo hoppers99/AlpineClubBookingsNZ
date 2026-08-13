@@ -41,13 +41,26 @@ SHADOW_DATABASE_URL=postgresql://user:pass@localhost:5432/drift_shadow \
 CI also runs independent static and container checks:
 
 - `npm audit --audit-level=high --package-lock-only` on pull requests
-- Semgrep with Next.js, TypeScript, JavaScript, and React rules
-- gitleaks full-history and pull-request diff scans
+- Semgrep with Next.js, TypeScript, JavaScript and React registry rules, **plus
+  the repository's own rules in `.semgrep/rules/`** for the two boundaries no
+  registry pack can know about — a `"use client"` module importing server-only
+  code, and interpolated SQL reaching `$queryRawUnsafe`/`$executeRawUnsafe`.
+  Each custom rule ships must-fail and must-pass fixtures in `.semgrep/tests/`,
+  which the same job runs before the scan (#2686)
+- gitleaks over the pull request's own commits **and** the full repository
+  history, one pinned container for both, as the required
+  `Secret scan (gitleaks)` check (#2686)
 - TypeScript, test, and Docker image build validation
 - Migration drift check (`migration-drift` job) running `db:check-drift` against
   a throwaway Postgres, so schema-vs-migration drift fails the PR rather than the
   deploy
-- Trivy critical vulnerability gate with high-severity warnings
+- Trivy critical vulnerability gate with high-severity warnings, as the required
+  `Image security gate (Trivy CRITICAL)` check
+- CodeQL, as **advisory** analysis via GitHub code scanning **default setup**
+  (repository settings, not a workflow file — languages `actions`, `javascript`,
+  `javascript-typescript`, `typescript`; default query suite; weekly schedule
+  plus every push and pull request on `main`). It is deliberately not a required
+  check, and it does not report on pull requests from forks
 
 ## Dependency Policy
 
@@ -76,7 +89,22 @@ CI also runs independent static and container checks:
   publishing uses the workflow `GITHUB_TOKEN` in the publish job only.
 - Treat Docker image security as two gates: CRITICAL Trivy findings fail the PR,
   while HIGH findings are warning-only until reviewed and promoted to a blocking
-  policy.
+  policy. Since #2686 the CRITICAL half is a **required** protected-branch check
+  (`Image security gate (Trivy CRITICAL)`), so it blocks the merge rather than
+  only turning a job red; the HIGH step keeps `continue-on-error: true` and the
+  two steps are named "REQUIRED" and "ADVISORY" so the distinction is readable
+  from the checks list.
+- Keep a scanner's configuration file honest about what it actually enables. A
+  `.gitleaks.toml` without `[extend] useDefault = true` REPLACES the built-in
+  rule set instead of adding to it, and this repository shipped exactly that for
+  months: both gitleaks jobs ran green over a rule set with nothing in it
+  (#2686). Whenever a scanner config changes, prove the scanner still fails on a
+  deliberate violation before trusting the green.
+- Keep gitleaks allowlists CONTENT-scoped. A global `[[allowlists]]` entry
+  carrying `paths` suppresses everything under those paths in gitleaks 8.28.0
+  whatever else the entry says, and `matchCondition = "AND"` does not narrow it.
+  One-off historical findings belong in `.gitleaksignore` as fingerprints, which
+  name the commit, file, rule and line.
 
 Accepted residual risk:
 

@@ -800,9 +800,22 @@ Verified controls already present and intentionally preserved:
 - `verify` remains the only CI job that runs the full production build, and it
   uses fake/test provider values. Local Lightsail validation should stay
   lightweight unless explicitly approved.
-- Semgrep uses a pinned `semgrep/semgrep:1.161.0` image, PR-diff gitleaks uses
-  `ghcr.io/gitleaks/gitleaks:v8.28.0`, and the Dockerfile uses
-  `node:24.15-alpine`.
+- Semgrep uses a pinned `semgrep/semgrep:1.161.0` image and runs this
+  repository's own rules (`.semgrep/rules/`) alongside the four registry packs;
+  gitleaks uses the pinned `ghcr.io/gitleaks/gitleaks:v8.28.0` container for
+  BOTH the pull-request commit range and the full repository history, in one
+  job; and the Dockerfile uses `node:24.15-alpine`.
+- Since #2686, four CI security gates are **required** protected-branch checks
+  rather than merely red-on-failure jobs: `Static analysis gate`,
+  `Secret scan (gitleaks)`, `Image security gate (Trivy CRITICAL)` and `verify`
+  (which carries `npm audit --audit-level=high`). `AGENTS.md` → "Completion and
+  Merge" is the authoritative list.
+- CodeQL runs as advisory analysis through GitHub code scanning **default
+  setup** (repository settings, no `codeql.yml`): languages `actions`,
+  `javascript`, `javascript-typescript` and `typescript`, default query suite,
+  `remote` threat model, weekly schedule plus push and pull request on `main`.
+  It is not a required check and, measured on fork pull requests #2782 and
+  #2813, it does not report on fork pull requests at all.
 - Dependabot checks npm, GitHub Actions, and Docker weekly, with Node runtime
   ignores keeping the app on Node 24 until the runtime policy changes.
 - The final app container runs as `nextjs`, Compose uses read-only app
@@ -818,8 +831,22 @@ Residual risks to keep visible:
 - Most GitHub Actions remain pinned to released major tags rather than full
   commit SHAs so Dependabot and upstream patch releases can keep routine
   maintenance low-friction.
-- HIGH Trivy findings remain warning-only; CRITICAL findings block. Promote
-  HIGH to blocking later if the operational noise level is acceptable.
+- HIGH Trivy findings remain warning-only; CRITICAL findings block the merge as
+  a required check. Promote HIGH to blocking later if the operational noise
+  level is acceptable.
+- The example env files (`.env.example`, `.env.staging.example`) are no longer
+  allowlisted wholesale by the secret scanner — #2686 replaced the path-scoped
+  allowlist with content-scoped ones, so a real credential pasted into either
+  file now fails the required gate instead of being silently permitted.
+- Semgrep parses this codebase only partially: the pinned image reports 127
+  `PartialParsing` errors across `src/**` on a clean scan, so some regions of
+  some files are not analysed by ANY Semgrep rule, registry or repository-owned.
+  This caps static-analysis coverage and is not visible in a green gate.
+- Semgrep also runs a second time per pull request through the
+  `semgrep-cloud-platform/scan` GitHub App (Semgrep AppSec Platform), whose
+  ruleset is configured at semgrep.dev rather than in this repository. It costs
+  no GitHub Actions time, but its findings can diverge from the workflow's and
+  nothing in the repository controls it.
 - The repo does not yet publish signed image attestations or SBOM artifacts.
   Current image provenance is protected PR checks plus commit-SHA GHCR tags.
 

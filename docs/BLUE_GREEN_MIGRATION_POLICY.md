@@ -122,7 +122,7 @@ Some migrations do not only change the *shape* of the database — they rewrite 
 
 **The rule: a data-rewriting migration ships a verification fixture in the same pull request.** `scripts/check-data-migration-verification.sh` — the read-only coverage gate, no database needed — enforces that a fixture *exists and is registered*. It runs as a step in `migration-drift`, a **required** status check, so a migration that rewrites club data without a fixture cannot merge. It runs a second time inside the `Data migration verification` job (fail-fast before the database comes up).
 
-The `Data migration verification` job is the half that *executes* the fixtures against a real PostgreSQL and runs the mutants. **It is not yet a required PR status check** — adding it to branch protection is an owner action (see "Enforcement" below). Until then a *failing* fixture (a wrong post-state, an undetected mutant) does not block a PR from merging on its own — but it **does** block the release: `publish-ghcr-images`, which pushes the image an operator deploys, lists the job in `needs:`, so a red fixture stops the image (#2418).
+The `Data migration verification` job is the half that *executes* the fixtures against a real PostgreSQL and runs the mutants. **It is a required PR status check** — the owner action this document used to ask for has been taken, and the check is live in branch protection on `main`. A failing fixture (a wrong post-state, an undetected mutant) therefore blocks the merge on its own, and it also blocks the release: `publish-ghcr-images`, which pushes the image an operator deploys, lists the job in `needs:`, so a red fixture stops the image (#2418).
 
 A migration counts as **data-rewriting** when any top-level statement:
 
@@ -157,11 +157,13 @@ Without that variable the real-database checks do not run, but the suite still f
 
 ### Enforcement
 
-Two things are enforced today, and one is a pending owner action:
+Three things are enforced today, and there is no longer a pending owner action here:
 
-- **Coverage** (a fixture exists and is registered) rides on the **required** `Migration drift check`, so no-fixture-no-merge bites immediately, before this or any executing job is added to branch protection.
-- **A failing fixture blocks the release**: `publish-ghcr-images` depends on the `Data migration verification` job, so a red fixture stops the image an operator would deploy.
-- **Owner action — make the executing job a required PR check.** The `Data migration verification` job is not yet in the required-status-check list on `main` (`verify`, `Migration drift check`, `Playwright E2E`, `E2E multi-lodge`, `Static analysis gate` — see `AGENTS.md`). Until an owner adds it, a *failing* fixture does not block a PR merge on its own (branch protection also has `enforce_admins` off). Add `Data migration verification` to branch protection and to that list to close the gap.
+- **Coverage** (a fixture exists and is registered) rides on the **required** `Migration drift check`, so no-fixture-no-merge bites immediately.
+- **A failing fixture blocks the merge**: `Data migration verification` is itself a required status check on `main`. `AGENTS.md` → "Completion and Merge" carries the authoritative list of all eight required checks.
+- **A failing fixture blocks the release**: `publish-ghcr-images` depends on the `Data migration verification` job, so a red fixture also stops the image an operator would deploy.
+
+Note that branch protection still has `enforce_admins` off, so an admin merge can bypass every check above.
 
 **Limitation.** The migration under test is applied inside a transaction so each case can be rolled back, which means a migration that adds an enum value *and uses it* cannot be verified this way (PostgreSQL refuses `ALTER TYPE ... ADD VALUE` followed by use in one transaction block). Split such a change into two migrations, which the expand/contract sequence above wants anyway.
 

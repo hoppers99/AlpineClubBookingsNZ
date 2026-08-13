@@ -2,15 +2,16 @@
 
 Audience: Developer, Agent.
 
-Prefix defined in this file: **`INV-OPS`** — raw SQL result shapes and row
-locking, production deployment including the worked windowed column drop,
-changing what values already stored in a column mean, and what may be used as
-test input.
+Prefix defined in this file: **`INV-OPS`** — raw SQL result shapes, raw SQL
+construction and row locking, the client/server bundle boundary, production
+deployment including the worked windowed column drop, changing what values
+already stored in a column mean, and what may be used as test input.
 
-Read this file when you are writing raw SQL, taking a row lock, dropping a
-column, changing the meaning of a stored value (an audit `category`, a status
-string) so that the rows already written no longer match the code, deploying to
-production, or choosing credentials or data for CI and local validation.
+Read this file when you are writing raw SQL, taking a row lock, adding an import
+to a `"use client"` module, dropping a column, changing the meaning of a stored
+value (an audit `category`, a status string) so that the rows already written no
+longer match the code, deploying to production, or choosing credentials or data
+for CI and local validation.
 
 `INV-OPS-005` to `INV-OPS-011` are the `FamilyGroupMember.role` column drop,
 re-homed here from `membership-lifecycle.md` by #2706: they are migration
@@ -74,6 +75,56 @@ rules first written here. #2765 extended it with the measured-audience half.
   `SELECT 1` connectivity probes), and holds every `FOR UPDATE` to `$executeRaw`
   over a constant. Tests are exempt from both by design. Full protocol in
   `docs/CONCURRENCY_AND_LOCKING.md` -> "Lock raw, read typed".
+
+## INV-OPS-014
+
+- **Nothing is interpolated or concatenated into a raw `Unsafe` statement
+  (#2686).** `$queryRawUnsafe` and `$executeRawUnsafe` take a plain `string`, so
+  Prisma sends exactly what that string says and there is no parameter binding
+  left between the value and the database. A statement built with a `${}`
+  interpolation, with `+`, or with `.concat()` is therefore the shape SQL
+  injection needs, whatever the value happens to be today.
+
+  Three safe forms remain, and the guard's message names all of them: the tagged
+  templates `` $queryRaw`… ${value} …` `` and `` $executeRaw`…` ``, where every
+  `${}` becomes a bound parameter; `Prisma.sql` composition; and `Prisma.raw()`
+  for an identifier already validated against a fixed allowlist. A static
+  statement — a plain literal, or a module constant holding one, as
+  `booking-envelope-invariants.ts` and `induction-baseline.ts` both use — is
+  untouched by the rule.
+
+  Enforced by `.semgrep/rules/acb-unsafe-raw-sql.yml` in the required
+  `Static analysis gate`, with must-fail and must-pass fixtures in
+  `.semgrep/tests/`. Tests and `e2e/` are exempt, for the reason
+  `eslint.config.mjs` gives for exempting them from `RAW_SQL_RESTRICTIONS`: a
+  test's raw statement runs against a throwaway database the test created. A
+  genuinely static interpolation in production code — only
+  `audit-retention.ts`'s archive DDL, built from the committed column manifest —
+  keeps a `// nosemgrep: acb-unsafe-raw-sql — <reason>` line, so the exemption is
+  reviewed in the diff that adds it rather than configured away in bulk. This
+  rule is about how the string is BUILT; `INV-OPS-001` is about what the result
+  is declared to be, and both apply to the same call.
+
+## INV-OPS-013
+
+- **A `"use client"` module never imports server-only code (#2686).**
+  Everything a client module imports at runtime is compiled into the browser
+  bundle, so importing `@/lib/prisma`, `@/lib/auth`, `next/headers`,
+  `server-only` or a Node built-in from a `"use client"` file ships database
+  access, credential handling or filesystem code to every visitor. Two of those
+  fail the Next build already; `@/lib/prisma` and `@/lib/auth` do NOT, because
+  neither imports `server-only` — those are the ones that would ship silently.
+
+  The fix is to do the work in an API route or a server component and pass the
+  RESULT to the client component. A type-only `import type` is exempt and stays
+  exempt: it is erased before a bundle exists and cannot carry anything into it.
+
+  Enforced by `.semgrep/rules/acb-client-server-boundary.yml` in the required
+  `Static analysis gate`, with must-fail and must-pass fixtures in
+  `.semgrep/tests/`. Measured at the time it was added: 431 `"use client"`
+  modules in `src/`, one server-adjacent import between them, and that one a
+  type-only import — so the rule is a regression guard over a clean tree, not a
+  cleanup.
 
 ## INV-OPS-002
 
