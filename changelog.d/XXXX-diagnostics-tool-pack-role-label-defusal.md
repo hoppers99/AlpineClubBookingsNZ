@@ -1,7 +1,7 @@
 - **Diagnostics evidence from the database is neutralised the same way whichever
   channel it takes (#2832).** When the AI Diagnostics assistant reads stored
-  free text — a guest's name, a room or bed label, a payer-typed bank
-  reference — that text is now folded and role-label defused before it reaches the
+  free text — a guest's name, a room or bed label, an email address, a payer-typed
+  bank reference — that text is now folded and role-label defused before it reaches the
   model, exactly as the page-context channel already was. This closes a gap where a
   hidden control character (the C1 "next line" character, which a plain whitespace
   clean-up does not catch) could make a stored value look like a new line, and where
