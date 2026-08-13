@@ -15,6 +15,7 @@ import logger from "@/lib/logger";
 import { hashActionToken, isActionTokenFormat } from "@/lib/action-tokens";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 import { isLoginEmailUniqueConflict } from "@/lib/member-email";
+import { reconcileEmailInheritanceForMemberChange } from "@/lib/member-email-inheritance";
 import {
   describeUniqueConstraintTarget,
   isPrismaUniqueConstraintError,
@@ -101,6 +102,17 @@ export async function GET(request: NextRequest) {
           where: { id: record.memberId },
           data: { email: record.newEmail },
         });
+        // #2716: re-resolve BEFORE the denormalised copy below, and in this same
+        // transaction. A member confirming a new address may be somebody's
+        // recorded email source who currently resolves to nobody — their
+        // previous address was anonymised or replaced by a placeholder — and
+        // this is the "address ADDED" event that must bring those pointers back.
+        // Running it first means the copy below reaches the dependants this
+        // restores, not just the ones that were already pointing here.
+        const reconciliation = await reconcileEmailInheritanceForMemberChange(
+          tx,
+          [record.memberId],
+        );
         // Update email for members who inherit email from this member
         const inheritedMembers = await tx.member.updateMany({
           where: { inheritEmailFromId: record.memberId },
@@ -124,6 +136,12 @@ export async function GET(request: NextRequest) {
                 newDomain: getAuditEmailDomain(record.newEmail),
               },
               inheritedMemberUpdateCount: inheritedMembers.count,
+              emailInheritanceReconciliation: {
+                examined: reconciliation.examined,
+                repointed: reconciliation.repointed,
+                cleared: reconciliation.cleared,
+                unresolved: reconciliation.unresolved.length,
+              },
             },
             request: getAuditRequestContext(request),
           },

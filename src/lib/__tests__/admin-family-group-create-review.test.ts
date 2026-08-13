@@ -738,6 +738,12 @@ describe("reviewAdminFamilyGroupRequest — CHILD_REQUEST memberless-group guard
       fn({
         $executeRaw: txExecuteRaw,
         member: {
+          // #2716: the notification mailbox is decided by ONE read of the
+          // chosen parent, and `isUsableEmailSource` disqualifies a parent who
+          // is themselves inheriting on EITHER column. `inheritEmailChoiceId`
+          // is in `EMAIL_SOURCE_SELECT`, so a real row always has it; a fixture
+          // that omits it yields `undefined`, which is not `null`, and the
+          // requester reads as an inheritor rather than a mailbox.
           findUnique: vi.fn().mockResolvedValue({
             id: "member-1",
             ageTier: "ADULT",
@@ -746,11 +752,12 @@ describe("reviewAdminFamilyGroupRequest — CHILD_REQUEST memberless-group guard
             parentMemberId: null,
             secondaryParentId: null,
             inheritEmailFromId: null,
+            inheritEmailChoiceId: null,
           }),
-          // #2255: the approval walks the family chain (four-generation cap +
-          // cycle guard) and resolves the notification mailbox upwards; both
-          // read `member.findMany`. Nobody here has a parent, so the walks
-          // terminate on the requester.
+          // #2255: the approval walks the family chain (four-generation LINK
+          // cap + cycle guard) through `member.findMany`. That cap is unchanged
+          // by #2716 — it governs the tree, never the address hop. Nobody here
+          // has a parent, so the walk terminates on the requester.
           findMany: vi.fn().mockImplementation(async ({ where }: any) =>
             where?.id?.in
               ? where.id.in.map((id: string) => ({

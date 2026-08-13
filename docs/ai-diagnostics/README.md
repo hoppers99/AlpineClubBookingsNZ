@@ -146,7 +146,7 @@ child; the existing repository-wide documents they extend are linked.
 | **Page context** | [`page-context.md`](page-context.md) — the typed selector, the route registry, the permission-checked server re-fetch, the personal-detail opt-in, and the evidence block (AID-4 #2373, **delivered**) | [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-003](decisions/ADR-003-untrusted-evidence-classes.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md) |
 | **Security / privacy** | This hub's [threat model](threat-model.md) and [ADRs](decisions/) (AID-1, this issue); release hardening notes (AID-8 #2379) | [`SECURITY.md`](../SECURITY.md), [`SECURITY-ATTACK-SURFACE.md`](../SECURITY-ATTACK-SURFACE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](../agents/PROMPT_INJECTION_GUIDE.md) |
 | **Deployment / operator** | [`deployment.md`](deployment.md) — setup order, provisioning and rotating the SELECT-only DB role, the credential, budget/limits, and reading readiness (AID-2 #2371 / AID-5 #2374, **delivered**); provider disclosure, zero-retention, and the private overlay still to come (AID-8 #2379) | [`../../DEPLOYMENT.md`](../../DEPLOYMENT.md), [`ONGOING_DEVELOPMENT_WORKFLOW.md`](../ONGOING_DEVELOPMENT_WORKFLOW.md) |
-| **UX** | [`ux.md`](ux.md) — the two surfaces, the Diagnostics tab, the per-question consent ticks, choosing the record under investigation, the eighteen failure states, and keyboard/screen-reader/narrow-viewport behaviour (AID-7 #2378, **delivered**) | [`UX_FLOW_MAP.md`](../UX_FLOW_MAP.md) |
+| **UX** | [`ux.md`](ux.md) — the two surfaces, the Diagnostics tab, the per-question consent ticks, choosing the record under investigation, the nineteen failure states, and keyboard/screen-reader/narrow-viewport behaviour (AID-7 #2378, **delivered**) | [`UX_FLOW_MAP.md`](../UX_FLOW_MAP.md) |
 | **E2E test matrix** | `docs/ai-diagnostics/e2e-matrix.md` — admission, per-tool auth, injection inertness, output-channel egress (inert render + CSP, ADR-008), budget/limit fail-closed, redaction (AID-8 #2379) | [`END_TO_END_TEST_MATRIX.md`](../END_TO_END_TEST_MATRIX.md) |
 | **Operator help** | Operator guidance for the Diagnostics surface (AID-7 #2378 / AID-8 #2379) | [`guides/ai-help.md`](../guides/ai-help.md) |
 
@@ -638,19 +638,19 @@ somebody is typing; a save re-reads rather than trusting what was typed.
 ### Asking, and what the operator sees
 
 Asking happens in the Help bubble. The surface itself — the tab, the two
-per-question consent ticks, the resizable panel, the eighteen failure states and the
+per-question consent ticks, the resizable panel, the nineteen failure states and the
 keyboard/screen-reader behaviour — is documented once, in [`ux.md`](ux.md). What
 follows here is the part that is a security argument rather than a screen.
 
 ### Naming the record (owner decision D11)
 
-The page-context registry declares a `recordKind` on the bookings, waitlist and
-payments lists, but a list does not say WHICH row the operator means, and there is no
-`/admin/bookings/[id]` page in this codebase — admin rows link out to the
-member-facing `/bookings/{id}`, which is not an admin route and not in the registry.
-Only `/admin/members/[id]` names its record in the address.
+The page-context registry declares a `recordKind` on the bookings, booking-requests
+(#2812), waitlist and payments lists, but a list does not say WHICH row the operator
+means, and there is no `/admin/bookings/[id]` page in this codebase — admin rows link
+out to the member-facing `/bookings/{id}`, which is not an admin route and not in the
+registry. Only `/admin/members/[id]` names its record in the address.
 
-So each row on those three lists carries a stethoscope control that makes that row the
+So each row on those four lists carries a stethoscope control that makes that row the
 subject and opens the bubble on Diagnostics. It was chosen over a picker inside the
 panel because it adds **no new way to reach a record**: the operator picks something
 already on their screen, on a page whose own guard already checked `bookings:view` or
@@ -668,10 +668,14 @@ conversation does. The asymmetry is the honest one: the server derives the recor
 kind from whatever route they are on now, so a booking id carried onto the payments
 list could only ever ask about a payment that does not exist.
 
-`/admin/booking-approvals` is deliberately **not** wired. Its registry row names a path
-that only `redirect()`s to `/admin/booking-requests`, so no operator is ever on it and
-the row is dead — see **#2812**, which owns retargeting it and the tab-allowlist
-decision that needs.
+The booking-requests page (approvals, change requests, exceptions, public queue) is
+wired through the `admin.booking-requests` registry row — **#2812**. Its first
+registration named `/admin/booking-approvals`, a path that only `redirect()`s, so the
+row could never match a live page; the owner's 13 Aug 2026 decision retargeted it with
+**every tab** of the page in its allowlist, and the approvals queue carries the same
+per-row stethoscope as the other three list surfaces. A census now fails any registry
+row whose pathname has no rendering page, so the dead-row form of this bug cannot
+ship again.
 
 ### The answer loop
 

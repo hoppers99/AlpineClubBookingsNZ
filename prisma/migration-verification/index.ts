@@ -1,3 +1,4 @@
+import addMemberEmailInheritanceChoice from "./20260813010000_add_member_email_inheritance_choice";
 import backfillBedAllocationAuditCategory from "./20260810020000_backfill_bed_allocation_audit_category";
 import backfillBookingRequestGuestNights from "./20260810010000_backfill_booking_request_guest_nights";
 import clearStarterFooterAffiliations from "./20260802140000_clear_starter_footer_affiliations";
@@ -30,4 +31,5 @@ export const DATA_MIGRATION_VERIFICATIONS: DataMigrationVerification[] = [
   contractSubscriptionLockoutDropEnabled,
   backfillBookingRequestGuestNights,
   backfillBedAllocationAuditCategory,
+  addMemberEmailInheritanceChoice,
 ];

@@ -867,8 +867,12 @@ there rather than on the parent link.
 ## INV-LIFE-032
 
 So the only things recording a young parent grants are the word "Parent" on an
-admin card and a mail-routing question, and the second is answered by the
-transitive resolver walking **past** them to the nearest adult ancestor. The
+admin card and a mail-routing question — and since #2716 that question is
+**unanswerable** rather than answered. There is no transitive resolver to walk
+past a young parent any more: `isUsableEmailSource` requires `ageTier === "ADULT"`,
+inheritance is one hop, so a dependant whose only parent is young inherits
+**nobody** and appears on the unreachable surface for an admin to resolve. That
+is the accepted cost recorded in `INV-LIFE-047`, not a defect. The
 lowering of the ADULT tier's minimum age to 16 was considered and **rejected**:
 the boundaries are admin-configurable, but moving them would change fees,
 subscription requirements and booking rules for every 16–17 year old in the club
@@ -1160,9 +1164,12 @@ and would fail open.
 ## INV-LIFE-044
 
 Two decisions here were taken by the delivering agent under D9's remit rather
-than by the owner, and are **flagged for owner confirmation** (2026-07-27,
-#2255): the depth number itself (four generations) and transitive email
-inheritance as described below.
+than by the owner, and the owner has now ruled on both (2026-08-09, #2708 →
+#2716). **The depth number stands: four generations.** **Transitive email
+inheritance does not** — it is narrowed to the direct parent, and the rule is
+stated in `INV-LIFE-047` below. The two are independent, which is the point of
+recording them together: the cap governs how deep the family TREE may run, and
+never governed how far an ADDRESS may travel.
 
 ## INV-LIFE-045
 
@@ -1189,31 +1196,66 @@ would be a mis-invoiced family.
 
 ## INV-LIFE-047
 
-**Email inheritance is resolved transitively but STORED FLAT** (#2255, D9 —
-flagged for owner confirmation alongside the depth number). When a dependant is
-set to inherit a parent's email, resolution walks UP from the chosen parent to
-the nearest ancestor who can actually receive mail: an **adult**, not archived,
-whose address is not a walk-in placeholder (`@no-email.invalid`, #1935 — those
-are silently dropped by `sendEmail`). One hop is no longer enough, because with
-four generations the direct parent is routinely a middle generation with no
-address of their own, and resolving only one hop would leave that generation's
-children with no reachable contact at all.
+**Email inheritance is DIRECT-PARENT ONLY** (#2716, owner decision on #2708,
+2026-08-09). A member with no address of their own inherits from a **parent**
+and from nobody else — never from a grandparent or great-grandparent through a
+middle generation that also has no address. Resolution reads one row: the chosen
+parent qualifies (an **adult**, not archived, holding a real address rather than
+a club-internal `.invalid` placeholder, and not themselves inheriting) or the
+dependant inherits nobody.
+
+The reasoning the owner gave: an address that travels an arbitrary number of
+hops is unpredictable to the person whose address it is. A grandparent who
+supplies an email for one grandchild does not thereby expect notifications for a
+branch of the family they may have no involvement with. One hop is explainable
+to a member in a sentence; three is not.
+
+**The cost is real and was accepted.** Where a middle generation has no address,
+the descendant inherits nobody and the club has to ask for one. That is the
+correct failure direction — a gap somebody can see beats a message going
+somewhere nobody chose — but it is only correct while the gap is VISIBLE, which
+is why the admin surface in `INV-LIFE-048` is part of the rule rather than a
+convenience beside it.
 
 ## INV-LIFE-048
 
-The walk is **nearest-first**: a closer ancestor always beats a further one, and
-where two are equally near, the one reached through **primary**-parent edges
-wins. Every member is visited at most once, so it is cycle-safe, and it is
-bounded by the same depth cap as the links. The adult gate survives #2282
-("parentage may be recorded at any age"): recording that a 16-year-old is a
-parent is a fact about the family, whereas being the club's contact of record
-for someone else is a responsibility function, and those stay adult-gated — so a
-non-adult ancestor is walked past rather than used.
+**The gap is surfaced, not merely permitted.** `unreachableMemberWhere`
+(`src/lib/member-email-inheritance.ts`) is the single definition of "the club
+has no way to reach this member", and both admin surfaces read it: the members
+list filter (`/admin/members?contactability=unreachable`) and the stuck-states
+dashboard item that links to it. It reports two distinct reasons, and the
+distinction matters more than it looks — one is a job for the office, the other
+is a data repair:
+
+- **a choice that resolves to nobody** — somebody was chosen and currently
+  nobody receives the mail. This is the one a placeholder-address test would
+  MISS, because a dependant's own `email` column is routinely a copy of the
+  address they used to inherit: after the pointer clears they look perfectly
+  reachable while their notifications would go to somebody else's mailbox.
+- **no address at all** — no inheritance and their own address is a
+  club-internal `.invalid` placeholder.
+
+It is scoped to people the club is supposed to be able to reach: active, not
+archived, not cancelled, and not an organisation, school or lodge account. A
+walk-in contact with a placeholder address is not a fault to fix, and listing
+them would bury the members who are.
 
 ## INV-LIFE-049
 
-What it stores is the **terminal** source: `Member.inheritEmailFromId` always
-points straight at the mailbox, never at a middleman. That is what lets every
+**Two columns, and the difference is the whole feature.**
+`Member.inheritEmailChoiceId` is WHO WAS CHOSEN — a direct parent for a derived
+pointer, the adult an admin named for a hand-picked one. `inheritEmailFromId` is
+WHO ACTUALLY RECEIVES THE MAIL, and is never written by hand: it is
+`effectiveEmailSourceId` of the choice and nothing else.
+
+Keeping them apart is what makes "re-resolve when an address is ADDED" possible
+at all. Collapse them and a REMOVED address erases the record of who was chosen,
+so the pointer can never come back when the address does, and the member sits
+unreachable until somebody notices by hand — a new silent failure introduced by
+the fix for a silent failure.
+
+What the pointer stores is still the **terminal** source: it always points
+straight at the mailbox, never at a middleman. That is what lets every
 reader (`getMemberEmail`, `member-email.ts`, the roster, the age-up cron, Xero
 contact sync, the preference resolver in `email/core.ts`) keep its single
 `inheritEmailFrom` join and stay correct at any depth. Do not "simplify" this by
@@ -1226,47 +1268,53 @@ nomination approval and admin member-create both stored one-hop pointers until
 
 `validateInheritEmailSource` enforces the guarantees that follow: the source is
 an adult, with a real address, who does not itself inherit. The **adult** clause
-there — and the matching one in `isUsableEmailSource`, which is what makes the
-walk step past an unusable generation — is deliberate and survived #2282: a
-16-year-old may be recorded as a parent, but being the club's contact of record
-for someone else's notifications is a responsibility function, so their child's
-mail routes on up to the nearest adult ancestor (most often the young parent's
-own parent), and the link is **refused** if there is no such adult rather than
-quietly making the minor the family's contact. The admin member detail page
-resolves and displays that adult (`dependentEmailSource`) with the same walk the
-writes use, so the routing is on screen before the dependant is added — and both
-link dialogs resolve the parent the admin picks in the notification-recipient
-list the same way (`GET /api/admin/members/[id]/dependent-email-source`),
-because the list names PARENTS while the write stores whoever the walk lands
-on. The age-up cron's parent handoff resolves it too, rather than mailing the
-raw parent link. Its former "must point to a **primary** adult member" rule
-(the source must have no parents) is
-retired — it barred exactly the middle-generation source the four-generation
-model needs — and the "inherit email from" candidate search was relaxed to match
-AND tightened to exclude placeholder addresses, so the picker can neither hide a
-source the write route accepts nor offer one it refuses. "Real address" means
-neither club-internal `.invalid` domain: a walk-in `@no-email.invalid` (#1935,
-silently dropped by `sendEmail`) or a deletion-anonymised `@deleted.invalid`
-(which hard-bounces). Both are matched by `isPlaceholderContactEmail`; the second
-was added in #2255 because a grandchild could otherwise keep resolving to an
-anonymised grandparent forever. If the walk finds nobody, the link is **refused**
-rather than quietly stored as "no inheritance": the admin asked for the
-dependant's mail to reach a parent, and silently leaving it on the dependant's
-own address is how a family stops hearing from the club without anyone noticing.
-The family-group create-child branch keeps the explicit opt-out
+there — and the matching one in `isUsableEmailSource`, which is the single
+predicate every resolution, query and backfill applies — is deliberate and
+survived #2282: a 16-year-old may be recorded as a parent, but being the club's
+contact of record for someone else's notifications is a responsibility function,
+so the link is **refused** rather than quietly making the minor the family's
+contact. Since #2716 that refusal is the whole answer: a minor parent's child
+inherits NOBODY rather than routing on up to the young parent's own parent. The
+admin member detail page resolves and displays the source
+(`dependentEmailSource`) with the same rule the writes use, so the routing is on
+screen before the dependant is added — and both link dialogs resolve the parent
+the admin picks in the notification-recipient list the same way
+(`GET /api/admin/members/[id]/dependent-email-source`). Its former "must point to
+a **primary** adult member" rule (the source must have no parents) stays retired:
+that clause was about where in the TREE a mailbox owner sits, which the one-hop
+rule does not constrain — a parent who is themselves somebody's child is a
+perfectly good source for their own children. The "inherit email from" candidate
+search mirrors the same predicate, so the picker can neither hide a source the
+write route accepts nor offer one it refuses. "Real address" means neither
+club-internal `.invalid` domain: a walk-in `@no-email.invalid` (#1935, silently
+dropped by `sendEmail`) or a deletion-anonymised `@deleted.invalid` (which
+hard-bounces). Both are matched by `isPlaceholderContactEmail`; the second was
+added in #2255 because a grandchild could otherwise keep resolving to an
+anonymised grandparent forever. If resolution finds nobody, the link is
+**refused** rather than quietly stored as "no inheritance": the admin asked for
+the dependant's mail to reach a parent, and silently leaving it on the
+dependant's own address is how a family stops hearing from the club without
+anyone noticing. The family-group create-child branch keeps the explicit opt-out
 (`inheritEmailFromId: ""`, "use the child's own email") its sibling branch has,
 so that refusal never becomes a dead end.
 
 ## INV-LIFE-051
 
-A stored pointer is a snapshot of a past decision, so the resolver **re-reads the
-member it names** before trusting it and keeps walking if that member has since
-been archived, anonymised, left with a placeholder address, or **themselves been
-linked as an inheriting dependant**. That last one is not optional politeness:
-returning a chaining source makes a validating writer 422 with "cannot chain
-through another inherited member" — naming a member the admin never chose — and
-the unlink route, which has no validator behind it, would store the chained
-pointer and break the flat-terminal invariant outright.
+A stored pointer is a snapshot of a past decision, so nothing trusts it without
+**re-reading the member it names**, and it resolves to nobody if that member has
+since been archived, anonymised, left with a placeholder address, or
+**themselves started inheriting**. That last one is not optional politeness: a
+member who inherits is not a mailbox, and their own `email` column is typically a
+stale copy of the very address they inherit, so honouring such a source would
+deliver a dependant's notifications to a third party while every screen showed a
+valid inheritance in place.
+
+"Themselves started inheriting" tests the **choice** column as well as the
+pointer, and that is what makes reconciliation order-independent. After #2716 a
+member whose chosen source has gone unreachable holds a live choice beside a NULL
+pointer; testing the pointer alone would read them as a mailbox of their own, and
+a sweep would then reach different answers depending on which member it happened
+to visit first.
 
 ## INV-LIFE-052
 
@@ -1280,31 +1328,63 @@ from a great-grandparent, while reporting `clearedEmailInheritance: false`.
 
 ## INV-LIFE-053
 
-**Re-resolution on change is deliberately narrow, and this is the open edge.**
-Exactly one automatic event re-points derived pointers: age-up. When a member
-ages up, their own inheritance is cleared — they now have an address and a login
-of their own — and their dependants' DERIVED pointers are re-resolved through
-them, because those pointers only walked past them in the first place for want of
-an address. Without that, a parent with both a mailbox and a login would never
-receive their own child's notifications.
+**Pointers re-resolve whenever an address is added, changed or removed** (#2716,
+owner decision on #2708, 2026-08-09). Automatically, with no admin prompt: a
+confirm-each-re-point variant was put to the owner and declined, because with
+inheritance limited to one hop re-resolution is a direct parent-to-child lookup
+rather than a walk up a tree, so there is nothing for a human to arbitrate, and a
+queue of pending confirmations is a slower version of the defect it replaces.
+
+The two halves of the decision compose, and the order is load-bearing: the
+prompt-free design is defensible only because the tree walk is gone. Automatic
+re-pointing across a multi-hop walk would be worse than the bug.
+
+The mechanism is **convergence, not event handling**.
+`reconcileEmailInheritanceForMemberChange` does not ask what happened; it
+recomputes what should be true from `effectiveEmailSourceId`, so ADD, CHANGE and
+REMOVE are one code path. A removed address is the case most likely to be missed
+and the one that leaves a pointer naming a mailbox nobody reads — it needed no
+special handling at all, which is the argument for the shape.
+
+It runs **inside the transaction that made the change**, so a rolled-back address
+write rolls the re-resolution back with it and a committed one cannot commit
+without it. Age-up is one of these events rather than the only one: it moves a
+member across the usable-source line in the helpful direction, and it now uses
+the same call as every other writer instead of a sweep of its own.
 
 ## INV-LIFE-054
 
-That sweep is scoped by WHERE the pointer currently points, not merely by who
-the dependant's parents are. `inheritParentEmail` records that a pointer is
-derived, but it cannot distinguish "derived by default" from "the admin
-explicitly chose parent Q" — both store `true`. So a child with two parents whose
-pointer names the other parent must be left alone, and the only sound test is
-whether the current pointer names somebody the aged-up member's own chain could
-have produced (themselves or one of their ancestors, since as a non-login minor
-the walk could never have stopped on them). Selecting on the flag alone silently
-moves a family's contact of record, which is the very consent question this job
-must not answer by itself. **The general case is NOT handled**: if
-an ancestor's email address changes, or a middle generation gains an address by
-some other route, existing pointers keep naming whoever they named. That is
-recorded here as a known limitation and flagged for the owner (2026-07-27, #2255)
-because the fix is a consent question — silently moving a family's contact of
-record is not obviously better than leaving it where the admin put it.
+**A daily sweep is the guarantee behind the per-write calls, and it is
+re-runnable by design.** `reconcileAllEmailInheritance`, scheduled as
+`email-inheritance-reconcile` at 06:45 NZT — deliberately just after age-up —
+converges every member who holds a choice or a pointer.
+
+It exists because "every write re-resolves" is a claim about a codebase, and this
+one decides which adult receives a minor's notifications. The specific hazard is a
+re-resolution that fires on the wrong event or fails partway, which would leave a
+pointer naming somebody nobody chose: the original defect with extra steps.
+Because the rule is a pure, total function of the family tree, a second run always
+moves the database towards the same fixed point and never away from it — so a
+partial failure is repaired by running it again rather than by working out what it
+did. That property is what made prompt-free re-pointing safe to ship.
+
+The sweep writes `inheritEmailFromId` and nothing else, with ONE exception: where
+it finds a pointer with no choice beside it — the shape a draining blue/green old
+colour writes, since that colour knows only the pointer — it adopts the pointer as
+the choice **if and only if it names a direct parent**, and clears it otherwise.
+That is one hop enforced at the last door: a transitive pointer written mid-deploy
+cannot survive it, while an ordinary link made mid-deploy is preserved intact.
+
+What it never does is rewrite a choice somebody made. `inheritParentEmail` is
+sound as PROVENANCE where a writer set it deliberately (`INV-LIFE-052`) and
+unsound as a universal test, because it carries `@default(true)` and therefore
+reads true for every member who was never a dependant at all. A "derived pointers
+must name a direct parent" rule applied on that flag would fire on a family-group
+login cluster — adults who share one login and are pointed at the holder by hand,
+none of whom is anyone's parent — and disconnect the whole cluster from its own
+mailbox on the next sweep. The one-hop constraint therefore lives where choices
+are CREATED (every writer, the migration backfill, and the adoption rule above),
+never in the convergence step.
 
 ## INV-LIFE-055
 
@@ -1533,7 +1613,7 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   DMMF/schema test that fails CI if a new relation is added unclassified:
   - **move** — history re-points loser → master (`updateMany`): bookings, guests,
     credits, refunds, redemptions, committee/hut-leader/lodge-access-created,
-    actor and reviewer back-references, and the four Member self-relations
+    actor and reviewer back-references, and the five Member self-relations
     (parent / secondary parent / email-inheritance / details-confirmed-by), whose
     self-cycles are nulled on the master first.
   - **resolve** — a unique constraint means a per-model resolver dedupes before

@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { AccessRole, type Member, type Prisma } from "@prisma/client";
+import { reconcileEmailInheritanceForMemberChange } from "@/lib/member-email-inheritance";
 import {
   actorIsFullAdmin,
   wouldRemoveLastFullAdmin,
@@ -145,7 +146,7 @@ function spec(
 }
 
 /**
- * The authoritative classification of all 79 Member FK-owning relations. The
+ * The authoritative classification of all 80 Member FK-owning relations. The
  * DMMF/schema completeness test (member-merge-dmmf.test.ts) fails CI if the
  * schema grows a Member relation that is missing here (or if a key here no
  * longer exists in the schema), so a new relation cannot silently escape merge
@@ -156,6 +157,7 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
   spec("Member", "parent", "parentMemberId", "move", { selfRelation: true }),
   spec("Member", "secondaryParent", "secondaryParentId", "move", { selfRelation: true }),
   spec("Member", "inheritEmailFrom", "inheritEmailFromId", "move", { selfRelation: true }),
+  spec("Member", "inheritEmailChoice", "inheritEmailChoiceId", "move", { selfRelation: true }),
   spec("Member", "detailsConfirmedBy", "detailsConfirmedByMemberId", "move", { selfRelation: true }),
 
   // --- Access roles ---
@@ -1119,6 +1121,11 @@ const FAMILY_LINK_LABELS: Record<string, string> = {
   parentMemberId: "parent",
   secondaryParentId: "second parent",
   inheritEmailFromId: "shared email address",
+  // #2716: the CHOICE behind the shared address, which the merge moves in step
+  // with the pointer. Two labels rather than one because a drift on either is a
+  // real, separately-recoverable state, and collapsing them would tell an admin
+  // the addresses conflict when what conflicts is who was chosen.
+  inheritEmailChoiceId: "who the shared email address was inherited from",
   detailsConfirmedByMemberId: "details confirmed by",
 };
 
@@ -2739,7 +2746,7 @@ export async function executeMemberMerge(params: {
     }
 
     // #2437 — the family links are re-checked under the SAME locks, in both
-    // directions. The four Member self-relation columns are written by admin
+    // directions. The five Member self-relation columns are written by admin
     // paths outside the member-lifecycle lock (admin-members-service.ts, the
     // dependents link route), and #2445's exclusion of the master's own row
     // from the moves turned the mid-merge race from corruption into SILENT
@@ -2796,6 +2803,22 @@ export async function executeMemberMerge(params: {
     if (fieldsChanged.length > 0) {
       await tx.member.update({ where: { id: masterId }, data: fieldOutcome.patch });
     }
+
+    // #2716: the relation moves re-pointed every inheritance pointer AND choice
+    // from the loser onto the master, and nothing tested whether the master can
+    // actually BE an email source. A merge is the sharpest case of a member
+    // crossing that line because it deletes one outright: if the master is a
+    // minor, holds a walk-in placeholder address, or themselves inherits, the
+    // loser's dependants are left resolving to a mailbox `sendEmail` drops until
+    // the daily sweep notices.
+    //
+    // HERE, and not earlier, for two reasons. Every drift guard has passed, so a
+    // merge that is going to refuse with a 409 writes nothing at all — the #2243
+    // contract, which the suite asserts on the write CALLS and not merely on the
+    // committed state. And the master's own fields are final as of the patch
+    // above, so whether the master is a usable source is now settled: reconciling
+    // before it could read an ageTier or address the merge was about to change.
+    await reconcileEmailInheritanceForMemberChange(tx, [masterId]);
 
     // 5b) Member-photo reconciliation (MP1, #189). The master's final photo is
     // its own when it had one, else the loser's absorbed one (in the patch). Any
@@ -2987,7 +3010,7 @@ function buildLoserSnapshot(loser: Member, xeroContactIdAtOpen: string | null) {
 
 /**
  * The execute-time re-derivation the preview token is verified against, plus —
- * for the four Member self-relation columns — the ID CAPTURE the moves are
+ * for the five Member self-relation columns — the ID CAPTURE the moves are
  * bounded to (#2437). Counts and captured ids come from the SAME read: the
  * self-relation counts are the length of the captured id list, so a row the
  * token check never saw can never be inside the capture. Anything that lands

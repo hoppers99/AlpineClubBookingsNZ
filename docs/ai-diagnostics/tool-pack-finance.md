@@ -332,8 +332,18 @@ The shared evidence vocabulary gained a state for it:
 **`provider_check_required`** (`src/lib/diagnostics/case/states.ts`) — "this is what
 the platform last recorded, not a live answer from the provider; settling it needs a
 check in Stripe's or Xero's own console." It is raised by the surface that assembles
-a diagnostic case (AID-7, #2378) rather than by the executor, which cannot know
-whether a given question turns on live provider truth.
+a diagnostic case rather than by the executor, which cannot know whether a given
+question turns on live provider truth. **#2815 wired that producer:** the answer loop
+folds it onto an otherwise-clean read from any entry whose `evidenceScope` carries
+this pack's `STORED_EVIDENCE_DISCLOSURE` — the disclosure text itself is the
+membership test, and this pack's own census pins the marked set entry by entry and
+asserts the full constant in every scope, so the set cannot drift from what the pack
+tells the model. The operator's confirm-in-console caveat keys on the TOOL rather
+than the folded state, so it reaches the collapsed provenance line for truncated and
+empty reads too — exactly where "nothing recorded" must never read as "the provider
+agrees". Two AID-6B membership entries whose subscription fields mirror a Xero
+invoice (`member_subscription_state`, `member_eligibility_state`) carry the same
+disclosure and marker.
 
 Live provider reads stay out of scope until an owner-approved issue designs their
 security, privacy, rate-limit, availability, credential and audit story.

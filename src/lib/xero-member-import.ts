@@ -779,6 +779,10 @@ export async function importMembersFromXeroGroups(
               // the family group, it simply keeps its own address, which for an
               // import row is the same address anyway.
               inheritEmailFromId,
+              // #2716: the CHOICE is written with the pointer. `null` here is
+              // the deliberate no-inheritance fallback above, so both columns
+              // stay empty and the dependant keeps its own (imported) address.
+              inheritEmailChoiceId: inheritEmailFromId,
             },
           });
             await upsertXeroObjectLink(

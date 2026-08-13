@@ -81,13 +81,19 @@ export const DIAGNOSTICS_EVIDENCE_STATES = [
    * WHO PRODUCES IT. Not `evidenceStateForToolResult` — the executor cannot know
    * whether a given question turns on live provider truth, and inventing a
    * heuristic there would be exactly the guessing this vocabulary exists to
-   * prevent. The intended producer is the surface that assembles a
-   * `DiagnosticCase`, when the finance pack's own scope disclosure applies to the
-   * question being answered, folded in with `worstEvidenceState` — which is why it
-   * sits here rather than in the pack. AID-7 (#2378) shipped that surface WITHOUT
-   * producing this state — its contract review found the gap — so today NOTHING
-   * raises it and stored-only finance evidence presents as `ok`; #2815 is the
-   * filed follow-up that makes the finance pack mark the reads this applies to.
+   * prevent. The producer is the answer loop (`answer/loop.ts`, #2815): where a
+   * tool whose `evidenceScope` carries the finance pack's own
+   * `STORED_EVIDENCE_DISCLOSURE` returns an otherwise-`ok` block, the loop folds
+   * this state in with `worstEvidenceState` — the disclosure text itself is the
+   * membership test (`diagnosticsToolRequiresProviderCheck`), pinned to the
+   * marked entries by the finance pack's own census, so the marked set cannot
+   * drift from what the pack tells the model. The fold is GUARDED on the block
+   * asserting `ok` — that guard, not the state ordering, is what lets a
+   * truncated or empty read keep its more specific state (this state's index
+   * would otherwise beat both under `worstEvidenceState`). The operator's
+   * confirm-in-the-provider's-console caveat does not depend on the fold at
+   * all: the provenance line keys it on the TOOL, so it rides collapsed (D10)
+   * on every answer that used such a read, truncated and empty ones included.
    * Live provider reads themselves remain out of scope until an owner-approved
    * issue designs their security, rate-limit, credential and audit story.
    */

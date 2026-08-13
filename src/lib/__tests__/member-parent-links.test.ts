@@ -87,12 +87,25 @@ describe("matchParentLinkIdForNotification", () => {
  * cope with a family loop or an over-deep chain on those paths.
  */
 describe("resolveInheritedEmailSourceId", () => {
+  // #2716 REWROTE THIS BLOCK. It used to describe a level-order WALK up the
+  // family tree to the nearest ancestor who could receive mail — the tie-breaks,
+  // the depth cap, the cycle guard, the re-read of a stored pointer's target.
+  // None of that survives, because the owner narrowed inheritance to the direct
+  // parent: an address that travels an arbitrary number of hops is
+  // unpredictable to the person whose address it is.
+  //
+  // What the deleted tests asserted is not lost, it moved: every "walks past an
+  // unusable generation" case is now a "resolves to NOBODY" case, and the
+  // members those cases left unreachable are surfaced to an admin instead
+  // (`unreachableMemberWhere`, covered in
+  // member-email-inheritance-reconcile.test.ts).
   type Row = {
     id: string;
     email: string;
     ageTier: string;
     archivedAt: Date | null;
     inheritEmailFromId: string | null;
+    inheritEmailChoiceId: string | null;
     parentMemberId: string | null;
     secondaryParentId: string | null;
   };
@@ -106,6 +119,7 @@ describe("resolveInheritedEmailSourceId", () => {
           ageTier: "ADULT",
           archivedAt: null,
           inheritEmailFromId: null,
+          inheritEmailChoiceId: null,
           parentMemberId: null,
           secondaryParentId: null,
           ...row,
@@ -115,15 +129,6 @@ describe("resolveInheritedEmailSourceId", () => {
     let queries = 0;
     const client = {
       member: {
-        async findMany({ where }: { where: { id: { in: string[] } } }) {
-          queries += 1;
-          return where.id.in
-            .map((id) => byId.get(id))
-            .filter((row): row is Row => Boolean(row));
-        },
-        // #2255: the walk re-reads a stored pointer's TARGET before trusting
-        // it, so a pointer at an archived or anonymised member is not
-        // propagated onward as though it were still a live mailbox.
         async findUnique({ where }: { where: { id: string } }) {
           queries += 1;
           return byId.get(where.id) ?? null;
@@ -145,18 +150,23 @@ describe("resolveInheritedEmailSourceId", () => {
     expect(result).toEqual({ sourceId: "p" });
   });
 
-  it("short-circuits on the parent's own already-flattened source", async () => {
-    // Stored inheritance is always terminal, so this hop needs no further walk —
-    // and taking it is what keeps a non-login middle generation's children
-    // pointed at the same mailbox as the middle generation itself.
-    const result = await resolveInheritedEmailSourceId(
-      db([{ id: "p", inheritEmailFromId: "gp" }, { id: "gp" }]),
-      "p",
-    );
-    expect(result).toEqual({ sourceId: "gp" });
+  it("reads exactly one row, whatever the family looks like above it", async () => {
+    // Not a performance assertion: it is how this test pins that there is no
+    // walk left to regress into. A second query would mean somebody had
+    // reintroduced a hop.
+    const client = db([
+      { id: "p", email: placeholder, parentMemberId: "gp" },
+      { id: "gp" },
+    ]);
+    await resolveInheritedEmailSourceId(client, "p");
+    expect(client.queryCount).toBe(1);
   });
 
-  it("walks up past a parent whose only address is a placeholder", async () => {
+  it("resolves to nobody when the parent's only address is a placeholder", async () => {
+    // The heart of the change. This used to answer "gp". The grandparent who
+    // supplied an email for one grandchild does not thereby expect
+    // notifications for a branch of the family they may have no involvement
+    // with, so the dependant now inherits NOBODY and the club has to ask.
     const result = await resolveInheritedEmailSourceId(
       db([
         { id: "p", email: placeholder, parentMemberId: "gp" },
@@ -164,32 +174,42 @@ describe("resolveInheritedEmailSourceId", () => {
       ]),
       "p",
     );
-    expect(result).toEqual({ sourceId: "gp" });
+    expect(result).toEqual({ sourceId: null });
   });
 
-  it("walks up past a non-adult and past an archived ancestor", async () => {
+  it("resolves to nobody through a parent who is themselves inheriting", async () => {
+    // Following the parent's own pointer would be transitivity wearing a
+    // different hat — and the parent's `email` column is typically a stale copy
+    // of the very mailbox that pointer names.
     const result = await resolveInheritedEmailSourceId(
       db([
-        { id: "p", email: placeholder, parentMemberId: "youth" },
-        { id: "youth", ageTier: "YOUTH", parentMemberId: "archived" },
-        { id: "archived", archivedAt: new Date("2026-01-01"), parentMemberId: "ggp" },
-        { id: "ggp" },
+        { id: "p", inheritEmailFromId: "gp", inheritEmailChoiceId: "gp" },
+        { id: "gp" },
       ]),
       "p",
     );
-    expect(result).toEqual({ sourceId: "ggp" });
+    expect(result).toEqual({ sourceId: null });
   });
 
-  // #2282: THE young-parent case, and the load-bearing one for that issue. The
-  // walk STARTS on a 16-year-old who is now recordable as a parent and who has a
-  // perfectly real address of their own — the previous test walks past a
-  // non-adult found part-way UP, which does not exercise level 0. Being the
-  // club's contact of record is a responsibility function and stays adult-only,
-  // so the child's mail must go to the grandparent instead.
+  it("resolves to nobody through a parent who has chosen a source but cannot reach it", async () => {
+    // The post-#2716 shape: a live choice beside a NULL pointer, because the
+    // chosen mailbox went away. Testing only the pointer would read this member
+    // as a mailbox of their own and make the sweep order-dependent.
+    const result = await resolveInheritedEmailSourceId(
+      db([{ id: "p", inheritEmailChoiceId: "gp" }, { id: "gp" }]),
+      "p",
+    );
+    expect(result).toEqual({ sourceId: null });
+  });
+
+  // #2282: being the club's contact of record is a responsibility function and
+  // stays adult-only, even though parentage may now be recorded at any age.
+  // Under #2716 the consequence is sharper than it was: the child's mail no
+  // longer routes on up to the young parent's own parent, it goes nowhere.
   //
   // Mutation probe: delete `member.ageTier === "ADULT"` from
   // `isUsableEmailSource` and this test resolves to "young-parent" and fails.
-  it("walks past a young PARENT with a real address, to the nearest adult", async () => {
+  it("refuses a young parent with a real address, and does not look past them", async () => {
     const result = await resolveInheritedEmailSourceId(
       db([
         {
@@ -202,119 +222,27 @@ describe("resolveInheritedEmailSourceId", () => {
       ]),
       "young-parent",
     );
-    expect(result).toEqual({ sourceId: "gp" });
+    expect(result).toEqual({ sourceId: null });
   });
 
-  // The other half of the same rule: a young parent with nobody adult above them
-  // is NOT quietly promoted to the source. Nothing is returned, and the callers
-  // turn that into the "no reachable mailbox" refusal rather than storing the
-  // minor as the family's contact of record.
-  it("returns nobody rather than falling back on the young parent", async () => {
+  it("refuses an archived parent", async () => {
     const result = await resolveInheritedEmailSourceId(
-      db([{ id: "young-parent", ageTier: "YOUTH", email: "teen@example.org" }]),
-      "young-parent",
+      db([{ id: "p", archivedAt: new Date("2026-01-01") }]),
+      "p",
     );
     expect(result).toEqual({ sourceId: null });
   });
 
-  it("prefers the nearer ancestor, and the primary edge within a level", async () => {
-    const result = await resolveInheritedEmailSourceId(
-      db([
-        {
-          id: "p",
-          email: placeholder,
-          parentMemberId: "primary-gp",
-          secondaryParentId: "secondary-gp",
-        },
-        { id: "primary-gp" },
-        { id: "secondary-gp" },
-      ]),
-      "p",
-    );
-    expect(result.sourceId).toBe("primary-gp");
-  });
-
-  it("stops at the depth cap rather than walking a long chain", async () => {
-    const result = await resolveInheritedEmailSourceId(
-      db([
-        { id: "p", email: placeholder, parentMemberId: "a" },
-        { id: "a", email: placeholder, parentMemberId: "b" },
-        { id: "b", email: placeholder, parentMemberId: "c" },
-        { id: "c", email: placeholder, parentMemberId: "far" },
-        { id: "far" },
-      ]),
-      "p",
-    );
-    expect(result.sourceId).toBeNull();
-  });
-
-  it("visits each member once on a family loop instead of circling", async () => {
-    // Terminating is not enough on its own to show the walk is cycle-SAFE: a
-    // level bound alone would also terminate, after a round trip per level. The
-    // query count is what distinguishes the two, so it is asserted.
-    const client = db([
-      { id: "p", email: placeholder, parentMemberId: "a" },
-      { id: "a", email: placeholder, parentMemberId: "p" },
-    ]);
-
-    const result = await resolveInheritedEmailSourceId(client, "p");
-
-    expect(result.sourceId).toBeNull();
-    expect(client.queryCount).toBeLessThanOrEqual(3);
-  });
-
-  it("does not trust a stored pointer whose target can no longer receive mail", async () => {
-    // A stored pointer is a snapshot of a past decision. The member it names
-    // can have been archived or anonymised since, and following it blindly
-    // would hand a dead mailbox to a NEW dependant and call it resolved.
-    const result = await resolveInheritedEmailSourceId(
-      db([
-        { id: "p", email: placeholder, inheritEmailFromId: "gone", parentMemberId: "gp" },
-        { id: "gone", archivedAt: new Date("2026-01-01") },
-        { id: "gp" },
-      ]),
-      "p",
-    );
-    expect(result).toEqual({ sourceId: "gp" });
-  });
-
-  it("does not trust a stored pointer whose target now inherits (terminality)", async () => {
-    // P->X was valid when written; X was later linked as a dependant and now
-    // inherits from Y. Returning X would break the flat-terminal invariant every
-    // one-hop reader depends on — and the two callers fail differently and both
-    // badly: a validating writer 422s with "cannot chain through another
-    // inherited member", naming a member the admin never chose, while the unlink
-    // route has no validator and would simply store the chained pointer.
-    const result = await resolveInheritedEmailSourceId(
-      db([
-        { id: "p", email: placeholder, inheritEmailFromId: "x", parentMemberId: "gp" },
-        { id: "x", inheritEmailFromId: "y" },
-        { id: "y" },
-        { id: "gp" },
-      ]),
-      "p",
-    );
-    // Walks ON rather than returning the chaining X — to P's own parent, which
-    // is the next candidate the walk would have considered anyway.
-    expect(result).toEqual({ sourceId: "gp" });
-  });
-
   it("treats a deletion-anonymised address as unreachable", async () => {
     const result = await resolveInheritedEmailSourceId(
-      db([
-        { id: "p", email: "deleted-abc12345@deleted.invalid", parentMemberId: "gp" },
-        { id: "gp" },
-      ]),
+      db([{ id: "p", email: "deleted-abc12345@deleted.invalid" }]),
       "p",
     );
-    expect(result).toEqual({ sourceId: "gp" });
+    expect(result).toEqual({ sourceId: null });
   });
 
-  it("returns null when nobody in reach can receive mail", async () => {
-    const result = await resolveInheritedEmailSourceId(
-      db([{ id: "p", email: placeholder }]),
-      "p",
-    );
+  it("returns nobody for a parent who does not exist", async () => {
+    const result = await resolveInheritedEmailSourceId(db([]), "ghost");
     expect(result).toEqual({ sourceId: null });
   });
 });

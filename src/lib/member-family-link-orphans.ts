@@ -60,8 +60,20 @@ export async function readFamilyLinkOrphans(
       select,
       orderBy,
     }),
+    // #2716: matched on the CHOICE as well as the pointer. A member whose chosen
+    // source has temporarily gone unreachable holds the choice with a NULL
+    // pointer, and they are the ones with most to lose here — they were already
+    // waiting for that mailbox to come back, and removing the member is what
+    // makes the wait permanent. Reading only the pointer would leave them out of
+    // the declaration the admin is shown and out of the audit record, which is
+    // the exact silence this helper exists to end.
     db.member.findMany({
-      where: { inheritEmailFromId: memberId },
+      where: {
+        OR: [
+          { inheritEmailFromId: memberId },
+          { inheritEmailChoiceId: memberId },
+        ],
+      },
       select,
       orderBy,
     }),

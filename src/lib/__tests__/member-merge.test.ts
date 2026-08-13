@@ -379,7 +379,7 @@ describe("patch derivation from a snapshot versus a fresh read (#2243)", () => {
 });
 
 describe("family-link drift under the lock (#2437, diffSelfRelationLinkState)", () => {
-  // The four self-relation columns are written by admin paths that take no
+  // The five self-relation columns are written by admin paths that take no
   // member-lifecycle lock, so a family link can land mid-merge. #2445 keeps the
   // master's own row out of the moves (no self-parent); this differ closes the
   // remaining arm — the SILENT LOSS of a concurrently-saved link, which the
@@ -415,11 +415,16 @@ describe("family-link drift under the lock (#2437, diffSelfRelationLinkState)", 
     });
   }
 
-  it("covers exactly the four self-relation columns, derived from the spec table", () => {
+  it("covers exactly the five self-relation columns, derived from the spec table", () => {
     expect([...MEMBER_SELF_RELATION_COLUMNS]).toEqual([
       "parentMemberId",
       "secondaryParentId",
       "inheritEmailFromId",
+      // #2716 added the fifth: the CHOICE behind the shared email address. It
+      // moves with the pointer rather than after it, because a merge that
+      // carried one and not the other would leave the surviving member with a
+      // mailbox whose decision names a row that no longer exists.
+      "inheritEmailChoiceId",
       "detailsConfirmedByMemberId",
     ]);
   });

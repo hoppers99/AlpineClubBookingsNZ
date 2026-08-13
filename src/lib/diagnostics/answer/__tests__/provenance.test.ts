@@ -34,7 +34,7 @@ function source(
     state,
     stateDescription: DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS[state],
     observedAt: "2026-08-12T11:59:00.000Z",
-    rowCount: state === "ok" ? 3 : 0,
+    rowCount: state === "ok" || state === "provider_check_required" ? 3 : 0,
     missingAreas: [],
     ...overrides,
   };
@@ -331,4 +331,63 @@ describe("every evidence state is placed deliberately (#2378 census)", () => {
       expect(provenance.line.trim().length).toBeGreaterThan(0);
     });
   }
+});
+
+describe("stored provider evidence carries its own collapsed caveat (#2815)", () => {
+  it("is NAMED as read, and tells the operator to confirm in the provider's console", () => {
+    // `provider_check_required` qualifies the evidence's LIVENESS, never its
+    // retrieval — rows were read. The first cut of `readSources` excluded it, so a
+    // stored-finance answer opened with "No live data could be read": wrong twice,
+    // and the actual caveat went unsaid.
+    const provenance = buildDiagnosticsProvenance({
+      sources: [source("provider_check_required", { label: "Payment summary" })],
+      summary: summariseDiagnosticCase(
+        caseWith([{ state: "provider_check_required" }]),
+      ),
+      roundsUsed: 1,
+      now: NOW,
+    });
+    expect(provenance.line).toContain("Read from Payment summary");
+    expect(provenance.line).not.toContain("No live data could be read");
+    expect(provenance.line).toContain(
+      "confirm against Stripe or Xero's own console",
+    );
+    expect(provenance.hasCaveat).toBe(true);
+    expect(provenance.hasProviderCheckRequired).toBe(true);
+  });
+
+  it("keeps BOTH caveats for a truncated stored-provider read", () => {
+    // The flag keys on the TOOL, not the folded state (#2815 review, both lenses):
+    // a truncated finance read stays `result_truncated` — so "part of a longer
+    // result was left out" survives — and the console caveat rides along in the
+    // caveat LIST. Losing either would be losing an honesty marker exactly where
+    // the packs' own scope lines say it matters.
+    const provenance = buildDiagnosticsProvenance({
+      sources: [
+        source("result_truncated", {
+          toolId: "diagnostics.payment_diagnostic_summary",
+          label: "Payment summary",
+          rowCount: 20,
+        }),
+      ],
+      summary: summariseDiagnosticCase(caseWith([{ state: "result_truncated" }])),
+      roundsUsed: 1,
+      now: NOW,
+    });
+    expect(provenance.hasPartialEvidence).toBe(true);
+    expect(provenance.hasProviderCheckRequired).toBe(true);
+    expect(provenance.line).toContain("part of a longer result was left out");
+    expect(provenance.line).toContain("Stripe or Xero's own console");
+  });
+
+  it("does not raise the flag when no stored-provider source contributed", () => {
+    const provenance = buildDiagnosticsProvenance({
+      sources: [source("ok", { label: "Booking blockers" })],
+      summary: summariseDiagnosticCase(caseWith([{ state: "ok" }])),
+      roundsUsed: 1,
+      now: NOW,
+    });
+    expect(provenance.hasProviderCheckRequired).toBe(false);
+    expect(provenance.line).not.toContain("console");
+  });
 });

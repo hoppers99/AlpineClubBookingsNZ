@@ -790,9 +790,21 @@ describe("member delete lifecycle actions", () => {
       dependants: Array<{ id: string; firstName: string; lastName: string; email: string }>,
       inheritors: Array<{ id: string; firstName: string; lastName: string; email: string }> = [],
     ) {
-      mockPrisma.member.findMany.mockImplementation(async ({ where }: any) =>
-        where?.inheritEmailFromId ? inheritors : dependants,
-      );
+      // #2716: BOTH reads are now `OR` queries — the parent read has always
+      // been one (`parentMemberId` / `secondaryParentId`), and the inheritor
+      // read became one when it started matching the CHOICE column as well as
+      // the pointer. Routing on a top-level `where.inheritEmailFromId` therefore
+      // stopped matching anything and sent the inheritor read to the dependant
+      // fixture. Route on which COLUMNS the clauses name instead, which is what
+      // the two reads have actually always differed by.
+      mockPrisma.member.findMany.mockImplementation(async ({ where }: any) => {
+        const clauses: Array<Record<string, unknown>> = where?.OR ?? [where ?? {}];
+        const readsInheritance = clauses.some(
+          (clause) =>
+            "inheritEmailFromId" in clause || "inheritEmailChoiceId" in clause,
+        );
+        return readsInheritance ? inheritors : dependants;
+      });
     }
 
     it("returns and audits the members it detached", async () => {
@@ -814,6 +826,21 @@ describe("member delete lifecycle actions", () => {
       expect(result.orphanedLinks.emailInheritors).toEqual([
         { id: "kid-2", name: "Ben Smith", email: "ben@example.org" },
       ]);
+      // #2716: and the inheritor read must ASK about both columns. A member
+      // whose chosen source is temporarily unreachable holds the choice with a
+      // NULL pointer; they were already waiting on that mailbox, and deleting
+      // the member is what makes the wait permanent — so leaving them out of the
+      // declaration would be the exact silence this helper exists to end.
+      expect(mockPrisma.member.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            OR: [
+              { inheritEmailFromId: "member-1" },
+              { inheritEmailChoiceId: "member-1" },
+            ],
+          },
+        }),
+      );
     });
 
     it("clears the inheritParentEmail flag SetNull would have stranded", async () => {
@@ -831,8 +858,19 @@ describe("member delete lifecycle actions", () => {
 
       // Guarded on the pointer already being NULL, so it can only ever tidy a
       // flag the delete itself stranded — never a live inheritance.
+      //
+      // #2716 added the second half of that guard: the repair is now scoped on
+      // `inheritEmailChoiceId: null` too (it used to test the pointer alone).
+      // Both self-relations carry `onDelete: SetNull`, so the deleted row takes
+      // the CHOICE with it as well — but a member who still holds a choice has a
+      // live decision naming somebody else, and clearing `inheritParentEmail`
+      // for them would erase the record of where their mail is meant to go.
       expect(mockPrisma.member.updateMany).toHaveBeenCalledWith({
-        where: { id: { in: ["kid-2"] }, inheritEmailFromId: null },
+        where: {
+          id: { in: ["kid-2"] },
+          inheritEmailFromId: null,
+          inheritEmailChoiceId: null,
+        },
         data: { inheritParentEmail: false },
       });
     });
@@ -1136,9 +1174,21 @@ describe("member archive lifecycle actions", () => {
       where: { secondaryParentId: "member-1" },
       data: { secondaryParentId: null },
     });
+    // #2716: the archive sweep now matches on the CHOICE as well as the pointer
+    // and clears BOTH. It used to be `where: { inheritEmailFromId: "member-1" }`
+    // / `data: { inheritEmailFromId: null }`, which missed the dependants with
+    // most to lose: a member whose chosen source has temporarily gone
+    // unreachable holds the choice beside a NULL pointer, so the pointer-only
+    // sweep left them recorded as waiting on an address that — since nothing in
+    // the product un-archives a member — is never coming back.
     expect(mockPrisma.member.updateMany).toHaveBeenCalledWith({
-      where: { inheritEmailFromId: "member-1" },
-      data: { inheritEmailFromId: null },
+      where: {
+        OR: [
+          { inheritEmailFromId: "member-1" },
+          { inheritEmailChoiceId: "member-1" },
+        ],
+      },
+      data: { inheritEmailFromId: null, inheritEmailChoiceId: null },
     });
     expect(mockPrisma.member.updateMany).toHaveBeenCalledWith({
       where: { id: "member-1", archivedAt: null },
@@ -1161,7 +1211,7 @@ describe("member archive lifecycle actions", () => {
     mockPrisma.member.updateMany
       .mockResolvedValueOnce({ count: 1 }) // parentMemberId cleanup
       .mockResolvedValueOnce({ count: 1 }) // secondaryParentId cleanup
-      .mockResolvedValueOnce({ count: 1 }) // inheritEmailFromId cleanup
+      .mockResolvedValueOnce({ count: 1 }) // inheritEmailFromId + choice cleanup
       .mockResolvedValueOnce({ count: 1 }) // billingFamilyGroupId cleanup (#1932, E6)
       .mockResolvedValueOnce({ count: 0 }); // archive claim - LOST
 

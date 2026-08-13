@@ -9,8 +9,9 @@ import { useDiagnosticsRecord } from "./help-widget-context";
  * SUBJECT (AID-7, #2378, owner decision D11, 13 Aug 2026).
  *
  * WHY IT EXISTS. The page-context registry declares a `recordKind` on the bookings,
- * waitlist and payments lists, but a list does not say WHICH row the operator means,
- * and there is no `/admin/bookings/[id]` page in this codebase — admin rows link out
+ * booking-requests (#2812), waitlist and payments lists, but a list does not say
+ * WHICH row the operator means, and there is no `/admin/bookings/[id]` page in this
+ * codebase — admin rows link out
  * to the member-facing `/bookings/{id}`, which is not an admin route and is not in the
  * registry. Only `/admin/members/[id]` names its record in the address. Without this
  * control the product could not be asked its own headline question, "why will this
@@ -31,9 +32,11 @@ import { useDiagnosticsRecord } from "./help-widget-context";
  *
  * IT HIDES ITSELF WHEN DIAGNOSTICS IS NOT AVAILABLE, off the widget's own published
  * answer rather than a permission check of its own — see
- * `usePublishDiagnosticsAvailable`. Three list pages each re-deriving "may this admin
- * use Diagnostics, and is the module on?" is three chances to get it wrong; this way
- * the control and the Diagnostics tab appear and disappear together.
+ * `usePublishDiagnosticsAvailable`. Every list page re-deriving "may this admin
+ * use Diagnostics, and is the module on?" is another chance to get it wrong; this way
+ * the control and the Diagnostics tab appear and disappear together. (The count is
+ * deliberately not written here — it was "three" until #2812 made it four, and a
+ * hand-written count in a docblock is exactly the drift this repo keeps paying for.)
  */
 export function DiagnosticsRecordButton({
   recordId,

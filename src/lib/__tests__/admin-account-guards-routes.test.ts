@@ -14,7 +14,12 @@ vi.mock("@/lib/prisma", () => ({
     member: {
       findUnique: vi.fn(),
       findFirst: vi.fn(),
-      findMany: vi.fn(),
+      // Read inside the mutation transactions below (deletion anonymisation's
+      // family-link orphan sweep, and since #2716 the email-inheritance
+      // re-resolution every member write runs). Defaulted to no rows — and
+      // re-defaulted per test, since `clearAllMocks` keeps implementations —
+      // so a fixture that names nobody means exactly that.
+      findMany: vi.fn().mockResolvedValue([]),
       update: vi.fn(),
       updateMany: vi.fn(),
       count: vi.fn().mockResolvedValue(0),
@@ -178,6 +183,8 @@ function mockTransaction() {
         // (before nulling their pointers) and sweeps the inheritance aimed at
         // the anonymised member, so it would otherwise keep hard-bouncing club
         // email off the @deleted.invalid address forever.
+        // #2716: the member edit reads through the same delegate, re-resolving
+        // its own pointer and its dependants' inside the write's transaction.
         findMany: prisma.member.findMany,
       },
       memberAccessRole: {
@@ -214,6 +221,7 @@ function mockTransaction() {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(prisma.member.count).mockResolvedValue(0);
+  vi.mocked(prisma.member.findMany).mockResolvedValue([] as any);
   vi.mocked(prisma.booking.findMany).mockResolvedValue([] as any);
   vi.mocked(prisma.deletionRequest.updateMany).mockResolvedValue({ count: 1 });
   mockTransaction();

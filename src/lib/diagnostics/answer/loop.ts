@@ -61,6 +61,7 @@ import {
 import type { DiagnosticsConsentLedger } from "../tools/consent";
 import { listDiagnosticsToolDefinitions } from "../tools/definitions";
 import { invokeDiagnosticsTool } from "../tools/invoke";
+import { diagnosticsToolRequiresProviderCheck } from "../tools/registry";
 import { renderToolResultEvidence } from "../tools/render";
 import type { DiagnosticsToolSession } from "../tools/session";
 import {
@@ -338,10 +339,31 @@ export async function runDiagnosticsAnswer(
       // The state the BLOCK asserts, not the retrieval state — `render.ts` is explicit
       // that using the latter beside a clipped block is what produced
       // `evidence-state="ok"` above an incomplete listing.
+      //
+      // STORED PROVIDER EVIDENCE IS NEVER RECORDED AS `ok` (#2815). A finance tool
+      // whose scope carries the stored-provider disclosure read what this platform
+      // last WROTE DOWN, not what Stripe or Xero believe right now — and `states.ts`
+      // names THIS surface as `provider_check_required`'s producer. Two edges are
+      // deliberate:
+      //  - The fold takes only a block-asserted `ok`. A truncated or empty read
+      //    keeps its more specific state (this state's index would beat both under
+      //    `worstEvidenceState`, so the guard is the protection, not the ordering);
+      //    the operator's console caveat is keyed on the TOOL in `provenance.ts`,
+      //    so those reads still carry it on the collapsed line.
+      //  - The model's own block keeps `evidence-state="ok"` (`render.ts` stamps
+      //    what the block asserts, and the scope: line already carries the full
+      //    disclosure to the model). Only the CASE and the operator-facing source
+      //    record the qualified state — divergence in the more-qualified direction
+      //    only. Do not "fix" the renderer to match.
+      const presentedState =
+        evidence.evidenceState === "ok" &&
+        diagnosticsToolRequiresProviderCheck(result.toolId)
+          ? "provider_check_required"
+          : evidence.evidenceState;
       const outcome = recordCaseEvidence(
         diagnosticCase,
         result,
-        evidence.evidenceState,
+        presentedState,
       );
       sources.push({
         toolId: result.toolId,

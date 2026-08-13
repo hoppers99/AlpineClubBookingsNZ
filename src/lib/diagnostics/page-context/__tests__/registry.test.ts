@@ -7,6 +7,9 @@
  * allowlist, or a status vocabulary that no longer matches the database.
  */
 
+import fs from "node:fs";
+import path from "node:path";
+
 import { BookingStatus, PaymentStatus } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 
@@ -217,6 +220,58 @@ describe("error codes", () => {
       for (const code of entry.errorCodes) {
         expect(DIAGNOSTICS_PAGE_ERROR_CODES).toContain(code);
       }
+    }
+  });
+});
+
+describe("every registry pathname is a page an operator can stand on (#2812)", () => {
+  /**
+   * The general form of #2812's bug: `admin.booking-approvals` named a pathname
+   * whose page.tsx was a fifteen-line redirect() shim, so the row could never
+   * match a live page — Diagnostics silently had no context on the approvals
+   * queue, the one place "why will this booking not confirm?" is most asked.
+   * The docs said the row was reachable; the coverage matrix said the route was
+   * a redirect; both were in-tree at once.
+   *
+   * So: each row's canonical pathname must map to a real page.tsx under the
+   * (admin) group, and that page must RENDER — a page whose source never
+   * returns JSX but does call redirect() is a shim, and a registry row naming
+   * one is dead on arrival. Pages that redirect CONDITIONALLY (a guard bounce
+   * before `return (`) pass, because they render for the admitted case.
+   */
+  it("maps every row to a rendering page.tsx, never a redirect-only shim", () => {
+    const appAdminRoot = path.join(process.cwd(), "src/app/(admin)");
+    for (const row of DIAGNOSTICS_PAGE_CONTEXT_ROUTES) {
+      const pagePath = path.join(
+        appAdminRoot,
+        ...row.pathname.split("/").filter(Boolean),
+        "page.tsx",
+      );
+      expect(
+        fs.existsSync(pagePath),
+        `${row.key} names ${row.pathname}, but ${pagePath} does not exist — the row can never match a live page`,
+      ).toBe(true);
+
+      // FAIL-CLOSED: every registered page must visibly render JSX. The first
+      // cut keyed on `redirect(` instead — "shim = calls redirect and never
+      // returns JSX" — and both review lenses broke it the same way: a shim
+      // using `permanentRedirect(` (capital R, never matched), `notFound()`, or
+      // a bare `return null` sailed through, and a helper function's `return (`
+      // anywhere in the file satisfied the JSX half. Comments are stripped and
+      // the requirement is a return whose expression OPENS AS JSX, which every
+      // current registry page satisfies; a legitimate page that renders through
+      // a helper call would fail here loudly and be adjudicated on purpose,
+      // which is the posture every census in this repo takes.
+      const source = fs
+        .readFileSync(pagePath, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^[ \t]*\/\/.*$/gm, "")
+        .replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+      const rendersJsx = /return\s*\(?\s*</.test(source);
+      expect(
+        rendersJsx,
+        `${row.key} names ${row.pathname}, whose page.tsx never returns JSX — a redirect/notFound shim or null-only page no operator is ever on (#2812's bug, generalised)`,
+      ).toBe(true);
     }
   });
 });

@@ -34,7 +34,10 @@ import { AUDIT_CORRELATION_DOMAIN_AREAS } from "@/lib/audit-categories";
 
 import { SELECT_GRANTS } from "../../provision-role";
 import { renderToolResultEvidenceBlock } from "../../render";
-import { DIAGNOSTICS_TOOLS } from "../../registry";
+import {
+  DIAGNOSTICS_TOOLS,
+  diagnosticsToolRequiresProviderCheck,
+} from "../../registry";
 import { DIAGNOSTICS_TOOL_BOUNDS } from "../../types";
 import {
   DIAGNOSTICS_FINANCE_AUDIT_HISTORY_TOOL_ID,
@@ -51,6 +54,7 @@ import {
 } from "../finance-search";
 import {
   FINANCE_UNPARSEABLE_VALUE,
+  STORED_EVIDENCE_DISCLOSURE,
   UNTRUSTED_TEXT_MAX_CHARS,
   centsOrNull,
   centsOrZero,
@@ -769,11 +773,46 @@ describe("AID-6C finance pack: read-only (#2377)", () => {
   it("declares the stored-evidence limit in every entry's scope line", () => {
     for (const tool of financeTools) {
       expect(tool.evidenceScope, `${tool.id} has no evidenceScope`).toBeDefined();
-      expect(tool.evidenceScope, tool.id).toContain("STORED evidence");
-      expect(tool.evidenceScope, tool.id).toContain(
-        "No provider is contacted by any diagnostics tool",
-      );
+      // THE FULL SHARED CONSTANT, not hand-typed fragments of it (#2815 review).
+      // `diagnosticsToolRequiresProviderCheck` keys the operator-facing
+      // confirm-in-console caveat on this exact sentence, so an entry that kept
+      // the old fragments but paraphrased the sentence would silently lose the
+      // caveat while this test stayed green. Asserting the constant is what makes
+      // "the marked set cannot drift from what the pack tells the model" true.
+      expect(tool.evidenceScope, tool.id).toContain(STORED_EVIDENCE_DISCLOSURE);
     }
+  });
+
+  it("is marked stored-provider, entry by entry, and non-finance tools are not (#2815)", () => {
+    // The marked set is DERIVED (the disclosure text is the membership test), so
+    // this census pins what it currently derives TO: every finance entry, plus the
+    // two AID-6B entries whose subscription fields mirror a Xero invoice. A new
+    // marked tool extends this list deliberately; an entry that falls out of it
+    // fails here with its id named.
+    for (const tool of financeTools) {
+      expect(
+        diagnosticsToolRequiresProviderCheck(tool.id),
+        `${tool.id} lost the stored-provider marker`,
+      ).toBe(true);
+    }
+    for (const id of [
+      "diagnostics.member_subscription_state",
+      "diagnostics.member_eligibility_state",
+    ]) {
+      expect(
+        diagnosticsToolRequiresProviderCheck(id),
+        `${id} mirrors Xero-derived subscription state and must carry the marker`,
+      ).toBe(true);
+    }
+    // A REGISTERED non-provider tool, not an unknown id — an unknown id tests only
+    // the undefined short-circuit (#2815 review caught exactly that in the loop
+    // suite's first negative case).
+    expect(diagnosticsToolRequiresProviderCheck("diagnostics.member_search")).toBe(
+      false,
+    );
+    expect(diagnosticsToolRequiresProviderCheck("diagnostics.booking_block_state")).toBe(
+      false,
+    );
   });
 
   /**

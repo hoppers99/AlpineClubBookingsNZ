@@ -32,7 +32,9 @@ cents; dates are NZ date-only.
 1. Go to **Admin → Members → Members**. Search by name, email, or member-ID prefix,
    and use the filters (Access Role, Membership Type, Status) — open **More
    filters** for age tier, family group, login access, Xero link, subscription
-   status, and Xero contact group. **Reset** restores search, every filter, sort,
+   status, Xero contact group, and **Contactable** — the last of which finds
+   members the club currently cannot email (#2716), and is what the Stuck States
+   card links into. **Reset** restores search, every filter, sort,
    and page together; it stays visible but is disabled while the list is already
    at those defaults.
 
@@ -187,9 +189,12 @@ than with a screenshot:
   Recording a parent therefore never puts that person's address in the hands of
   a family they are not part of.
   **Who the club emails is decided separately, and always resolves to an adult.**
-  A dependent's club email goes to the nearest adult at or above them in the
-  family who has a real address, so a dependent added under a young parent has
-  their mail routed on up — usually to that parent's own parent. The member's
+  A dependent's club email goes to their **direct parent** and no further (#2716).
+  If that parent has no address the club can send to — a young parent, a walk-in
+  placeholder, or somebody who is themselves inheriting — the dependent inherits
+  **nobody** rather than the mail travelling on up the family. Those members are
+  findable: the **Contactable** filter on this page, and the *Members with no
+  reachable email address* card on Stuck States. The member's
   page names that adult before you add the dependent, and both link dialogs name
   it again next to the notification-recipient list, because the list shows
   parents while the stored contact of record may be someone further up. If

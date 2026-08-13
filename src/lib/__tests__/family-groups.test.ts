@@ -1401,6 +1401,13 @@ describe("Admin Family Group Join Requests", () => {
           // review transaction (pg_advisory_xact_lock via $executeRaw).
           $executeRaw: vi.fn().mockResolvedValue(undefined),
           member: {
+            // #2716: the notification mailbox is now resolved with ONE
+            // `findUnique` on the chosen parent instead of a walk up the tree,
+            // and `isUsableEmailSource` reads `inheritEmailChoiceId` as well as
+            // `inheritEmailFromId` — a parent who has CHOSEN to inherit is not a
+            // mailbox even while their pointer is momentarily NULL. The column
+            // is part of `EMAIL_SOURCE_SELECT`, so a real row always carries it;
+            // the fixture has to as well or the parent reads as unusable.
             findUnique: vi.fn().mockResolvedValue({
               id: "parent-1",
               ageTier: "ADULT",
@@ -1409,10 +1416,11 @@ describe("Admin Family Group Join Requests", () => {
               parentMemberId: null,
               secondaryParentId: null,
               inheritEmailFromId: null,
+              inheritEmailChoiceId: null,
             }),
-            // #2255: the approval now walks the family chain (depth cap +
-            // cycle guard) and resolves the notification mailbox by walking
-            // up from the requester. Both read `member.findMany`.
+            // #2255: the approval still walks the family chain (depth cap +
+            // cycle guard) through `member.findMany`. That walk is the LINK
+            // depth cap, which #2716 left untouched.
             findMany: vi.fn().mockImplementation(async ({ where }: any) =>
               where?.id?.in
                 ? where.id.in.map((id: string) => ({
@@ -1449,6 +1457,11 @@ describe("Admin Family Group Join Requests", () => {
           parent: { connect: { id: "parent-1" } },
           inheritParentEmail: true,
           inheritEmailFrom: { connect: { id: "parent-1" } },
+          // #2716: every writer records WHO WAS CHOSEN beside the mailbox the
+          // choice currently resolves to. Under one hop the two are the same
+          // member here — the requester — but they are separate columns, and
+          // pinning the choice is what proves the writer did not skip it.
+          inheritEmailChoice: { connect: { id: "parent-1" } },
         }),
       });
       expect(txUpsert).toHaveBeenCalledWith({
@@ -1601,12 +1614,21 @@ describe("Admin Family Group Join Requests", () => {
       // transaction opens, so the source has to read back as usable — otherwise
       // the approval fails on the email rule and never reaches the depth gate
       // this test is about.
+      //
+      // #2716 made that fixture gap bite: `inheritEmailChoiceId` joined
+      // `EMAIL_SOURCE_SELECT`, and a row missing it reads as `undefined`, which
+      // is not `null`, so Alice was judged to be inheriting and the approval
+      // refused with NO_INHERITABLE_EMAIL_SOURCE_MESSAGE before it ever reached
+      // the four-generation cap. The FIXTURE is what was wrong — this test's
+      // subject is the depth cap, so the column is added here rather than the
+      // expectation being moved to the inheritance message.
       mockedPrisma.member.findUnique.mockResolvedValue({
         id: "parent-1",
         ageTier: "ADULT",
         email: "alice@test.com",
         archivedAt: null,
         inheritEmailFromId: null,
+        inheritEmailChoiceId: null,
       } as any);
       const txMemberCreate = vi.fn();
       deepRequesterTx({ create: txMemberCreate });
@@ -1663,20 +1685,30 @@ describe("Admin Family Group Join Requests", () => {
         },
         familyGroup: { id: "fg1", name: "Smith Family" },
       } as any);
+      // #2716: this ONE row is now the whole of the mailbox resolution — the
+      // service reads the chosen parent with `EMAIL_SOURCE_SELECT` and asks
+      // `isUsableEmailSource` about it, so the fixture must carry the address
+      // and BOTH inheritance columns. It previously omitted `email` (the walk
+      // read addresses out of `findMany`) and `inheritEmailChoiceId` (which did
+      // not exist), and an absent column reads as `undefined`, not `null`.
       mockedPrisma.member.findUnique.mockResolvedValue({
         id: "parent-1",
         ageTier: "ADULT",
         active: true,
+        email: "Alice@Test.com",
         archivedAt: null,
         parentMemberId: null,
         secondaryParentId: null,
         inheritEmailFromId: null,
+        inheritEmailChoiceId: null,
       } as any);
 
-      // #2255: before building the create payload the service resolves the
-      // child's notification mailbox by walking up from the requester, on the
-      // base client. Alice is an active adult with a real address, so the walk
-      // stops on her — the same answer the one-hop rule gave.
+      // #2255 left this stub behind: the create branch used to resolve the
+      // child's mailbox by WALKING UP from the requester through
+      // `member.findMany` on the base client. #2716 retired the walk — the
+      // requester is the child's direct parent, so she is either the mailbox or
+      // there isn't one — and the stub survives only so the family-chain depth
+      // and cycle reads have a shape to return.
       mockedPrisma.member.findMany.mockImplementation((async ({ where }: any) =>
         where?.id?.in?.includes("parent-1")
           ? [
@@ -1735,6 +1767,10 @@ describe("Admin Family Group Join Requests", () => {
           parentMemberId: "parent-1",
           inheritParentEmail: true,
           inheritEmailFromId: "parent-1",
+          // #2716: the create writes the CHOICE alongside the pointer. Both
+          // name the requester, because one hop means the chosen parent IS the
+          // mailbox or there is no mailbox at all.
+          inheritEmailChoiceId: "parent-1",
           emailVerified: true,
           phoneCountryCode: "64",
           streetAddressLine1: "1 Main St",
@@ -2017,6 +2053,9 @@ describe("Admin Family Group Join Requests", () => {
             // top of the review transaction.
             $executeRaw: vi.fn().mockResolvedValue(undefined),
             member: {
+              // #2716: one `findUnique` on the chosen parent decides the
+              // mailbox, and the usable-source test reads BOTH inheritance
+              // columns — see the sibling fixture above.
               findUnique: vi.fn().mockResolvedValue({
                 id: "parent-1",
                 ageTier: "ADULT",
@@ -2025,8 +2064,10 @@ describe("Admin Family Group Join Requests", () => {
                 parentMemberId: null,
                 secondaryParentId: null,
                 inheritEmailFromId: null,
+                inheritEmailChoiceId: null,
               }),
-              // #2255: family-chain walks (see the sibling fixture above).
+              // #2255: family-chain depth/cycle walks (see the sibling fixture
+              // above) — the LINK cap, which #2716 left unchanged.
               findMany: vi.fn().mockImplementation(async ({ where }: any) =>
                 where?.id?.in
                   ? where.id.in.map((id: string) => ({
