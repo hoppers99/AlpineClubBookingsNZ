@@ -8,6 +8,7 @@ import {
   readQueueType,
 } from "@/lib/xero-operation-outbox-payload";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
+import { formatDateOnly } from "@/lib/date-only";
 
 export function makeLocalKey(localModel: string, localId: string) {
   return `${localModel}:${localId}`;
@@ -67,7 +68,7 @@ export function toIsoDate(value: Date) {
 }
 
 export function toDateOnly(value: Date) {
-  return value.toISOString().slice(0, 10);
+  return formatDateOnly(value);
 }
 
 export function readJsonRecord(value: unknown): Record<string, unknown> | null {

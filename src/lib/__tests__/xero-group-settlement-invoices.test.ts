@@ -100,10 +100,6 @@ vi.mock("@/lib/pricing", () => ({
   getStayNights: vi.fn(() => [new Date("2026-07-01")]),
 }));
 
-vi.mock("@/lib/xero-invoice-helpers", () => ({
-  formatDate: vi.fn(() => "2026-07-01"),
-}));
-
 vi.mock("@/lib/logger", () => ({
   default: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
