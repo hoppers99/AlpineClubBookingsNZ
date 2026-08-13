@@ -1,0 +1,352 @@
+// @vitest-environment jsdom
+
+/**
+ * THE CLIENT ADMIN LISTS PUBLISH WHAT THEY APPLIED (#2816, owner decision
+ * 13 Aug 2026).
+ *
+ * Each page is rendered inside a real `HelpWidgetProvider` and read back through
+ * `useDiagnosticsViewState` — the same channel the Diagnostics panel reads — so
+ * what is asserted is what a question would actually carry, not a mock of it.
+ *
+ * The payments case is the one the design was argued from: on a bare
+ * `/admin/payments` the activity window is applied from React state and never
+ * appears in the address at all, and the registry calls that window "the single
+ * most common reason a payment an operator expects is not on screen".
+ */
+
+import "@testing-library/jest-dom/vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import {
+  HelpWidgetProvider,
+  useDiagnosticsViewState,
+} from "@/components/help-widget/help-widget-context";
+import { getPaymentsDatasetDefaults } from "@/lib/admin-dataset-reset-state";
+import { todayDateOnlyForTimeZone } from "@/lib/date-only";
+
+const routerMocks = vi.hoisted(() => ({
+  replace: vi.fn(),
+  search: "",
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    replace: routerMocks.replace,
+    push: vi.fn(),
+    refresh: vi.fn(),
+  }),
+  useSearchParams: () => new URLSearchParams(routerMocks.search),
+  usePathname: () => "/admin",
+}));
+
+vi.mock("next/link", () => ({
+  default: ({ href, children }: { href: string; children: ReactNode }) => (
+    <a href={href}>{children}</a>
+  ),
+}));
+
+vi.mock("@/hooks/use-admin-area-edit-access", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/hooks/use-admin-area-edit-access")
+  >()),
+  useAdminAreaEditAccess: () => true,
+}));
+vi.mock("@/hooks/use-xero-status", () => ({
+  useXeroStatus: () => ({ connected: false }),
+}));
+vi.mock("@/hooks/use-xero-org-short-code", () => ({
+  useXeroOrgShortCode: () => ({ shortCode: null }),
+}));
+vi.mock("@/components/admin/manual-refund-task-queue", () => ({
+  ManualRefundTaskQueue: () => null,
+}));
+
+// --- members-list dependencies -------------------------------------------
+vi.mock("next-auth/react", () => ({
+  useSession: () => ({
+    data: { user: { id: "admin-1", accessRoles: [{ role: "ADMIN" }] } },
+  }),
+}));
+vi.mock("sonner", () => ({ toast: { success: vi.fn() } }));
+
+/**
+ * The members query state is mocked so the DRAFT and the APPLIED search can be
+ * set to different values — which is the whole point of the assertion below, and
+ * something the real 300ms debounce cannot be asked for directly.
+ */
+const membersQueryState = vi.hoisted(() => ({
+  search: "",
+  setSearch: vi.fn(),
+  debouncedSearch: "",
+  page: 1,
+  setPage: vi.fn(),
+  pageSize: 25,
+  sortBy: "name",
+  sortDir: "asc" as const,
+  filters: {} as Record<string, string>,
+  setFilter: vi.fn(),
+  resetDataset: vi.fn(),
+  isDatasetDefault: true,
+  activeFilterCount: 0,
+  toggleSort: vi.fn(),
+  buildMembersSearchParams: vi.fn(() => new URLSearchParams()),
+  buildMembersListPath: vi.fn(() => "/admin/members"),
+  buildExportUrl: vi.fn(() => "/api/admin/members/export"),
+}));
+
+vi.mock("@/app/(admin)/admin/members/_hooks/use-members-query-state", () => ({
+  useMembersQueryState: () => membersQueryState,
+}));
+vi.mock("@/app/(admin)/admin/members/_hooks/use-xero-contact-groups", () => ({
+  useXeroContactGroups: () => ({
+    xeroConnected: false,
+    xeroFeatures: {},
+    xeroContactGroupsList: [],
+    refreshingXeroGroups: false,
+    refreshXeroGroups: vi.fn(),
+    lastRefreshedAt: null,
+  }),
+}));
+vi.mock("@/app/(admin)/admin/members/_components/member-bulk-action-bar", () => ({
+  MemberBulkActionBar: () => null,
+}));
+vi.mock("@/app/(admin)/admin/members/_components/member-bulk-dialog", () => ({
+  MemberBulkDialog: () => null,
+}));
+vi.mock(
+  "@/app/(admin)/admin/members/_components/member-bulk-membership-dialog",
+  () => ({ MemberBulkMembershipDialog: () => null }),
+);
+vi.mock("@/app/(admin)/admin/members/_components/member-editor-dialog", () => ({
+  MemberEditorDialog: () => null,
+}));
+vi.mock("@/app/(admin)/admin/members/_components/member-filter-toolbar", () => ({
+  MemberFilterToolbar: () => null,
+}));
+vi.mock("@/app/(admin)/admin/members/_components/member-import-dialog", () => ({
+  MemberImportDialog: () => null,
+}));
+vi.mock("@/app/(admin)/admin/members/_components/member-pagination", () => ({
+  MemberPagination: () => null,
+}));
+vi.mock(
+  "@/app/(admin)/admin/members/_components/member-password-action-dialog",
+  () => ({ MemberPasswordActionDialog: () => null }),
+);
+vi.mock("@/app/(admin)/admin/members/_components/member-table", () => ({
+  MemberTable: () => null,
+}));
+vi.mock(
+  "@/app/(admin)/admin/members/_components/xero-groups-refresh-hint",
+  () => ({ XeroGroupsRefreshHint: () => null }),
+);
+
+/** Reads the published state back out of the provider, as the widget does. */
+function PublishedViewProbe() {
+  const view = useDiagnosticsViewState();
+  return (
+    <div data-testid="published-view">{view === null ? "null" : JSON.stringify(view)}</div>
+  );
+}
+
+function published() {
+  const text = screen.getByTestId("published-view").textContent ?? "null";
+  return text === "null" ? null : JSON.parse(text);
+}
+
+/**
+ * One mock for the whole file, assigned rather than stubbed. A stub restored in
+ * `afterEach` loses the race with an effect that re-fires as React unmounts the
+ * page, and the real `fetch` then rejects on the relative URL as an unhandled
+ * rejection that fails the run without failing a test.
+ */
+const fetchMock = vi.fn();
+
+function respondWith(body: Record<string, unknown>, init = { ok: true, status: 200 }) {
+  fetchMock.mockResolvedValue({ ...init, json: async () => body });
+}
+
+beforeEach(() => {
+  routerMocks.search = "";
+  routerMocks.replace.mockReset();
+  fetchMock.mockReset();
+  global.fetch = fetchMock as unknown as typeof fetch;
+  respondWith({
+    data: [],
+    entries: [],
+    members: [],
+    total: 0,
+    totalPages: 0,
+    page: 1,
+    pageSize: 25,
+    summary: { totalRevenueCents: 0, refundedCents: 0, count: 0 },
+  });
+});
+
+afterEach(() => {
+  vi.clearAllMocks();
+});
+
+describe("/admin/payments publishes the window it applied (#2816)", () => {
+  it("publishes the DEFAULT activity window from a completely empty query string", async () => {
+    // THE FLAGSHIP. Nothing is in the address; the two `useState` initialisers
+    // fall back to `getPaymentsDatasetDefaults(clubToday)` and today, and
+    // `buildPaymentsSearchParams` puts both into the request. Reading the
+    // address would report no filtering at all on a list that is filtered to
+    // the last three club-timezone months.
+    const { default: PaymentsPage } = await import(
+      "@/app/(admin)/admin/payments/page"
+    );
+    const clubToday = todayDateOnlyForTimeZone();
+    const defaults = getPaymentsDatasetDefaults(clubToday);
+
+    render(
+      <HelpWidgetProvider>
+        <PaymentsPage />
+        <PublishedViewProbe />
+      </HelpWidgetProvider>,
+    );
+
+    await waitFor(() =>
+      expect(published()).toEqual({
+        filters: {
+          lastUpdatedFrom: defaults.lastUpdatedFrom,
+          lastUpdatedTo: clubToday,
+        },
+      }),
+    );
+    // And it really is invisible in the address: the page's own URL sync writes
+    // no query at all for the default dataset.
+    expect(defaults.lastUpdatedFrom).not.toEqual(clubToday);
+  });
+
+  it("publishes the status, source and search it applied, and not the keys its row does not allow", async () => {
+    routerMocks.search =
+      "status=SUCCEEDED&source=STRIPE&search=%20ngata%20&xeroState=linked&sortBy=amount&page=4";
+    const { default: PaymentsPage } = await import(
+      "@/app/(admin)/admin/payments/page"
+    );
+    const clubToday = todayDateOnlyForTimeZone();
+    const defaults = getPaymentsDatasetDefaults(clubToday);
+
+    render(
+      <HelpWidgetProvider>
+        <PaymentsPage />
+        <PublishedViewProbe />
+      </HelpWidgetProvider>,
+    );
+
+    await waitFor(() =>
+      expect(published()).toEqual({
+        status: "SUCCEEDED",
+        filters: {
+          source: "STRIPE",
+          // Trimmed, because the trim is what reaches the request.
+          search: "ngata",
+          lastUpdatedFrom: defaults.lastUpdatedFrom,
+          lastUpdatedTo: clubToday,
+        },
+      }),
+    );
+    // `xeroState`, `sortBy` and `page` are applied but are NOT in this row's
+    // allowlist. The route would drop them; publishing to be dropped is not a
+    // contract, so they never leave the page.
+    expect(JSON.stringify(published())).not.toContain("xeroState");
+    expect(JSON.stringify(published())).not.toContain("sortBy");
+  });
+});
+
+describe("/admin/waitlist publishes the window it applied (#2816)", () => {
+  it("publishes the URL window the fetch actually used", async () => {
+    routerMocks.search = "from=2026-08-01&to=2026-08-31&page=2&pageSize=50";
+    const { default: AdminWaitlistPage } = await import(
+      "@/app/(admin)/admin/waitlist/page"
+    );
+
+    render(
+      <HelpWidgetProvider>
+        <AdminWaitlistPage />
+        <PublishedViewProbe />
+      </HelpWidgetProvider>,
+    );
+
+    await waitFor(() =>
+      expect(published()).toEqual({
+        filters: { from: "2026-08-01", to: "2026-08-31" },
+      }),
+    );
+  });
+
+  it("publishes NOTHING once the API refused the window", async () => {
+    // `/api/admin/waitlist` validates the window with zod and answers 400 on a
+    // malformed or over-long one, so the rows on screen are then not a filtered
+    // list at all — they are no list. Same total-rejection trap the bookings
+    // page has, arriving over the wire instead of in a `safeParse`.
+    respondWith(
+      { error: "Invalid query parameters" },
+      { ok: false, status: 400 },
+    );
+    routerMocks.search = "from=13-45-2026&to=2026-08-31";
+    const { default: AdminWaitlistPage } = await import(
+      "@/app/(admin)/admin/waitlist/page"
+    );
+
+    render(
+      <HelpWidgetProvider>
+        <AdminWaitlistPage />
+        <PublishedViewProbe />
+      </HelpWidgetProvider>,
+    );
+
+    await waitFor(() => expect(published()).toEqual({}));
+  });
+});
+
+describe("/admin/members publishes the search that FILTERED, not the one being typed (#2816)", () => {
+  it("publishes the debounced search and the applied age tier, never the draft", async () => {
+    // `search` is the raw keystroke draft in the box; only `debouncedSearch`
+    // reaches `buildMembersSearchParams` and therefore the fetch, 300ms later.
+    // Publishing the draft would report a search that has filtered nothing —
+    // including through the whole window in which an operator types a name and
+    // immediately asks why nobody is showing up.
+    membersQueryState.search = "hemi-still-typing";
+    membersQueryState.debouncedSearch = "ngata";
+    membersQueryState.filters = { ageTier: "ADULT", role: "ADMIN" };
+    const { default: MembersPage } = await import(
+      "@/app/(admin)/admin/members/page"
+    );
+
+    render(
+      <HelpWidgetProvider>
+        <MembersPage />
+        <PublishedViewProbe />
+      </HelpWidgetProvider>,
+    );
+
+    await waitFor(() =>
+      // `role` is applied but is not in this row's allowlist, so it stays here.
+      expect(published()).toEqual({ filters: { q: "ngata", ageTier: "ADULT" } }),
+    );
+    expect(JSON.stringify(published())).not.toContain("still-typing");
+  });
+
+  it("publishes an empty view when nothing is filtered, not `undefined`", async () => {
+    membersQueryState.search = "";
+    membersQueryState.debouncedSearch = "";
+    membersQueryState.filters = {};
+    const { default: MembersPage } = await import(
+      "@/app/(admin)/admin/members/page"
+    );
+
+    render(
+      <HelpWidgetProvider>
+        <MembersPage />
+        <PublishedViewProbe />
+      </HelpWidgetProvider>,
+    );
+
+    await waitFor(() => expect(published()).toEqual({}));
+  });
+});

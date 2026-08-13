@@ -569,3 +569,43 @@ describe("the view is filtered to the matched route's own allowlists (#2816)", (
     expect(selector.filters).toBeUndefined();
   });
 });
+
+describe("the route is the authority on a page's allowlist, not the page (#2816)", () => {
+  /**
+   * The four wired pages publish only what their own registry row permits, but
+   * that discipline lives in four files a future edit can get wrong. THIS is the
+   * gate: the row the server matched decides, and a key that belongs to another
+   * page's row is dropped here regardless of who sent it or how confidently.
+   */
+  it("drops another page's filter keys from a members-list question", async () => {
+    await POST(
+      request(
+        body({
+          pathname: "/admin/members",
+          view: {
+            filters: {
+              q: "ngata",
+              ageTier: "ADULT",
+              // Real keys — on `/admin/payments`. Not on this row.
+              lastUpdatedFrom: "2026-05-13",
+              search: "ngata",
+            },
+          },
+        }),
+      ),
+    );
+    const selector = mocks.resolveContext.mock.calls[0][0].selector;
+    expect(selector.filters).toEqual({ q: "ngata", ageTier: "ADULT" });
+  });
+
+  it("drops a booking status sent from the members list, which allowlists none", async () => {
+    await POST(
+      request(
+        body({ pathname: "/admin/members", view: { status: "confirmed" } }),
+      ),
+    );
+    const selector = mocks.resolveContext.mock.calls[0][0].selector;
+    expect(selector.status).toBeUndefined();
+    expect(selector.routeKey).toBe("admin.members");
+  });
+});
