@@ -111,7 +111,9 @@ describe("analytics route policy — the owner's exclusion list", () => {
       "/booking-requests/respond/tok_abc123",
       "/booking-requests/verify/tok_abc123",
       "/school-bookings/confirm/tok_abc123",
-      // The three (website-dynamic) pages: a PIN-gated page and two code/token ones.
+      // Three more of the eight (website-dynamic) routes: a PIN-gated page and
+      // two code/token ones. The bare `/booking-requests` and `/school-bookings`
+      // pages, and the remaining token flows above, are the other five.
       "/hut-leader-instructions",
       "/join/AB12CD",
       "/join/verify/tok_abc123",
@@ -136,6 +138,32 @@ describe("analytics route policy — the owner's exclusion list", () => {
       const path = route.replace(/\[[^\]]+\]/g, "sample");
       expect(isAnalyticsEligiblePath(path), path).toBe(false);
     }
+  });
+
+  // #2818: `booking-requests`/`school-bookings` stopped being
+  // NON_WEBSITE_ROOT_SEGMENTS entries, so only the EXACT per-request routes are
+  // subtracted now — not every address under them. These pin the current answers
+  // explicitly, so the coverage is not silently tied to a shrinking set.
+  it("keeps the two bare form pages out (they are per-request pages)", () => {
+    expect(isAnalyticsEligiblePath("/booking-requests")).toBe(false);
+    expect(isAnalyticsEligiblePath("/school-bookings")).toBe(false);
+  });
+
+  it("tracks a 2-segment miss under a form page that no token route claims", () => {
+    // `/booking-requests/respond` is two segments; the token route is
+    // `/booking-requests/respond/[token]` (three). Nothing claims the 2-segment
+    // address, so the catch-all serves its 404 and — carrying no token or PIN —
+    // it is analytics-eligible. Accepted by the owner as a harmless tracked 404,
+    // and the behaviour change from `booking-requests` no longer being a
+    // NON_WEBSITE_ROOT_SEGMENTS entry (which previously excluded everything under
+    // it). This did not happen for `/booking-requests` itself, which is a real
+    // per-request route and stays excluded (asserted above).
+    expect(isAnalyticsEligiblePath("/booking-requests/respond")).toBe(true);
+    // But gate 2 still bites where the miss is a credential word: the parallel
+    // `/school-bookings/confirm` miss is refused because `confirm` is in
+    // CREDENTIAL_SEGMENT_WORDS — so removing the root segment did not open a
+    // token-flavoured 404 to tracking.
+    expect(isAnalyticsEligiblePath("/school-bookings/confirm")).toBe(false);
   });
 });
 
