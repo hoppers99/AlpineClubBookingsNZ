@@ -3,7 +3,7 @@ import "server-only";
 import sanitizeHtml from "sanitize-html";
 import { prisma } from "@/lib/prisma";
 import { deriveAltFromImageSrc } from "@/lib/image-alt";
-import type { EditablePageRecord } from "@/lib/page-content";
+import { isReservedPageSlug, type EditablePageRecord } from "@/lib/page-content";
 import {
   isBuiltInDynamicPageSlug,
   isCmsServablePageSlug,
@@ -349,10 +349,12 @@ export async function listEditablePageContent() {
  *  1. `published` — a hidden page is not advertised.
  *  2. A non-empty `menuTitle` — the admin's way of keeping a published page out
  *     of the navigation.
- *  3. The site must actually SERVE the address: either
- *     {@link isCmsServablePageSlug} (the `(website)/[...slug]` catch-all will
- *     render it) or {@link isBuiltInDynamicPageSlug} (a real code-backed
- *     `(website-dynamic)` route renders it).
+ *  3. The site must actually SERVE the address:
+ *     {@link isBuiltInDynamicPageSlug} (a real code-backed `(website-dynamic)`
+ *     route renders it) OR both {@link isCmsServablePageSlug} (the
+ *     `(website)/[...slug]` catch-all will render it) AND
+ *     {@link isReservedPageSlug} `=== false` (the catch-all's own loader will
+ *     not then refuse the slug).
  *
  * Without the third, slice 1 could leave a nav link pointing at a 404. That
  * slice reserved every first segment belonging to another route group, so an
@@ -361,6 +363,23 @@ export async function listEditablePageContent() {
  * filters 1 and 2 both passed it and the header kept advertising it, with no
  * signal to the visitor or the operator. An address the site will not serve is
  * not an address the site should link to.
+ *
+ * ## Why the third filter also subtracts reserved slugs (#2818)
+ *
+ * `isCmsServablePageSlug` asks only the route-GROUP question about the FIRST
+ * segment, so it returns `true` for `/trips/booking-requests`: the address is a
+ * public-website path and no fixed-length `(website-dynamic)` route claims it.
+ * But `booking-requests` and `school-bookings` are now RESERVED WORDS that match
+ * in ANY segment (#2818 decision 9), so the catch-all loader hard-404s
+ * `trips/booking-requests` even though it will store it nowhere. Filter 1 and 2
+ * pass such a row, and the old filter 3 did too — reviving the exact
+ * "link to a 404" hazard slice 1 closed for reserved first segments. Excluding
+ * `isReservedPageSlug` closes it for reserved words anywhere in the slug.
+ *
+ * The two built-in slugs are themselves reserved (they ARE the new words), so the
+ * order matters: `isBuiltInDynamicPageSlug` is checked FIRST and admits them, and
+ * only an admin-created row reaches the `isCmsServablePageSlug && !reserved`
+ * branch. A club that opts `/booking-requests` into its menu still shows it.
  *
  * This does not repair the row; the operator still has to rename it (see
  * `CONFIGURATION.md` → "Some slugs are refused, and the list grew" for the query
@@ -403,8 +422,9 @@ export async function listWebsiteMenuPages() {
   return records.filter(
     (record) =>
       record.menuTitle.trim().length > 0 &&
-      (isCmsServablePageSlug(record.slug) ||
-        isBuiltInDynamicPageSlug(record.slug)),
+      (isBuiltInDynamicPageSlug(record.slug) ||
+        (isCmsServablePageSlug(record.slug) &&
+          !isReservedPageSlug(record.slug))),
   );
 }
 

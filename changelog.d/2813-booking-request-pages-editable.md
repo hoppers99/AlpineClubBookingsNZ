@@ -33,3 +33,11 @@
 
   Existing sites gain the editable pages automatically on upgrade, and both
   forms work exactly as they did.
+
+  Because the club owns the one-time links directly under those two addresses,
+  `booking-requests` and `school-bookings` are now reserved words: a content page
+  you name with either word in any part of its address (for example
+  `trips/booking-requests`) is refused, and if you had one from an earlier
+  release it is no longer advertised in your menu or by a Book Now button until
+  you rename it. See CONFIGURATION.md → "Website Page Content" for a query that
+  finds one.

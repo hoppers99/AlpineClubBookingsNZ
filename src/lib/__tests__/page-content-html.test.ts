@@ -402,6 +402,34 @@ describe("listWebsiteMenuPages", () => {
     expect(pages.map((page) => page.slug)).toEqual(["about", "trips/pay"]);
   });
 
+  // #2818: the reserved-WORD hazard, one segment deeper than the slice-1 rule.
+  // A row at `trips/booking-requests` passes `isCmsServablePageSlug` (the
+  // route-group check looks at the first segment only), but the catch-all loader
+  // hard-404s any slug containing `booking-requests`/`school-bookings`. Without
+  // the `!isReservedPageSlug` half of filter 3 the header would advertise a link
+  // to that 404 — the exact class slice 1 closed for reserved first segments.
+  it("drops a published page whose slug contains a reserved word in a non-leading segment", async () => {
+    mocks.pageContentFindMany.mockResolvedValue([
+      { slug: "about", menuTitle: "About", title: "About", path: "/about" },
+      {
+        slug: "trips/booking-requests",
+        menuTitle: "Trip Requests",
+        title: "Trip Requests",
+        path: "/trips/booking-requests",
+      },
+      {
+        slug: "info/school-bookings",
+        menuTitle: "Info",
+        title: "Info",
+        path: "/info/school-bookings",
+      },
+    ]);
+
+    const pages = await listWebsiteMenuPages();
+
+    expect(pages.map((page) => page.slug)).toEqual(["about"]);
+  });
+
   // #2818 decisions 1 and 2. The two form pages live in `(website-dynamic)`, so
   // `isCmsServablePageSlug` refuses them — a real code-backed route serves each
   // address, but the catch-all will never store one. Advertising them is opt-in:

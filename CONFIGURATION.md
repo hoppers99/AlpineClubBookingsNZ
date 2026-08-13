@@ -669,12 +669,12 @@ menu.
     ```sql
     SELECT slug, title, published FROM "PageContent"
     WHERE split_part(slug, '/', 1) IN (
-      'admin', 'api', 'asset-not-found', 'book', 'booking-requests', 'bookings',
+      'admin', 'api', 'asset-not-found', 'book', 'bookings',
       'calendar', 'change-password', 'chores', 'confirm-email-change',
       'dashboard', 'display', 'family-invite', 'finance', 'forgot-password',
       'induction', 'lodge', 'lodge-instructions', 'login',
       'membership-cancellation', 'nominations', 'notices', 'pay', 'profile',
-      'register', 'reset-password', 'school-bookings', 'verify-email'
+      'register', 'reset-password', 'verify-email'
     );
     ```
 
@@ -683,6 +683,27 @@ menu.
     release, because it grows whenever the application claims a new top-level
     address. Renaming the page in Admin > Page Content is the whole fix — the
     content, header and menu title come with it.
+
+    **`booking-requests` and `school-bookings` are a different, tighter rule
+    (#2818).** These two are built-in pages the club owns, so the bare
+    `/booking-requests` and `/school-bookings` rows are legitimate and must NOT be
+    renamed. But the two WORDS are reserved in every segment position — the
+    application owns the one-time token links directly under them
+    (`/booking-requests/verify/<token>`, `/school-bookings/confirm/<token>`) — so
+    a content page that puts either word in ANY segment (`trips/booking-requests`,
+    `booking-requests/archive`) is refused by the catch-all and, since this
+    release, dropped from the menu and from any Book Now button. This query names
+    such a page while leaving the two built-in rows alone:
+
+    ```sql
+    SELECT slug, title, published FROM "PageContent"
+    WHERE ('booking-requests' = ANY (string_to_array(slug, '/'))
+        OR 'school-bookings' = ANY (string_to_array(slug, '/')))
+      AND slug NOT IN ('booking-requests', 'school-bookings');
+    ```
+
+    Rename any page it returns; the two built-in rows it deliberately excludes
+    stay exactly as they are.
 
     Three more shapes are refused for the same reason, and the query above does
     not find them because they are not top-level segments:

@@ -157,6 +157,32 @@ describe("getBookNowVariants fail-open matrix (E3 #1929)", () => {
     });
   });
 
+  // #2818: the reserved-WORD hazard, one segment deeper than the slice-1 rule.
+  // `/trips/booking-requests` passes the route-group servability check
+  // (`isCmsServablePageSlug` looks at the first segment only), but the catch-all
+  // loader hard-404s any slug containing the `booking-requests`/`school-bookings`
+  // reserved words — so the button must fail open here exactly as it does for a
+  // reserved first segment.
+  it.each(["trips/booking-requests", "info/school-bookings"])(
+    "fails open when the PAGE target contains a reserved word (%s)",
+    async (slug) => {
+      findUnique.mockResolvedValue({
+        showBookNow: true,
+        bookNowTarget: "PAGE",
+        bookNowPage: {
+          slug,
+          path: `/${slug}`,
+          published: true,
+        },
+      });
+      expect(await bookNowFor(false)).toEqual({
+        show: true,
+        href: "/login?next=/book",
+        label: ANONYMOUS_BOOK_NOW_LABEL,
+      });
+    },
+  );
+
   it("fails open when the PAGE target FK is null", async () => {
     findUnique.mockResolvedValue({ showBookNow: true, bookNowTarget: "PAGE", bookNowPage: null });
     expect(await bookNowFor(false)).toEqual({
