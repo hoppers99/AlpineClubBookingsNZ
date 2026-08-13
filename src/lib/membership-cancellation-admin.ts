@@ -14,6 +14,7 @@ import {
   wouldRemoveLastFullAdmin,
 } from "@/lib/admin-account-guards";
 import { createAuditLog } from "@/lib/audit";
+import { retireInheritedEmailCopies } from "@/lib/member-email-inheritance";
 import {
   sendMembershipCancellationApprovedEmail,
   sendMembershipCancellationRejectedEmail,
@@ -857,6 +858,23 @@ export async function reviewMembershipCancellationParticipant({
         participant.memberId,
       );
 
+      // #2716: retire the denormalised COPIES of this member's address BEFORE
+      // anything clears the pointers, because the pointers are what identify
+      // whose address the copy is. Clearing them alone left dependants holding
+      // a live, deliverable copy of the cancelled member's address — mail kept
+      // arriving in an ex-member's mailbox, and the dependants did not appear on
+      // the unreachable surface because their stored address looked fine.
+      const departingMember = await tx.member.findUnique({
+        where: { id: participant.memberId },
+        select: { email: true },
+      });
+      if (departingMember) {
+        await retireInheritedEmailCopies(tx, {
+          id: participant.memberId,
+          email: departingMember.email,
+        });
+      }
+
       await tx.member.update({
         where: { id: participant.memberId },
         data: {
@@ -872,6 +890,10 @@ export async function reviewMembershipCancellationParticipant({
           parentMemberId: null,
           secondaryParentId: null,
           inheritEmailFromId: null,
+          // #2716: the cancelled member's own recorded choice goes with their
+          // pointer and their parent links — they are leaving the club, so there
+          // is no decision left to honour.
+          inheritEmailChoiceId: null,
         },
       });
 
@@ -887,9 +909,20 @@ export async function reviewMembershipCancellationParticipant({
           where: { secondaryParentId: participant.memberId },
           data: { secondaryParentId: null },
         }),
+        // #2716: dependants who named the cancelled member lose the choice as
+        // well as the pointer. A cancelled member is deactivated and de-logged
+        // in the same write, so a choice naming them could only ever resolve to
+        // nobody; clearing it is what puts these dependants on the admin
+        // surface as "no contact of record chosen" rather than as "waiting for
+        // an address that is not coming".
         tx.member.updateMany({
-          where: { inheritEmailFromId: participant.memberId },
-          data: { inheritEmailFromId: null },
+          where: {
+            OR: [
+              { inheritEmailFromId: participant.memberId },
+              { inheritEmailChoiceId: participant.memberId },
+            ],
+          },
+          data: { inheritEmailFromId: null, inheritEmailChoiceId: null },
         }),
       ]);
 

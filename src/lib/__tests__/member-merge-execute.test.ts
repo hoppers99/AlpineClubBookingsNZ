@@ -477,13 +477,19 @@ describe("executeMemberMerge", () => {
     const selfRelationColumns = MEMBER_MERGE_RELATION_SPECS.filter(
       (s) => s.selfRelation && s.bucket === "move",
     ).map((s) => s.column);
-    // All four of them — and the DMMF-driven flag test in
-    // member-merge-dmmf.test.ts is what forces a fifth Member self-FK to carry
-    // `selfRelation: true` and join this sweep shape.
+    // All five of them — and the DMMF-driven flag test in
+    // member-merge-dmmf.test.ts is what forces a new Member self-FK to carry
+    // `selfRelation: true` and join this sweep shape. #2716's
+    // `inheritEmailChoiceId` is the column that proves it works.
     expect(selfRelationColumns).toEqual([
       "parentMemberId",
       "secondaryParentId",
       "inheritEmailFromId",
+      // #2716 added the fifth: the CHOICE behind the shared email address. It
+      // moves with the pointer rather than after it, because a merge that
+      // carried one and not the other would leave the surviving member with a
+      // mailbox whose decision names a row that no longer exists.
+      "inheritEmailChoiceId",
       "detailsConfirmedByMemberId",
     ]);
 
@@ -1854,6 +1860,8 @@ describe("family-link drift under the lock (#2437)", () => {
     "parentMemberId",
     "secondaryParentId",
     "inheritEmailFromId",
+    // #2716: the choice behind the shared email address.
+    "inheritEmailChoiceId",
     "detailsConfirmedByMemberId",
   ] as const;
 
@@ -2359,7 +2367,7 @@ describe("family-link drift under the lock (#2437)", () => {
     });
   });
 
-  it("re-checks inbound links with the id-excluded four-column query (shape pin)", async () => {
+  it("re-checks inbound links with the id-excluded five-column query (shape pin)", async () => {
     // Pin the query so it cannot silently narrow: both merge parties excluded,
     // every self-relation column OR-ed, and every column selected for the
     // differ to inspect.
@@ -2390,6 +2398,7 @@ describe("family-link drift under the lock (#2437)", () => {
       { parentMemberId: LOSER_ID },
       { secondaryParentId: LOSER_ID },
       { inheritEmailFromId: LOSER_ID },
+      { inheritEmailChoiceId: LOSER_ID },
       { detailsConfirmedByMemberId: LOSER_ID },
     ]);
     expect(lingering?.select).toEqual({
@@ -2397,6 +2406,7 @@ describe("family-link drift under the lock (#2437)", () => {
       parentMemberId: true,
       secondaryParentId: true,
       inheritEmailFromId: true,
+      inheritEmailChoiceId: true,
       detailsConfirmedByMemberId: true,
     });
   });

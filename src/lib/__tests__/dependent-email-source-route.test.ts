@@ -6,9 +6,11 @@ import { NextRequest } from "next/server";
  *
  * "If a dependent were recorded under this member, whose mailbox would their
  * club email actually land in?" Both link dialogs ask it, because the picker
- * they show lists PARENTS while the write stores the nearest ADULT at or above
- * the chosen parent — so the option label was naming somebody the mail would
- * never reach.
+ * they show lists PARENTS while the write stores only a parent who can actually
+ * receive mail — so the option label was naming somebody the mail would never
+ * reach. Since #2716 the answer is that parent or nobody, and "nobody" is the
+ * answer the dialogs must be able to show, because it is now a routine outcome
+ * rather than an edge case.
  *
  * What is pinned here: the admin gate, the 404 for a member who does not exist
  * (which must NOT read as "no adult in this family", a different and misleading
@@ -78,42 +80,28 @@ describe("GET /api/admin/members/[id]/dependent-email-source", () => {
   });
 
   it("names the adult the write would actually store", async () => {
-    // Tui is a 16-year-old parent with a real address of their own; the walk
-    // steps past them to Nan, because being the contact of record is a
-    // responsibility function and stays adult-only.
+    // Whatever this route says is what the write will do — that is its entire
+    // purpose, so the fixture is the ordinary case: an adult parent with a real
+    // address, who under #2716 IS the source rather than a step on the way to
+    // one.
     mockedFindUnique
-      .mockResolvedValueOnce({ id: "tui" } as never)
+      .mockResolvedValueOnce({ id: "nan" } as never)
+      .mockResolvedValueOnce({
+        id: "nan",
+        email: "nan@example.org",
+        ageTier: "ADULT",
+        archivedAt: null,
+        inheritEmailFromId: null,
+        inheritEmailChoiceId: null,
+      } as never)
       .mockResolvedValueOnce({
         id: "nan",
         firstName: "Nan",
         lastName: "Rangi",
         email: "nan@example.org",
       } as never);
-    mockedFindMany
-      .mockResolvedValueOnce([
-        {
-          id: "tui",
-          email: "tui@example.org",
-          ageTier: "YOUTH",
-          archivedAt: null,
-          inheritEmailFromId: null,
-          parentMemberId: "nan",
-          secondaryParentId: null,
-        },
-      ] as never)
-      .mockResolvedValueOnce([
-        {
-          id: "nan",
-          email: "nan@example.org",
-          ageTier: "ADULT",
-          archivedAt: null,
-          inheritEmailFromId: null,
-          parentMemberId: null,
-          secondaryParentId: null,
-        },
-      ] as never);
 
-    const res = await call();
+    const res = await call("nan");
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -126,23 +114,29 @@ describe("GET /api/admin/members/[id]/dependent-email-source", () => {
     });
   });
 
-  it("answers null when nobody in reach can receive club email", async () => {
-    mockedFindUnique.mockResolvedValueOnce({ id: "tui" } as never);
-    mockedFindMany.mockResolvedValueOnce([
-      {
+  it("answers null for a young parent instead of naming somebody above them (#2716)", async () => {
+    // Tui is a 16-year-old parent with a real address of their own. Being the
+    // club's contact of record is a responsibility function and stays
+    // adult-only, so Tui is refused — and since #2716 the answer stops there
+    // rather than continuing to Tui's own parent. The dialog therefore shows the
+    // admin the same "nobody" the write route will enforce, instead of naming a
+    // grandparent the write would no longer accept.
+    mockedFindUnique
+      .mockResolvedValueOnce({ id: "tui" } as never)
+      .mockResolvedValueOnce({
         id: "tui",
         email: "tui@example.org",
         ageTier: "YOUTH",
         archivedAt: null,
         inheritEmailFromId: null,
-        parentMemberId: null,
-        secondaryParentId: null,
-      },
-    ] as never);
+        inheritEmailChoiceId: null,
+      } as never);
 
     const res = await call();
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ source: null });
+    // No second lookup: there is nowhere further to look.
+    expect(mockedFindMany).not.toHaveBeenCalled();
   });
 });

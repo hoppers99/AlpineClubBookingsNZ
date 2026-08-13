@@ -76,6 +76,10 @@ vi.mock("@/lib/prisma", () => ({
       return (operation as (tx: unknown) => Promise<unknown>)({
         member: {
           update: vi.fn(),
+          // #2716: the member write re-resolves email inheritance inside its
+          // own transaction, reading the subjects and then their chosen
+          // sources with `findMany`; no rows, so nothing is re-pointed.
+          findMany: vi.fn().mockResolvedValue([]),
         },
         memberAccessRole: {
           createMany: vi.fn(),
@@ -178,6 +182,10 @@ describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
           // #1604 last-admin guard counts active Full Admins inside the
           // transaction; default (undefined) resolves to "not the last admin".
           count: prisma.member.count,
+          // #2716: the edit re-resolves email inheritance in the same
+          // transaction — the member's own pointer first, then everyone who
+          // inherits from them — and both halves read through `findMany`.
+          findMany: prisma.member.findMany,
         },
         memberAccessRole: {
           createMany: vi.fn().mockResolvedValue({ count: 1 }),
@@ -612,6 +620,9 @@ describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
         member: {
           update: prisma.member.update,
           count: prisma.member.count,
+          // #2716: as above — the access-role edit still re-resolves email
+          // inheritance inside the transaction, and that reads with `findMany`.
+          findMany: prisma.member.findMany,
         },
         memberAccessRole: {
           createMany: vi.fn().mockImplementation(async (args: any) => {

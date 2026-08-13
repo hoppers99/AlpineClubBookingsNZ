@@ -355,6 +355,11 @@ describe("membership cancellation admin review", () => {
         parentMemberId: null,
         secondaryParentId: null,
         inheritEmailFromId: null,
+        // #2716: the cancelled member's own recorded CHOICE is cleared beside
+        // their pointer and their parent links. They are leaving the club, so
+        // there is no decision left to honour — and a choice left standing would
+        // list them forever on the "waiting on a parent's address" surface.
+        inheritEmailChoiceId: null,
       }),
     });
     expect(mocks.tx.familyGroupMember.deleteMany).toHaveBeenCalledWith({
@@ -410,9 +415,21 @@ describe("membership cancellation admin review", () => {
       dependants: Array<{ id: string; firstName: string; lastName: string; email: string }>,
       inheritors: Array<{ id: string; firstName: string; lastName: string; email: string }> = [],
     ) {
-      mocks.tx.member.findMany.mockImplementation(async ({ where }: any) =>
-        where?.inheritEmailFromId ? inheritors : dependants,
-      );
+      // #2716: BOTH reads are `OR` queries now — the parent read has always
+      // been one (`parentMemberId` / `secondaryParentId`), and the inheritor
+      // read became one when it started matching the CHOICE column as well as
+      // the pointer. A top-level `where.inheritEmailFromId` therefore no longer
+      // exists on either, and every read was being answered with the dependant
+      // fixture. Route on which COLUMNS the clauses name, which is the thing the
+      // two reads have always genuinely differed by.
+      mocks.tx.member.findMany.mockImplementation(async ({ where }: any) => {
+        const clauses: Array<Record<string, unknown>> = where?.OR ?? [where ?? {}];
+        const readsInheritance = clauses.some(
+          (clause) =>
+            "inheritEmailFromId" in clause || "inheritEmailChoiceId" in clause,
+        );
+        return readsInheritance ? inheritors : dependants;
+      });
     }
 
     it("names the dependants whose parent link was cleared", async () => {
@@ -450,6 +467,21 @@ describe("membership cancellation admin review", () => {
       expect(result.orphanedLinks.emailInheritors).toEqual([
         { id: "kid-1", name: "Cai Smith", email: "cai@example.org" },
       ]);
+      // #2716: and the read must ASK about the CHOICE as well as the pointer. A
+      // member whose chosen source is temporarily unreachable holds the choice
+      // beside a NULL pointer; they were already waiting on that mailbox, and
+      // cancelling the member is what makes the wait permanent — so a
+      // pointer-only read would leave exactly them out of the declaration.
+      expect(mocks.tx.member.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            OR: [
+              { inheritEmailFromId: "member-1" },
+              { inheritEmailChoiceId: "member-1" },
+            ],
+          },
+        }),
+      );
     });
 
     it("does NOT re-parent the detached dependants onto a grandparent", async () => {

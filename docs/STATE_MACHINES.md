@@ -2436,7 +2436,7 @@ create-group names an unregistered partner email -> single-use PartnerInviteToke
 create-group marks the named partner as a declared partner (#1742) -> registered partner gets a PENDING MemberPartnerLink request; unregistered partner's token carries createPartnerLink (see Partner Link Lifecycle)
 dependent inherits email or has explicit email inheritance source
 parent link requested -> parent is active + not archived + not an organisation account (ANY age tier) -> ancestors(parent) + 1 + descendants(child) <= 3 links -> linked | 422 (parent inactive/archived/organisation) | 422 (four-generation cap) | 422 (would close a family loop)
-dependent inherits email -> walk up from the chosen parent to the nearest adult, non-archived, real-address ancestor -> store that terminal source | 422 (nobody reachable)
+dependent inherits email -> the chosen parent themselves, if adult + not archived + not cancelled + real address + not themselves inheriting -> record that parent as the CHOICE and derive the effective pointer from it | 422 (that parent cannot receive club mail). One hop only since #2716: no walk, and no fallback to a grandparent.
 family removal/cancellation/delete -> relationship cleanup while preserving history
 cancellation approved for a middle generation -> its dependants' links cleared, NOT re-parented -> detached members named in the response and the audit log
 ```
@@ -2450,8 +2450,8 @@ can genuinely be a parent, so recording the relationship is age-blind while
 every responsibility function — the contact of record for a dependant's mail,
 details confirmation, booking delegation — stays gated on an active adult, none
 of which consults the parent link. A dependant of a non-adult parent therefore
-inherits email from the nearest adult ancestor, and the admin member page names
-that adult before the dependant is added. Organisation and school ACCOUNTS are
+inherits from **nobody** (#2716) — the address does not travel past them to a
+grandparent — and the admin member page says so before the dependant is added. Organisation and school ACCOUNTS are
 the one exclusion, and it is by role rather than by age tier: they are not
 people, and `NOT_APPLICABLE` is the age-exempt tier that age-exempt humans carry
 too.
@@ -2460,8 +2460,8 @@ Family links run to at most **four generations** (great-grandparent →
 grandparent → parent → child) and two parents per member, checked symmetrically
 at link time so the verdict does not depend on the order links were created in.
 See `docs/DOMAIN_INVARIANTS.md` → parent/dependant links for the rule, the
-writers that enforce it, and the transitive-but-flat email inheritance that goes
-with it.
+writers that enforce it, and the direct-parent-only email inheritance that goes
+with it (`INV-LIFE-047`).
 
 To verify: non-login adult confirmation, dependent age-up behavior, inherited
 email changes, the four-generation cap and its cycle guard at depth, and Xero

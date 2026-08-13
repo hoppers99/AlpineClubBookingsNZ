@@ -36,6 +36,7 @@ export function useMembersQueryState() {
     xeroLinked: searchParams.get("xeroLinked") || "",
     subscription: searchParams.get("subscription") || "",
     xeroContactGroup: searchParams.get("xeroContactGroup") || "",
+    contactability: searchParams.get("contactability") || "",
   })
 
   useEffect(() => {

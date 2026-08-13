@@ -29,8 +29,11 @@ import {
 } from "@/lib/prisma-errors";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
 import { copyStreetAddressToPostal } from "@/lib/member-address";
-import { PLACEHOLDER_CONTACT_EMAIL_DOMAINS } from "@/lib/placeholder-contact-email";
-import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
+import {
+  unreachableMemberWhere,
+  usableEmailSourceWhere,
+  validateInheritEmailSource,
+} from "@/lib/member-email-inheritance";
 import {
   isLoginEmailUniqueConflict,
   MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE,
@@ -228,6 +231,7 @@ export const adminMembersQuerySchema = z
     ageTierIn: optionalSearchParam,
     membershipType: optionalSearchParam,
     xeroLinked: optionalSearchParam,
+    contactability: optionalSearchParam,
     inviteStatus: optionalSearchParam,
     subscription: optionalSearchParam,
     familyGroup: optionalSearchParam,
@@ -296,6 +300,7 @@ export async function listAdminMembers(
     ageTierIn: ageTierInFilter,
     membershipType: membershipTypeFilter,
     xeroLinked: xeroLinkedFilter,
+    contactability: contactabilityFilter,
     inviteStatus: inviteStatusFilter,
     subscription: subscriptionFilter,
     familyGroup: familyGroupFilter,
@@ -446,18 +451,15 @@ export async function listAdminMembers(
     // the last clause the picker offers walk-in placeholder contacts that
     // `validateInheritEmailSource` now 422s on, which is the same
     // search-offers-what-the-write-refuses drift #2254 existed to close.
-    andConditions.push(
-      { ageTier: "ADULT" },
-      { inheritEmailFromId: null },
-      // Both club-internal `.invalid` domains, because both are what
-      // `isPlaceholderContactEmail` — and therefore the write route — rejects.
-      // Listing one would re-open the drift in the other direction.
-      ...PLACEHOLDER_CONTACT_EMAIL_DOMAINS.map(
-        (domain): Prisma.MemberWhereInput => ({
-          NOT: { email: { endsWith: `@${domain}`, mode: "insensitive" } },
-        }),
-      ),
-    );
+    //
+    // #2716: the clauses are no longer restated here at all. They come from
+    // `usableEmailSourceWhere`, the SQL half of the one predicate every
+    // resolution, validation and sweep applies, so the picker offers exactly the
+    // members the write route accepts and cannot drift from it again. Restating
+    // them had already gone wrong quietly: this list tested the age tier, the
+    // terminality and the placeholder domains but NOT `archivedAt`, so the
+    // picker offered archived members that `validateInheritEmailSource` refuses.
+    andConditions.push(...usableEmailSourceWhere());
   }
 
   if (excludeId) {
@@ -652,6 +654,24 @@ export async function listAdminMembers(
     andConditions.push({ xeroContactId: { not: null } });
   } else if (xeroLinkedFilter === "false") {
     andConditions.push({ xeroContactId: null });
+  }
+
+  // Filter: contactability (#2716) — the admin-visible half of the
+  // direct-parent inheritance rule.
+  //
+  // Narrowing inheritance to one hop has an accepted cost: where a middle
+  // generation has no address, the descendant now inherits nobody and the club
+  // has to ask for one. That is the right failure direction only if somebody can
+  // FIND those members, so this filter is part of the deliverable rather than a
+  // convenience. `unreachableMemberWhere` is the single definition of who
+  // qualifies, shared with the stuck-states dashboard so the count on one screen
+  // and the list on the other can never disagree.
+  if (contactabilityFilter === "unreachable") {
+    andConditions.push(unreachableMemberWhere());
+  } else if (contactabilityFilter === "inheritance-unresolved") {
+    andConditions.push(unreachableMemberWhere("inheritance-unresolved"));
+  } else if (contactabilityFilter === "placeholder-address") {
+    andConditions.push(unreachableMemberWhere("placeholder-address"));
   }
 
   // Filter: login access stage. This mirrors the single Access-column stage the
@@ -1370,12 +1390,13 @@ export async function createAdminMember(
     }
   }
 
-  // #2255: `parentMember.inheritEmailFromId || parentMember.id` was a ONE-HOP
-  // read, so creating a dependant under a parent whose only address is a
+  // #2255/#2716: `parentMember.inheritEmailFromId || parentMember.id` was a raw
+  // column read, so creating a dependant under a parent whose only address is a
   // placeholder resolved to that placeholder and 422'd — while the link route,
-  // given the same parent, walks up and succeeds. Two routes, same family, two
-  // answers. Both now use the transitive resolver, and a chain with no reachable
-  // mailbox is refused with the shared message rather than a misleading one.
+  // given the same parent, answered differently. Two routes, same family, two
+  // answers. Both now go through the shared resolver, which since #2716 answers
+  // "that parent or nobody", and a parent with no address is refused with the
+  // shared message rather than a misleading one.
   let resolvedInheritEmailFromId = requestedInheritEmailFromId;
   if (!resolvedInheritEmailFromId && data.inheritParentEmail && parentMember) {
     const resolution = await resolveInheritedEmailSourceId(
@@ -1552,6 +1573,11 @@ export async function createAdminMember(
           // same answer with the invariant kept.
           inheritParentEmail: Boolean(resolvedInheritEmailFromId),
           inheritEmailFromId: resolvedInheritEmailFromId,
+          // #2716: the CHOICE is written with the pointer on every create. The
+          // member has no dependants yet, so nothing needs reconciling here —
+          // but a create that recorded only the pointer would leave a member the
+          // first address change could never restore.
+          inheritEmailChoiceId: resolvedInheritEmailFromId,
           passwordHash: placeholderHash,
           emailVerified: !canLogin, // Non-login members don't need verification
           joinedDate,

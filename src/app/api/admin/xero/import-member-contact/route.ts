@@ -195,6 +195,12 @@ export async function POST(request: NextRequest) {
         canLogin,
         emailVerified: !canLogin,
         inheritEmailFromId: existingLoginForEmail?.id ?? null,
+        // #2716: pointer and CHOICE together. This is a HAND-PICKED shape, not a
+        // derived one — the source is whoever already holds this address as a
+        // login, and no parent link is involved — so one hop has nothing to
+        // constrain here; what the choice buys is that the pointer restores
+        // itself if that login holder's address is removed and put back.
+        inheritEmailChoiceId: existingLoginForEmail?.id ?? null,
       },
         select: {
           id: true,
