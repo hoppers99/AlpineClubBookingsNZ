@@ -58,6 +58,14 @@ type MemberRow = {
 
 const store = new Map<string, MemberRow>();
 let updateCount = 0;
+const auditRows: unknown[] = [];
+
+/**
+ * The provenance every reconciliation now threads through (#2822). These tests
+ * are about the CONVERGENCE mechanics, not the audit trail — audit content is
+ * proven in `member-email-inheritance-audit.test.ts` — so any real trigger does.
+ */
+const TEST_ORIGIN = { trigger: "source-member-change" } as const;
 
 function seed(rows: Array<Partial<MemberRow> & { id: string }>) {
   store.clear();
@@ -197,6 +205,12 @@ const fakePrisma = {
       return row;
     },
   },
+  auditLog: {
+    async create({ data }: { data: unknown }) {
+      auditRows.push(data);
+      return data;
+    },
+  },
 };
 
 // The factory is hoisted above every top-level binding, so it must reach
@@ -236,6 +250,7 @@ function threeGenerations(parentEmail: string) {
 beforeEach(() => {
   store.clear();
   updateCount = 0;
+  auditRows.length = 0;
 });
 
 describe("one hop", () => {
@@ -479,7 +494,7 @@ describe("re-resolution on add, change and remove", () => {
     ]);
 
     store.get("parent")!.email = "new-address@example.org";
-    await reconcileEmailInheritanceForMemberChange(db, ["parent"]);
+    await reconcileEmailInheritanceForMemberChange(db, ["parent"], TEST_ORIGIN);
 
     // The pointer names the parent either way; what the test pins is that the
     // resolution ran and agreed, which is what a later removal depends on.
@@ -500,7 +515,7 @@ describe("re-resolution on add, change and remove", () => {
     ]);
 
     store.get("parent")!.email = "deleted-abc@deleted.invalid";
-    await reconcileEmailInheritanceForMemberChange(db, ["parent"]);
+    await reconcileEmailInheritanceForMemberChange(db, ["parent"], TEST_ORIGIN);
 
     expect(store.get("child")!.inheritEmailFromId).toBeNull();
     // The decision survives the address. Without this the pointer could never
@@ -522,7 +537,7 @@ describe("re-resolution on add, change and remove", () => {
     ]);
 
     store.get("parent")!.email = "back@example.org";
-    await reconcileEmailInheritanceForMemberChange(db, ["parent"]);
+    await reconcileEmailInheritanceForMemberChange(db, ["parent"], TEST_ORIGIN);
 
     expect(store.get("child")!.inheritEmailFromId).toBe("parent");
   });
@@ -546,7 +561,7 @@ describe("re-resolution on add, change and remove", () => {
     ]);
 
     store.get("dad")!.email = "dad@example.org";
-    await reconcileEmailInheritanceForMemberChange(db, ["dad"]);
+    await reconcileEmailInheritanceForMemberChange(db, ["dad"], TEST_ORIGIN);
 
     expect(store.get("child")!.inheritEmailFromId).toBe("mum");
   });
@@ -566,7 +581,7 @@ describe("re-resolution on add, change and remove", () => {
       },
     ]);
 
-    await reconcileEmailInheritanceForMemberChange(db, ["mum"]);
+    await reconcileEmailInheritanceForMemberChange(db, ["mum"], TEST_ORIGIN);
 
     expect(store.get("child")!.inheritEmailFromId).toBe("dad");
     expect(updateCount).toBe(0);
@@ -625,7 +640,7 @@ describe("whole-tree convergence", () => {
     await reconcileAllEmailInheritance(db);
     expect(store.get("leaf")!.inheritEmailFromId).toBeNull();
 
-    await reconcileEmailInheritanceForMemberChange(db, ["leaf", "middle"]);
+    await reconcileEmailInheritanceForMemberChange(db, ["leaf", "middle"], TEST_ORIGIN);
     expect(store.get("leaf")!.inheritEmailFromId).toBeNull();
   });
 });
@@ -715,7 +730,7 @@ describe("the admin surface for members with no reachable address", () => {
     ]);
 
     store.get("parent")!.email = PLACEHOLDER;
-    await reconcileEmailInheritanceForMemberChange(db, ["parent"]);
+    await reconcileEmailInheritanceForMemberChange(db, ["parent"], TEST_ORIGIN);
 
     const summary = await getUnreachableMemberSummary(db);
     // Both of them: the parent has no address of their own, and the child is
