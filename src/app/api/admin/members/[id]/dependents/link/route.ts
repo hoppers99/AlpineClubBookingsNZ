@@ -20,7 +20,10 @@ import {
   dependentParentStateBlocker,
 } from "@/lib/dependent-link-eligibility";
 import { prisma } from "@/lib/prisma";
-import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
+import {
+  reconcileEmailInheritanceForMemberChange,
+  validateInheritEmailSource,
+} from "@/lib/member-email-inheritance";
 import {
   describeChildSideDepth,
   describeParentSideDepth,
@@ -356,6 +359,16 @@ export async function POST(
           canLogin: true,
         },
       });
+
+      // #2821: linking an EXISTING ADULT as somebody's dependant makes that
+      // adult stop being a usable email source at this moment — they now
+      // inherit, and `isUsableEmailSource` refuses a member who does. Their own
+      // dependants therefore hold pointers at somebody the rule no longer
+      // permits, and nothing re-resolved them. This is the ordering hazard
+      // `reconcileEmailInheritanceForMemberChange` documents: settle the
+      // member's own pointer first, then judge everyone who depends on them.
+      // One call does both.
+      await reconcileEmailInheritanceForMemberChange(tx, [target.id]);
 
       await Promise.all(
         addToFamilyGroupIds.map((familyGroupId) =>
