@@ -27,8 +27,18 @@ import {
  *
  * The tokenised attendee-confirmation flow — `confirm/[token]` — is a sibling
  * under this same directory; its URL is unchanged.
+ *
+ * Advertising this page is OPT-IN and works exactly as `/booking-requests` does:
+ * the seeded row carries an empty `menuTitle`, so the page stays out of the
+ * navigation and out of search until a club sets one under Site Appearance &
+ * Content → Page Content, and that single field drives both (#2818 decision 1).
  */
 export const dynamic = "force-dynamic";
+
+/** A non-empty `menuTitle` is the club's opt-in signal. See the docblock above. */
+function isAdvertised(menuTitle: string | undefined): boolean {
+  return (menuTitle ?? "").trim().length > 0;
+}
 
 export async function generateMetadata(): Promise<Metadata> {
   const holdingScreen = await setupInProgressMetadata();
@@ -47,6 +57,12 @@ export async function generateMetadata(): Promise<Metadata> {
     description:
       pageContentHtmlToPlainText(page?.headerText ?? "") ||
       `Request a school group stay with ${clubName}.`,
+    // Stated in both directions, for the reasons set out on the booking-request
+    // page: the sibling layout's noindex would otherwise supply the unlisted
+    // answer by inheritance rather than by decision.
+    robots: isAdvertised(page?.menuTitle)
+      ? { index: true, follow: true }
+      : { index: false, follow: false },
   };
 }
 
@@ -63,9 +79,11 @@ export default async function SchoolBookingsPage() {
 
   const caption = page?.caption ?? "For schools & groups";
   const title = page?.title ?? "School Bookings";
-  const headerText =
-    page?.headerText ||
-    `Request a school group stay at ${liveClubIdentity.lodgeName}. We'll email you to confirm your address, then send a quote for your school to review.`;
+  // Only genuine stored admin HTML reaches the HTML sink; the composed fallback,
+  // which interpolates an unsanitised club-set lodge name, renders as escaped
+  // text (#2818 decision 6).
+  const storedHeaderHtml = page?.headerText.trim() ? page.headerText : null;
+  const fallbackHeaderText = `Request a school group stay at ${liveClubIdentity.lodgeName}. We'll email you to confirm your address, then send a quote for your school to review.`;
 
   return (
     <>
@@ -78,11 +96,16 @@ export default async function SchoolBookingsPage() {
           <h1 className="font-heading text-4xl font-bold tracking-tight sm:text-5xl">
             {title}
           </h1>
-          {/* headerText is sanitised on read by the page-content helper. */}
-          <div
-            className="mt-4 max-w-2xl text-lg text-brand-snow/80"
-            dangerouslySetInnerHTML={{ __html: headerText }}
-          />
+          {storedHeaderHtml ? (
+            <div
+              className="mt-4 max-w-2xl text-lg text-brand-snow/80"
+              dangerouslySetInnerHTML={{ __html: storedHeaderHtml }}
+            />
+          ) : (
+            <p className="mt-4 max-w-2xl text-lg text-brand-snow/80">
+              {fallbackHeaderText}
+            </p>
+          )}
         </div>
       </section>
 

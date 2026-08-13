@@ -52,6 +52,18 @@ const SCHOOL_BOOKINGS_MIGRATION_PATH = join(
   "migration.sql",
 );
 
+// The built-in "/contact" row's menu title, backfilled when the public header
+// stopped appending a hard-coded Contact link (#2818 decision 5). An UPDATE, so
+// it belongs in `combinedSql` but must stay OUT of `allInsertSql` — that set is
+// asserted to contain no UPDATE or DELETE at all.
+const CONTACT_MENU_TITLE_MIGRATION_PATH = join(
+  process.cwd(),
+  "prisma",
+  "migrations",
+  "20260813010000_backfill_contact_menu_title",
+  "migration.sql",
+);
+
 const HOME_UPDATE_MIGRATION_PATH = join(
   process.cwd(),
   "prisma",
@@ -213,6 +225,44 @@ function sqlQuote(value: string) {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+/**
+ * The single-row `INSERT INTO "PageContent" (...) VALUES (...)` in a backfill
+ * migration, as a column -> raw SQL literal map.
+ *
+ * Needed because the value-lockstep test above filters EMPTY strings out before
+ * comparing, so a seed field of `""` is asserted by nothing at all. For most
+ * fields that is harmless; for `menuTitle` on the two form pages it is the whole
+ * opt-in decision (#2818 decision 1), and "the migration writes an empty menu
+ * title" has to be pinned positionally rather than by substring — `''` appears
+ * in almost any SQL file, so a `toContain("''")` would pass on anything.
+ */
+function insertedRow(sql: string): Record<string, string> {
+  const statements = statementsOnly(sql);
+  const columnBlock = statements.match(
+    /INSERT INTO "PageContent"\s*\(([^)]*)\)/,
+  )?.[1];
+  const valuesBlock = statements.match(
+    /VALUES\s*\(([\s\S]*?)\)\s*ON CONFLICT/,
+  )?.[1];
+
+  if (!columnBlock || !valuesBlock) {
+    throw new Error("single-row PageContent INSERT not found in migration SQL");
+  }
+
+  const columns = columnBlock
+    .split(",")
+    .map((column) => column.trim().replace(/"/g, ""));
+  const values = valuesBlock.split(/,\s*\n/).map((value) => value.trim());
+
+  if (columns.length !== values.length) {
+    throw new Error(
+      `column/value count mismatch: ${columns.length} columns, ${values.length} values`,
+    );
+  }
+
+  return Object.fromEntries(columns.map((column, index) => [column, values[index]]));
+}
+
 function expectSqlContainsValue(sql: string, value: string) {
   expect(
     sql.includes(sqlQuote(value)) || sql.includes(value),
@@ -242,8 +292,12 @@ describe("starter page content backfill migration", () => {
   const homeGuestCopySql = statementsOnly(
     readFileSync(HOME_GUEST_COPY_MIGRATION_PATH, "utf8"),
   );
+  const contactMenuTitleSql = readFileSync(
+    CONTACT_MENU_TITLE_MIGRATION_PATH,
+    "utf8",
+  );
   const allInsertSql = `${insertSql}\n${backfill404Sql}\n${policyPagesSql}\n${bookingRequestsSql}\n${schoolBookingsSql}`;
-  const combinedSql = `${allInsertSql}\n${updateSql}\n${faqUpdateSql}\n${privacyUpdateSql}\n${nonMemberHoldCopyUpdateSql}\n${genericiseLodgeCopySql}\n${homeGuestCopySql}`;
+  const combinedSql = `${allInsertSql}\n${updateSql}\n${faqUpdateSql}\n${privacyUpdateSql}\n${nonMemberHoldCopyUpdateSql}\n${genericiseLodgeCopySql}\n${homeGuestCopySql}\n${contactMenuTitleSql}`;
 
   it("inserts exactly the starter pages defined for the seed", () => {
     const insertedIds = [
@@ -279,6 +333,34 @@ describe("starter page content backfill migration", () => {
     expect(allInsertSql).not.toMatch(/\b(UPDATE|DELETE)\b/);
   });
 
+  it("seeds the two form pages UNLISTED, in both the seed and the backfill (#2818)", () => {
+    // Advertising `/booking-requests` and `/school-bookings` is opt-in per club:
+    // an empty menuTitle keeps each page out of the navigation AND out of search
+    // engines, because the page reads the same field for its robots tag. The
+    // value-lockstep test above skips empty strings, so without this the seed
+    // could gain a menu title — silently opting every deployment in — with
+    // nothing failing.
+    for (const [slug, sql] of [
+      ["booking-requests", bookingRequestsSql],
+      ["school-bookings", schoolBookingsSql],
+    ] as const) {
+      const page = starterPageContent.find((entry) => entry.slug === slug);
+      expect(page, `expected starter page ${slug}`).toBeDefined();
+      expect(page!.menuTitle, `${slug} must seed an empty menu title`).toBe("");
+
+      const row = insertedRow(sql);
+      expect(row.slug).toBe(sqlQuote(slug));
+      expect(row.menuTitle, `${slug} backfill must write an empty menu title`).toBe(
+        "''",
+      );
+      // The header copy is NOT empty, so the page never falls back to the
+      // composed string the render path deliberately escapes rather than
+      // renders as HTML (#2818 decision 6).
+      expect(page!.headerText.trim()).not.toBe("");
+      expect(row.headerText).toBe(sqlQuote(page!.headerText));
+    }
+  });
+
   it("covers the routes that hard-404 without a record", () => {
     // "/" renders the "/home" record and the footer/sitemap link to "/rules";
     // both must exist after migrations alone.
@@ -287,6 +369,57 @@ describe("starter page content backfill migration", () => {
     expect(policyPagesSql).toContain("'/privacy'");
     expect(policyPagesSql).toContain("'/terms'");
     expect(policyPagesSql).toContain("'/faq'");
+  });
+});
+
+describe("contact menu-title backfill migration (#2818)", () => {
+  const statements = statementsOnly(
+    readFileSync(CONTACT_MENU_TITLE_MIGRATION_PATH, "utf8"),
+  );
+  const contact = starterPageContent.find((page) => page.slug === "contact");
+
+  it("only updates, and only the PageContent table", () => {
+    expect(statements).toMatch(/UPDATE\s+"PageContent"/);
+    expect(statements).not.toMatch(/\bDELETE\b/i);
+    expect(statements).not.toMatch(/\bINSERT\b/i);
+    // Exactly one statement, and pure DML: no schema change for a draining old
+    // colour's compiled queries to miss.
+    expect(statements.match(/;/g) ?? []).toHaveLength(1);
+    expect(statements).not.toMatch(/\b(CREATE|ALTER|DROP|TRUNCATE)\b/i);
+  });
+
+  it("is value-scoped, so a club's own menu label is untouched", () => {
+    // The predicate that does the work. Without the menuTitle equality this
+    // would overwrite the label of every install that had typed one.
+    expect(statements).toMatch(/WHERE\s+"slug" = 'contact'/);
+    expect(statements).toContain(`AND "menuTitle" = ''`);
+  });
+
+  it("writes exactly the menu title the seed now carries", () => {
+    expect(contact).toBeDefined();
+    expect(contact!.menuTitle).toBe("Contact");
+    expect(statements).toContain(
+      `SET "menuTitle" = ${sqlQuote(contact!.menuTitle)}`,
+    );
+  });
+
+  it("is idempotent: the value it writes is not the value it matches", () => {
+    expect(contact!.menuTitle).not.toBe("");
+  });
+
+  it("writes no session clock into the payload (#1627/#1656)", () => {
+    expect(statements).not.toMatch(/CURRENT_TIMESTAMP/i);
+    expect(statements).not.toMatch(/\bnow\s*\(/i);
+    // "updatedAt" is deliberately left alone: a system repair of a seeded
+    // default, not an admin edit — matching 20260802110000 and 20260802140000.
+    expect(statements).not.toContain('"updatedAt"');
+  });
+
+  it("sorts after every migration already on main", () => {
+    expect(
+      "20260813010000_backfill_contact_menu_title" >
+        "20260812010000_backfill_school_bookings_page_content",
+    ).toBe(true);
   });
 });
 

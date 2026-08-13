@@ -40,8 +40,28 @@ import {
  *
  * The two tokenised confirmation flows — `respond/[token]` and `verify/[token]` —
  * are siblings under this same directory; their URLs are unchanged.
+ *
+ * ## Advertising this page is OPT-IN, and one field decides both halves
+ *
+ * The seeded row carries an EMPTY `menuTitle`, so out of the box the page keeps
+ * the unlisted behaviour #2421 established: reachable by its address and by the
+ * links the club already sends, absent from the navigation, and `noindex`. A club
+ * that wants the form advertised types a menu title under Site Appearance &
+ * Content → Page Content, and that one edit both adds the nav entry
+ * (`listWebsiteMenuPages`) and makes the page indexable ({@link generateMetadata}
+ * below). Reading the SAME field in both places is the point: a nav-listed page a
+ * search engine is told to ignore, or an indexable page the site itself will not
+ * link to, are both states nobody chose (#2818 decision 1).
  */
 export const dynamic = "force-dynamic";
+
+/**
+ * Is the club advertising this page? A non-empty `menuTitle` is the signal — see
+ * the docblock above.
+ */
+function isAdvertised(menuTitle: string | undefined): boolean {
+  return (menuTitle ?? "").trim().length > 0;
+}
 
 export async function generateMetadata(): Promise<Metadata> {
   // Pre-setup, before any lookup (#2420 F1). See setupInProgressMetadata().
@@ -61,6 +81,15 @@ export async function generateMetadata(): Promise<Metadata> {
     description:
       pageContentHtmlToPlainText(page?.headerText ?? "") ||
       `Request a stay with ${clubName} without creating an account.`,
+    // Stated in BOTH directions rather than only the opt-out one. The sibling
+    // layout already declares noindex for this whole directory, so omitting the
+    // key would inherit the right answer for the unlisted case by accident — and
+    // would silently stop working if that layout ever moved. An unpublished or
+    // missing row also lands here as "not advertised", which is correct: the page
+    // falls back to the bare form and nothing has asked for it to be indexed.
+    robots: isAdvertised(page?.menuTitle)
+      ? { index: true, follow: true }
+      : { index: false, follow: false },
   };
 }
 
@@ -77,9 +106,15 @@ export default async function BookingRequestsPage() {
 
   const caption = page?.caption ?? "Request a stay";
   const title = page?.title ?? "Booking Requests";
-  const headerText =
-    page?.headerText ||
-    `Request a stay at ${liveClubIdentity.lodgeName} without creating an account. We'll email you to confirm your address, then review and price your request.`;
+  // Only a GENUINE stored `headerText` may reach the HTML sink. It is admin HTML,
+  // sanitised on write and again on read by `getSanitizedPageContentByPath()`.
+  const storedHeaderHtml = page?.headerText.trim() ? page.headerText : null;
+  // The fallback is a string this code COMPOSES, and it interpolates a club-set
+  // value (`lodgeName`) that no sanitiser has ever seen. It renders as an escaped
+  // text child, never through `dangerouslySetInnerHTML` — the branch a deployment
+  // with no seeded row takes is exactly the branch that must not be an HTML sink
+  // (#2818 decision 6).
+  const fallbackHeaderText = `Request a stay at ${liveClubIdentity.lodgeName} without creating an account. We'll email you to confirm your address, then review and price your request.`;
 
   return (
     <>
@@ -92,11 +127,16 @@ export default async function BookingRequestsPage() {
           <h1 className="font-heading text-4xl font-bold tracking-tight sm:text-5xl">
             {title}
           </h1>
-          {/* headerText is sanitised on read by the page-content helper. */}
-          <div
-            className="mt-4 max-w-2xl text-lg text-brand-snow/80"
-            dangerouslySetInnerHTML={{ __html: headerText }}
-          />
+          {storedHeaderHtml ? (
+            <div
+              className="mt-4 max-w-2xl text-lg text-brand-snow/80"
+              dangerouslySetInnerHTML={{ __html: storedHeaderHtml }}
+            />
+          ) : (
+            <p className="mt-4 max-w-2xl text-lg text-brand-snow/80">
+              {fallbackHeaderText}
+            </p>
+          )}
         </div>
       </section>
 

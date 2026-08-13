@@ -1,5 +1,6 @@
 import backfillBedAllocationAuditCategory from "./20260810020000_backfill_bed_allocation_audit_category";
 import backfillBookingRequestGuestNights from "./20260810010000_backfill_booking_request_guest_nights";
+import backfillContactMenuTitle from "./20260813010000_backfill_contact_menu_title";
 import clearStarterFooterAffiliations from "./20260802140000_clear_starter_footer_affiliations";
 import clearWaldvogelLodgeAddress from "./20260802110000_clear_waldvogel_lodge_address";
 import contractSubscriptionLockoutDropEnabled from "./20260803010000_contract_subscription_lockout_drop_enabled";
@@ -30,4 +31,5 @@ export const DATA_MIGRATION_VERIFICATIONS: DataMigrationVerification[] = [
   contractSubscriptionLockoutDropEnabled,
   backfillBookingRequestGuestNights,
   backfillBedAllocationAuditCategory,
+  backfillContactMenuTitle,
 ];

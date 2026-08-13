@@ -1,10 +1,14 @@
 import type { Metadata } from "next";
 
-// The tokenised school-attendee confirmation flow — `confirm/[token]` — carries a
-// one-time secure link and must never be indexed (#2421). A layout keeps the
-// tokenised sub-tree noindex in one place. The bare `/school-bookings` page is
-// deliberately NOT covered here: it lives in the `(website)` group and is a
-// listed, indexable public page.
+// The DEFAULT for everything under `/school-bookings`, deliberately the closed
+// one — see `(website-dynamic)/booking-requests/layout.tsx`, which carries the
+// full reasoning.
+//
+// The tokenised attendee-confirmation flow — `confirm/[token]` — carries a
+// one-time secure link and must never be indexed (#2421). The bare
+// `/school-bookings` page inherits the noindex until a club opts in by setting a
+// menu title, at which point that page's own `generateMetadata()` overrides it
+// (#2818 decision 1).
 //
 // `public/robots.txt` must NOT disallow the prefix: a disallowed crawler never
 // fetches the page, so it never sees this noindex, and could still list a bare
@@ -13,7 +17,7 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-export default function SchoolBookingsTokenLayout({
+export default function SchoolBookingsLayout({
   children,
 }: {
   children: React.ReactNode;
