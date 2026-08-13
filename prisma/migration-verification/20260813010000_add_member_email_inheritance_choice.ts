@@ -61,7 +61,7 @@ const pointerQuery = (...ids: string[]) =>
   POINTER_QUERY.replace("%IDS%", ids.map((id) => `'${id}'`).join(", "));
 
 const verification: DataMigrationVerification = {
-  migration: "20260810000000_add_member_email_inheritance_choice",
+  migration: "20260813010000_add_member_email_inheritance_choice",
   intent:
     "Record the CHOICE behind every existing email-inheritance pointer, re-seating a transitive pointer (one naming an ancestor who is not a direct parent) onto a direct parent; then derive the effective pointer from that choice, keeping it only while the chosen member can receive mail. Hand-picked sources and one-hop pointers are left exactly as they are.",
   // The migration adds a column and an index, so re-running the whole file
