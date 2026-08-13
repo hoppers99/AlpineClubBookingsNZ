@@ -4,6 +4,7 @@ import type { AgeTier } from "@prisma/client";
 import { z } from "zod";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
+import { reconcileEmailInheritanceForMemberChange } from "@/lib/member-email-inheritance";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
@@ -487,6 +488,13 @@ export async function POST(req: NextRequest) {
               cause: "SYSTEM_CHANGE",
               actorMemberId: currentUserId,
             });
+            // #2821: an age tier decides whether this member may be anybody's
+            // contact of record (`isUsableEmailSource` requires ADULT), so an
+            // ORG grant that forces N/A — or a revoke that restores a person
+            // tier — has to re-resolve their dependants' pointers. In the same
+            // transaction, so a rolled-back grant rolls the re-resolution back
+            // with it.
+            await reconcileEmailInheritanceForMemberChange(tx, [member.id]);
           }
           // #1756: an ORG grant that moves the member off ADULT breaks the
           // double-bed sharing precondition, so sweep their future shared-double

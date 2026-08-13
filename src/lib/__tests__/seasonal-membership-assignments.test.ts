@@ -163,7 +163,7 @@ function makePreviewDb() {
         firstName: "Member",
         lastName: "One",
       }),
-      findMany: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
       update: vi.fn().mockResolvedValue({}),
     },
     membershipType: {
@@ -188,7 +188,7 @@ function makePreviewDb() {
     seasonalMembershipAssignment: {
       findUnique: vi.fn().mockResolvedValue(previousAssignment()),
       findUniqueOrThrow: vi.fn().mockResolvedValue(previousAssignment()),
-      findMany: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
       upsert: vi.fn().mockResolvedValue({
         ...previousAssignment(),
         id: "assignment-saved",
@@ -881,9 +881,14 @@ describe("seasonal membership assignment roll-forward", () => {
         createMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       member: {
-        findMany: vi
-          .fn()
-          .mockResolvedValue(candidates.map((candidate) => candidate.member)),
+        findMany: vi.fn().mockImplementation(async ({ select }: any) =>
+          // #2821: see above — the inheritance re-resolution reads through this
+          // same double and must not be served the candidate list.
+          select?.inheritEmailChoiceId
+            ? []
+            : candidates.map((candidate) => candidate.member),
+        ),
+        update: vi.fn().mockResolvedValue({}),
       },
       auditLog: {
         create: vi.fn().mockResolvedValue({}),
@@ -994,7 +999,13 @@ describe("seasonal membership assignment roll-forward", () => {
         createMany: vi.fn().mockResolvedValue({ count: 2 }),
       },
       member: {
-        findMany: vi.fn().mockImplementation(async ({ where }: any) => {
+        findMany: vi.fn().mockImplementation(async ({ where, select }: any) => {
+          // #2821: the age-tier write now re-resolves email inheritance in the
+          // same transaction, and that read uses the SAME `where.id.in` shape
+          // as this suite's own candidate read. The select is what tells them
+          // apart. `[]` is the honest answer here: these fixtures have no
+          // dependants, so nothing needs re-pointing.
+          if (select?.inheritEmailChoiceId) return [];
           if (where?.id?.in) {
             return where.id.in.map((id: string) => freshById[id]);
           }
@@ -1102,7 +1113,13 @@ describe("seasonal membership assignment roll-forward", () => {
         createMany: vi.fn().mockResolvedValue({ count: 30 }),
       },
       member: {
-        findMany: vi.fn().mockImplementation(async ({ where }: any) => {
+        findMany: vi.fn().mockImplementation(async ({ where, select }: any) => {
+          // #2821: the age-tier write now re-resolves email inheritance in the
+          // same transaction, and that read uses the SAME `where.id.in` shape
+          // as this suite's own candidate read. The select is what tells them
+          // apart. `[]` is the honest answer here: these fixtures have no
+          // dependants, so nothing needs re-pointing.
+          if (select?.inheritEmailChoiceId) return [];
           if (where?.id?.in) {
             return where.id.in.map((id: string) => freshById[id]);
           }

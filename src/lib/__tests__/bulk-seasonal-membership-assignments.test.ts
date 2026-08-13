@@ -153,7 +153,12 @@ function makeBulkDb(members: Record<string, MemberConfig>) {
           lastName: where.id,
         };
       }),
-      findMany: vi.fn(async ({ where }: any) => {
+      findMany: vi.fn(async ({ where, select }: any) => {
+        // #2821: the tier write now re-resolves email inheritance in the same
+        // transaction, and that read uses the same `where.id.in` shape as this
+        // suite's own. The select tells them apart; `[]` is honest here because
+        // these fixtures have no dependants to re-point.
+        if (select?.inheritEmailChoiceId) return [];
         const idList: string[] = where.id.in;
         return idList
           .filter((id) => members[id])

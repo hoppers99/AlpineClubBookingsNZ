@@ -499,18 +499,28 @@ export async function reconcileEmailInheritanceAfterSourceChange(
  * WHAT IS ACTUALLY WIRED, stated honestly because an earlier version of this
  * comment claimed the set was closed and it is not. Every address write, the
  * three departure sweeps, member merge, the dependant link and unlink routes,
- * the login-holder transfer and the admin member edit call it. Of the age-tier
- * writers only the admin member edit does; self-service profile, delegated
- * family details, both seasonal-assignment paths and the admin bulk update all
- * resolve an enforced tier without re-resolving, so a source who drops out of
- * ADULT there keeps live pointers until the daily sweep converges them (#2821).
+ * the login-holder transfer and — as of #2821 — every age-tier writer call it
+ * in the SAME transaction as the change. That last set is the admin member edit,
+ * self-service profile, delegated family details, both seasonal-assignment
+ * paths, the admin bulk update, the age-up cron and the nomination promotion:
+ * each re-resolves at the moment it moves a member across the usable-source
+ * line. Before #2821 only the admin member edit and the age-up cron did; the
+ * self-service profile, delegated family details, both seasonal paths, the admin
+ * bulk update and the nomination promotion set a tier WITHOUT re-resolving, so a
+ * source who dropped out of ADULT there kept live pointers until the daily sweep
+ * converged them. #2821 closed that gap, so the pointer is now re-pointed before
+ * the transaction commits rather than up to a day later.
  *
- * That residue is bounded rather than silent — `reconcileAllEmailInheritance`
- * runs at 06:45 and is a total function of the tree, so the worst case is a
- * pointer naming a no-longer-qualified adult for less than a day, and the
- * address it names is still that person's real mailbox rather than a stranger's.
- * It is written down here so the next reader does not infer a guarantee from a
- * list.
+ * That the set stays closed is no longer a claim in this comment: it is
+ * mechanically enforced by `age-tier-writers-reconcile-census.test.ts`, which
+ * discovers every member write that sets the age tier and fails if one does not
+ * call this function. The daily `reconcileAllEmailInheritance` at 06:45
+ * (INV-LIFE-054) is now a backstop for a write that failed partway, not the
+ * convergence path for a writer that never re-resolved — because there is no
+ * longer such a writer. It is a total function of the tree, so re-running it
+ * only ever moves the database towards the same fixed point. This is written
+ * down so the next reader does not infer a best-effort guarantee where a
+ * same-transaction one now holds.
  */
 export async function reconcileEmailInheritanceForMemberChange(
   db: EmailInheritanceClient,

@@ -34,6 +34,7 @@ import {
   loadMemberCurrentSeasonTypeExemption,
   resolveEnforcedAgeTier,
 } from "@/lib/age-tier-enforcement";
+import { reconcileEmailInheritanceForMemberChange } from "@/lib/member-email-inheritance";
 
 const maxStr = (len: number) => z.string().max(len).optional().nullable();
 
@@ -71,9 +72,27 @@ const profileSchema = z.object({
   postalSameAsPhysical: z.boolean().optional(),
 });
 
-const PHONE_FIELDS = ["phoneCountryCode", "phoneAreaCode", "phoneNumber"] as const;
-const STREET_FIELDS = ["streetAddressLine1", "streetAddressLine2", "streetCity", "streetRegion", "streetPostalCode", "streetCountry"] as const;
-const POSTAL_FIELDS = ["postalAddressLine1", "postalAddressLine2", "postalCity", "postalRegion", "postalPostalCode", "postalCountry"] as const;
+const PHONE_FIELDS = [
+  "phoneCountryCode",
+  "phoneAreaCode",
+  "phoneNumber",
+] as const;
+const STREET_FIELDS = [
+  "streetAddressLine1",
+  "streetAddressLine2",
+  "streetCity",
+  "streetRegion",
+  "streetPostalCode",
+  "streetCountry",
+] as const;
+const POSTAL_FIELDS = [
+  "postalAddressLine1",
+  "postalAddressLine2",
+  "postalCity",
+  "postalRegion",
+  "postalPostalCode",
+  "postalCountry",
+] as const;
 const PROFILE_AUDIT_FIELDS = [
   "firstName",
   "lastName",
@@ -130,19 +149,22 @@ function normalizeAuditValue(value: unknown): unknown {
 function getChangedFields(
   before: Record<string, unknown>,
   updateData: Record<string, unknown>,
-  fields: readonly string[]
+  fields: readonly string[],
 ): string[] {
   return fields.filter((field) => {
     if (!Object.prototype.hasOwnProperty.call(updateData, field)) {
       return false;
     }
-    return normalizeAuditValue(before[field]) !== normalizeAuditValue(updateData[field]);
+    return (
+      normalizeAuditValue(before[field]) !==
+      normalizeAuditValue(updateData[field])
+    );
   });
 }
 
 function hasAnyField(
   changedFields: readonly string[],
-  fields: readonly string[]
+  fields: readonly string[],
 ): boolean {
   return fields.some((field) => changedFields.includes(field));
 }
@@ -168,8 +190,11 @@ export async function PUT(req: NextRequest) {
   const parsed = profileSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Validation failed", details: parsed.error.flatten().fieldErrors },
-      { status: 422 }
+      {
+        error: "Validation failed",
+        details: parsed.error.flatten().fieldErrors,
+      },
+      { status: 422 },
     );
   }
 
@@ -217,7 +242,7 @@ export async function PUT(req: NextRequest) {
     if (isNaN(dob.getTime())) {
       return NextResponse.json(
         { error: "Invalid date of birth" },
-        { status: 422 }
+        { status: 422 },
       );
     }
     // "In the future" means a later NZ CALENDAR DAY, not a later instant
@@ -229,7 +254,7 @@ export async function PUT(req: NextRequest) {
     if (dob > getTodayDateOnly()) {
       return NextResponse.json(
         { error: "Date of birth cannot be in the future" },
-        { status: 422 }
+        { status: 422 },
       );
     }
     updateData.dateOfBirth = dob;
@@ -251,12 +276,12 @@ export async function PUT(req: NextRequest) {
   if (dobProvided) {
     const dobDerivedTier = await computeAgeTier(
       updateData.dateOfBirth as Date,
-      getSeasonStartDate(getSeasonYear())
+      getSeasonStartDate(getSeasonYear()),
     );
     const typeExemption = await loadMemberCurrentSeasonTypeExemption(
       prisma,
       session.user.id,
-      getSeasonYear()
+      getSeasonYear(),
     );
     const resolved = resolveEnforcedAgeTier({
       isOrganisation: isOrganisationMember({
@@ -296,21 +321,28 @@ export async function PUT(req: NextRequest) {
     const profileCompleteness = evaluateSelfServiceProfilePayload({
       firstName: updateData.firstName as string | null | undefined,
       lastName: updateData.lastName as string | null | undefined,
-      phoneCountryCode: updateData.phoneCountryCode as string | null | undefined,
+      phoneCountryCode: updateData.phoneCountryCode as
+        string | null | undefined,
       phoneAreaCode: updateData.phoneAreaCode as string | null | undefined,
       phoneNumber: updateData.phoneNumber as string | null | undefined,
       dateOfBirth: updateData.dateOfBirth as Date | null | undefined,
-      streetAddressLine1: updateData.streetAddressLine1 as string | null | undefined,
-      streetAddressLine2: updateData.streetAddressLine2 as string | null | undefined,
+      streetAddressLine1: updateData.streetAddressLine1 as
+        string | null | undefined,
+      streetAddressLine2: updateData.streetAddressLine2 as
+        string | null | undefined,
       streetCity: updateData.streetCity as string | null | undefined,
       streetRegion: updateData.streetRegion as string | null | undefined,
-      streetPostalCode: updateData.streetPostalCode as string | null | undefined,
+      streetPostalCode: updateData.streetPostalCode as
+        string | null | undefined,
       streetCountry: updateData.streetCountry as string | null | undefined,
-      postalAddressLine1: updateData.postalAddressLine1 as string | null | undefined,
-      postalAddressLine2: updateData.postalAddressLine2 as string | null | undefined,
+      postalAddressLine1: updateData.postalAddressLine1 as
+        string | null | undefined,
+      postalAddressLine2: updateData.postalAddressLine2 as
+        string | null | undefined,
       postalCity: updateData.postalCity as string | null | undefined,
       postalRegion: updateData.postalRegion as string | null | undefined,
-      postalPostalCode: updateData.postalPostalCode as string | null | undefined,
+      postalPostalCode: updateData.postalPostalCode as
+        string | null | undefined,
       postalCountry: updateData.postalCountry as string | null | undefined,
       postalSameAsPhysical: data.postalSameAsPhysical,
     });
@@ -321,7 +353,7 @@ export async function PUT(req: NextRequest) {
           error: "Profile is incomplete",
           missingFields: profileCompleteness.missingFields,
         },
-        { status: 422 }
+        { status: 422 },
       );
     }
 
@@ -334,14 +366,23 @@ export async function PUT(req: NextRequest) {
     const changedFields = getChangedFields(
       existing as unknown as Record<string, unknown>,
       updateData,
-      PROFILE_AUDIT_FIELDS
+      PROFILE_AUDIT_FIELDS,
     );
-    const [updated] = await prisma.$transaction([
-      prisma.member.update({
+    // #2821: an INTERACTIVE transaction rather than the batch array this used to
+    // be. An age tier decides whether this member may be anybody's contact of
+    // record (`isUsableEmailSource` requires ADULT), and a member correcting
+    // their own date of birth here can move themselves across that line — which
+    // has to re-resolve their dependants' pointers. A batch array cannot express
+    // that, because there is no client to hand the reconciler; running it
+    // afterwards would make the guarantee a best effort, which is what the
+    // reconciler's docblock warns against. The two writes below are unchanged
+    // and still commit atomically with each other.
+    const updated = await prisma.$transaction(async (tx) => {
+      const member = await tx.member.update({
         where: { id: session.user.id },
         data: updateData,
         select: PROFILE_XERO_SYNC_SELECT,
-      }),
+      });
       // `account`, and DELIBERATELY NOT joined to the `admin` unification that
       // #2755 applied to the three officer-driven member-record writers
       // (`INV-PRIV-012`). This route's actor IS its subject — `where: { id:
@@ -352,7 +393,7 @@ export async function PUT(req: NextRequest) {
       // Filing it `admin` would hide a member's own action from their own
       // timeline, which is a narrowing in the one direction nobody argued for.
       // #2755's issue body listed this site as part of the split; it is not.
-      prisma.auditLog.create(
+      await tx.auditLog.create(
         buildStructuredAuditLogCreateArgs({
           action: "member.profile.updated",
           actor: { memberId: session.user.id },
@@ -376,16 +417,18 @@ export async function PUT(req: NextRequest) {
               ageTier: changedFields.includes("ageTier"),
               occupation: changedFields.includes("occupation"),
               lodgeScreenPhoneOptIn: changedFields.includes(
-                "lodgeScreenPhoneOptIn"
+                "lodgeScreenPhoneOptIn",
               ),
               profileCompleted: changedFields.includes("profileCompletedAt"),
             },
             postalSameAsPhysical: data.postalSameAsPhysical === true,
           },
           request: getAuditRequestContext(req),
-        })
-      ),
-    ]);
+        }),
+      );
+      await reconcileEmailInheritanceForMemberChange(tx, [session.user.id]);
+      return member;
+    });
 
     const hasMappedContactUpdate = updated.xeroContactId
       ? hasMemberXeroContactChanges(existing, updated)
@@ -395,12 +438,15 @@ export async function PUT(req: NextRequest) {
       : false;
     const needsContactUpdate = Boolean(
       updated.xeroContactId &&
-        (hasMappedContactUpdate || shouldRepairContactNameOrder)
+      (hasMappedContactUpdate || shouldRepairContactNameOrder),
     );
     const needsContactGroupSync =
       updated.xeroContactId && existing.ageTier !== updated.ageTier;
 
-    if (updated.xeroContactId && (needsContactUpdate || needsContactGroupSync)) {
+    if (
+      updated.xeroContactId &&
+      (needsContactUpdate || needsContactGroupSync)
+    ) {
       try {
         if (await isXeroConnected()) {
           if (needsContactUpdate) {
@@ -412,7 +458,7 @@ export async function PUT(req: NextRequest) {
                 localId: session.user.id,
                 createdByMemberId: session.user.id,
                 preserveXeroName: !shouldRepairContactNameOrder,
-              }
+              },
             );
           }
 
@@ -423,7 +469,10 @@ export async function PUT(req: NextRequest) {
           }
         }
       } catch (xeroErr) {
-        logger.error({ err: xeroErr, memberId: session.user.id }, "Xero sync failed for profile update");
+        logger.error(
+          { err: xeroErr, memberId: session.user.id },
+          "Xero sync failed for profile update",
+        );
       }
     }
 
@@ -431,7 +480,7 @@ export async function PUT(req: NextRequest) {
   } catch {
     return NextResponse.json(
       { error: "Failed to update profile" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

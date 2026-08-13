@@ -32,6 +32,7 @@ import {
   loadMemberCurrentSeasonTypeExemption,
   resolveEnforcedAgeTier,
 } from "@/lib/age-tier-enforcement";
+import { reconcileEmailInheritanceForMemberChange } from "@/lib/member-email-inheritance";
 
 const delegatedDetailsSchema = z.object({
   firstName: nameField({ required: "First name required" }),
@@ -84,19 +85,25 @@ function trimOrNull(value: string | null | undefined) {
 
 function getSharedFamilyGroupIds(
   requesterGroups: Array<{ familyGroupId: string }>,
-  targetGroups: Array<{ familyGroupId: string }>
+  targetGroups: Array<{ familyGroupId: string }>,
 ) {
-  const targetGroupIds = new Set(targetGroups.map((group) => group.familyGroupId));
+  const targetGroupIds = new Set(
+    targetGroups.map((group) => group.familyGroupId),
+  );
   return requesterGroups
     .map((group) => group.familyGroupId)
     .filter((groupId) => targetGroupIds.has(groupId));
 }
 
-function serializeStatus(member: Parameters<typeof evaluateMemberProfileCompleteness>[0]) {
+function serializeStatus(
+  member: Parameters<typeof evaluateMemberProfileCompleteness>[0],
+) {
   const status = evaluateMemberProfileCompleteness(member);
   return {
     ...status,
-    missingFieldDetails: getMissingMemberProfileFieldDetails(status.missingFields),
+    missingFieldDetails: getMissingMemberProfileFieldDetails(
+      status.missingFields,
+    ),
   };
 }
 
@@ -116,7 +123,7 @@ function serializeStatus(member: Parameters<typeof evaluateMemberProfileComplete
  */
 export async function PUT(
   req: NextRequest,
-  { params }: { params: Promise<{ memberId: string }> }
+  { params }: { params: Promise<{ memberId: string }> },
 ) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -139,8 +146,11 @@ export async function PUT(
   const parsed = delegatedDetailsSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Validation failed", details: parsed.error.flatten().fieldErrors },
-      { status: 422 }
+      {
+        error: "Validation failed",
+        details: parsed.error.flatten().fieldErrors,
+      },
+      { status: 422 },
     );
   }
 
@@ -155,8 +165,11 @@ export async function PUT(
 
   if (!requester.canLogin || requester.ageTier !== "ADULT") {
     return NextResponse.json(
-      { error: "Only active adult members with login accounts can confirm family member details" },
-      { status: 403 }
+      {
+        error:
+          "Only active adult members with login accounts can confirm family member details",
+      },
+      { status: 403 },
     );
   }
 
@@ -164,10 +177,13 @@ export async function PUT(
   if (!requesterProfile.isProfileComplete) {
     return NextResponse.json(
       {
-        error: "Complete your own contact and address details before confirming another family member.",
-        missingFields: getMissingMemberProfileFieldDetails(requesterProfile.missingFields),
+        error:
+          "Complete your own contact and address details before confirming another family member.",
+        missingFields: getMissingMemberProfileFieldDetails(
+          requesterProfile.missingFields,
+        ),
       },
-      { status: 422 }
+      { status: 422 },
     );
   }
 
@@ -177,37 +193,48 @@ export async function PUT(
   });
 
   if (!target || !target.active) {
-    return NextResponse.json({ error: "Family member not found" }, { status: 404 });
+    return NextResponse.json(
+      { error: "Family member not found" },
+      { status: 404 },
+    );
   }
 
   if (target.canLogin) {
     return NextResponse.json(
-      { error: "Members with their own login must sign in and confirm their own details" },
-      { status: 403 }
+      {
+        error:
+          "Members with their own login must sign in and confirm their own details",
+      },
+      { status: 403 },
     );
   }
 
   const sharedFamilyGroupIds = getSharedFamilyGroupIds(
     requester.familyGroupMemberships,
-    target.familyGroupMemberships
+    target.familyGroupMemberships,
   );
   if (sharedFamilyGroupIds.length === 0) {
     return NextResponse.json(
-      { error: "You can only confirm details for members in your family group" },
-      { status: 403 }
+      {
+        error: "You can only confirm details for members in your family group",
+      },
+      { status: 403 },
     );
   }
 
   const dob = parseDateOnly(parsed.data.dateOfBirth);
   if (Number.isNaN(dob.getTime())) {
-    return NextResponse.json({ error: "Invalid date of birth" }, { status: 422 });
+    return NextResponse.json(
+      { error: "Invalid date of birth" },
+      { status: 422 },
+    );
   }
   // A later NZ calendar day, not a later instant (#2682) — the same comparison
   // `request-child/route.ts` already makes.
   if (dob > getTodayDateOnly()) {
     return NextResponse.json(
       { error: "Date of birth cannot be in the future" },
-      { status: 422 }
+      { status: 422 },
     );
   }
 
@@ -217,12 +244,12 @@ export async function PUT(
   // is preserved. The delegate never submits a tier directly.
   const dobDerivedTier = await computeAgeTier(
     dob,
-    getSeasonStartDate(getSeasonYear())
+    getSeasonStartDate(getSeasonYear()),
   );
   const typeExemption = await loadMemberCurrentSeasonTypeExemption(
     prisma,
     target.id,
-    getSeasonYear()
+    getSeasonYear(),
   );
   const enforced = resolveEnforcedAgeTier({
     isOrganisation: isOrganisationMember({
@@ -236,33 +263,45 @@ export async function PUT(
   // Only an explicit manual N/A request can fail; delegates never send one.
   const ageTier = enforced.ok ? enforced.ageTier : dobDerivedTier;
 
-  const updated = await prisma.member.update({
-    where: { id: target.id },
-    data: {
-      firstName: parsed.data.firstName.trim(),
-      lastName: parsed.data.lastName.trim(),
-      dateOfBirth: dob,
-      ageTier,
-      phoneCountryCode: trimOrNull(requester.phoneCountryCode),
-      phoneAreaCode: trimOrNull(requester.phoneAreaCode),
-      phoneNumber: trimOrNull(requester.phoneNumber),
-      streetAddressLine1: trimOrNull(requester.streetAddressLine1),
-      streetAddressLine2: trimOrNull(requester.streetAddressLine2),
-      streetCity: trimOrNull(requester.streetCity),
-      streetRegion: trimOrNull(requester.streetRegion),
-      streetPostalCode: trimOrNull(requester.streetPostalCode),
-      streetCountry: trimOrNull(requester.streetCountry),
-      postalAddressLine1: trimOrNull(requester.postalAddressLine1),
-      postalAddressLine2: trimOrNull(requester.postalAddressLine2),
-      postalCity: trimOrNull(requester.postalCity),
-      postalRegion: trimOrNull(requester.postalRegion),
-      postalPostalCode: trimOrNull(requester.postalPostalCode),
-      postalCountry: trimOrNull(requester.postalCountry),
-      profileCompletedAt: now,
-      detailsConfirmedAt: now,
-      detailsConfirmedByMemberId: requester.id,
-    },
-    select: DELEGATED_MEMBER_SELECT,
+  // #2821: wrapped in an interactive transaction so the age-tier write and the
+  // email-inheritance re-resolution commit together or not at all. An age tier
+  // decides whether this member may be anybody's contact of record
+  // (`isUsableEmailSource` requires ADULT), and a delegate correcting a date of
+  // birth can move them across that line — leaving a dependant pointing at
+  // somebody the rule no longer permits. Doing it after the write would make
+  // the guarantee a best effort, which is exactly what the reconciler's own
+  // docblock warns against.
+  const updated = await prisma.$transaction(async (tx) => {
+    const member = await tx.member.update({
+      where: { id: target.id },
+      data: {
+        firstName: parsed.data.firstName.trim(),
+        lastName: parsed.data.lastName.trim(),
+        dateOfBirth: dob,
+        ageTier,
+        phoneCountryCode: trimOrNull(requester.phoneCountryCode),
+        phoneAreaCode: trimOrNull(requester.phoneAreaCode),
+        phoneNumber: trimOrNull(requester.phoneNumber),
+        streetAddressLine1: trimOrNull(requester.streetAddressLine1),
+        streetAddressLine2: trimOrNull(requester.streetAddressLine2),
+        streetCity: trimOrNull(requester.streetCity),
+        streetRegion: trimOrNull(requester.streetRegion),
+        streetPostalCode: trimOrNull(requester.streetPostalCode),
+        streetCountry: trimOrNull(requester.streetCountry),
+        postalAddressLine1: trimOrNull(requester.postalAddressLine1),
+        postalAddressLine2: trimOrNull(requester.postalAddressLine2),
+        postalCity: trimOrNull(requester.postalCity),
+        postalRegion: trimOrNull(requester.postalRegion),
+        postalPostalCode: trimOrNull(requester.postalPostalCode),
+        postalCountry: trimOrNull(requester.postalCountry),
+        profileCompletedAt: now,
+        detailsConfirmedAt: now,
+        detailsConfirmedByMemberId: requester.id,
+      },
+      select: DELEGATED_MEMBER_SELECT,
+    });
+    await reconcileEmailInheritanceForMemberChange(tx, [target.id]);
+    return member;
   });
 
   logAudit({
@@ -291,7 +330,7 @@ export async function PUT(
       targetMemberId: updated.id,
       familyGroupIds: sharedFamilyGroupIds,
     },
-    "Family member details confirmed by delegate"
+    "Family member details confirmed by delegate",
   );
 
   const hasMappedContactUpdate = updated.xeroContactId
@@ -302,7 +341,7 @@ export async function PUT(
     : false;
   const needsContactUpdate = Boolean(
     updated.xeroContactId &&
-      (hasMappedContactUpdate || shouldRepairContactNameOrder)
+    (hasMappedContactUpdate || shouldRepairContactNameOrder),
   );
   const needsContactGroupSync =
     updated.xeroContactId && target.ageTier !== updated.ageTier;
@@ -319,7 +358,7 @@ export async function PUT(
               localId: updated.id,
               createdByMemberId: requester.id,
               preserveXeroName: !shouldRepairContactNameOrder,
-            }
+            },
           );
         }
 
@@ -332,7 +371,7 @@ export async function PUT(
     } catch (xeroErr) {
       logger.error(
         { err: xeroErr, requesterId: requester.id, targetMemberId: updated.id },
-        "Xero sync failed for delegated family member details update"
+        "Xero sync failed for delegated family member details update",
       );
     }
   }

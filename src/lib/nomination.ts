@@ -30,7 +30,10 @@ import {
   exceedsFamilyLinkGenerationLimit,
   FAMILY_LINK_GENERATION_LIMIT_ERROR,
 } from "@/lib/member-family-link-depth";
-import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
+import {
+  reconcileEmailInheritanceForMemberChange,
+  validateInheritEmailSource,
+} from "@/lib/member-email-inheritance";
 import {
   NO_INHERITABLE_EMAIL_SOURCE_MESSAGE,
   resolveInheritedEmailSourceId,
@@ -1634,6 +1637,12 @@ export async function approveMemberApplication(
         select: { id: true, email: true, firstName: true, lastName: true },
       });
       applicantMember = updated;
+      // #2821: promotion turns the applicant INTO a usable email source — they
+      // gain a login and their own verified address, and their own inheritance
+      // is cleared just above. Anyone who already holds a choice naming them was
+      // resolving to nobody while they were inheriting, and should now resolve
+      // to them. Nothing re-pointed those dependants until the daily sweep.
+      await reconcileEmailInheritanceForMemberChange(tx, [target.id]);
       mappedMemberIds.push(target.id);
       if (outcome.skipSeasonalAssignment) {
         skipBillingIds.add(target.id);
