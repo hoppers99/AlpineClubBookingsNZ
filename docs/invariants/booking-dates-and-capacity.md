@@ -378,7 +378,7 @@ derivation).
   `src/lib/__tests__/nz-today-date-only.test.tsx` freezes the clock inside the
   divergence window and fails the build if the pattern comes back.
 
-  Two exact boundaries on that rule, because both are easy to get wrong:
+  Three exact boundaries on that rule, because each is easy to get wrong:
 
   - *Truncating an existing `@db.Date` value the same way is fine* — those are
     already pinned to UTC midnight and encode a calendar day, not an instant.
@@ -386,11 +386,45 @@ derivation).
     friends are real instants, so `booking.createdAt.toISOString().slice(0, 10)`
     is the clock one hop removed and lands on the previous NZ day all morning.
     #2697 closed the two `Booking.createdAt` sites (the Xero booking-invoice due
-    date and the legacy finance export's `created_date`); #2834 closes the
-    remaining Xero document dates, several of which reach this pattern through a
-    local `formatDate` wrapper rather than a literal `.slice(0, 10)`. #2684's
-    lint rule is where the whole class gets caught; until then it is a known
-    trap, not a permitted pattern.
+    date and the legacy finance export's `created_date`), and #2834 closed the
+    twenty Xero document dates that remained: every invoice, credit note,
+    payment and allocation date derived from the clock or from a stored
+    `DateTime`, across ten modules. Every one of them is now
+    `formatDateOnlyForTimeZone`. **Most of them were invisible to a grep**,
+    because they reached the pattern through the `formatDate` wrapper in
+    `src/lib/xero-invoice-helpers.ts` (which is `toISOString().split("T")[0]`)
+    or through a private clone of it in `membership-cancellation-xero.ts` — so
+    census that call graph, not the spelling. `formatDate` is still correct and
+    still used, but only for `@db.Date` receivers, and its docblock says so.
+    #2684's lint rule is where the whole class gets caught; until then it is a
+    known trap, not a permitted pattern.
+  - *A number of days added to a document date is added in CALENDAR days*, with
+    `addDaysDateOnly` over the date-only value — never by adding `days x 24h` to
+    an instant and then reading the result on the club's calendar. The Xero
+    entrance-fee invoice's 30-day due date and the subscription invoice's
+    `dueDays` both step date-only values since #2834.
+
+    Be exact about where that hazard lives, because the pre-#2834 code did not
+    have it and a reader should not go hunting a bug that was never there. Both
+    due dates were previously derived in **UTC** from a UTC-truncated issue date
+    — the entrance fee by adding `30 x 24h` to the instant, the subscription by
+    `setUTCDate` — so both ends moved together and the interval came out exactly
+    the intended number of days, daylight saving included. Their only defect was
+    the UTC-day one above.
+
+    The hazard belongs to the FIX. Once the issue date is the club's calendar
+    day, deriving the due date as
+    `formatDateOnlyForTimeZone(instant + days x 24h)` reads a shifted instant in
+    a zone whose offset may have changed in between. New Zealand leaves daylight
+    saving at 03:00 on 5 April 2026, making that local day 25 hours long, so
+    `30 x 24h` from 00:30 on 15 March lands at 23:30 on 13 April and yields the
+    13th where thirty calendar days is the 14th. On the subscription invoice that
+    is worse than a wrong date: `subscriptionInvoiceMatchesSnapshot` adopts a
+    pre-existing Xero invoice only when `invoiceDueIntervalDays` equals the
+    charge's frozen `dueDays`, so a 29-day interval would stop an immutable
+    charge adopting its own invoice.
+    `src/lib/__tests__/xero-document-dates-club-calendar.test.ts` pins both ends
+    of that at the 5 April boundary.
   - *The member booking calendar and the admin kiosk deliberately derive today
     from the BROWSER's calendar day* (`src/components/booking-calendar.tsx`,
     `src/app/(admin)/admin/book/page.tsx`, #2474 — see the next invariant), so

@@ -69,9 +69,11 @@ vi.mock("@/lib/xero-contacts", () => ({
   retryXeroWriteWithContactRepair: mocks.retryXeroWriteWithContactRepair,
 }));
 
-vi.mock("@/lib/xero-invoice-helpers", () => ({
-  formatDate: () => "2026-01-01",
-}));
+// This module no longer imports `xero-invoice-helpers` at all: #2834 moved both
+// of its dates onto the club calendar via `formatDateOnlyForTimeZone`, so the
+// stub that used to pin `formatDate` here would mock a module nothing loads. The
+// dates themselves are pinned at the NZ-morning boundary in
+// `xero-document-dates-club-calendar.test.ts`.
 
 import { createXeroSupplementaryInvoice } from "@/lib/xero-supplementary-invoices";
 import { lineTotalCents } from "@/lib/__tests__/helpers";

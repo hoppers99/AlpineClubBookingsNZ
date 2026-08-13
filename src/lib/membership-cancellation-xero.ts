@@ -10,6 +10,7 @@ import {
   loadMembershipCancellationSettings,
   type MembershipCancellationXeroContactGroupSetting,
 } from "@/lib/membership-cancellation-settings";
+import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 import {
   buildXeroIdempotencyKey,
@@ -57,10 +58,6 @@ type XeroGroupReference = {
   id: string;
   name: string | null;
 };
-
-function formatDate(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
 
 function seasonLabel(seasonYear: number): string {
   return `${seasonYear}/${seasonYear + 1}`;
@@ -714,10 +711,16 @@ export async function createXeroMembershipCancellationCreditNote(
     creditLineItem.itemCode = mapping.itemCode;
   }
 
+  // The credit note's date decides its GST period and financial year, so it is
+  // the club's calendar day. This file used to truncate the clock to its UTC day
+  // through a private `formatDate` helper of its own, which is still yesterday
+  // for roughly the first half of every New Zealand day (INV-DATE-019, #2834).
+  const cancellationCreditNoteDate = formatDateOnlyForTimeZone(new Date());
+
   const buildCreditNote = (): CreditNote => ({
     type: CreditNote.TypeEnum.ACCRECCREDIT,
     contact: { contactID: contactId },
-    date: formatDate(new Date()),
+    date: cancellationCreditNoteDate,
     lineAmountTypes: LineAmountTypes.Inclusive,
     lineItems: [creditLineItem],
     reference: `Membership Cancellation ${params.participantId.slice(0, 8)}`,
@@ -932,6 +935,12 @@ async function allocateMembershipCancellationCreditNote(params: {
     createdByMemberId: params.createdByMemberId ?? null,
   });
 
+  // Club calendar day, as for the credit note it settles (INV-DATE-019, #2834),
+  // read ONCE outside the closure: `callXeroApi` re-invokes its callback on
+  // every retry attempt, so a read inside it would send a different date on a
+  // retry that crossed club midnight, under the same idempotency key.
+  const allocationDate = formatDateOnlyForTimeZone(new Date());
+
   try {
     const response = await callXeroApi(
       () =>
@@ -943,7 +952,7 @@ async function allocateMembershipCancellationCreditNote(params: {
               {
                 invoice: { invoiceID: params.invoiceId },
                 amount: params.amountCents / 100,
-                date: formatDate(new Date()),
+                date: allocationDate,
               },
             ],
           },

@@ -544,6 +544,33 @@ async function persistMeteredXeroApiUsage(
  * Wrap a Xero API call so each attempt is observed (usage row, rate-limit
  * category) and retries are governed by withXeroRetry. Use for any
  * outbound Xero call we want metered.
+ *
+ * ## Every attempt re-invokes `fn`, so build the request OUTSIDE it
+ *
+ * `withXeroRetry` calls `fn` again per attempt. Anything the callback computes
+ * from ambient state — above all a date read off the clock — is therefore
+ * recomputed per attempt, and a retry that crosses club midnight would send a
+ * different document date than the first attempt did under the SAME
+ * `Idempotency-Key`. Compose the request body before the `callXeroApi` call and
+ * close over it (#2834; `xero-supplementary-invoices.ts` is the worked example).
+ *
+ * ## The one assumption this leaves standing
+ *
+ * Idempotency keys in this codebase carry no date (censused on #2834), so
+ * changing how a date is derived never changes a key. That is what makes an
+ * operation queued before a deploy still dedupe after it — but it also means the
+ * retry can arrive with the SAME key and a DIFFERENT `date` in the body, which
+ * is exactly what happens to an operation that sent its first request under the
+ * pre-#2834 UTC-day derivation and is re-driven afterwards.
+ *
+ * This ships on the assumption that a repeated `Idempotency-Key` never re-dates
+ * a document Xero has already created: Xero either replays the original
+ * response (the original date stands — the outcome we want) or rejects the
+ * mismatch (the operation fails loudly and is re-driven, which is also safe).
+ * That assumption is recorded rather than verified against the live API — no
+ * exploratory work runs against a live provider — so treat it as a known
+ * assumption, not a proven property, if a same-key/changed-body case ever turns
+ * up in the outbox.
  */
 export async function callXeroApi<T>(
   fn: () => Promise<T>,

@@ -35,7 +35,7 @@ import {
   findOrCreateXeroContact,
   retryXeroWriteWithContactRepair,
 } from "./xero-contacts";
-import { formatDate } from "./xero-invoice-helpers";
+import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 
 export async function createXeroSupplementaryInvoice(params: {
   bookingId: string;
@@ -159,15 +159,23 @@ export async function createXeroSupplementaryInvoice(params: {
     where: { id: bookingModificationId },
     select: { createdAt: true },
   });
-  const supplementaryInvoiceDueDate = formatDate(
+  // Both halves of this are real instants — `BookingModification.createdAt` is a
+  // `DateTime @default(now())`, and the fallback is the clock itself — so both
+  // land on the previous UTC day for roughly the first half of every New Zealand
+  // day. The club's calendar is the only correct one here (INV-DATE-019, #2834).
+  const supplementaryInvoiceDueDate = formatDateOnlyForTimeZone(
     bookingModification?.createdAt ?? new Date()
   );
+  // Read the club day ONCE. `buildInvoice` is called for the recorded
+  // `requestPayload` and again for each contact-repair attempt, so a per-call
+  // clock read could record one date and send another across midnight.
+  const supplementaryInvoiceIssueDate = formatDateOnlyForTimeZone(new Date());
 
   const buildInvoice = (resolvedContactId: string): Invoice => ({
     type: Invoice.TypeEnum.ACCREC,
     contact: { contactID: resolvedContactId },
     lineItems,
-    date: formatDate(new Date()),
+    date: supplementaryInvoiceIssueDate,
     dueDate: supplementaryInvoiceDueDate,
     reference: `Supplementary for booking ${bookingId.slice(0, 8)}${booking.payment?.xeroInvoiceId ? ` (original: ${booking.payment.xeroInvoiceId})` : ""}`,
     status: Invoice.StatusEnum.AUTHORISED,
@@ -264,6 +272,12 @@ export async function createXeroSupplementaryInvoice(params: {
           netAmountCents,
           "v1"
         );
+        // Bank-reconciliation input: the club's calendar day, not the UTC one
+        // (INV-DATE-019, #2834). Read ONCE, outside the closure, for the same
+        // reason as the issue date above — `callXeroApi` re-invokes this
+        // callback on every retry attempt, so a read inside it could send a
+        // different date on a retry that crossed club midnight.
+        const supplementaryPaymentDate = formatDateOnlyForTimeZone(new Date());
         const paymentResponse = await callXeroApi(
           () =>
             xero.accountingApi.createPayments(
@@ -273,7 +287,7 @@ export async function createXeroSupplementaryInvoice(params: {
                   invoice: { invoiceID: created.invoiceID },
                   account: { code: stripeBankCode },
                   amount: netAmountCents / 100,
-                  date: formatDate(new Date()),
+                  date: supplementaryPaymentDate,
                   reference: `Stripe payment for booking modification ${bookingId.slice(0, 8)}`,
                 }],
               },

@@ -40,7 +40,12 @@ import {
   retryXeroWriteWithContactRepair,
   type FindOrCreateXeroContactOptions,
 } from "./xero-contacts";
-import { formatDate } from "./xero-invoice-helpers";
+import {
+  addDaysDateOnly,
+  formatDateOnly,
+  formatDateOnlyForTimeZone,
+  parseDateOnly,
+} from "@/lib/date-only";
 import { buildJoiningFeeNarration } from "./joining-fee-narration";
 
 export interface CreateXeroEntranceFeeInvoiceOptions
@@ -341,12 +346,25 @@ export async function createXeroEntranceFeeInvoice(
       entranceFee.description,
     );
 
+    // The invoice's issue date decides its GST period and financial year, so it
+    // is the CLUB's calendar day, never the UTC one — which is still yesterday
+    // for roughly the first half of every New Zealand day (INV-DATE-019, #2834).
+    //
+    // The due date is then thirty CALENDAR days after that, stepped with
+    // date-only arithmetic. Adding 30 x 24h to the instant instead would slip an
+    // hour across a daylight-saving transition, which moves the day whenever the
+    // instant sits within an hour of club midnight. Read once, outside the
+    // closure: `buildInvoice` runs for the recorded `requestPayload` and again
+    // per contact-repair attempt, and both must carry the same date.
+    const issueDate = formatDateOnlyForTimeZone(new Date());
+    const dueDate = formatDateOnly(addDaysDateOnly(parseDateOnly(issueDate), 30));
+
     const buildInvoice = (resolvedContactId: string): Invoice => ({
       type: Invoice.TypeEnum.ACCREC,
       contact: { contactID: resolvedContactId },
       lineItems: [lineItem],
-      date: formatDate(new Date()),
-      dueDate: formatDate(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)), // Due in 30 days
+      date: issueDate,
+      dueDate,
       reference,
       status: Invoice.StatusEnum.AUTHORISED,
       lineAmountTypes: LineAmountTypes.Inclusive,
