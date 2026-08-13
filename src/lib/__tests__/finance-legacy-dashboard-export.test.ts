@@ -100,6 +100,36 @@ describe("finance legacy dashboard export", () => {
     ]);
   });
 
+  it("reports created_date on the club calendar, not the UTC day (#2697)", async () => {
+    // 2026-04-08 09:30 in Pacific/Auckland: a booking made in the NZ morning
+    // still falls on the previous UTC day. `createdAt` is a `DateTime` instant,
+    // unlike start_date/end_date, which are `@db.Date` lodge nights.
+    const createdAt = new Date("2026-04-07T21:30:00.000Z");
+    expect(createdAt.toISOString().slice(0, 10)).toBe("2026-04-07");
+
+    mockFindMany.mockResolvedValue([
+      {
+        id: "booking-nz-morning",
+        checkIn: new Date("2026-04-08T00:00:00.000Z"),
+        checkOut: new Date("2026-04-10T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 20000,
+        createdAt,
+        guests: [{ id: "guest-1" }],
+      },
+    ]);
+
+    const result = await getLegacyDashboardBookingExport({
+      historyStartDate: "2026-04-01",
+      asOfDate: "2026-04-10",
+    });
+
+    expect(result.bookings[0].created_date).toBe("2026-04-08");
+    // The lodge nights are date-only and must be untouched by the fix.
+    expect(result.bookings[0].start_date).toBe("2026-04-08");
+    expect(result.bookings[0].end_date).toBe("2026-04-10");
+  });
+
   it("rejects malformed export dates before querying", async () => {
     await expect(
       getLegacyDashboardBookingExport({

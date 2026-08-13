@@ -4,6 +4,7 @@ import {
   FINANCE_FORWARD_COMMITTED_BOOKING_STATUSES,
   FINANCE_REALIZED_BOOKING_STATUSES,
 } from "@/lib/finance-booking-metrics";
+import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -184,7 +185,12 @@ function toLegacyDashboardBookingRow(input: {
     booking_id: input.booking.id,
     start_date: toIsoDate(input.overlapStart),
     end_date: toIsoDate(input.overlapEndExclusive),
-    created_date: input.booking.createdAt.toISOString().slice(0, 10),
+    // `createdAt` is a `DateTime` instant, unlike every other date in this row.
+    // Truncating it to its UTC day reported the booking as created a day early
+    // for every booking made before ~midday NZ, and mixed two definitions of
+    // "day" inside one payload (#2697). The club calendar is the one this export
+    // means everywhere else (INV-DATE-010).
+    created_date: formatDateOnlyForTimeZone(input.booking.createdAt),
     status: input.booking.status,
     guests: guestCount,
     nights: input.overlapNights,
