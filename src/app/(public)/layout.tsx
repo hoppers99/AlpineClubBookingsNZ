@@ -106,11 +106,13 @@ export default async function PublicLayout({
           authentication screens; `/forgot-password`, `/reset-password`,
           `/change-password`, `/verify-email` and `/confirm-email-change` are
           recovery flows; and `/pay/[token]`, `/chores/[token]`,
-          `/family-invite/[token]`, `/membership-cancellation/[token]`,
-          `/booking-requests/respond/[token]`, `/booking-requests/verify/[token]`
-          and `/school-bookings/confirm/[token]` all carry a one-time credential in
-          the URL. Analytics must not load on any of them, and a URL from any of
-          them must never reach Google.
+          `/family-invite/[token]` and `/membership-cancellation/[token]` all carry
+          a one-time credential in the URL. Analytics must not load on any of them,
+          and a URL from any of them must never reach Google. (The booking-request
+          and school-booking token flows are the same shape, but now live in
+          `(website-dynamic)`, whose chrome DOES mount analytics — there
+          `isAnalyticsEligiblePath()` is the sole guard, and it refuses those
+          tokenised paths.)
 
           Mounting the component and letting its route policy refuse would work, and
           `isAnalyticsEligiblePath()` does refuse every address above — but not

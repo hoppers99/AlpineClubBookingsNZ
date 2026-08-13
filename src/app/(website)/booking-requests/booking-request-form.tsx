@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { useClubIdentity } from "@/components/club-identity-provider";
+import type { ClubIdentity } from "@/config/club-identity-types";
 import { useAgeTierOptions } from "@/lib/use-age-tier-options";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 import { formatCents } from "@/lib/utils";
@@ -23,8 +23,20 @@ function emptyGuest(): RequestGuest {
   return { firstName: "", lastName: "", ageTier: "ADULT" };
 }
 
-export default function BookingRequestPage() {
-  const club = useClubIdentity();
+/**
+ * The public booking-request (request to book / request for price) form.
+ *
+ * Extracted from the former `(public)/booking-requests/page.tsx` so it can render
+ * both as that route's body AND as the {{booking-requests}} content token
+ * (static → dynamic migration). It takes `club` as a PROP rather than reading
+ * `useClubIdentity()`, mirroring ContactPageClient/JoinApplyPageClient: that keeps
+ * it renderable by `EmbeddedPageContentParts` in either public route group,
+ * including the `(website)` group which has no ClubIdentityProvider. The
+ * DB-resolved default lodge capacity is injected into `club.lodgeCapacity` by the
+ * resolving server page, so the guest cap tracks the real lodge, never the static
+ * fallback (#1982 R1).
+ */
+export function BookingRequestForm({ club }: { club: ClubIdentity }) {
   const ageTierOptions = useAgeTierOptions();
   const [contactFirstName, setContactFirstName] = useState("");
   const [contactLastName, setContactLastName] = useState("");
@@ -202,7 +214,7 @@ export default function BookingRequestPage() {
   const formTitle = showPricing ? "Request to Book" : "Request for Price";
 
   return (
-    <Card className="w-full max-w-2xl">
+    <Card id="bookingRequestForm" className="w-full max-w-2xl">
       <CardHeader>
         <CardTitle>{formTitle}</CardTitle>
         <CardDescription>

@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
-import { useClubIdentity } from "@/components/club-identity-provider";
+import type { ClubIdentity } from "@/config/club-identity-types";
 import { useAgeTierOptions } from "@/lib/use-age-tier-options";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 import { DEFAULT_SCHOOL_GROUP_SOFT_CAP } from "@/lib/school-booking-constants";
@@ -35,8 +35,18 @@ function emptyTeacher(): TeacherInput {
   return { firstName: "", lastName: "", email: "" };
 }
 
-export default function SchoolBookingRequestPage() {
-  const club = useClubIdentity();
+/**
+ * The public school-group booking-request form.
+ *
+ * Extracted from the former `(public)/school-bookings/page.tsx` so it can render
+ * both as that page's body AND as the {{school-bookings}} content token
+ * (static → dynamic migration). It takes `club` as a PROP rather than reading
+ * `useClubIdentity()`, mirroring the other embedded forms: that keeps it
+ * renderable by `EmbeddedPageContentParts` in either public route group, which
+ * have no ClubIdentityProvider. The DB-resolved default lodge capacity is
+ * injected into `club.lodgeCapacity` by the resolving server page (#1982 R1).
+ */
+export function SchoolBookingForm({ club }: { club: ClubIdentity }) {
   const ageTierOptions = useAgeTierOptions();
   const [schoolName, setSchoolName] = useState("");
   const [contactFirstName, setContactFirstName] = useState("");
@@ -212,7 +222,7 @@ export default function SchoolBookingRequestPage() {
   }
 
   return (
-    <Card className="w-full max-w-2xl">
+    <Card id="schoolBookingForm" className="w-full max-w-2xl">
       <CardHeader>
         <CardTitle>School Group Booking Request</CardTitle>
         <CardDescription>

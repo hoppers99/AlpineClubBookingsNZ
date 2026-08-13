@@ -36,14 +36,14 @@ button. Page Content is edited under the **content** permission area.
 
 2. Click **Edit &lt;page&gt;** to open its editor, change the title, menu title,
    menu order, rich-text content (with content tokens such as
-   `{{member-application-form}}`, `{{contact-form}}`, or
-   `{{committee-members-cards}}` — the editor's token help button lists every
-   token the page supports), and its published state. Use **+ Add Page** to
-   create a new page.
+   `{{member-application-form}}`, `{{contact-form}}`, `{{booking-requests}}`,
+   `{{school-bookings}}`, or `{{committee-members-cards}}` — the editor's token
+   help button lists every token the page supports), and its published state. Use
+   **+ Add Page** to create a new page.
 3. Every page the starter site ships (Home, About, Join, Apply, Rules, Contact,
-   Committee, Privacy, Terms, FAQ, and the **System** pages Club Lodge `/home`
-   and Page Not Found `/404`) cannot be hidden or deleted — code routes, the
-   footer, and the sitemap link them. Only pages you add yourself can be hidden
+   Booking Requests, School Bookings, Committee, Privacy, Terms, FAQ, and the
+   **System** pages Club Lodge `/home` and Page Not Found `/404`) cannot be hidden
+   or deleted — code routes, the footer, and the sitemap link them. Only pages you add yourself can be hidden
    or deleted; a hidden page returns 404 to the public and drops out of the site
    menu. System pages additionally keep their fixed slug and menu order. If a
    built-in page ever shows a **Hidden** badge (only possible from hand-edited

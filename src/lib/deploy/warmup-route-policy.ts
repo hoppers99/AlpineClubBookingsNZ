@@ -43,7 +43,7 @@
  * repository already owns, so it is enforced in two layers instead:
  *
  *  • `isFixedNonceWebsitePath()` (`src/lib/public-website-paths.ts`) answers
- *    "is this an address one of the five approved public routes can serve?" — and
+ *    "is this an address one of the seven approved public routes can serve?" — and
  *    it is FALSE for `/api/*`, the admin area, every authenticated member area,
  *    `/login` and the auth flows, `robots.txt`/`sitemap.xml`, asset shapes,
  *    `_next/*`, and the three per-request public pages. That predicate is already

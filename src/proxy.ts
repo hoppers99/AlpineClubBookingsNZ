@@ -816,7 +816,7 @@ export async function proxy(request: NextRequest) {
   // sentence:
   //
   //   **An address carries the fixed per-release nonce if and only if it is a
-  //   public website address one of the five approved `(website)` routes can serve
+  //   public website address one of the seven approved `(website)` routes can serve
   //   — so no PAGE is ever stored outside that set, and every other address on the
   //   site is rendered per request under a nonce minted for that request.**
   //

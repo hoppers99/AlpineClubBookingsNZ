@@ -85,7 +85,23 @@ describe("isBuiltinPageSlug", () => {
     expect(isBuiltinPageSlug("privacy")).toBe(true);
     expect(isBuiltinPageSlug("terms")).toBe(true);
     expect(isBuiltinPageSlug("faq")).toBe(true);
+    expect(isBuiltinPageSlug("booking-requests")).toBe(true);
+    expect(isBuiltinPageSlug("school-bookings")).toBe(true);
   });
+
+  it.each(["booking-requests", "school-bookings"])(
+    "treats %s as a listed, built-in website page",
+    (slug) => {
+      // These are code-backed `(website)` pages (the same makeup as join/apply)
+      // whose seeded bodies are their {{...}} tokens. Built-in keeps them from
+      // being hidden or deleted; being real website slugs they are NOT reserved,
+      // so they can carry a menu title and appear in the public navigation.
+      expect(isBuiltinPageSlug(slug)).toBe(true);
+      expect(isReservedPageSlug(slug)).toBe(false);
+      expect(canUnpublishPage(slug)).toBe(false);
+      expect(canDeletePage(slug)).toBe(false);
+    },
+  );
 
   it("does not match admin-created pages", () => {
     expect(isBuiltinPageSlug("trip-reports")).toBe(false);
@@ -108,6 +124,8 @@ describe("canUnpublishPage", () => {
     expect(canUnpublishPage("privacy")).toBe(false);
     expect(canUnpublishPage("terms")).toBe(false);
     expect(canUnpublishPage("faq")).toBe(false);
+    expect(canUnpublishPage("booking-requests")).toBe(false);
+    expect(canUnpublishPage("school-bookings")).toBe(false);
   });
 });
 
@@ -136,6 +154,8 @@ describe("canDeletePage", () => {
     "privacy",
     "terms",
     "faq",
+    "booking-requests",
+    "school-bookings",
     // admin-created
     "trip-reports",
     "2026-agm",
@@ -180,6 +200,8 @@ describe("canDeletePage", () => {
       "privacy",
       "terms",
       "faq",
+      "booking-requests",
+      "school-bookings",
     ]) {
       expect(canDeletePage(slug), `${slug} must not be deletable`).toBe(false);
     }

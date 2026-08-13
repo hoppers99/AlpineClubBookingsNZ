@@ -22,7 +22,7 @@
  *
  * While the fixed nonce covered the whole `(website)` group those three had the
  * same answer, so one function could serve all three. The narrowing broke that: the
- * fixed nonce now covers exactly the five approved addresses, while the holding
+ * fixed nonce now covers exactly the seven approved addresses, while the holding
  * screen must still stand in for the WHOLE public website — including the three
  * pages that moved to `(website-dynamic)`. One predicate cannot say both things, and
  * narrowing the shared one would have quietly taken the pre-setup 503 off
@@ -33,7 +33,7 @@
  *  • {@link isPublicWebsitePath} answers (1). Unchanged behaviour: every public
  *    address, both groups. Only the setup gate calls it.
  *  • {@link isFixedNonceWebsitePath} answers (2). True for exactly the addresses
- *    the five approved routes can serve.
+ *    the seven approved routes can serve.
  *  • {@link isCmsServablePageSlug} answers (3), and is (2) restated as a slug
  *    question — because a page the catch-all STORES must be an address the fixed
  *    nonce covers, or its inline scripts are refused for every later visitor.
@@ -41,7 +41,7 @@
  * ## The one-sentence invariant
  *
  * **An address carries the fixed per-release nonce if and only if it is a public
- * website address that one of the five approved `(website)` routes can serve — so no
+ * website address that one of the seven approved `(website)` routes can serve — so no
  * PAGE is ever stored outside that set, and everything else on the site, public or
  * not, is rendered per request under a nonce minted for that request.**
  *
@@ -62,7 +62,7 @@
  * 404 there, and that 404 DOCUMENT is stored carrying the generating request's nonce,
  * which no later response names. So the stored out-of-territory 404 documents are the
  * whole of the difference between "carries the fixed nonce" and "can be served by one
- * of the five", and an earlier wording of this paragraph asserted a plain "if and only
+ * of the seven", and an earlier wording of this paragraph asserted a plain "if and only
  * if" that they falsify. Tracked on #2570; not closed here.
  *
  * **What WAS closed for those documents is their HEADERS (#2578).** A stored
@@ -89,7 +89,7 @@
  *     /hut%2Dleader%2Dinstructions  as above
  *     /dashboar%64               404, ISR headers    -> the catch-all, not /dashboard
  *     /logi%6E                   404, ISR headers    -> the catch-all, not /login
- *     /join/apply                200, no ISR headers -> the static route, one of the five
+ *     /join/apply                200, no ISR headers -> the static route, one of the seven
  *     /join/appl%79              404, no ISR headers -> /join/[code], same as /join/ANY
  *     /join/verif%79/tok         404, ISR headers    -> the catch-all, not the token page
  *
@@ -166,7 +166,6 @@ export const NON_WEBSITE_ROOT_SEGMENTS: ReadonlySet<string> = new Set([
   "notices",
   "profile",
   // (public) — login and the token flows an operator may need mid-setup.
-  "booking-requests",
   "change-password",
   "chores",
   "confirm-email-change",
@@ -177,7 +176,6 @@ export const NON_WEBSITE_ROOT_SEGMENTS: ReadonlySet<string> = new Set([
   "pay",
   "register",
   "reset-password",
-  "school-bookings",
   "verify-email",
   // (finance)
   "finance",
@@ -213,13 +211,13 @@ export const NON_WEBSITE_ROOT_SEGMENTS: ReadonlySet<string> = new Set([
 /**
  * The `(website)` route group's routes, as URL patterns — the FIXED-NONCE census.
  *
- * This is owner decision D1's five approved addresses (31 Jul 2026, narrowed back
+ * This is owner decision D1's seven approved addresses (31 Jul 2026, narrowed back
  * to exactly these on 3 Aug), written down where the runtime can read it. Adding a
  * sixth is a decision about the CSP, not a routing detail, so it has to be made
  * here on purpose: `scripts/ci/check-website-render-modes.mjs` walks the route
  * group, compares it with this list, and fails until the two agree.
  *
- * `/[...slug]` is the CMS catch-all and is the only one of the five that is stored.
+ * `/[...slug]` is the CMS catch-all and is the only one of the seven that is stored.
  * The other four are still `force-dynamic` pending #2352 slices 2 and 3 — they are
  * listed because the nonce split is about which POLICY an address is served under,
  * not about which addresses happen to be cached today, and a slice-2 change must not
@@ -228,9 +226,11 @@ export const NON_WEBSITE_ROOT_SEGMENTS: ReadonlySet<string> = new Set([
 export const FIXED_NONCE_WEBSITE_ROUTES = [
   "/",
   "/[...slug]",
+  "/booking-requests",
   "/contact",
   "/join",
   "/join/apply",
+  "/school-bookings",
 ] as const;
 
 /**
@@ -254,9 +254,12 @@ export const FIXED_NONCE_WEBSITE_ROUTES = [
  * add a fixed-nonce one is to amend {@link FIXED_NONCE_WEBSITE_ROUTES}.
  */
 export const PER_REQUEST_WEBSITE_ROUTES = [
+  "/booking-requests/respond/[token]",
+  "/booking-requests/verify/[token]",
   "/hut-leader-instructions",
   "/join/[code]",
   "/join/verify/[token]",
+  "/school-bookings/confirm/[token]",
 ] as const;
 
 /**
@@ -361,7 +364,7 @@ const PER_REQUEST_ROUTE_MATCHERS = PER_REQUEST_WEBSITE_ROUTES.map(
 );
 
 /**
- * The four STATIC addresses among the approved five, which win over any dynamic
+ * The six STATIC addresses among the approved seven, which win over any dynamic
  * pattern exactly as they do in Next's own route table.
  *
  * `/join/apply` is why this set has to exist: it matches the `/join/[code]` pattern
@@ -400,7 +403,7 @@ function matchesPerRequestRoute(path: string): boolean {
  * **This is the #2420 SETUP GATE's question and nothing else now.** It deliberately
  * claims both public groups, so `/hut-leader-instructions`, `/join/[code]` and
  * `/join/verify/[token]` are answered with the 503 holding screen before setup is
- * complete exactly as the five approved routes are. Narrowing it to the fixed-nonce
+ * complete exactly as the seven approved routes are. Narrowing it to the fixed-nonce
  * set would have taken the holding screen off those three, which is a change to
  * what an unlaunched club exposes and was never asked for — the D1 narrowing is
  * about which NONCE an address carries, not about which addresses are public.
@@ -451,9 +454,9 @@ export function isPublicWebsitePath(pathname: string): boolean {
  * Does this address carry the FIXED per-release CSP nonce (#2352 D1, narrowed by
  * the owner on 3 Aug 2026)?
  *
- * True for exactly the addresses one of the five approved `(website)` routes can
+ * True for exactly the addresses one of the seven approved `(website)` routes can
  * serve: the four fixed paths, plus everything the `[...slug]` CMS catch-all
- * claims. False for the three `(website-dynamic)` pages and for every non-website
+ * claims. False for the five `(website-dynamic)` routes and for every non-website
  * address, both of which mint a nonce per request.
  *
  * The subtraction is the whole of it, and it is exact rather than approximate:

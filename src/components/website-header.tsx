@@ -16,8 +16,6 @@ interface WebsiteHeaderProps {
   logoDataUrl?: string | null;
 }
 
-const staticNavLinks = [{ href: "/contact", label: "Contact" }];
-
 /**
  * The public site header.
  *
@@ -50,7 +48,6 @@ export async function WebsiteHeader({
   const navLinks: WebsiteNavLink[] = [
     { href: "/", label: "Home" },
     ...dynamicNavLinks,
-    ...staticNavLinks,
   ];
   // Configurable public Book Now (E3 #1929): hidden, custom page, or the default
   // booking flow (fail-open). The authenticated dashboard CTA is out of scope.

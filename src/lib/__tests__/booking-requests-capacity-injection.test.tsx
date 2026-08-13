@@ -19,17 +19,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // capacity the (public) layout injects into the club identity provider.
 const DB_CAPACITY = 47;
 
-vi.mock("@/components/club-identity-provider", () => ({
-  useClubIdentity: () => ({
-    lodgeName: "Test Alpine Lodge",
-    otherLodgeId: null,
-    otherLodgeName: null,
-    suggestedGuestNightRates: {},
-    lodgeCapacity: DB_CAPACITY,
-  }),
-}));
+import type { ClubIdentity } from "@/config/club-identity-types";
+import { BookingRequestForm } from "@/app/(website)/booking-requests/booking-request-form";
 
-import BookingRequestPage from "@/app/(public)/booking-requests/page";
+// The club identity the resolving server page injects into the form, with the
+// DB-resolved default lodge capacity spread over it (#1982 R1). Only the fields
+// the form reads need real values; the cast satisfies the ClubIdentity type.
+function injectedClub(): ClubIdentity {
+  return {
+    lodgeName: "Test Alpine Lodge",
+    lodgeCapacity: DB_CAPACITY,
+  } as unknown as ClubIdentity;
+}
 
 function mockFetch(lodges: Array<{ id: string; name: string; capacity: number }>) {
   global.fetch = vi.fn(async (input: RequestInfo | URL) => {
@@ -57,7 +58,7 @@ describe("public booking-request form — guest cap comes from the injected DB c
   });
 
   it("caps guests at the DB-resolved club.lodgeCapacity (47), never the FALLBACK 20", async () => {
-    const { container } = render(<BookingRequestPage />);
+    const { container } = render(<BookingRequestForm club={injectedClub()} />);
 
     await waitFor(() => {
       expect(container.textContent).toContain(`/${DB_CAPACITY} max`);

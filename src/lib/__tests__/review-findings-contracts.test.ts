@@ -3483,7 +3483,7 @@ describe("review finding source/schema contracts", () => {
 
   it("guards the public quote cancel behind a confirmation dialog (F28)", () => {
     const respondPage = readRepoFile(
-      "src/app/(public)/booking-requests/respond/[token]/page.tsx",
+      "src/app/(website-dynamic)/booking-requests/respond/[token]/booking-request-respond-client.tsx",
     );
     expect(respondPage).toContain("useConfirm");
     expect(respondPage).toContain("cancelWithConfirmation");

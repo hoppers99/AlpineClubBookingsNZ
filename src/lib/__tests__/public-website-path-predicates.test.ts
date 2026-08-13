@@ -12,14 +12,14 @@ import {
  *
  * One `isPublicWebsitePath()` used to answer three different questions, which was
  * safe only while the fixed per-release CSP nonce covered the whole `(website)`
- * group. The narrowing broke that: the nonce now covers exactly five approved
+ * group. The narrowing broke that: the nonce now covers exactly seven approved
  * addresses, while the pre-setup holding screen must still stand in for the WHOLE
  * public website. So the questions were separated, and this file is what stops them
  * being quietly rejoined:
  *
  *  • {@link isPublicWebsitePath} — the #2420 setup gate's question. BOTH public
  *    route groups.
- *  • {@link isFixedNonceWebsitePath} — the nonce question. The five approved
+ *  • {@link isFixedNonceWebsitePath} — the nonce question. The seven approved
  *    `(website)` routes only.
  *  • {@link isCmsServablePageSlug} — the CMS catch-all's territory, which has to be
  *    the same set as the second, because a page the catch-all STORES carries one
@@ -53,14 +53,16 @@ describe("the setup gate's question is unchanged by the narrowing", () => {
   );
 });
 
-describe("the fixed nonce covers exactly the five approved routes", () => {
+describe("the fixed nonce covers exactly the seven approved routes", () => {
   it.each([
     "/",
+    "/booking-requests",
     "/contact",
     "/join",
     "/join/apply",
+    "/school-bookings",
     // Everything the `[...slug]` CMS catch-all serves is inside the set, because
-    // the catch-all is one of the five and its pages are the ones that get stored.
+    // the catch-all is one of the seven and its pages are the ones that get stored.
     "/about",
     "/trips/2026",
     "/definitely-missing",
@@ -79,11 +81,11 @@ describe("the fixed nonce covers exactly the five approved routes", () => {
     },
   );
 
-  it("keeps /join/apply with the five even though /join/[code] matches its shape", () => {
+  it("keeps /join/apply with the seven even though /join/[code] matches its shape", () => {
     // Next serves the static route in preference to the dynamic one, so the address
     // really is served by `(website)/join/apply` and really does carry the fixed
     // nonce. A segment-count match alone would have handed it to `/join/[code]` and
-    // given the wrong answer for one of the owner's own five.
+    // given the wrong answer for one of the owner's own seven.
     expect(isFixedNonceWebsitePath("/join/apply")).toBe(true);
     expect(isFixedNonceWebsitePath("/join/anything-else")).toBe(false);
   });
@@ -146,16 +148,18 @@ describe("the two route censuses", () => {
     ).toEqual([]);
   });
 
-  it("record the owner's five approved addresses and nothing else", () => {
+  it("record the owner's seven approved addresses and nothing else", () => {
     // Spelled out rather than derived, because this list IS the owner's decision
     // and a change to it is a change to the CSP. `check-website-render-modes.mjs`
     // holds the other half: the route tree has to agree with it.
     expect([...FIXED_NONCE_WEBSITE_ROUTES].sort()).toEqual([
       "/",
       "/[...slug]",
+      "/booking-requests",
       "/contact",
       "/join",
       "/join/apply",
+      "/school-bookings",
     ]);
   });
 

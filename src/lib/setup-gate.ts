@@ -53,7 +53,7 @@ import {
  * pay for this module's database reads. Since the D1 narrowing (owner decision,
  * 3 Aug 2026) those callers use a DIFFERENT predicate from the same module: the
  * nonce split and the CMS catch-all's territory are `isFixedNonceWebsitePath()`
- * and `isCmsServablePageSlug()`, which cover only the five approved routes, while
+ * and `isCmsServablePageSlug()`, which cover only the seven approved routes, while
  * `isPublicWebsitePath()` — the one this gate asks — deliberately still claims the
  * whole public website, both route groups. That is what keeps the pre-setup 503
  * holding screen in front of `/hut-leader-instructions`, `/join/[code]` and

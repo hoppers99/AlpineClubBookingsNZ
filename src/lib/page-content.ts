@@ -82,6 +82,12 @@ export function isSystemPageSlug(slug: string): boolean {
  * routes, the footer, and the sitemap. Admins may edit their copy, but they
  * must not be unpublished/hidden — those links would 404. Only admin-created
  * pages can be hidden. (`home` is also a system page; listed here for clarity.)
+ *
+ * `booking-requests` and `school-bookings` are code-backed `(website)` pages (the
+ * same makeup as `join/apply`) whose seeded bodies are `{{booking-requests}}` and
+ * `{{school-bookings}}`. Their tokenised confirmation flows live under
+ * `(website-dynamic)/…` and keep a per-request nonce; the bare pages are listed,
+ * indexable public pages.
  */
 const BUILTIN_PAGE_SLUGS: ReadonlySet<string> = new Set([
   "home",
@@ -94,6 +100,8 @@ const BUILTIN_PAGE_SLUGS: ReadonlySet<string> = new Set([
   "privacy",
   "terms",
   "faq",
+  "booking-requests",
+  "school-bookings",
 ]);
 
 // test seam

@@ -28,7 +28,7 @@ import { pathToFileURL } from "node:url";
  *    return to the cost slice 1 removed, with no failing test anywhere.
  *
  * The 3 Aug narrowing added a second class of silent change, and it is a security
- * one. The fixed per-release CSP nonce now covers exactly five approved addresses;
+ * one. The fixed per-release CSP nonce now covers exactly seven approved addresses;
  * everything else on the site mints one per request. Which group a page file sits
  * in is what decides that, and a route group is invisible in a URL — so a new page
  * dropped into `(website)` would be handed the weaker fixed nonce with nothing
@@ -458,7 +458,7 @@ export function auditPublicWebsiteStructure({
 
   if (!fixedLayout) {
     problems.push(
-      "src/app/(website)/layout.tsx is missing. It is what hands the five approved " +
+      "src/app/(website)/layout.tsx is missing. It is what hands the seven approved " +
         "routes the fixed per-release CSP nonce.",
     );
   } else {
@@ -481,7 +481,7 @@ export function auditPublicWebsiteStructure({
       if (pattern.test(fixedLayout)) {
         problems.push(
           `(website)/layout.tsx calls ${name}. Any request read here opts every one of the ` +
-            "five approved routes out of static rendering (#2352 slice 1) — including the " +
+            "seven approved routes out of static rendering (#2352 slice 1) — including the " +
             "CMS catch-all, which then stops being stored at all.",
         );
       }
@@ -493,7 +493,7 @@ export function auditPublicWebsiteStructure({
       problems.push(
         "(website-dynamic)/layout.tsx must read the per-request CSP nonce from " +
           "CSP_NONCE_HEADER. That is the entire reason this group exists: the owner " +
-          "narrowed the fixed per-release nonce back to the five approved routes on " +
+          "narrowed the fixed per-release nonce back to the approved routes on " +
           "3 Aug 2026, and these three pages get the same freshly minted nonce every " +
           "member and admin page gets.",
       );
@@ -592,7 +592,7 @@ export function auditPublicWebsiteStructure({
     for (const [token, why] of [
       [
         "getPublicWebsiteNonce",
-        "the FIXED per-release value, which would reach the three per-request pages " +
+        "the FIXED per-release value, which would reach the six per-request pages " +
           "through the shared component and undo the owner's 3 Aug 2026 narrowing",
       ],
       [

@@ -32,6 +32,26 @@ const POLICY_PAGES_MIGRATION_PATH = join(
   "migration.sql",
 );
 
+// The built-in "/booking-requests" row, backfilled when that page moved from a
+// static (public) route to a database-backed, token-driven CMS page.
+const BOOKING_REQUESTS_MIGRATION_PATH = join(
+  process.cwd(),
+  "prisma",
+  "migrations",
+  "20260811020000_backfill_booking_requests_page_content",
+  "migration.sql",
+);
+
+// The built-in "/school-bookings" row, backfilled for the same static -> dynamic
+// move.
+const SCHOOL_BOOKINGS_MIGRATION_PATH = join(
+  process.cwd(),
+  "prisma",
+  "migrations",
+  "20260812010000_backfill_school_bookings_page_content",
+  "migration.sql",
+);
+
 const HOME_UPDATE_MIGRATION_PATH = join(
   process.cwd(),
   "prisma",
@@ -204,6 +224,8 @@ describe("starter page content backfill migration", () => {
   const insertSql = readFileSync(INSERT_MIGRATION_PATH, "utf8");
   const backfill404Sql = readFileSync(BACKFILL_404_MIGRATION_PATH, "utf8");
   const policyPagesSql = readFileSync(POLICY_PAGES_MIGRATION_PATH, "utf8");
+  const bookingRequestsSql = readFileSync(BOOKING_REQUESTS_MIGRATION_PATH, "utf8");
+  const schoolBookingsSql = readFileSync(SCHOOL_BOOKINGS_MIGRATION_PATH, "utf8");
   const updateSql = readFileSync(HOME_UPDATE_MIGRATION_PATH, "utf8");
   const faqUpdateSql = readFileSync(FAQ_UPDATE_MIGRATION_PATH, "utf8");
   const privacyUpdateSql = readFileSync(PRIVACY_UPDATE_MIGRATION_PATH, "utf8");
@@ -220,7 +242,7 @@ describe("starter page content backfill migration", () => {
   const homeGuestCopySql = statementsOnly(
     readFileSync(HOME_GUEST_COPY_MIGRATION_PATH, "utf8"),
   );
-  const allInsertSql = `${insertSql}\n${backfill404Sql}\n${policyPagesSql}`;
+  const allInsertSql = `${insertSql}\n${backfill404Sql}\n${policyPagesSql}\n${bookingRequestsSql}\n${schoolBookingsSql}`;
   const combinedSql = `${allInsertSql}\n${updateSql}\n${faqUpdateSql}\n${privacyUpdateSql}\n${nonMemberHoldCopyUpdateSql}\n${genericiseLodgeCopySql}\n${homeGuestCopySql}`;
 
   it("inserts exactly the starter pages defined for the seed", () => {

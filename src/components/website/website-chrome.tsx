@@ -21,8 +21,8 @@ import { SETUP_IN_PROGRESS_COPY } from "@/lib/setup-in-progress-screen";
  * ## Why it exists
  *
  * Owner decision, 3 Aug 2026 (#2352): the fixed per-release CSP nonce covers
- * exactly the five approved addresses (`/`, the CMS catch-all, `/join`,
- * `/contact`, `/join/apply`). The three pages the first cut had swept in —
+ * exactly the seven approved addresses (`/`, the CMS catch-all, `/booking-requests`, `/school-bookings`,
+ * `/join`, `/contact`, `/join/apply`). The three pages the first cut had swept in —
  * `/hut-leader-instructions`, `/join/[code]`, `/join/verify/[token]` — go back to
  * a freshly minted per-request nonce.
  *
@@ -68,7 +68,7 @@ import { SETUP_IN_PROGRESS_COPY } from "@/lib/setup-in-progress-screen";
  * The per-request group's layout reads `headers()` for its nonce, and that is
  * safe precisely because it is in the OTHER layout: the read opts that group's
  * routes out of static rendering, which is what those routes want anyway
- * (`force-dynamic`), and it cannot reach the five.
+ * (`force-dynamic`), and it cannot reach the seven.
  */
 export async function WebsiteChrome({
   nonce,
@@ -126,7 +126,7 @@ export async function WebsiteChrome({
     // public-website address with 503 and this same screen while setup is
     // incomplete, so an ordinary request never gets here — and it answers on
     // `isPublicWebsitePath()`, which claims BOTH public route groups, so the
-    // three per-request pages are gated pre-setup exactly as the five are.
+    // six per-request pages are gated pre-setup exactly as the seven are.
     //
     // What still does reach here is a URL the proxy RUNS on but the gate does not
     // CLAIM. (#2404 removed the matcher's prefetch exemption entirely, so the

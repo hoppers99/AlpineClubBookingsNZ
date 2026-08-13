@@ -45,7 +45,7 @@ export interface CspOptions {
    *
    * **This flag does NOT mean "the nonce handed in is the fixed per-release value",
    * and since the owner's 3 Aug 2026 narrowing that distinction is load-bearing.**
-   * The fixed nonce covers only the five approved `(website)` routes
+   * The fixed nonce covers only the seven approved `(website)` routes
    * (`isFixedNonceWebsitePath()`); `/hut-leader-instructions`, `/join/[code]` and
    * `/join/verify/[token]` are public-website pages that carry a per-request nonce.
    * The tightening deliberately covers them anyway: following the nonce here would

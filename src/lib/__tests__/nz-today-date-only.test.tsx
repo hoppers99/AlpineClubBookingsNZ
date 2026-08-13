@@ -56,8 +56,16 @@ vi.mock("@/lib/finance-legacy-dashboard-export", () => ({
   getLegacyDashboardBookingExport: financeMocks.getLegacyDashboardBookingExport,
 }));
 
-import BookingRequestPage from "@/app/(public)/booking-requests/page";
-import SchoolBookingRequestPage from "@/app/(public)/school-bookings/page";
+import type { ClubIdentity } from "@/config/club-identity-types";
+import { BookingRequestForm } from "@/app/(website)/booking-requests/booking-request-form";
+import { SchoolBookingForm } from "@/app/(website)/school-bookings/school-booking-form";
+
+// Only the fields the forms read need real values; the cast satisfies the type.
+const STUB_CLUB = {
+  lodgeName: "Test Alpine Lodge",
+  lodgeCapacity: 20,
+  hutLeaderLabel: "Hut Leader",
+} as unknown as ClubIdentity;
 import { getFinanceBookingMetrics } from "@/lib/finance-booking-metrics";
 import { GET as getLegacyDashboardBookings } from "@/app/api/finance/legacy-dashboard/bookings/route";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
@@ -112,7 +120,7 @@ describe("#2682 the fixture really is inside the UTC/NZ divergence window", () =
 
 describe("#2682 public lodge-night pickers offer the NZ day, not the UTC day", () => {
   it("the public booking-request form's earliest selectable night is the NZ day", async () => {
-    render(<BookingRequestPage />);
+    render(<BookingRequestForm club={STUB_CLUB} />);
 
     const checkIn = (await screen.findByLabelText(/check-?in/i)) as HTMLInputElement;
     await waitFor(() => expect(checkIn.getAttribute("min")).toBeTruthy());
@@ -125,7 +133,7 @@ describe("#2682 public lodge-night pickers offer the NZ day, not the UTC day", (
   });
 
   it("the public school-booking form's earliest selectable night is the NZ day", async () => {
-    render(<SchoolBookingRequestPage />);
+    render(<SchoolBookingForm club={STUB_CLUB} />);
 
     const checkIn = (await screen.findByLabelText(/check-?in/i)) as HTMLInputElement;
     await waitFor(() => expect(checkIn.getAttribute("min")).toBeTruthy());
@@ -223,8 +231,10 @@ describe("#2682 no surface derives today from UTC any more", () => {
 
   it("leaves neither public booking form defining a date helper of its own", () => {
     for (const page of [
-      "src/app/(public)/booking-requests/page.tsx",
-      "src/app/(public)/school-bookings/page.tsx",
+      // The booking date pickers live in the extracted form components, now under
+      // the (website) group (both are real website pages).
+      "src/app/(website)/booking-requests/booking-request-form.tsx",
+      "src/app/(website)/school-bookings/school-booking-form.tsx",
     ]) {
       const source = fs.readFileSync(path.resolve(process.cwd(), page), "utf8");
       // The byte-identical private `todayDateOnly()` in both files is what made
