@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Contact } from "xero-node";
 
 const mocks = vi.hoisted(() => ({
@@ -109,6 +109,8 @@ import {
   createXeroMembershipCancellationCreditNote,
   syncXeroMembershipCancellationContact,
 } from "@/lib/membership-cancellation-xero";
+import { frozenTestNow } from "@/lib/__tests__/helpers/clock";
+import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
 
 function xeroClient() {
   return {
@@ -281,11 +283,26 @@ describe("membership cancellation Xero operations", () => {
     utcDay,
     clubDay,
   }) => {
-    it("are both dated on the club's calendar day", async () => {
+    beforeEach(() => {
+      // Say what actually happened before any date assertion can turn an
+      // environment problem into what looks like the product bug.
+      expectClubTimeZonePremise();
+      // A fixture that drifted out of the divergence window would pass vacuously.
       expect(instant.toISOString().slice(0, 10)).toBe(utcDay);
       // The root freeze pins midday NZ, where both calendars agree — the one
       // window this defect does not live in.
       vi.setSystemTime(instant);
+    });
+
+    afterEach(() => {
+      // Hand the clock back so the root `beforeEach` re-freezes the DEFAULT
+      // instant for every test declared after this block: `ensureFrozenTestClock()`
+      // returns early whenever anything is already mocking `Date`, so it never
+      // overwrites — nor restores — a deliberate pin (docs/TESTING.md rule 4).
+      vi.useRealTimers();
+    });
+
+    it("are both dated on the club's calendar day", async () => {
       mocks.memberSubscriptionFindUnique.mockResolvedValue({
         id: "sub_1",
         memberId: "member_1",
@@ -335,6 +352,15 @@ describe("membership cancellation Xero operations", () => {
       expect(allocationBody.allocations[0].date).toBe(clubDay);
       expect(allocationBody.allocations[0].date).not.toBe(utcDay);
     });
+  });
+
+  // The restore proof for the block above. Declared after it, so it runs after
+  // it, and it fails the moment that `afterEach` stops handing the clock back —
+  // which is all that keeps a scoped pin from silently re-dating every test
+  // below to 14 January 2026. `frozenTestNow()` rather than the literal so the
+  // rollover canary's `TEST_CLOCK_ISO` / `TEST_CLOCK_OFFSET_DAYS` runs agree.
+  it("hands the default frozen clock back to every test declared after the pinned block", () => {
+    expect(new Date().toISOString()).toBe(frozenTestNow().toISOString());
   });
 
   it("alerts admins instead of silently skipping when a paid subscription is cancelled", async () => {

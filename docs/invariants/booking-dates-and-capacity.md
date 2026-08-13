@@ -378,7 +378,7 @@ derivation).
   `src/lib/__tests__/nz-today-date-only.test.tsx` freezes the clock inside the
   divergence window and fails the build if the pattern comes back.
 
-  Two exact boundaries on that rule, because both are easy to get wrong:
+  Three exact boundaries on that rule, because each is easy to get wrong:
 
   - *Truncating an existing `@db.Date` value the same way is fine* — those are
     already pinned to UTC midnight and encode a calendar day, not an instant.
@@ -399,13 +399,32 @@ derivation).
     #2684's lint rule is where the whole class gets caught; until then it is a
     known trap, not a permitted pattern.
   - *A number of days added to a document date is added in CALENDAR days*, with
-    `addDaysDateOnly` over the date-only value — never as `days x 24h` on the
-    instant. The Xero entrance-fee invoice's 30-day due date and the
-    subscription invoice's `dueDays` both do it that way since #2834: adding
-    whole days to an instant slips an hour across a daylight-saving change,
-    which moves the day whenever the instant sits within an hour of club
-    midnight, and on the subscription invoice it would also break the frozen
-    `dueDays` interval that adoption matches on.
+    `addDaysDateOnly` over the date-only value — never by adding `days x 24h` to
+    an instant and then reading the result on the club's calendar. The Xero
+    entrance-fee invoice's 30-day due date and the subscription invoice's
+    `dueDays` both step date-only values since #2834.
+
+    Be exact about where that hazard lives, because the pre-#2834 code did not
+    have it and a reader should not go hunting a bug that was never there. Both
+    due dates were previously derived in **UTC** from a UTC-truncated issue date
+    — the entrance fee by adding `30 x 24h` to the instant, the subscription by
+    `setUTCDate` — so both ends moved together and the interval came out exactly
+    the intended number of days, daylight saving included. Their only defect was
+    the UTC-day one above.
+
+    The hazard belongs to the FIX. Once the issue date is the club's calendar
+    day, deriving the due date as
+    `formatDateOnlyForTimeZone(instant + days x 24h)` reads a shifted instant in
+    a zone whose offset may have changed in between. New Zealand leaves daylight
+    saving at 03:00 on 5 April 2026, making that local day 25 hours long, so
+    `30 x 24h` from 00:30 on 15 March lands at 23:30 on 13 April and yields the
+    13th where thirty calendar days is the 14th. On the subscription invoice that
+    is worse than a wrong date: `subscriptionInvoiceMatchesSnapshot` adopts a
+    pre-existing Xero invoice only when `invoiceDueIntervalDays` equals the
+    charge's frozen `dueDays`, so a 29-day interval would stop an immutable
+    charge adopting its own invoice.
+    `src/lib/__tests__/xero-document-dates-club-calendar.test.ts` pins both ends
+    of that at the 5 April boundary.
   - *The member booking calendar and the admin kiosk deliberately derive today
     from the BROWSER's calendar day* (`src/components/booking-calendar.tsx`,
     `src/app/(admin)/admin/book/page.tsx`, #2474 — see the next invariant), so

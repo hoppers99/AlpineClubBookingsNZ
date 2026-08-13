@@ -29,9 +29,23 @@ import { buildXeroIdempotencyKey } from "@/lib/xero-sync";
  * `nz-today-date-only.test.tsx` and from MAD-A2 #2682's sweep, so twenty Xero
  * document dates reached the forbidden pattern one indirection away from the
  * spelling anyone was looking for. #2697 closed the two `Booking.createdAt`
- * consumers and #2834 closed the rest. **Every remaining caller is a `@db.Date`
- * receiver**, which is the only thing this function is for; if you are about to
- * pass it an instant, you want `formatDateOnlyForTimeZone`.
+ * consumers and #2834 closed the rest.
+ *
+ * **Every remaining caller passes either a `@db.Date` receiver or a date-only
+ * value read back off a Xero document.** The second class is one site,
+ * `normalizeXeroDateOnly` in `src/lib/xero-subscription-invoices.ts`, and it
+ * must NOT be zone-converted. What it receives is whatever the Xero SDK
+ * deserialised from a document Xero already holds as a plain calendar date; a
+ * `Date` there is that calendar date at midnight, so truncation reads it back
+ * and zone conversion would move it. Moving it would change
+ * `invoiceDueIntervalDays`, hence `subscriptionInvoiceMatchesSnapshot`, hence
+ * whether a pre-existing invoice is adopted — the charge would flip to
+ * `CONFLICT`/`PROVIDER_MISMATCH` and the member would be left unbilled.
+ *
+ * So the rule is about the VALUE, not the shape: if you are about to pass this
+ * an instant — `createdAt`, `updatedAt`, `new Date()` — you want
+ * `formatDateOnlyForTimeZone`. If you are handing it a calendar day that
+ * something else already decided, truncation is the correct read.
  */
 export function formatDate(date: Date): string {
   return date.toISOString().split("T")[0];

@@ -29,6 +29,19 @@ function invoiceCents(invoice: Invoice) {
     sum + (line.lineAmount ?? ((line.quantity ?? 1) * (line.unitAmount ?? 0))), 0) * 100);
 }
 
+/**
+ * Read a date back off a Xero invoice as the calendar day Xero holds.
+ *
+ * `formatDate` here is deliberate and must NOT become
+ * `formatDateOnlyForTimeZone` (#2834). This is not a clock read and not a
+ * `DateTime` column: `invoice.date` / `invoice.dueDate` are plain calendar dates
+ * on a document Xero already has, and whatever the SDK deserialised them into —
+ * a `Date` at midnight, an ISO prefix, a `/Date(…)/` string — encodes that day,
+ * so truncation reads it back and zone conversion would shift it. A shift here
+ * changes `invoiceDueIntervalDays`, so `subscriptionInvoiceMatchesSnapshot`
+ * stops matching, so a pre-existing invoice stops being adopted: the charge goes
+ * to `CONFLICT`/`PROVIDER_MISMATCH` and the member is left unbilled.
+ */
 function normalizeXeroDateOnly(value: unknown): string | null {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return formatDate(value);

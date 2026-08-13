@@ -1,6 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { APP_TIME_ZONE } from "@/config/operational";
+import { formatDateOnlyForTimeZone } from "@/lib/date-only";
+import { frozenTestNow } from "@/lib/__tests__/helpers/clock";
+import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
+import { formatDate } from "@/lib/xero-invoice-helpers";
 
 /**
  * Every Xero document date derived from an INSTANT is the club's calendar day
@@ -25,12 +28,15 @@ import { APP_TIME_ZONE } from "@/config/operational";
  * either the first instant of a club day (which a shallower zone gets wrong) or
  * 00:30 NZDT (which a fixed +12 zone with no daylight saving gets wrong).
  *
- * Sibling coverage that needs its own scaffolding lives with it:
- * `xero-group-settlement-invoices.test.ts` (settlement due date),
- * `xero-booking-invoice.test.ts` (invoice payment date),
- * `xero-applied-credit-allocation.test.ts` (applied-credit remainder note),
- * `xero-applied-credit-deallocation.test.ts` (allocation recreate) and
- * `membership-cancellation-xero.test.ts` (cancellation credit note + allocation).
+ * Three surfaces need scaffolding too heavy to rebuild here, so their coverage
+ * lives in their own suites: `xero-booking-invoice.test.ts` (the Stripe payment
+ * recorded against a freshly raised booking invoice),
+ * `xero-applied-credit-deallocation.test.ts` (the recreated allocation) and
+ * `membership-cancellation-xero.test.ts` (the cancellation credit note and its
+ * allocation). Everything else is here — including the group-settlement invoice
+ * (below, "a group-settlement invoice") and the applied-credit remainder note
+ * (below, "the remainder note minted for applied credit"), whose own suites
+ * carry no #2834 coverage.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -207,6 +213,10 @@ import { createXeroSupplementaryInvoice } from "@/lib/xero-supplementary-invoice
  * - `NZDT_JUST_AFTER_MIDNIGHT` is 00:30 in Pacific/Auckland at UTC+13. A fixed
  *   +12 zone with no daylight saving returns the previous day, so this pins the
  *   daylight-saving offset rather than merely "somewhere east of UTC".
+ *
+ * `clubDayPlus30` is the thirtieth calendar day after `clubDay`, written out
+ * rather than computed: a helper here would re-run production's own day-stepping
+ * algorithm, so a shared error would pass on both sides.
  */
 const CLUB_DAY_CASES = [
   {
@@ -214,12 +224,18 @@ const CLUB_DAY_CASES = [
     instant: new Date("2026-06-14T12:00:00.000Z"),
     utcDay: "2026-06-14",
     clubDay: "2026-06-15",
+    clubDayPlus30: "2026-07-15",
+    // Reading this instant in a zone shallower than UTC+12 returns the UTC day.
+    wrongZone: "Australia/Brisbane", // UTC+10, no daylight saving
   },
   {
     label: "NZDT (UTC+13), 00:30 on a club day",
     instant: new Date("2026-01-14T11:30:00.000Z"),
     utcDay: "2026-01-14",
     clubDay: "2026-01-15",
+    clubDayPlus30: "2026-02-14",
+    // A fixed +12 with no daylight saving is 30 minutes short of the club day.
+    wrongZone: "Etc/GMT-12", // UTC+12 year-round; POSIX sign, so -12 means +12
   },
 ] as const;
 
@@ -227,10 +243,14 @@ const SENTINEL = "sentinel-stop";
 
 function pinClubMorning(instant: Date) {
   // The root freeze pins midday NZ (2026-07-01T00:00:00.000Z), where the UTC day
-  // and the club day agree — exactly the window this defect does NOT live in. Set
-  // the instant per test: the root `beforeEach` only re-freezes when the clock has
-  // been handed back to the real calendar, so it never overwrites this pin, and
-  // never restores it either (docs/TESTING.md rule 4).
+  // and the club day agree — exactly the window this defect does NOT live in. So
+  // set the divergent instant per test.
+  //
+  // The pin must be undone by hand: the root `beforeEach` re-freezes only when
+  // the clock has been handed back to the real calendar, so it never overwrites
+  // a deliberate pin — and never restores one either (docs/TESTING.md rule 4).
+  // The file-level `afterEach` below hands it back after every test, and the
+  // last test in the file proves that actually happens.
   vi.setSystemTime(instant);
 }
 
@@ -240,25 +260,65 @@ function enqueuedOperation(index = 0) {
 
 describe("#2834 the premise: the club zone is New Zealand and each instant really is divergent", () => {
   it("runs with the club time zone actually set to New Zealand", () => {
-    // docs/TESTING.md rule 6: setting TZ=UTC to imitate the CI runner ALSO moves
-    // APP_TIME_ZONE, because it is `process.env.TZ || NEXT_PUBLIC_TZ ||
-    // "Pacific/Auckland"`. Every assertion in this file would then go red and
-    // read like the product bug it proves fixed. Say what actually happened.
-    expect(
-      APP_TIME_ZONE,
-      "This suite exists to prove the club day and the UTC day differ, so it needs the club zone to be New Zealand. TZ (or NEXT_PUBLIC_TZ) is overriding APP_TIME_ZONE — see docs/TESTING.md rule 6.",
-    ).toBe("Pacific/Auckland");
+    expectClubTimeZonePremise();
   });
 
   it.each(CLUB_DAY_CASES)(
     "$label: the UTC day is the day before the club day",
     ({ instant, utcDay, clubDay }) => {
-      // Without this a fixture that drifted out of the divergence window would
-      // pass vacuously, testing nothing at all.
+      // Both readings are executed, not asserted against each other as literals:
+      // `expect(utcDay).not.toBe(clubDay)` compares two hard-coded strings and
+      // can never fail, so it would keep passing while the fixture drifted out
+      // of the divergence window and quietly stopped testing anything.
       expect(instant.toISOString().slice(0, 10)).toBe(utcDay);
-      expect(utcDay).not.toBe(clubDay);
+      expect(formatDateOnlyForTimeZone(instant)).toBe(clubDay);
     },
   );
+
+  it.each(CLUB_DAY_CASES)(
+    "$label: reading the same instant in the wrong zone gives the UTC day, so a wrong zone FAILS this suite",
+    ({ instant, utcDay, wrongZone }) => {
+      // This is the load-bearing claim of the docblock above, made executable.
+      // 21:30Z sits about 9.5h into a 12h window and reads as the club day under
+      // any zone from roughly UTC+10 upwards; drifting a fixture back to
+      // something like that would leave every test in this file green while the
+      // discrimination silently vanished. Brisbane (+10, no DST) catches the
+      // NZST case; Etc/GMT-12 (a fixed +12, no DST) catches the NZDT one.
+      expect(formatDateOnlyForTimeZone(instant, wrongZone)).toBe(utcDay);
+    },
+  );
+});
+
+describe("#2834 the other half of the premise: a `@db.Date` receiver is read by TRUNCATION, which is a different operation", () => {
+  // Several tests below assert that a `@db.Date` value — a lodge night, an
+  // organiser booking's check-in — reaches Xero unshifted, and cite INV-DATE-010
+  // for it. Those assertions are honest as positive statements, but on their own
+  // they cannot fail the mutation they look like they guard: a `@db.Date` is UTC
+  // midnight, and in Auckland (as in every zone ahead of UTC) UTC midnight still
+  // falls on the same calendar day, so converting one of those receivers to
+  // `formatDateOnlyForTimeZone` would leave every one of them green.
+  //
+  // So the contrast is made decidable here instead, in a zone where the two
+  // operations disagree. Read those tests as "the value is preserved", and this
+  // block as "and these really are two different derivations".
+  const lodgeNight = new Date("2026-08-03T00:00:00.000Z");
+
+  it("truncation reads back the calendar day the value encodes", () => {
+    expect(formatDate(lodgeNight)).toBe("2026-08-03");
+  });
+
+  it("zone conversion returns a DIFFERENT day for the same value, west of UTC", () => {
+    // 19:00 on 2 August in Chicago. Swapping a `@db.Date` receiver onto the
+    // zone-aware helper would move a lodge night by a day for that reader.
+    expect(formatDateOnlyForTimeZone(lodgeNight, "America/Chicago")).toBe(
+      "2026-08-02",
+    );
+  });
+
+  it("but the two agree in the club's own zone, which is exactly why the assertions below cannot decide it alone", () => {
+    expect(formatDateOnlyForTimeZone(lodgeNight)).toBe("2026-08-03");
+    expect(formatDate(lodgeNight)).toBe("2026-08-03");
+  });
 });
 
 beforeEach(() => {
@@ -296,6 +356,15 @@ beforeEach(() => {
   });
 });
 
+afterEach(() => {
+  // Hand the clock back so the root `beforeEach` re-freezes the DEFAULT instant
+  // before the next test. `ensureFrozenTestClock()` returns early whenever
+  // anything is already mocking `Date`, so a bare `vi.setSystemTime` in a test
+  // body is never restored on its own and leaks into every test after it
+  // (docs/TESTING.md rule 4). The last test in this file proves this works.
+  vi.useRealTimers();
+});
+
 // ---------------------------------------------------------------------------
 // Payments — bank-reconciliation input, and the date decides the GST period the
 // cash falls in.
@@ -320,11 +389,14 @@ describe.each(CLUB_DAY_CASES)(
       const sent = mocks.accountingApi.createPayments.mock.calls[0][1];
       expect(sent.payments[0].date).toBe(clubDay);
       expect(sent.payments[0].date).not.toBe(utcDay);
-      // The key is unchanged by the derivation — see the idempotency analysis on
-      // #2834. An operation queued before this shipped still dedupes after it.
-      expect(enqueuedOperation().idempotencyKey).toBe(
-        "payment:pay_local:invoice-payment:v1",
-      );
+      // No assertion about the idempotency key belongs here. On this path the
+      // key is a caller-supplied parameter passed straight through, so any
+      // assertion about it holds under every possible implementation of the
+      // date derivation, including the pre-#2834 one — it would read as
+      // evidence for the cross-version dedupe claim while proving nothing. The
+      // falsifiable version of that claim is on a key production builds itself:
+      // `xero-applied-credit-deallocation.test.ts` asserts the recreate key
+      // contains no `yyyy-mm-dd` substring.
     });
   },
 );
@@ -367,7 +439,10 @@ describe.each(CLUB_DAY_CASES)(
           id: "booking_1234abcd",
           memberId: "mem_1",
           // `@db.Date` lodge nights: UTC midnight is the ENCODING of a calendar
-          // day, so these must read back unshifted (INV-DATE-010).
+          // day, so these must read back unshifted (INV-DATE-010). The
+          // assertion below states that they do; what makes truncation and zone
+          // conversion decidably different is the premise block near the top of
+          // this file, because in a zone ahead of UTC they agree here.
           checkIn: new Date("2026-08-03T00:00:00.000Z"),
           checkOut: new Date("2026-08-05T00:00:00.000Z"),
           member: { id: "mem_1" },
@@ -584,6 +659,11 @@ describe.each(CLUB_DAY_CASES)(
       // (INV-DATE-010). The DUE date is `GroupBookingSettlement.createdAt`, a
       // `DateTime @default(now())` — a real instant (INV-DATE-019).
       //
+      // The issue-date assertion states the value is preserved; it cannot on its
+      // own tell truncation from zone conversion, because they agree for a
+      // UTC-midnight value in a zone ahead of UTC. The premise block near the
+      // top of this file is what separates them.
+      //
       // The clock is pinned somewhere the calendars agree, so the due date can
       // only be coming from the stored instant.
       vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
@@ -631,7 +711,7 @@ describe.each(CLUB_DAY_CASES)(
 
 describe.each(CLUB_DAY_CASES)(
   "an entrance-fee invoice — $label",
-  ({ instant, utcDay, clubDay }) => {
+  ({ instant, utcDay, clubDay, clubDayPlus30 }) => {
     it("dates the invoice on the club's calendar day and its due date thirty club days later", async () => {
       pinClubMorning(instant);
       mocks.getEntranceFeeContext.mockResolvedValue({
@@ -655,14 +735,14 @@ describe.each(CLUB_DAY_CASES)(
       const invoice = enqueuedOperation().requestPayload.invoices[0];
       expect(invoice.date).toBe(clubDay);
       expect(invoice.date).not.toBe(utcDay);
-      expect(invoice.dueDate).toBe(thirtyDaysAfter(clubDay));
+      expect(invoice.dueDate).toBe(clubDayPlus30);
     });
   },
 );
 
 describe.each(CLUB_DAY_CASES)(
   "a membership subscription invoice — $label",
-  ({ instant, utcDay, clubDay }) => {
+  ({ instant, utcDay, clubDay, clubDayPlus30 }) => {
     it("dates the invoice on the club's calendar day and its due date dueDays club days later", async () => {
       pinClubMorning(instant);
       mocks.chargeFindUnique.mockResolvedValue(subscriptionCharge());
@@ -680,7 +760,11 @@ describe.each(CLUB_DAY_CASES)(
       const built = mocks.accountingApi.createInvoices.mock.calls[0][1].invoices[0];
       expect(built.date).toBe(clubDay);
       expect(built.date).not.toBe(utcDay);
-      expect(built.dueDate).toBe(addCalendarDays(clubDay, 30));
+      // `dueDays` on the fixture charge is 30, so the expected due date is the
+      // literal thirtieth calendar day after the club day. Recomputing it here
+      // would re-run production's own day-stepping algorithm, and a shared error
+      // would then pass on both sides.
+      expect(built.dueDate).toBe(clubDayPlus30);
     });
   },
 );
@@ -690,19 +774,28 @@ describe.each(CLUB_DAY_CASES)(
 // ---------------------------------------------------------------------------
 
 describe("a due date counted in days is counted in CLUB days, not 24-hour blocks", () => {
-  // New Zealand leaves daylight saving on 5 April 2026, so an invoice issued in
-  // NZDT whose due date lands in NZST spans a 23-hour "day". Adding
-  // `days x 24h` to the ISSUE INSTANT and reading the result in club time gives
-  // 13 April; the correct answer, thirty CALENDAR days after 15 March, is the
-  // 14th. Only date-only arithmetic gets this right.
+  // New Zealand leaves daylight saving at 03:00 on Sunday 5 April 2026, when the
+  // clocks go BACK to 02:00 — so that local day is 25 hours long, and the span
+  // from 15 March to 14 April is one hour longer than thirty 24-hour blocks.
+  // (The 23-hour day is the September transition, which this suite never
+  // exercises.)
+  //
+  // That extra hour is the whole point. The issue instant is 00:30 on 15 March
+  // in club time, so it sits within an hour of club midnight: add thirty
+  // 24-hour blocks to it and the result lands at 23:30 on 13 April club time,
+  // one day short. The correct answer — thirty CALENDAR days after 15 March —
+  // is the 14th, and only date-only arithmetic gets there.
   const issuedAt = new Date("2026-03-14T11:30:00.000Z"); // 00:30 on 15 Mar, NZDT
 
-  it("the premise: the fixture crosses the end of daylight saving", () => {
-    expect(issuedAt.toISOString().slice(0, 10)).toBe("2026-03-14");
+  it("the premise: 30 x 24h from this instant is the day BEFORE 30 calendar days, read on the club's calendar", () => {
+    // Read in club time, because that is the reading the claim is about. The
+    // UTC reading happens to give the same answer here, so verifying the
+    // premise with `toISOString()` would test the wrong calendar and still pass.
+    expect(formatDateOnlyForTimeZone(issuedAt)).toBe("2026-03-15");
     expect(
-      new Date(issuedAt.getTime() + 30 * 24 * 60 * 60 * 1000)
-        .toISOString()
-        .slice(0, 10),
+      formatDateOnlyForTimeZone(
+        new Date(issuedAt.getTime() + 30 * 24 * 60 * 60 * 1000),
+      ),
     ).toBe("2026-04-13");
   });
 
@@ -741,29 +834,35 @@ describe("a due date counted in days is counted in CLUB days, not 24-hour blocks
       }),
     ).rejects.toThrow(SENTINEL);
 
+    // Why the 14th and not the 13th matters beyond the date itself:
+    // `subscriptionInvoiceMatchesSnapshot` adopts a pre-existing Xero invoice
+    // only when `invoiceDueIntervalDays` equals the charge's frozen `dueDays`
+    // (30 here), and it measures that interval between these two date-only
+    // values. The 13th would make it 29 and the charge would stop adopting its
+    // own invoice. These two literals are what pins that; recomputing the
+    // interval from them would only restate their own difference and would pass
+    // against the pre-#2834 code too, so it is not asserted.
     const built = mocks.accountingApi.createInvoices.mock.calls[0][1].invoices[0];
     expect(built.date).toBe("2026-03-15");
     expect(built.dueDate).toBe("2026-04-14");
-    // `subscriptionInvoiceMatchesSnapshot` adopts a pre-existing Xero invoice
-    // only when this interval equals the charge's frozen `dueDays`, so the
-    // arithmetic has to stay exactly thirty days across the DST change.
-    expect(
-      (Date.parse(`${built.dueDate}T00:00:00.000Z`) -
-        Date.parse(`${built.date}T00:00:00.000Z`)) /
-        86_400_000,
-    ).toBe(30);
   });
 });
 
-function addCalendarDays(dateOnly: string, days: number): string {
-  const stepped = new Date(`${dateOnly}T00:00:00.000Z`);
-  stepped.setUTCDate(stepped.getUTCDate() + days);
-  return stepped.toISOString().slice(0, 10);
-}
+// ---------------------------------------------------------------------------
+// The pins above are undone, which is what keeps them from leaking.
+// ---------------------------------------------------------------------------
 
-function thirtyDaysAfter(dateOnly: string): string {
-  return addCalendarDays(dateOnly, 30);
-}
+describe("the clock pins in this file do not survive their own tests", () => {
+  // Declared last, so it runs last. It fails the moment the file-level
+  // `afterEach` stops handing the clock back — the only thing that stops a bare
+  // `vi.setSystemTime` in a test body from silently re-dating every test after
+  // it, here and (with the same fix) in the three sibling suites. Compared
+  // against `frozenTestNow()` rather than the literal so the rollover canary's
+  // `TEST_CLOCK_ISO` / `TEST_CLOCK_OFFSET_DAYS` runs still agree with it.
+  it("hands the default frozen instant back to whatever runs next", () => {
+    expect(new Date().toISOString()).toBe(frozenTestNow().toISOString());
+  });
+});
 
 function subscriptionCharge() {
   return {

@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const tx = {
@@ -212,6 +212,8 @@ import {
   resetXeroRateLimitStateForTests,
   updateXeroBookingInvoiceForBooking,
 } from "@/lib/xero";
+import { frozenTestNow } from "@/lib/__tests__/helpers/clock";
+import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
 
 // encryptToken is async (#2079); precompute the fixture ciphertexts once so the
 // synchronous mock-setup blocks below need no await. The stubbed token key
@@ -914,12 +916,28 @@ describe("createXeroInvoiceForBooking", () => {
       clubDay: "2026-01-15",
     },
   ])("the recorded Stripe payment date — $label", ({ instant, utcDay, clubDay }) => {
-    it("is the club's calendar day, not the UTC one", async () => {
+    beforeEach(() => {
+      // Say what actually happened before any date assertion can turn an
+      // environment problem into what looks like the product bug.
+      expectClubTimeZonePremise();
+      // A fixture that drifted out of the divergence window would pass vacuously.
       expect(instant.toISOString().slice(0, 10)).toBe(utcDay);
       // The root freeze pins midday NZ, where the two calendars agree — the one
       // window this defect does not live in. Pin the divergent instant here.
       vi.setSystemTime(instant);
+    });
 
+    afterEach(() => {
+      // Hand the clock back so the root `beforeEach` re-freezes the DEFAULT
+      // instant for every test declared after this block. Without this the pin
+      // leaks: `ensureFrozenTestClock()` returns early whenever anything is
+      // already mocking `Date`, so it would never overwrite — nor restore — a
+      // deliberate pin, and the rest of this file would silently run six months
+      // earlier than 1 July 2026 (docs/TESTING.md rule 4).
+      vi.useRealTimers();
+    });
+
+    it("is the club's calendar day, not the UTC one", async () => {
       mocks.prisma.booking.findUnique.mockResolvedValue({
         id: "booking_1",
         memberId: "mem_1",
@@ -972,6 +990,17 @@ describe("createXeroInvoiceForBooking", () => {
       expect(payment.date).toBe(clubDay);
       expect(payment.date).not.toBe(utcDay);
     });
+  });
+
+  // The restore proof for the block above. It is declared AFTER it, so it runs
+  // after it, and it fails the moment that `afterEach` stops handing the clock
+  // back — which is the only thing standing between a scoped pin and roughly
+  // 2,300 lines of later tests silently running on 14 January 2026 instead of
+  // 1 July 2026, flipping past and future for every `2026-07-31` fixture in this
+  // file. `frozenTestNow()` rather than the literal so the rollover canary's
+  // `TEST_CLOCK_ISO` / `TEST_CLOCK_OFFSET_DAYS` runs still agree with it.
+  it("hands the default frozen clock back to every test declared after the pinned block", () => {
+    expect(new Date().toISOString()).toBe(frozenTestNow().toISOString());
   });
 
   describe("promo code discount line coding", () => {

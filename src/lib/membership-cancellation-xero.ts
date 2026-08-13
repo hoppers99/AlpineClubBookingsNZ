@@ -935,6 +935,12 @@ async function allocateMembershipCancellationCreditNote(params: {
     createdByMemberId: params.createdByMemberId ?? null,
   });
 
+  // Club calendar day, as for the credit note it settles (INV-DATE-019, #2834),
+  // read ONCE outside the closure: `callXeroApi` re-invokes its callback on
+  // every retry attempt, so a read inside it would send a different date on a
+  // retry that crossed club midnight, under the same idempotency key.
+  const allocationDate = formatDateOnlyForTimeZone(new Date());
+
   try {
     const response = await callXeroApi(
       () =>
@@ -946,9 +952,7 @@ async function allocateMembershipCancellationCreditNote(params: {
               {
                 invoice: { invoiceID: params.invoiceId },
                 amount: params.amountCents / 100,
-                // Club calendar day, as for the credit note it settles
-                // (INV-DATE-019, #2834).
-                date: formatDateOnlyForTimeZone(new Date()),
+                date: allocationDate,
               },
             ],
           },

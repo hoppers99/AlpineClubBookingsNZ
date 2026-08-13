@@ -851,6 +851,12 @@ export async function deallocateExcessAppliedCreditForBooking(
           "deallocation-recreate", group.currentCents, group.targetCents,
           "op", options.syncOperationId, "v2"
         );
+        // The recreated allocation is dated on the club's calendar, not the UTC
+        // day (INV-DATE-019, #2834), read ONCE outside the closure: `callXeroApi`
+        // re-invokes its callback on every retry attempt, so a read inside it
+        // would send a different date on a retry that crossed club midnight,
+        // under the same idempotency key.
+        const recreatedAllocationDate = formatDateOnlyForTimeZone(new Date());
         await callXeroApi(
           () => xero.accountingApi.createCreditNoteAllocation(
             tenantId,
@@ -858,9 +864,7 @@ export async function deallocateExcessAppliedCreditForBooking(
             { allocations: [{
               invoice: { invoiceID: booking.payment!.xeroInvoiceId! },
               amount: group.targetCents / 100,
-              // The recreated allocation is dated on the club's calendar, not
-              // the UTC day (INV-DATE-019, #2834).
-              date: formatDateOnlyForTimeZone(new Date()),
+              date: recreatedAllocationDate,
             }] },
             undefined,
             idempotencyKey

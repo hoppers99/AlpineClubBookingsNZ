@@ -272,6 +272,12 @@ export async function createXeroSupplementaryInvoice(params: {
           netAmountCents,
           "v1"
         );
+        // Bank-reconciliation input: the club's calendar day, not the UTC one
+        // (INV-DATE-019, #2834). Read ONCE, outside the closure, for the same
+        // reason as the issue date above — `callXeroApi` re-invokes this
+        // callback on every retry attempt, so a read inside it could send a
+        // different date on a retry that crossed club midnight.
+        const supplementaryPaymentDate = formatDateOnlyForTimeZone(new Date());
         const paymentResponse = await callXeroApi(
           () =>
             xero.accountingApi.createPayments(
@@ -281,9 +287,7 @@ export async function createXeroSupplementaryInvoice(params: {
                   invoice: { invoiceID: created.invoiceID },
                   account: { code: stripeBankCode },
                   amount: netAmountCents / 100,
-                  // Bank-reconciliation input: the club's calendar day, not the
-                  // UTC one (INV-DATE-019, #2834).
-                  date: formatDateOnlyForTimeZone(new Date()),
+                  date: supplementaryPaymentDate,
                   reference: `Stripe payment for booking modification ${bookingId.slice(0, 8)}`,
                 }],
               },
