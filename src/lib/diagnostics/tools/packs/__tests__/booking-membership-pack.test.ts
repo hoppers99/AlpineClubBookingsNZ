@@ -2592,6 +2592,12 @@ describe("AID-6B booking/membership pack: a name is untrusted text (#2376)", () 
           durationMs: 1,
           roundIndex: 0,
           observedAt: "2026-08-09T09:00:00.000Z",
+          invocationChannel: "model_tool_use",
+          sensitiveInclusion: "not_applicable",
+          consentRecordKind: null,
+          consentRecordOrigin: null,
+          peopleSearchTick: "withheld",
+          recordConsentTick: "withheld",
         },
       });
       // Exactly one opening and one closing delimiter: no projected value could
@@ -2639,29 +2645,26 @@ describe("AID-6B booking/membership pack: read-only (#2376)", () => {
       }
     }
 
-    // The one interactive transaction is a refusal boundary around the whole
-    // server-owned read graph, not a mutation: PostgreSQL is told READ ONLY before
-    // the first data statement and receives its own statement timeout. Both tagged
-    // templates are fixed; the timeout's only interpolation is a BOUND PARAMETER
-    // (`set_config` takes the value as text, where `SET LOCAL` would have needed the
-    // number built into the SQL). They are the only raw execution controls permitted
-    // in a server-owned pack source.
-    const evidence = packSource("booking-evidence.ts");
-    expect(evidence.match(/\.\$transaction\(/g)).toHaveLength(1);
-    expect(evidence.match(/\.\$executeRaw`/g)).toHaveLength(2);
-    expect(evidence).toContain("await tx.$executeRaw`SET TRANSACTION READ ONLY`");
-    expect(evidence).toContain(
-      "await tx.$executeRaw`SELECT pg_catalog.set_config('statement_timeout', ${String(AID6B_DATABASE_STATEMENT_TIMEOUT_MS)}, true)`",
-    );
-    expect(evidence).not.toContain("$executeRawUnsafe");
-    // The timeout value is DERIVED, never a second literal. `'5s'` beside a constant
-    // called AID6B_DATABASE_STATEMENT_TIMEOUT_MS is how the two silently diverge:
-    // narrow the constant and PostgreSQL keeps cancelling at five seconds while the
-    // transaction ceiling drops below it, inverting which bound fires first.
-    expect(evidence).not.toContain("statement_timeout = '");
+    // NO PACK MODULE EXECUTES RAW SQL AT ALL, which is stricter than the rule this
+    // assertion carried before #2786. The two control statements that open the
+    // bounded read-only transaction used to live in `booking-evidence.ts`, so the
+    // census had to permit exactly two `$executeRaw` calls there and describe what
+    // they were allowed to be. They now live in the shared seam
+    // (`tools/read-only-transaction.ts`), whose own test pins them and their bound
+    // parameter — so a pack source needs no raw execution for any reason, and
+    // "exactly these two are fine" is no longer a doorway a later edit can widen.
+    for (const name of AID6B_PACK_MODULES) {
+      const source = packSource(name);
+      expect(source.includes("$executeRaw"), `${name} executes raw SQL`).toBe(
+        false,
+      );
+      expect(source.includes("$transaction"), `${name} opens a transaction`).toBe(
+        false,
+      );
+    }
   });
 
-  it("names the global Prisma client nowhere except opening the transaction", () => {
+  it("names the global Prisma client nowhere at all", () => {
     // THE GUARD THE UNIT DOUBLES CANNOT BE. `booking-evidence.test.ts` stubs
     // `$transaction` and hands the callback a client; even with a distinct `txMock`
     // object it can only prove that COLLABORATORS received the transaction client,
@@ -2675,19 +2678,30 @@ describe("AID-6B booking/membership pack: read-only (#2376)", () => {
     // comments stripped first, because the docblocks discuss `prisma` by name on
     // purpose and a census that counted prose would break on every wording change
     // and teach the next author to widen it.
+    //
+    // THE PIN MOVED WITH THE HELPER AND GOT STRICTER (#2786). While
+    // `withBoundedReadOnlyTransaction` lived here the census had to allow
+    // `prisma.$transaction`, and "exactly one property" was the strongest statement
+    // available. The seam now lives in `tools/read-only-transaction.ts`, which
+    // carries that one-property pin, and what is true of THIS module is that it
+    // reaches the global client for nothing whatsoever. The tree-wide version of
+    // this assertion — every `server_owned` evidence module, not just this one —
+    // is in `tools/__tests__/read-only-transaction.test.ts`; keeping a copy here
+    // is deliberate, because this is the pack census a booking-pack author reads.
     const evidence = packSource("booking-evidence.ts");
     const code = evidence
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/^[ \t]*\/\/.*$/gm, "");
-    // Exactly one property is ever reached on the global client, and it is the one
-    // that opens the bounded transaction.
-    expect(code.match(/prisma\.[A-Za-z$]+/g)).toEqual(["prisma.$transaction"]);
-    // Non-vacuous: the stripped code still holds the module, and the import the
-    // census is about.
-    expect(code).toContain('import { prisma } from "@/lib/prisma"');
+    expect(code.match(/prisma\.[A-Za-z$]+/g)).toBeNull();
+    expect(code).not.toContain('from "@/lib/prisma"');
+    // Non-vacuous: the stripped code still holds the module and the import of the
+    // seam that replaced the direct client, so an empty match means "reads through
+    // the seam", never "the strip ate the file".
+    expect(code).toContain('from "../read-only-transaction"');
+    expect(code).toContain("withBoundedReadOnlyTransaction((tx)");
     expect(code.length).toBeGreaterThan(evidence.length / 4);
     // And the rule itself is stated where a future author will read it.
-    expect(evidence).toContain("none of these three readers names");
+    expect(evidence).toContain("names the global Prisma client NOWHERE AT ALL");
   });
 
   it("makes no provider call — no client is imported and nothing calls fetch", () => {

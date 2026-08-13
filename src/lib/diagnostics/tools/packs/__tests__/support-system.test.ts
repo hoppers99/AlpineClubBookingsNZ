@@ -21,9 +21,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/ai-diagnostics-config", () => ({
   getDiagnosticsReadiness: vi.fn(),
-}));
-vi.mock("@/lib/module-settings", () => ({
-  loadEffectiveModuleFlags: vi.fn(),
+  // #2803: the module flag now comes from the readiness module's own TRI-STATE
+  // reader, not from the fault-tolerant flags loader, so this pack no longer
+  // decides for itself what a failed settings read means.
+  readDiagnosticsModuleFlag: vi.fn(),
 }));
 vi.mock("@/lib/ai-diagnostics-usage", async (importOriginal) => {
   const actual =
@@ -34,21 +35,69 @@ vi.mock("@/lib/admin-cron-runs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/admin-cron-runs")>();
   return { ...actual, getCronRunsForAdminHealth: vi.fn() };
 });
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
-    diagnosticsBudgetReservation: { count: vi.fn() },
-    diagnosticsUsageEvent: { findFirst: vi.fn() },
+/**
+ * THE DOUBLE HAS TO MODEL THE SEAM, not just the reads inside it (#2786).
+ *
+ * The usage-health entry's three reads moved inside
+ * `withBoundedReadOnlyTransaction`, so a `prisma` double with no `$transaction`
+ * stops being a simplification and becomes a wrong answer: every one of those tests
+ * would fail on the double's shape rather than on anything the entry does.
+ *
+ * `txMock` is a DISTINCT OBJECT HOLDING THE SAME DOUBLE FUNCTIONS, which is the
+ * shape #2376 established and #2786 carried into the finance pack. Every existing
+ * `reservationCountMock` assertion in this file keeps working because the functions
+ * are shared — while the object identities differ, so a read that went to the global
+ * client instead of the transaction is visible rather than indistinguishable. It has
+ * no `$transaction` of its own, because a `Prisma.TransactionClient` does not: a
+ * nested interactive transaction throws here rather than quietly taking a second
+ * pool connection. `$executeRaw` is present because the seam's two control
+ * statements run on the transaction client.
+ */
+const { prismaMock, txMock, globalClientReads, recordingWindow } = vi.hoisted(
+  () => {
+    const models = {
+      diagnosticsBudgetReservation: { count: vi.fn() },
+      diagnosticsUsageEvent: { findFirst: vi.fn() },
+    };
+    const txMock = { ...models, $executeRaw: vi.fn().mockResolvedValue(0) };
+    /**
+     * And because the doubles ARE shared, an argument assertion cannot tell the two
+     * clients apart — so the escape is watched for directly. This Proxy records
+     * every property reached on the GLOBAL client while the transaction callback is
+     * running; inside that window the correct number is zero, and a read that
+     * quietly went to `prisma` instead of `tx` names itself here.
+     */
+    const globalClientReads: string[] = [];
+    const recordingWindow = { open: false };
+    const base = { ...models, $transaction: vi.fn() };
+    const prismaMock = new Proxy(base, {
+      get(target, property, receiver) {
+        if (recordingWindow.open && typeof property === "string") {
+          globalClientReads.push(property);
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    }) as typeof base;
+    return { prismaMock, txMock, globalClientReads, recordingWindow };
   },
-}));
+);
 
-import { getDiagnosticsReadiness } from "@/lib/ai-diagnostics-config";
+vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
+
+import {
+  getDiagnosticsReadiness,
+  readDiagnosticsModuleFlag,
+} from "@/lib/ai-diagnostics-config";
+import {
+  DIAGNOSTICS_BLOCKER_CODES,
+  DIAGNOSTICS_BLOCKER_DESCRIPTIONS,
+} from "@/lib/ai-diagnostics-blockers";
 import { getDiagnosticsUsageSummary } from "@/lib/ai-diagnostics-usage";
 import {
   CronRunReadDeadlineError,
   getCronRunsForAdminHealth,
 } from "@/lib/admin-cron-runs";
 import { canonicalStringify } from "@/lib/diagnostics/knowledge/hash";
-import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { prisma } from "@/lib/prisma";
 
 import { renderToolResultEvidenceBlock } from "../../render";
@@ -69,7 +118,7 @@ import {
 } from "../support-evidence";
 
 const readinessMock = vi.mocked(getDiagnosticsReadiness);
-const flagsMock = vi.mocked(loadEffectiveModuleFlags);
+const moduleFlagMock = vi.mocked(readDiagnosticsModuleFlag);
 const usageMock = vi.mocked(getDiagnosticsUsageSummary);
 const cronRunsMock = vi.mocked(getCronRunsForAdminHealth);
 const reservationCountMock = vi.mocked(prisma.diagnosticsBudgetReservation.count);
@@ -88,7 +137,20 @@ const NOW = new Date("2026-08-03T09:00:00.000Z");
 beforeEach(() => {
   vi.clearAllMocks();
   resetDiagnosticsDeploymentEvidenceCacheForTests();
-  flagsMock.mockResolvedValue({ aiDiagnostics: true } as never);
+  moduleFlagMock.mockResolvedValue(true);
+  // Runs the caller's work against the transaction client, as the real seam does.
+  globalClientReads.length = 0;
+  recordingWindow.open = false;
+  prismaMock.$transaction.mockImplementation(
+    async (callback: (tx: typeof txMock) => Promise<unknown>) => {
+      recordingWindow.open = true;
+      try {
+        return await callback(txMock);
+      } finally {
+        recordingWindow.open = false;
+      }
+    },
+  );
 });
 
 afterEach(() => {
@@ -143,7 +205,7 @@ describe("AID-6A readiness evidence (#2375)", () => {
 
     // The canonical function, called with the module flag the deployment resolved —
     // NOT a second readiness rule of this pack's own.
-    expect(flagsMock).toHaveBeenCalledTimes(1);
+    expect(moduleFlagMock).toHaveBeenCalledTimes(1);
     expect(readinessMock).toHaveBeenCalledWith({ aiDiagnostics: true });
 
     const projected = entry(DIAGNOSTICS_READINESS_TOOL_ID).project(rows[0]);
@@ -156,6 +218,93 @@ describe("AID-6A readiness evidence (#2375)", () => {
       blockerCodes: "credential_needs_reentry,database_role_unsafe",
       blockerCount: 2,
     });
+  });
+
+  it("carries an UNREADABLE module flag through as unknown, not as off (#2803)", async () => {
+    // The narrow-failure shape: the flags read failed, everything else answered.
+    moduleFlagMock.mockResolvedValue(null);
+    readinessMock.mockResolvedValue({
+      ready: false,
+      moduleEnabled: null,
+      keyState: "saved",
+      monthlyBudgetCents: 20_000,
+      databaseState: "verified",
+      blockers: ["module_flags_unreadable"],
+    });
+
+    const rows = await readDiagnosticsReadinessEvidence();
+
+    // The pack does not decide what a failed read means — it passes the unknown on.
+    expect(readinessMock).toHaveBeenCalledWith({ aiDiagnostics: null });
+    // And it is still ONE ROW. This must never become a rejection or an
+    // `evidence_unavailable`: readiness has to answer in exactly the case where the
+    // application database is the fault.
+    expect(rows).toHaveLength(1);
+
+    const projected = entry(DIAGNOSTICS_READINESS_TOOL_ID).project(rows[0]);
+    expect(projected.moduleEnabled).toBeNull();
+    expect(projected.blockerCodes).toBe("module_flags_unreadable");
+    expect(projected.readinessState).toBe("not_ready");
+    // The whole point, stated as a comparison: this row and a genuinely disabled
+    // module's row are not the same row.
+    expect(projected).not.toEqual(
+      entry(DIAGNOSTICS_READINESS_TOOL_ID).project({
+        ...rows[0],
+        module_enabled: false,
+        blocker_codes: "module_off",
+      }),
+    );
+  });
+
+  it("still projects a genuinely disabled module as off, with module_off alone", async () => {
+    moduleFlagMock.mockResolvedValue(false);
+    readinessMock.mockResolvedValue({
+      ready: false,
+      moduleEnabled: false,
+      keyState: "saved",
+      monthlyBudgetCents: 20_000,
+      databaseState: "verified",
+      blockers: ["module_off"],
+    });
+
+    const rows = await readDiagnosticsReadinessEvidence();
+    const projected = entry(DIAGNOSTICS_READINESS_TOOL_ID).project(rows[0]);
+    expect(projected.moduleEnabled).toBe(false);
+    expect(projected.blockerCodes).toBe("module_off");
+    expect(projected.blockerCount).toBe(1);
+  });
+
+  it("projects an absent or malformed module flag as unknown, never as off", () => {
+    // Fail-SAFE direction. The old `row.module_enabled === true` answered `false`
+    // for a field that was missing entirely, which is an assertion about a club's
+    // settings that no read ever made.
+    const project = entry(DIAGNOSTICS_READINESS_TOOL_ID).project;
+    const base = {
+      readiness_state: "not_ready",
+      credential_state: "saved",
+      monthly_budget_cents: 100,
+      database_role_state: "verified",
+      blocker_codes: "module_flags_unreadable",
+      blocker_count: 1,
+    };
+    expect(project(base).moduleEnabled).toBeNull();
+    expect(project({ ...base, module_enabled: "true" }).moduleEnabled).toBeNull();
+    expect(project({ ...base, module_enabled: 1 }).moduleEnabled).toBeNull();
+  });
+
+  it("gives the model every blocker code with its exact meaning (#2803)", () => {
+    // A stable code the model has to guess the meaning of is how `module_off`
+    // became "tell them to switch it on" for a module that was already on.
+    const { description } = entry(DIAGNOSTICS_READINESS_TOOL_ID);
+    for (const code of DIAGNOSTICS_BLOCKER_CODES) {
+      expect(description, code).toContain(
+        `${code} = ${DIAGNOSTICS_BLOCKER_DESCRIPTIONS[code]}`,
+      );
+    }
+    expect(description).toContain("BLOCKER CODES");
+    // The tri-state has to be readable from the description alone, because the
+    // model sees the row without this test's context.
+    expect(description).toMatch(/moduleEnabled is true, false, or NULL/);
   });
 
   it("says `none` rather than an empty string when nothing is blocking", async () => {
@@ -400,6 +549,54 @@ describe("AID-6A budget and usage health (#2375)", () => {
     expect(Number.isInteger(projected.remainingCents)).toBe(true);
   });
 
+  it("reads its own three counts inside the seam, and reaches the global client for none of them (#2786)", async () => {
+    usageMock.mockResolvedValue(summary());
+    reservationCountMock.mockResolvedValue(3 as never);
+    usageEventMock.mockResolvedValue(null as never);
+
+    await readDiagnosticsUsageHealthEvidence(NOW);
+
+    // It opened the seam exactly once — not once per read, which would be three
+    // pool connections and three snapshots for one row of evidence.
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    // And PostgreSQL was told READ ONLY before anything was read, on the
+    // transaction client rather than anywhere else.
+    expect(txMock.$executeRaw).toHaveBeenCalled();
+    // Nothing reached the global client while the callback was running. This is the
+    // assertion the shared doubles cannot make by identity, and the only one that
+    // would catch a fourth read added later on `prisma` instead of `tx`.
+    expect(globalClientReads).toEqual([]);
+  });
+
+  it("runs the shared usage summary BEFORE the seam opens, which is the declared exemption (#2786)", async () => {
+    // The ordering is a decision, not an accident: `getDiagnosticsUsageSummary` is
+    // the admin panel's own calculation and accepts no transaction client, so it is
+    // exempt (`usage-summary-no-tx-client`) and must not become a statement inside a
+    // transaction that has already begun. If it ever moved inside, this fails.
+    const order: string[] = [];
+    usageMock.mockImplementation(async () => {
+      order.push(recordingWindow.open ? "summary-inside-seam" : "summary");
+      return summary();
+    });
+    prismaMock.$transaction.mockImplementation(
+      async (callback: (tx: typeof txMock) => Promise<unknown>) => {
+        order.push("seam-opened");
+        recordingWindow.open = true;
+        try {
+          return await callback(txMock);
+        } finally {
+          recordingWindow.open = false;
+        }
+      },
+    );
+    reservationCountMock.mockResolvedValue(0 as never);
+    usageEventMock.mockResolvedValue(null as never);
+
+    await readDiagnosticsUsageHealthEvidence(NOW);
+
+    expect(order).toEqual(["summary", "seam-opened"]);
+  });
+
   it("reports a negative remainder honestly rather than clamping it to zero", async () => {
     // A budget lowered below what is already committed is a real operational state,
     // and hiding it behind a zero would make the number look healthy.
@@ -625,6 +822,12 @@ describe("AID-6A background job health (#2375)", () => {
         durationMs: 1,
         roundIndex: 0,
         observedAt: NOW.toISOString(),
+        invocationChannel: "model_tool_use",
+        sensitiveInclusion: "not_applicable",
+        consentRecordKind: null,
+        consentRecordOrigin: null,
+        peopleSearchTick: "withheld",
+        recordConsentTick: "withheld",
       },
     });
     // All eighteen present, which is why the ceiling is eighteen and not the twenty
@@ -641,7 +844,7 @@ describe("AID-6A background job health (#2375)", () => {
 
   it("bounds its own read in TIME, and refuses rather than reporting a partial one", async () => {
     // The `server_owned` arm gets none of the SQL arm's `BEGIN READ ONLY`,
-    // `statement_timeout` or `lock_timeout`, and the executor's 15-second race abandons
+    // `statement_timeout` or `lock_timeout`, and the executor's outer race abandons
     // a slow read WITHOUT cancelling it. So this source carries its own deadline, set
     // below the executor's.
     cronRunsMock.mockResolvedValue([]);

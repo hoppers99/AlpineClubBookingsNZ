@@ -1,9 +1,22 @@
 /**
- * The ONLY module in the codebase that imports `@anthropic-ai/sdk` (#2211, epic
- * #2094 C3). Everything about talking to the paid model — the client, the frozen
- * system prompt, the grounded-only answer contract, and the error taxonomy —
- * lives here so the route, the metering, and the tests never touch the SDK
- * surface directly.
+ * PAGE HELP's model client (#2211, epic #2094 C3). Everything about talking to the
+ * paid model for page help — the client, the frozen system prompt, the
+ * grounded-only answer contract, and the error taxonomy — lives here so the route,
+ * the metering, and the tests never touch the SDK surface directly.
+ *
+ * This module used to say it was "the ONLY module in the codebase that imports
+ * `@anthropic-ai/sdk`". That was true, load-bearing and enforced by nothing, and
+ * AI Diagnostics (AID-7, #2378) needed a second one: its
+ * `src/lib/diagnostics/answer/provider.ts` runs an agentic TOOL loop, which the
+ * frozen prompt below promises page help can never do ("You have no tools, no
+ * actions, and no access to any account, booking, or database"). One module serving
+ * both would need a system prompt that is true of both, and that promise is exactly
+ * what diagnostics exists to break.
+ *
+ * SO THE CLAIM IS NOW A CENSUS, NOT A SENTENCE:
+ * `src/lib/__tests__/anthropic-sdk-importers.test.ts` reads the tree and asserts the
+ * set of SDK importers, so a third one fails a test instead of quietly falsifying a
+ * docblock.
  *
  * SECURITY (carry-forward from C1's grounding injection review):
  *  - The system prompt is FROZEN. Nothing is interpolated into it.

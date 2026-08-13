@@ -396,6 +396,8 @@ Prefix `INV-LOCKOUT`.
 | `INV-LOCKOUT-011` | The financial-year reseed is gated on the Xero module, not on the mode |
 | `INV-LOCKOUT-012` | Only the refusals are mode-gated; the unpaid-member-guest lookups still run for the privacy rule |
 | `INV-LOCKOUT-013` | There are six mode-gated refusal sites: the five routes plus the modify apply path |
+| `INV-LOCKOUT-069` | The payment path carries no subscription gate by design, so a locked-out member can pay an on-behalf booking |
+| `INV-LOCKOUT-070` | That journey's two non-payment edges: the 72-hour draft clock, and a $0 draft with no member pay step |
 | `INV-LOCKOUT-014` | The paid-up-adult rule is evaluated on removals too; a consent decline or expiry is exempt |
 | `INV-LOCKOUT-015` | The waitlist is the sixth money path: the offer states the reason, confirm re-checks without consuming |
 | `INV-LOCKOUT-016` | D-12 applies on every path from the real consent column; a pending invite cannot be the paid-up adult |
@@ -539,8 +541,9 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-034` | One shared "cancelled or removed" sentence for the surfaces that explain rather than 404 |
 | `INV-ADDPAY-035` | A soft-deleted booking takes no member-guest consent answer, from any role, either arm |
 | `INV-ADDPAY-036` | A modification payment captured on a deleted booking is recorded and queued for a human, never auto-refunded from that path |
-| `INV-ADDPAY-037` | An auto-refunded late BOOKING-CHANGE capture on a cancelled booking leaves a DISMISSED refund task the finance queue shows, grouped by whether the booking was deleted, with two named exceptions and the refund staying automatic |
-| `INV-ADDPAY-038` | That booking-change alert names what happened for both populations, cannot be muted, resolves a real recipient rather than the bootstrap literal, and stays the event's only notification |
+| `INV-ADDPAY-037` | EITHER late-capture path's auto-refund on a cancelled booking leaves a DISMISSED refund task the finance queue shows, grouped by whether the booking was deleted, with two named exceptions and the refund staying automatic — widened from the booking-change path alone by #2773, and the hand-resolved exception kept by #2774 D1, both orchestrator decisions on those issues' Recommended options that the owner has not ruled on (see `INV-ADDPAY-039`) |
+| `INV-ADDPAY-038` | That alert names what happened — which payment, which population — cannot be muted, resolves a real recipient rather than the bootstrap literal, and stays the event's only notification — extended from the booking-change alert alone to both paths by #2773, an orchestrator decision the owner has not ruled on (see `INV-ADDPAY-039`) |
+| `INV-ADDPAY-039` | A late capture an operator has already paid back by hand is never refunded again: the automatic refund is withheld, audited and alerted, and a hand-back landing mid-refund is reported as a possible double payment — an orchestrator decision on #2774's Recommended option that the owner has not ruled on, so never cite it as owner-settled |
 
 ## Analytics And Privacy
 
@@ -564,6 +567,7 @@ Prefix `INV-PRIV`.
 | `INV-PRIV-010` | Every one of these fails closed, and the public website still renders normally |
 | `INV-PRIV-011` | Which person fields the log/Sentry redactor strips by key, that key coverage is not exhaustive, and that audit rows deliberately keep name and street address |
 | `INV-PRIV-012` | Audit category follows the affected domain; member visibility declared separately; rows already written are `INV-OPS-012` |
+| `INV-PRIV-013` | `admin` writers move only to close a split; fifteen keeps, `lockers` settled (#2777) |
 
 ## Membership Lifecycle
 
@@ -701,7 +705,7 @@ File: [`invariants/operations.md`](invariants/operations.md). Prefix `INV-OPS`.
 | --- | --- |
 | `INV-OPS-001` | Raw SQL never declares its own result shape: lock raw and read typed, or validate the rows |
 | `INV-OPS-002` | Production deployment must respect `docs/BLUE_GREEN_MIGRATION_POLICY.md` |
-| `INV-OPS-012` | An audit reclassification ships its backfill or files one, never neither |
+| `INV-OPS-012` | An audit reclassification ships its backfill or files one, never neither — and states its MEASURED before/after audience per site |
 | `INV-OPS-005` | A doomed column needs `@ignore`: static defaults and implicit `RETURNING` still name it |
 | `INV-OPS-006` | Post-drop the compiler catches only `where`; `select` and `create` fail at runtime |
 | `INV-OPS-007` | The surviving guard test pins the generated client's shape and raw SQL |

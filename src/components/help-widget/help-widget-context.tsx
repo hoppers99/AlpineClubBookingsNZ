@@ -32,6 +32,22 @@ export type HelpWidgetExtras = {
 
 type Registration = { id: number; extras: HelpWidgetExtras };
 
+/**
+ * The record an operator has explicitly chosen to investigate (AID-7, #2378, owner
+ * decision D11).
+ *
+ * IT IS AN ID AND NOTHING ELSE. No kind, no fields, no label. The kind comes from the
+ * route the SERVER matches, which is what keeps "a member id sent on a booking route
+ * can only ever fail to find a booking" true; the record is then re-resolved
+ * server-side under the operator's own authority before a single field is read. So the
+ * worst a wrong selection can do is select a record the server refuses.
+ *
+ * THE NONCE IS WHAT MAKES THE SECOND CLICK WORK. Choosing the same row again after
+ * closing the panel must reopen it, and an id-only value would be `===` to the one
+ * already held and change nothing. It counts choices, not records.
+ */
+export type DiagnosticsRecordSelection = { id: string; nonce: number };
+
 type HelpWidgetContextValue = {
   /** Merged extras from every live registration (registration order). */
   extras: HelpWidgetExtras;
@@ -40,9 +56,20 @@ type HelpWidgetContextValue = {
   registerExtras: (extras: HelpWidgetExtras) => number;
   deregisterExtras: (id: number) => void;
   setHint: (group: string | null) => void;
+  /** The record chosen for investigation, or null. */
+  diagnosticsRecord: DiagnosticsRecordSelection | null;
+  selectDiagnosticsRecord: (recordId: string) => void;
+  clearDiagnosticsRecord: () => void;
+  /** Whether this admin may use Diagnostics at all, published by the widget. */
+  diagnosticsAvailable: boolean;
+  setDiagnosticsAvailable: (available: boolean) => void;
 };
 
 const HelpWidgetContext = createContext<HelpWidgetContextValue | null>(null);
+
+/** Stable no-ops, so the provider-less hooks return the same object shape forever. */
+const NOOP = () => {};
+const NOOP_SELECT: (recordId: string) => void = () => {};
 
 function mergeRegistrations(registrations: Registration[]): HelpWidgetExtras {
   const sections: HelpSection[] = [];
@@ -57,7 +84,19 @@ function mergeRegistrations(registrations: Registration[]): HelpWidgetExtras {
 export function HelpWidgetProvider({ children }: { children: ReactNode }) {
   const [registrations, setRegistrations] = useState<Registration[]>([]);
   const [hintGroup, setHintGroup] = useState<string | null>(null);
+  const [diagnosticsRecord, setDiagnosticsRecord] =
+    useState<DiagnosticsRecordSelection | null>(null);
+  const [diagnosticsAvailable, setDiagnosticsAvailable] = useState(false);
   const nextId = useRef(0);
+  const nextNonce = useRef(0);
+
+  const selectDiagnosticsRecord = useCallback((recordId: string) => {
+    setDiagnosticsRecord({ id: recordId, nonce: (nextNonce.current += 1) });
+  }, []);
+
+  const clearDiagnosticsRecord = useCallback(() => {
+    setDiagnosticsRecord(null);
+  }, []);
 
   const registerExtras = useCallback((extras: HelpWidgetExtras) => {
     const id = (nextId.current += 1);
@@ -81,8 +120,22 @@ export function HelpWidgetProvider({ children }: { children: ReactNode }) {
       registerExtras,
       deregisterExtras,
       setHint: setHintGroup,
+      diagnosticsRecord,
+      selectDiagnosticsRecord,
+      clearDiagnosticsRecord,
+      diagnosticsAvailable,
+      setDiagnosticsAvailable,
     }),
-    [extras, hintGroup, registerExtras, deregisterExtras],
+    [
+      extras,
+      hintGroup,
+      registerExtras,
+      deregisterExtras,
+      diagnosticsRecord,
+      selectDiagnosticsRecord,
+      clearDiagnosticsRecord,
+      diagnosticsAvailable,
+    ],
   );
 
   return (
@@ -129,6 +182,56 @@ export function useHelpWidgetExtras(extras: HelpWidgetExtras): void {
     // `key` captures the meaningful identity of `extras`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [registerExtras, deregisterExtras, key]);
+}
+
+/**
+ * The operator's chosen investigation record, and the two ways it changes
+ * (AID-7, #2378, owner decision D11).
+ *
+ * WHY THIS IS NOT `useHelpWidgetExtras`. Extras register on MOUNT, which is exactly
+ * wrong for a table: every row would register its own id as the page rendered, and
+ * "last one wins" would silently make the bottom row of the list the subject of the
+ * investigation. Choosing a record is an act by the operator, so it is a callback
+ * they invoke, not a side effect of a row existing.
+ *
+ * Inert without a provider, so a row control can be dropped onto any surface.
+ */
+export function useDiagnosticsRecord(): {
+  record: DiagnosticsRecordSelection | null;
+  /** True only where the widget itself said this admin may use Diagnostics. */
+  available: boolean;
+  select: (recordId: string) => void;
+  clear: () => void;
+} {
+  const ctx = useContext(HelpWidgetContext);
+  return {
+    record: ctx?.diagnosticsRecord ?? null,
+    available: ctx?.diagnosticsAvailable ?? false,
+    select: ctx?.selectDiagnosticsRecord ?? NOOP_SELECT,
+    clear: ctx?.clearDiagnosticsRecord ?? NOOP,
+  };
+}
+
+/**
+ * Let the widget publish whether Diagnostics is usable at all, so a row control on a
+ * page that knows nothing about permissions can hide itself.
+ *
+ * THE WIDGET IS THE ONE THAT KNOWS. Its `diagnostics` prop comes from the admin
+ * layout, which has already resolved both halves — the operator's permission (the
+ * prop's PRESENCE) and the module flag (`moduleEnabled`). Republishing it here means
+ * the row control and the Diagnostics tab appear and disappear together off one
+ * computation, rather than three list pages each re-deriving it and one of them
+ * getting it wrong.
+ */
+export function usePublishDiagnosticsAvailable(available: boolean): void {
+  const ctx = useContext(HelpWidgetContext);
+  const publish = ctx?.setDiagnosticsAvailable;
+
+  useEffect(() => {
+    if (!publish) return;
+    publish(available);
+    return () => publish(false);
+  }, [publish, available]);
 }
 
 /**

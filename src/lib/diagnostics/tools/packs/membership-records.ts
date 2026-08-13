@@ -214,13 +214,16 @@
  * argument has nothing to mean — and every argument is an exact record id or a key
  * from a closed server-owned map anyway.
  *
- * ADR-004's PER-INVOCATION OPT-IN FOR PERSONAL DATA IS DECLARED BUT NOT YET
- * IMPLEMENTED. `surfacesPersonalData` is set truthfully on every entry below, and
- * it is recorded as a prerequisite on #2378. Until #2378 lands it is a DECLARATION
- * and not a control, so nothing in this module leans on it: what actually bounds
- * this pack is the AND-ed area check, the fixed statements, the column grant, the
- * per-session call ceiling and the audit row — and that is stated here so a later
- * reader does not mistake the flag for a gate.
+ * ADR-004's PER-INVOCATION OPT-IN FOR PERSONAL DATA IS ENFORCED (AID-7a, #2785).
+ * `surfacesPersonalData` is set truthfully on every entry below, and it is now the
+ * trigger for `invoke.ts` gate 4b: such an entry runs only when the operator ticked
+ * personal details AND this investigation covers the record it names. Each entry
+ * therefore also declares which record that is, and `member_record_audit_history`
+ * — which surfaces no personal fields — declares one too, because reading ONE named
+ * record's history is bounded by the investigation whether or not the row carries a
+ * name. That sits on top of what always bounded this pack: the AND-ed area check,
+ * the fixed statements, the column grant, the per-session call ceiling and the
+ * audit row.
  */
 
 import "server-only";
@@ -467,9 +470,17 @@ const memberSummary = defineDiagnosticsTool<MemberIdArgs>({
   // may be added here without something being removed; the next field to go would
   // be `hutLeaderEligible`, which has its own answer in the lodge tools.
   //
-  // A name, an email address and a member id. ADR-004's per-invocation opt-in
-  // applies — DECLARED, not yet implemented (#2378).
+  // A name, an email address and a member id, so ADR-004 §1's personal-details
+  // tick is required here (`invoke.ts` gate 4b, AID-7a #2785).
   surfacesPersonalData: true,
+  consentRecordKind: "member",
+  consentRecordArgKey: "memberId",
+  // The parents this member is a dependent of. `familyGroupRef` and
+  // `billingFamilyGroupRef` name family GROUPS, which are not a consent record kind.
+  relatedRecordRefs: [
+    { field: "parentMemberRef", kind: "member" },
+    { field: "secondaryParentRef", kind: "member" },
+  ],
 });
 
 // ---------------------------------------------------------------------------
@@ -554,9 +565,12 @@ const memberSubscriptionState = defineDiagnosticsTool<MemberIdArgs>({
   // TEN fields. No name, no email address, no operator identity and no free
   // text — but the entry is keyed on a member id the caller supplied, and a
   // subscription row is a fact about a person's membership standing, so the
-  // declaration is true and the opt-in applies (DECLARED, not yet implemented,
-  // #2378).
+  // declaration is true and ADR-004 §1's personal-details tick is required here.
   surfacesPersonalData: true,
+  // No related ref: subscription rows carry the season, the status and the Xero
+  // invoice number, and a Xero invoice is a provider record.
+  consentRecordKind: "member",
+  consentRecordArgKey: "memberId",
 });
 
 // ---------------------------------------------------------------------------
@@ -744,9 +758,15 @@ const memberFamilyState = defineDiagnosticsTool<MemberIdArgs>({
   }),
   rowLimit: MEMBER_FAMILY_ROW_LIMIT,
   byteLimit: AID6B_BYTE_LIMIT,
-  // Names, member ids and a member-supplied family-group name on every row.
-  // ADR-004's per-invocation opt-in applies (DECLARED, not yet implemented, #2378).
+  // Names, member ids and a member-supplied family-group name on every row —
+  // OTHER PEOPLE's names, which is why the operator's tick copy says so in as many
+  // words. ADR-004 §1's personal-details tick is required here (gate 4b).
   surfacesPersonalData: true,
+  consentRecordKind: "member",
+  consentRecordArgKey: "memberId",
+  // Every row IS a family link — a partner, a parent or a dependent of the
+  // consented member — and `relatedMemberRef` is that person's member id.
+  relatedRecordRefs: [{ field: "relatedMemberRef", kind: "member" }],
 });
 
 // ---------------------------------------------------------------------------
@@ -914,8 +934,12 @@ const memberBookingSummary = defineDiagnosticsTool<MemberIdArgs>({
   byteLimit: AID6B_BYTE_LIMIT,
   // No person's name is projected — a lodge name is club-set text — but the entry
   // is keyed on a member id and every row is a fact about where that person slept.
-  // ADR-004's per-invocation opt-in applies (DECLARED, not yet implemented, #2378).
+  // ADR-004 §1's personal-details tick is required here (gate 4b).
   surfacesPersonalData: true,
+  consentRecordKind: "member",
+  consentRecordArgKey: "memberId",
+  // The bookings this member owns or is a guest on.
+  relatedRecordRefs: [{ field: "bookingRef", kind: "booking" }],
 });
 
 // ---------------------------------------------------------------------------
@@ -1104,6 +1128,21 @@ const memberAuditHistory = defineDiagnosticsTool<MembershipAuditArgs>({
   // audit row's own — the caller's `recordId` is a predicate and is never echoed
   // back into a row.
   surfacesPersonalData: false,
+  // The history of ONE named record, so the investigation must cover it (#2785
+  // review), with the KIND coming from `subject`. Only `member` is a kind the ledger
+  // holds: a family join request, a partner link and a cancellation request are
+  // per-person records an operator cannot select, so they refuse rather than being
+  // readable for any id the model saw in an earlier row.
+  consentRecordArgKey: "recordId",
+  consentRecordKindByArg: {
+    argKey: "subject",
+    kinds: {
+      member: "member",
+      family_request: null,
+      partner_link: null,
+      cancellation_request: null,
+    },
+  },
 });
 
 /** The AID-6B per-member half, in presentation order. */

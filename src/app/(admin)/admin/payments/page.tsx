@@ -70,6 +70,7 @@ import {
 import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { SortHeader } from "@/components/admin/sort-header";
 import { Pagination } from "@/components/admin/admin-pagination";
+import { DiagnosticsRecordButton } from "@/components/help-widget/diagnostics-record-button";
 import { StatusChip } from "@/components/ui/status-chip";
 import { MiniChip } from "@/components/ui/mini-chip";
 import { type ChipTone } from "@/lib/chip-tones";
@@ -998,6 +999,14 @@ export default function PaymentsPage() {
                       {p.source === "STRIPE" && (
                         <MiniChip tone="info" icon={CreditCard}>Stripe</MiniChip>
                       )}
+                      {/* #2378 D11 — the payment's own id, beside the status the
+                          operator is asking about ("why is this still pending?").
+                          Renders nothing unless the widget says Diagnostics is
+                          available to this admin. */}
+                      <DiagnosticsRecordButton
+                        recordId={p.id}
+                        subject={`the ${formatCents(p.amountCents)} payment for ${p.booking.member.firstName} ${p.booking.member.lastName}`}
+                      />
                     </div>
                   </TableCell>
                   <TableCell>

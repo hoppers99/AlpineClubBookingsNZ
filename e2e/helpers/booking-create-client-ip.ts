@@ -82,6 +82,18 @@ export const E2E_BOOKING_CREATE_CENSUS = [
     classification: "isolated-setup",
   },
   {
+    key: "locked-out-self-refusal",
+    file: "e2e/locked-out-pickup-and-pay.spec.ts",
+    transport: "api",
+    classification: "isolated-setup",
+  },
+  {
+    key: "locked-out-on-behalf-draft",
+    file: "e2e/locked-out-pickup-and-pay.spec.ts",
+    transport: "api",
+    classification: "isolated-setup",
+  },
+  {
     key: "member-exception-compliant",
     file: "e2e/member-policy-exception-requests.spec.ts",
     transport: "browser",

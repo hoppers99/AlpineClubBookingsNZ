@@ -224,6 +224,31 @@ describe("getAdminFeatureSearchIndex — permission filtering (the invariant)", 
     expect(hrefs).toEqual(visibleHrefs(xeroOff, fullMatrix, true));
   });
 
+  it("indexes AI Diagnostics when its module is on, and drops it when off (#2378)", () => {
+    // The nav entry carries no explicit flag of its own — visibility is derived
+    // from the href against FEATURE_ROUTE_RULES, where #2378 registered
+    // "/admin/ai-diagnostics" under the `aiDiagnostics` rule. This asserts that
+    // derivation actually reaches the palette, because the sidebar comment claims
+    // it does and a claim about a mechanism two modules away is exactly the kind
+    // that quietly stops being true.
+    const on = getAdminFeatureSearchIndex(allOn, fullMatrix, true);
+    expect(new Set(on.map((entry) => entry.href))).toContain(
+      "/admin/ai-diagnostics",
+    );
+
+    const diagnosticsOff = { ...allOn, aiDiagnostics: false } as FeatureFlags;
+    const off = getAdminFeatureSearchIndex(diagnosticsOff, fullMatrix, true);
+    const hrefs = new Set(off.map((entry) => entry.href));
+
+    // Off means GONE from discovery, matching the 404 the route itself returns —
+    // a palette entry that navigates to a 404 is worse than no entry.
+    expect(hrefs.has("/admin/ai-diagnostics")).toBe(false);
+    expect(hrefs).toEqual(visibleHrefs(diagnosticsOff, fullMatrix, true));
+    // The help ASSISTANT is a different product on a different flag and must not
+    // disappear with it.
+    expect(hrefs.has("/admin/ai-assistant")).toBe(true);
+  });
+
   it("drops Lobby Display when its module is disabled", () => {
     const lobbyDisplayOff = {
       ...allOn,

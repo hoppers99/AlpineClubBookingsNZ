@@ -14,7 +14,12 @@ import { z } from "zod";
 import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
 import { canonicalStringify, sha256Hex } from "@/lib/diagnostics/knowledge/hash";
 
+import {
+  consentedRecordForToolCall,
+  declaresConsentRecord,
+} from "../consent";
 import { readSqlPlaceholderNumbers } from "../database";
+import { READ_ONLY_SEAM_EXEMPTION_IDS } from "../read-only-seam-exemptions";
 import {
   defineDiagnosticsTool,
   DIAGNOSTICS_TOOL_EVIDENCE_SOURCES,
@@ -81,7 +86,10 @@ import {
   DIAGNOSTICS_TOOLS,
   findDiagnosticsTool,
 } from "../registry";
-import { DIAGNOSTICS_TOOL_BOUNDS } from "../types";
+import {
+  DIAGNOSTICS_CONSENT_RECORD_KINDS,
+  DIAGNOSTICS_TOOL_BOUNDS,
+} from "../types";
 
 /**
  * Only the `select_only_sql` entries carry SQL, so the statement-shaped contracts
@@ -1237,6 +1245,12 @@ describe("diagnostics tool registry contract (#2374)", () => {
           durationMs: 1,
           roundIndex: 0,
           observedAt: "2026-08-03T09:00:00.000Z",
+          invocationChannel: "model_tool_use",
+          sensitiveInclusion: "not_applicable",
+          consentRecordKind: null,
+          consentRecordOrigin: null,
+          peopleSearchTick: "withheld",
+          recordConsentTick: "withheld",
         },
       });
       expect(block.length).toBeLessThanOrEqual(
@@ -1348,6 +1362,12 @@ describe("diagnostics tool registry contract (#2374)", () => {
           durationMs: 1,
           roundIndex: 0,
           observedAt: "2026-08-03T09:00:00.000Z",
+          invocationChannel: "model_tool_use",
+          sensitiveInclusion: "not_applicable",
+          consentRecordKind: null,
+          consentRecordOrigin: null,
+          peopleSearchTick: "withheld",
+          recordConsentTick: "withheld",
         },
       }).length;
       const oneRow = renderToolResultEvidenceBlock({
@@ -1357,7 +1377,10 @@ describe("diagnostics tool registry contract (#2374)", () => {
         observedAt: "2026-08-03T09:00:00.000Z",
         audit: { toolId: tool.id, areasChecked: [...tool.requiredAreas], authOutcome: "allowed",
           failureReason: null, argsHash: "a".repeat(64), resultHash: "b".repeat(64),
-          rowCount: 1, byteCount: 0, durationMs: 1, roundIndex: 0, observedAt: "2026-08-03T09:00:00.000Z" },
+          rowCount: 1, byteCount: 0, durationMs: 1, roundIndex: 0, observedAt: "2026-08-03T09:00:00.000Z",
+          invocationChannel: "model_tool_use", sensitiveInclusion: "not_applicable",
+          consentRecordKind: null, consentRecordOrigin: null, recordConsentTick: "withheld",
+          peopleSearchTick: "withheld" },
       }).length;
       const rowCost = oneRow - fixedCost;
       // The bound, stated as the thing that actually breaks: the fixed cost plus ONE
@@ -1558,6 +1581,754 @@ describe("diagnostics tool registry contract (#2374)", () => {
   });
 });
 
+describe("ADR-004 §1 consent declarations (#2785)", () => {
+  const PERSONAL_DATA_TOOLS = DIAGNOSTICS_TOOLS.filter(
+    (tool) => tool.surfacesPersonalData,
+  );
+
+  it("has personal-data entries to check, so nothing below is vacuous", () => {
+    expect(PERSONAL_DATA_TOOLS.length).toBeGreaterThan(10);
+  });
+
+  it.each(PERSONAL_DATA_TOOLS.map((tool) => [tool.id, tool] as const))(
+    "%s names the record it is about, or declares itself a search",
+    (_id, tool) => {
+      // The gate `invoke.ts` runs has exactly two shapes — "did the operator include
+      // THIS record" and "did the operator allow searching" — so an entry that
+      // surfaces personal data and declares neither would have no gate at all.
+      // `defineDiagnosticsTool` throws on it; this is the same rule asserted over the
+      // registry that actually ships.
+      const namesRecord = declaresConsentRecord(tool);
+      expect(namesRecord || tool.operatorOnly === true).toBe(true);
+      expect(namesRecord && tool.operatorOnly === true).toBe(false);
+    },
+  );
+
+  it("pins the PER-RECORD entries that surface no personal data (#2785 review)", () => {
+    // These six read about one identified subject and return only codes, amounts and
+    // instants, so they declared `surfacesPersonalData: false` and sat outside the
+    // consent gate entirely — the model could read the refund history of a payment
+    // the ledger had just refused. Five of them now name their record; the sixth is
+    // keyed on a PROVIDER event reference, which is not a record an operator can
+    // select or a kind the ledger can hold, and its entry says so in as many words.
+    const perRecordNonPersonal = DIAGNOSTICS_TOOLS.filter(
+      (tool) => !tool.surfacesPersonalData && declaresConsentRecord(tool),
+    ).map((tool) => tool.id);
+    expect(perRecordNonPersonal.sort()).toEqual(
+      [
+        DIAGNOSTICS_PAYMENT_REFUND_STATE_TOOL_ID,
+        DIAGNOSTICS_XERO_INVOICE_LINKAGE_TOOL_ID,
+        DIAGNOSTICS_FINANCE_AUDIT_HISTORY_TOOL_ID,
+        DIAGNOSTICS_MEMBER_AUDIT_HISTORY_TOOL_ID,
+        DIAGNOSTICS_BOOKING_AUDIT_HISTORY_TOOL_ID,
+      ].sort(),
+    );
+    const webhook = findDiagnosticsTool(
+      DIAGNOSTICS_FINANCE_WEBHOOK_TIMELINE_TOOL_ID,
+    );
+    expect(webhook && declaresConsentRecord(webhook)).toBe(false);
+  });
+
+  /**
+   * The registry-side half of the record-scope forcing function (#2785 delta review).
+   *
+   * `defineDiagnosticsTool` enforces the rule from the entry's ZOD schema at
+   * definition time. This census enforces the same rule over the registry that
+   * actually ships, by a DIFFERENT mechanism — the hand-written `inputSchema.required`
+   * list (the bytes the provider is handed) and the entry's own `parseArgs` — so the
+   * two cannot both stop working for one reason. It is also what makes the definer's
+   * detector non-vacuous: if the probe stopped recognising identifiers, this
+   * population would collapse and the count assertion below would fail.
+   */
+  function requiredIdentifierArgs(tool: DiagnosticsToolEntry): string[] {
+    const example = EXAMPLE_ARGS[tool.id];
+    if (typeof example !== "object" || example === null) return [];
+    const keys: string[] = [];
+    for (const key of tool.inputSchema.required ?? []) {
+      const acceptsId = tool.parseArgs({
+        ...example,
+        [key]: WIDEST_RECORD_ID,
+      }).ok;
+      const refusesText = !tool.parseArgs({
+        ...example,
+        [key]: "not a record id!",
+      }).ok;
+      if (acceptsId && refusesText) keys.push(key);
+    }
+    return keys;
+  }
+
+  it("makes every entry asked about ONE identified thing answer for it (#2785 delta review)", () => {
+    // The rule, over the registry rather than over one spec: an entry with a required
+    // argument that takes an exact identifier either names the record it is about, is
+    // a search governed by the channel gate, or carries a reviewed exemption saying
+    // why what it names is not a record an operator could have included. Nothing may
+    // simply not answer — that is how five per-record entries came to sit outside the
+    // consent gate in the first place.
+    const perRecordEntries = DIAGNOSTICS_TOOLS.filter(
+      (tool) => requiredIdentifierArgs(tool).length > 0,
+    );
+    // Non-vacuity, and the detector's own alarm: this population is most of the
+    // registry, so a probe that stopped recognising identifiers fails here.
+    expect(perRecordEntries.length).toBeGreaterThan(15);
+
+    for (const tool of perRecordEntries) {
+      const answered =
+        declaresConsentRecord(tool) ||
+        tool.operatorOnly === true ||
+        (tool.consentRecordExemption ?? "").trim().length > 0;
+      expect(
+        answered,
+        `${tool.id} takes ${requiredIdentifierArgs(tool).join(", ")} but names no consent record, is no search, and carries no consentRecordExemption`,
+      ).toBe(true);
+    }
+  });
+
+  it("pins the ONE reviewed exemption, and what it says (#2785 delta review)", () => {
+    // A census, not a ceiling — but a second one has to be added here in the same
+    // diff, which is the review step the exemption exists to force. The webhook
+    // timeline is keyed on a provider event reference: not a platform record id, not
+    // something an operator can select, and not a kind the ledger can hold, so
+    // declaring a record kind for it would refuse every invocation while looking like
+    // a gate.
+    const exempt = DIAGNOSTICS_TOOLS.filter(
+      (tool) => tool.consentRecordExemption !== undefined,
+    );
+    expect(exempt.map((tool) => tool.id)).toEqual([
+      DIAGNOSTICS_FINANCE_WEBHOOK_TIMELINE_TOOL_ID,
+    ]);
+    const webhook = exempt[0];
+    expect(webhook?.consentRecordExemption).toMatch(/provider event reference/i);
+    // The exemption is not a way to be gated more loosely: the entry still declares
+    // no consent record, still surfaces no personal data, and still cannot widen the
+    // investigation.
+    expect(declaresConsentRecord(webhook!)).toBe(false);
+    expect(webhook?.surfacesPersonalData).toBe(false);
+    expect(webhook?.relatedRecordRefs).toBeUndefined();
+  });
+
+  it("pins the entries whose record KIND is an argument (#2785 review)", () => {
+    // A static kind cannot express `{subject, recordId}` or `{localModel, localId}`,
+    // and declaring one anyway would gate every subject as the wrong kind. The map is
+    // exhaustive over the argument's own enum by definition-time invariant; this is
+    // the census that a new one has to be added here in the same diff.
+    const byArg = DIAGNOSTICS_TOOLS.filter(
+      (tool) => tool.consentRecordKindByArg !== undefined,
+    );
+    expect(byArg.map((tool) => tool.id).sort()).toEqual(
+      [
+        DIAGNOSTICS_XERO_INVOICE_LINKAGE_TOOL_ID,
+        DIAGNOSTICS_FINANCE_AUDIT_HISTORY_TOOL_ID,
+        DIAGNOSTICS_MEMBER_AUDIT_HISTORY_TOOL_ID,
+      ].sort(),
+    );
+    for (const tool of byArg) {
+      // Every mapped value is a real kind or a deliberate `null` refusal, and at
+      // least one is a real kind — a map of nothing but nulls is an entry no
+      // investigation could ever run, which is a mistake rather than a policy.
+      const values = Object.values(tool.consentRecordKindByArg?.kinds ?? {});
+      expect(values.length, tool.id).toBeGreaterThan(1);
+      for (const value of values) {
+        if (value === null) continue;
+        expect(DIAGNOSTICS_CONSENT_RECORD_KINDS, tool.id).toContain(value);
+      }
+      expect(
+        values.some((value) => value !== null),
+        `${tool.id} maps every subject to null, so it can never run`,
+      ).toBe(true);
+    }
+  });
+
+  it("pins the operator-only entries — the four that SEARCH", () => {
+    // A census, not a ceiling. A fifth search entry has to be added here in the same
+    // diff, and an entry that quietly stops being operator-only fails this.
+    expect(
+      DIAGNOSTICS_TOOLS.filter((tool) => tool.operatorOnly === true)
+        .map((tool) => tool.id)
+        .sort(),
+    ).toEqual(
+      [
+        DIAGNOSTICS_BOOKING_SEARCH_TOOL_ID,
+        DIAGNOSTICS_MEMBER_SEARCH_TOOL_ID,
+        DIAGNOSTICS_FINANCE_PAYMENT_SEARCH_TOOL_ID,
+        DIAGNOSTICS_FINANCE_AMOUNT_SEARCH_TOOL_ID,
+      ].sort(),
+    );
+  });
+
+  it.each(
+    DIAGNOSTICS_TOOLS.filter(
+      (tool) => tool.consentRecordArgKey !== undefined,
+    ).map((tool) => [tool.id, tool] as const),
+  )(
+    "%s declares an argument key its OWN schema accepts as the record id",
+    (_id, tool) => {
+      // A declared key the schema never produces would refuse every invocation of the
+      // entry — fail-closed, but silently and permanently. `EXAMPLE_ARGS` is the
+      // census of a realistic argument object per entry, so this checks the
+      // declaration against arguments the entry actually accepts.
+      const key = tool.consentRecordArgKey;
+      const example = EXAMPLE_ARGS[tool.id];
+      expect(example, `add an EXAMPLE_ARGS row for ${tool.id}`).toBeDefined();
+      const binding = tool.parseArgs(example);
+      expect(binding.ok, `${tool.id} rejected its own EXAMPLE_ARGS`).toBe(true);
+      if (!binding.ok) return;
+      const record = consentedRecordForToolCall(tool, binding.args);
+      expect(
+        record,
+        `${tool.id} declares ${key} but its accepted arguments carry no such record id`,
+      ).not.toBeNull();
+      expect(record?.id, tool.id).toBe(WIDEST_RECORD_ID);
+      // The kind is the entry's own when it declares one, and the resolved one when
+      // the entry chooses it per invocation — either way it must be a kind the ledger
+      // can actually hold, or the gate has nothing to compare against.
+      if (tool.consentRecordKind !== undefined) {
+        expect(record?.kind, tool.id).toBe(tool.consentRecordKind);
+      }
+      expect(DIAGNOSTICS_CONSENT_RECORD_KINDS, tool.id).toContain(record?.kind);
+    },
+  );
+
+  it("pins the entries that WIDEN the investigation — the ten with related refs", () => {
+    // An exact-set census, and its absence was a real hole (#2785 review): the block
+    // below is an `it.each` over a filtered population, and `it.each([])` registers
+    // ZERO tests and reports green. Delete every `relatedRecordRefs` declaration in
+    // the tree and nothing else would have failed — `defineDiagnosticsTool` treats
+    // the field as optional, the ledger's own unit tests use hand-written fixtures,
+    // and the real-registry executor tests assert only `status`. The flagship derived
+    // flow (booking -> ownerMemberRef -> member_eligibility_state), which is the
+    // entire reason consent is a ledger rather than one {kind, id} pair, would have
+    // silently stopped working on every shipped entry.
+    expect(
+      DIAGNOSTICS_TOOLS.filter((tool) => tool.relatedRecordRefs !== undefined)
+        .map((tool) => tool.id)
+        .sort(),
+    ).toEqual(
+      [
+        DIAGNOSTICS_BOOKING_BLOCK_STATE_TOOL_ID,
+        DIAGNOSTICS_BOOKING_SUMMARY_TOOL_ID,
+        DIAGNOSTICS_BOOKING_PARTY_TOOL_ID,
+        DIAGNOSTICS_BOOKING_LINKED_STATE_TOOL_ID,
+        DIAGNOSTICS_BOOKING_EXCEPTION_REQUEST_TOOL_ID,
+        DIAGNOSTICS_MEMBER_SUMMARY_TOOL_ID,
+        DIAGNOSTICS_MEMBER_FAMILY_STATE_TOOL_ID,
+        DIAGNOSTICS_MEMBER_BOOKING_SUMMARY_TOOL_ID,
+        DIAGNOSTICS_PAYMENT_SUMMARY_TOOL_ID,
+        DIAGNOSTICS_BOOKING_FINANCE_STATE_TOOL_ID,
+      ].sort(),
+    );
+  });
+
+  it("lets only a reviewed consent surface widen the ledger (#2785 review)", () => {
+    // Absorbing extends the set of records the personal-data entries may then read,
+    // so the entry doing the widening has to be one somebody reviewed as a consent
+    // surface. Without this, a future non-personal linkage entry could seed member
+    // ids into the ledger while declaring itself outside the consent story entirely.
+    for (const tool of DIAGNOSTICS_TOOLS) {
+      if (tool.relatedRecordRefs === undefined) continue;
+      expect(tool.surfacesPersonalData, tool.id).toBe(true);
+    }
+  });
+
+  it.each(
+    DIAGNOSTICS_TOOLS.filter((tool) => tool.relatedRecordRefs !== undefined).map(
+      (tool) => [tool.id, tool] as const,
+    ),
+  )("%s declares related refs its OWN projection produces", (_id, tool) => {
+    // The ledger reads these fields out of the PROJECTED row, so a declared field the
+    // projection does not emit is a declaration that can never fire — the ledger would
+    // silently fail to follow a link the entry was written to expose. Every projection
+    // is a fixed object literal, so projecting an empty raw row still yields the full
+    // key set.
+    const projectedKeys = Object.keys(tool.project({}));
+    for (const ref of tool.relatedRecordRefs ?? []) {
+      expect(
+        projectedKeys,
+        `${tool.id} declares related ref "${ref.field}" which its projection does not emit`,
+      ).toContain(ref.field);
+      expect(DIAGNOSTICS_CONSENT_RECORD_KINDS).toContain(ref.kind);
+      // A related ref that names the entry's OWN record is a no-op at best and a
+      // self-referential derivation at worst.
+      expect(ref.field).not.toBe(tool.consentRecordArgKey);
+    }
+  });
+
+  it("refuses, at definition time, an entry with no way to be gated", () => {
+    const base = {
+      id: "diagnostics.consent_fixture",
+      label: "Consent fixture",
+      description:
+        "Test-only entry used to pin the definition-time consent declaration invariant.",
+      requiredAreas: ["support"] as const,
+      source: "select_only_sql" as const,
+      argsSchema: z.object({ bookingId: z.string() }).strict(),
+      inputSchema: {
+        type: "object" as const,
+        properties: { bookingId: { type: "string" } },
+        additionalProperties: false as const,
+      },
+      sql: "SELECT true AS ok",
+      bind: () => [],
+      project: (row: Record<string, unknown>) => ({ ok: row.ok === true }),
+      rowLimit: 1,
+      byteLimit: 64,
+    };
+
+    // Surfaces personal data, names no record, is not a search: ungateable.
+    expect(() =>
+      defineDiagnosticsTool({ ...base, surfacesPersonalData: true }),
+    ).toThrow(/names neither the record it is about/);
+
+    // Half a record declaration.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: true,
+        consentRecordKind: "booking",
+      }),
+    ).toThrow(/travel together/);
+
+    // Both gates at once — a contradiction about which one governs it.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: true,
+        operatorOnly: true,
+        consentRecordKind: "booking",
+        consentRecordArgKey: "bookingId",
+      }),
+    ).toThrow(/one or the other/);
+
+    // Related refs with no record to derive FROM.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: false,
+        relatedRecordRefs: [{ field: "ownerMemberRef", kind: "member" }],
+      }),
+    ).toThrow(/nothing for the consent ledger to derive FROM/);
+
+    // An empty declaration, which reads as "considered and none" but declares nothing.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: true,
+        consentRecordKind: "booking",
+        consentRecordArgKey: "bookingId",
+        relatedRecordRefs: [],
+      }),
+    ).toThrow(/Omit it rather than declaring nothing/);
+
+    // Related refs on an entry nobody reviewed as a consent surface (#2785 review).
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: false,
+        consentRecordKind: "booking",
+        consentRecordArgKey: "bookingId",
+        relatedRecordRefs: [{ field: "ownerMemberRef", kind: "member" }],
+      }),
+    ).toThrow(/only an entry reviewed as a consent surface/);
+
+    // Two answers to "what kind of record is this about".
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: false,
+        consentRecordKind: "booking",
+        consentRecordArgKey: "bookingId",
+        consentRecordKindByArg: {
+          argKey: "subject",
+          kinds: { booking: "booking" },
+        },
+      }),
+    ).toThrow(/exactly one way/);
+
+    // A per-argument kind map that does not cover the argument's own enum. This is
+    // the clause that makes adding a subject to a schema a decision rather than an
+    // omission: the registry refuses to build until somebody says which kind it is.
+    const withSubject = {
+      ...base,
+      argsSchema: z
+        .object({ subject: z.enum(["booking", "invoice"]), recordId: z.string() })
+        .strict(),
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          subject: { type: "string", enum: ["booking", "invoice"] },
+          recordId: { type: "string" },
+        },
+        additionalProperties: false as const,
+      },
+      surfacesPersonalData: false,
+      consentRecordArgKey: "recordId",
+    };
+    expect(() =>
+      defineDiagnosticsTool({
+        ...withSubject,
+        consentRecordKindByArg: {
+          argKey: "subject",
+          kinds: { booking: "booking" },
+        },
+      }),
+    ).toThrow(/unmapped: invoice/);
+    expect(() =>
+      defineDiagnosticsTool({
+        ...withSubject,
+        consentRecordKindByArg: {
+          argKey: "subject",
+          kinds: { booking: "booking", invoice: null, ghost: null },
+        },
+      }),
+    ).toThrow(/mapped but not accepted: ghost/);
+    // A discriminant with no closed enum cannot be mapped exhaustively at all.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...withSubject,
+        consentRecordKindByArg: {
+          argKey: "recordId",
+          kinds: { booking: "booking" },
+        },
+      }),
+    ).toThrow(/no closed string enum/);
+    // And the exhaustive one defines, including its deliberate `null`.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...withSubject,
+        consentRecordKindByArg: {
+          argKey: "subject",
+          kinds: { booking: "booking", invoice: null },
+        },
+      }),
+    ).not.toThrow();
+
+    // The well-formed shapes still define.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: true,
+        consentRecordKind: "booking",
+        consentRecordArgKey: "bookingId",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        surfacesPersonalData: true,
+        operatorOnly: true,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      defineDiagnosticsTool({ ...base, surfacesPersonalData: false }),
+    ).not.toThrow();
+  });
+
+  it("refuses, at definition time, a per-record entry that answers nothing (#2785 delta review)", () => {
+    // THE HOLE THIS CLOSES. The definition-time invariant above only reaches entries
+    // that declare `surfacesPersonalData`. The five per-record entries that return
+    // codes, amounts and instants declared it false, named no record, and so sat
+    // outside gate 4b entirely until the fix lane bound them BY HAND — which binds the
+    // entries that exist, not the next one. `booking_hold_state({ bookingId })`,
+    // projecting nothing but status codes, would have defined cleanly, been offered on
+    // every request, and been readable for any booking id the model could name. The
+    // registry census cannot catch that either: it filters on entries that DECLARE a
+    // record, so an entry that never had a declaration never enters the comparison.
+    //
+    // So the signal is the ARGUMENT SCHEMA, which no author can forget to write: a
+    // REQUIRED argument that accepts an exact identifier and refuses free text.
+    const perRecordShape = {
+      id: "diagnostics.record_scope_fixture",
+      label: "Record scope fixture",
+      description:
+        "Test-only entry used to pin the definition-time record-scope invariant.",
+      requiredAreas: ["support"] as const,
+      source: "select_only_sql" as const,
+      argsSchema: z
+        .object({ bookingId: z.string().min(20).max(40).regex(/^[a-z0-9]+$/) })
+        .strict(),
+      inputSchema: {
+        type: "object" as const,
+        properties: { bookingId: { type: "string" } },
+        required: ["bookingId"],
+        additionalProperties: false as const,
+      },
+      sql: "SELECT true AS ok",
+      bind: () => [],
+      project: (row: Record<string, unknown>) => ({ ok: row.ok === true }),
+      rowLimit: 1,
+      byteLimit: 64,
+      surfacesPersonalData: false,
+    };
+
+    expect(() => defineDiagnosticsTool({ ...perRecordShape })).toThrow(
+      /asked about one identified thing/,
+    );
+
+    // The three ways to answer, all of which define.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...perRecordShape,
+        consentRecordKind: "booking",
+        consentRecordArgKey: "bookingId",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      defineDiagnosticsTool({ ...perRecordShape, operatorOnly: true }),
+    ).not.toThrow();
+    expect(() =>
+      defineDiagnosticsTool({
+        ...perRecordShape,
+        consentRecordExemption:
+          "The id names a provider event, not a platform record an operator can select.",
+      }),
+    ).not.toThrow();
+
+    // An OPTIONAL identifier is not what the entry is about — the audit-correlation
+    // entries read a window of events and filter inside it — so it does not trip.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...perRecordShape,
+        argsSchema: z
+          .object({
+            window: z.enum(["1h", "24h"]),
+            requestId: z
+              .string()
+              .min(20)
+              .max(40)
+              .regex(/^[a-z0-9]+$/)
+              .optional(),
+          })
+          .strict(),
+      }),
+    ).not.toThrow();
+
+    // And an entry whose schema cannot be introspected at all fails CLOSED, because a
+    // detector that silently stops detecting is this assert's own failure mode.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...perRecordShape,
+        argsSchema: z.union([
+          z.object({ bookingId: z.string() }).strict(),
+          z.object({ paymentId: z.string() }).strict(),
+        ]),
+      }),
+    ).toThrow(/not a plain object/);
+  });
+
+  it("refuses an exemption that excuses nothing (#2785 delta review)", () => {
+    const base = {
+      id: "diagnostics.exemption_fixture",
+      label: "Exemption fixture",
+      description:
+        "Test-only entry used to pin the consent-record exemption invariant.",
+      requiredAreas: ["support"] as const,
+      source: "select_only_sql" as const,
+      argsSchema: z
+        .object({ eventRef: z.string().min(20).max(40).regex(/^[a-z0-9]+$/) })
+        .strict(),
+      inputSchema: {
+        type: "object" as const,
+        properties: { eventRef: { type: "string" } },
+        required: ["eventRef"],
+        additionalProperties: false as const,
+      },
+      sql: "SELECT true AS ok",
+      bind: () => [],
+      project: (row: Record<string, unknown>) => ({ ok: row.ok === true }),
+      rowLimit: 1,
+      byteLimit: 64,
+      surfacesPersonalData: false,
+      consentRecordExemption: "A provider event reference, not a platform record.",
+    };
+
+    // A blank reason is not a review.
+    expect(() =>
+      defineDiagnosticsTool({ ...base, consentRecordExemption: "   " }),
+    ).toThrow(/empty consentRecordExemption/);
+
+    // An exemption beside a real consent declaration: one of the two is stale.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        consentRecordKind: "booking",
+        consentRecordArgKey: "eventRef",
+      }),
+    ).toThrow(/BOTH a consent record and a consentRecordExemption/);
+
+    // A search is governed by the channel gate, so there is nothing to excuse.
+    expect(() =>
+      defineDiagnosticsTool({ ...base, operatorOnly: true }),
+    ).toThrow(/nothing for the exemption to excuse/);
+
+    // And an exemption on an entry that takes no identifier at all is a declaration
+    // that stopped being true — the argument was removed and the excuse was left.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        argsSchema: z.object({ window: z.enum(["1h", "24h"]) }).strict(),
+      }),
+    ).toThrow(/exempt from nothing/);
+  });
+});
+
+describe("read-only seam declarations (#2786)", () => {
+  /**
+   * A `server_owned` fixture that is complete APART from the declaration under
+   * test, so each expectation below fails for exactly one reason.
+   */
+  const base = {
+    id: "diagnostics.seam_fixture",
+    label: "Seam fixture",
+    description:
+      "Test-only entry used to pin the definition-time read-only seam invariant.",
+    requiredAreas: ["support"] as const,
+    source: "server_owned" as const,
+    argsSchema: z.object({}).strict(),
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+      additionalProperties: false as const,
+    },
+    readEvidence: async () => [],
+    project: (row: Record<string, unknown>) => ({ ok: row.ok === true }),
+    rowLimit: 1,
+    byteLimit: 64,
+    surfacesPersonalData: false,
+  };
+
+  it("registers EVERY server-owned entry with a declaration that holds up", () => {
+    // The census half. The two tests below prove the assert refuses a bad
+    // declaration; this proves it was actually APPLIED to the real registry, which
+    // is the property that would silently lapse if a future entry were built by
+    // some path that skipped `defineDiagnosticsTool`.
+    const serverOwned = DIAGNOSTICS_TOOLS.filter(
+      (tool) => tool.source === "server_owned",
+    );
+    expect(serverOwned.length).toBeGreaterThan(0);
+
+    for (const tool of serverOwned) {
+      const declaration = tool.readOnlySeam;
+      expect(declaration, `${tool.id} carries no readOnlySeam`).toBeDefined();
+      expect(typeof declaration.threadsOwnReads, tool.id).toBe("boolean");
+      // Says something: threads its own reads, or names what it reads through.
+      expect(
+        declaration.threadsOwnReads || (declaration.exemptions?.length ?? 0) > 0,
+        `${tool.id} declares neither threaded reads nor an exemption`,
+      ).toBe(true);
+      for (const id of declaration.exemptions ?? []) {
+        expect(
+          READ_ONLY_SEAM_EXEMPTION_IDS,
+          `${tool.id} names undeclared exemption "${id}"`,
+        ).toContain(id);
+      }
+    }
+  });
+
+  it("refuses, at definition time, a declaration that cannot be true", () => {
+    // Reaches its evidence in some third way nobody has reviewed.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        readOnlySeam: { threadsOwnReads: false },
+      }),
+    ).toThrow(/names no exemption/);
+
+    // An id that is not in the table. This is the clause that keeps the table
+    // CLOSED: without it, a typo or a deleted row leaves a declaration that still
+    // reads as a reviewed decision while pointing at nothing.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        readOnlySeam: {
+          threadsOwnReads: false,
+          exemptions: ["readiness-own-pools"],
+        },
+      }),
+    ).toThrow(/not in READ_ONLY_SEAM_EXEMPTIONS/);
+
+    // "Declared nothing" and "declared an empty list" must not read alike.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        readOnlySeam: { threadsOwnReads: true, exemptions: [] },
+      }),
+    ).toThrow(/Omit it rather than declaring nothing/);
+
+    // One reliance, stated once.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        readOnlySeam: {
+          threadsOwnReads: false,
+          exemptions: ["cron-runs-own-budget", "cron-runs-own-budget"],
+        },
+      }),
+    ).toThrow(/more than once/);
+  });
+
+  it("accepts each of the three shapes an honest entry can have", () => {
+    // Threads everything.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        readOnlySeam: { threadsOwnReads: true },
+      }),
+    ).not.toThrow();
+
+    // Threads nothing, and says what it reads through instead.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        readOnlySeam: {
+          threadsOwnReads: false,
+          exemptions: ["deployment-no-database"],
+        },
+      }),
+    ).not.toThrow();
+
+    // Both — the usage-health shape, which is the one an "either/or" rule would
+    // have forced into a lie.
+    expect(() =>
+      defineDiagnosticsTool({
+        ...base,
+        readOnlySeam: {
+          threadsOwnReads: true,
+          exemptions: ["usage-summary-no-tx-client"],
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  it("asks nothing of a SELECT-only entry, which PostgreSQL already bounds", () => {
+    // The seam exists because a server-owned entry runs on the application's
+    // full-privilege connection. A `select_only_sql` entry runs as the read-only
+    // role on its own pool inside `BEGIN READ ONLY`, so requiring a declaration
+    // from it would be ceremony that teaches nothing.
+    expect(() =>
+      defineDiagnosticsTool({
+        id: "diagnostics.seam_fixture_sql",
+        label: "Seam fixture (SQL)",
+        description:
+          "Test-only entry pinning that the seam declaration is a server-owned concern.",
+        requiredAreas: ["support"],
+        source: "select_only_sql",
+        argsSchema: z.object({}).strict(),
+        inputSchema: {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        },
+        sql: "SELECT true AS ok",
+        bind: () => [],
+        project: (row: Record<string, unknown>) => ({ ok: row.ok === true }),
+        rowLimit: 1,
+        byteLimit: 64,
+        surfacesPersonalData: false,
+      }),
+    ).not.toThrow();
+  });
+});
+
 describe("the substrate readiness probe (#2374)", () => {
   const registered = findDiagnosticsTool(DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID);
   const probe =
@@ -1670,6 +2441,10 @@ describe("the evidence modules are SERVER-ONLY (#2375)", () => {
     "packs/support-correlation.ts",
     "packs/support-evidence.ts",
     "packs/support-system.ts",
+    // The shared read-only seam (#2786). It holds the application's Prisma client
+    // and opens the transaction every server-owned evidence read runs inside, so
+    // it belongs on this list for exactly the reason `database.ts` does.
+    "read-only-transaction.ts",
   ] as const;
 
   it.each(SERVER_ONLY_MODULES)("%s imports server-only", (relativePath) => {

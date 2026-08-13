@@ -16,21 +16,76 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
-    booking: { findUnique: vi.fn() },
-    payment: { findUnique: vi.fn() },
-    memberCredit: { findMany: vi.fn(), aggregate: vi.fn() },
-    xeroSyncOperation: { findMany: vi.fn() },
-    xeroObjectLink: { findFirst: vi.fn() },
-    paymentRecoveryOperation: { findMany: vi.fn() },
-    manualRefundTask: { count: vi.fn() },
-    refundRequest: { count: vi.fn() },
+// ---------------------------------------------------------------------------
+// THE HARNESS HAS TO SEE A READ THAT ESCAPES THE TRANSACTION (#2786).
+//
+// Since this source runs inside the shared read-only seam, "every read went
+// through `tx`" is a property worth proving — and it is one an ordinary mock
+// cannot prove. Handing the callback the global client would make every
+// `toBe(txMock)` assertion vacuous; handing it a shallow copy makes identity
+// assertions real for the collaborators this file MOCKS, but the two credit
+// helpers are deliberately NOT mocked (see the docblock above), so no argument
+// assertion can reach them at all. Each of them falls back to the global client
+// when it is handed nothing — silently, and with every behavioural expectation
+// in this file still satisfied.
+//
+// So the global client RECORDS which properties are reached on it while the
+// transaction is open. A read that escaped names its model there, whether it was
+// written in this pack or inside a helper three modules away, and the recorder
+// discriminates by construction rather than by anyone remembering to assert on a
+// new collaborator. Recording is scoped to the callback so the fixture wiring in
+// `setup`, which legitimately reaches through the same object, is not counted.
+// ---------------------------------------------------------------------------
+
+const { prismaMock, txMock, globalClientReads, recordingWindow } = vi.hoisted(
+  () => {
+    const models = {
+      booking: { findUnique: vi.fn() },
+      payment: { findUnique: vi.fn() },
+      memberCredit: { findMany: vi.fn(), aggregate: vi.fn() },
+      xeroSyncOperation: { findMany: vi.fn() },
+      xeroObjectLink: { findFirst: vi.fn() },
+      paymentRecoveryOperation: { findMany: vi.fn() },
+      manualRefundTask: { count: vi.fn() },
+      refundRequest: { count: vi.fn() },
+    };
+    /**
+     * A DISTINCT OBJECT HOLDING THE SAME DOUBLES, and no `$transaction`.
+     *
+     * The same shape #2376 established for the booking pack: every
+     * `prismaMock.payment.findUnique` assertion in this file keeps working because
+     * the functions are shared, while the object identities differ — so a read that
+     * reached the global client instead is visible rather than indistinguishable.
+     * `$transaction` is absent because a `Prisma.TransactionClient` does not have
+     * one, so a nested interactive transaction throws here instead of quietly
+     * taking a second pool connection. `$executeRaw` IS present because the seam's
+     * two control statements run on the transaction client, which is the only place
+     * raw execution belongs on this path.
+     */
+    const txMock = { ...models, $executeRaw: vi.fn().mockResolvedValue(0) };
+    const globalClientReads: string[] = [];
+    const recordingWindow = { open: false };
+    const base = { ...models, $transaction: vi.fn() };
+    const prismaMock = new Proxy(base, {
+      get(target, property, receiver) {
+        if (recordingWindow.open && typeof property === "string") {
+          globalClientReads.push(property);
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    }) as typeof base;
+    return { prismaMock, txMock, globalClientReads, recordingWindow };
   },
-}));
+);
+
+vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import { prisma } from "@/lib/prisma";
 
+import {
+  DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS,
+  DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
+} from "../../read-only-transaction";
 import { readBookingFinanceStateEvidence } from "../finance-evidence";
 
 const BOOKING_ID = "clzbooking0000000000000001";
@@ -167,6 +222,22 @@ function blockers(row: Record<string, unknown>): string[] {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  globalClientReads.length = 0;
+  recordingWindow.open = false;
+  // The seam's transaction, doubled: the callback receives `txMock`, and the window
+  // in which a global-client access counts as an escape is exactly the callback's
+  // lifetime. `finally` closes it even when the source rejects, so a refusal test
+  // does not leave the recorder on for the next one.
+  prismaMock.$transaction.mockImplementation(
+    async (callback: (tx: typeof txMock) => Promise<unknown>) => {
+      recordingWindow.open = true;
+      try {
+        return await callback(txMock);
+      } finally {
+        recordingWindow.open = false;
+      }
+    },
+  );
 });
 
 describe("booking finance state: absence and shape (#2377)", () => {
@@ -821,5 +892,92 @@ describe("booking finance state: the booking LIFECYCLE (#2377)", () => {
     const codes = blockers(await readRow());
     expect(codes).toContain("manual_refund_open");
     expect(codes).toContain("xero_operation_failed");
+  });
+});
+
+describe("booking finance state is read-only AT THE DATABASE (#2786)", () => {
+  it("assembles inside ONE bounded read-only transaction", async () => {
+    setup({ booking: {}, payment: {} });
+    await readRow();
+
+    // One transaction for the whole graph, not one per read. A second would take a
+    // second pool connection and a second snapshot, which is exactly the shape
+    // `docs/CONCURRENCY_AND_LOCKING.md` forbids and the reason `txMock` carries no
+    // `$transaction` of its own.
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    expect(prismaMock.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        isolationLevel: "RepeatableRead",
+        timeout: DIAGNOSTICS_READ_ONLY_TRANSACTION_TIMEOUT_MS,
+      }),
+    );
+  });
+
+  it("tells PostgreSQL to refuse writes before it reads anything", async () => {
+    setup({ booking: {}, payment: {} });
+    await readRow();
+
+    expect(txMock.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(txMock.$executeRaw.mock.calls[0]?.[0]?.[0]).toBe(
+      "SET TRANSACTION READ ONLY",
+    );
+    expect(txMock.$executeRaw.mock.calls[1]?.[1]).toBe(
+      String(DIAGNOSTICS_READ_ONLY_STATEMENT_TIMEOUT_MS),
+    );
+  });
+
+  it("reaches the global client for NOTHING once the transaction is open", async () => {
+    // The assertion the mocks could not make. Eight reads in this module and two
+    // authoritative credit helpers in `member-credit.ts` — which are deliberately
+    // unmocked, and each of which falls back to the global client when it is not
+    // handed one. Any of them escaping runs outside the snapshot AND outside the
+    // statement timeout while every other expectation in this file still passes.
+    setup({
+      booking: {},
+      payment: {},
+      appliedCreditLedgerCents: -2_500,
+      memberCreditBalanceCents: 4_000,
+      cancellationCredits: [
+        { amountCents: 2_500, description: "Cancellation refund for booking" },
+      ],
+      xeroOperations: [
+        { id: "op-1", status: "SUCCESS", createdAt: new Date("2026-08-01") },
+      ],
+      primaryInvoiceLink: true,
+      recoveryOperations: [{ status: "PENDING", attempts: 1 }],
+      openManualRefundTasks: 1,
+      pendingRefundAppeals: 1,
+    });
+    await readRow();
+
+    expect(globalClientReads).toEqual([]);
+  });
+
+  it("keeps the recorder honest — the reads DID happen, on the transaction", async () => {
+    // Non-vacuous: an empty escape list means "everything went through `tx`", never
+    // "nothing ran". These are the same doubled functions either client would have
+    // reached, so their call counts prove the graph executed.
+    setup({ booking: {}, payment: {} });
+    await readRow();
+
+    expect(txMock.booking.findUnique).toHaveBeenCalledTimes(1);
+    expect(txMock.payment.findUnique).toHaveBeenCalledTimes(1);
+    expect(txMock.memberCredit.aggregate).toHaveBeenCalled();
+    expect(txMock.refundRequest.count).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the recording window even when the read refuses", async () => {
+    setup({ booking: {}, payment: {} });
+    vi.mocked(prisma.xeroSyncOperation.findMany).mockRejectedValue(
+      new Error("the database stopped answering"),
+    );
+
+    await expect(
+      readBookingFinanceStateEvidence({ bookingId: BOOKING_ID }),
+    ).rejects.toThrow();
+    // A refusal must not leave the recorder armed, or the next invocation would
+    // count this file's own fixture wiring as an escaped read.
+    expect(recordingWindow.open).toBe(false);
   });
 });

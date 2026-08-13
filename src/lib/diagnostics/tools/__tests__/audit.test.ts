@@ -36,6 +36,12 @@ const BASE_AUDIT: DiagnosticsToolAudit = {
   durationMs: 7,
   roundIndex: 0,
   observedAt: "2026-08-02T03:04:05.000Z",
+  invocationChannel: "model_tool_use",
+  sensitiveInclusion: "not_applicable",
+  consentRecordKind: null,
+  consentRecordOrigin: null,
+  peopleSearchTick: "withheld",
+  recordConsentTick: "withheld",
 };
 
 function record(overrides: Partial<DiagnosticsToolAudit> = {}) {
@@ -91,18 +97,55 @@ describe("diagnostics tool audit row (#2374, ADR-004)", () => {
       "argsHash",
       "authOutcome",
       "byteCount",
+      "consentRecordKind",
+      "consentRecordOrigin",
       "durationMs",
       "failureReason",
+      "invocationChannel",
       "observedAt",
+      "peopleSearchTick",
+      "recordConsentTick",
       "resultHash",
       "roundIndex",
       "rowCount",
+      "sensitiveInclusion",
       "toolId",
     ]);
     expect(metadata.argsHash).toBe("a".repeat(64));
     expect(metadata.resultHash).toBe("b".repeat(64));
     expect(metadata.rowCount).toBe(3);
     expect(metadata.byteCount).toBe(128);
+  });
+
+  it("carries the consent state through to the durable row (#2785)", async () => {
+    // Before this, a `surfacesPersonalData` read taken WITH the operator's consent
+    // was indistinguishable in the durable log from one taken without it. The
+    // fields are hand-copied in `auditMetadata`, so this is what proves they are
+    // actually copied rather than merely present on the type.
+    await record({
+      invocationChannel: "operator_action",
+      sensitiveInclusion: "granted",
+      consentRecordKind: "booking",
+      consentRecordOrigin: "derived",
+      peopleSearchTick: "granted",
+    });
+    expect(lastEvent().metadata).toMatchObject({
+      invocationChannel: "operator_action",
+      sensitiveInclusion: "granted",
+      consentRecordKind: "booking",
+      consentRecordOrigin: "derived",
+      peopleSearchTick: "granted",
+    });
+
+    await record({
+      sensitiveInclusion: "refused",
+      consentRecordKind: "member",
+      consentRecordOrigin: null,
+    });
+    expect(lastEvent().metadata).toMatchObject({
+      sensitiveInclusion: "refused",
+      consentRecordOrigin: null,
+    });
   });
 
   it("carries no raw argument, row value, question or answer", async () => {
@@ -145,6 +188,12 @@ describe("diagnostics tool audit row (#2374, ADR-004)", () => {
       "important",
       "blocked",
     ],
+    [
+      "a FAULT taken before authorization ran (#2785 review)",
+      { authOutcome: "denied" as const, failureReason: "internal_error" as const },
+      "info",
+      "failure",
+    ],
   ])(
     "maps %s to the right severity and outcome",
     async (_label, overrides, severity, outcome) => {
@@ -159,6 +208,24 @@ describe("diagnostics tool audit row (#2374, ADR-004)", () => {
     await record({ authOutcome: "denied", failureReason: null });
     expect(lastEvent().outcome).toBe("blocked");
     expect(lastEvent().severity).toBe("important");
+  });
+
+  it("never calls a FAULT a permission incident (#2785 review)", async () => {
+    // Every exit taken before the permission check records `authOutcome: "denied"`,
+    // because nothing had been allowed yet. For `internal_error` — a caller bug, a
+    // collaborator that threw — that used to mean a security-category, 24-month row
+    // at `important`/`blocked` describing a block that never happened, and a
+    // security-incident view filling up with them. The metadata still says exactly
+    // what the row was: the auth outcome and the reason are both there.
+    await record({ authOutcome: "denied", failureReason: "internal_error" });
+    const event = lastEvent();
+    expect(event.outcome).toBe("failure");
+    expect(event.severity).toBe("info");
+    expect(event.summary).toContain("failed");
+    expect(event.metadata).toMatchObject({
+      authOutcome: "denied",
+      failureReason: "internal_error",
+    });
   });
 
   it("PROPAGATES a write failure rather than swallowing it", async () => {

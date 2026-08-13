@@ -201,7 +201,7 @@ dropped inside the function) and `Payment."manualPaymentNote"` — so **every ed
 needs the review a grant would get.
 
 It bounds its own **work** as well as the executor's wait: a constant six point
-reads and aggregates for one booking, under its own 10-second deadline that
+reads and aggregates for one booking, under its own deadline that
 **refuses** rather than returning a partial row. A finance state assembled from some
 of its inputs would be a fabricated answer, not an absent one.
 
@@ -291,8 +291,29 @@ line to a booking, and #2377 lists it as approved evidence. It is bounded to 64
 characters (well below the substrate's own 200), stripped of control characters,
 quotes and angle brackets, whitespace-collapsed, and marked when clipped. Because
 payers routinely type their own name into it, **every entry that projects one
-declares `surfacesPersonalData: true`**, which triggers ADR-004's per-invocation
-operator opt-in.
+declares `surfacesPersonalData: true`**.
+
+Since AID-7a (#2785) that declaration is **enforced** rather than aspirational. Each
+per-record entry also names the record it reads — `payment_summary` and
+`payment_attempt_ledger` are keyed on `paymentId`, `xero_contact_linkage` on
+`memberId`, `booking_finance_state` on `bookingId` — and the executor refuses the
+invocation with `sensitive_consent_required` unless the operator included that
+record in this investigation. The two search entries are declared `operatorOnly`
+instead: they run as the operator's own record-picker action, or as a model tool call
+only on a request where the operator ticked people-search. `payment_summary` declares
+its projected `bookingId`, and `booking_finance_state` its projected `paymentRef`, as
+related-record refs, so an investigation opened on either one can follow the money to
+the other. The provider references beside them (Stripe ids, Xero invoice numbers,
+bank references) are deliberately **not** declared: they name provider records, not
+records this platform's consent is expressed in.
+
+The one entry in this pack that takes an exact identifier and names no consent record
+is the **webhook timeline**, whose `eventRef` is a provider event id, a Xero resource
+id or a correlation key. Since the #2785 delta review that is a declaration rather
+than a comment — `consentRecordExemption`, carrying the reason — because the definer
+now refuses to define an entry that takes an identifier and answers neither the record
+question nor the search one. Adding a second exemption to this pack means writing that
+reason in the diff and adding the entry to the census in `registry.test.ts`.
 
 ## Stored evidence only, and saying so
 
@@ -515,7 +536,7 @@ under `admin`, which this tool cannot read; and the audit category is optional, 
 row recorded with **no** category is matched by no diagnostics tool at all. **82**
 production write paths used to record that way, several of them money-adjacent
 (subscription billing, member-credit adjustments, fee configuration); #2676
-classified all 82 at the source, so the census now reads **429 write sites and zero
+classified all 82 at the source, so the census now reads **434 write sites and zero
 uncategorised** and no *new* finance audit row is born invisible to this tool. Rows
 written before that runtime deployed still carry no category, and back-filling them
 is a separate data change that has not run — so for historical events an empty
@@ -544,7 +565,7 @@ never have matched a row.
 | Bytes, multi-row entries | 16 384 |
 | Bytes, single-row entries | 4 096 |
 | Free-text field cap | 64 characters, clipping marked |
-| Server-owned read | 15 s deadline on the **wait**; the source carries its own 10 s deadline on the **work**, and refuses rather than returning a partial row |
+| Server-owned read | The executor's outer race bounds the **wait**; the source carries its own deadline on the **work**, and refuses rather than returning a partial row. Both derive from the one ladder in `types.ts` (#2804) |
 
 Both byte ceilings are **measured, not estimated**: a registry contract test
 serialises every entry's own projected shape at its own row limit, at the widest
@@ -594,13 +615,18 @@ extend the test.
 | `booking_finance_state` reports a non-zero `ledgerVarianceCents` | The platform's own stored figures disagree | This is a real finding. Compare `payment_diagnostic_summary` and `payment_attempt_ledger` before changing anything |
 | The webhook timeline is empty for an event Stripe shows as delivered | Webhook logs are pruned after ~30 days, or the event id is wrong | Check the processing lease row, which is not pruned on that schedule |
 
-Incident response is unchanged from AID-6A: the audit trail for tool use is
-`ai_diagnostics.tool_invocation` in `AuditLog`, retention class `sensitive_access`
-(24 months), recording the acting administrator, the tool id, the areas checked, the
-allow/deny outcome, the stable failure reason, non-reversible hashes of the accepted
-arguments and of the result, row and byte counts, duration, round index and the
-observed-at instant — and never the arguments, the results, the question or the
-answer.
+Incident response is the AID-6A trail plus AID-7a's consent fields: the audit trail
+for tool use is `ai_diagnostics.tool_invocation` in `AuditLog`, retention class
+`sensitive_access` (24 months), recording the acting administrator, the tool id, the
+areas checked, the allow/deny outcome, the stable failure reason, non-reversible
+hashes of the accepted arguments and of the result, row and byte counts, duration,
+round index, the observed-at instant, and — since AID-7a (#2785) — the invocation
+channel, the ADR-004 §1 inclusion decision, the KIND and provenance of the record it
+was about, and the two per-request ticks (personal details, people search).
+Seventeen fields, and never the arguments, the results, the question or the answer.
+Those last six are what answer "was this personal read consented, was the model
+allowed to search, and was it asking about a record this operator had included?"
+during an incident.
 
 ## Adding to this pack
 

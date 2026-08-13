@@ -34,8 +34,11 @@ readiness evidence behind `support:view`, bounded sanitized audit correlation be
 `support:view` **and** the affected domain's own `area:view`, one column-restricted
 `AuditLog` grant, and the shared evidence-state and diagnostic-case contracts.
 **AID-6B (#2376) and AID-6C (#2377) are now delivered too:** the booking and
-membership pack and the finance/Xero pack are documented below. The product
-shell/answer workflow remains a later implementation child.
+membership pack and the finance/Xero pack are documented below. **AID-7 (#2378) has
+since landed the product itself** — the setup/status page, the budget, and the whole
+question-and-answer surface in the Help bubble, with its
+[operator-facing side documented in `ux.md`](ux.md). Release hardening (AID-8, #2379)
+is the remaining child.
 
 ## Governance: these contracts are binding
 
@@ -139,11 +142,11 @@ child; the existing repository-wide documents they extend are linked.
 | Area | Planned subsystem doc (owner) | Existing docs it extends |
 | --- | --- | --- |
 | **Architecture** | `docs/ai-diagnostics/architecture.md` — runtime shape, the deployed-knowledge bundle, and end-to-end data flows (AID-2 #2371). The tool substrate's own shape is now documented in [`tools.md`](tools.md) | [`ARCHITECTURE.md`](../ARCHITECTURE.md), [`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) |
-| **Tool substrate** | [`tools.md`](tools.md) — the server-owned typed registry, the ten fail-closed gates, per-invocation authorization, bounds, untrusted-evidence render, approved audit metadata, and the rules for adding a tool (AID-5 #2374, **delivered**) | [ADR-001](decisions/ADR-001-separate-admin-only-diagnostics-product.md), [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md), [ADR-007](decisions/ADR-007-least-privilege-select-only-database-credential.md) |
+| **Tool substrate** | [`tools.md`](tools.md) — the server-owned typed registry, the twelve fail-closed gates, per-invocation authorization, bounds, untrusted-evidence render, approved audit metadata, and the rules for adding a tool (AID-5 #2374, **delivered**) | [ADR-001](decisions/ADR-001-separate-admin-only-diagnostics-product.md), [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md), [ADR-007](decisions/ADR-007-least-privilege-select-only-database-credential.md) |
 | **Page context** | [`page-context.md`](page-context.md) — the typed selector, the route registry, the permission-checked server re-fetch, the personal-detail opt-in, and the evidence block (AID-4 #2373, **delivered**) | [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-003](decisions/ADR-003-untrusted-evidence-classes.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md) |
 | **Security / privacy** | This hub's [threat model](threat-model.md) and [ADRs](decisions/) (AID-1, this issue); release hardening notes (AID-8 #2379) | [`SECURITY.md`](../SECURITY.md), [`SECURITY-ATTACK-SURFACE.md`](../SECURITY-ATTACK-SURFACE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](../agents/PROMPT_INJECTION_GUIDE.md) |
 | **Deployment / operator** | [`deployment.md`](deployment.md) — setup order, provisioning and rotating the SELECT-only DB role, the credential, budget/limits, and reading readiness (AID-2 #2371 / AID-5 #2374, **delivered**); provider disclosure, zero-retention, and the private overlay still to come (AID-8 #2379) | [`../../DEPLOYMENT.md`](../../DEPLOYMENT.md), [`ONGOING_DEVELOPMENT_WORKFLOW.md`](../ONGOING_DEVELOPMENT_WORKFLOW.md) |
-| **UX** | `docs/ai-diagnostics/ux.md` — the Diagnostics shell, inert-text answer render + strict CSP (ADR-008), evidence citations, permission-scoped answers, fallbacks (AID-7 #2378) | [`UX_FLOW_MAP.md`](../UX_FLOW_MAP.md) |
+| **UX** | [`ux.md`](ux.md) — the two surfaces, the Diagnostics tab, the per-question consent ticks, choosing the record under investigation, the eighteen failure states, and keyboard/screen-reader/narrow-viewport behaviour (AID-7 #2378, **delivered**) | [`UX_FLOW_MAP.md`](../UX_FLOW_MAP.md) |
 | **E2E test matrix** | `docs/ai-diagnostics/e2e-matrix.md` — admission, per-tool auth, injection inertness, output-channel egress (inert render + CSP, ADR-008), budget/limit fail-closed, redaction (AID-8 #2379) | [`END_TO_END_TEST_MATRIX.md`](../END_TO_END_TEST_MATRIX.md) |
 | **Operator help** | Operator guidance for the Diagnostics surface (AID-7 #2378 / AID-8 #2379) | [`guides/ai-help.md`](../guides/ai-help.md) |
 
@@ -292,7 +295,11 @@ Every gate denies the paid call on doubt — the concrete realisation of ADR-005
   `DIAGNOSTICS_METERING_FAILURE_THRESHOLD` (3) consecutive settle failures; the
   product route checks it BEFORE spending — can't-meter ⇒ don't-spend.
 - **Readiness** (`getDiagnosticsReadiness`) returns `ready: false` with a
-  `resolve_error` blocker on any DB fault rather than throwing.
+  `resolve_error` blocker on any DB fault rather than throwing. A failure of the
+  **module-flags read alone** is reported as its own state rather than folded into
+  either of those: `moduleEnabled: null` with a `module_flags_unreadable` blocker,
+  which blocks like any other but says *we could not tell* rather than *it is off*
+  (#2803). A surface rendering readiness must never show `null` as "off".
 - **Budget** defaults to NZ$0, so enabling the module alone authorises nothing.
 - The **rate limiters** are all `authSensitive`, so a degraded shared-store
   fallback runs at limit/4 — a store outage tightens, never loosens, the
@@ -399,11 +406,13 @@ accepted; those become positional parameters and nothing else.
   undeclared read privilege, and membership in **any** other role are all absent.
   There is no fallback to `DATABASE_URL`, and a URL naming the application's own role
   is refused outright.
-- **Ten ordered fail-closed gates**, every one returning no rows: registry, loop
-  budget, fresh authorization, arguments, metering, credential, read, projection,
-  size, audit. Authorization runs **before** argument parsing so the difference
-  between "invalid arguments" and "permission denied" cannot be used as an oracle,
-  and the audit row is written **before** any evidence is returned.
+- **Twelve ordered fail-closed gates**, every one returning no rows: registry,
+  loop budget, fresh authorization, arguments, channel, consent, metering,
+  credential, read, projection, size, audit. Authorization runs **before** argument
+  parsing so the difference between "invalid arguments" and "permission denied"
+  cannot be used as an oracle; the two consent gates run after arguments and before
+  any database work; and the audit row is written **before** any evidence is
+  returned.
 - **Authorization is per invocation, and withholding is not authorization.** Tool
   definitions are hidden from the model when the caller lacks the area — a usability
   courtesy — while the server re-reads the caller's matrix from the database and
@@ -515,16 +524,207 @@ application's own authoritative calculations.** Sixteen entries. Full reference:
   has no role column, bed allocation is not capacity, a booking's money is the
   finance pack's, and an empty audit result is not evidence that nothing happened.
 
-### ADR-004's per-invocation opt-in is declared, not enforced
+### ADR-004's per-invocation opt-in is now enforced (AID-7a, #2785)
 
-Fourteen of the sixteen entries set `surfacesPersonalData: true` truthfully, but
-**nothing in the shipped code implements a per-invocation operator consent**. The
-flag records that a row can identify a person; it does not gate the entry, and it
-must not be described as a control. Implementing the opt-in is a prerequisite
-recorded on AID-7 (#2378). What actually bounds the pack today is the fresh AND-ed
-area check, the exact-identifier argument shapes, the fixed projections, the column
+This section previously recorded the gap: `surfacesPersonalData` was declared
+truthfully across the packs and gated nothing. AID-7a closed it.
+
+An entry that surfaces personal data now either names the record it reads or
+declares itself a record **search**, and `defineDiagnosticsTool` refuses to define
+one that does neither — the registry does not build. The executor then refuses a
+per-record read whose record the operator did not include
+(`sensitive_consent_required`), and refuses a model-invoked search on a request with
+no people-search tick (`operator_action_required`). The record bound applies to an
+entry that reads one named record even when its rows carry no personal field at all
+— a booking's audit history is codes and instants, and it is still evidence about a
+subject the operator has to have put in scope (`record_not_included`); what the
+personal-details tick adds is the entries whose rows name people. Consent itself is a server-held
+per-request ledger, seeded only from the operator's server-revalidated selections and
+extended only by absorbing the projected fields an entry declares, one hop out. The
+durable audit row records the decision. See [`tools.md`](tools.md) → "Consent is an
+investigation, not a single record" and ADR-004's implementation note.
+
+Everything that bounded the packs before still runs first: the fresh AND-ed area
+check, the exact-identifier argument shapes, the fixed projections, the column
 grants, the row/byte/field ceilings, the 16-call-per-session ceiling and the audit
 row.
+
+## Delivered capability: the Diagnostics workspace (AID-7, #2378)
+
+The page, its admission, its tiered readiness, its budget, and the whole
+question-and-answer surface in the Help bubble.
+
+### Where it lives, and a correction worth recording
+
+`/admin/ai-diagnostics`, inside the admin panel under **Monitoring & Support**,
+inheriting the ordinary admin layout and sidebar. **Asking** happens in the Help
+bubble, on whichever admin screen the operator is on.
+
+An earlier revision gave Diagnostics its own `(diagnostics)` route group and a
+separate workspace layout, following decision Q4 on #2378. **The owner corrected that
+on 12 Aug 2026** and Q4 is superseded: Diagnostics belongs in the **Help chat bubble**
+for an administrator with the right permission, and a full page — where one is needed
+— belongs in the admin panel like every other admin screen.
+
+The reasoning holds up: every question this product answers is about something the
+operator was already looking at in the admin panel. Taking them out of the panel to
+ask about it, and handing them a screen with no sidebar to get back from, made the
+tool feel like a place to go rather than a thing to ask.
+
+Nothing about security changed with the move. The page is admitted by the same
+`guardAdminLayout` sequence as every other admin page, now inherited from
+`(admin)/layout.tsx` rather than duplicated in a second layout.
+
+**The page owns setup and status; the bubble owns the conversation** (owner decision
+D8). That split is the reason the consent ticks, the evidence display and the
+transcript hardening exist in exactly one place rather than two that drift — and it is
+why the page shows no readiness detail of its own beside the ask box, because a second
+readiness surface is precisely the drift D8 rules out.
+
+### Who may open it, and why that is `overview`
+
+Any admitted administrator may OPEN the page (owner decision Q6). It is deliberately
+NOT a `support:view` permission: gating it would hide the "here is who can fix this"
+message from precisely the admins who need to read it.
+
+`/admin/ai-diagnostics` was previously registered under the `support` area, added in
+anticipation of a UI that did not exist. AID-7 removes the PAGE from that list and
+keeps every `/api/admin/ai-diagnostics` route in it. Nothing is loosened: opening the
+page grants no evidence, and each tool invocation re-derives the acting admin's areas
+server-side and refuses what they may not read. The page falls to the `overview`
+catch-all, recorded in `OVERVIEW_ALLOWLIST` with that reasoning, because it looks
+like a workaround and is not.
+
+### Readiness is tiered on the server
+
+| tier | who | sees |
+|---|---|---|
+| coarse | any admitted admin | usable or not, whether the module is on, and who can resolve it |
+| detailed | `support:view` | the full verdict — credential state, verified database-role state, blockers |
+
+The coarse tier is **built** from the full verdict, not the full verdict with fields
+hidden by markup. A field that reaches the browser is disclosed whatever the
+component does with it, so the detailed fields are never sent to a coarse reader.
+`diagnostics-readiness-tiers.test.ts` asserts their absence on the object and on its
+serialisation, and is mutation-verified.
+
+The coarse reader gets "who can resolve this" instead of a blocker list, split by
+whether they can act themselves — telling somebody who only needed to switch the
+module on to "ask an administrator with support access" is wrong in the annoying
+direction.
+
+### The monthly budget
+
+Shown on the page as its own section, not inside the detailed readiness tier (owner
+decision 3). Readiness detail is behind `support:view` because a blocker list and a
+database role are operational internals; a budget is a **control** with its own
+permission story, and folding it in there made it look like an internal too.
+
+It reads and writes through the AID-2 settings route — `support:view` to see it,
+`support:edit` to change it, and hard-gated on the module flag, so it 404s while the
+module is off. The card has five outcomes and none of them is silence:
+
+| situation | what the operator is told |
+|---|---|
+| module off | the budget cannot be read or changed, with a link to Feature modules |
+| module flag **unreadable** (`null`, #2803) | it could not be *established* — explicitly not the same as off, and explicitly do not go and switch the module on |
+| no `support:view` | the budget is not shown to your role, and who can see it |
+| `support:view` only | the figure, read-only, with the standard view-only reason |
+| read failed | the budget could not be read — **never** a zero, because zero is a real setting that hard-offs every paid call |
+
+The server owns the number. The only client state is the text in the box while
+somebody is typing; a save re-reads rather than trusting what was typed.
+
+### Asking, and what the operator sees
+
+Asking happens in the Help bubble. The surface itself — the tab, the two
+per-question consent ticks, the resizable panel, the eighteen failure states and the
+keyboard/screen-reader behaviour — is documented once, in [`ux.md`](ux.md). What
+follows here is the part that is a security argument rather than a screen.
+
+### Naming the record (owner decision D11)
+
+The page-context registry declares a `recordKind` on the bookings, waitlist and
+payments lists, but a list does not say WHICH row the operator means, and there is no
+`/admin/bookings/[id]` page in this codebase — admin rows link out to the
+member-facing `/bookings/{id}`, which is not an admin route and not in the registry.
+Only `/admin/members/[id]` names its record in the address.
+
+So each row on those three lists carries a stethoscope control that makes that row the
+subject and opens the bubble on Diagnostics. It was chosen over a picker inside the
+panel because it adds **no new way to reach a record**: the operator picks something
+already on their screen, on a page whose own guard already checked `bookings:view` or
+`finance:view`. A paste-or-search box would be a new reach, and a paste box that
+distinguishes "not found" from "not authorised" is the existence oracle #2378 rules
+out.
+
+The control sends an **id and nothing else** — not the kind, not a field, not the label
+beside it. The kind comes from the route the server matches, and the record is
+re-resolved server-side under the operator's own authority before a field is read, so
+the worst a wrong id can do is select a record the server refuses.
+
+A chosen record does **not** follow the operator to another screen, while the
+conversation does. The asymmetry is the honest one: the server derives the record's
+kind from whatever route they are on now, so a booking id carried onto the payments
+list could only ever ask about a payment that does not exist.
+
+`/admin/booking-approvals` is deliberately **not** wired. Its registry row names a path
+that only `redirect()`s to `/admin/booking-requests`, so no operator is ever on it and
+the row is dead — see **#2812**, which owns retargeting it and the tab-allowlist
+decision that needs.
+
+### The answer loop
+
+`claude-sonnet-5` (owner decision Q1), 2048 output tokens, a 60-second request
+timeout, and **zero SDK retries** — a retry is a paid call the budget reservation
+never saw. Up to `DIAGNOSTICS_MAX_TOOL_ROUNDS` (8) tool rounds per question.
+
+Each round: begin the bounded session, reserve budget, call the provider, **settle the
+roundtrip**, then invoke the tool and render its result as evidence. Settlement is
+unconditional — a provider throw is converted to a typed failure and settled anyway,
+because an unsettled reservation is spend nobody can see.
+
+The tool offer list is rebuilt **every round**, not once per question, because the
+consent ledger can widen mid-answer.
+
+#### The transcript is untrusted data
+
+`prompt.ts` holds the whole hardening, as constants rather than string-building at the
+call site. The system prompt is frozen with no interpolation. The entire prior
+conversation is replayed as **one wrapped user turn** — never as `assistant`-authority
+content — bounded to 8 turns, 2000 characters a turn and 12000 for the block, with the
+question bounded to 1000.
+
+Neutralisation strips angle brackets, defuses the wrapper tokens, and defuses the turn
+labels themselves, so text forging an operator turn label cannot become a turn
+boundary. That last one is mutation-verified: deleting the turn-label defusal fails
+exactly the forged-label test.
+
+This deliberately differs from `anthropic-client.ts`, which replays prior turns in
+their original roles. That is correct there and would be wrong here.
+
+### Evidence provenance (owner decision D10)
+
+One line per answer, expandable. The line is built on the **server** and travels as
+text, with the honesty markers as booleans beside it — because D10's one binding rule
+is that "something could not be read" and "this was stale" belong in the COLLAPSED
+line, and a caveat a component has to re-derive is a caveat the next restyle can drop.
+
+The line names where evidence came from and what was missing from it. It may never
+carry record ids, personal fields, tool arguments or row contents.
+
+Freshness in the line is deliberately coarse. The exact instant is in the expander; a
+to-the-second timestamp in the summary reads as precision the answer does not have.
+
+### Discovery, and the module switch
+
+The page appears in the admin sidebar and command palette under Monitoring & Support.
+It carries no flag of its own: visibility derives from the href against
+`FEATURE_ROUTE_RULES`, where the page prefix is registered under `aiDiagnostics`. So
+switching the module off removes it from both surfaces AND 404s the route, which
+matches — a palette entry that navigates to a 404 is worse than no entry. The
+readiness ENDPOINT stays exempt from that gate, as it must, so an admin can still see
+why the module is not ready and set it up.
 
 ## Maintenance rules
 

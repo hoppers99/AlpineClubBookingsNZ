@@ -44,6 +44,92 @@ import type { AdminPermissionArea } from "@/lib/admin-permissions";
 export const DIAGNOSTICS_TOOL_SCHEMA_VERSION = 1 as const;
 
 /**
+ * THE SERVER-OWNED BOUND LADDER, IN ONE PLACE AND DERIVED (#2804).
+ *
+ * Four bounds govern one `server_owned` read, and the relation between them is
+ * worth stating carefully, because the obvious shorthand is WRONG (#2804 review).
+ * The wait is not "smaller than" the transaction timeout — it comes BEFORE it, and
+ * the two ADD:
+ *
+ *   statement < transaction      and      (wait + transaction) < graph < outer race
+ *
+ * "wait < read < graph < outer race" was true while the wait was 2 000 and became
+ * false the moment it became 20 000 — a fair illustration of why the numbers below
+ * are derived rather than merely described.
+ *
+ * Break the relation and the operator gets a vague answer instead of a specific one:
+ * a graph deadline clearing only the transaction would kill a read for the time it
+ * spent queuing for a connection it then went on to get, and call it "took too
+ * long". #2786 found the failure mode that makes this worth deriving rather
+ * than listing: two unlinked names for one bound, where narrowing one silently
+ * left the other behind and every test still passed. So the three upper bounds
+ * are COMPUTED from the two real choices below. There is no second literal to
+ * keep in step, and no way to move one without moving what depends on it.
+ *
+ * OWNER DECISION 12 Aug 2026 (#2804): a diagnostics read should WAIT for a busy
+ * database rather than give up. The wait went from 2 s to 8 s, which moves the
+ * worst case before a refusal from 9 s to 15 s.
+ *
+ * IT IS 8 AND NOT THE 20 FIRST CHOSEN, and the reason is the rung below: pg's own
+ * pool ceiling is 10 000 in production, so a longer wait is simply not reachable
+ * without raising a limit that member traffic shares. That was put back to the owner
+ * with the measurement, and 8 s inside the existing ceiling was chosen over changing
+ * the whole application's pool behaviour for an admin tool.
+ *
+ * The owner's condition stands: the UI shows a "still working" state (#2378). A
+ * 15-second wait with no feedback is worse than a fast refusal, because an admin
+ * reloads, and a reload during contention adds another queued reader.
+ *
+ * THE STATEMENT TIMEOUT DELIBERATELY DID NOT MOVE. Waiting longer to START is
+ * what was asked for. Letting an already-running query run longer is a different
+ * thing, and it is the half that actually loads the database.
+ */
+const READ_ONLY_STATEMENT_TIMEOUT_MS = 5_000;
+
+/**
+ * The owner's decision, and the only reason this ladder changed (#2804).
+ *
+ * IT IS BOUNDED BY SOMETHING THIS LADDER DOES NOT OWN, which is the whole story of
+ * how the first attempt got it wrong. pg's `connectionTimeoutMillis` — set from
+ * `pool_timeout` in `DATABASE_URL`, 10 000 in production — covers time spent QUEUED
+ * as well as time spent connecting. Ask Prisma to wait longer than that and pg
+ * rejects first, with a bare `Error` carrying no code: the longer wait never
+ * happens, the refusal cannot be classified, and every unit test still passes
+ * because they hand-build the error. A first draft of #2804 set this to 20 000
+ * against a 10 000 pool ceiling and claimed a 27-second worst case the code could
+ * not reach.
+ *
+ * So it sits deliberately BELOW the pool's own ceiling, which is what makes
+ * Prisma's own `maxWait` the thing that fires and `P2028` the error that arrives.
+ * `__tests__/pool-acquisition-ladder.test.ts` asserts that against the real
+ * production connection strings, so raising this without raising the pool — a
+ * whole-application decision, since that pool serves member traffic too — fails.
+ */
+const READ_ONLY_MAX_WAIT_MS = 8_000;
+
+/**
+ * How much longer the whole transaction may run than any one statement in it.
+ * A margin over one statement, not a bound in its own right — which is why it is
+ * small, and why it is expressed as a margin.
+ */
+const READ_ONLY_TRANSACTION_MARGIN_MS = 2_000;
+
+/**
+ * Room for the JavaScript either side of the database work — assembling the
+ * evidence rows, the collaborators' own pure computation — on top of the worst
+ * case the database itself can impose.
+ */
+const SERVER_EVIDENCE_MARGIN_MS = 5_000;
+
+/**
+ * The executor's own margin above one source's deadline. It exists so the
+ * SOURCE's specific refusal wins the race: the outer bound is the backstop for a
+ * calculation that hangs on something with no deadline at all, never the thing
+ * that normally fires.
+ */
+const SERVER_EVIDENCE_EXECUTOR_MARGIN_MS = 5_000;
+
+/**
  * Every ceiling the substrate enforces. They are deliberately small: a
  * diagnostics tool exists to answer "what does the deployed system currently say
  * about X", not to move data. A tool that wants more than this is a report, and
@@ -65,7 +151,40 @@ export const DIAGNOSTICS_TOOL_BOUNDS = {
   /** Cap on the number of projected columns one row may carry. */
   maxFieldsPerRow: 24,
   /** `statement_timeout` for the tool's read-only transaction. */
-  statementTimeoutMs: 5_000,
+  statementTimeoutMs: READ_ONLY_STATEMENT_TIMEOUT_MS,
+  /**
+   * How long a `server_owned` read waits for a connection from the application
+   * pool before refusing (Prisma's `maxWait`). Raised from 2 s by owner decision
+   * #2804: an admin would rather wait for a busy database than be told to try
+   * again.
+   *
+   * It is finite because it must be — but be precise about what it costs (#2804
+   * review). A WAITING read holds no pool connection; that is what waiting means.
+   * What grows is QUEUE DEPTH, not occupancy, and occupancy stays bounded by the
+   * unchanged 7 s transaction timeout. An unbounded wait would still be wrong — a
+   * queue nobody ever leaves is its own failure — but it is not the "every reader
+   * pins a connection" story that is easy to tell and wrong.
+   */
+  readOnlyMaxWaitMs: READ_ONLY_MAX_WAIT_MS,
+  /**
+   * The interactive-transaction ceiling: strictly ABOVE the statement timeout so
+   * the database's own cancellation is what a slow read hits and the operator
+   * gets `57014 query_canceled` rather than a generic Prisma transaction error.
+   */
+  readOnlyTransactionTimeoutMs:
+    READ_ONLY_STATEMENT_TIMEOUT_MS + READ_ONLY_TRANSACTION_MARGIN_MS,
+  /**
+   * Deadline on ONE `server_owned` evidence graph — the JavaScript race each
+   * source runs. Derived to sit above the worst case the database can impose
+   * (the full wait for a connection PLUS the full transaction), so a source
+   * never reports "took too long" for time it spent queuing for a connection
+   * that it would have got.
+   */
+  serverEvidenceDeadlineMs:
+    READ_ONLY_MAX_WAIT_MS +
+    READ_ONLY_STATEMENT_TIMEOUT_MS +
+    READ_ONLY_TRANSACTION_MARGIN_MS +
+    SERVER_EVIDENCE_MARGIN_MS,
   /** `lock_timeout` — a diagnostics read must never queue behind a writer. */
   lockTimeoutMs: 2_000,
   /** `idle_in_transaction_session_timeout` — a wedged read frees its backend. */
@@ -111,8 +230,20 @@ export const DIAGNOSTICS_TOOL_BOUNDS = {
    * answer an operator needs — into a timeout that says nothing. This bound is the
    * backstop for a calculation that hangs on something with no deadline of its own,
    * and it fails closed: an expired read returns `evidence_unavailable` and no rows.
+   *
+   * DERIVED from `serverEvidenceDeadlineMs` since #2804, not chosen. It is the
+   * OUTER race, so it has to stay above the source's own deadline or it fires
+   * first and replaces a specific refusal with a generic one. When the wait for a
+   * connection moved, this had to move with it; a hand-set 15 000 would sit at or
+   * below the source deadline and invert the ladder, and every existing test would
+   * still have passed. That is exactly the shape #2786 was filed about.
    */
-  serverEvidenceTimeoutMs: 15_000,
+  serverEvidenceTimeoutMs:
+    READ_ONLY_MAX_WAIT_MS +
+    READ_ONLY_STATEMENT_TIMEOUT_MS +
+    READ_ONLY_TRANSACTION_MARGIN_MS +
+    SERVER_EVIDENCE_MARGIN_MS +
+    SERVER_EVIDENCE_EXECUTOR_MARGIN_MS,
   /** Hard cap on the rendered evidence block handed to the model. */
   renderedBlockMaxChars: 8_000,
 } as const;
@@ -157,6 +288,56 @@ export type DiagnosticsToolFailureReason =
   | "actor_read_failed"
   /** The caller lacks `view` on at least one area the tool declares. */
   | "permission_denied"
+  /**
+   * The entry surfaces personal data (`surfacesPersonalData: true`) and the record
+   * it was asked about is not one the operator consented to for this investigation
+   * (AID-7a, #2785; ADR-004 §1).
+   *
+   * DISTINCT FROM `permission_denied`, and the distinction is the whole point: the
+   * caller may well hold every area the entry declares. What is missing is the
+   * operator's own per-request inclusion of THAT record, which ADR-004 §1 requires
+   * on top of the permission check. Reporting it as a permission denial would send
+   * an operator to a Full Admin to be granted access they already have.
+   *
+   * It is ADR-004 §1's SECOND branch — "an explicit 'personal detail omitted —
+   * include the record to see it'" — taken at the whole-result level rather than
+   * field by field, because a second per-entry projection is out of scope for this
+   * substrate (recorded as an ADR-004 implementation note).
+   */
+  | "sensitive_consent_required"
+  /**
+   * The entry reads ONE NAMED RECORD but surfaces no personal fields, and the record
+   * it was asked about is not one this investigation covers (#2785 review).
+   *
+   * A SECOND REASON RATHER THAN A WIDER FIRST ONE. `booking_audit_history`,
+   * `payment_refund_state`, `xero_invoice_linkage` and the two audit-history entries
+   * return stable codes, amounts and instants — no names — so telling their operator
+   * "that diagnostics tool reads personal details" would be false, and a durable row
+   * counted as a personal-inclusion refusal would overstate what was refused. What
+   * they DO have in common with the personal-data entries is the bound ADR-004 §1
+   * puts on the investigation: evidence about one identified subject flows only for
+   * subjects the operator put in scope. The remedy is the same (select the record),
+   * the sentence is honest, and an auditor can still count the two apart.
+   *
+   * It also carries the entries whose record KIND an argument chooses and whose
+   * chosen subject is not a kind the ledger can hold at all — a manual refund task,
+   * a partner link, a Xero-linked credit note. Those refuse here rather than running
+   * unbounded.
+   */
+  | "record_not_included"
+  /**
+   * The entry is declared `operatorOnly` — record SEARCH, which returns a bounded
+   * list of people or bookings — and this invocation is not one the operator
+   * authorised for the model (AID-7a, #2785).
+   *
+   * Two invocations are allowed and everything else refuses here: the operator's own
+   * record-picker action (`invocationChannel: "operator_action"`, which renders to
+   * the browser and sends nothing to the provider), and a model tool call on a
+   * request where the operator ticked the per-request people-search box (owner
+   * decision, #2378, 11 Aug 2026). The tick is per request, defaults off and is
+   * never persisted, so an otherwise identical later request refuses again.
+   */
+  | "operator_action_required"
   /** `AI_DIAGNOSTICS_DATABASE_URL` is absent, malformed, or reuses the app role. */
   | "database_not_configured"
   /** The connected role is NOT the least-privilege shape ADR-007 requires. */
@@ -175,6 +356,25 @@ export type DiagnosticsToolFailureReason =
    * them would send an operator to the wrong credential.
    */
   | "evidence_unavailable"
+  /**
+   * The read never STARTED: it waited the full `readOnlyMaxWaitMs` for a
+   * connection from the application pool and did not get one (#2804).
+   *
+   * Distinct from `evidence_unavailable` because the operator's next step is
+   * different, and because the two are easy to confuse into one useless message.
+   * `evidence_unavailable` means the calculation ran and could not answer —
+   * usually the application database is unreachable, and the next step is to
+   * check that. This one means the database is REACHABLE and BUSY: nothing is
+   * broken, the read queued for the full wait and gave up, and the next step is
+   * to try again shortly or find what is holding connections. Telling an admin
+   * "evidence could not be gathered" when the true answer is "everything is fine,
+   * it is just busy" sends them to look for a fault that does not exist.
+   *
+   * It exists at all because #2804 made the wait long. At two seconds a busy
+   * refusal was rare enough to leave folded in; at eight seconds, an admin who
+   * waited that long is owed an accurate reason for it.
+   */
+  | "evidence_database_busy"
   /** The projected result exceeded the tool's byte ceiling. Never truncated. */
   | "result_too_large"
   /** A projection or redaction step threw. Evidence is discarded, not partial. */
@@ -210,6 +410,58 @@ export type DiagnosticsToolFailureReason =
  */
 export const DIAGNOSTICS_ARGS_HASH_REDACTED = "low_entropy_args_redacted";
 
+/**
+ * WHERE AN INVOCATION CAME FROM — a server-owned, closed discriminant (AID-7a,
+ * #2785).
+ *
+ * It is NOT `surface`. That field is free-form, defaulted by the executor and
+ * consumed only inside the audit row's description sentence; a gate cannot be built
+ * on a string any caller may invent. This one is a required field on every
+ * invocation with no default, so a new call site has to state which of the two
+ * things it is, and a reviewer sees it in the diff:
+ *
+ *  - `operator_action` — the operator themselves, through a server route that
+ *    renders the result to their own browser and sends nothing to the model
+ *    provider. The record picker is the only such caller.
+ *  - `model_tool_use` — the bounded provider loop, executing a `tool_use` block the
+ *    MODEL chose. Everything an attacker can write into evidence text reaches tool
+ *    arguments through this channel, so it is the one the gates are written for.
+ */
+export type DiagnosticsInvocationChannel = "operator_action" | "model_tool_use";
+
+/**
+ * The record kinds a consent decision can be about (AID-7a, #2785; ADR-004 §1).
+ *
+ * Closed, and matching the argument shapes the packs already take: every entry that
+ * surfaces personal data names its record with a `bookingId`, a `memberId` or a
+ * `paymentId`. A kind that is not on this list cannot be consented to, which is the
+ * fail-closed default a future pack should have to argue against.
+ */
+export const DIAGNOSTICS_CONSENT_RECORD_KINDS = [
+  "booking",
+  "member",
+  "payment",
+] as const;
+
+export type DiagnosticsConsentRecordKind =
+  (typeof DIAGNOSTICS_CONSENT_RECORD_KINDS)[number];
+
+/**
+ * A PROJECTED field that names a directly linked record, declared by the entry that
+ * projects it (AID-7a, #2785).
+ *
+ * The point of declaring it on the entry rather than deriving it from a field name
+ * is that the derivation would be a guess about server data. This is a statement by
+ * the tool author, reviewed with the entry, that this exact projected column carries
+ * the identifier of a record of this exact kind — which is what makes it safe for
+ * the consent ledger to follow.
+ */
+export interface DiagnosticsRelatedRecordRef {
+  /** The key in the entry's own PROJECTED row. Never a raw column name. */
+  field: string;
+  kind: DiagnosticsConsentRecordKind;
+}
+
 /** A projected scalar. Deliberately not `unknown`: a tool returns flat scalars. */
 export type DiagnosticsToolFieldValue = string | number | boolean | null;
 
@@ -227,6 +479,109 @@ export interface DiagnosticsToolAudit {
   /** The areas the tool declares, recorded even when the check denied. */
   areasChecked: AdminPermissionArea[];
   authOutcome: "allowed" | "denied";
+  /**
+   * Whether this invocation was the OPERATOR'S own action or a model tool call
+   * (AID-7a, #2785). Recorded because "an admin ran a search themselves" and "the
+   * model ran a search" are different events, and before this the durable row could
+   * not tell them apart at all.
+   */
+  invocationChannel: DiagnosticsInvocationChannel;
+  /**
+   * The ADR-004 §1 PERSONAL-DATA inclusion decision for this invocation. It records
+   * the DECISION, not whether data ultimately flowed: a consented read that then
+   * failed at the database is `granted`, because the operator's consent did cover it.
+   *
+   *  - `not_applicable` — the identified entry does not surface personal data. A
+   *    per-record entry that was refused because the investigation does not cover its
+   *    record (`record_not_included`) is still `not_applicable`: no personal
+   *    inclusion decision was needed, and `failureReason` is what says it was refused;
+   *  - `not_reached` — the invocation was refused before the consent gates ran, or no
+   *    entry was identified at all (so whether it is sensitive is unknown);
+   *  - `granted` — the inclusion was authorised. For a per-record entry that means
+   *    the operator ticked personal details AND this investigation covers the record;
+   *    for a SEARCH it means the operator ticked people-search, or ran the search
+   *    themselves through the record picker (`invocationChannel: "operator_action"`),
+   *    which is their own inclusion act and is why such a row can honestly read
+   *    `granted` beside `peopleSearchTick: "withheld"`;
+   *  - `refused` — the inclusion was not authorised and the invocation was refused
+   *    for that reason: `sensitive_consent_required` for a per-record entry,
+   *    `operator_action_required` for a search the operator did not allow the model
+   *    to run. Both are ADR-004 §1 refusals of personal data; `failureReason`
+   *    separates them, and an auditor counting §1 refusals wants both.
+   *
+   * Four values rather than three on purpose: collapsing `not_reached` into
+   * `not_applicable` would put "this entry is not sensitive" on a row where nobody
+   * had established that.
+   */
+  sensitiveInclusion:
+    | "not_applicable"
+    | "not_reached"
+    | "granted"
+    | "refused";
+  /**
+   * The KIND of record THIS INVOCATION was about, or null when the entry names none.
+   *
+   * Resolved per invocation rather than copied from the entry, because three entries
+   * choose their subject with an argument (`{subject, recordId}`,
+   * `{localModel, localId}`): for those the kind is not a property of the entry at
+   * all, and a row that recorded one would be recording the wrong one.
+   *
+   * It is therefore `null` in three cases, and they are all the same fact — nobody
+   * established a kind: the entry names no record; the invocation was refused before
+   * the consent gate ran, so its arguments were never resolved (`sensitiveInclusion`
+   * reads `not_reached` beside it); or the arguments named a subject no consent kind
+   * covers. Reading the entry's static declaration onto a row whose arguments never
+   * parsed would assert a subject that was never identified.
+   */
+  consentRecordKind: DiagnosticsConsentRecordKind | null;
+  /**
+   * How the record this invocation was about came to be in the investigation — the
+   * operator picked it, or the server derived it from a declared projected field of
+   * an earlier consented call. Null when this investigation does not cover that
+   * record at all, and null when no record was resolved or the gate never ran.
+   *
+   * IT IS RECORDED ON A REFUSAL TOO (#2785 review), and that is what makes the three
+   * causes of a consent refusal separable in the durable log. Read with
+   * `consentRecordKind` and `recordConsentTick`:
+   *
+   *  - kind `null` — the arguments named no record the ledger can hold, so nothing
+   *    was resolved to check;
+   *  - a kind with origin `null` — a real record this investigation does NOT cover.
+   *    On a `model_tool_use` row this is the pivot the ledger exists to catch: the
+   *    model asked about a record the operator never included;
+   *  - a kind with a real origin, beside `recordConsentTick: "withheld"` — a record
+   *    the operator DID include, refused only for the unticked personal-details box.
+   *
+   * Before this the first two and the third were one row, so "the model tried to
+   * reach outside the investigation" and "the operator forgot to tick a box" were
+   * indistinguishable to anyone reading the trail afterwards.
+   *
+   * NO SUBJECT RECORD ID, deliberately and in line with this type's own contract:
+   * `argsHash` already pins WHICH record non-reversibly, and kind + origin +
+   * `argsHash` together are the forensic record that a deliberate act occurred
+   * without adding an identifier to a durable row.
+   */
+  consentRecordOrigin: "operator_selected" | "derived" | null;
+  /**
+   * The per-request personal-details tick as it stood for this invocation (ADR-004
+   * §1). Recorded on EVERY row for the same reason `peopleSearchTick` is: it is
+   * request-level state, and answering "was the assistant allowed to read personal
+   * details during this question" from the rows that happen to be personal-data reads
+   * would answer it only where the permission was used.
+   *
+   * It is the tick, NOT the outcome. `sensitiveInclusion` is the decision this
+   * invocation reached; this field is the state of the operator's box, which is what
+   * separates a refusal caused by the box from a refusal caused by the record.
+   */
+  recordConsentTick: "granted" | "withheld";
+  /**
+   * The per-request people-search tick as it stood for this invocation (owner
+   * decision, #2378 Q2, 11 Aug 2026). Recorded on EVERY row, not only on search
+   * ones: "was the model allowed to look people up during this session" is a
+   * question about the request, and answering it from the rows that happen to be
+   * searches would answer it only when the capability was used.
+   */
+  peopleSearchTick: "granted" | "withheld";
   /** Set on every non-success exit; null on success. */
   failureReason: DiagnosticsToolFailureReason | null;
   /**
@@ -329,6 +684,22 @@ export const DIAGNOSTICS_TOOL_FAILURE_MESSAGES: Record<
     "Your permissions could not be checked just now, so no diagnostics tool was run.",
   permission_denied:
     "You do not have view access to the area this diagnostics tool reads, so it was not run.",
+  // ADR-004 §1's "personal detail omitted — include the record to see it", said in
+  // plain English and naming the control the operator can actually reach. It never
+  // names the record it was asked about: the whole point is that the record was not
+  // included, and echoing an id back would put an unincluded identifier on screen.
+  // It names BOTH controls and asserts NEITHER cause (#2785 delta review). One reason
+  // covers three conditions — no record to resolve, a record outside the
+  // investigation, and a record the operator DID select with the personal-details box
+  // unticked — so a sentence that says "this question does not include the record"
+  // tells an operator looking at their own selected record that they never selected
+  // it, and sends them back to the picker instead of to the tick.
+  sensitive_consent_required:
+    "That diagnostics tool reads personal details, and this question does not both include the record it was asked about and allow that record's personal details to be read, so it was not run. Select that record and tick the personal-details box to see those details.",
+  record_not_included:
+    "That diagnostics tool reads one specific record, and this question does not include the record it was asked about, so it was not run. Select that record to see its history.",
+  operator_action_required:
+    "Searching for people or records needs your explicit go-ahead for this question, and it was not given, so that search was not run.",
   database_not_configured:
     "The read-only diagnostics database credential is not configured, so no tool was run.",
   database_role_unsafe:
@@ -339,6 +710,8 @@ export const DIAGNOSTICS_TOOL_FAILURE_MESSAGES: Record<
     "That diagnostics read did not complete (it may have taken too long), so no results are available.",
   evidence_unavailable:
     "The system evidence that diagnostics tool reads could not be gathered just now, so no results are available.",
+  evidence_database_busy:
+    "The database was too busy to start that diagnostics read, so no results are available. Nothing is broken — try again shortly.",
   result_too_large:
     "That diagnostics read returned more data than this feature is allowed to handle. Ask a narrower question.",
   redaction_failed:
