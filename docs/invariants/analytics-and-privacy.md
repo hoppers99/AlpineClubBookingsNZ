@@ -22,11 +22,14 @@ verbatim move from the source document and must not be reworded in place** —
 only the ID heading lines were added.
 
 That applies to `INV-PRIV-001` through `INV-PRIV-010`, which are the transcribed
-blocks. `INV-PRIV-011` (#2683) and `INV-PRIV-012` (#2755) were written after the
+blocks. `INV-PRIV-011` (#2683), `INV-PRIV-012` (#2755) and `INV-PRIV-013` (#2765)
+were written after the
 restructure rather than moved into it, so there is no source text to preserve
 them against: correct them like any other prose, in their own reviewable change.
 See [`SCHEME.md`](SCHEME.md) §3 — the no-rewording rule governs transcriptions,
-not rules first written here.
+not rules first written here. #2765 used that licence to scope `INV-PRIV-012`'s
+"narrowing, member-invisible in both directions" sentence to `lodge`, which is the
+only destination it is true of.
 
 ## INV-PRIV-001
 
@@ -353,14 +356,79 @@ and #2763's bulk member-record rows were not.
     tolerated: both correlation entries' `scope` and the Lodge entry's
     `description` name this whole set as `admin`, so an empty lodge answer reads
     as a known gap rather than as evidence that nothing happened.
-  - **`lockers` (4 of those fifteen) is unresolved rather than settled**, and the
-    distinction is worth keeping. Its routes are gated `membership:*`, not
-    `lodge:*`, and a locker is allocated to a named member — so `lodge` is not
-    obviously its answer either, and it needs its own reasoning rather than
-    inheriting the group's whenever the group is next revisited.
+  - **`lockers` (4 of those fifteen) was settled separately (#2777): the four
+    stay `admin`.** Its routes are gated `membership:*`, not `lodge:*`, and a
+    locker is allocated to a named member, so a revisit of the group must still
+    reason about `lockers` on its own terms — the rule, the declined alternative
+    and the accepted cost are in `INV-PRIV-013`.
 
-  Moving either group would be a **narrowing**, member-invisible in both
+  Moving either group **to `lodge`** would be a **narrowing**, member-invisible in both
   directions and retention-neutral, which makes it a materially easier question
   than any widening — but it is still a readership change, so it needs a decision
-  rather than a sweep. `docs/ai-diagnostics/audit-admin-category-review.md`
+  rather than a sweep. **That reading is scoped to `lodge` and does not travel to
+  another destination:** for the `lockers` subgroup the membership correlation
+  domain is measurably a widening, not a narrowing. The deciding rule and the
+  `lockers` settlement are `INV-PRIV-013`;
+  `docs/ai-diagnostics/audit-admin-category-review.md`
   carries the per-site verdict for all 118 and the alternative reading for each.
+
+## INV-PRIV-013
+
+The test that decides whether an `admin` audit writer moves in a sweep, and the
+one destination a lane may never choose for itself. Owner decisions of 11 August
+2026: #2765 (the fifteen keeps, with the deciding rule) and #2777 (`lockers`
+stay `admin`; reopening is a fresh owner decision). The measurement and the
+costed options live on those issues, not here.
+
+- **The test is: did this site SPLIT a subsystem? Not: does this site name a
+  lodge, a member or a payment.** A split is the defect — some other writer of
+  the same objects already answers to a different gate, so no operator can get a
+  complete answer and nothing tells them the answer is partial. **A group that
+  is UNIFORM has no split to close, so moving it fixes nothing and opens a fresh
+  readership question of its own size.** Enforced per site, measured from the
+  tree: the #2730 movers in `REVIEWED_ADMIN_CATEGORIES_2730`, the keeps in
+  `LODGE_GATED_ADMIN_CATEGORIES_2765`
+  (`scripts/audit/audit-writer-census-manifest.ts`) — #2765's fifteen plus any
+  later lodge-gated `admin` writer classified under this rule on arrival
+  (#2749's other-lodges registry is the first) — a sweep that disagrees
+  fails CI with the rule named. Per-site verdicts and worked examples:
+  `docs/ai-diagnostics/audit-admin-category-review.md`. The `INV-PRIV-012`
+  sentence calling a move of this group "a narrowing, member-invisible in both
+  directions" is scoped to `lodge` as the destination and does not travel: it is
+  measurably false of the membership correlation domain (#2765's measurement,
+  on the issue).
+- **The `lockers` settlement (#2777, 11 August 2026): the four stay `admin`.**
+  The decided move to `membership` was refused on measurement — `membership` is
+  a permission area and a correlation domain here, not an audit category — and
+  the one implementable alternative (a NEW canonical category mapped to the
+  membership correlation domain and left out of
+  `MEMBER_VISIBLE_AUDIT_CATEGORIES`) was costed on #2777 and **declined**. The
+  accepted cost is a permission requirement, not a choice of tool: these rows
+  correlate only through the System entry, so a Membership Officer who does not
+  also hold Support & System cannot correlate a member's locker history at all.
+  Three facts from the measurement stay load-bearing and are asserted by
+  `src/lib/__tests__/audit-writer-census.test.ts` rather than restated as
+  prose: no member-invisible category routes to the membership correlation
+  domain in today's taxonomy (pinned as an empty set, so a taxonomy change that
+  reopens the question fails by name); the only migration ever to rewrite a
+  stored `AuditLog.category` is #2751's backfill, which is why any future
+  category here must not reuse the stored string `membership`; and the four
+  writers reach the acting officer's own member timeline through the
+  null-subject `memberId` leg, so every member-visible destination is a
+  widening reserved to the owner (`INV-PRIV-012`, `INV-OPS-012`). The full
+  reasoning, options and costs: #2777.
+- **While any writer pinned in that map stays `admin`, both correlation tools'
+  evidence scope must keep NAMING its subsystem.** The cost of the keep is a
+  silent absence: a Lodge correlation entry that returns nothing to "when was
+  this lodge deactivated?" reads as evidence that nothing happened. The Lodge
+  entry's `scope` and `description` and the System entry's `scope` therefore
+  name chores, lockers, work parties, lodge instructions, lodge settings, the
+  `LODGE_*` records and the other-lodges registry as `admin`, so an empty
+  answer reads as a **known gap**. A scope string that stops naming this set —
+  or that starts implying completeness — is a defect of the same kind as the
+  mis-classification, in the opposite direction. **Pinned, not left to a
+  reviewer:** `src/lib/diagnostics/tools/packs/__tests__/support-correlation.test.ts`
+  asserts all three strings name every subsystem in the set, so a copy-edit
+  that drops one fails by name. The population here is three string literals in
+  one file, which is why this half is pinned rather than reviewer-enforced like
+  the 307 unpinned write sites in `INV-OPS-012`.

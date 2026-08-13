@@ -28,6 +28,12 @@ are permanent: never renumbered, never reused. **The text under each ID is a
 verbatim move from the source document and must not be reworded in place** —
 only the ID heading lines were added.
 
+`INV-OPS-012` (#2751) is the exception, because it was written here rather than
+moved into the restructure: there is no source text to preserve it against, so it
+is corrected and extended like any other prose, in its own reviewable change. See
+[`SCHEME.md`](SCHEME.md) §3 — the no-rewording rule governs transcriptions, not
+rules first written here. #2765 extended it with the measured-audience half.
+
 ## INV-OPS-001
 
 - **Raw SQL never declares its own result shape (#2289).** `$queryRaw<SomeRow[]>`
@@ -142,15 +148,55 @@ only the ID heading lines were added.
   still unreleased and unapplied anywhere. A GENERAL "did a reclassification ship
   without a
   backfill" check is **not available**, and pretending otherwise would be worse
-  than having none: the audit-writer census pins only 105 of its 428 write sites
-  per-site (`APPLIED_AUDIT_CATEGORIES` plus `REVIEWED_ADMIN_CATEGORIES_2730`) —
+  than having none: the audit-writer census pins only 127 of its 434 write sites
+  per-site — the union of `APPLIED_AUDIT_CATEGORIES`,
+  `REVIEWED_ADMIN_CATEGORIES_2730`, `MEMBER_RECORD_ADMIN_CATEGORIES_2755` and
+  `LODGE_GATED_ADMIN_CATEGORIES_2765`, counted rather than added up, and asserted
+  by `audit-writer-census.test.ts` so this figure and the copy of it in
+  `bed-allocation-audit-category-backfill.test.ts` cannot go stale again —
   deliberately, because pinning all of them would make every feature that records
-  something edit a 400-line literal — so for the other 323 there is no baseline
+  something edit a 400-line literal — so for the other 307 there is no baseline
   a check could compare against, and the category distribution alone cannot see a
   reclassification that another one compensates for. The two `verify` gates that
   can read a pull request parse its BODY, not its diff. So outside the pinned
   population this is a rule a reviewer applies, and the reviewer is the
   enforcement.
+
+  **The same pull request also states the MEASURED before/after audience, per
+  site.** Owner decision of 11 August 2026 on #2765, D3, extending this rule
+  rather than adding a second one: recategorisation work carries both halves — the
+  backfill answer for the rows already written, and the audience answer for the
+  rows written next. Measured means run against every reader that keys on
+  `category`, and stated per site rather than per group:
+  `MEMBER_VISIBLE_AUDIT_CATEGORIES` and `buildMemberVisibleAuditLogWhere` for the
+  member self-timeline; `AUDIT_CATEGORY_CORRELATION_DOMAIN` with
+  `AUDIT_CORRELATION_DOMAIN_AREAS` for which AI Diagnostics
+  correlation entries can return the row and which admin areas that needs;
+  `AUDIT_TIMELINE_CATEGORY_OPTIONS` for which tab of Admin > Audit Log surfaces
+  it; `FINANCE_AUDIT_CATEGORIES` in
+  `src/lib/diagnostics/tools/packs/finance-records.ts` for any move into `payment`
+  or `xero` on a `Payment`, `Booking`, `ManualRefundTask` or `MemberSubscription`
+  entity, because that is a SIXTH audit-category reader outside the correlation
+  pack and its gate is `finance` **alone** — deliberately weaker than the
+  correlation entries' `support` + `finance`, per #2377's owner decision that a
+  Finance Officer must not need Support & System permission, and pinned in
+  `finance-pack.test.ts`; and `classifyAuditRetention` on the site's OWN action,
+  since that function
+  reads action as well as category and an access-shaped action expires at 24
+  months instead of seven years. **The reason this is a rule is that reasoning
+  about it has already failed.** #2755's issue text and the brief for its build
+  lane both stated that the change moved nobody's readership; measurement on
+  #2764 found three deltas, including a widening that appeared in neither. A
+  sentence asserting "this changes nobody's readership" is not evidence, and on
+  this surface the cost of being wrong is a row published to a member on an
+  append-only table. The same measurement is what refused a move on #2765: the
+  category the decision named turned out not to exist, and every category that
+  reached the intended reader was member-visible (`INV-PRIV-013`). A refusal is
+  not the end of the obligation — the question went back to the owner as **#2777**,
+  a filed issue with the measurement and the costed alternatives, because a
+  carry-forward named in a pull request and nowhere else is the defect #2765 was
+  itself opened to fix. #2777 was decided on 11 August 2026; `INV-PRIV-013`
+  records the settlement.
 
 ## INV-OPS-005
 

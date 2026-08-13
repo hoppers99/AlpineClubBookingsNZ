@@ -191,8 +191,9 @@ nine were held for a decision, because their destinations are member-visible and
 move would publish the row on a member-facing surface.
 [**The `admin` audit category, reviewed site by site**](audit-admin-category-review.md)
 records the verdict and the reason for every one of them, the alternative reading where
-there was a real one, and the fifteen lodge-gated sites that are an open question rather
-than a settled keep.
+there was a real one, and the fifteen lodge-gated sites — an open question when that
+page was written, settled as keeps by #2765, with the four locker sites confirmed on
+their own reasoning by #2777 (`INV-PRIV-013`).
 
 **One of those nine was resolved in #2755, and it moved TWO more writers IN rather than
 out.** Editing, activating, deactivating or re-roling a member's record from an officer
