@@ -85,10 +85,15 @@ export const DIAGNOSTICS_EVIDENCE_STATES = [
    * tool whose `evidenceScope` carries the finance pack's own
    * `STORED_EVIDENCE_DISCLOSURE` returns an otherwise-`ok` block, the loop folds
    * this state in with `worstEvidenceState` — the disclosure text itself is the
-   * membership test (`diagnosticsToolRequiresProviderCheck`), so the marked set
-   * cannot drift from what the pack tells the model. Any non-`ok` state already
-   * names a more specific problem and wins the fold. The provenance line then
-   * carries the confirm-in-the-provider's-console caveat collapsed (D10).
+   * membership test (`diagnosticsToolRequiresProviderCheck`), pinned to the
+   * marked entries by the finance pack's own census, so the marked set cannot
+   * drift from what the pack tells the model. The fold is GUARDED on the block
+   * asserting `ok` — that guard, not the state ordering, is what lets a
+   * truncated or empty read keep its more specific state (this state's index
+   * would otherwise beat both under `worstEvidenceState`). The operator's
+   * confirm-in-the-provider's-console caveat does not depend on the fold at
+   * all: the provenance line keys it on the TOOL, so it rides collapsed (D10)
+   * on every answer that used such a read, truncated and empty ones included.
    * Live provider reads themselves remain out of scope until an owner-approved
    * issue designs their security, rate-limit, credential and audit story.
    */

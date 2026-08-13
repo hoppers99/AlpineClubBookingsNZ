@@ -194,10 +194,20 @@ export function findDiagnosticsTool(
  * to forget.
  */
 export function diagnosticsToolRequiresProviderCheck(toolId: string): boolean {
-  // An entry without an evidenceScope cannot carry the disclosure: false, which is
-  // the fail-closed direction — an unmarked read is presented as ok, never caveated
-  // by accident, and a finance entry that LOST its scope would fail the pack's own
-  // tests long before it lost this marker.
+  // An unknown id or an entry without an evidenceScope is false — QUIET BY
+  // DEFAULT, which for an honesty marker is the risky direction, not a safe one:
+  // silence here presents a stored provider state as clean. What makes the quiet
+  // default acceptable is that it is not trusted alone — the finance pack's own
+  // census pins the marked set entry by entry and asserts the full disclosure
+  // constant in every scope, so an entry cannot fall out of the set without a
+  // named test failure (#2815 review).
+  //
+  // Note what the marker follows: the pack's own EVIDENCE CLAIM, not a per-tool
+  // judgement about provider dimensions. The finance audit-history entry carries
+  // it because its pack put the disclosure in its scope deliberately; the support
+  // pack's correlation entry reads similar audit rows without the disclosure and
+  // is unmarked. The sentence is conditional, so a marked tool with no provider
+  // value on a given answer still yields a true caveat.
   return (
     findDiagnosticsTool(toolId)?.evidenceScope?.includes(
       STORED_EVIDENCE_DISCLOSURE,

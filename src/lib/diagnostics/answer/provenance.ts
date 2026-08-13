@@ -27,6 +27,7 @@ import "server-only";
 
 import type { DiagnosticCaseSummary } from "../case/case";
 import type { DiagnosticsEvidenceState } from "../case/states";
+import { diagnosticsToolRequiresProviderCheck } from "../tools/registry";
 import type { DiagnosticsAskProvenance, DiagnosticsAskSource } from "./contract";
 
 /**
@@ -127,8 +128,16 @@ export function buildDiagnosticsProvenance(
   const hasSearchWithheld = input.summary.hasSearchWithheld;
   const hasPartialEvidence = sources.some((source) => isPartialState(source.state));
   const hasStaleEvidence = sources.some((source) => isStaleState(source.state));
+  // KEYED ON THE TOOL, NOT ONLY THE FOLDED STATE (#2815, both review lenses). A
+  // source carries ONE state, and a truncated or empty read from a stored-provider
+  // tool rightly keeps `result_truncated`/`not_found` — but the collapsed line is a
+  // LIST of caveats, and losing the console caveat there is losing it exactly where
+  // it matters most: the packs' own scope lines are emphatic that "nothing matching
+  // means nothing was RECORDED — not that the provider never sent one".
   const hasProviderCheckRequired = sources.some(
-    (source) => source.state === "provider_check_required",
+    (source) =>
+      source.state === "provider_check_required" ||
+      diagnosticsToolRequiresProviderCheck(source.toolId),
   );
   // Anything withheld at all — including a locked-out actor, which
   // `summariseDiagnosticCase` counts in `hasWithheldEvidence` but in none of the three
@@ -137,6 +146,7 @@ export function buildDiagnosticsProvenance(
     input.summary.hasWithheldEvidence ||
     hasPartialEvidence ||
     hasStaleEvidence ||
+    hasProviderCheckRequired ||
     sources.some(
       (source) =>
         source.state !== "ok" &&
@@ -193,8 +203,10 @@ export function buildDiagnosticsProvenance(
     // #2815, and D10's rule applies in full: this is an honesty marker, so it lives
     // in the COLLAPSED line. The remedy is specific — the provider's own console —
     // because that is the one thing an operator can actually do about stored state.
+    // Worded to be true of a FOUND value and of an ABSENCE alike: an empty webhook
+    // or refund read means nothing was recorded, never that the provider agrees.
     caveats.push(
-      "provider values are as last recorded here — confirm against Stripe or Xero's own console before acting on them",
+      "provider state here is what the platform last recorded, not a live answer — confirm against Stripe or Xero's own console before acting on it",
     );
   }
   // A withheld source that is none of the above — a locked-out actor, an unconfigured

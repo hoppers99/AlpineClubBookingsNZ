@@ -343,13 +343,32 @@ describe("stored provider evidence is never presented as ok (#2815)", () => {
   });
 
   it("leaves an ok read from an unmarked tool alone", async () => {
+    // A REAL registered id, deliberately: the first cut used the unregistered
+    // "member_search", which only exercised the unknown-id short-circuit — a
+    // mutant marking EVERY registered tool passed it (#2815 review).
     mocks.runRound
-      .mockResolvedValueOnce(toolRound("member_search"))
+      .mockResolvedValueOnce(toolRound("diagnostics.member_search"))
       .mockResolvedValueOnce(answerRound("found them"));
-    mocks.invoke.mockResolvedValue(okResult("member_search"));
+    mocks.invoke.mockResolvedValue(okResult("diagnostics.member_search"));
 
     const result = await runDiagnosticsAnswer(input());
     expect(result.sources[0]).toMatchObject({ state: "ok" });
+  });
+
+  it("keeps result_truncated on a truncated finance read — the fold takes only ok", async () => {
+    // Dropping the `=== "ok"` guard would turn this into provider_check_required
+    // (index 6 beats result_truncated's 1 under worstEvidenceState) and the
+    // "part of a longer result was left out" caveat would vanish. The console
+    // caveat still reaches the operator for this source — provenance keys it on
+    // the TOOL, not the folded state.
+    const toolId = "diagnostics.payment_diagnostic_summary";
+    mocks.runRound
+      .mockResolvedValueOnce(toolRound(toolId))
+      .mockResolvedValueOnce(answerRound("part of the ledger"));
+    mocks.invoke.mockResolvedValue({ ...okResult(toolId), truncated: true });
+
+    const result = await runDiagnosticsAnswer(input());
+    expect(result.sources[0]).toMatchObject({ state: "result_truncated" });
   });
 
   it("never overrides a more specific state — a denial stays a denial", async () => {

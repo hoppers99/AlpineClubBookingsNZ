@@ -89,6 +89,7 @@ import {
   recordRefOrNull,
   serverLabelOrNull,
   stableCodeOrNull,
+  STORED_EVIDENCE_DISCLOSURE,
 } from "./finance-shared";
 
 export const DIAGNOSTICS_BOOKING_BLOCK_STATE_TOOL_ID =
@@ -484,7 +485,7 @@ THERE IS NO MEMBER NUMBER in this platform, so none is reported. If a member quo
 
 ELIGIBILITY CODES. eligibilityCodes is in PRIORITY order — report the first one as the primary problem and mention the rest as also true. Absent means nothing in this list applies. Each code's exact meaning is in this tool's own description; use those words and do not paraphrase them.
 
-This is a MEMBER-scoped answer. Whether they are present on a particular night, and whether a particular booking's hosting rule is satisfied, are booking questions — diagnostics.booking_block_state answers those. ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
+This is a MEMBER-scoped answer. Whether they are present on a particular night, and whether a particular booking's hosting rule is satisfied, are booking questions — diagnostics.booking_block_state answers those. The subscription status and paid instant it reads are DERIVED FROM A XERO INVOICE by a daily sync, so they mirror provider state as this platform last computed it. ${STORED_EVIDENCE_DISCLOSURE} ${AID6B_SCOPE_TAIL} ${AID6B_UNTRUSTED_EVIDENCE_DISCLOSURE}`,
   argsSchema: memberIdArgsSchema,
   inputSchema: {
     type: "object",

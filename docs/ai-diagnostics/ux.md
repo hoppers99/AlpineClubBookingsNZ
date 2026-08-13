@@ -99,7 +99,7 @@ says where the state is produced and what the operator is told to do next.
 | 16 | runtime evidence unavailable, deployed evidence available | evidence state `evidence_unavailable` beside `ok` sources | the answer still lands, with the gap named in the collapsed line |
 | 17 | session expired / access changed mid-conversation | the client, on a 401/403 | "your session no longer allows this — sign in again". Never rendered as a network fault |
 | 18 | transport failure | the client, when no response arrives at all | "check your connection" — the one state where that sentence is true |
-| 19 | stored provider evidence (#2815) | the answer loop folds `provider_check_required` onto any otherwise-clean read from a finance tool carrying the stored-provider disclosure | `hasProviderCheckRequired` on the collapsed line: "provider values are as last recorded here — confirm against Stripe or Xero's own console before acting on them". The evidence still counts as READ — the state qualifies its liveness, not its retrieval |
+| 19 | stored provider evidence (#2815) | the answer loop folds `provider_check_required` onto an otherwise-clean read from a tool carrying the stored-provider disclosure (the finance pack, plus the two membership tools whose subscription fields mirror a Xero invoice); the collapsed caveat itself keys on the TOOL, so truncated and empty reads carry it too | `hasProviderCheckRequired` on the collapsed line: "provider state here is what the platform last recorded, not a live answer — confirm against Stripe or Xero's own console before acting on it". The evidence still counts as READ — the state qualifies its liveness, not its retrieval |
 
 Two properties hold across the whole table:
 
@@ -116,7 +116,7 @@ Two properties hold across the whole table:
 
 A census test iterates `DIAGNOSTICS_EVIDENCE_STATES` itself and requires every state to
 be placed deliberately on one side of "does this raise a caveat". It is fail-closed:
-the allowlist is the states that may pass WITHOUT one, so a seventeenth state added
+the allowlist is the states that may pass WITHOUT one, so a new state added
 next year lands on the caveat side and fails until somebody decides.
 
 ## The "still working" state

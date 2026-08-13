@@ -56,7 +56,6 @@ import {
 } from "../case/case";
 import {
   DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS,
-  worstEvidenceState,
   type DiagnosticsEvidenceState,
 } from "../case/states";
 import type { DiagnosticsConsentLedger } from "../tools/consent";
@@ -341,19 +340,25 @@ export async function runDiagnosticsAnswer(
       // that using the latter beside a clipped block is what produced
       // `evidence-state="ok"` above an incomplete listing.
       //
-      // STORED PROVIDER EVIDENCE IS NEVER PRESENTED AS `ok` (#2815). A finance tool
+      // STORED PROVIDER EVIDENCE IS NEVER RECORDED AS `ok` (#2815). A finance tool
       // whose scope carries the stored-provider disclosure read what this platform
       // last WROTE DOWN, not what Stripe or Xero believe right now — and `states.ts`
-      // names THIS surface as `provider_check_required`'s producer, folded with
-      // `worstEvidenceState`. The fold applies only where the block asserts `ok`:
-      // every other state already names a more specific problem (truncation, denial,
-      // nothing matched), and one state per source means the more actionable caveat
-      // must win. AID-7 shipped without this and its contract review caught stored
-      // `SUCCEEDED` rows presenting as live truth.
+      // names THIS surface as `provider_check_required`'s producer. Two edges are
+      // deliberate:
+      //  - The fold takes only a block-asserted `ok`. A truncated or empty read
+      //    keeps its more specific state (this state's index would beat both under
+      //    `worstEvidenceState`, so the guard is the protection, not the ordering);
+      //    the operator's console caveat is keyed on the TOOL in `provenance.ts`,
+      //    so those reads still carry it on the collapsed line.
+      //  - The model's own block keeps `evidence-state="ok"` (`render.ts` stamps
+      //    what the block asserts, and the scope: line already carries the full
+      //    disclosure to the model). Only the CASE and the operator-facing source
+      //    record the qualified state — divergence in the more-qualified direction
+      //    only. Do not "fix" the renderer to match.
       const presentedState =
         evidence.evidenceState === "ok" &&
         diagnosticsToolRequiresProviderCheck(result.toolId)
-          ? worstEvidenceState(evidence.evidenceState, "provider_check_required")
+          ? "provider_check_required"
           : evidence.evidenceState;
       const outcome = recordCaseEvidence(
         diagnosticCase,
