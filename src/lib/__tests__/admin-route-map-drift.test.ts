@@ -67,10 +67,35 @@ function relative(absFile: string): string {
   return path.relative(process.cwd(), absFile).split(path.sep).join("/");
 }
 
-const adminPageFiles = walkFiles(
-  path.join(process.cwd(), "src/app/(admin)"),
-  "page.tsx",
-).sort();
+/**
+ * Every admin PAGE, from whichever route group it lives in.
+ *
+ * This used to walk `src/app/(admin)` alone, which quietly assumed admin pages only
+ * ever live in that one group.
+ *
+ * NO ADMIN PAGE LIVES OUTSIDE `(admin)` TODAY, so this is hardening rather than a
+ * fix — but the assumption was briefly false and nothing said so. A revision of
+ * AID-7 (#2378) put the Diagnostics page in its own `(diagnostics)` group, and this
+ * guard went silent for it in BOTH halves: the page could have landed in the
+ * `overview` catch-all unnoticed, and its feature-route prefix was reported as
+ * matching no file. That revision was withdrawn — the page now sits under `(admin)`
+ * like every other admin page — but the blindness it exposed was real.
+ *
+ * A route group is a rendering concern; this guard is a permissions concern. Tying
+ * the second to the first made "add a route group" a way to leave the guard without
+ * anybody deciding to. The walk now covers every `(group)/admin/**` page, so if that
+ * ever happens again it is picked up rather than remembered.
+ */
+const adminPageFiles = fs
+  .readdirSync(path.join(process.cwd(), "src/app"), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory() && entry.name.startsWith("("))
+  .flatMap((group) =>
+    walkFiles(
+      path.join(process.cwd(), "src/app", group.name, "admin"),
+      "page.tsx",
+    ),
+  )
+  .sort();
 const adminApiFiles = walkFiles(
   path.join(process.cwd(), "src/app/api/admin"),
   "route.ts",
@@ -103,6 +128,17 @@ const OVERVIEW_ALLOWLIST: Record<string, string> = {
   // enforces its own area on drill-in.
   "/api/admin/pending-counts":
     "Cross-area read-only badge counts for the sidebar; spans all areas, so overview view is correct.",
+  // The AI Diagnostics workspace shell (AID-7, #2378). `overview` is the CORRECT
+  // requirement here and not a workaround, which is worth stating because it looks
+  // like one: owner decision Q6 is that any admitted administrator may OPEN the
+  // workspace, and that the shell must not itself become a `support:view`
+  // permission. Opening it grants no evidence — every tool invocation re-derives the
+  // acting admin's areas server-side and refuses what they may not read, and the
+  // detailed readiness panel on this very page is already gated on `support:view`.
+  // Gating the shell instead would hide the "who can fix this" message from exactly
+  // the admins who need to read it.
+  "/admin/ai-diagnostics":
+    "AI Diagnostics workspace shell; any admitted admin may open it (owner decision #2378 Q6) and per-tool area checks gate every read, so overview view is correct.",
 };
 
 // State-changing GET endpoints (EDIT_ON_GET_PREFIXES in admin-permissions.ts).

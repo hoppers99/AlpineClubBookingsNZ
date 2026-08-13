@@ -14,6 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { DiagnosticsRecordButton } from "@/components/help-widget/diagnostics-record-button";
 import { StatusChip } from "@/components/ui/status-chip";
 import { MiniChip } from "@/components/ui/mini-chip";
 import { type ChipTone } from "@/lib/chip-tones";
@@ -609,6 +610,16 @@ export default async function AdminBookingsPage({
                             Overlaps exclusive hold
                           </MiniChip>
                         ) : null}
+                        {/* Beside the status chip on purpose (#2378 D11): the status
+                            IS the question an operator brings to Diagnostics — "why
+                            is this one still pending?" — so the control sits where
+                            they are already looking when they think to ask. It
+                            renders nothing unless the widget says Diagnostics is
+                            available to this admin. */}
+                        <DiagnosticsRecordButton
+                          recordId={booking.id}
+                          subject={`the booking for ${booking.member.firstName} ${booking.member.lastName} from ${formatNZDate(booking.checkIn)}`}
+                        />
                       </div>
                       {booking.requiresAdminReview && booking.adminReviewReason ? (
                         <p className="mt-1 text-xs text-warning">{booking.adminReviewReason}</p>

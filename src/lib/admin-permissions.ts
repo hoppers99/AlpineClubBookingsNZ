@@ -371,9 +371,23 @@ const ROUTE_AREA_PREFIXES: Array<{
       // Registered under support so its budget + readiness API never falls back
       // to the overview catch-all: support view = readiness/status, support edit
       // = budget change. The DEDICATED Anthropic key WRITE stays Full Admin on the
-      // shared credentials route regardless of area level. (The Diagnostics UI
-      // page /admin/ai-diagnostics arrives in AID-8 #2378 and resolves here too.)
-      "/admin/ai-diagnostics",
+      // shared credentials route regardless of area level.
+      //
+      // THE API IS HERE; THE PAGE DELIBERATELY IS NOT (AID-7, #2378). This list
+      // used to carry "/admin/ai-diagnostics" too, added in anticipation of a UI
+      // that did not exist yet, with a comment saying the page would "resolve here
+      // too". The owner's later Q6 decision on #2378 went the other way and is
+      // authoritative: ANY admitted administrator may OPEN the Diagnostics
+      // workspace, and the shell must not itself become a support permission —
+      // otherwise the "here is who can fix this" message is hidden from precisely
+      // the admins who need to read it.
+      //
+      // Nothing is loosened by that. Opening the shell grants no evidence: every
+      // tool invocation re-derives the acting admin's areas server-side and refuses
+      // what they may not read, the DETAILED readiness panel on the page is gated on
+      // support:view in its own right, and every /api/admin/ai-diagnostics route
+      // stays here. The page falls to the overview catch-all and is recorded in
+      // OVERVIEW_ALLOWLIST with that reasoning.
       "/api/admin/ai-diagnostics",
     ],
   },

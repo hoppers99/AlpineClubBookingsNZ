@@ -14,10 +14,17 @@ export function HelpWidgetAdmin({
   scope,
   llmEnabled,
   chatEndpoint,
+  diagnostics,
 }: {
   scope: "admin" | "finance";
   llmEnabled: boolean;
   chatEndpoint?: string;
+  /**
+   * AI Diagnostics (AID-7, #2378). Passed straight through: its PRESENCE is the
+   * permission, decided by the server-rendered layout that supplied it. See
+   * `HelpWidgetProps.diagnostics` for why there is no check on this side.
+   */
+  diagnostics?: { moduleEnabled: boolean };
 }) {
   const resolveHelp = useCallback(
     (pathname: string): HelpPageContent => getContextualHelp(pathname, scope),
@@ -31,6 +38,7 @@ export function HelpWidgetAdmin({
       resolveHelp={resolveHelp}
       position="app"
       chatEndpoint={chatEndpoint}
+      diagnostics={diagnostics}
     />
   );
 }

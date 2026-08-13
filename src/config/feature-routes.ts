@@ -220,11 +220,18 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     //    once the club has opted into the product by enabling the module, and
     //    enabling it alone authorises no spend (fail-closed readiness gates every
     //    paid call).
-    // No /admin/ai-diagnostics PAGE prefix is listed yet — the Diagnostics UI
-    // (AID-8, #2378) adds the page and its gate; listing a page prefix now would
-    // fail admin-route-map-drift.test.ts (a prefix that matches no file).
+    // The PAGE prefix is listed as of AID-7 (#2378), which added
+    // /admin/ai-diagnostics. It was deliberately absent until then, because a
+    // prefix matching no file fails admin-route-map-drift.test.ts. (The comment
+    // here previously said "AID-8"; the UI is AID-7 / #2378.)
+    //
+    // The page is gated by the module like the settings route, and unlike the
+    // readiness endpoint: with diagnostics switched off there is no workspace to
+    // open, while readiness must stay reachable so an admin can see WHY and set it
+    // up. Turning the module off therefore 404s the page rather than rendering a
+    // shell that can do nothing.
     flag: "aiDiagnostics",
-    prefixes: ["/api/admin/ai-diagnostics"],
+    prefixes: ["/admin/ai-diagnostics", "/api/admin/ai-diagnostics"],
     exemptPaths: ["/api/admin/ai-diagnostics/readiness"],
   },
   {

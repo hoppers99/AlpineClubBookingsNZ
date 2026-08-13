@@ -198,7 +198,18 @@ export default function ReportsPage() {
         : "All lodges"
       : null;
 
+  // Monotonic ticket for the LATEST query. Every filter change refires the effect
+  // below while earlier fetches are still in flight, and without this guard the
+  // screen belongs to whichever response lands LAST, not to the query the operator
+  // asked — the mount-time default-range response overwriting the narrowed range's
+  // figures a moment after they rendered. Found as a deterministic-looking
+  // Playwright failure on PR #2817 (the cards showed the default range's $315
+  // against the selected range's $135), but it is a live product defect: nothing
+  // marked the figures as belonging to a different range than the inputs showed.
+  const fetchSeq = useRef(0);
+
   const fetchReports = useCallback(async () => {
+    const seq = ++fetchSeq.current;
     setLoading(true);
     setError(null);
     try {
@@ -215,11 +226,15 @@ export default function ReportsPage() {
         throw new Error(body.error || "Failed to fetch reports");
       }
       const json = await res.json();
+      // A response for a superseded query changes nothing — not the data, not the
+      // error, not the spinner. The latest query owns all three.
+      if (seq !== fetchSeq.current) return;
       setData(json);
     } catch (err) {
+      if (seq !== fetchSeq.current) return;
       setError(err instanceof Error ? err.message : "Failed to fetch reports");
     } finally {
-      setLoading(false);
+      if (seq === fetchSeq.current) setLoading(false);
     }
   }, [deleted, from, to, lodgeId]);
 
