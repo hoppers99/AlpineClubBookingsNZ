@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { enqueueHostingCoverageReevaluation } from "@/lib/adult-member-hosting-coverage-queue";
@@ -556,10 +559,21 @@ describe("hosting coverage queue participant fence (#2597)", () => {
  * so issuing one without the lock would not merely skip a check here, it would
  * silently switch the check off everywhere the proof travels.
  */
+/**
+ * A narrow double does not have the key AT ALL, so the fixture deletes it rather
+ * than spreading around it — the shape the real test doubles had is the shape the
+ * refusal has to catch. (Also drops the two unused-binding lint warnings the
+ * destructuring form left behind.)
+ */
+function withoutRawLockClient(db: ReturnType<typeof makeDb>): never {
+  const client: Record<string, unknown> = { ...db };
+  delete client.$executeRaw;
+  return client as never;
+}
+
 describe("participant proof cannot exist without its lock", () => {
   it("refuses a client that cannot take the row lock instead of issuing a proof", async () => {
-    const db = makeDb();
-    const { $executeRaw: _omitted, ...withoutRawLock } = db;
+    const withoutRawLock = withoutRawLockClient(makeDb());
 
     await expect(
       acquireHostingCoverageQueueParticipantProof(
@@ -572,8 +586,7 @@ describe("participant proof cannot exist without its lock", () => {
   it("does not dress the wiring fault as retryable contention", async () => {
     // A 409 retry contract here would invite an endless client retry loop: no
     // amount of retrying grows the client a $executeRaw method.
-    const db = makeDb();
-    const { $executeRaw: _omitted, ...withoutRawLock } = db;
+    const withoutRawLock = withoutRawLockClient(makeDb());
 
     const error = await acquireHostingCoverageQueueParticipantProof(
       { sources: [SOURCE], actorMemberId: "actor-1" },
@@ -632,5 +645,126 @@ describe("participant proof cannot exist without its lock", () => {
         db as never,
       ),
     ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+  });
+});
+
+/**
+ * THE SOURCE CONTRACT (#2619, #2810).
+ *
+ * The behavioural tests above prove the seam refuses the ONE shape of unlockable
+ * client they hand it. That is worth having and it is not enough, because the
+ * bypass those tests replaced was reintroducible by a plausible refactor rather
+ * than by a mistake. What stood here before #2634 read, in full sincerity:
+ *
+ *   "Hosting service unit tests use deliberately narrow in-memory delegates. A
+ *    real Prisma client exposes both raw methods; requiring that production shape
+ *    keeps those existing test doubles narrow without weakening the runtime-issued
+ *    proof at the queue boundary."
+ *
+ * That is what somebody writes when a suite of narrow doubles is failing and an
+ * early return makes them pass. It reads as housekeeping locally. What it did was
+ * hand back a proof — a CAPABILITY, which then satisfies
+ * `assertHostingCoverageQueueParticipantsLocked` at every downstream call site —
+ * for a lock that was never taken.
+ *
+ * A differently shaped early return placed above the lock would not be caught by a
+ * runtime test that hands over one specific unlockable client. So this block
+ * asserts on the source: not that the module behaves, but that the SHAPE cannot
+ * come back.
+ */
+describe("participant fence source contract (#2619)", () => {
+  /** Resolved from this file, not `process.cwd()`, so the run directory is irrelevant. */
+  const MODULE_PATH = join(
+    import.meta.dirname,
+    "..",
+    "adult-member-hosting-queue-participants.ts",
+  );
+
+  /**
+   * Source with comments removed.
+   *
+   * A comment that NAMES a pattern must not read as using it — otherwise the
+   * docblock above, which quotes the bypass it exists to describe, would fail the
+   * very assertions it is explaining.
+   */
+  function readModuleCode(): string {
+    return readFileSync(MODULE_PATH, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n")
+      .filter((line) => !/^\s*(\/\/|\*)/.test(line))
+      .join("\n");
+  }
+
+  /**
+   * The acquire function's own body.
+   *
+   * Scoped to the one function because the module has two other legitimate
+   * `issueProof` callers — `proveMemberMergeHostingCoverageParticipants` takes its
+   * lock through a different path entirely. Asserting over the whole file would
+   * either fail honest code or, worse, be loosened until it asserted nothing.
+   */
+  function acquireFunctionBody(code: string): string {
+    const start = code.indexOf(
+      "export async function acquireHostingCoverageQueueParticipantProof",
+    );
+    expect(
+      start,
+      "the acquire function has been renamed — this contract now guards nothing",
+    ).toBeGreaterThan(-1);
+    const end = code.indexOf("\nexport ", start + 1);
+    return code.slice(start, end === -1 ? undefined : end);
+  }
+
+  it("never names $queryRaw, which this module has never called", () => {
+    // The dropped half of the old condition, and the reason a client that COULD
+    // lock was read as unlockable: the bypass demanded a method the module does
+    // not use and `ParticipantDb` does not declare.
+    expect(readModuleCode()).not.toContain("$queryRaw");
+  });
+
+  it("issues no proof before the row lock, and refuses a client that cannot lock", () => {
+    const body = acquireFunctionBody(readModuleCode());
+
+    // The exact bypass #2619 removed, and the general shape of it.
+    expect(body).not.toMatch(
+      /return\s+issueProof\(\s*memberIds\s*,\s*params\.sources/,
+    );
+    expect(body).toContain(
+      "throw new HostingCoverageParticipantFenceUnavailableError()",
+    );
+
+    // ORDER IS THE CONTRACT. Every `issueProof` in this function must sit after
+    // the lock statement, so no path can hand back an unlocked capability —
+    // including one added later under a condition nobody thought to test.
+    const lockAt = body.indexOf("FOR KEY SHARE NOWAIT");
+    expect(
+      lockAt,
+      "the acquire function no longer takes a FOR KEY SHARE NOWAIT lock",
+    ).toBeGreaterThan(-1);
+    const proofCalls = [...body.matchAll(/issueProof\(/g)];
+    expect(
+      proofCalls.length,
+      "the acquire function issues no proof at all — this contract is vacuous",
+    ).toBeGreaterThan(0);
+    for (const match of proofCalls) {
+      expect(match.index).toBeGreaterThan(lockAt);
+    }
+  });
+
+  it("keeps the refusal outside the retryable 409 hierarchy", () => {
+    // Not a style point. `isHostingCoverageParticipantRetry` matches on the code,
+    // and that 409 drives hold-release, group-booking and payment-link branches
+    // plus operator copy telling them to reload and try again. A wiring fault can
+    // never clear by retrying, so dressing it as contention would invite an
+    // endless loop. It has to fall through to a generic 500.
+    const error = new HostingCoverageParticipantFenceUnavailableError();
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(HostingCoverageParticipantRetryError);
+    expect(isHostingCoverageParticipantRetry(error)).toBe(false);
+    expect((error as unknown as { code?: unknown }).code).toBeUndefined();
+    expect(
+      (error as unknown as { statusCode?: unknown }).statusCode,
+    ).toBeUndefined();
   });
 });
