@@ -160,7 +160,7 @@ Without that variable the real-database checks do not run, but the suite still f
 Three things are enforced today, and there is no longer a pending owner action here:
 
 - **Coverage** (a fixture exists and is registered) rides on the **required** `Migration drift check`, so no-fixture-no-merge bites immediately.
-- **A failing fixture blocks the merge**: `Data migration verification` is itself a required status check on `main`. `AGENTS.md` → "Completion and Merge" carries the authoritative list of all eight required checks.
+- **A failing fixture blocks the merge**: `Data migration verification` is itself a required status check on `main` — verified against the applied branch-protection configuration, not merely intended. `AGENTS.md` → "Completion and Merge" carries the authoritative table of what is required today, what is pending an owner action, and the `gh api` call that reads the live list.
 - **A failing fixture blocks the release**: `publish-ghcr-images` depends on the `Data migration verification` job, so a red fixture also stops the image an operator would deploy.
 
 Note that branch protection still has `enforce_admins` off, so an admin merge can bypass every check above.

@@ -47,15 +47,18 @@ CI also runs independent static and container checks:
   code, and interpolated SQL reaching `$queryRawUnsafe`/`$executeRawUnsafe`.
   Each custom rule ships must-fail and must-pass fixtures in `.semgrep/tests/`,
   which the same job runs before the scan (#2686)
-- gitleaks over the pull request's own commits **and** the full repository
-  history, one pinned container for both, as the required
-  `Secret scan (gitleaks)` check (#2686)
+- gitleaks in one pinned container over **three** scopes — the pull request's own
+  commits, the history of `main`, and the checked-out tree — preceded by
+  `scripts/ci/gitleaks-selftest.sh`, which plants a credential and proves the
+  scanner still reports it. `Secret scan (gitleaks)` (#2686; **pending** as a
+  required check, see `AGENTS.md` for the rollout order)
 - TypeScript, test, and Docker image build validation
 - Migration drift check (`migration-drift` job) running `db:check-drift` against
   a throwaway Postgres, so schema-vs-migration drift fails the PR rather than the
   deploy
-- Trivy critical vulnerability gate with high-severity warnings, as the required
-  `Image security gate (Trivy CRITICAL)` check
+- Trivy critical vulnerability gate with high-severity warnings, as
+  `Image security gate (Trivy CRITICAL)` (#2686; **pending** as a required
+  check)
 - CodeQL, as **advisory** analysis via GitHub code scanning **default setup**
   (repository settings, not a workflow file — languages `actions`, `javascript`,
   `javascript-typescript`, `typescript`; default query suite; weekly schedule
@@ -89,22 +92,109 @@ CI also runs independent static and container checks:
   publishing uses the workflow `GITHUB_TOKEN` in the publish job only.
 - Treat Docker image security as two gates: CRITICAL Trivy findings fail the PR,
   while HIGH findings are warning-only until reviewed and promoted to a blocking
-  policy. Since #2686 the CRITICAL half is a **required** protected-branch check
-  (`Image security gate (Trivy CRITICAL)`), so it blocks the merge rather than
-  only turning a job red; the HIGH step keeps `continue-on-error: true` and the
-  two steps are named "REQUIRED" and "ADVISORY" so the distinction is readable
-  from the checks list.
+  policy. Since #2686 the CRITICAL half is intended as a **required**
+  protected-branch check (`Image security gate (Trivy CRITICAL)`), so it blocks
+  the merge rather than only turning a job red; the HIGH step keeps
+  `continue-on-error: true` and the two steps are named "REQUIRED" and
+  "ADVISORY" so the distinction is readable from the checks list.
 - Keep a scanner's configuration file honest about what it actually enables. A
   `.gitleaks.toml` without `[extend] useDefault = true` REPLACES the built-in
   rule set instead of adding to it, and this repository shipped exactly that for
   months: both gitleaks jobs ran green over a rule set with nothing in it
   (#2686). Whenever a scanner config changes, prove the scanner still fails on a
-  deliberate violation before trusting the green.
-- Keep gitleaks allowlists CONTENT-scoped. A global `[[allowlists]]` entry
-  carrying `paths` suppresses everything under those paths in gitleaks 8.28.0
-  whatever else the entry says, and `matchCondition = "AND"` does not narrow it.
-  One-off historical findings belong in `.gitleaksignore` as fingerprints, which
-  name the commit, file, rule and line.
+  deliberate violation before trusting the green —
+  `bash scripts/ci/gitleaks-selftest.sh` is that proof, and it runs in CI ahead
+  of the scans it vouches for.
+- Keep gitleaks allowlists CONTENT-scoped **and pinned to exact literals**. A
+  global `[[allowlists]]` entry carrying `paths` suppresses everything under
+  those paths in gitleaks 8.28.0 whatever else the entry says, and
+  `matchCondition = "AND"` does not narrow it. A global allowlist also applies to
+  every RULE, not the one its description names, so a SHAPE — a UUID, a
+  `sk_test_` prefix — silences rules nobody considered: measured, the UUID shape
+  dropped `heroku-api-key` and a UUID `CRON_SECRET`. `targetRules` is not the fix
+  either; in 8.28.0 it silently voids the allowlist entirely.
+
+### Two Semgrep scans run per pull request, and only one of them blocks
+
+This trips up every reader of a `nosemgrep` annotation, so it is written down
+rather than inferred:
+
+- **`Static analysis gate`** (`ci.yml` → `static-analysis`) is the blocking one.
+  It runs `p/nextjs`, `p/typescript`, `p/javascript`, `p/react` and
+  `.semgrep/rules/`, and nothing else.
+- **`semgrep-cloud-platform/scan`** is a Semgrep AppSec Platform GitHub App
+  check. Its ruleset is configured at semgrep.dev, not in this repository, it
+  costs no GitHub Actions time, and it is advisory.
+
+Measured at 527eb74fc by re-running the exact blocking invocation with
+`--disable-nosem`: **the blocking rule set produces exactly ONE finding in the
+whole repository**, `acb-unsafe-raw-sql` at `src/lib/audit-retention.ts`. So
+exactly one of this repository's `nosemgrep` annotations is live against the
+gate that can stop a merge. The other 87 name ids from `p/default` /
+`p/security-audit` — packs the blocking scan does not run — and serve the cloud
+scan.
+
+They are deliberately **not** pruned. Their effect is only observable in a scan
+whose ruleset this repository does not control, so "these suppress nothing"
+cannot be verified from here, and deleting 87 annotations on that assumption
+would be a blind change to a security surface. Two things follow for anyone
+adding or reading one:
+
+- say which scan an annotation is for. If it names a `javascript.…` /
+  `generic.…` registry id, it is for the cloud scan and the blocking gate will
+  never emit it;
+- Semgrep matches `nosemgrep: <id>` by **exact suffix**, so a rule-id variant is
+  a different id. The 41 `path-traversal.path-join-resolve-traversal`
+  annotations do not suppress an `express-path-join-resolve-traversal` finding,
+  and a rename upstream silently un-suppresses every one of them.
+
+### Break-glass: a new CRITICAL image finding with no code change
+
+Trivy scans the built image against a vulnerability database that moves on its
+own. A newly published CRITICAL against the `node:24.15-alpine` base therefore
+turns `Image security gate (Trivy CRITICAL)` red on **every** open pull request,
+including the one that would fix it, with nobody having changed a line. Branch
+protection has `enforce_admins` off, so the owner can force a merge through; an
+agent cannot, and must not try. Do this instead, in order:
+
+1. **Rebuild first.** If the base image has already been patched upstream, a
+   fresh `docker build` picks it up and the finding disappears. Check the
+   advisory for a fixed version before anything else.
+2. **If there is no fix yet, add a dated `.trivyignore` entry** at the
+   repository root, one CVE per line, each with a comment giving the CVE, the
+   date, why the application is not exposed, and the issue tracking removal:
+
+   ```
+   # CVE-2026-12345 — added 2026-08-14. openssl in node:24.15-alpine; no fixed
+   # version published yet. Reachable only from the TLS client path, which this
+   # image does not use at build time. Remove when 24.15.x ships the fix.
+   # Tracked by #NNNN.
+   CVE-2026-12345
+   ```
+
+3. **File the removal issue in the same pull request**, never as prose. An
+   undated, untracked `.trivyignore` entry is a permanently disabled gate.
+4. **Owner admin-merge is the last resort**, and it is an owner action: an agent
+   escalates by commenting, and waits.
+
+Review `.trivyignore` whenever the base image moves, and delete every entry whose
+advisory now has a fixed version.
+
+### The repository-wide secret sweep
+
+`Secret scan (gitleaks)` is deliberately scoped to `main`, not to every branch:
+`git log --all` walks every `refs/remotes/origin/*` that `fetch-depth: 0`
+materialised, so one leak on anybody's abandoned branch would turn a REQUIRED
+check red on every open pull request, unfixable from the author's own branch.
+A wider sweep is still worth running — a secret on an unmerged branch is public
+on a public repository — but it belongs in a scheduled, non-blocking job where a
+finding is a task rather than a merge freeze. Until that job exists, run it by
+hand when a branch is abandoned:
+
+```bash
+docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.28.0 \
+  git /repo --log-opts="--diff-merges=first-parent --all" --exit-code=1 --redact
+```
 
 Accepted residual risk:
 

@@ -36,37 +36,71 @@ This project uses:
 
 ## Which CI security checks block a merge
 
-Four of them are required protected-branch checks on `main`, so a finding stops
-the merge rather than only turning a job red:
+Two are required protected-branch checks on `main` today, and two more are
+pending an owner action (#2686) — see `AGENTS.md` → "Completion and Merge" for
+the applied list, the rollout order, and the `gh api` call that reads the live
+configuration rather than trusting a document:
 
-- **`Secret scan (gitleaks)`** — gitleaks over the pull request's own commits and
-  over the full repository history, in one pinned container. Suppressions are
-  content-scoped allowlists in `.gitleaks.toml` and per-finding fingerprints in
-  `.gitleaksignore`; both files explain every entry.
-- **`Static analysis gate`** — Semgrep, running four registry packs plus this
-  repository's own rules in `.semgrep/rules/`. The same job first runs each
-  custom rule against its must-fail/must-pass fixtures in `.semgrep/tests/`.
-- **`Image security gate (Trivy CRITICAL)`** — a CRITICAL vulnerability in the
-  built container image. HIGH findings are reported in the same job but are
-  advisory and cannot block.
-- **`verify`** — carries `npm audit --audit-level=high` alongside lint, types and
-  tests.
+- **`Static analysis gate`** (required today) — Semgrep, running four registry
+  packs plus this repository's own rules in `.semgrep/rules/`. The same job
+  first runs each custom rule against its must-fail/must-pass fixtures in
+  `.semgrep/tests/`.
+- **`verify`** (required today) — carries `npm audit --audit-level=high`
+  alongside lint, types and tests.
+- **`Secret scan (gitleaks)`** (**pending**) — gitleaks in one pinned container
+  over three scopes: the pull request's own commits, the history of `main`, and
+  the checked-out tree. Suppressions are exact-literal, content-scoped
+  allowlists in `.gitleaks.toml`; `.gitleaksignore` is deliberately empty and its
+  header explains why a fingerprint is not durable here.
+- **`Image security gate (Trivy CRITICAL)`** (**pending**) — a CRITICAL
+  vulnerability in the built container image. HIGH findings are reported in the
+  same job but are advisory and cannot block.
 
 CodeQL runs as **advisory** analysis through GitHub code scanning default setup
 (`actions`, `javascript`, `javascript-typescript`, `typescript`). Its findings
 are investigated but never block a merge, and it does not report on pull requests
-from forks. `AGENTS.md` → "Completion and Merge" holds the authoritative list of
-every required check.
+from forks.
 
-To reproduce the secret scan locally, with the same pinned image CI uses:
+### Reproducing the secret scan locally
+
+The same pinned image CI uses, in the same three scopes. Run all three: they
+report overlapping but different sets, because a rule that needs surrounding
+context sees less in a diff hunk than in a whole file.
 
 ```bash
+# 1. The history of main. `--diff-merges=first-parent` is not optional: git log
+#    emits no patch for a merge commit, and about a third of this repository's
+#    commits are merges, so without it the scan silently skips them — including
+#    any secret written while resolving a conflict.
 docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.28.0 \
-  git /repo --log-opts=--all --exit-code=1 --redact
+  git /repo --log-opts="--diff-merges=first-parent origin/main" \
+  --exit-code=1 --redact
+
+# 2. Your own branch's commits, the way the pull-request step scans them.
+docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.28.0 \
+  git /repo --log-opts="--diff-merges=first-parent origin/main..HEAD" \
+  --exit-code=1 --redact
+
+# 3. The working tree as it stands.
+docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.28.0 \
+  dir /repo --exit-code=1 --redact
 ```
 
-Add `--report-format=json --report-path=/repo/leaks.json` to read the
-`Fingerprint` field for a `.gitleaksignore` entry.
+Note the scope is `origin/main`, not `--all`. `--all` walks every
+`refs/remotes/origin/*` branch that `fetch-depth: 0` materialised, which makes
+the required check hostage to a leak on somebody else's unrelated branch and
+gives a different answer here than in CI.
+
+Add `--report-format=json --report-path=/repo/leaks.json` to see the unredacted
+detail. That report contains every matched value in clear text and is **not**
+git-ignored — write it outside the repository, or delete it before you commit.
+
+To prove the scanner can still fail before trusting a green — which this
+repository has needed three separate times — run the failure injection CI runs:
+
+```bash
+bash scripts/ci/gitleaks-selftest.sh
+```
 
 Never test against a live production deployment without written approval from
 the deployment owner. Use local or staging environments with test Stripe keys,

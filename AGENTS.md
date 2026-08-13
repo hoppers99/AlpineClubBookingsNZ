@@ -347,19 +347,38 @@ At the successful end of a meaningful piece of work:
    passes. When knip flags a genuinely-used file or export it cannot statically
    trace, add a justified `entry` or file-scoped `ignoreIssues` carve-out to
    `knip.jsonc` (see CONTRIBUTING.md "Dead-code gate") rather than deleting live
-   code. `main` is branch-protected. **These eight checks must pass to merge**,
-   and force-pushes and branch deletions are blocked:
+   code. `main` is branch-protected, and force-pushes and branch deletions are
+   blocked. **Six checks are required today. Two more are pending an owner
+   action** and are marked as such below — this table is the applied
+   configuration plus what is queued, never an aspiration:
 
-   | Required check | Job | What it gates |
-   | --- | --- | --- |
-   | `verify` | `ci.yml` → `verify` | lint, typecheck, knip, `npm test`, build, PR-body gates |
-   | `Migration drift check` | `ci.yml` → `migration-drift` | migrations reproduce `schema.prisma`; real-Postgres lock harnesses |
-   | `Data migration verification` | `ci.yml` → `data-migration-verification` | data-rewriting migrations against realistic pre-state |
-   | `Static analysis gate` | `ci.yml` → `static-analysis` | Semgrep: four registry packs **plus** `.semgrep/rules/**` and their fixtures |
-   | `Secret scan (gitleaks)` | `ci.yml` → `secret-scan` | the PR's own commits **and** the full repository history (#2686) |
-   | `Image security gate (Trivy CRITICAL)` | `ci.yml` → `docker-image-security` | CRITICAL image vulnerabilities. HIGH stays advisory (#2686) |
-   | `Playwright E2E` | `e2e.yml` → `e2e` | the browser suite |
-   | `E2E multi-lodge` | `e2e.yml` → `e2e-multi-lodge` | the multi-lodge browser suite |
+   | Required check | Status | Job | What it gates |
+   | --- | --- | --- | --- |
+   | `verify` | applied | `ci.yml` → `verify` | lint, typecheck, knip, `npm test`, build, PR-body gates |
+   | `Migration drift check` | applied | `ci.yml` → `migration-drift` | migrations reproduce `schema.prisma`; real-Postgres lock harnesses |
+   | `Data migration verification` | applied | `ci.yml` → `data-migration-verification` | data-rewriting migrations against realistic pre-state |
+   | `Static analysis gate` | applied | `ci.yml` → `static-analysis` | Semgrep: four registry packs **plus** `.semgrep/rules/**` and their fixtures |
+   | `Playwright E2E` | applied | `e2e.yml` → `e2e` | the browser suite |
+   | `E2E multi-lodge` | applied | `e2e.yml` → `e2e-multi-lodge` | the multi-lodge browser suite |
+   | `Secret scan (gitleaks)` | **PENDING owner action** | `ci.yml` → `secret-scan` | the PR's own commits, `main`'s history including merge commits, and the checked-out tree (#2686) |
+   | `Image security gate (Trivy CRITICAL)` | **PENDING owner action** | `ci.yml` → `docker-image-security` | CRITICAL image vulnerabilities. HIGH stays advisory (#2686) |
+
+   **The rollout order for the two pending ones is load-bearing, and adding them
+   early breaks every open pull request.** Both contexts are produced by jobs
+   this change RENAMES, so a branch that predates the merge produces the old
+   context names and none of the new ones — and a required check that has never
+   reported sits on "Expected — waiting for status" forever. The order is:
+
+   1. merge the change that renames the jobs;
+   2. then add the two contexts to branch protection;
+   3. then rebase every open pull request onto the new `main`, oldest first.
+
+   Confirm the applied list rather than trusting this table:
+
+   ```bash
+   gh api repos/thatskiff33/AlpineClubBookingsNZ/branches/main/protection \
+     --jq '.required_status_checks.contexts'
+   ```
 
    **Advisory, and deliberately NOT required** — a finding is investigated, but
    it cannot block a merge: `CodeQL`, `Analyze (javascript-typescript)` and
@@ -374,6 +393,17 @@ At the successful end of a meaningful piece of work:
    its own workflow comment says must never become a pull-request check.
    Measured on fork pull requests #2782 and #2813: the CodeQL contexts do not
    appear at all, which is a second reason they can never be required.
+
+   **Never put a job-level `if:` on a required check.** The reason is the
+   opposite of the intuitive one. A skipped job DOES report a status — measured
+   on push `66448740c`, `dependency-review` and `gitleaks-pr-diff` both skipped
+   via a job-level `if:` and both reported one; only a workflow-level `on:`
+   filter produces no status at all. The hazard is that GitHub counts a
+   `skipped` required check as **satisfying** branch protection, so a job-level
+   `if:` on a security gate makes it vacuously green and the merge button turns
+   on. `needs:` has the same effect: if an upstream job fails, the dependent job
+   skips, and the required gate reports as satisfied. Put the condition on the
+   STEP instead, where a skip leaves the job a real pass or a real failure.
 
    Because `enforce_admins` is off and no review approval is required, an admin
    merge can still occasionally land `main` red, so investigate before assuming

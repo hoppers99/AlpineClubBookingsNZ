@@ -803,13 +803,22 @@ Verified controls already present and intentionally preserved:
 - Semgrep uses a pinned `semgrep/semgrep:1.161.0` image and runs this
   repository's own rules (`.semgrep/rules/`) alongside the four registry packs;
   gitleaks uses the pinned `ghcr.io/gitleaks/gitleaks:v8.28.0` container for
-  BOTH the pull-request commit range and the full repository history, in one
-  job; and the Dockerfile uses `node:24.15-alpine`.
-- Since #2686, four CI security gates are **required** protected-branch checks
-  rather than merely red-on-failure jobs: `Static analysis gate`,
-  `Secret scan (gitleaks)`, `Image security gate (Trivy CRITICAL)` and `verify`
-  (which carries `npm audit --audit-level=high`). `AGENTS.md` → "Completion and
-  Merge" is the authoritative list.
+  the pull-request commit range, the history of `main` and the checked-out
+  tree, in one job; and the Dockerfile uses `node:24.15-alpine`.
+- Two CI security gates are **required** protected-branch checks today —
+  `Static analysis gate` and `verify` (which carries
+  `npm audit --audit-level=high`). #2686 adds `Secret scan (gitleaks)` and
+  `Image security gate (Trivy CRITICAL)` to that list; both are **pending an
+  owner action** on branch protection and are not enforced until it is applied.
+  `AGENTS.md` → "Completion and Merge" carries the applied list, the pending
+  ones, and the rollout order.
+- The secret scan reads merge commits. `git log -p` emits no patch for a merge
+  commit, and roughly a third of this repository's 7,510 commits are merges, so
+  a scan without `--diff-merges=first-parent` never looked at them — and a
+  credential written into a file WHILE RESOLVING A CONFLICT exists only in the
+  merge commit. The workflow passes the flag on both patch scopes and adds a
+  tree scan, and `scripts/ci/gitleaks-selftest.sh` re-proves all three on every
+  run.
 - CodeQL runs as advisory analysis through GitHub code scanning **default
   setup** (repository settings, no `codeql.yml`): languages `actions`,
   `javascript`, `javascript-typescript` and `typescript`, default query suite,
@@ -831,22 +840,46 @@ Residual risks to keep visible:
 - Most GitHub Actions remain pinned to released major tags rather than full
   commit SHAs so Dependabot and upstream patch releases can keep routine
   maintenance low-friction.
-- HIGH Trivy findings remain warning-only; CRITICAL findings block the merge as
-  a required check. Promote HIGH to blocking later if the operational noise
-  level is acceptable.
+- HIGH Trivy findings remain warning-only; CRITICAL findings block the merge
+  once the pending required check is applied. Promote HIGH to blocking later if
+  the operational noise level is acceptable. A new CRITICAL against the base
+  image reddens every open pull request with no code change; the break-glass is
+  in `docs/MAINTENANCE.md` → "Break-glass".
 - The example env files (`.env.example`, `.env.staging.example`) are no longer
   allowlisted wholesale by the secret scanner — #2686 replaced the path-scoped
-  allowlist with content-scoped ones, so a real credential pasted into either
-  file now fails the required gate instead of being silently permitted.
-- Semgrep parses this codebase only partially: the pinned image reports 127
-  `PartialParsing` errors across `src/**` on a clean scan, so some regions of
-  some files are not analysed by ANY Semgrep rule, registry or repository-owned.
-  This caps static-analysis coverage and is not visible in a green gate.
+  allowlist with exact-literal content ones, so a real credential pasted into
+  either file now fails the gate instead of being silently permitted.
+- A connection-string password is now covered by a repository-owned gitleaks
+  rule (`acb-connection-string-password`); gitleaks' defaults have none, and on
+  a public repository the URL carries the host as well as the credential. Its
+  stated limit: a password shorter than 8 characters, or one a human chose and
+  typed rather than generated, is below the length and entropy floors that keep
+  the rule quiet against this repository's hundreds of development connection
+  strings.
+- An AWS **access key id** on its own is reported by nothing here — measured,
+  the default `aws-access-token` rule did not fire on a well-formed `AKIA…` id.
+  The AWS **secret** key is caught, by entropy. Do not read a green scan as
+  "no AWS identifier is present".
+- Semgrep parses this codebase only partially: running the exact blocking
+  invocation at 7f90a2cf4 reported 0 findings and **146 parse errors** across
+  3,556 scanned targets (~99.9% of lines parsed), so some regions of some files
+  are not analysed by ANY Semgrep rule, registry or repository-owned. This caps
+  static-analysis coverage and is not visible in a green gate.
 - Semgrep also runs a second time per pull request through the
   `semgrep-cloud-platform/scan` GitHub App (Semgrep AppSec Platform), whose
   ruleset is configured at semgrep.dev rather than in this repository. It costs
   no GitHub Actions time, but its findings can diverge from the workflow's and
-  nothing in the repository controls it.
+  nothing in the repository controls it. Every one of this repository's 88
+  `nosemgrep` annotations except one serves THAT scan — see
+  `docs/MAINTENANCE.md` → "Two Semgrep scans run per pull request".
+- The client/server boundary is enforced at two depths and neither is the
+  bundler. `.semgrep/rules/acb-client-server-boundary.yml` reports a DIRECT
+  import in the required static-analysis gate, and
+  `src/lib/__tests__/client-server-boundary-census.test.ts` walks the transitive
+  import graph in `verify`. The Next.js mechanism that would enforce it in the
+  BUILD — `import "server-only"` in `@/lib/prisma` and `@/lib/auth` — is not
+  applied, because it throws outside a React Server Component and 122 test files
+  already mock it for the modules that carry it today.
 - The repo does not yet publish signed image attestations or SBOM artifacts.
   Current image provenance is protected PR checks plus commit-SHA GHCR tags.
 

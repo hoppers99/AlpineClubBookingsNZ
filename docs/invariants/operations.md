@@ -78,53 +78,102 @@ rules first written here. #2765 extended it with the measured-audience half.
 
 ## INV-OPS-014
 
-- **Nothing is interpolated or concatenated into a raw `Unsafe` statement
-  (#2686).** `$queryRawUnsafe` and `$executeRawUnsafe` take a plain `string`, so
-  Prisma sends exactly what that string says and there is no parameter binding
-  left between the value and the database. A statement built with a `${}`
-  interpolation, with `+`, or with `.concat()` is therefore the shape SQL
-  injection needs, whatever the value happens to be today.
+- **The statement handed to a raw `Unsafe` call is visibly static at the call
+  site (#2686).** `$queryRawUnsafe` and `$executeRawUnsafe` take a plain
+  `string`, so Prisma sends exactly what that string says and there is no
+  parameter binding left between the value and the database.
+
+  The invariant is stated as a property of the CALL SITE rather than as a list
+  of forbidden constructions, and that is deliberate. An enumeration of ways to
+  build a string — interpolation, `+`, `.concat()` — is open-ended, and whatever
+  is not enumerated passes: measured against the ways this codebase writes the
+  same defect, the first version of the guard caught 3 of 13, missing the most
+  natural one of all, which is to build the string one statement earlier and
+  pass it by name. So: a literal passes, a constant holding a literal passes
+  (constant propagation folds it), and anything a reader cannot see the value of
+  at the call site is reported, whether or not anyone thought of it.
 
   Three safe forms remain, and the guard's message names all of them: the tagged
   templates `` $queryRaw`… ${value} …` `` and `` $executeRaw`…` ``, where every
   `${}` becomes a bound parameter; `Prisma.sql` composition; and `Prisma.raw()`
-  for an identifier already validated against a fixed allowlist. A static
-  statement — a plain literal, or a module constant holding one, as
-  `booking-envelope-invariants.ts` and `induction-baseline.ts` both use — is
-  untouched by the rule.
+  for an identifier already validated against a fixed allowlist. All three are
+  in the must-pass fixtures.
 
-  Enforced by `.semgrep/rules/acb-unsafe-raw-sql.yml` in the required
+  **Aliasing the method is itself the violation.** `const run =
+  prisma.$executeRawUnsafe.bind(prisma)` puts the statement and the call that
+  sends it in two different places, and by the time the call reads `run(sql)`
+  there is nothing at the call site to review. `acb-unsafe-raw-sql-alias` reports
+  the line that creates the alias.
+
+  Enforced by `.semgrep/rules/acb-unsafe-raw-sql.yml` in the
   `Static analysis gate`, with must-fail and must-pass fixtures in
-  `.semgrep/tests/`. Tests and `e2e/` are exempt, for the reason
-  `eslint.config.mjs` gives for exempting them from `RAW_SQL_RESTRICTIONS`: a
-  test's raw statement runs against a throwaway database the test created. A
-  genuinely static interpolation in production code — only
-  `audit-retention.ts`'s archive DDL, built from the committed column manifest —
-  keeps a `// nosemgrep: acb-unsafe-raw-sql — <reason>` line, so the exemption is
-  reviewed in the diff that adds it rather than configured away in bulk. This
-  rule is about how the string is BUILT; `INV-OPS-001` is about what the result
-  is declared to be, and both apply to the same call.
+  `.semgrep/tests/` — and `src/lib/__tests__/semgrep-rule-fixtures.test.ts`
+  asserts those fixtures exist and cover each rule id both ways, because
+  `semgrep --test` exits 0 when a fixture is simply missing. Tests and `e2e/` are
+  exempt, for the reason `eslint.config.mjs` gives for exempting them from
+  `RAW_SQL_RESTRICTIONS`: a test's raw statement runs against a throwaway
+  database the test created. **Two** genuinely static interpolations exist in
+  production code — `audit-retention.ts`'s archive DDL, built from the committed
+  column manifest, and `booking-envelope-invariants.ts`'s SET CONSTRAINTS, built
+  from a committed two-element const array — and each keeps a
+  `// nosemgrep: acb-unsafe-raw-sql — <reason>` line, so the exemption is
+  reviewed in the diff that adds it rather than configured away in bulk. The
+  second of those was invisible to the first version of the guard, which is what
+  the widened form found. This rule is about how the string is BUILT;
+  `INV-OPS-001` is about what the result is declared to be, and both apply to
+  the same call.
 
 ## INV-OPS-013
 
-- **A `"use client"` module never imports server-only code (#2686).**
-  Everything a client module imports at runtime is compiled into the browser
-  bundle, so importing `@/lib/prisma`, `@/lib/auth`, `next/headers`,
-  `server-only` or a Node built-in from a `"use client"` file ships database
-  access, credential handling or filesystem code to every visitor. Two of those
-  fail the Next build already; `@/lib/prisma` and `@/lib/auth` do NOT, because
-  neither imports `server-only` — those are the ones that would ship silently.
+- **A `"use client"` module never reaches server-only code (#2686).**
+  Everything a client module pulls in at runtime is compiled into the browser
+  bundle, so reaching `@/lib/prisma`, `@/lib/auth`, `@/lib/audit`,
+  `@/lib/session`, `@/lib/email`, `@/lib/xero`, `@/lib/stripe`, `@/lib/env`,
+  `next/headers`, `server-only` or a Node built-in from a `"use client"` file
+  ships database access, credential handling or filesystem code to every
+  visitor. Two of those fail the Next build already; `@/lib/prisma` and
+  `@/lib/auth` do NOT, because neither imports `server-only` — those are the ones
+  that would ship silently.
+
+  **"Reaches", not "imports", and the two words are enforced by two different
+  mechanisms.** A re-export (`export { prisma } from …`, `export * from …`) and a
+  dynamic `await import()` / `require()` have exactly the same bundle effect as a
+  plain import, and all of them are direct edges. A hop through an intermediate
+  module — a client component importing `@/lib/audit`, which imports
+  `@/lib/prisma` — has the same effect again and is not visible in any single
+  file.
 
   The fix is to do the work in an API route or a server component and pass the
-  RESULT to the client component. A type-only `import type` is exempt and stays
-  exempt: it is erased before a bundle exists and cannot carry anything into it.
+  RESULT to the client component. A type-only `import type` / `export type` is
+  exempt and stays exempt: it is erased before a bundle exists and cannot carry
+  anything into it.
 
-  Enforced by `.semgrep/rules/acb-client-server-boundary.yml` in the required
-  `Static analysis gate`, with must-fail and must-pass fixtures in
-  `.semgrep/tests/`. Measured at the time it was added: 431 `"use client"`
-  modules in `src/`, one server-adjacent import between them, and that one a
-  type-only import — so the rule is a regression guard over a clean tree, not a
-  cleanup.
+  Enforced twice:
+
+  - **direct edges** by `.semgrep/rules/acb-client-server-boundary.yml` in the
+    `Static analysis gate`, with must-fail and must-pass fixtures in
+    `.semgrep/tests/`;
+  - **transitive reach** by
+    `src/lib/__tests__/client-server-boundary-census.test.ts`, which walks the
+    real import graph from every `"use client"` module and reports the shortest
+    path it found. It runs in the required `verify` check.
+
+  What is **not** enforced, so that the wording here matches the mechanism:
+  neither guard is the bundler. The build-time answer Next.js provides —
+  `import "server-only"` in the leaf module, which makes the compiler refuse the
+  whole chain — is not applied to `@/lib/prisma` or `@/lib/auth`, because
+  `server-only` throws when evaluated outside a React Server Component and 122
+  test files already carry `vi.mock("server-only", …)` for the modules that have
+  it today. Adding it would put that requirement on essentially every test in the
+  repository.
+
+  Measured at 527eb74fc: 432 `"use client"` modules in `src/`, **zero** direct
+  imports of any listed module or Node built-in, and **one** transitive edge —
+  `src/lib/booking-exception-requests.ts` imports `node:crypto` for
+  `computeProposalHash` and four client components import values from it. That
+  edge is named in the census's `KNOWN_EDGES` with its reason; nothing new joins
+  that list without the same explanation, and `@/lib/prisma` and `@/lib/auth` are
+  never exemptable at all.
 
 ## INV-OPS-002
 
