@@ -32,7 +32,7 @@ import { formatNZDateTime } from "@/lib/nzst-date";
 function stateTone(state: string): string {
   if (state === "ok") return "text-muted-foreground";
   if (state === "not_found") return "text-muted-foreground";
-  return "text-amber-700 dark:text-amber-500";
+  return "text-warning-11";
 }
 
 /**
@@ -85,7 +85,7 @@ export function DiagnosticsProvenance({
         {provenance.hasCaveat ? (
           <TriangleAlert
             aria-hidden="true"
-            className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-500"
+            className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning-11"
           />
         ) : null}
         <span className="flex-1">{provenance.line}</span>
@@ -113,7 +113,7 @@ export function DiagnosticsProvenance({
                   {formatInstant(source.observedAt)}
                 </span>
                 {source.missingAreas.length > 0 ? (
-                  <span className="text-amber-700 dark:text-amber-500">
+                  <span className="text-warning-11">
                     Needs admin access to: {source.missingAreas.join(", ")}
                   </span>
                 ) : null}
@@ -123,7 +123,7 @@ export function DiagnosticsProvenance({
         )}
 
         {provenance.withheldAreas.length > 0 ? (
-          <p className="text-amber-700 dark:text-amber-500">
+          <p className="text-warning-11">
             A Full Admin can add these areas to your access to complete the picture:{" "}
             {provenance.withheldAreas.join(", ")}.
           </p>
