@@ -108,6 +108,16 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   // AI Diagnostics (AID-2, #2371): a separate admin-only paid capability. Its
   // budget-settings and readiness routes sit in "support" alongside the sibling
   // ai-assistant config routes above.
+  //
+  // The `ask` route (AID-7, #2378) inherits "support" from the same prefix, but
+  // the assignment is DORMANT there by owner decision Q6: the handler calls
+  // `requireAdmin({ permission: false })`, so `inferAdminAccessRequirement`
+  // returns null and no area gate applies — any admitted admin may ask, and
+  // every tool re-checks its own area at invocation. Its own route test pins
+  // the `permission: false` call. This row exists so that if someone removes
+  // that opt-out, the gate that silently springs into place (`support:view`,
+  // narrowing access against Q6) is at least the one adjudicated here.
+  "/api/admin/ai-diagnostics/ask": "support",
   "/api/admin/ai-diagnostics/readiness": "support",
   "/api/admin/ai-diagnostics/settings": "support",
   "/api/admin/audit-log": "support",

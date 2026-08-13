@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
   DiagnosticsAskProvenance,
+  DiagnosticsAskRequest,
   DiagnosticsAskResponse,
   DiagnosticsAskTurn,
 } from "@/lib/diagnostics/answer/contract";
@@ -186,18 +187,22 @@ export function useDiagnosticsChat(): UseDiagnosticsChat {
       setPending(true);
 
       try {
+        // Typed as the contract's own request shape, so this literal is the
+        // place the compiler catches the client and the route disagreeing —
+        // an untyped body here would make `contract.ts` documentation only.
+        const askBody: DiagnosticsAskRequest = {
+          pathname: options.pathname,
+          question: trimmed,
+          transcript,
+          allowPeopleSearch: askedWithPeopleSearch,
+          allowRecordPersonalDetails: askedWithPersonalDetails,
+          ...(options.recordId ? { recordId: options.recordId } : {}),
+          ...(options.view ? { view: options.view } : {}),
+        };
         const response = await fetch("/api/admin/ai-diagnostics/ask", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            pathname: options.pathname,
-            question: trimmed,
-            transcript,
-            allowPeopleSearch: askedWithPeopleSearch,
-            allowRecordPersonalDetails: askedWithPersonalDetails,
-            ...(options.recordId ? { recordId: options.recordId } : {}),
-            ...(options.view ? { view: options.view } : {}),
-          }),
+          body: JSON.stringify(askBody),
         });
 
         // The module gate answers with a frozen 404, byte-identical to a route that
