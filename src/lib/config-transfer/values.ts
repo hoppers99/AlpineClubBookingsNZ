@@ -2,6 +2,7 @@ import { strFromU8 } from "fflate";
 import * as PrismaClientModule from "@prisma/client";
 
 import { parseCsv, type CsvRow } from "./csv";
+import { formatDateOnly } from "@/lib/date-only";
 
 // Shared cell-value helpers for the config-transfer categories: one home for
 // the CSV coercions that were previously copy-pasted per category, plus the
@@ -48,7 +49,7 @@ export function strictDate(value: unknown): Valid<Date> {
     return { ok: false, message: `"${s}" is not a YYYY-MM-DD date` };
   }
   const date = new Date(`${s}T00:00:00.000Z`);
-  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== s) {
+  if (Number.isNaN(date.getTime()) || formatDateOnly(date) !== s) {
     return { ok: false, message: `"${s}" is not a real calendar date` };
   }
   return { ok: true, value: date };

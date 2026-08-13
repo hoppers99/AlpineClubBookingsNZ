@@ -1,4 +1,4 @@
-import { todayDateOnlyForTimeZone } from "@/lib/date-only";
+import { formatDateOnly, todayDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   GENDER_OPTIONS,
   TITLE_OPTIONS,
@@ -703,7 +703,7 @@ function normalizeDateParts(year: number, month: number, day: number) {
   const parsed = new Date(`${normalized}T00:00:00.000Z`);
   if (
     Number.isNaN(parsed.getTime()) ||
-    parsed.toISOString().slice(0, 10) !== normalized
+    formatDateOnly(parsed) !== normalized
   ) {
     return null;
   }

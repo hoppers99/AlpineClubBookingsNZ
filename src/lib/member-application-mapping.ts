@@ -29,6 +29,7 @@ import {
   parseApplicationFamilyMembers,
   type ApplicationFamilyMember,
 } from "@/lib/nomination";
+import { formatDateOnly } from "@/lib/date-only";
 
 // personDecisionsSchema, personDecisionSchema, refKey, resolvePersonDecisions,
 // PersonDecisionInput, and DecisionResolution used to be re-exported here too,
@@ -349,7 +350,7 @@ function makeDiff(
 
 function dateOnly(value: Date | null | undefined): string | null {
   if (!value) return null;
-  return value.toISOString().slice(0, 10);
+  return formatDateOnly(value);
 }
 
 function targetSummary(target: MappingTargetRecord): MappingTargetSummary {
