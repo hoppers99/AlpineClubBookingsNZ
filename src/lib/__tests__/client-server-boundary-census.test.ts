@@ -163,8 +163,27 @@ function specifiersOf(file: string): string[] {
   return value;
 }
 
+/*
+  Leading whitespace and comments before the "use client" directive.
+
+  Written as ONE alternation where every branch is decided by its opening
+  characters — a whitespace character, `//`, or `/*` — and every branch consumes
+  at least one character. That is what keeps it linear. The obvious spelling,
+  `(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*`, is ambiguous: the trailing `\s*` inside
+  a starred group can match the same run of whitespace in more than one way, and
+  CodeQL flagged it as exponential backtracking on input of the shape `*//*`
+  repeated (`js/redos`, high). This file reads repository sources rather than
+  untrusted input, so it was not reachable — but a quadratic-or-worse regex in a
+  test that walks every file in `src/` is not worth keeping for the sake of a
+  shorter pattern. The block-comment branch also spells its interior as
+  "not-a-star, or a star not followed by a slash" so it cannot backtrack into the
+  terminator.
+*/
+const LEADING_TRIVIA_THEN_USE_CLIENT =
+  /^(?:\s|\/\/[^\n]*|\/\*(?:[^*]|\*(?!\/))*\*\/)*["']use client["']/;
+
 const clientModules = files.filter((file) =>
-  /^\s*(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*["']use client["']/.test(read(file).slice(0, 400)),
+  LEADING_TRIVIA_THEN_USE_CLIENT.test(read(file).slice(0, 400)),
 );
 
 /** Breadth-first, so the path reported is the shortest one. */
