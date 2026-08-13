@@ -341,15 +341,22 @@ export function DiagnosticsView({
 
         {/* THE DISCLOSURE (owner decision, 13 Aug 2026): the operator's current
             page filters — including a typed search — travel with every question,
-            with no tick gating them. The decision was to always send and SAY SO,
-            so the sentence sits beside the input where the sending happens, not
-            in a doc nobody re-reads. */}
+            with NEITHER tick gating them. The decision was to always send and SAY
+            SO, so the sentence sits beside the input where the sending happens,
+            not in a doc nobody re-reads.
+
+            It says "on this page" rather than "that this page applied" because
+            both are true at once: a wired page publishes what it applied, and an
+            unwired one falls back to the address. And it names the ticks, because
+            a control that sits directly above something it does not govern is
+            read as governing it. */}
         <p
           data-testid="diagnostics-view-disclosure"
           className="px-1 text-xs text-muted-foreground"
         >
-          Your current page filters and search travel with the question, so it can
-          reason about what you are looking at.
+          The filters and search on this page — including anything you have typed
+          into a search box — travel with your question, so Diagnostics can see
+          the list you are looking at. The boxes above do not affect that.
         </p>
 
         <label htmlFor="diagnostics-question" className="sr-only">

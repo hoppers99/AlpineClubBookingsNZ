@@ -184,6 +184,43 @@ operator their page context on that page; it cannot widen what is read, because 
 filter values are never used as a query — they are re-emitted as the operator's own
 selection and nothing else.
 
+### Where the view state comes from
+
+The tokens and filters arriving here are the page's **applied** state, not its
+address (#2816, owner decision 13 Aug 2026). A wired page publishes the values that
+actually reached its own query — post-parse, defaults included — through
+`usePublishDiagnosticsViewState` (client pages) or `DiagnosticsViewStatePublisher`
+(server pages), and the bubble sends what was published. Publication clears on
+unmount, so one page's filters can never be reported from the next one.
+
+There are exactly two paths, and the precedence is in
+`diagnostics-view.tsx`'s submit handler:
+
+| what the page did | what the question carries |
+| --- | --- |
+| published a view (**including `{}`**) | that view, verbatim; the address is not read |
+| published nothing | the query string, read at ask time — the fallback for pages nobody has wired |
+
+`{}` and "published nothing" are deliberately different answers. A page that
+examined its own address and concluded it had applied nothing must **suppress** the
+fallback, not invite it: that is precisely the case where the address is a lie.
+
+Wired so far, each publishing only what its own row allowlists:
+
+| page | what diverges from the address |
+| --- | --- |
+| `/admin/bookings` | the query schema's `safeParse` is total, so one malformed value drops **every** filter to defaults while the URL still shows them; `from`/`to` are legacy aliases that lose to `checkInFrom`/`checkInTo`/`checkOutTo`; the consent *attention* queue replaces the table with an exceptions list no booking filter touches |
+| `/admin/payments` | the activity window defaults to the last three club-timezone months in React state and is applied without ever reaching the URL |
+| `/admin/waitlist` | the `from`/`to` inputs are a draft until *Apply* writes them to the URL, and a malformed window is refused by the API with a 400, so the rows are then not a filtered list at all |
+| `/admin/members` | `q` is the **debounced** search, 300 ms behind the box; the draft has filtered nothing |
+
+Two things a page must not do. It must not publish a value it did not apply — the
+model would be told the operator narrowed a list they are seeing unnarrowed — and it
+must not publish a key outside its row's allowlist, which the route drops anyway.
+`/admin/booking-requests` is deliberately **not** wired: its row carries no status
+vocabulary (its `?status=` values are review filters, a different vocabulary), and
+widening it is the decision named in the registry comment.
+
 ### Adding a page
 
 1. Add a row with `requiredAreas` matching (or exceeding) the admin route
