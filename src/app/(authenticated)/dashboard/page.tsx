@@ -31,6 +31,12 @@ import { formatCents } from "@/lib/utils";
 import { CLUB_HUT_LEADER_LABEL, CLUB_NAME } from "@/config/club-identity";
 import { bookingStatusClass, bookingStatusLabel } from "@/lib/status-colors";
 import { isHutLeader } from "@/lib/hut-leader";
+import {
+  addDaysDateOnly,
+  formatDateOnly,
+  getTodayDateOnly,
+  startOfDateOnlyForTimeZone,
+} from "@/lib/date-only";
 import { getMemberCreditBalance } from "@/lib/member-credit";
 import {
   isDashboardPaymentOwed,
@@ -135,12 +141,33 @@ export default async function DashboardPage() {
 
   const firstName = session.user.name?.split(" ")[0] ?? "Member";
   const memberId = session.user.id;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  // "Today" has TWO encodings on this page and they are NOT interchangeable
+  // (#2838; INV-DATE-013, INV-DATE-019).
+  //
+  // `today` / `tomorrow` are date-only values — the club's calendar day pinned
+  // to UTC midnight — and they are the only thing a `@db.Date` column may be
+  // compared against. `Booking.checkIn`, `Booking.checkOut` and the hut-leader
+  // assignment dates are all `@db.Date`, and the pg driver adapter narrows a
+  // bound `Date` for such a column to its UTC calendar date, discarding the
+  // time (`formatDate` in `@prisma/adapter-pg`). The old
+  // `new Date()` + `setHours(0, 0, 0, 0)` was NZ-LOCAL midnight — `(D-1)T12:00Z`
+  // under the `TZ=Pacific/Auckland` server pin — which narrowed to D-1, so every
+  // window below ran a full day behind: the documented day-before access never
+  // fired at all, and access instead lingered for a day after the stay or the
+  // assignment had ended.
+  //
+  // `startOfTodayNZ` is the INSTANT that same club day begins. It belongs to the
+  // real `DateTime` columns further down (`Booking.draftExpiresAt` and
+  // `CalendarEvent.startsAt`), which hold moments rather than calendar days and
+  // would be pushed to club MIDDAY by a date-only value. Under the server's NZ
+  // pin this is the identical instant `setHours(0, 0, 0, 0)` produced, so those
+  // two reads are unchanged; deriving it from the club's calendar rather than
+  // the process's own zone keeps it right if the process is ever not pinned.
+  const today = getTodayDateOnly();
+  const tomorrow = addDaysDateOnly(today, 1);
+  const startOfTodayNZ = startOfDateOnlyForTimeZone(formatDateOnly(today));
 
   // Check if member is a staying guest (PAID booking where checkIn-1 <= today <= checkOut)
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
   const stayingGuestBooking = await prisma.booking.findFirst({
     where: {
       deletedAt: null,
@@ -174,6 +201,9 @@ export default async function DashboardPage() {
       where: {
         deletedAt: null,
         status: { in: [...ACTIVE_BOOKING_STATUSES] },
+        // "Upcoming" means checking in today or later. Against the old
+        // local-midnight instant this narrowed to D-1, so a stay that began
+        // YESTERDAY was still listed as upcoming for one extra day (#2838).
         checkIn: { gte: today },
         OR: [{ memberId }, { guests: { some: { memberId } } }],
       },
@@ -214,7 +244,10 @@ export default async function DashboardPage() {
         memberId,
         deletedAt: null,
         status: "DRAFT",
-        draftExpiresAt: { gt: today },
+        // `draftExpiresAt` is a plain `DateTime` — a real instant, not a lodge
+        // night — so it takes the start-of-club-day INSTANT, not the date-only
+        // value the `@db.Date` filters above use.
+        draftExpiresAt: { gt: startOfTodayNZ },
       },
       orderBy: { createdAt: "desc" },
       select: {
@@ -355,11 +388,17 @@ export default async function DashboardPage() {
   // moment it was clicked.
   const showEventsCard =
     modules.eventsCalendar && canViewCalendarEvents(session.user);
-  const twoWeeksOut = new Date(today);
-  twoWeeksOut.setDate(twoWeeksOut.getDate() + 14);
+  // `CalendarEvent.startsAt` is a plain `DateTime`, so this window is a pair of
+  // INSTANTS: the start of today in club time to the start of the fourteenth day
+  // after it. The end is stepped in whole CALENDAR days over the date-only value
+  // and only then turned back into an instant, so a daylight-saving change
+  // inside the fortnight cannot shift the edge by an hour (INV-DATE-019).
+  const twoWeeksOut = startOfDateOnlyForTimeZone(
+    formatDateOnly(addDaysDateOnly(today, 14)),
+  );
   const upcomingEvents = showEventsCard
     ? await prisma.calendarEvent.findMany({
-        where: { startsAt: { gte: today, lte: twoWeeksOut } },
+        where: { startsAt: { gte: startOfTodayNZ, lte: twoWeeksOut } },
         orderBy: { startsAt: "asc" },
         take: 6,
         select: {

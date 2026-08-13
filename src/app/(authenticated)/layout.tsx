@@ -19,6 +19,7 @@ import {
   hasFinanceViewerAccess,
 } from "@/lib/admin-permissions";
 import { hasAccessRole } from "@/lib/access-roles";
+import { addDaysDateOnly, getTodayDateOnly } from "@/lib/date-only";
 import { recordAuthBounce } from "@/lib/auth-diagnostics";
 import { buildLoginPath } from "@/lib/auth-redirect";
 import { REQUEST_PATH_HEADER } from "@/lib/internal-return-path";
@@ -105,10 +106,17 @@ export default async function AuthenticatedLayout({
       : false;
 
   // Check if the member is a staying guest (PAID booking where checkIn-1 <= today <= checkOut)
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  //
+  // `Booking.checkIn` and `Booking.checkOut` are `@db.Date`: an NZ calendar day
+  // encoded at UTC midnight, and the pg driver adapter narrows whatever `Date`
+  // is bound against them to its UTC calendar date. So both ends must be
+  // date-only values from the club's own calendar (#2838; INV-DATE-013).
+  // `new Date()` + `setHours(0, 0, 0, 0)` was NZ-LOCAL midnight — `(D-1)T12:00Z`
+  // under the `TZ=Pacific/Auckland` server pin — which narrowed to D-1 and ran
+  // this whole window a day behind: the day-before access this comment
+  // describes never fired, and the badge instead survived a day past check-out.
+  const today = getTodayDateOnly();
+  const tomorrow = addDaysDateOnly(today, 1);
 
   let isStayingGuest = false;
   if (

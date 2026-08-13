@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
+import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
+
 // Route-level tests for PUT /api/admin/age-tier-settings (issue #2009 — the
 // age-tier SUBSET relaxation and the fail-closed tier-removal guard). The pure
 // validity rule is exercised directly in age-tier-settings.test.ts; here we
@@ -210,6 +212,40 @@ describe("PUT /api/admin/age-tier-settings — subset save (#2009)", () => {
     const body = await res.json();
     expect(body.liveGuests).toBe(1);
     expect(mocks.ageTierDeleteMany).not.toHaveBeenCalled();
+  });
+
+  it("counts live guests from the CLUB's calendar day, not a local-midnight clock (#2838)", async () => {
+    // `BookingGuest.stayEnd` is `@db.Date`, and `@prisma/adapter-pg` narrows a
+    // bound `Date` for such a column to its UTC calendar date, discarding the
+    // time (`formatDate` in `mapArg`). So `new Date()` + `setHours(0, 0, 0, 0)`
+    // — NZ-local midnight, `(D-1)T12:00Z` under the `TZ=Pacific/Auckland`
+    // server pin — arrived as the day D-1 and counted a guest whose stay ended
+    // YESTERDAY as still live. That erred towards refusing a tier removal
+    // rather than towards deleting a tier someone still classifies into, so it
+    // was a spurious block, never an unsafe allow. This pins the cut-off to the
+    // club's own day.
+    //
+    // 01:30 on 2 July in New Zealand; 23:30 on 1 July in UTC and in Brisbane.
+    vi.setSystemTime(new Date("2026-07-01T13:30:00.000Z"));
+    expectClubTimeZonePremise();
+
+    mocks.ageTierFindMany.mockReset();
+    mocks.ageTierFindMany
+      .mockResolvedValueOnce([{ tier: "INFANT" }, { tier: "CHILD" }, { tier: "ADULT" }])
+      .mockResolvedValueOnce([CHILD, ADULT]);
+
+    const res = await PUT(putRequest([CHILD, ADULT]));
+    expect(res.status).toBe(200);
+
+    const where = (
+      mocks.bookingGuestCount.mock.calls[0]?.[0] as {
+        where: { stayEnd: { gte: Date } };
+      }
+    ).where;
+    // UTC midnight, so the adapter's narrowing is lossless and the day
+    // Postgres compares against is 2 July — the club's today.
+    expect(where.stayEnd.gte.toISOString()).toBe("2026-07-02T00:00:00.000Z");
+    expect(where.stayEnd.gte.toISOString().slice(0, 10)).toBe("2026-07-02");
   });
 
   it("rejects a set missing ADULT (400)", async () => {
