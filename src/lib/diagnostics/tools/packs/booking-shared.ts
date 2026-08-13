@@ -94,6 +94,7 @@ import {
 import type { AdminPermissionArea } from "@/lib/admin-permissions";
 import { DELETED_CONTACT_EMAIL_DOMAIN } from "@/lib/placeholder-contact-email";
 
+import { defuseRoleLabels, foldUntrustedText } from "../../untrusted-text";
 import { FINANCE_UNPARSEABLE_VALUE } from "./finance-shared";
 
 /**
@@ -441,14 +442,18 @@ export const PERSON_NAME_MAX_CHARS = 60;
  */
 export function personNameOrNull(value: unknown): string | null {
   if (value === null || value === undefined) return null;
-  const cleaned = String(value)
-    // Stripping control characters is the point: nothing here is source code, so
-    // the strip costs no fidelity, and a control character in a durable audit hash
-    // input is worth removing at the source.
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/["<>;=]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  // `foldUntrustedText` + `defuseRoleLabels` REPLACE the old narrow control class
+  // (which missed the C1 block, notably U+0085 NEL) and add role-label defusal, so
+  // this database-derived path is no weaker than the page-context renderer (#2832,
+  // #2831). The ANYWHERE-in-span defusal is the right one because the collapse
+  // renders a name on ONE line: no line start to anchor to; the fold runs BEFORE
+  // the bracket strip so a folded fullwidth `<` (U+FF1C) is removed.
+  const cleaned = defuseRoleLabels(
+    foldUntrustedText(String(value), "flatten")
+      .replace(/["<>;=]/g, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
   if (cleaned.length === 0) return null;
   if (cleaned.length <= PERSON_NAME_MAX_CHARS) return cleaned;
   return `${cleaned.slice(0, PERSON_NAME_MAX_CHARS - 1)}…`;
@@ -463,15 +468,30 @@ export function personNameOrNull(value: unknown): string | null {
  * a field in the rendered evidence block. It is NOT lower-cased on the way out —
  * an operator comparing the stored address against what a member told them needs
  * the stored form, and case-folding the evidence would hide a mismatch that is
- * sometimes the whole answer.
+ * sometimes the whole answer. Folding is NOT case-folding: NFKC is a no-op on the
+ * ASCII a real address carries, so the stored form survives; only an obfuscated
+ * value is altered, which is the point.
+ *
+ * The negated class excludes what JavaScript's `\s` matches and nothing more, and
+ * `\s` matches neither U+0085 (NEL), the C1 block, the zero-width/format code
+ * points, nor the colon — so the raw class ADMITTED a control- or colon-bearing
+ * address and returned it verbatim, the one projector in this pack that was not
+ * folded and defused like its free-text siblings `personNameOrNull` /
+ * `lodgeLabelOrNull` / `untrustedTextOrNull` (#2832). It is fixed by routing the
+ * value through the shared primitive FIRST and shape-checking the CLEANED value,
+ * never the raw one: `foldUntrustedText` maps every C0/DEL/C1 control and line
+ * terminator (NEL included) to a space and drops the invisibles, so an obfuscated
+ * address collapses to a form the allowlist then refuses to the sentinel; and
+ * `defuseRoleLabels` (which folds internally) neutralises a `user:` / `assistant:`
+ * turn smuggled into the local part before the shape check sees it.
  */
 const PROJECTABLE_EMAIL = /^[^@\s"'<>;=]{1,120}@[^@\s"'<>;=]{1,80}$/;
 
 export function emailOrNull(value: unknown): string | null {
   if (value === null || value === undefined) return null;
-  const text = String(value).trim();
-  if (text.length === 0) return null;
-  return PROJECTABLE_EMAIL.test(text) ? text : FINANCE_UNPARSEABLE_VALUE;
+  const cleaned = defuseRoleLabels(String(value)).trim();
+  if (cleaned.length === 0) return null;
+  return PROJECTABLE_EMAIL.test(cleaned) ? cleaned : FINANCE_UNPARSEABLE_VALUE;
 }
 
 /**

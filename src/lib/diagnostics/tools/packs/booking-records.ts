@@ -399,6 +399,7 @@ import { auditCategoriesForCorrelationDomain } from "@/lib/audit-categories";
 import { classifyDoubleBedSharingFacts } from "@/lib/double-bed-sharing";
 import { classifyMemberGuestConsent } from "@/lib/member-guest-consent";
 
+import { defuseRoleLabels, foldUntrustedText } from "../../untrusted-text";
 import { defineDiagnosticsTool, type DiagnosticsToolEntry } from "../define";
 import {
   AID6B_ALLOCATION_ROW_LIMIT,
@@ -483,31 +484,40 @@ const bookingIdInputSchema = {
 const LODGE_LABEL_MAX_CHARS = 24;
 
 /**
- * Project a room or bed label: control characters removed, whitespace collapsed,
- * quotes, angle brackets, `;` and `=` removed, hard-capped and marked when
- * clipped.
+ * Project a room or bed label: folded and role-label defused, whitespace
+ * collapsed, quotes, angle brackets, `;` and `=` removed, hard-capped and marked
+ * when clipped.
  *
- * Stripped rather than sentinelled, on the same reasoning as `personNameOrNull`:
+ * Folded rather than sentinelled, on the same reasoning as `personNameOrNull`:
  * this is authored text an administrator typed into the lodge configuration, so
  * an unusual character is a naming choice rather than evidence the column holds
  * the wrong kind of thing. The `;` and `=` strip matters because the evidence
  * renderer's row format is `key=value` pairs joined by `"; "`, and because this
  * value also reaches the audit `resultHash`, which no renderer touches.
  *
+ * `foldUntrustedText` + `defuseRoleLabels` REPLACE the old narrow control class,
+ * which stripped only U+0000–U+001F and DEL and so missed the C1 block — U+0085
+ * (NEL) is not matched by JavaScript's `\s`, so it survived both that class and
+ * the `\s+` collapse and could fake a new line in the rendered evidence (#2832).
+ * The ANYWHERE-in-span defusal is the right one because the collapse renders a
+ * label on ONE line — there is no line start for a role label to anchor to, the
+ * same choice `render.ts` made; the fold runs BEFORE the bracket strip so a
+ * folded fullwidth `<` (U+FF1C) is still removed. This lodge configuration is
+ * lower-trust than it looks: an administrator account can be compromised, so a
+ * bed name is untrusted evidence like any other stored text.
+ *
  * Returns null for an absent or blank label and never an empty string: "this
  * allocation's bed row could not be read" and "the bed has a blank name" are
  * both "there is no label here", and neither of them is a label.
  */
-function lodgeLabelOrNull(value: unknown): string | null {
+export function lodgeLabelOrNull(value: unknown): string | null {
   if (value === null || value === undefined) return null;
-  const cleaned = String(value)
-    // Stripping control characters is the point: nothing here is source code, so
-    // the strip costs no fidelity, and a control character in a durable audit hash
-    // input is worth removing at the source.
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/["<>;=]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const cleaned = defuseRoleLabels(
+    foldUntrustedText(String(value), "flatten")
+      .replace(/["<>;=]/g, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
   if (cleaned.length === 0) return null;
   if (cleaned.length <= LODGE_LABEL_MAX_CHARS) return cleaned;
   return `${cleaned.slice(0, LODGE_LABEL_MAX_CHARS - 1)}…`;
