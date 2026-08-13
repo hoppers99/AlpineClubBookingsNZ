@@ -120,6 +120,13 @@ export async function POST(
                   inheritEmailFrom: {
                     select: { email: true },
                   },
+                  // #2716: the transfer decides who may be given a hand-picked
+                  // choice, and that turns on whether the member has a parent
+                  // link. Selected explicitly because reading it as `undefined`
+                  // would silently classify EVERY cluster member as a hand-pick,
+                  // which is the bug this selection exists to prevent.
+                  parentMemberId: true,
+                  secondaryParentId: true,
                   role: true,
                   financeAccessLevel: true,
                   accessRoles: { select: MEMBER_ACCESS_ROLE_SELECT },
@@ -239,11 +246,14 @@ export async function POST(
             canLogin: false,
             email: requestedEmail,
             // #2716: pointer and CHOICE together. These are adults sharing one
-            // login, pointed at the holder BY HAND — none of them is anyone's
-            // parent here, so the one-hop rule (which constrains a pointer
-            // DERIVED from a parent link) has nothing to say about them. What it
-            // does mean is that if the holder's address is ever removed, the
-            // cluster's pointers clear and this choice is what brings them back.
+            // login, pointed at the holder BY HAND. That is now ESTABLISHED
+            // rather than assumed — the set is filtered to members with no
+            // parent link, above — because the earlier version of this comment
+            // claimed "none of them is anyone's parent here" about a set that
+            // was selected purely by matching address, and a minor with a stale
+            // inherited copy satisfied it. What the choice buys: if the holder's
+            // address is ever removed, the cluster's pointers clear and this is
+            // what brings them back.
             inheritEmailFromId:
               currentHolder.id === newHolderId ? null : newHolderId,
             inheritEmailChoiceId:
@@ -270,13 +280,37 @@ export async function POST(
         throw new LoginHolderRequestError(validation.status, validation.error);
       }
 
-      const otherMemberIds = cluster
-        .filter((member) => member.id !== newHolderId)
+      const otherMembers = cluster.filter(
+        (member) => member.id !== newHolderId,
+      );
+
+      // #2716: WHO MAY BE GIVEN A CHOICE HERE, and why the cluster is not that
+      // set. `cluster` is every family-group member whose EFFECTIVE email
+      // matches the requested address — no age test, no parent-link test. The
+      // docblock above used to assert "none of them is anyone's parent here",
+      // and the code never established it. A minor whose own `email` column
+      // still holds a stale copy of the address they used to inherit falls
+      // straight into the cluster, and writing a choice for them records a
+      // permanent hand-pick at the login holder — who may be their grandparent.
+      //
+      // That is the routing this whole issue exists to abolish, and it would
+      // never converge: a choice is a decision a person made, so the sweep is
+      // deliberately forbidden from revisiting it.
+      //
+      // A member with a parent link therefore keeps their DERIVED inheritance,
+      // which the reconcile below re-resolves through the one-hop rule. Only a
+      // member with no parent links — an adult genuinely sharing this login, the
+      // population the transfer is actually for — is pointed at the holder.
+      const handPickIds = otherMembers
+        .filter((member) => !member.parentMemberId && !member.secondaryParentId)
+        .map((member) => member.id);
+      const parentedIds = otherMembers
+        .filter((member) => member.parentMemberId || member.secondaryParentId)
         .map((member) => member.id);
 
-      if (otherMemberIds.length > 0) {
+      if (handPickIds.length > 0) {
         await tx.member.updateMany({
-          where: { id: { in: otherMemberIds } },
+          where: { id: { in: handPickIds } },
           data: {
             canLogin: false,
             email: requestedEmail,
@@ -284,6 +318,17 @@ export async function POST(
             inheritEmailChoiceId: newHolderId,
           },
         });
+      }
+
+      // The rest lose the login and keep the shared address as their stored
+      // copy, but their inheritance is left to the one-hop rule rather than
+      // hand-written here.
+      if (parentedIds.length > 0) {
+        await tx.member.updateMany({
+          where: { id: { in: parentedIds } },
+          data: { canLogin: false, email: requestedEmail },
+        });
+        await reconcileEmailInheritanceForMemberChange(tx, parentedIds);
       }
 
       // #2716: this transfer rewrites the ADDRESS on every member of the

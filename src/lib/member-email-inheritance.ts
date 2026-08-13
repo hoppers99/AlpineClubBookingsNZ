@@ -228,14 +228,29 @@ export function effectiveEmailSourceId(
  * migrate and cutover arrives unaccompanied; and any future writer that forgets
  * the choice column would too.
  *
- * The answer is ONE HOP, applied to the pointer itself: adopt it when it names a
- * direct parent, and refuse otherwise. That is what makes the drain window safe
- * without a second mechanism. An old colour's TRANSITIVE write — a pointer at a
- * grandparent, the exact shape this issue exists to abolish — is refused and the
- * pointer clears, so the retired behaviour cannot re-enter through the back door
- * while the old colour is still serving. An old colour's ordinary one-hop write
- * is preserved intact, so an admin who links a dependant mid-deploy does not
- * silently lose the link's notification routing.
+ * The answer refuses exactly one shape: an ANCESTOR-SHAPED pointer, meaning the
+ * member has at least one parent link and the pointer names somebody who is not
+ * one of them. That is the shape this issue exists to abolish, so an old
+ * colour's transitive write is refused and the pointer clears; the retired
+ * behaviour cannot re-enter through the back door while the old colour is still
+ * serving. An old colour's ordinary one-hop write is preserved intact.
+ *
+ * WHY IT IS NOT SIMPLY "NAMES A DIRECT PARENT", which is what this function
+ * tested when review found it. A member with NO parent links at all who holds a
+ * pointer is not a transitive inheritance — they are a HAND-PICK: the admin
+ * member-edit source, or a family-group login cluster, where adults sharing one
+ * login are pointed at the holder by hand and none of them is anyone's parent.
+ * The bare direct-parent test refused those, `convergeSubjects` then cleared the
+ * pointer, and a whole login cluster lost its shared mailbox on the next sweep
+ * with no choice recorded to bring it back.
+ *
+ * That is not a hypothetical: the sibling docblock on {@link
+ * effectiveEmailSourceId} above names this exact failure as the reason one hop
+ * is not tested THERE, and this function then reproduced it. The migration's own
+ * fixtures preserve both shapes deliberately (its `EXISTS (SELECT 1 FROM
+ * ancestry …)` clause refuses ancestors, not non-parents), so the rule here is
+ * now the same rule the migration applies, which is what it should always have
+ * been.
  *
  * Adoption is the ONLY circumstance in which reconciliation writes the choice
  * column. It repairs a state no decision produced; it never changes a decision
@@ -250,6 +265,13 @@ export function adoptedEmailInheritanceChoiceId(
     member.inheritEmailFromId === member.parentMemberId ||
     member.inheritEmailFromId === member.secondaryParentId
   ) {
+    return member.inheritEmailFromId;
+  }
+  // No parent links at all: nothing about this pointer can be transitive,
+  // because there is no middle generation for it to have reached through. It is
+  // a hand-pick, and adopting it is what keeps a login cluster connected to its
+  // own mailbox across the drain.
+  if (!member.parentMemberId && !member.secondaryParentId) {
     return member.inheritEmailFromId;
   }
   return null;

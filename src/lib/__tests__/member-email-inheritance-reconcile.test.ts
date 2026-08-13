@@ -412,6 +412,56 @@ describe("adopting a pointer written without a choice", () => {
       }),
     ).toBe("picked");
   });
+
+  /**
+   * THE SHAPE THAT WAS BEING DESTROYED, found in review.
+   *
+   * Every test above gives the subject a parent link, so the rule "adopt only a
+   * direct parent" looked right. A member with NO parent link who holds a
+   * pointer is not a transitive inheritance — there is no middle generation for
+   * it to have reached through. It is a HAND-PICK: the admin member-edit source,
+   * or a family-group login cluster where adults sharing one login are pointed
+   * at the holder.
+   *
+   * Refusing those meant `convergeSubjects` cleared the pointer, and a whole
+   * login cluster lost its shared mailbox on the first sweep after cutover with
+   * no choice recorded to restore it. The docblock on `effectiveEmailSourceId`
+   * names this exact failure as the reason one hop is not tested there — and
+   * this function reproduced it thirty lines below.
+   */
+  const unparented = { ...base, parentMemberId: null, secondaryParentId: null };
+
+  it("adopts a hand-picked pointer on a member with no parent links", () => {
+    expect(
+      adoptedEmailInheritanceChoiceId({
+        ...unparented,
+        inheritEmailFromId: "login-holder",
+      }),
+    ).toBe("login-holder");
+  });
+
+  it("still refuses a genuinely ancestor-shaped pointer", () => {
+    // The narrowing must not have widened into "adopt anything". A member who
+    // HAS a parent and points somewhere else is the retired transitive shape,
+    // and is still refused.
+    expect(
+      adoptedEmailInheritanceChoiceId({
+        ...base,
+        secondaryParentId: "other-parent",
+        inheritEmailFromId: "gran",
+      }),
+    ).toBeNull();
+  });
+
+  it("adopts through the SECOND parent column too", () => {
+    expect(
+      adoptedEmailInheritanceChoiceId({
+        ...base,
+        secondaryParentId: "step-parent",
+        inheritEmailFromId: "step-parent",
+      }),
+    ).toBe("step-parent");
+  });
 });
 
 describe("re-resolution on add, change and remove", () => {
