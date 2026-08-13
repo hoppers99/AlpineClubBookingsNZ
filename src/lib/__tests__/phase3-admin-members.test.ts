@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
+import { PLACEHOLDER_CONTACT_EMAIL_DOMAINS } from "@/lib/placeholder-contact-email";
 
 // Mock dependencies
 vi.mock("@/lib/prisma", () => ({
@@ -637,21 +638,30 @@ describe("Phase 3: Admin Member Management", () => {
       // deletion-anonymised contacts would re-open the very search-offers-what-
       // the-write-refuses drift #2254 closed. With `arrayContaining` alone both
       // could be deleted and this test would stay green.
+      //
+      // #2716: DERIVED from the constant rather than hand-listed. This assertion
+      // was written out as two literal domains and broke the moment a third was
+      // added (`@inheritance-lost.invalid`, stamped over a dependant's stale copy
+      // when their source leaves the club) — even though excluding it is exactly
+      // right, since such a member cannot receive their own mail let alone
+      // somebody else's. A hand-written list here re-creates the same drift the
+      // clauses exist to prevent, one level up: the picker's test would pass
+      // while the picker offered a source the write route refuses.
       const placeholderExclusions = (call.where?.AND as unknown[]).filter(
         (clause) => JSON.stringify(clause).includes("endsWith"),
       );
-      expect(placeholderExclusions).toEqual([
-        {
+      expect(placeholderExclusions).toEqual(
+        PLACEHOLDER_CONTACT_EMAIL_DOMAINS.map((domain) => ({
           NOT: {
-            email: { endsWith: "@no-email.invalid", mode: "insensitive" },
+            email: { endsWith: `@${domain}`, mode: "insensitive" },
           },
-        },
-        {
-          NOT: {
-            email: { endsWith: "@deleted.invalid", mode: "insensitive" },
-          },
-        },
-      ]);
+        })),
+      );
+      // Still exact, not `arrayContaining`: every domain the predicate rejects
+      // must be excluded from the picker, and no extra clause may creep in.
+      expect(placeholderExclusions).toHaveLength(
+        PLACEHOLDER_CONTACT_EMAIL_DOMAINS.length,
+      );
     });
 
     it("filters to active, non-archived parent-link candidates of ANY age and excludes the current member", async () => {
