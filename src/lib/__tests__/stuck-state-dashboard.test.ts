@@ -662,6 +662,10 @@ describe("getStuckStateDashboard", () => {
     const dashboard = await getStuckStateDashboard({
       deps,
       now: new Date("2026-06-22T00:00:00.000Z"),
+      // #2823: the booking-owner detail rows are membership-roll surface, so a
+      // caller must hold membership:view to receive them. This suite asserts the
+      // full-detail shape, so it acts as such a caller.
+      viewerCanViewMembership: true,
     });
 
     const item = dashboard.items.find(
@@ -710,6 +714,9 @@ describe("getStuckStateDashboard", () => {
     const dashboard = await getStuckStateDashboard({
       deps,
       now: new Date("2026-06-22T00:00:00.000Z"),
+      // #2823: the named member rows are the membership roll, gated on
+      // membership:view. This assertion is about the full-detail view.
+      viewerCanViewMembership: true,
     });
 
     const item = dashboard.items.find(
@@ -746,5 +753,132 @@ describe("getStuckStateDashboard", () => {
         (candidate) => candidate.id === "email-unreachable-members",
       ),
     ).toBe(false);
+  });
+
+  /**
+   * #2823. The stuck-state dashboard is a `support`-area surface, so a
+   * support-only admin without membership:view can reach it. The named member
+   * rows and booking-owner rows are membership-roll detail and must be dropped
+   * for such a caller — while the count and the card-level link stay, so support
+   * still sees a problem exists and can hand it on. Fail closed: the default
+   * (nobody passed the flag) is no names.
+   */
+  it("drops the unreachable-member names without membership:view, keeping the count and link (#2823)", async () => {
+    const deps = buildDeps({
+      getUnreachableMemberSummary: vi.fn().mockResolvedValue({
+        total: 3,
+        inheritanceUnresolved: 2,
+        members: [
+          { id: "m-1", name: "Sam Young", reason: "inheritance-unresolved" },
+          { id: "m-2", name: "Ana Reid", reason: "placeholder-address" },
+        ],
+      }),
+    });
+
+    const dashboard = await getStuckStateDashboard({
+      deps,
+      now: new Date("2026-06-22T00:00:00.000Z"),
+      viewerCanViewMembership: false,
+    });
+
+    const item = dashboard.items.find(
+      (candidate) => candidate.id === "email-unreachable-members",
+    );
+    // The signal itself is untouched: count and card-level link both remain.
+    expect(item).toMatchObject({
+      count: 3,
+      href: "/admin/members?contactability=unreachable",
+    });
+    // But no member name, id, or deep link is surfaced.
+    expect(item?.details).toBeUndefined();
+  });
+
+  it("drops the hosting-coverage booking-owner rows without membership:view, keeping the count and link (#2823)", async () => {
+    const deps = buildDeps({
+      db: {
+        hostingCoverageIncident: {
+          count: vi.fn().mockResolvedValue(1),
+          findMany: vi.fn().mockResolvedValue([
+            {
+              id: "incident-1",
+              cause: "SYSTEM_CHANGE",
+              openedAt: new Date("2026-06-20T00:00:00.000Z"),
+              evidence: { affectedNights: ["2026-08-02", "2026-08-03"] },
+              booking: {
+                id: "booking-12345678",
+                checkIn: new Date("2026-08-02T00:00:00.000Z"),
+                checkOut: new Date("2026-08-04T00:00:00.000Z"),
+                member: { firstName: "Aroha", lastName: "Ngata" },
+                lodge: { name: "Ruapehu Lodge" },
+              },
+            },
+          ]),
+        },
+      } as never,
+    });
+
+    const dashboard = await getStuckStateDashboard({
+      deps,
+      now: new Date("2026-06-22T00:00:00.000Z"),
+      viewerCanViewMembership: false,
+    });
+
+    const item = dashboard.items.find(
+      (candidate) => candidate.id === "booking-hosting-coverage-incidents",
+    );
+    expect(item).toMatchObject({
+      count: 1,
+      href: "/admin/bookings#hosting-coverage-incidents",
+    });
+    expect(item?.details).toBeUndefined();
+  });
+
+  it("fails closed to no names when membership:view is not passed at all (#2823)", async () => {
+    const deps = buildDeps({
+      getUnreachableMemberSummary: vi.fn().mockResolvedValue({
+        total: 1,
+        inheritanceUnresolved: 0,
+        members: [
+          { id: "m-9", name: "Kim Tui", reason: "placeholder-address" },
+        ],
+      }),
+      db: {
+        hostingCoverageIncident: {
+          count: vi.fn().mockResolvedValue(1),
+          findMany: vi.fn().mockResolvedValue([
+            {
+              id: "incident-9",
+              cause: "OFFICER_OVERRIDE",
+              openedAt: new Date("2026-06-20T00:00:00.000Z"),
+              evidence: { affectedNights: ["2026-08-02"] },
+              booking: {
+                id: "booking-99999999",
+                checkIn: new Date("2026-08-02T00:00:00.000Z"),
+                checkOut: new Date("2026-08-03T00:00:00.000Z"),
+                member: { firstName: "Jo", lastName: "Reta" },
+                lodge: { name: "Ruapehu Lodge" },
+              },
+            },
+          ]),
+        },
+      } as never,
+    });
+
+    // Deliberately omit viewerCanViewMembership entirely.
+    const dashboard = await getStuckStateDashboard({
+      deps,
+      now: new Date("2026-06-22T00:00:00.000Z"),
+    });
+
+    expect(
+      dashboard.items.find(
+        (candidate) => candidate.id === "email-unreachable-members",
+      )?.details,
+    ).toBeUndefined();
+    expect(
+      dashboard.items.find(
+        (candidate) => candidate.id === "booking-hosting-coverage-incidents",
+      )?.details,
+    ).toBeUndefined();
   });
 });

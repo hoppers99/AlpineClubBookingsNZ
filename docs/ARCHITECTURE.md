@@ -1064,6 +1064,17 @@ recovery visibility. `src/lib/stuck-state-dashboard.ts` aggregates local
 payment recovery, operational Xero, email deliverability, waitlist,
 bed-allocation, hut-leader, and issue-report signals into severity, owner, and
 target links without making live provider calls during page render.
+The page and its API sit in the `support` permission area, but a few signals
+expand into per-member/per-booking rows that name individuals — the *Members
+with no reachable email address* card and the *Bookings without required adult
+member cover* card. Those named rows are the membership roll, so
+`getStuckStateDashboard` takes a `viewerCanViewMembership` flag and omits the
+names unless the caller also holds `{ area: "membership", level: "view" }` (the
+same permission `/api/admin/members` requires); the count and the card-level
+link stay for every support admin (#2823). Both callers (the page and
+`/api/admin/stuck-states`) resolve that flag from the acting admin's permission
+matrix and default it to `false`, so a caller that omits it fails closed to no
+names.
 `src/lib/booking-provider-mismatches.ts` answers the same provider-divergence
 questions for a single booking (paid with no completed Xero invoice operation,
 Stripe refund with no Xero credit note, waitlist offer whose email needs

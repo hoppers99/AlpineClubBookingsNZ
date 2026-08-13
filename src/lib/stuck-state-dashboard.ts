@@ -472,6 +472,11 @@ function addXeroItems(items: StuckStateItem[], snapshot: XeroAdminHealthSnapshot
 async function addEmailItems(
   items: StuckStateItem[],
   deps: StuckStateDashboardDependencies,
+  // #2823: whether the caller holds membership:view. The stuck-state dashboard
+  // lives in the `support` area behind a bare requireAdmin(), so a support-only
+  // admin without membership:view reaches it — but must not be handed the
+  // named membership-roll rows below. Fail closed: absent/false ⇒ no names.
+  viewerCanViewMembership: boolean,
 ) {
   const [
     deliverability,
@@ -513,12 +518,19 @@ async function addEmailItems(
         ? `, ${unreachableMembers.inheritanceUnresolved} of them waiting on a parent's address to inherit`
         : ""
     }.`,
-    details: unreachableMembers.members.map((member) => ({
-      id: member.id,
-      title: member.name,
-      summary: UNREACHABLE_MEMBER_REASON_LABEL[member.reason],
-      href: `/admin/members/${member.id}`,
-    })),
+    // #2823 privacy gate: the count and the card-level link stay visible to
+    // every support-area admin, but the per-member named rows (full name + id +
+    // /admin/members/{id} deep link) are the membership roll and are dropped
+    // unless the caller also holds membership:view — the same permission
+    // /api/admin/members itself requires.
+    details: viewerCanViewMembership
+      ? unreachableMembers.members.map((member) => ({
+          id: member.id,
+          title: member.name,
+          summary: UNREACHABLE_MEMBER_REASON_LABEL[member.reason],
+          href: `/admin/members/${member.id}`,
+        }))
+      : undefined,
   });
 
   addItem(items, {
@@ -900,12 +912,22 @@ function isModuleEnabled(modules: FeatureFlags, key: keyof FeatureFlags) {
 export async function getStuckStateDashboard(input?: {
   deps?: Partial<StuckStateDashboardDependencies>;
   now?: Date;
+  /**
+   * #2823: whether the caller holds `{ area: "membership", level: "view" }`.
+   * The dashboard is a `support`-area surface, so a support-only admin without
+   * membership:view can reach it; when this is false the named member /
+   * booking-owner rows are omitted (count and card-level link are always kept).
+   * Defaults to false so a caller that forgets to pass it fails closed to no
+   * names rather than leaking the membership roll.
+   */
+  viewerCanViewMembership?: boolean;
 }): Promise<StuckStateDashboard> {
   const deps = {
     ...defaultDependencies,
     ...input?.deps,
   };
   const now = input?.now ?? new Date();
+  const viewerCanViewMembership = input?.viewerCanViewMembership ?? false;
   const items: StuckStateItem[] = [];
 
   const [modules, paymentCounts] = await Promise.all([
@@ -1054,10 +1076,15 @@ export async function getStuckStateDashboard(input?: {
     } lost the adult member cover this club requires and ${
       hostingCoverageIncidents === 1 ? "needs" : "need"
     } an officer to restore cover, amend the booking, or approve an exception. Beds and payments are untouched.`,
-    details: hostingCoverageDetails,
+    // #2823 privacy gate: each hosting-coverage row names its booking owner
+    // (booking reference - member full name) and deep-links to the booking, so
+    // it is membership-roll detail in the same sense as the unreachable-members
+    // rows. The count and the card-level link stay for every support-area
+    // admin; the named rows are dropped unless the caller holds membership:view.
+    details: viewerCanViewMembership ? hostingCoverageDetails : undefined,
   });
 
-  await addEmailItems(items, deps);
+  await addEmailItems(items, deps, viewerCanViewMembership);
 
   if (isModuleEnabled(modules, "xeroIntegration")) {
     addXeroItems(items, await deps.getXeroAdminHealthSnapshot());

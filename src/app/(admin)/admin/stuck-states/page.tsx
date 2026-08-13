@@ -28,6 +28,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { auth } from "@/lib/auth";
+import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import {
   getStuckStateDashboard,
   type StuckStateDomain,
@@ -165,7 +167,16 @@ function ItemRow({ item }: { item: StuckStateItem }) {
 }
 
 export default async function AdminStuckStatesPage() {
-  const dashboard = await getStuckStateDashboard();
+  // #2823: this page is admitted by the (admin) layout at support:view. The
+  // named member / booking-owner detail rows are membership-roll surface, so
+  // gate them separately on membership:view — the same permission the members
+  // admin requires. Mirrors the in-page permission read on /admin/bookings.
+  // Fail closed: no session ⇒ no names.
+  const session = await auth();
+  const viewerCanViewMembership = session?.user
+    ? hasAdminAreaAccess(session.user, { area: "membership", level: "view" })
+    : false;
+  const dashboard = await getStuckStateDashboard({ viewerCanViewMembership });
 
   return (
     <div className="space-y-8">
