@@ -49,11 +49,14 @@ export default function BookingRequestsPage() {
   // (issue #779 — they previously looked under Approvals/Bookings/Waitlist).
   const [publicQueueCount, setPublicQueueCount] = useState(0);
 
-  // The public request form is deliberately unlisted (#2421) — no page a
-  // visitor can browse to links to it — so admins need a way to hand the direct
-  // URL to a guest the club has agreed to host. `window.location.origin` is
-  // client-only, so it is resolved after mount (same shape as
-  // /admin/display/devices) and the field shows its emptyHint until then.
+  // The public request form is UNLISTED BY DEFAULT (#2421, #2818 decision 1):
+  // its page ships with an empty menu title, so no page a visitor can browse to
+  // links to it and search engines are told to ignore it, until the club decides
+  // otherwise under Site Appearance & Content -> Page Content. Either way an
+  // admin needs the direct URL to hand to a guest the club has agreed to host.
+  // `window.location.origin` is client-only, so it is resolved after mount (same
+  // shape as /admin/display/devices) and the field shows its emptyHint until
+  // then.
   const [publicRequestUrl, setPublicRequestUrl] = useState("");
 
   useEffect(() => {
@@ -206,10 +209,10 @@ export default function BookingRequestsPage() {
               {/* Read-only affordance: sharing the link is not a booking write,
                   so it stays available to view-only admins (no edit gate). */}
               <CopyField
-                label="Guest request form link (unlisted)"
+                label="Guest request form link"
                 value={publicRequestUrl}
                 emptyHint="Loading the site address…"
-                description="Share this link directly with guests the club is willing to host. No page a visitor can browse to links to the form — the only other way in is the rebook button on a payment link the club emails a past requester — and this is the only place in the app that shows the URL."
+                description="Share this link directly with guests the club is willing to host. By default nothing on the public site links to the form and search engines are told to ignore it, so this is how a guest gets to it (the only other way in is the rebook button on a payment link the club emails a past requester). To put the form in your site menu instead, give its page a menu title under Site Appearance &amp; Content → Page Content — that also lets search engines list it."
               />
               <p className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
                 How a non-member request flows: the requester submits it and

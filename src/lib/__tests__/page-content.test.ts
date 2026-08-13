@@ -209,7 +209,12 @@ describe("canDeletePage", () => {
     expect(canDeletePage("404")).toBe(false);
   });
 
-  it("refuses the built-in pages code routes, the footer and the sitemap link", () => {
+  it("refuses every built-in page a code route serves", () => {
+    // Not "the sitemap links them": `booking-requests` and `school-bookings`
+    // are in neither the sitemap nor the footer, and are unlisted by default
+    // (#2818 decision 1). What makes all of these undeletable is that a code
+    // route reads each row, so deleting one leaves a live address with nothing
+    // behind it.
     for (const slug of [
       "about",
       "join",

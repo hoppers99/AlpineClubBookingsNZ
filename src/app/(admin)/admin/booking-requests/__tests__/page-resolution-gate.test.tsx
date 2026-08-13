@@ -146,16 +146,17 @@ describe("Public Requests tab share link (#2421)", () => {
     vi.restoreAllMocks();
   });
 
-  // The public form is unlisted, so this copy field is the only place an admin
-  // can get the URL to hand a guest. Sharing it is not a booking write, so it
-  // must NOT be gated on bookings:edit.
+  // The public form is unlisted by default (#2818 decision 1), so this copy
+  // field is where an admin gets the URL to hand a guest — and it stays useful
+  // for a club that HAS opted in, since the URL is the same either way. Sharing
+  // it is not a booking write, so it must NOT be gated on bookings:edit.
   it("shows the copyable public request form link to a view-only admin", () => {
     sessionStatus = "authenticated";
     sessionMatrix = { ...editMatrix(), bookings: "view" };
     render(<BookingRequestsPage />);
 
     expect(
-      screen.getByText("Guest request form link (unlisted)"),
+      screen.getByText("Guest request form link"),
     ).toBeInTheDocument();
     expect(
       screen.getByText(`${window.location.origin}/booking-requests`),
@@ -171,7 +172,7 @@ describe("Public Requests tab share link (#2421)", () => {
     render(<BookingRequestsPage />);
 
     expect(
-      screen.getByText("Guest request form link (unlisted)"),
+      screen.getByText("Guest request form link"),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("public-panel")).not.toBeInTheDocument();
   });

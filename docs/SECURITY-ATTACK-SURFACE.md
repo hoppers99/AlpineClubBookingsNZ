@@ -2685,7 +2685,10 @@ permanently (D7).
   (`src/lib/analytics-route-policy.ts`). Two independent gates: the address must be one
   the five approved `(website)` routes serve (derived from the same route census the
   nonce split uses, so a new admin, member or token route is excluded the day it is
-  added), and it must also *look* like an admin-authored page slug — which is what
+  added — and, since #2818, so are `/booking-requests` and `/school-bookings`, the
+  two pages an anonymous visitor types the most personal information into; that
+  exclusion falls out of their route group and was ratified deliberately rather
+  than merely inherited), and it must also *look* like an admin-authored page slug — which is what
   refuses the catch-all's territory of identifier-shaped and credential-flavoured
   addresses (`/reset/<token>`, `/t/<hex>`, `/cm5x…`). `send_page_view: false` turns
   Google's own automatic page view off, so `location.href` is never used; this app sends

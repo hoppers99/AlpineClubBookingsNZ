@@ -295,17 +295,21 @@ as the [Member & Guest Guide](user-guide/README.md) under `docs/user-guide/`
 [`UX_FLOW_MAP.md`](UX_FLOW_MAP.md) and the public route tree. Route realities the
 guides document:
 
-- **Two guest paths need no login, but only one is advertised.** The sign-in
-  page (`/login`) links to *Request a school group booking*
-  (`/school-bookings`). The general guest quote flow
-  (`/booking-requests`, `/booking-requests/respond/[token]`) is deliberately
-  unlisted (#2421): no page a visitor can browse to links to it, and it is
-  excluded from search engines via a route-level `noindex` (`robots.txt`
-  deliberately does not disallow it, so crawlers can fetch the page and see the
-  noindex). The club shares the direct URL only with guests it has agreed to
-  host — an admin copies it from the **Public Requests** tab of
-  `/admin/booking-requests` — and the only other path in is the rebook button
-  on a tokenised `/pay/[token]` link the club itself emailed a past requester.
+- **Two guest paths need no login, and whether either is advertised is the
+  club's choice.** The sign-in page (`/login`) links to *Request a school group
+  booking* (`/school-bookings`). Both that page and the general guest quote flow
+  (`/booking-requests`, `/booking-requests/respond/[token]`) are editable CMS
+  pages that ship **unlisted by default** (#2421, #2818): each seeds an empty
+  menu title, which keeps it out of the site menu *and* out of search engines —
+  one field drives both, so the two can never disagree. `robots.txt` deliberately
+  does not disallow either path, so a crawler fetches the page and sees the
+  `noindex` rather than merely listing the bare URL. On that default the club
+  shares the direct URL only with guests it has agreed to host — an admin copies
+  it from the **Public Requests** tab of `/admin/booking-requests` — and the only
+  other path in is the rebook button on a tokenised `/pay/[token]` link the club
+  itself emailed a past requester. A club that wants the form advertised gives
+  the page a menu title under **Site Appearance & Content → Page Content**, and
+  it joins the navigation and becomes indexable together.
   The
   [Booking a stay](user-guide/booking-a-stay.md) guide covers both as the guest
   journey, and says plainly that whether a non-member can stay is the club's own

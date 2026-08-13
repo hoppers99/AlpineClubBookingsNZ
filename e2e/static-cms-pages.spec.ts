@@ -312,8 +312,9 @@ test.describe("a slug under another route group's prefix", () => {
 
 /**
  * The D1 narrowing (owner decision, 3 Aug 2026): the fixed per-release nonce covers
- * exactly the seven approved routes, and the three public pages the first cut swept
- * in are back on a freshly minted per-request nonce.
+ * exactly the five approved routes. Everything else public is on a freshly minted
+ * per-request nonce: the three pages the first cut swept in, and the five routes
+ * #2818 moved across with them (the two form pages and their token flows).
  *
  * Only a real server can show this. The unit suite proves the PROXY publishes two
  * different nonces for the two territories; what has to hold is that each RENDER
@@ -345,7 +346,7 @@ test.describe("the per-request public pages (#2352 D1 narrowing)", () => {
     expect(
       secondNonce,
       "a page that is never stored must mint a nonce per response — that unguessable " +
-        "value is the defence the seven approved routes give up, and this page gives " +
+        "value is the defence the five approved routes give up, and this page gives " +
         "up nothing",
     ).not.toBe(firstNonce);
 
@@ -481,7 +482,7 @@ test.describe("percent-encoded public addresses", () => {
     // The mirror direction, and the one that matters most for security: a DYNAMIC
     // route matches the raw path, so `/join/appl%79` is `(website-dynamic)/join/[code]`
     // with code `apply`. Decoding in the classifier would have called this address
-    // one of the approved seven and served a genuinely per-request page under the
+    // one of the approved five and served a genuinely per-request page under the
     // fixed, publicly readable nonce.
     const canonical = await request.get("/join/apply");
     expect(canonical.status()).toBe(200);

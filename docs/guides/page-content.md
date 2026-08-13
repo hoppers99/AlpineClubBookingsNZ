@@ -42,15 +42,27 @@ button. Page Content is edited under the **content** permission area.
    **+ Add Page** to create a new page.
 3. Every page the starter site ships (Home, About, Join, Apply, Rules, Contact,
    Booking Requests, School Bookings, Committee, Privacy, Terms, FAQ, and the
-   **System** pages Club Lodge `/home` and Page Not Found `/404`) cannot be hidden
-   or deleted — code routes, the footer, and the sitemap link them. Only pages you add yourself can be hidden
-   or deleted; a hidden page returns 404 to the public and drops out of the site
+   **System** pages Club Lodge `/home` and Page Not Found `/404`) cannot be
+   hidden or deleted, because a code route serves each of them and the footer or
+   the sitemap links most of them. Only pages you add yourself can be hidden or
+   deleted; a hidden page returns 404 to the public and drops out of the site
    menu. System pages additionally keep their fixed slug and menu order. If a
    built-in page ever shows a **Hidden** badge (only possible from hand-edited
    data), its card offers a one-click **Publish** to repair it — until then the
-   public site treats the content as absent: `/contact`, `/join` and
-   `/join/apply` fall back to their built-in copy and forms, and `/home` answers
-   404.
+   public site treats the content as absent: `/contact`, `/join`, `/join/apply`,
+   `/booking-requests` and `/school-bookings` fall back to their built-in copy
+   and forms, and `/home` answers 404.
+
+   **Booking Requests and School Bookings are the two that are not advertised
+   by default**, and they are the reason the menu title is worth understanding.
+   Both ship with an empty menu title, which keeps each page out of your site
+   menu *and* tells search engines not to list it. Give either page a menu title
+   and it joins the menu and becomes searchable together — one field, both
+   effects, so the two can never disagree. Clear the menu title and both
+   reverse. Neither page is in the sitemap in either state; the menu is what
+   advertises them. The addresses themselves never change, so the links your club
+   has already shared, and the confirmation emails the system sends, keep
+   working whichever you choose.
 
 ### Hide a page, or delete it
 

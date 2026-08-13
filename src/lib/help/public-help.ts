@@ -14,9 +14,17 @@ import type { HelpPageContent, HelpPageEntry } from "./types";
  *  - Never state or imply that a non-member can simply book or stay (#2421).
  *    Whether the club hosts non-members at all, and on what terms, is the
  *    club's own policy — defer to its FAQ, rules, or policy pages and its
- *    contact page. Never link or name the unlisted guest request form: it is
- *    reachable only by the direct URL the club hands a guest it has agreed to
- *    host. `help-corpus.test.ts` guards this.
+ *    contact page.
+ *  - Never name or link the guest request form, and this rule SURVIVED the form
+ *    becoming a real editable page (#2818 decision 1). Advertising it is opt-in
+ *    per club: the page ships with an empty menu title, so the default is still
+ *    that nothing links to it and search engines are told to ignore it, and the
+ *    club hands the URL to a guest it has agreed to host. This corpus is the
+ *    same text for every deployment and cannot know which choice a club made, so
+ *    naming the form would be wrong for every club that left the default — and
+ *    for a club that opted in the form is already in its own site menu, where a
+ *    visitor will find it without help copy pointing at it.
+ *    `help-corpus.test.ts` guards this.
  */
 
 function entry(path: string, content: HelpPageContent): HelpPageEntry {

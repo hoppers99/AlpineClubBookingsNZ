@@ -147,13 +147,17 @@ describe("question integrity across all surfaces", () => {
 describe("public corpus hygiene", () => {
   const CLUB_PROPER_NOUNS = /tokoroa|LWTC|hoppers|example mountain/i;
   const AI_WORDING = /\bAI\b|assistant/i;
-  // #2421: the signed-out corpus must never advertise the guest request form.
-  // The form is deliberately unlisted — reachable only by the direct URL the
-  // club hands a guest it has agreed to host — and whether the club hosts
-  // non-members at all is its own policy, so the copy defers to the club's own
-  // FAQ/rules/policy pages instead of naming or linking the route. The FAQ
-  // question "Can I stay without being a member?" is deliberately still
-  // allowed: asking the question is not advertising an answer.
+  // #2421, and it SURVIVES the form becoming a real editable page (#2818
+  // decision 1). Advertising the guest request form is opt-in per club: the page
+  // ships with an empty menu title, so by default nothing links to it and search
+  // engines are told to ignore it. This corpus is the same text for every
+  // deployment and cannot know which choice a club made — so naming the form
+  // would be wrong for every club that left the default, and redundant for a
+  // club that opted in, since the form is then in its own site menu. Whether the
+  // club hosts non-members at all is its own policy either way, so the copy
+  // defers to the club's FAQ/rules/policy pages. The FAQ question "Can I stay
+  // without being a member?" is deliberately still allowed: asking the question
+  // is not advertising an answer.
   const ADVERTISES_GUEST_BOOKING =
     /without an account|booking-requests|request a booking/i;
 
@@ -169,7 +173,7 @@ describe("public corpus hygiene", () => {
     }
   });
 
-  it("never advertises the unlisted guest request form", () => {
+  it("never advertises the guest request form, whose listing is the club's choice", () => {
     const paths = [...getHelpPaths("public"), "/an-unknown-public-page"];
     for (const path of paths) {
       const text = collectText(getHelpForPage("public", path));
