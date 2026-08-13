@@ -86,17 +86,45 @@ describe("deployment image contracts", () => {
       expect(workflow).toContain("--error");
     });
 
-    it("keeps the gitleaks gate on one pinned container, covering both the PR range and the full history", () => {
+    it("keeps the gitleaks gate on one pinned container, covering the PR range, main's history and the tree", () => {
       const workflow = readRepoFile(".github/workflows/ci.yml");
 
       expect(workflow).toContain("name: Secret scan (gitleaks)");
       expect(workflow).toContain("GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.28.0");
-      // Both scopes. `--log-opts=--all` is the history scan the old
-      // `gitleaks-full-repo` job never actually performed: the marketplace
-      // action picks its range from the event and only scans everything on
-      // workflow_dispatch/schedule, neither of which this workflow fires.
-      expect(workflow).toContain("--log-opts=--all");
-      expect(workflow).toContain('--log-opts="${PR_BASE_SHA}..${PR_HEAD_SHA}"');
+      // THREE scopes, and each covers a hole the other two leave.
+      //
+      // The PR range is the precise signal, and it carries the merge flag too
+      // because a PR that merges `main` into itself to resolve a conflict would
+      // otherwise have that resolution scanned by nothing.
+      expect(workflow).toContain(
+        '--log-opts="--diff-merges=first-parent ${PR_BASE_SHA}..${PR_HEAD_SHA}"',
+      );
+      // The history scan is scoped to a RESOLVED ref, never `--all`.
+      // `actions/checkout` with `fetch-depth: 0` materialises every branch as
+      // `refs/remotes/origin/*`, so `git log --all` made this required check
+      // hostage to a leak on anyone's unrelated branch — red on every open PR,
+      // and unfixable from your own branch.
+      expect(workflow).toContain(
+        '--log-opts="--diff-merges=first-parent ${HISTORY_SCAN_SCOPE}"',
+      );
+      // Asserted against the DIRECTIVES: the job's comment quotes `--all` at
+      // length while explaining why it is gone, and a banned flag named in order
+      // to forbid it must not read as using it.
+      const directives = workflow
+        .split("\n")
+        .filter((line) => !line.trim().startsWith("#"))
+        .join("\n");
+      expect(directives).not.toContain("--log-opts=--all");
+      // ...and the scope must be resolved with a hard failure when the ref is
+      // missing. A required secret gate that quietly scans an empty range is
+      // the whole defect class #2686 exists to close.
+      expect(workflow).toContain("HISTORY_SCAN_SCOPE=$scope");
+      expect(workflow).toMatch(/if \[ -z "\$scope" \]; then\n\s+echo "::error::/);
+      // The tree scan is topology-independent: whatever is in the checked-out
+      // files right now is covered however it got there, including a pull
+      // request's merge PREVIEW, which is not any commit either patch scan
+      // walks. Anchored to the `dir` subcommand's own argument line.
+      expect(workflow).toMatch(/^ +dir \/repo \\$/m);
       // Non-zero exit on a finding, and no secret echoed into a public log.
       expect(workflow).toContain("--exit-code=1");
       expect(workflow).toContain("--redact");
@@ -111,6 +139,34 @@ describe("deployment image contracts", () => {
       expect(workflow).toContain("PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}");
     });
 
+    it("proves the secret scanner can still fail before trusting it to pass", () => {
+      const workflow = readRepoFile(".github/workflows/ci.yml");
+      const selftest = readRepoFile("scripts/ci/gitleaks-selftest.sh");
+
+      // Every silent-failure mode #2686 found — an empty rule set, a shape
+      // allowlist that swallowed a whole default rule, a scan that never looked
+      // at merge commits — turned this gate GREEN. So the gate runs a failure
+      // injection first, and the injection runs BEFORE the real scans.
+      expect(workflow).toContain("run: bash scripts/ci/gitleaks-selftest.sh");
+      expect(workflow.indexOf("gitleaks-selftest.sh")).toBeLessThan(
+        workflow.indexOf("HISTORY_SCAN_SCOPE=$scope"),
+      );
+      // The three things the injection must actually assert. Named rather than
+      // counted, so deleting one is a named failure.
+      expect(selftest).toContain("acb-connection-string-password");
+      expect(selftest).toContain("--diff-merges=first-parent main");
+      expect(selftest).toContain("git merge --no-commit side");
+      // ...and it must be able to fail. `exit 1` on a non-zero failure count is
+      // the only line that makes any of the above load-bearing.
+      expect(selftest).toMatch(/if \[ "\$failures" -ne 0 \]; then/);
+      // No literal a rule matches may live in the script itself, or the tree
+      // scan two steps later reports the self-test as a leak. The samples are
+      // assembled from a prefix plus fresh randomness, which is why the live
+      // Stripe prefix is split across a `printf` argument.
+      expect(selftest).not.toMatch(/sk_live_[A-Za-z0-9]{10,}/);
+      expect(selftest).not.toMatch(/ghp_[A-Za-z0-9]{20,}/);
+    });
+
     it("never puts the required secret-scan job behind a job-level event condition", () => {
       const workflow = readRepoFile(".github/workflows/ci.yml");
       const job = workflow.slice(
@@ -119,10 +175,18 @@ describe("deployment image contracts", () => {
       );
 
       expect(job.length).toBeGreaterThan(0);
-      // A required check that SKIPS produces no status, and branch protection
-      // waits for a status that will never arrive — the branch becomes
-      // unmergeable. The PR-range scan is therefore conditional at STEP level,
-      // where a skip leaves the job (and so the check context) intact.
+      // WHY, correctly. An earlier version of this comment said a skipped job
+      // produces no status and leaves the branch unmergeable. That is false, and
+      // this repository refutes it: on push 66448740c, `dependency-review` and
+      // `gitleaks-pr-diff` both skipped via a JOB-level `if:` and both reported
+      // a status. Only a WORKFLOW-level `on:` filter produces no status.
+      //
+      // The real hazard is the inverse, and worse: GitHub counts a `skipped`
+      // required check as SATISFYING branch protection. A job-level `if:` on a
+      // required security gate therefore makes it vacuously green — the gate
+      // says "skipped" and the merge button turns on. So every condition in this
+      // job stays at STEP level, where a skip leaves the job a real pass or a
+      // real failure.
       expect(job).not.toMatch(/^ {4}if:/m);
       expect(job).toMatch(/^ {8}if: github\.event_name == 'pull_request'$/m);
     });
@@ -150,8 +214,14 @@ describe("deployment image contracts", () => {
       // found by mutation-testing rather than by reading.
       expect(job).toMatch(/^ +continue-on-error: true$/m);
       // `needs: verify` here would put a REQUIRED image scan behind a ~17-minute
-      // job, making it the new critical path for every merge.
-      expect(job).not.toMatch(/needs:\s*\n\s*- verify/);
+      // job, making it the new critical path for every merge — and, because
+      // GitHub counts a skipped required check as satisfied, a failed `verify`
+      // would have reported this gate as skipped, i.e. as PASSING.
+      //
+      // The pattern accepts both YAML spellings. The first version matched only
+      // the block-sequence form, so `needs: verify` and `needs: [verify]` — the
+      // same dependency, one line shorter — both walked straight past it.
+      expect(job).not.toMatch(/needs:\s*(\n\s*-\s*)?\[?\s*verify/);
     });
 
     it("keeps the gitleaks config extending the default rule set", () => {
@@ -172,6 +242,63 @@ describe("deployment image contracts", () => {
       // suppresses EVERYTHING under those paths in gitleaks 8.28.0, whatever
       // else the entry says.
       expect(config).not.toMatch(/^\s*paths\s*=/m);
+      // ...and they stay pinned to EXACT LITERALS, never to a shape. A global
+      // allowlist applies to every rule, not the one its description names, so a
+      // shape class silences rules nobody thought about: measured, the UUID
+      // shape dropped `heroku-api-key` and a UUID `CRON_SECRET`, and
+      // `^(?:pk|sk)_test_[A-Za-z0-9_]+$` forgave every Stripe test-mode key that
+      // will ever exist here. Both regexes are forbidden by name.
+      //
+      // Asserted against the DIRECTIVES, with `#` comment lines stripped: the
+      // file explains at length why each banned shape is banned, and quoting a
+      // shape in order to forbid it must not read as using it. That is the same
+      // prose-satisfies-the-guard defect as the `[extend]` case above, inverted.
+      const directives = config
+        .split("\n")
+        .filter((line) => !line.trim().startsWith("#"))
+        .join("\n");
+      expect(directives).not.toContain("(?:pk|sk)_test_[A-Za-z0-9_]+");
+      expect(directives).not.toContain("[0-9a-f]{8}-[0-9a-f]{4}");
+      // `targetRules` is never the answer either: in 8.28.0 it silently voids
+      // the allowlist entirely, which turns a narrowing into a widening.
+      expect(directives).not.toContain("targetRules");
+      // The one rule this repository owns. gitleaks' defaults have no rule for a
+      // connection-string password, which on a PUBLIC repository holding member
+      // and payment data is the most damaging plausible leak — the URL carries
+      // the host as well as the credential.
+      expect(config).toMatch(/^id = "acb-connection-string-password"$/m);
+      expect(config).toMatch(/^entropy = /m);
+    });
+
+    it("keeps the .gitleaksignore free of fingerprints that suppress nothing", () => {
+      const ignore = readRepoFile(".gitleaksignore");
+      const entries = ignore
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line !== "" && !line.startsWith("#"));
+
+      // The file shipped nine fingerprints described as "RE-VERIFIED against
+      // gitleaks v8.28.0", and not one of them suppressed anything: replacing
+      // the file with an empty one changed no scan result. An ignore file full
+      // of dead entries is worse than an empty one, because it reads as
+      // coverage.
+      //
+      // A fingerprint is also not durable here. The history scan passes
+      // `--diff-merges=first-parent`, so a line is re-reported at every merge
+      // that carried it forward — each with its own `commit:file:rule:line`
+      // fingerprint — and pinning by fingerprint would need a new entry after
+      // every merge, forever, on a REQUIRED check. Real suppressions are
+      // exact-literal allowlists in `.gitleaks.toml` instead.
+      //
+      // This is not "the file must stay empty". It is: every entry must be
+      // shaped like a fingerprint, so a fingerprint added for the one case that
+      // still warrants one (a rotated credential whose value must not be
+      // written down) passes, and a stale or malformed line does not.
+      for (const entry of entries) {
+        expect(entry, `${entry} is not a gitleaks fingerprint`).toMatch(
+          /^[0-9a-f]{40}:[^:]+:[^:]+:\d+$/,
+        );
+      }
     });
 
     it("releases only behind the renamed secret-scan gate", () => {
