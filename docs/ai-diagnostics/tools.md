@@ -567,6 +567,22 @@ defused, so a value containing `</diagnostics_tool_result>` cannot close the blo
 and continue as prompt. The block is deterministic (the observed-at instant comes
 from the result, not a clock) and hard-capped.
 
+**The tool-pack path shares the page-context channel's role-label defusal**
+(`src/lib/diagnostics/untrusted-text.ts`, #2832). Every database-derived free-text
+value — a guest name, a room or bed label, a payer-typed bank reference — is folded
+by `foldUntrustedText` and passed through `defuseRoleLabels` at BOTH the projection
+helper (`personNameOrNull`, `lodgeLabelOrNull`, `untrustedTextOrNull`) and the
+renderer's own `neutralize`, exactly as the page-context renderer does after
+#2831. The fold matters because the earlier, narrow control-character class stripped
+only `U+0000–U+001F` and DEL and missed the C1 block: `U+0085` (NEL) is not matched
+by JavaScript's `\s`, so it survived a plain whitespace collapse and could fake a
+new line, and an invisible character in the gap (`assistant<ZWSP>:`) defeated a raw
+string match. The projection defends the value where it also reaches the audit
+`resultHash`; the renderer defends the channel even for a row a caller assembled
+without a projector (AID-7). A tree-wide census
+(`untrusted-text-projection-census.test.ts`) fails any new tool surface that
+reintroduces the narrow class or flattens untrusted text without the shared defusal.
+
 **Section order is a safety property.** Truncation takes the tail, so the framing,
 the tool identity, and the truncation/failure notices are rendered *before* the
 rows: a large result can only ever cost rows, never the notice that tells the model
