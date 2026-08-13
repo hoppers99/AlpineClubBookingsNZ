@@ -1,3 +1,4 @@
+import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import {
@@ -324,6 +325,22 @@ function mergeReconciliations(
 async function convergeSubjects(
   db: EmailInheritanceClient,
   subjects: EmailInheritanceSubject[],
+  /**
+   * Skip a member whose row moved underneath us instead of throwing.
+   *
+   * TRUE ONLY FOR THE DAILY SWEEP, and the asymmetry is the point. The sweep
+   * runs on the top-level client, so each update is its own implicit
+   * transaction: a member merged or hard-deleted between the batch read and a
+   * later write raises P2025 or P2003, and without this the throw escapes the
+   * whole job and leaves every remaining batch unswept until tomorrow. Skipping
+   * costs nothing, because the next run re-examines that member anyway.
+   *
+   * It stays FALSE for the in-transaction callers, where swallowing would be
+   * wrong: those exist so a re-resolution commits with the address change or not
+   * at all, and a caught error there would turn that guarantee into a best
+   * effort silently.
+   */
+  options: { skipRowsThatMoved?: boolean } = {},
 ): Promise<EmailInheritanceReconciliation> {
   if (subjects.length === 0) return EMPTY_RECONCILIATION;
 
@@ -372,15 +389,27 @@ async function convergeSubjects(
     }
     if (next === before.inheritEmailFromId && !choiceChanged) continue;
 
-    await db.member.update({
-      where: { id: subject.id },
-      data: {
-        inheritEmailFromId: next,
-        ...(choiceChanged
-          ? { inheritEmailChoiceId: subject.inheritEmailChoiceId }
-          : {}),
-      },
-    });
+    try {
+      await db.member.update({
+        where: { id: subject.id },
+        data: {
+          inheritEmailFromId: next,
+          ...(choiceChanged
+            ? { inheritEmailChoiceId: subject.inheritEmailChoiceId }
+            : {}),
+        },
+      });
+    } catch (error) {
+      if (!options.skipRowsThatMoved) throw error;
+      // The member was merged or deleted between this batch's read and now, or
+      // the source it names was. Either way the row this pass computed no longer
+      // exists as read, and the next run recomputes it from whatever is there.
+      logger.warn(
+        { err: error, memberId: subject.id },
+        "email inheritance: skipped a member whose row moved during the sweep",
+      );
+      continue;
+    }
     if (next === before.inheritEmailFromId) continue;
     if (next === null) {
       result.cleared += 1;
@@ -463,10 +492,25 @@ export async function reconcileEmailInheritanceAfterSourceChange(
  * otherwise a child could be left pointing at a parent whose `email` column is
  * about to become a copy of a third member's mailbox.
  *
- * Call it inside the transaction that made the change. Every write that can move
- * a member across the usable-source line belongs here — an address added,
- * changed or removed, an archive, an anonymisation, an age-tier change, a
- * hand-picked source chosen or cleared.
+ * Call it inside the transaction that made the change: an address added, changed
+ * or removed, an archive, a cancellation, an anonymisation, a member merge, an
+ * age-tier change, a hand-picked source chosen or cleared.
+ *
+ * WHAT IS ACTUALLY WIRED, stated honestly because an earlier version of this
+ * comment claimed the set was closed and it is not. Every address write, the
+ * three departure sweeps, member merge, the dependant link and unlink routes,
+ * the login-holder transfer and the admin member edit call it. Of the age-tier
+ * writers only the admin member edit does; self-service profile, delegated
+ * family details, both seasonal-assignment paths and the admin bulk update all
+ * resolve an enforced tier without re-resolving, so a source who drops out of
+ * ADULT there keeps live pointers until the daily sweep converges them (#2821).
+ *
+ * That residue is bounded rather than silent — `reconcileAllEmailInheritance`
+ * runs at 06:45 and is a total function of the tree, so the worst case is a
+ * pointer naming a no-longer-qualified adult for less than a day, and the
+ * address it names is still that person's real mailbox rather than a stranger's.
+ * It is written down here so the next reader does not infer a guarantee from a
+ * list.
  */
 export async function reconcileEmailInheritanceForMemberChange(
   db: EmailInheritanceClient,
@@ -597,7 +641,12 @@ export async function reconcileAllEmailInheritance(
     });
     if (subjects.length === 0) break;
 
-    result = mergeReconciliations(result, await convergeSubjects(db, subjects));
+    result = mergeReconciliations(
+      result,
+      // The only caller that passes this: the sweep is a backstop, so one
+      // member whose row moved must not cost the rest of the tree its pass.
+      await convergeSubjects(db, subjects, { skipRowsThatMoved: true }),
+    );
     if (subjects.length < RECONCILE_BATCH_SIZE) break;
     cursor = subjects[subjects.length - 1]?.id;
     if (!cursor) break;

@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { AccessRole, type Member, type Prisma } from "@prisma/client";
+import { reconcileEmailInheritanceForMemberChange } from "@/lib/member-email-inheritance";
 import {
   actorIsFullAdmin,
   wouldRemoveLastFullAdmin,
@@ -2802,6 +2803,22 @@ export async function executeMemberMerge(params: {
     if (fieldsChanged.length > 0) {
       await tx.member.update({ where: { id: masterId }, data: fieldOutcome.patch });
     }
+
+    // #2716: the relation moves re-pointed every inheritance pointer AND choice
+    // from the loser onto the master, and nothing tested whether the master can
+    // actually BE an email source. A merge is the sharpest case of a member
+    // crossing that line because it deletes one outright: if the master is a
+    // minor, holds a walk-in placeholder address, or themselves inherits, the
+    // loser's dependants are left resolving to a mailbox `sendEmail` drops until
+    // the daily sweep notices.
+    //
+    // HERE, and not earlier, for two reasons. Every drift guard has passed, so a
+    // merge that is going to refuse with a 409 writes nothing at all — the #2243
+    // contract, which the suite asserts on the write CALLS and not merely on the
+    // committed state. And the master's own fields are final as of the patch
+    // above, so whether the master is a usable source is now settled: reconciling
+    // before it could read an ageTier or address the merge was about to change.
+    await reconcileEmailInheritanceForMemberChange(tx, [masterId]);
 
     // 5b) Member-photo reconciliation (MP1, #189). The master's final photo is
     // its own when it had one, else the loser's absorbed one (in the patch). Any
