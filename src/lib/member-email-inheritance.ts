@@ -1,6 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import {
+  buildInheritanceLostEmail,
+  INHERITANCE_LOST_CONTACT_EMAIL_DOMAIN,
+  isInheritanceLostEmail,
   isPlaceholderContactEmail,
   PLACEHOLDER_CONTACT_EMAIL_DOMAINS,
 } from "@/lib/placeholder-contact-email";
@@ -455,6 +458,84 @@ export async function reconcileEmailInheritanceForMemberChange(
   return mergeReconciliations(own, dependants);
 }
 
+/**
+ * Retire the DENORMALISED COPY of a departing member's address from everyone who
+ * inherited it (#2716, owner decision 13 Aug 2026).
+ *
+ * Call this from the sweeps that remove a member from the club — archive,
+ * cancellation, anonymisation, hard delete — in the SAME transaction, alongside
+ * the existing clear of `inheritEmailFromId` / `inheritEmailChoiceId`.
+ *
+ * WHY CLEARING THE POINTERS IS NOT ENOUGH, which is what review found. A
+ * dependant's `email` column holds a copy of whoever they inherit from, so a
+ * reader can resolve an address without a join. Clearing the pointers leaves
+ * that copy behind, and `resolveEffectiveEmail` then falls straight through to
+ * it: the club keeps sending the dependant's mail to the departed member's
+ * mailbox, and because the copy is a perfectly ordinary deliverable address the
+ * dependant never appears on the unreachable surface. After an ERASURE that is
+ * squarely a privacy failure — the request rewrites the deleted member's own
+ * row and leaves their real address sitting on every dependant.
+ *
+ * CALL IT BEFORE CLEARING THE POINTERS, not after. The set this may touch is
+ * defined by who INHERITED from the departing member, and that is knowable only
+ * while the pointers still say so. Running it afterwards would leave the address
+ * as the only available key, which is not good enough: two members can hold the
+ * same address without either inheriting it — a couple who were both entered by
+ * hand, most obviously — and stamping a placeholder over a spouse's own address
+ * because their partner left the club would be a worse bug than the one this
+ * fixes.
+ *
+ * TWO CONDITIONS, BOTH REQUIRED. A member is retired only if they point at the
+ * departing member (by pointer or by choice) AND their stored address is still
+ * case-insensitively equal to the departing address. The first establishes that
+ * the column holds a COPY rather than their own address; the second that it is
+ * still that copy. A dependant who has since been given an address of their own
+ * fails the second and is untouched. Nothing that was ever this member's own
+ * address is destroyed.
+ *
+ * Idempotent: a second call finds no row satisfying both, because the first
+ * replaced every address with a unique `.invalid` string.
+ */
+export async function retireInheritedEmailCopies(
+  db: EmailInheritanceClient,
+  departing: { id: string; email: string },
+): Promise<{ retired: number }> {
+  // The parameter is typed `string` and `Member.email` is NOT NULL, so a real
+  // caller cannot reach here without an address — the compiler is the guard.
+  // The coalesce is for narrow in-memory test doubles that select a subset of
+  // columns: a missing address means there is nothing to retire, which is the
+  // same answer as an empty one, and is better than throwing inside somebody
+  // else's cancellation transaction.
+  const address = (departing.email ?? "").trim();
+  // A departing member whose own address is already a placeholder has no real
+  // address to leave behind, so there is nothing to retire and stamping the
+  // dependants would only trade one placeholder for another.
+  if (!address || isPlaceholderContactEmail(address)) return { retired: 0 };
+
+  const stale = await db.member.findMany({
+    where: {
+      id: { not: departing.id },
+      OR: [
+        { inheritEmailFromId: departing.id },
+        { inheritEmailChoiceId: departing.id },
+      ],
+      email: { equals: address, mode: "insensitive" },
+    },
+    select: { id: true },
+  });
+  if (stale.length === 0) return { retired: 0 };
+
+  // One statement per member rather than an `updateMany`: each replacement must
+  // be a DISTINCT address, for the same reason walk-in placeholders are unique.
+  for (const member of stale) {
+    await db.member.update({
+      where: { id: member.id },
+      data: { email: buildInheritanceLostEmail() },
+    });
+  }
+  return { retired: stale.length };
+}
+
 /** How many members one sweep batch reads and writes. */
 const RECONCILE_BATCH_SIZE = 500;
 
@@ -517,6 +598,18 @@ export async function reconcileAllEmailInheritance(
  *    dependant's own `email` column is routinely a copy of the address they used
  *    to inherit, so after the pointer clears they look perfectly reachable while
  *    their mail goes to somebody else's mailbox.
+ *  - `inheritance-lost` — the source DEPARTED (archived, cancelled, anonymised,
+ *    hard-deleted) and took the choice with it. Review found the hole this
+ *    closes: those sweeps clear both pointer columns, so the member matches
+ *    neither reason above, while their `email` column still holds a copy of the
+ *    departed member's real address. They looked reachable, were invisible here,
+ *    and their mail kept arriving in the departed member's mailbox — worst of
+ *    all after an ERASURE, which rewrites the deleted member's own row and
+ *    leaves the copies. The sweeps now stamp
+ *    {@link buildInheritanceLostEmail} over the stale copy, which both stops the
+ *    misdelivery and lands the member here. It is reported separately from
+ *    `placeholder-address` because "the arrangement they had broke" is a
+ *    different job for an admin than "never had an address".
  *  - `placeholder-address` — no inheritance at all and their own address is a
  *    club-internal `.invalid` placeholder, which `sendEmail` drops or which
  *    hard-bounces.
@@ -528,13 +621,26 @@ export async function reconcileAllEmailInheritance(
  */
 export type UnreachableMemberReason =
   | "inheritance-unresolved"
+  | "inheritance-lost"
   | "placeholder-address";
 
 export function unreachableMemberWhere(
   reason?: UnreachableMemberReason,
 ): Prisma.MemberWhereInput {
+  const inheritanceLost: Prisma.MemberWhereInput = {
+    email: {
+      endsWith: `@${INHERITANCE_LOST_CONTACT_EMAIL_DOMAIN}`,
+      mode: "insensitive" as const,
+    },
+  };
+  // The OTHER placeholder domains. `inheritance-lost` is one of them for
+  // deliverability — `sendEmail` and the Xero guards must drop it like any
+  // other — but it is reported as its own reason, so listing it here as well
+  // would double-count it in the unfiltered set.
   const placeholderAddress: Prisma.MemberWhereInput = {
-    OR: PLACEHOLDER_CONTACT_EMAIL_DOMAINS.map((domain) => ({
+    OR: PLACEHOLDER_CONTACT_EMAIL_DOMAINS.filter(
+      (domain) => domain !== INHERITANCE_LOST_CONTACT_EMAIL_DOMAIN,
+    ).map((domain) => ({
       email: { endsWith: `@${domain}`, mode: "insensitive" as const },
     })),
   };
@@ -545,9 +651,11 @@ export function unreachableMemberWhere(
   const reasons: Prisma.MemberWhereInput[] =
     reason === "inheritance-unresolved"
       ? [unresolvedInheritance]
-      : reason === "placeholder-address"
-        ? [placeholderAddress]
-        : [unresolvedInheritance, placeholderAddress];
+      : reason === "inheritance-lost"
+        ? [inheritanceLost]
+        : reason === "placeholder-address"
+          ? [placeholderAddress]
+          : [unresolvedInheritance, inheritanceLost, placeholderAddress];
 
   return {
     // No effective source: whatever else is true, a member with a live pointer
@@ -569,6 +677,10 @@ export function unreachableMemberReason(member: {
 }): UnreachableMemberReason | null {
   if (member.inheritEmailFromId) return null;
   if (member.inheritEmailChoiceId) return "inheritance-unresolved";
+  // Checked BEFORE the general placeholder test, which would otherwise swallow
+  // it: `inheritance-lost.invalid` is a placeholder domain too, and the more
+  // specific reason is the one worth telling an admin.
+  if (isInheritanceLostEmail(member.email)) return "inheritance-lost";
   if (isPlaceholderContactEmail(member.email)) return "placeholder-address";
   return null;
 }
@@ -579,6 +691,8 @@ export const UNREACHABLE_MEMBER_REASON_LABEL: Record<
 > = {
   "inheritance-unresolved":
     "Inherits a parent's email, but that parent has no address the club can send to",
+  "inheritance-lost":
+    "Lost the address they inherited when that member left the club, and has none of their own",
   "placeholder-address": "No email address on record",
 };
 

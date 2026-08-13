@@ -14,6 +14,7 @@ import {
   wouldRemoveLastFullAdmin,
 } from "@/lib/admin-account-guards";
 import { createAuditLog } from "@/lib/audit";
+import { retireInheritedEmailCopies } from "@/lib/member-email-inheritance";
 import {
   sendMembershipCancellationApprovedEmail,
   sendMembershipCancellationRejectedEmail,
@@ -856,6 +857,23 @@ export async function reviewMembershipCancellationParticipant({
         tx,
         participant.memberId,
       );
+
+      // #2716: retire the denormalised COPIES of this member's address BEFORE
+      // anything clears the pointers, because the pointers are what identify
+      // whose address the copy is. Clearing them alone left dependants holding
+      // a live, deliverable copy of the cancelled member's address — mail kept
+      // arriving in an ex-member's mailbox, and the dependants did not appear on
+      // the unreachable surface because their stored address looked fine.
+      const departingMember = await tx.member.findUnique({
+        where: { id: participant.memberId },
+        select: { email: true },
+      });
+      if (departingMember) {
+        await retireInheritedEmailCopies(tx, {
+          id: participant.memberId,
+          email: departingMember.email,
+        });
+      }
 
       await tx.member.update({
         where: { id: participant.memberId },

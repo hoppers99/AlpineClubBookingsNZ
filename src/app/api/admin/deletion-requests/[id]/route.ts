@@ -43,7 +43,10 @@ import {
   type SweptPartnerSharedAllocation,
 } from "@/lib/bed-allocation-lifecycle";
 import logger from "@/lib/logger";
-import { reconcileEmailInheritanceForMemberChange } from "@/lib/member-email-inheritance";
+import {
+  reconcileEmailInheritanceForMemberChange,
+  retireInheritedEmailCopies,
+} from "@/lib/member-email-inheritance";
 import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
 import {
   claimDeletionRequestApproval,
@@ -1002,6 +1005,22 @@ export async function POST(
       // though the person's details are gone. It is only the mailbox that has
       // to stop being used.
       detachedFamilyLinks = await readFamilyLinkOrphans(tx, member.id);
+      // #2716: retire the denormalised COPIES of this member's real address
+      // first. This is the sharpest case in the whole feature: erasure rewrites
+      // the deleted member's own row to `@deleted.invalid`, and used to leave
+      // their REAL address sitting in the `email` column of every dependant who
+      // inherited it. Those dependants then looked perfectly reachable, were
+      // absent from the unreachable surface, and kept having their mail
+      // delivered to the mailbox of somebody who had asked to be forgotten.
+      //
+      // `member.email` is still the pre-anonymisation address here: the
+      // `@deleted.invalid` write happens earlier in this transaction against the
+      // database row, while `member` is the read taken before it. That ordering
+      // is what makes the exact-match safe, so it must not be reordered.
+      const retiredInheritedCopies = await retireInheritedEmailCopies(tx, {
+        id: member.id,
+        email: member.email,
+      });
       // #2716: clear the CHOICE too, not just the pointer. Anonymisation is the
       // one address REMOVAL that is permanent — the `@deleted.invalid` address
       // hard-bounces and nothing in the product ever writes a real one back —
