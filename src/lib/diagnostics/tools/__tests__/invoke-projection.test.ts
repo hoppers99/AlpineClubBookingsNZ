@@ -16,6 +16,8 @@ import {
   type AdminPermissionMatrix,
 } from "@/lib/admin-permissions";
 
+import { reportAiError } from "@/lib/observability-bridge";
+
 import { authorizeDiagnosticsToolCall } from "../authorize";
 import {
   getDiagnosticsDatabase,
@@ -53,6 +55,7 @@ vi.mock("../registry", async (importOriginal) => {
 });
 
 const authorizeMock = vi.mocked(authorizeDiagnosticsToolCall);
+const reportMock = vi.mocked(reportAiError);
 const getDatabaseMock = vi.mocked(getDiagnosticsDatabase);
 const runQueryMock = vi.mocked(runDiagnosticsReadOnlyQuery);
 const auditMock = vi.mocked(recordDiagnosticsToolAudit);
@@ -361,5 +364,50 @@ describe("a FIXED projection means fixed across rows too (#2374)", () => {
     const result = await invoke();
     expect(result.status).toBe("ok");
     if (result.status === "ok") expect(result.rows).toHaveLength(2);
+  });
+});
+
+describe("a projection fault does not forward a row value to observability (AID-8 F1)", () => {
+  // The leakage hazard, verbatim: `reportAiError` hands its `err` to
+  // `Sentry.captureException` with NO redaction, and the `beforeSend` net covers
+  // structural fields but has no value-shaped rule for a member/guest NAME spliced
+  // into an error MESSAGE. A projection that throws while choking on a row value can
+  // put that value in the message, so the executor must forward a fixed-message
+  // error carrying only the error CLASS. Reverting that wrap turns this test red.
+  const MEMBER_NAME = "Jarrah Quartermaine-Testperson";
+
+  it("forwards only the error class, never the name the projection threw", async () => {
+    entry = makeEntry(() => {
+      // A projection fault whose message quotes the very row value it failed on —
+      // exactly what a first-party calculation or a driver error can produce.
+      throw new Error(
+        `invalid input for member "${MEMBER_NAME}" while projecting row`,
+      );
+    });
+    runQueryMock.mockResolvedValue({ ok: true, durationMs: 2, rows: [{}] });
+
+    const result = await invoke();
+    expect(result.status).toBe("error");
+    if (result.status === "error") expect(result.reason).toBe("redaction_failed");
+
+    const forwarded = reportMock.mock.calls.find(
+      ([payload]) => payload.tag === "diagnostics-tool-projection",
+    );
+    expect(forwarded, "the projection fault was reported").toBeDefined();
+    const payload = forwarded![0];
+    const err = payload.err;
+    expect(err).toBeInstanceOf(Error);
+
+    // Nothing forwarded to observability — the error object OR the surrounding
+    // payload — may carry the name. `Sentry.captureException` sees the message and
+    // stack; both derive from the wrapped message here.
+    const forwardedError = err as Error;
+    expect(forwardedError.message).not.toContain(MEMBER_NAME);
+    expect(forwardedError.stack ?? "").not.toContain(MEMBER_NAME);
+    expect(JSON.stringify(payload.context ?? {})).not.toContain(MEMBER_NAME);
+    // And what it DOES carry is the classifying label plus the error class.
+    expect(forwardedError.message).toBe(
+      "Diagnostics tool projection or redaction failed (Error)",
+    );
   });
 });

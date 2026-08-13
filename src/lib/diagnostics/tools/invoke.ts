@@ -314,7 +314,14 @@ async function auditDenial(
     reportAiError({
       tag: "diagnostics-tool-audit",
       message: "Failed to audit a denied or failed diagnostics tool invocation",
-      err,
+      // A write failure here is a PostgreSQL driver error, which quotes the failing
+      // statement and its bound parameters (ids, and any free-text audit field)
+      // verbatim. Carry only the error class, as `database.ts` carries only the
+      // SQLSTATE.
+      err: redactedForwardError(
+        "Failed to audit a denied or failed diagnostics tool invocation",
+        err,
+      ),
       context: { toolId: audit.toolId, failureReason: audit.failureReason },
     });
   }
@@ -328,6 +335,29 @@ async function auditDenial(
 const NO_EVIDENCE: unique symbol = Symbol(
   "diagnostics-server-evidence-unavailable",
 );
+
+/**
+ * Wrap a caught error so ONLY a stable class name — never a value it may quote —
+ * reaches observability.
+ *
+ * `reportAiError` forwards its `err` to `Sentry.captureException` with NO
+ * redaction, and the `beforeSend` net in `sentry.server.config.ts` covers
+ * structural fields (`event.extra`, request data, breadcrumbs) but has no
+ * value-shaped rule for a member/guest/family NAME or DB free-text spliced into an
+ * error MESSAGE. A first-party projection, ledger or unexpected-fault error can
+ * carry a row value in its message (a PostgreSQL driver error quotes the failing
+ * statement and its bound parameters verbatim — the same hazard `database.ts`
+ * forwards only the SQLSTATE for). So the executor's own catches send a
+ * fixed-message error instead of the original.
+ *
+ * The `name` carried is the error's CLASS ("TypeError",
+ * "PrismaClientKnownRequestError"), which is the constructor identity and not a row
+ * value, so it stays diagnosable without leaking one. This mirrors the existing
+ * safe pattern at the server-evidence catch above (`err.name` only).
+ */
+function redactedForwardError(label: string, err: unknown): Error {
+  return new Error(`${label} (${err instanceof Error ? err.name : typeof err})`);
+}
 
 /**
  * Read a `server_owned` entry's evidence under a hard deadline (AID-6A, #2375).
@@ -911,7 +941,13 @@ export async function invokeDiagnosticsTool(
       reportAiError({
         tag: "diagnostics-tool-projection",
         message: "Diagnostics tool projection or redaction failed",
-        err,
+        // NOT the raw `err`: a projection/redaction fault can throw a message that
+        // quotes the row value it choked on — a member/guest name — and that would
+        // reach Sentry unredacted. Carry only the error class.
+        err: redactedForwardError(
+          "Diagnostics tool projection or redaction failed",
+          err,
+        ),
         context: { toolId: tool.id },
       });
       return await fail("redaction_failed", {
@@ -977,7 +1013,12 @@ export async function invokeDiagnosticsTool(
         tag: "diagnostics-tool-audit",
         message:
           "Discarding diagnostics tool evidence: the audit row could not be written",
-        err,
+        // As above: a driver error on the audit write quotes its statement and
+        // parameters. Carry only the error class.
+        err: redactedForwardError(
+          "Diagnostics tool audit row could not be written",
+          err,
+        ),
         context: { toolId: tool.id },
       });
       return await fail("audit_unavailable", {
@@ -1019,7 +1060,13 @@ export async function invokeDiagnosticsTool(
         tag: "diagnostics-tool-consent",
         message:
           "Could not extend the diagnostics consent ledger after a successful tool call",
-        err,
+        // A caller-supplied ledger runs over the PROJECTED rows, so a throw from it
+        // can quote a projected value (a linked record id, or a name a projection
+        // surfaced). Carry only the error class, never that value.
+        err: redactedForwardError(
+          "Diagnostics consent ledger extension failed",
+          err,
+        ),
         context: { toolId: tool.id },
       });
     }
@@ -1044,7 +1091,13 @@ export async function invokeDiagnosticsTool(
     reportAiError({
       tag: "diagnostics-tool-invoke",
       message: "Unexpected fault while running a diagnostics tool",
-      err,
+      // The catch-all: anything the gates above did not classify, including a
+      // first-party calculation or driver error whose message quotes a row value.
+      // Carry only the error class so an unexpected fault cannot become a leak.
+      err: redactedForwardError(
+        "Unexpected fault while running a diagnostics tool",
+        err,
+      ),
       context: { toolId: safeToolId },
     });
     return await fail("internal_error", {
