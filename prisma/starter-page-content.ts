@@ -137,12 +137,50 @@ export const starterPageContent: StarterPageContent[] = [
     slug: "contact",
     path: "/contact",
     caption: "Get in touch",
+    // EMPTY on purpose. The public header renders the Contact link itself, as a
+    // code fallback appended only when no CMS menu entry already points at
+    // `/contact` (`src/components/website-header.tsx`, #2818 decision 5). So the
+    // nav stays fully the club's to arrange — a club that gives this page a menu
+    // title takes over the link and the fallback steps aside, deduped by href —
+    // while a club that does nothing still shows Contact exactly once. There is
+    // no data migration: the fallback needs no seeded label.
     menuTitle: "",
     title: "Contact Us",
     headerText:
       "Have a question about the club, the lodge, or booking a stay? Get in touch and we'll get back to you.",
     sortOrder: 27,
     contentHtml: "{{contact-form}}",
+  },
+  {
+    slug: "booking-requests",
+    path: "/booking-requests",
+    caption: "Request a stay",
+    // EMPTY on purpose, and it is the whole of the opt-in model (#2818
+    // decision 1). An empty menu title keeps the page out of the navigation AND
+    // out of search engines — `(website-dynamic)/booking-requests/page.tsx`
+    // reads this same field for its robots tag — so a club that does nothing
+    // keeps the unlisted behaviour #2421 established. A club that wants the form
+    // advertised types a title here under Site Appearance & Content → Page
+    // Content, and both follow.
+    menuTitle: "",
+    title: "Booking Requests",
+    headerText:
+      "Request a stay without creating an account. We'll email you to confirm your address, then review and price your request.",
+    sortOrder: 28,
+    contentHtml: "{{booking-requests}}",
+  },
+  {
+    slug: "school-bookings",
+    path: "/school-bookings",
+    caption: "For schools & groups",
+    // Empty for the same reason as the booking-request page above: advertising
+    // the form is the club's decision, not the default (#2818 decision 1).
+    menuTitle: "",
+    title: "School Bookings",
+    headerText:
+      "Planning a school or group trip? Tell us your dates and numbers, and we'll email you a quote for your school to review.",
+    sortOrder: 29,
+    contentHtml: "{{school-bookings}}",
   },
   {
     slug: "committee",

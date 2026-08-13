@@ -9,6 +9,7 @@ import {
 import {
   canDeletePage,
   canUnpublishPage,
+  isBuiltinPageSlug,
   isReservedPageSlug,
   isSystemPageSlug,
   isValidPageSlug,
@@ -252,16 +253,6 @@ export async function PUT(request: NextRequest) {
     );
   }
 
-  if (isReservedPageSlug(slug)) {
-    return NextResponse.json(
-      {
-        error:
-          "This slug is reserved for part of the application (for example admin, login, pay, calendar or profile) and cannot be used for a content page. Choose a different first word.",
-      },
-      { status: 400 },
-    );
-  }
-
   const path = toPagePath(slug);
 
   const safeContentHtml = sanitizePageContentHtml(parsed.data.contentHtml);
@@ -275,6 +266,33 @@ export async function PUT(request: NextRequest) {
 
   if (!existing) {
     return NextResponse.json({ error: "Page not found" }, { status: 404 });
+  }
+
+  // The reserved-slug rule gates admin-CREATED pages, so a BUILT-IN row keeping
+  // its own slug is exempt. It has to be: since #2818 reserved the
+  // `booking-requests` and `school-bookings` namespaces (decision 9), and since
+  // both bare addresses are claimed by real `(website-dynamic)` routes, those two
+  // slugs are reserved twice over — and an admin who cannot save that row cannot
+  // set the menu title that opts the page into the navigation, which is the whole
+  // of decision 1. `/contact`, `/join/apply` and the policy pages are exempted by
+  // the same line rather than by luck; they are not reserved today, but nothing
+  // guarantees that stays true.
+  //
+  // Deliberately narrow. It exempts only a built-in row whose slug is UNCHANGED,
+  // so it cannot be used to move an ordinary page onto a reserved address, and it
+  // is checked after the row is loaded so the exemption is about the row being
+  // edited rather than about the value the caller typed.
+  const editingBuiltinInPlace =
+    isBuiltinPageSlug(existing.slug) && slug === existing.slug;
+
+  if (!editingBuiltinInPlace && isReservedPageSlug(slug)) {
+    return NextResponse.json(
+      {
+        error:
+          "This slug is reserved for part of the application (for example admin, login, pay, calendar or profile) and cannot be used for a content page. Choose a different first word.",
+      },
+      { status: 400 },
+    );
   }
 
   // System pages have fixed slugs and fixed sort orders.

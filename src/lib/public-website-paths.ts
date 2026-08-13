@@ -23,10 +23,11 @@
  * While the fixed nonce covered the whole `(website)` group those three had the
  * same answer, so one function could serve all three. The narrowing broke that: the
  * fixed nonce now covers exactly the five approved addresses, while the holding
- * screen must still stand in for the WHOLE public website — including the three
- * pages that moved to `(website-dynamic)`. One predicate cannot say both things, and
- * narrowing the shared one would have quietly taken the pre-setup 503 off
- * `/hut-leader-instructions`, `/join/[code]` and `/join/verify/[token]`.
+ * screen must still stand in for the WHOLE public website — including every route
+ * in `(website-dynamic)`. One predicate cannot say both things, and narrowing the
+ * shared one would have quietly taken the pre-setup 503 off
+ * `/hut-leader-instructions`, `/join/[code]`, `/join/verify/[token]` and — since
+ * #2818 — `/booking-requests`, `/school-bookings` and their token flows.
  *
  * So the split is by QUESTION, not by convenience:
  *
@@ -48,8 +49,10 @@
  * Held from both sides, which is why it is an invariant rather than an intention:
  * `src/proxy.ts` publishes the fixed nonce for exactly {@link isFixedNonceWebsitePath},
  * and {@link isCmsServablePageSlug} makes the catch-all's loader, the admin slug
- * validator, the public site menu and the Book Now target all refuse an address
- * outside it.
+ * validator and the Book Now target all refuse an address outside it. The public
+ * site MENU used to be on that list and came off it in #2818: a menu entry is a
+ * link, not a stored page, so the menu asks a slightly wider question — see
+ * {@link BUILT_IN_DYNAMIC_PAGE_SLUGS}.
  *
  * **It is stated over PAGES because of one recorded exception, and the exception is
  * named here rather than left for a reader to trip over (#2570).** The `[...slug]`
@@ -166,7 +169,15 @@ export const NON_WEBSITE_ROOT_SEGMENTS: ReadonlySet<string> = new Set([
   "notices",
   "profile",
   // (public) — login and the token flows an operator may need mid-setup.
-  "booking-requests",
+  //
+  // NOT every token flow in the product, and since #2818 that is worth saying
+  // out loud. `booking-requests` and `school-bookings` used to be listed here as
+  // `(public)` routes; they are now public WEBSITE addresses in
+  // `(website-dynamic)`, so their emailed `verify`/`respond`/`confirm` links are
+  // claimed by `isPublicWebsitePath()` and answer the pre-setup holding screen
+  // like the rest of the site. That is decision 11 of #2818, accepted
+  // deliberately: it matches how `/join/verify/[token]` has always behaved, and a
+  // club that has not finished setup has not sent those emails.
   "change-password",
   "chores",
   "confirm-email-change",
@@ -177,7 +188,6 @@ export const NON_WEBSITE_ROOT_SEGMENTS: ReadonlySet<string> = new Set([
   "pay",
   "register",
   "reset-password",
-  "school-bookings",
   "verify-email",
   // (finance)
   "finance",
@@ -237,12 +247,22 @@ export const FIXED_NONCE_WEBSITE_ROUTES = [
  * The `(website-dynamic)` route group's routes, as URL patterns — the PER-REQUEST
  * census, and the input {@link isFixedNonceWebsitePath} subtracts.
  *
- * These three are public website pages in every other respect (same chrome, same
+ * These eight are public website pages in every other respect (same chrome, same
  * pre-setup holding screen) and differ only in carrying a per-request nonce. Each
  * is `force-dynamic` for a permanent reason of its own — a PIN-gated
- * per-assignment page, a group code in the URL, a one-time token in the URL — so
- * none of them is ever stored and none of them needs a nonce that outlives a
- * request.
+ * per-assignment page, a group code in the URL, a one-time token in the URL, or a
+ * public form an anonymous visitor types personal details into — so none of them
+ * is ever stored and none of them needs a nonce that outlives a request.
+ *
+ * `/booking-requests` and `/school-bookings` joined the group on 13 Aug 2026
+ * (#2818 decision 2). They are database-backed built-in CMS pages, so the obvious
+ * home for them was the fixed-nonce group alongside `/contact` and `/join/apply` —
+ * but decision D1's census is a CSP decision the owner made deliberately at five,
+ * and widening it is not a routing detail. Per-request costs these two nothing:
+ * both are `force-dynamic` anyway, and keeping the unguessable nonce is worth more
+ * on the two pages where an anonymous visitor enters the most personal
+ * information. The nav coupling that would otherwise have forced the fixed-nonce
+ * placement is broken by {@link BUILT_IN_DYNAMIC_PAGE_SLUGS} instead.
  *
  * **The predicate is DERIVED from this list rather than hand-written alongside it,
  * and that is what stops the classic decay.** A hand-maintained mirror of a route
@@ -254,10 +274,70 @@ export const FIXED_NONCE_WEBSITE_ROUTES = [
  * add a fixed-nonce one is to amend {@link FIXED_NONCE_WEBSITE_ROUTES}.
  */
 export const PER_REQUEST_WEBSITE_ROUTES = [
+  "/booking-requests",
+  "/booking-requests/respond/[token]",
+  "/booking-requests/verify/[token]",
   "/hut-leader-instructions",
   "/join/[code]",
   "/join/verify/[token]",
+  "/school-bookings",
+  "/school-bookings/confirm/[token]",
 ] as const;
+
+/**
+ * The built-in `(website-dynamic)` pages that own a `PageContent` row, and so may
+ * carry a public menu entry even though the CMS catch-all will never serve them.
+ *
+ * ## The coupling this breaks
+ *
+ * {@link isCmsServablePageSlug} answers "may the catch-all STORE a page here?",
+ * and until #2818 the public menu filter
+ * (`listWebsiteMenuPages`, `src/lib/page-content-html.ts`) used that same answer
+ * as its own. For an admin-created page the two questions really are the same
+ * one: a slug the catch-all refuses is a slug nothing serves, so linking to it
+ * promises a 404. These two pages are the case that breaks the equivalence —
+ * a REAL code-backed route serves each of them, so the address works perfectly,
+ * while the catch-all must still refuse the slug because the page is rendered
+ * per request and is never stored.
+ *
+ * Without this list the only way to give either page a menu entry would be to
+ * move it into the fixed-nonce group, which is what #2813 originally did and what
+ * decision 2 of #2818 reversed. The list is the seam that lets the CSP decision
+ * and the navigation decision be made independently.
+ *
+ * ## Why an allowlist rather than "any per-request route"
+ *
+ * Membership here is code-owned and deliberately tiny. `/hut-leader-instructions`
+ * is per-request too and must NOT be listable: it is PIN-gated and
+ * per-assignment, has no `PageContent` row, and would be a nav link to a screen
+ * that refuses everyone who follows it. Deriving the set from
+ * {@link PER_REQUEST_WEBSITE_ROUTES} would sweep it in, so the set is written
+ * down — and `public-website-path-predicates.test.ts` pins that every entry is a
+ * real single-segment route in that census, so an entry cannot rot into a nav
+ * link pointing at nothing.
+ *
+ * Being on this list is PERMISSION, never advertisement. Both pages seed an EMPTY
+ * `menuTitle`, so every deployment stays unlisted until a club sets one under
+ * Site Appearance & Content → Page Content (#2818 decision 1) — and the same
+ * signal decides search-engine indexability, so the nav and the robots tag can
+ * never disagree.
+ */
+export const BUILT_IN_DYNAMIC_PAGE_SLUGS: ReadonlySet<string> = new Set([
+  "booking-requests",
+  "school-bookings",
+]);
+
+/**
+ * Is this slug one of the built-in per-request pages that may appear in the
+ * public navigation when its club has set a menu title?
+ *
+ * A `true` here says only that a real route serves the address. The menu filter
+ * still requires the row to be published and to carry a non-empty `menuTitle`;
+ * see {@link BUILT_IN_DYNAMIC_PAGE_SLUGS}.
+ */
+export function isBuiltInDynamicPageSlug(slug: string): boolean {
+  return BUILT_IN_DYNAMIC_PAGE_SLUGS.has(slug);
+}
 
 /**
  * Machine-readable addresses served from the app root or `public/` that are not
@@ -398,12 +478,21 @@ function matchesPerRequestRoute(path: string): boolean {
  * it part of the public website the holding screen stands in for?
  *
  * **This is the #2420 SETUP GATE's question and nothing else now.** It deliberately
- * claims both public groups, so `/hut-leader-instructions`, `/join/[code]` and
- * `/join/verify/[token]` are answered with the 503 holding screen before setup is
- * complete exactly as the five approved routes are. Narrowing it to the fixed-nonce
- * set would have taken the holding screen off those three, which is a change to
- * what an unlaunched club exposes and was never asked for — the D1 narrowing is
- * about which NONCE an address carries, not about which addresses are public.
+ * claims both public groups, so every `(website-dynamic)` route — including
+ * `/hut-leader-instructions`, `/join/[code]`, `/join/verify/[token]` and the
+ * booking-request and school-booking pages and their token flows — is answered
+ * with the 503 holding screen before setup is complete, exactly as the five
+ * approved routes are. Narrowing it to the fixed-nonce set would have taken the
+ * holding screen off them, which is a change to what an unlaunched club exposes
+ * and was never asked for — the D1 narrowing is about which NONCE an address
+ * carries, not about which addresses are public.
+ *
+ * The recorded consequence for the token flows (#2818 decision 11): pre-setup, an
+ * emailed `verify`/`respond`/`confirm` link answers the holding screen rather than
+ * the confirmation screen, exactly as `/join/verify/[token]` already did. Accepted
+ * rather than carved out — a club that has not finished setup has not sent those
+ * emails, and a carve-out would put a real, tokenised page in front of the world
+ * on a site the operator has not yet launched.
  *
  * For the nonce decision use {@link isFixedNonceWebsitePath}; for the CMS
  * catch-all's territory use {@link isCmsServablePageSlug}.
@@ -453,7 +542,7 @@ export function isPublicWebsitePath(pathname: string): boolean {
  *
  * True for exactly the addresses one of the five approved `(website)` routes can
  * serve: the four fixed paths, plus everything the `[...slug]` CMS catch-all
- * claims. False for the three `(website-dynamic)` pages and for every non-website
+ * claims. False for the eight `(website-dynamic)` routes and for every non-website
  * address, both of which mint a nonce per request.
  *
  * The subtraction is the whole of it, and it is exact rather than approximate:
@@ -495,11 +584,11 @@ export function isFixedNonceWebsitePath(pathname: string): boolean {
  * May the `(website)/[...slug]` CMS catch-all serve a page for this slug?
  *
  * Takes a SLUG (`about`, `trips/2026`), not a path, because that is what its
- * callers hold: the admin write validator, the catch-all's own loader, the public
- * site menu and the Book Now target. The answer is
- * {@link isFixedNonceWebsitePath} of the corresponding path, and the point of the
- * wrapper is the name — a reader at any of those call sites should see the reason
- * rather than a nonce predicate used for something that is not a nonce decision.
+ * callers hold: the admin write validator, the catch-all's own loader and the
+ * Book Now target. The answer is {@link isFixedNonceWebsitePath} of the
+ * corresponding path, and the point of the wrapper is the name — a reader at any
+ * of those call sites should see the reason rather than a nonce predicate used
+ * for something that is not a nonce decision.
  *
  * A `false` here is not a preference. Under full-route ISR a page served outside
  * the fixed-nonce set is a page stored with a per-request nonce, which every
@@ -513,6 +602,14 @@ export function isFixedNonceWebsitePath(pathname: string): boolean {
  * of the public menu — the same treatment `/lodge/history` got in the slice-1
  * security re-review, for the same reason: an address the site will not serve is
  * an address the site must not offer.
+ *
+ * **The public site MENU no longer asks this question alone (#2818).** It gained
+ * `/booking-requests` and `/school-bookings`, which real code-backed routes serve
+ * perfectly while the catch-all must still refuse the slug — so the menu filter
+ * accepts this predicate OR {@link isBuiltInDynamicPageSlug}. That is the only
+ * caller with the widened test; the admin write validator, the catch-all loader
+ * and the Book Now target all still refuse these two, because for each of them
+ * "the catch-all will serve it" really is the question being asked.
  */
 export function isCmsServablePageSlug(slug: string): boolean {
   return isFixedNonceWebsitePath(`/${slug}`);

@@ -1,5 +1,7 @@
 import { ContactPageClient } from "@/app/(website)/contact/contact-page-client";
 import { JoinApplyPageClient } from "@/app/(website)/join/apply/join-apply-page-client";
+import { BookingRequestForm } from "@/app/(website-dynamic)/booking-requests/booking-request-form";
+import { SchoolBookingForm } from "@/app/(website-dynamic)/school-bookings/school-booking-form";
 import { CommitteeMembersGrid } from "@/components/website/committee-members-grid";
 import { PhotoGalleryToken } from "@/components/website/photo-gallery-token";
 import { SkifieldConditionsWidget } from "@/components/website/skifield-conditions-widget";
@@ -69,6 +71,24 @@ export function EmbeddedPageContentParts({
               lodge={lodge}
               contactRoleKey={contactRoleKey}
               showHero={false}
+            />
+          );
+        }
+
+        if (part.type === "booking-requests") {
+          return (
+            <BookingRequestForm
+              key={`${keyPrefix}-booking-requests-${index}`}
+              club={clubIdentity}
+            />
+          );
+        }
+
+        if (part.type === "school-bookings") {
+          return (
+            <SchoolBookingForm
+              key={`${keyPrefix}-school-bookings-${index}`}
+              club={clubIdentity}
             />
           );
         }

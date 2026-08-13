@@ -1,10 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
 import { CheckCircle2, AlertTriangle, Clock } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useClubIdentity } from "@/components/club-identity-provider";
 import { formatNZDate } from "@/lib/nzst-date";
 
 type VerifyOutcome = "verified" | "already_verified" | "expired" | "invalid" | "loading" | "error";
@@ -19,9 +17,13 @@ interface VerifyResult {
   lodgeName?: string;
 }
 
-export default function BookingRequestVerifyPage() {
-  const club = useClubIdentity();
-  const { token } = useParams<{ token: string }>();
+export function BookingRequestVerifyClient({
+  token,
+  clubLodgeName,
+}: {
+  token: string;
+  clubLodgeName: string;
+}) {
   const [result, setResult] = useState<VerifyResult>({ outcome: "loading" });
 
   useEffect(() => {
@@ -65,7 +67,7 @@ export default function BookingRequestVerifyPage() {
               <p className="font-medium">Your email address is confirmed.</p>
             </div>
             <p className="text-sm text-muted-foreground">
-              Thanks for your booking request with {club.lodgeName}. It has been added to our
+              Thanks for your booking request with {clubLodgeName}. It has been added to our
               review queue and an officer will be in touch with pricing and a payment link.
             </p>
             {result.checkIn && result.checkOut ? (

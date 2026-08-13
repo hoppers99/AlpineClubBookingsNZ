@@ -290,6 +290,33 @@ describe("site-content page hardening (slug/path/headerText)", () => {
     expect(plan.categories.flatMap((c) => c.items)).toEqual([]);
   });
 
+  // #2818 decision 9 made `booking-requests` and `school-bookings` RESERVED words,
+  // but they are also BUILT-IN slugs with their own PageContent rows — so a bundle
+  // exported from any deployment carries them, and the importer must accept them.
+  // `strictPageSlug`'s `!isBuiltinPageSlug(s) && isReservedPageSlug(s)` guard is
+  // what does that. The admin/settings test above passes with or without the
+  // `!isBuiltinPageSlug(s) &&` half (admin is not built-in), so it never exercised
+  // the exemption; this does — remove that half and this test fails.
+  it.each(["booking-requests", "school-bookings"])(
+    "imports the built-in reserved slug %s (the exemption strictPageSlug grants)",
+    async (slug) => {
+      const zip = pagesBundle([
+        { ...BASE_PAGE, slug, path: `/${slug}`, menuTitle: "" },
+      ]);
+      const plan = await buildImportPlan(pagesDb([]), zip, { mode: "merge" });
+
+      expect(plan.errors).toEqual([]);
+      const items = plan.categories.flatMap((c) => c.items);
+      expect(items).toHaveLength(1);
+
+      // And it really applies — the built-in row is written, addressed by its own
+      // slug, exactly as strictPageSlug's docblock promises.
+      const { pages, ctx } = pagesApplyHarness(zip);
+      await siteContentImporter.apply(ctx);
+      expect(pages.get(slug)?.path).toBe(`/${slug}`);
+    },
+  );
+
   it("derives the path from the slug instead of trusting the file", async () => {
     // Plan: a crafted path cell on an otherwise-identical row is NOT a change.
     const zip = pagesBundle([{ ...BASE_PAGE, path: "/evil" }]);

@@ -667,21 +667,26 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                   CSS. Use sparingly — prefer colour and font settings where
                   possible.
                 </p>
+                {/* Tall default so it uses the space under the editor, and stays
+                    manually resizable (resize-y restores the drag handle). */}
                 <textarea
                   value={rawCss}
                   onChange={(e) => updateRawCss(e.target.value)}
-                  rows={16}
+                  rows={24}
                   spellCheck={false}
                   readOnly={!canEdit}
                   placeholder={`/* Example */\n.dynamic-header {\n  background: linear-gradient(135deg, #1a1a2e, #16213e);\n}`}
-                  className="w-full rounded-md border border-slate-300 bg-white p-3 font-mono text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  className="w-full resize-y rounded-md border border-slate-300 bg-white p-3 font-mono text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400"
                 />
-                {rawCss.length > 45_000 && (
-                  <p className="text-sm text-warning-11">
-                    {rawCss.length.toLocaleString()} / 50,000 characters
-                    used.
-                  </p>
-                )}
+                <p
+                  className={`text-sm ${
+                    rawCss.length > 45_000
+                      ? "text-warning-11"
+                      : "text-muted-foreground"
+                  }`}
+                >
+                  {rawCss.length.toLocaleString()} / 50,000 characters used.
+                </p>
               </div>
             )}
 

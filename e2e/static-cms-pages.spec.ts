@@ -312,8 +312,9 @@ test.describe("a slug under another route group's prefix", () => {
 
 /**
  * The D1 narrowing (owner decision, 3 Aug 2026): the fixed per-release nonce covers
- * exactly the five approved routes, and the three public pages the first cut swept
- * in are back on a freshly minted per-request nonce.
+ * exactly the five approved routes. Everything else public is on a freshly minted
+ * per-request nonce: the three pages the first cut swept in, and the five routes
+ * #2818 moved across with them (the two form pages and their token flows).
  *
  * Only a real server can show this. The unit suite proves the PROXY publishes two
  * different nonces for the two territories; what has to hold is that each RENDER

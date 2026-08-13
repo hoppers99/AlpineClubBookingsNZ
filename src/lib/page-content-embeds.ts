@@ -47,6 +47,8 @@ export type EmbeddedBodyPart =
   | { type: "committee" }
   | { type: "member-application-form" }
   | { type: "contact-form" }
+  | { type: "booking-requests" }
+  | { type: "school-bookings" }
   | { type: "skifield-conditions"; dataHash?: string }
   | { type: "skifield-whakapapa" }
   | { type: "photo-gallery"; images: PhotoGalleryImage[] }
@@ -517,6 +519,10 @@ export async function buildEmbeddedBody(contentHtml: string) {
       parts.push({ type: "cancellation-policy", policy: await loadPublicCancellationPolicy(parsed.parameter) });
     } else if (parsed.token === "contact-form") {
       parts.push({ type: "contact-form" });
+    } else if (parsed.token === "booking-requests") {
+      parts.push({ type: "booking-requests" });
+    } else if (parsed.token === "school-bookings") {
+      parts.push({ type: "school-bookings" });
     } else {
       // Catalogue and renderer should evolve together. If they drift, retain
       // the already-sanitised literal instead of accidentally rendering a

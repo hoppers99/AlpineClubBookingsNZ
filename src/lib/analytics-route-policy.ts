@@ -24,15 +24,32 @@ import { isFixedNonceWebsitePath } from "@/lib/public-website-paths";
  *    and dashboard route, and — because each is a `NON_WEBSITE_ROOT_SEGMENTS`
  *    entry — `/login`, `/register`, `/forgot-password`, `/reset-password`,
  *    `/change-password`, `/verify-email`, `/confirm-email-change`,
- *    `/family-invite/*`, `/membership-cancellation/*`, `/pay/*`, `/chores/*`,
- *    `/booking-requests/*` and `/school-bookings/*`. It also subtracts the three
- *    `(website-dynamic)` pages, which are exactly the PIN-bearing and
- *    token-bearing public pages (`/hut-leader-instructions`, `/join/[code]`,
- *    `/join/verify/[token]`).
+ *    `/family-invite/*`, `/membership-cancellation/*`, `/pay/*` and `/chores/*`.
+ *    It also subtracts the eight `(website-dynamic)` routes via
+ *    `PER_REQUEST_WEBSITE_ROUTES` — the PIN-bearing and token-bearing public pages
+ *    (`/hut-leader-instructions`, `/join/[code]`, `/join/verify/[token]`) plus the
+ *    booking-request and school-booking form pages and their token flows
+ *    (`/booking-requests`, `/booking-requests/respond/[token]`,
+ *    `/booking-requests/verify/[token]`, `/school-bookings`,
+ *    `/school-bookings/confirm/[token]`, #2818 decision 2). A bare
+ *    `/booking-requests` or `/school-bookings` is therefore NOT eligible: it is a
+ *    per-request page, exactly where an anonymous visitor types the most personal
+ *    information.
  *
  *    Using it means a route added to any of those groups later is excluded the day
  *    it is added, with no second list to remember. That is the failure mode a
  *    hand-written denylist has: it rots silently, in the dangerous direction.
+ *
+ *    **One accepted behaviour change (#2818).** `booking-requests` and
+ *    `school-bookings` used to be `NON_WEBSITE_ROOT_SEGMENTS` entries, which
+ *    excluded EVERY address under them. They are website roots now, and only the
+ *    exact per-request routes above are subtracted — so a 2-segment miss that no
+ *    route claims, such as `/booking-requests/respond` (the token route is
+ *    `/booking-requests/respond/[token]`, three segments), passes gate 1, is an
+ *    ordinary-looking slug for gate 2, and so its catch-all 404 is analytics-
+ *    eligible. The owner accepts this: it is a harmless tracked 404 that carries
+ *    no token or PIN, and pinned explicitly in `analytics-route-policy.test.ts`
+ *    so the coverage is not silently tied to a shrinking exclusion set.
  *
  * 2. **The address must also LOOK like an ordinary public page.** Gate 1 admits
  *    everything the `[...slug]` CMS catch-all claims, which is every URL no other

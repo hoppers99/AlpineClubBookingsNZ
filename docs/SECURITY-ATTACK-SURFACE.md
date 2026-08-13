@@ -2492,8 +2492,12 @@ argument for the widening was real:
   `force-dynamic` and therefore never stored, so the fixed nonce cost them the
   unguessable-per-response defence and returned nothing at all.
 - So there are now two route groups: `src/app/(website)` (the five, fixed nonce) and
-  `src/app/(website-dynamic)` (the three, per-request nonce, read out of
-  `CSP_NONCE_HEADER` exactly as every member and admin page reads it).
+  `src/app/(website-dynamic)` (per-request nonce, read out of `CSP_NONCE_HEADER`
+  exactly as every member and admin page reads it). The dynamic group held three
+  routes after the 3 Aug narrowing; #2818 (decision 2) moved the two public form
+  pages `/booking-requests` and `/school-bookings` and their token flows into it, so
+  it holds **eight** now — and per-request is the stronger choice on the two form
+  pages, where an anonymous visitor types the most personal information.
 - **The markup is not duplicated to get that** — the owner's direction was explicit
   on the point. Both layouts are three lines around one shared
   `src/components/website/website-chrome.tsx`, which takes the nonce as a prop, and
@@ -2506,14 +2510,17 @@ inconsistency and is not:
   `https://js.stripe.com` from `script-src` is right for the whole public website:
   Stripe.js is loaded only from the member payment surfaces, so allowing it on a
   PIN-gated instructions page is reach for an attacker and nothing for the club.
-  Narrowing that flag alongside the nonce would have handed those three pages a
-  LOOSER policy as a side effect of tightening their nonce.
-- **The #2420 pre-setup holding screen also follows the wide predicate.** The three
-  moved pages are public website addresses, so an unlaunched club still answers them
-  with 503 and the holding screen. Narrowing the shared predicate would have been
-  the small change and would have quietly taken that off them — a change to what an
-  unconfigured install exposes, made as a side effect of a CSP decision. Verified on
-  a real container build: with `ClubTheme.completedAt` NULL, all three answer 503.
+  Narrowing that flag alongside the nonce would have handed the eight
+  `(website-dynamic)` pages a LOOSER policy as a side effect of tightening their
+  nonce.
+- **The #2420 pre-setup holding screen also follows the wide predicate.** The
+  `(website-dynamic)` pages are public website addresses, so an unlaunched club
+  still answers them with 503 and the holding screen. Narrowing the shared
+  predicate would have been the small change and would have quietly taken that off
+  them — a change to what an unconfigured install exposes, made as a side effect of a
+  CSP decision. Verified on a real container build for the original three: with
+  `ClubTheme.completedAt` NULL, all three answer 503; the five #2818 added carry the
+  same treatment through the same predicate.
 
 Login, registration, the member area, admin, finance, lodge and `/display` keep a
 freshly minted per-request nonce, exactly as before. `/login` is out of scope
@@ -2685,7 +2692,10 @@ permanently (D7).
   (`src/lib/analytics-route-policy.ts`). Two independent gates: the address must be one
   the five approved `(website)` routes serve (derived from the same route census the
   nonce split uses, so a new admin, member or token route is excluded the day it is
-  added), and it must also *look* like an admin-authored page slug — which is what
+  added — and, since #2818, so are `/booking-requests` and `/school-bookings`, the
+  two pages an anonymous visitor types the most personal information into; that
+  exclusion falls out of their route group and was ratified deliberately rather
+  than merely inherited), and it must also *look* like an admin-authored page slug — which is what
   refuses the catch-all's territory of identifier-shaped and credential-flavoured
   addresses (`/reset/<token>`, `/t/<hex>`, `/cm5x…`). `send_page_view: false` turns
   Google's own automatic page view off, so `location.href` is never used; this app sends
@@ -2787,8 +2797,8 @@ and `DEPLOYMENT.md`.
   build's own records, with a closed allowlist on BOTH halves. A new build-time route
   is a page whose inline scripts carry no nonce (nothing stamps one without a
   request). A new ON-DEMAND route is worse: one visitor's render is stored and handed
-  to whoever asks next. The second half used to be checked only against the seven
-  routes that must stay per-request, so `/pay/[token]` becoming storable — by a later
+  to whoever asks next. The second half used to be checked only against the routes
+  that must stay per-request (`MUST_STAY_DYNAMIC`), so `/pay/[token]` becoming storable — by a later
   PR dropping the group-level `force-dynamic` from `src/app/(public)/layout.tsx` —
   passed both this gate and `check-website-render-modes.mjs`, which walks
   `src/app/(website)` only. Closed in the slice-1 review.
@@ -2796,14 +2806,15 @@ and `DEPLOYMENT.md`.
   addresses `isFixedNonceWebsitePath()` claims and nowhere else, while the tightened
   source list appears on every address `isPublicWebsitePath()` claims (the two
   predicates asserted separately on one URL matrix, so the addresses where they
-  disagree are the cases); the three per-request pages get a DIFFERENT nonce on each
-  of two requests, and each response hands its own value to the render; every other
+  disagree are the cases); the eight per-request `(website-dynamic)` pages get a
+  DIFFERENT nonce on each of two requests, and each response hands its own value to
+  the render; every other
   directive is byte-identical to a member page's; the marker cookie is set, cleared,
   left alone when it already agrees, and stripped from the `Cookie` header the render
   is handed (asserted on `x-middleware-request-cookie`, where the value really
   travels); and no public-website response invites a shared cache to store it.
 - `src/lib/__tests__/public-website-path-predicates.test.ts` — the split itself: the
-  setup gate still claims all three moved addresses, the fixed-nonce set is exactly
+  setup gate still claims all eight `(website-dynamic)` addresses, the fixed-nonce set is exactly
   the five plus the catch-all's territory, `/join/apply` stays with the five even
   though it matches `/join/[code]`'s shape (Next serves the static route, and the
   predicate mirrors that precedence), and the census walk classifies every
@@ -2827,6 +2838,40 @@ and `DEPLOYMENT.md`.
   immediately" — the tagged data caches clear nothing a visitor sees while the page
   itself is served from the store — so it now fails in seconds rather than only in
   Playwright.
+
+### Admin Raw CSS on the public site: the `data-page-slug` oracle (#2818 D8)
+
+The public footer stamps a `data-page-slug` attribute so an admin's Site-Style
+**Raw CSS** can target one page (`[data-page-slug="contact"] { … }`). Raw CSS is a
+trusted admin capability, but a CSS attribute selector reads a value one character
+at a time (`[data-page-slug^="9f"]`, then `"9f3"`, …, each match firing a
+background-image fetch), so whatever the attribute holds is exfiltratable by an
+admin who authors CSS — a **content-area** admin, not necessarily a Full Admin.
+
+- **The pre-existing exposure this closes.** The footer stamped the RAW pathname,
+  so on a one-time-link page the attribute carried the secret segment of the URL:
+  `/join/verify/<token>`, `/join/[code]`'s group code, and (once #2818 moved them
+  in) the booking-request verify/respond and school-attendee confirm tokens. Any of
+  those was readable character-by-character from admin Raw CSS. The fix
+  (`pageSlugFromPathname`, `src/components/website-footer-shell.tsx`) stamps the
+  route SHAPE instead of the value — `join/verify/[token]`, `join/[code]` — so the
+  attribute still individuates a page for styling but carries no token or code.
+  Derived from `PER_REQUEST_WEBSITE_ROUTES` and pinned in
+  `src/components/__tests__/website-footer-shell-slug.test.tsx` over every dynamic
+  public route, including a prefix-by-prefix assertion that not even the first
+  character of a token survives, so a token route added later is covered the day it
+  lands.
+
+- **Accepted residual (13 Aug 2026): admin Raw CSS still reaches the
+  `(website-dynamic)` token confirmation pages.** Moving those pages under the shared
+  chrome means `theme.css` appends `rawCss` on them too, so an attribute selector can
+  read the server-rendered attendee first/last-name and guest-id attributes
+  (`value=`/`id=`) on `/school-bookings/confirm/[token]` and its siblings. The owner
+  ACCEPTS this: Site-Style Raw CSS is itself a trusted admin capability, and attendee
+  data is low-sensitivity within that trust boundary. The rendering is deliberately
+  left unchanged. The clean fix, if ever wanted, is to render these pages with the
+  `appCss` variant (which excludes `rawCss`), as the `(public)` layout did before
+  #2818 — not a per-field DOM change.
 
 ## Follow-Up Mapping
 

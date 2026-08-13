@@ -841,11 +841,15 @@ export async function proxy(request: NextRequest) {
   // is readable in the page source, so on those pages it no longer stops a fully
   // injected `<script>` tag. The owner accepted that only where it buys something
   // — a STORED page can carry just one nonce, and these five hold nothing but
-  // twice-sanitised admin HTML. `/hut-leader-instructions`, `/join/[code]` and
-  // `/join/verify/[token]` are never stored, so the fixed nonce would cost them
-  // that defence and return nothing; they live in `(website-dynamic)` and read the
-  // per-request nonce out of `CSP_NONCE_HEADER` exactly as the member and admin
-  // pages do.
+  // twice-sanitised admin HTML. The eight `(website-dynamic)` routes are never
+  // stored, so the fixed nonce would cost them that defence and return nothing;
+  // they live in `(website-dynamic)` and read the per-request nonce out of
+  // `CSP_NONCE_HEADER` exactly as the member and admin pages do. Since #2818 that
+  // group also holds `/booking-requests` and `/school-bookings` — two CMS-backed
+  // built-in pages that would have fitted the fixed-nonce group perfectly well,
+  // kept per-request because the census is an owner decision at five and because
+  // these are the two pages where an anonymous visitor types the most personal
+  // information.
   //
   // **Why two route groups rather than one layout with a condition.** A route
   // takes its nonce from the layout above it, and `(website)/layout.tsx` may not
@@ -863,8 +867,10 @@ export async function proxy(request: NextRequest) {
   // later response names, and every inline script on it would be refused,
   // permanently, for everyone. It is closed from the CMS side rather than by
   // widening this predicate: `isCmsServablePageSlug()` makes the catch-all's
-  // loader, the admin slug validator, the public site menu and the Book Now target
-  // all refuse an address outside the set. `/pay` was the live shape.
+  // loader, the admin slug validator and the Book Now target all refuse an address
+  // outside the set. `/pay` was the live shape. (The public site MENU asks a
+  // slightly wider question since #2818, because a menu entry is a link rather
+  // than a stored page — see `BUILT_IN_DYNAMIC_PAGE_SLUGS`.)
   //
   // One residual, tracked as #2570 rather than hidden, and NOT changed by the
   // narrowing: a 404 the catch-all raises for a path outside the set
@@ -920,10 +926,11 @@ export async function proxy(request: NextRequest) {
   // the difference is deliberate. Its only effect is dropping `https://js.stripe.com`
   // from `script-src` — the tightening bundled with D1 — and that is right for the
   // whole public website: Stripe.js is loaded only from the member payment
-  // surfaces, so allowing it on a PIN-gated lodge-instructions page or a group-join
-  // screen is reach for an attacker and nothing for the club. Narrowing this flag
-  // alongside the nonce would have handed those three pages a LOOSER policy as a
-  // side effect of tightening their nonce.
+  // surfaces, so allowing it on a PIN-gated lodge-instructions page, a group-join
+  // screen or a public booking-request form is reach for an attacker and nothing
+  // for the club. Narrowing this flag alongside the nonce would have handed the
+  // `(website-dynamic)` pages a LOOSER policy as a side effect of tightening their
+  // nonce.
   const publicWebsite = isPublicWebsitePath(pathname);
   const csp = buildContentSecurityPolicy(nonce, {
     pathname,

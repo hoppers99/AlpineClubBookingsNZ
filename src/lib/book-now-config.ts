@@ -3,6 +3,7 @@ import "server-only";
 import { buildBookingLoginPath } from "@/lib/auth-redirect";
 import { DEFAULT_PUBLIC_CONTENT_SETTINGS } from "@/config/club-settings-defaults";
 import { prisma } from "@/lib/prisma";
+import { isReservedPageSlug } from "@/lib/page-content";
 import { isCmsServablePageSlug } from "@/lib/public-website-paths";
 // The warm-up gate's planner owns this shape and is deliberately pure, so the type
 // lives there and is imported here rather than the other way round (#2566).
@@ -134,11 +135,19 @@ async function resolveBookNowChoice(): Promise<BookNowChoice> {
     // published, so without this the button would point every visitor at a 404.
     // Treating it as a dead target is exactly the case #1929's fail-open contract
     // already covers, alongside a deleted or unpublished page.
+    //
+    // `!isReservedPageSlug` extends that to reserved WORDS in a non-leading
+    // segment (#2818): `isCmsServablePageSlug` asks the route-group question of
+    // the first segment only, so it accepts `/trips/booking-requests`, but the
+    // catch-all loader hard-404s any slug containing the `booking-requests` /
+    // `school-bookings` reserved words — so the button would otherwise point at a
+    // 404 there too.
     if (
       settings.bookNowTarget === "PAGE" &&
       settings.bookNowPage?.published &&
       settings.bookNowPage.path &&
-      isCmsServablePageSlug(settings.bookNowPage.slug)
+      isCmsServablePageSlug(settings.bookNowPage.slug) &&
+      !isReservedPageSlug(settings.bookNowPage.slug)
     ) {
       return {
         show: true,

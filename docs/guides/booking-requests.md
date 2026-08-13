@@ -94,20 +94,31 @@ are listed on the booking for you to relay.
    (The screenshot predates the **Guest request form link** field described
    next, so that field is not in it; recapture is tracked in #2429.)
 
-   At the top of the tab is **Guest request form link (unlisted)** with a
-   **Copy** button. That is the URL of the guest request form
-   (`/booking-requests`), and this is the only place in the app that shows it:
-   the form is **deliberately unlisted** — no page a visitor can browse to
-   links to it, and it is excluded from search engines via a route-level
-   `noindex` (`robots.txt` deliberately does *not* disallow it, so crawlers can
-   fetch the page and see the noindex rather than merely listing the bare URL).
-   The only other path in is the **Book these dates again** button on a
-   tokenised payment link the club itself emailed a past requester, so it
-   reaches nobody the club has not already dealt with. Send the link to a guest
-   the club has agreed to host, and to nobody else. The field is available to
-   view-only admins too, since sharing the link is not a booking write. Whether
-   the club hosts non-members at all is the club's own policy; the public
-   website never states or implies that a non-member can simply book (#2421).
+   At the top of the tab is **Guest request form link** with a **Copy** button.
+   That is the URL of the guest request form (`/booking-requests`).
+
+   **The form is unlisted until you decide otherwise.** Its page ships with an
+   empty menu title, so out of the box nothing on your public site links to it
+   and search engines are told to ignore it (`robots.txt` deliberately does
+   *not* disallow it, so a crawler fetches the page and sees that instruction
+   rather than merely listing the bare URL). On that default this field is how a
+   guest gets to the form; the only other path in is the **Book these dates
+   again** button on a tokenised payment link the club itself emailed a past
+   requester, so it reaches nobody the club has not already dealt with. Send the
+   link to a guest the club has agreed to host, and to nobody else. The field is
+   available to view-only admins too, since sharing the link is not a booking
+   write.
+
+   **To advertise it instead**, open **Site Appearance & Content → Page
+   Content**, edit the **Booking Requests** page, and give it a menu title. It
+   then appears in your site menu and becomes indexable by search engines —
+   those two follow the same field, so the menu and the search-engine
+   instruction can never disagree. Clearing the menu title reverses both.
+
+   Whether the club hosts non-members at all is the club's own policy either
+   way; the public website never states or implies that a non-member can simply
+   book (#2421), and the built-in help copy never names the form, because it is
+   the same text for every club and cannot know which choice yours made.
 
 2. Open a **Verified** request. Set the **Pricing mode** (Overall total or Per
    guest-night) and enter the price, then **Save quote** and **Send quote** to

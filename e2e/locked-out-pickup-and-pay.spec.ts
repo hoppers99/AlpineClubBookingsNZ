@@ -339,6 +339,12 @@ test("the member finds it on their dashboard and it carries a pay action", async
 });
 
 test("paying it is admitted while the subscription is still unpaid", async () => {
+  // Requires genuine Stripe test-mode keys: create-payment-intent calls Stripe,
+  // so on an unconfigured environment (e.g. a fork PR that gets no secrets) it
+  // 500s. Skip on the same terms as stripe-payment.spec.ts and the card-charge
+  // test below — the lockout/no-subscription-gate behaviour is already proven
+  // without a provider by the refusal and on-behalf tests above.
+  test.skip(!stripeTestModeConfigured(), STRIPE_SKIP_REASON);
   expect(draftBookingId, "the on-behalf draft must have been created").toBeTruthy();
 
   // THE ASSERTION #2779 IS ABOUT. Same member, same unpaid subscription, same

@@ -462,8 +462,10 @@ describe("the public preferences control", () => {
 
   it.each([
     // A page where the runtime really is mounted but analytics is ineligible: the
-    // three (website-dynamic) pages carry a PIN or a token, so the tag never runs
-    // there — and those are the visitors most likely to want the opt-out.
+    // eight (website-dynamic) pages carry a PIN, a token, or (the two form pages,
+    // #2818) an anonymous visitor's personal input, so the tag never runs there —
+    // and those are the visitors most likely to want the opt-out. Three examples
+    // below, one per shape.
     "/join/verify/tok_secret123",
     "/hut-leader-instructions",
     "/dashboard",

@@ -36,14 +36,42 @@ const MOVED_ADDRESSES = [
   "/join/verify/token-xyz",
 ];
 
+/**
+ * The five routes #2818 moved into `(website-dynamic)` — the two CMS-backed form
+ * pages and their tokenised confirmation flows.
+ *
+ * They joined for a different reason from the three above. Nothing about them
+ * needed a per-request nonce structurally: both bare pages are database-backed
+ * built-ins that would have suited the fixed-nonce group. They are here because
+ * D1's census is an owner decision pinned at five addresses, so widening it is a
+ * CSP decision rather than a routing convenience, and because these are the two
+ * pages where an anonymous visitor enters the most personal information.
+ */
+const FORM_PAGE_ADDRESSES = [
+  "/booking-requests",
+  "/booking-requests/respond/token-xyz",
+  "/booking-requests/verify/token-xyz",
+  "/school-bookings",
+  "/school-bookings/confirm/token-xyz",
+];
+
 describe("the setup gate's question is unchanged by the narrowing", () => {
-  it.each(MOVED_ADDRESSES)("still claims %s as a public website address", (path) => {
+  it.each([...MOVED_ADDRESSES, ...FORM_PAGE_ADDRESSES])(
+    "still claims %s as a public website address",
+    (path) => {
     // The regression the split exists to prevent. Narrowing the SHARED predicate
     // would have been the small change, and it would have silently taken the
     // pre-setup 503 holding screen off these three — i.e. changed what an
     // unlaunched club exposes to the internet, as a side effect of a CSP decision.
-    expect(isPublicWebsitePath(path)).toBe(true);
-  });
+    //
+    // For the form pages' TOKEN flows this is also the accepted consequence
+    // recorded as #2818 decision 11: pre-setup, an emailed verify/respond/confirm
+    // link answers the holding screen rather than the confirmation page, exactly
+    // as `/join/verify/[token]` always has. Not carved out — a club that has not
+    // finished setup has not sent those emails.
+      expect(isPublicWebsitePath(path)).toBe(true);
+    },
+  );
 
   it.each(["/dashboard", "/admin/site-style", "/login", "/robots.txt", "/logo.png"])(
     "still leaves %s outside the public website",
@@ -158,6 +186,35 @@ describe("the two route censuses", () => {
       "/join/apply",
     ]);
   });
+
+  it("record the eight per-request routes and nothing else", () => {
+    // Spelled out for the same reason the fixed-nonce list is: this census is
+    // what the runtime SUBTRACTS, so an entry silently lost here hands the fixed,
+    // publicly readable nonce to a page that is never stored — and, for the two
+    // form pages, would put them back in the CSP census the owner pinned at five.
+    expect([...PER_REQUEST_WEBSITE_ROUTES].sort()).toEqual([
+      "/booking-requests",
+      "/booking-requests/respond/[token]",
+      "/booking-requests/verify/[token]",
+      "/hut-leader-instructions",
+      "/join/[code]",
+      "/join/verify/[token]",
+      "/school-bookings",
+      "/school-bookings/confirm/[token]",
+    ]);
+  });
+
+  it.each(FORM_PAGE_ADDRESSES)(
+    "keeps %s out of the fixed-nonce set and out of the catch-all's territory",
+    (path) => {
+      // Both halves matter. The first is the CSP decision; the second is what
+      // stops an admin creating a CMS page at an address a real route serves —
+      // and it is why the public MENU needed its own, wider question
+      // (`isBuiltInDynamicPageSlug`) rather than this one.
+      expect(isFixedNonceWebsitePath(path)).toBe(false);
+      expect(isCmsServablePageSlug(path.replace(/^\//, ""))).toBe(false);
+    },
+  );
 
   it("keeps the per-request patterns to shapes the matcher can express exactly", () => {
     // A catch-all in the per-request census would claim more addresses than a

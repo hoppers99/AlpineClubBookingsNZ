@@ -1,7 +1,23 @@
+import type { Metadata } from "next";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getSchoolAttendeeConfirmation } from "@/lib/school-attendee-confirmation";
 import { formatNZDate } from "@/lib/nzst-date";
 import { SchoolAttendeeConfirmForm } from "./school-attendee-confirm-form";
+
+// The attendee-confirmation link carries a one-time token and must never be
+// indexed (#2421): keep it out of search results the same way the group-join and
+// booking-request token pages are.
+export const metadata: Metadata = {
+  robots: { index: false, follow: false },
+};
+
+/**
+ * Permanently per-request (#2352): a dynamic segment carrying a ONE-TIME token in
+ * the URL, so it sits in `(website-dynamic)` and keeps a per-request CSP nonce. It
+ * is never stored. The group's layout declares the render mode too; this line is
+ * the route's own reason.
+ */
+export const dynamic = "force-dynamic";
 
 /**
  * Public school attendee confirmation page (#1101). Reached from the tokenized
@@ -17,7 +33,8 @@ export default async function SchoolAttendeeConfirmationPage({
   const details = await getSchoolAttendeeConfirmation(token);
 
   return (
-    <Card className="w-full max-w-2xl">
+    <div className="mx-auto flex w-full max-w-3xl justify-center px-4 py-12 sm:py-16">
+      <Card className="w-full max-w-2xl">
       <CardHeader>
         <CardTitle>Confirm Your Attendee List</CardTitle>
         {details.request?.schoolName ? (
@@ -78,6 +95,7 @@ export default async function SchoolAttendeeConfirmationPage({
           </div>
         ) : null}
       </CardContent>
-    </Card>
+      </Card>
+    </div>
   );
 }

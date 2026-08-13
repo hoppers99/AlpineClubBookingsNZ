@@ -177,13 +177,16 @@ describe("which addresses the setup gate covers", () => {
    * from quietly going stale.
    *
    * BOTH public route groups count as the website (#2352 D1 narrowing, 3 Aug
-   * 2026). `(website-dynamic)` holds `/hut-leader-instructions`, `/join/[code]`
-   * and `/join/verify/[token]`: they carry a per-request CSP nonce instead of the
-   * fixed per-release one, and that is the ONLY thing the group changes about
-   * them. They are public website addresses, so the holding screen still stands in
-   * for them before setup is complete — and treating the new group as "some other
-   * route group" here would have demanded exactly the opposite, that
-   * `hut-leader-instructions` and `join` be added to the exemption list.
+   * 2026). `(website-dynamic)` holds eight routes: `/hut-leader-instructions`,
+   * `/join/[code]`, `/join/verify/[token]`, and the two form pages
+   * `/booking-requests` and `/school-bookings` with their token flows (#2818
+   * decision 2). They carry a per-request CSP nonce instead of the fixed
+   * per-release one, and that is the ONLY thing the group changes about them. They
+   * are public website addresses, so the holding screen still stands in for them
+   * before setup is complete — and treating the new group as "some other route
+   * group" here would have demanded exactly the opposite, that
+   * `hut-leader-instructions`, `join` and the two form pages be added to the
+   * exemption list.
    */
   const PUBLIC_WEBSITE_GROUPS = ["(website)", "(website-dynamic)"];
 
@@ -547,8 +550,8 @@ describe("the shared chrome's fallback screen says the same thing", () => {
     // renders inside a request scope.
     //
     // It lives in the shared chrome since the D1 narrowing (3 Aug 2026), which is
-    // what makes ONE copy cover both public route groups — the three per-request
-    // pages get the same holding screen as the five approved ones, from the same
+    // what makes ONE copy cover both public route groups — every per-request
+    // route gets the same holding screen as the five approved ones, from the same
     // strings. `scripts/ci/check-website-render-modes.mjs` fails the build if
     // either layout stops composing this component.
     const source = readFileSync(

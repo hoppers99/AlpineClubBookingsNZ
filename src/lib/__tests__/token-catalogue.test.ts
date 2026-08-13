@@ -57,6 +57,8 @@ describe("token catalogue contents", () => {
       "member-application-form",
       "contact-form",
       "join-apply-form",
+      "booking-requests",
+      "school-bookings",
       "skifield-conditions",
       "skifield-whakapapa",
       "photo-gallery",
@@ -91,6 +93,8 @@ describe("token catalogue contents", () => {
       "member-application-form",
       "contact-form",
       "join-apply-form",
+      "booking-requests",
+      "school-bookings",
       "skifield-conditions",
       "skifield-whakapapa",
     ]);

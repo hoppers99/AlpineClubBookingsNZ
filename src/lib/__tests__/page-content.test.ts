@@ -85,6 +85,42 @@ describe("isBuiltinPageSlug", () => {
     expect(isBuiltinPageSlug("privacy")).toBe(true);
     expect(isBuiltinPageSlug("terms")).toBe(true);
     expect(isBuiltinPageSlug("faq")).toBe(true);
+    expect(isBuiltinPageSlug("booking-requests")).toBe(true);
+    expect(isBuiltinPageSlug("school-bookings")).toBe(true);
+  });
+
+  it.each(["booking-requests", "school-bookings"])(
+    "treats %s as a built-in page whose whole namespace is code-owned",
+    (slug) => {
+      // Code-backed `(website-dynamic)` pages whose seeded bodies are their
+      // {{...}} tokens. Built-in keeps the rows from being hidden or deleted;
+      // RESERVED keeps an admin from creating a CMS page anywhere in the
+      // namespace, because the emailed one-time token links live one segment
+      // below (#2818 decision 9).
+      expect(isBuiltinPageSlug(slug)).toBe(true);
+      expect(isReservedPageSlug(slug)).toBe(true);
+      expect(canUnpublishPage(slug)).toBe(false);
+      expect(canDeletePage(slug)).toBe(false);
+    },
+  );
+
+  it.each([
+    // The bare addresses.
+    "booking-requests",
+    "school-bookings",
+    // One segment above the emailed credential URLs — the shape the review
+    // found creatable, and the reason a WORD is reserved rather than the exact
+    // addresses real routes happen to claim.
+    "booking-requests/verify",
+    "booking-requests/respond",
+    "school-bookings/confirm",
+    // Deeper still, and in a non-leading position.
+    "booking-requests/verify/anything",
+    "school-bookings/confirm/anything/else",
+    "trips/booking-requests",
+  ])("refuses %s as an admin-created CMS page", (slug) => {
+    expect(isValidPageSlug(slug), "the slug is otherwise well-formed").toBe(true);
+    expect(isReservedPageSlug(slug)).toBe(true);
   });
 
   it("does not match admin-created pages", () => {
@@ -108,6 +144,8 @@ describe("canUnpublishPage", () => {
     expect(canUnpublishPage("privacy")).toBe(false);
     expect(canUnpublishPage("terms")).toBe(false);
     expect(canUnpublishPage("faq")).toBe(false);
+    expect(canUnpublishPage("booking-requests")).toBe(false);
+    expect(canUnpublishPage("school-bookings")).toBe(false);
   });
 });
 
@@ -136,6 +174,8 @@ describe("canDeletePage", () => {
     "privacy",
     "terms",
     "faq",
+    "booking-requests",
+    "school-bookings",
     // admin-created
     "trip-reports",
     "2026-agm",
@@ -169,7 +209,12 @@ describe("canDeletePage", () => {
     expect(canDeletePage("404")).toBe(false);
   });
 
-  it("refuses the built-in pages code routes, the footer and the sitemap link", () => {
+  it("refuses every built-in page a code route serves", () => {
+    // Not "the sitemap links them": `booking-requests` and `school-bookings`
+    // are in neither the sitemap nor the footer, and are unlisted by default
+    // (#2818 decision 1). What makes all of these undeletable is that a code
+    // route reads each row, so deleting one leaves a live address with nothing
+    // behind it.
     for (const slug of [
       "about",
       "join",
@@ -180,6 +225,8 @@ describe("canDeletePage", () => {
       "privacy",
       "terms",
       "faq",
+      "booking-requests",
+      "school-bookings",
     ]) {
       expect(canDeletePage(slug), `${slug} must not be deletable`).toBe(false);
     }

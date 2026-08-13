@@ -10,6 +10,7 @@ import { storableLogoDataUrl } from "@/lib/image-metadata";
 import { sanitizePageContentHtml } from "@/lib/page-content-html";
 import {
   canUnpublishPage,
+  isBuiltinPageSlug,
   isReservedPageSlug,
   isValidPageSlug,
   PAGE_CONTENT_LIMITS,
@@ -343,6 +344,15 @@ interface ParsedPageRow {
  * (src/app/api/admin/page-content/route.ts). A hand-edited bundle must not
  * write a slug the admin UI would reject — or one whose segments shadow a
  * reserved application route (admin, api, book, ...).
+ *
+ * BUILT-IN slugs are exempt from the reserved rule, exactly as the admin PUT
+ * route exempts a built-in row keeping its own slug. The exporter above emits
+ * EVERY `PageContent` row, built-ins included, so without this a bundle exported
+ * from any deployment would fail to import the moment a built-in slug became
+ * reserved — which `booking-requests` and `school-bookings` did in #2818
+ * decision 9. The exemption is safe because the set is code-owned and fixed, and
+ * because the writer below targets the row by slug, so a built-in slug can only
+ * ever address its own built-in row.
  */
 function strictPageSlug(value: unknown): Valid<string> {
   const s = asStr(value).trim();
@@ -359,7 +369,7 @@ function strictPageSlug(value: unknown): Valid<string> {
       message: `"${s}" is not a valid page slug (lowercase letters, numbers, and hyphens, with optional forward slashes between segments)`,
     };
   }
-  if (isReservedPageSlug(s)) {
+  if (!isBuiltinPageSlug(s) && isReservedPageSlug(s)) {
     return { ok: false, message: `"${s}" uses a reserved route segment` };
   }
   return { ok: true, value: s };

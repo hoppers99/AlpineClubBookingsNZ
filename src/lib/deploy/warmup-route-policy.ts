@@ -46,7 +46,7 @@
  *    "is this an address one of the five approved public routes can serve?" — and
  *    it is FALSE for `/api/*`, the admin area, every authenticated member area,
  *    `/login` and the auth flows, `robots.txt`/`sitemap.xml`, asset shapes,
- *    `_next/*`, and the three per-request public pages. That predicate is already
+ *    `_next/*`, and the eight per-request public routes. That predicate is already
  *    held from both sides by `src/proxy.ts` and the CMS catch-all, so warming
  *    exactly its territory means the gate can never warm something the release
  *    does not intend to store.
@@ -164,10 +164,16 @@ export interface CriticalRouteDeclaration {
  *    as NON-CRITICAL routes under the tiered tolerance the owner set. Promoting
  *    them all to critical would replace that policy with "every CMS page is
  *    fatal", which the decision explicitly rejects.
- *  • **`/hut-leader-instructions`, `/join/[code]`, `/join/verify/[token]`.** Public
- *    pages, but per-request by design (a PIN-gated assignment, a group code, a
- *    one-time token). They are outside `isFixedNonceWebsitePath()`, so
- *    {@link buildWarmupPlan} would refuse them anyway.
+ *  • **`/hut-leader-instructions`, `/join/[code]`, `/join/verify/[token]`, and the
+ *    two form pages `/booking-requests` and `/school-bookings` with their token
+ *    flows (`/booking-requests/respond/[token]`, `/booking-requests/verify/[token]`,
+ *    `/school-bookings/confirm/[token]`).** Public pages, but per-request by design
+ *    (a PIN-gated assignment, a group code, one-time tokens, and public forms an
+ *    anonymous visitor types personal details into). All eight are `(website-dynamic)`
+ *    routes outside `isFixedNonceWebsitePath()`, so {@link buildWarmupPlan} would
+ *    refuse them anyway — and the two bare form pages are `(website-dynamic)`
+ *    code routes with no stored `PageContent` to warm, so the CMS-page discovery
+ *    below does not reach them either (#2818 decision 4).
  */
 /**
  * The public-route CENSUS this list is cross-checked against.

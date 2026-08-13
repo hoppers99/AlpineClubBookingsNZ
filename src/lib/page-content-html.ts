@@ -3,8 +3,11 @@ import "server-only";
 import sanitizeHtml from "sanitize-html";
 import { prisma } from "@/lib/prisma";
 import { deriveAltFromImageSrc } from "@/lib/image-alt";
-import type { EditablePageRecord } from "@/lib/page-content";
-import { isCmsServablePageSlug } from "@/lib/public-website-paths";
+import { isReservedPageSlug, type EditablePageRecord } from "@/lib/page-content";
+import {
+  isBuiltInDynamicPageSlug,
+  isCmsServablePageSlug,
+} from "@/lib/public-website-paths";
 
 // Hardcoded literal regexes (not a dynamic `new RegExp`) so the pattern can
 // never be shaped by input and there is no non-literal-RegExp/ReDoS surface.
@@ -346,8 +349,12 @@ export async function listEditablePageContent() {
  *  1. `published` — a hidden page is not advertised.
  *  2. A non-empty `menuTitle` — the admin's way of keeping a published page out
  *     of the navigation.
- *  3. {@link isCmsServablePageSlug} — the page must be one the
- *     `(website)/[...slug]` catch-all will actually serve.
+ *  3. The site must actually SERVE the address:
+ *     {@link isBuiltInDynamicPageSlug} (a real code-backed `(website-dynamic)`
+ *     route renders it) OR both {@link isCmsServablePageSlug} (the
+ *     `(website)/[...slug]` catch-all will render it) AND
+ *     {@link isReservedPageSlug} `=== false` (the catch-all's own loader will
+ *     not then refuse the slug).
  *
  * Without the third, slice 1 could leave a nav link pointing at a 404. That
  * slice reserved every first segment belonging to another route group, so an
@@ -357,10 +364,45 @@ export async function listEditablePageContent() {
  * signal to the visitor or the operator. An address the site will not serve is
  * not an address the site should link to.
  *
+ * ## Why the third filter also subtracts reserved slugs (#2818)
+ *
+ * `isCmsServablePageSlug` asks only the route-GROUP question about the FIRST
+ * segment, so it returns `true` for `/trips/booking-requests`: the address is a
+ * public-website path and no fixed-length `(website-dynamic)` route claims it.
+ * But `booking-requests` and `school-bookings` are now RESERVED WORDS that match
+ * in ANY segment (#2818 decision 9), so the catch-all loader hard-404s
+ * `trips/booking-requests` even though it will store it nowhere. Filter 1 and 2
+ * pass such a row, and the old filter 3 did too — reviving the exact
+ * "link to a 404" hazard slice 1 closed for reserved first segments. Excluding
+ * `isReservedPageSlug` closes it for reserved words anywhere in the slug.
+ *
+ * The two built-in slugs are themselves reserved (they ARE the new words), so the
+ * order matters: `isBuiltInDynamicPageSlug` is checked FIRST and admits them, and
+ * only an admin-created row reaches the `isCmsServablePageSlug && !reserved`
+ * branch. A club that opts `/booking-requests` into its menu still shows it.
+ *
  * This does not repair the row; the operator still has to rename it (see
  * `CONFIGURATION.md` → "Some slugs are refused, and the list grew" for the query
  * that finds them). It stops the site promising a page it cannot deliver in the
  * meantime.
+ *
+ * ## Why filter 3 grew a second half (#2818)
+ *
+ * It used to be `isCmsServablePageSlug` alone, and that ASSUMED "the catch-all
+ * will serve it" and "the site will serve it" are the same sentence. For an
+ * admin-created page they are. `/booking-requests` and `/school-bookings` are the
+ * counter-example: a real code-backed route serves each of them, so the link
+ * works, while the catch-all must keep refusing the slug because those pages are
+ * rendered per request and are never stored. Asking the narrower question would
+ * have forced them into the fixed-nonce route group purely to get a menu entry —
+ * which is what #2813 first did and what decision 2 of #2818 reversed.
+ *
+ * Filter 2 is what keeps this OPT-IN. Both pages seed an empty `menuTitle`, so a
+ * club that does nothing keeps today's unlisted behaviour (#2421); a club that
+ * wants the form advertised types a menu title under Site Appearance & Content →
+ * Page Content. The pages' own `generateMetadata` reads the SAME field for the
+ * robots tag, so what the nav shows and what a search engine may index can never
+ * disagree.
  */
 export async function listWebsiteMenuPages() {
   const records = await prisma.pageContent.findMany({
@@ -379,7 +421,10 @@ export async function listWebsiteMenuPages() {
 
   return records.filter(
     (record) =>
-      record.menuTitle.trim().length > 0 && isCmsServablePageSlug(record.slug),
+      record.menuTitle.trim().length > 0 &&
+      (isBuiltInDynamicPageSlug(record.slug) ||
+        (isCmsServablePageSlug(record.slug) &&
+          !isReservedPageSlug(record.slug))),
   );
 }
 
@@ -394,6 +439,16 @@ export async function listWebsiteMenuPages() {
  * `(website)/[...slug]` catch-all will actually serve). A page with no `menuTitle`
  * IS included, deliberately: it is unadvertised, not unpublished, and a visitor
  * following a direct link still pays the cold render.
+ *
+ * **It does NOT take {@link listWebsiteMenuPages}' widened form of that filter,
+ * and the difference is the whole point of the split (#2818).** The menu asks "is
+ * there a link worth offering?"; this asks "is there a STORE entry to warm?".
+ * `/booking-requests` and `/school-bookings` have `PageContent` rows and may carry
+ * a menu entry, but they are `(website-dynamic)` routes: nothing about them is
+ * ever stored, so warming them would fill nothing and the census cross-check would
+ * then demand `CRITICAL_PUBLIC_ROUTES` entries for two addresses that must not
+ * have any (#2818 decision 4). `isCmsServablePageSlug` alone is exactly right
+ * here.
  *
  * Lives in this module rather than in the deploy code because this is where the
  * published filter lives (#2440) and where the contract test keeps it — a second

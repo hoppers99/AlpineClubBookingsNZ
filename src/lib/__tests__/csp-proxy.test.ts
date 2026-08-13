@@ -806,8 +806,9 @@ describe("public website fixed release nonce (#2352 D1)", () => {
    *
    *  • the NONCE follows `isFixedNonceWebsitePath()` — the five approved
    *    `(website)` routes and everything the CMS catch-all serves, and nothing
-   *    else. `/hut-leader-instructions`, `/join/[code]` and `/join/verify/[token]`
-   *    moved to `(website-dynamic)` and are back on a per-request value;
+   *    else. The eight `(website-dynamic)` routes are on a per-request value:
+   *    `/hut-leader-instructions`, `/join/[code]`, `/join/verify/[token]`, and
+   *    the two form pages and their token flows that #2818 moved across;
    *  • the POLICY's Stripe tightening follows `isPublicWebsitePath()` — the WHOLE
    *    public website, both groups, because Stripe.js has no business on a
    *    PIN-gated instructions page either.
@@ -830,6 +831,12 @@ describe("public website fixed release nonce (#2352 D1)", () => {
     "/join/ABC123",
     "/join/verify/token-xyz",
     "/hut-leader-instructions",
+    // The two form pages and their token flows moved here in #2818 (decision 2).
+    "/booking-requests",
+    "/booking-requests/verify/token-xyz",
+    "/booking-requests/respond/token-xyz",
+    "/school-bookings",
+    "/school-bookings/confirm/token-xyz",
     // Not the website: every other group, plus the shapes the gate refuses.
     "/login",
     "/register",
@@ -865,7 +872,7 @@ describe("public website fixed release nonce (#2352 D1)", () => {
       }
 
       // The policy's public-website flag is the WIDE predicate, on purpose: its
-      // only effect is dropping Stripe from `script-src`, and the three
+      // only effect is dropping Stripe from `script-src`, and the eight
       // per-request public pages should be tightened too. Following the nonce here
       // would have handed them a LOOSER policy as a side effect of a security fix.
       if (isPublicWebsitePath(url)) {
@@ -911,6 +918,11 @@ describe("public website fixed release nonce (#2352 D1)", () => {
     ["/hut-leader-instructions", false, "moved to (website-dynamic)"],
     ["/join/ABC123", false, "the group-join page"],
     ["/join/verify/token-xyz", false, "the emailed-token page"],
+    ["/booking-requests", false, "the booking-request form page, (website-dynamic) since #2818"],
+    ["/school-bookings", false, "the school-booking form page, (website-dynamic) since #2818"],
+    ["/booking-requests/verify/token-xyz", false, "the emailed address-verification page"],
+    ["/booking-requests/respond/token-xyz", false, "the emailed quote-response page"],
+    ["/school-bookings/confirm/token-xyz", false, "the emailed attendee-confirmation page"],
     ["/dashboard", false, "the member area keeps a per-request nonce"],
     ["/admin", false, "the admin area keeps a per-request nonce"],
     [
@@ -968,15 +980,22 @@ describe("public website fixed release nonce (#2352 D1)", () => {
   /**
    * The narrowing, as the property it is meant to buy (owner decision, 3 Aug 2026).
    *
-   * The matrix above pins that these three do not get the RELEASE value; this pins
-   * the thing that actually matters, which is that they get a fresh one every time.
+   * The matrix above pins that these do not get the RELEASE value; this pins the
+   * thing that actually matters, which is that they get a fresh one every time.
    * An unguessable per-response nonce is the defence the fixed value gives up, and
-   * these pages give up nothing because none of them is ever stored.
+   * these pages give up nothing because none of them is ever stored — which is
+   * exactly why the two form pages (#2818) belong here too: an anonymous visitor
+   * types the most personal information into them.
    */
   it.each([
     "/hut-leader-instructions",
     "/join/ABC123",
     "/join/verify/token-xyz",
+    "/booking-requests",
+    "/booking-requests/verify/token-xyz",
+    "/booking-requests/respond/token-xyz",
+    "/school-bookings",
+    "/school-bookings/confirm/token-xyz",
   ])("mints a DIFFERENT nonce on each request for %s", async (url) => {
     const a = await proxy(new NextRequest(`https://example.org${url}`));
     const b = await proxy(new NextRequest(`https://example.org${url}`));

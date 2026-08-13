@@ -27,8 +27,8 @@ import { pathToFileURL } from "node:url";
  * prerendered route nor a nonce-less script can arrive quietly.
  *
  * **BOTH halves of the manifest are closed lists**, and that symmetry arrived in
- * the slice-1 review. `dynamicRoutes` used to be checked only against the seven
- * routes that must stay per-request, so a manifest listing a NEW stored route
+ * the slice-1 review. `dynamicRoutes` used to be checked only against the routes
+ * that must stay per-request (`MUST_STAY_DYNAMIC`), so a manifest listing a NEW stored route
  * passed — which is the more dangerous direction, because a stored route is one
  * visitor's render handed to the next. `routes` is the build-time half,
  * `dynamicRoutes` the on-demand half, and each names exactly what is allowed.
@@ -57,13 +57,20 @@ const ISR_DYNAMIC_ROUTE = "/[...slug]";
  *    acquires the per-release nonce (reconciliation F2);
  *  • `/hut-leader-instructions` — per-assignment and PIN-gated;
  *  • `/join/[code]`, `/join/verify/[token]` — a group code and a one-time token
- *    in the URL; a stored copy is a page that skips its own re-check.
+ *    in the URL; a stored copy is a page that skips its own re-check;
+ *  • `/booking-requests`, `/school-bookings` and their token flows
+ *    (`/booking-requests/respond/[token]`, `/booking-requests/verify/[token]`,
+ *    `/school-bookings/confirm/[token]`) — moved to `(website-dynamic)` in #2818
+ *    (decision 2): public forms an anonymous visitor types personal details into,
+ *    plus the one-time emailed confirmation links.
  *
- * The last three moved to the `(website-dynamic)` group in the owner's 3 Aug 2026
- * narrowing, which makes them per-request for a SECOND reason: they carry a nonce
- * minted for the request, so a stored copy could never match a later response's
- * policy either. Both halves are checked here, and this list did not have to change
- * for the move — which is the point of checking the manifest rather than the tree.
+ * All but the first four sit in the `(website-dynamic)` group and are per-request
+ * for a SECOND reason too: they carry a nonce minted for the request, so a stored
+ * copy could never match a later response's policy either. Both halves are checked
+ * here. The generic on-demand loop below already fails closed on any of them (only
+ * `/[...slug]` is an allowed on-demand route), so listing them here does not change
+ * whether the gate catches a regression — it makes the SPECIFIC token/PIN reason
+ * fire, and keeps this census honest against the route tree.
  */
 const MUST_STAY_DYNAMIC = [
   "/",
@@ -73,6 +80,11 @@ const MUST_STAY_DYNAMIC = [
   "/hut-leader-instructions",
   "/join/[code]",
   "/join/verify/[token]",
+  "/booking-requests",
+  "/booking-requests/respond/[token]",
+  "/booking-requests/verify/[token]",
+  "/school-bookings",
+  "/school-bookings/confirm/[token]",
 ];
 
 /**
@@ -96,7 +108,7 @@ const ALLOWED_BUILD_TIME_ROUTES = new Set(["/_global-error", "/sitemap.xml"]);
  * Routes allowed to be generated ON DEMAND and then STORED, as a closed list.
  *
  * The slice-1 review found this half was not closed: `dynamicRoutes` was only
- * checked against the seven names in {@link MUST_STAY_DYNAMIC}, so a manifest
+ * checked against the names in {@link MUST_STAY_DYNAMIC}, so a manifest
  * listing `/pay/[token]` or `/blog/[slug]` alongside `/[...slug]` produced zero
  * problems. That is short of the criterion #2352 recorded ("a future PR cannot
  * silently re-dynamise a route OR make a new one static") and it left the exact

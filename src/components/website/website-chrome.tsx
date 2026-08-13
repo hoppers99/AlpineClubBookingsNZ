@@ -24,7 +24,9 @@ import { SETUP_IN_PROGRESS_COPY } from "@/lib/setup-in-progress-screen";
  * exactly the five approved addresses (`/`, the CMS catch-all, `/join`,
  * `/contact`, `/join/apply`). The three pages the first cut had swept in —
  * `/hut-leader-instructions`, `/join/[code]`, `/join/verify/[token]` — go back to
- * a freshly minted per-request nonce.
+ * a freshly minted per-request nonce, and #2818 put five more routes alongside
+ * them (`/booking-requests`, `/school-bookings` and their three token flows), for
+ * eight in the per-request group.
  *
  * A route can only take its nonce from the layout above it, so two different
  * nonce sources means two layouts, which means two route groups. The obvious way
@@ -126,7 +128,7 @@ export async function WebsiteChrome({
     // public-website address with 503 and this same screen while setup is
     // incomplete, so an ordinary request never gets here — and it answers on
     // `isPublicWebsitePath()`, which claims BOTH public route groups, so the
-    // three per-request pages are gated pre-setup exactly as the five are.
+    // eight per-request routes are gated pre-setup exactly as the five are.
     //
     // What still does reach here is a URL the proxy RUNS on but the gate does not
     // CLAIM. (#2404 removed the matcher's prefetch exemption entirely, so the

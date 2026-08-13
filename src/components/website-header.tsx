@@ -9,14 +9,13 @@ import {
 import { getBookNowVariants } from "@/lib/book-now-config";
 import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { listWebsiteMenuPages } from "@/lib/page-content-html";
+import { buildWebsiteNavLinks } from "@/lib/website-nav";
 import type { WebsiteHeaderCtaVariants } from "@/lib/website-header-ctas";
 
 interface WebsiteHeaderProps {
   logoUrl?: string | null;
   logoDataUrl?: string | null;
 }
-
-const staticNavLinks = [{ href: "/contact", label: "Contact" }];
 
 /**
  * The public site header.
@@ -47,11 +46,11 @@ export async function WebsiteHeader({
     href: page.path,
     label: page.menuTitle.trim(),
   }));
-  const navLinks: WebsiteNavLink[] = [
-    { href: "/", label: "Home" },
-    ...dynamicNavLinks,
-    ...staticNavLinks,
-  ];
+  // Home, the CMS-driven entries, then a Contact fallback appended only when no
+  // CMS entry already links there — deduped by href so a club that opts its
+  // Contact page into the menu shows it exactly once (#2818 decision 5). See
+  // `buildWebsiteNavLinks`.
+  const navLinks: WebsiteNavLink[] = buildWebsiteNavLinks(dynamicNavLinks);
   // Configurable public Book Now (E3 #1929): hidden, custom page, or the default
   // booking flow (fail-open). The authenticated dashboard CTA is out of scope.
   // #2430: the LABEL is resolved there too, from the SESSION rather than the

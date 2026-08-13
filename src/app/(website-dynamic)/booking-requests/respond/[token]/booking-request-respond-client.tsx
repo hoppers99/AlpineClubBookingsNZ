@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
 import { AlertTriangle, CheckCircle2, HelpCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -50,8 +49,7 @@ interface QuoteContext {
 type LoadState = "loading" | "ready" | "invalid" | "expired" | "error";
 type Action = "ACCEPT" | "CANCEL" | "MODIFY" | "QUERY";
 
-export default function BookingRequestQuoteResponsePage() {
-  const { token } = useParams<{ token: string }>();
+export function BookingRequestRespondClient({ token }: { token: string }) {
   const [state, setState] = useState<LoadState>("loading");
   const [context, setContext] = useState<QuoteContext | null>(null);
   // Sampled when the quote context arrives so the expiry label below can be

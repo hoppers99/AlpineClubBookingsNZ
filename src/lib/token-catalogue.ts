@@ -74,6 +74,32 @@ export const HTML_TOKEN_CATALOGUE: readonly HtmlTokenDefinition[] = [
     contexts: ["page-content-body"],
   },
   {
+    token: "booking-requests",
+    kind: "embed",
+    description:
+      "This will display the public booking-request form, where a non-member " +
+      "can request a stay (or a price) without an account. Placing this token on " +
+      "an ordinary page renders the form under that page's CSP nonce and analytics " +
+      "posture; the dedicated /booking-requests page is the canonical " +
+      "per-request-nonce, analytics-free entry point.",
+    example: "{{booking-requests}}",
+    allowsLegacySingleBrace: true,
+    contexts: ["page-content-body"],
+  },
+  {
+    token: "school-bookings",
+    kind: "embed",
+    description:
+      "This will display the public school-group booking-request form, where a " +
+      "school or group can request a stay and quote without an account. Placing " +
+      "this token on an ordinary page renders the form under that page's CSP nonce " +
+      "and analytics posture; the dedicated /school-bookings page is the canonical " +
+      "per-request-nonce, analytics-free entry point.",
+    example: "{{school-bookings}}",
+    allowsLegacySingleBrace: true,
+    contexts: ["page-content-body"],
+  },
+  {
     token: "skifield-conditions",
     kind: "embed",
     description:

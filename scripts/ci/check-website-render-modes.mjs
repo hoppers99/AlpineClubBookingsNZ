@@ -391,7 +391,8 @@ export function auditPublicWebsiteStructure({
       '(website-dynamic)/layout.tsx must declare `export const dynamic = "force-dynamic"` ' +
         "for the whole group, so a page added later is per-request by default rather than " +
         "by remembering. Nothing in this group may ever be stored: it holds a PIN-gated " +
-        "per-assignment page and two token-bearing screens.",
+        "per-assignment page, four token-bearing screens, a group-code page, and two " +
+        "public forms an anonymous visitor types personal details into.",
     );
   }
 
@@ -494,14 +495,14 @@ export function auditPublicWebsiteStructure({
         "(website-dynamic)/layout.tsx must read the per-request CSP nonce from " +
           "CSP_NONCE_HEADER. That is the entire reason this group exists: the owner " +
           "narrowed the fixed per-release nonce back to the five approved routes on " +
-          "3 Aug 2026, and these three pages get the same freshly minted nonce every " +
-          "member and admin page gets.",
+          "3 Aug 2026, and every route in this group gets the same freshly minted " +
+          "nonce every member and admin page gets.",
       );
     }
     if (perRequestLayout.includes("getPublicWebsiteNonce")) {
       problems.push(
         "(website-dynamic)/layout.tsx reaches for getPublicWebsiteNonce(). That is the " +
-          "fixed per-release value, and handing it to these three pages is exactly the " +
+          "fixed per-release value, and handing it to this group is exactly the " +
           "widening the owner reversed on 3 Aug 2026 — it costs them the unguessable-nonce " +
           "defence and buys nothing, because none of them is ever stored.",
       );
@@ -592,7 +593,7 @@ export function auditPublicWebsiteStructure({
     for (const [token, why] of [
       [
         "getPublicWebsiteNonce",
-        "the FIXED per-release value, which would reach the three per-request pages " +
+        "the FIXED per-release value, which would reach every per-request public page " +
           "through the shared component and undo the owner's 3 Aug 2026 narrowing",
       ],
       [

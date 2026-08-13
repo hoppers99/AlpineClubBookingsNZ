@@ -371,13 +371,44 @@ ledger_field() {
 # `windowed` declaration is precisely the thing a silent discard must not be
 # allowed to delete. The ledger is append-only hand-edited TSV, so two lanes
 # appending rows for the same migration merges cleanly and produces no conflict.
+#
+# FIELD COUNT is checked too, and that is the #2818 addition. The file had been
+# corrupted in exactly the way an append-only hand-edited TSV invites: the
+# previous last line carried no trailing newline, so the next lane's `>>` glued
+# its row onto the end of the last one and THREE rows became one 9-field physical
+# line. Every gate stayed green. `$1` was still a real migration name and `$4`
+# was still "yes", so this scan passed the fused line; the rows swallowed into
+# columns 6-9 were simply invisible, which meant a migration with no ledger row
+# at all read as documented — the precise failure the coverage gate exists to
+# prevent, on a file an operator is told to consult before every deploy.
+#
+# The expected width is read from the HEADER rather than hard-coded, so adding a
+# column is a one-line edit to the header and not a hunt through this script. If
+# the header cannot be read as a multi-column row the scan fails closed rather
+# than skipping the check: a width of zero compared against every row would
+# otherwise turn this into a silent no-op, which is the same class of defect it
+# was written to catch.
 scan_ledger() {
   [ -f "$MIGRATION_SAFETY_LEDGER" ] || return 0
 
   awk -F'\t' -v ledger="$MIGRATION_SAFETY_LEDGER" '
+    NR == 1 {
+      expected_fields = NF
+      if (expected_fields < 2) {
+        printf "error\t%s line 1: safety ledger header must be a tab-separated column list; read %d field(s). Without it the per-row field-count check cannot run, and a fused row would pass unnoticed (#2818).\n", ledger, expected_fields
+        broken_header = 1
+      }
+    }
     /^[[:space:]]*#/ { next }
     NF == 0 { next }
     {
+      if (broken_header) next
+
+      if (NF != expected_fields) {
+        printf "error\t%s line %d: safety ledger row has %d field(s), expected %d. Almost always two or more rows fused onto one physical line because the previous line had no trailing newline — split them and make sure the file ends with a newline. A fused row hides every migration after the first, so a migration with no row at all reads as documented (#2818).\n", ledger, NR, NF, expected_fields
+        next
+      }
+
       name = $1
       value = $4
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)

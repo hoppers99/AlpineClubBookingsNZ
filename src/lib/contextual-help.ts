@@ -2338,7 +2338,7 @@ const ADMIN_HELP_QUESTIONS: Record<string, HelpQuestion[]> = {
     },
     {
       q: "How does a non-member get to the request form?",
-      a: "Only from you. The form is deliberately unlisted: no page a visitor can browse to links to it, and it is excluded from search engines. Copy the link from the Public Requests tab and send it only to a guest the club has agreed to host.",
+      a: "By default, only from you. The form ships unlisted: nothing on the public site links to it and search engines are told to ignore it, so you copy the link from the Public Requests tab and send it to a guest the club has agreed to host. If your club would rather advertise it, give the Booking Requests page a menu title under Site Appearance & Content → Page Content and it joins the site menu and becomes searchable.",
     },
   ],
   "/admin/bookings": [
