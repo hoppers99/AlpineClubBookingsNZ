@@ -124,7 +124,7 @@ function expectStrictScriptSrc(policy: string) {
  *
  * This is about the SOURCE LIST and says nothing about which nonce the policy
  * names. Since the 3 Aug narrowing the two travel separately: every public-website
- * address gets this tightened list, while only the seven approved routes get the
+ * address gets this tightened list, while only the five approved routes get the
  * fixed per-release nonce.
  */
 function expectPublicWebsiteScriptSrc(policy: string) {
@@ -804,10 +804,11 @@ describe("public website fixed release nonce (#2352 D1)", () => {
    * asks the right question of each address — and since the owner's 3 Aug 2026
    * narrowing there are TWO questions, deliberately answered by two predicates:
    *
-   *  • the NONCE follows `isFixedNonceWebsitePath()` — the seven approved
+   *  • the NONCE follows `isFixedNonceWebsitePath()` — the five approved
    *    `(website)` routes and everything the CMS catch-all serves, and nothing
-   *    else. `/hut-leader-instructions`, `/join/[code]` and `/join/verify/[token]`
-   *    moved to `(website-dynamic)` and are back on a per-request value;
+   *    else. The eight `(website-dynamic)` routes are on a per-request value:
+   *    `/hut-leader-instructions`, `/join/[code]`, `/join/verify/[token]`, and
+   *    the two form pages and their token flows that #2818 moved across;
    *  • the POLICY's Stripe tightening follows `isPublicWebsitePath()` — the WHOLE
    *    public website, both groups, because Stripe.js has no business on a
    *    PIN-gated instructions page either.
@@ -855,7 +856,7 @@ describe("public website fixed release nonce (#2352 D1)", () => {
       const nonce = nonceFromScriptSrc(policy);
 
       if (isFixedNonceWebsitePath(url)) {
-        expect(nonce, `${url} is served by one of the seven approved routes`).toBe(
+        expect(nonce, `${url} is served by one of the five approved routes`).toBe(
           releaseNonce,
         );
       } else {

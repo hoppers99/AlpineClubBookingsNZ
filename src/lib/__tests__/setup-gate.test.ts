@@ -547,8 +547,8 @@ describe("the shared chrome's fallback screen says the same thing", () => {
     // renders inside a request scope.
     //
     // It lives in the shared chrome since the D1 narrowing (3 Aug 2026), which is
-    // what makes ONE copy cover both public route groups — the three per-request
-    // pages get the same holding screen as the seven approved ones, from the same
+    // what makes ONE copy cover both public route groups — every per-request
+    // route gets the same holding screen as the five approved ones, from the same
     // strings. `scripts/ci/check-website-render-modes.mjs` fails the build if
     // either layout stops composing this component.
     const source = readFileSync(
