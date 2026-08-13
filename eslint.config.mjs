@@ -459,28 +459,118 @@ const DATE_ONLY_ENCODING_RESTRICTIONS = [
   NO_ISO_DATE_SPLIT_ON_T,
 ];
 
-// Every restriction that must survive in EVERY `src/**` block, whatever else
-// that block is there to lift.
+// ---------------------------------------------------------------------------
+// Composition: every restriction that must survive in EVERY `src/**` block,
+// whatever else that block is there to lift.
+// ---------------------------------------------------------------------------
 //
 // A comment saying "re-state these" was the whole mechanism until now, and it
-// only holds while everyone reads it — flat config replaces the option list
-// silently, so a new block written to lift one rule takes every other rule down
-// with it and lint still passes. Two things make that structural instead:
-// `srcRestrictedSyntax()` builds the list so a block cannot forget them by
-// omission, and `date-only-encoding-guard.test.ts` walks the RESOLVED config and
-// fails if any `src/**` block's list is missing one of these selectors. Adding a
-// block is therefore safe by default and loud when it is not.
+// only holds while everyone reads it — flat config REPLACES a rule's option list
+// rather than merging it, so a block written to lift one rule takes every other
+// rule down with it and lint still passes.
+//
+// A MERGE can do the same thing from the other direction, and more quietly. When
+// two branches each add a block here, git can align the conflict so one side's
+// whole restriction group sits inside the hunk and the other side's is a closing
+// paren; resolving THAT the obvious way deletes a guard outright and the file
+// still parses. So the rule LISTS live here as named arrays, separately from the
+// blocks that apply them, and every block's rule value is a function CALL —
+// never an array literal. Merging two named arrays is a decision somebody can
+// see; merging two block literals is how a guard disappears.
+//
+// THAT IS NOT A HYPOTHETICAL. #2684 and #2685 were built in parallel, each
+// adding its own guard and its own blocks, and a three-way merge of the two
+// aligned #2685's whole money group inside a hunk whose #2684 side was a single
+// `),`. Resolving it the obvious way deleted the money guard's broad arm and its
+// helper exemption, and the file still parsed. The fold below is the answer:
+// ONE mandatory array, THREE named groups inside it, and no block that spells
+// out a list of its own.
+//
+// ADDING A GUARD: put its restrictions in a named array beside the three below
+// and add that array here. That is the only edit needed — every block picks it
+// up, and BOTH `date-only-encoding-guard.test.ts` and `money-cents-guard.test.ts`
+// read this same array, so the integrity checks extend themselves rather than
+// each needing its own copy of the list.
 const ALWAYS_RESTRICTED_IN_SRC = [
   ...RAW_SQL_RESTRICTIONS,
   ...DATE_ONLY_ENCODING_RESTRICTIONS,
+  ...MONEY_CENTS_RESTRICTIONS,
 ];
 
 /**
- * `no-restricted-syntax` for a `src/**` block: the mandatory restrictions,
- * plus whatever that block adds. Prefer this over writing the array by hand.
+ * Blocks allowed to omit part of the mandatory set, each with the group it omits
+ * and why. Exported so the integrity test reads the SAME record instead of
+ * keeping its own copy, which would drift out of step with this file.
+ *
+ * `files` must match a block's list EXACTLY, so widening a block's globs does
+ * not quietly widen its exemption too.
+ */
+export const SRC_RESTRICTION_EXEMPTIONS = [
+  {
+    files: ["src/lib/date-only.ts"],
+    omits: DATE_ONLY_ENCODING_RESTRICTIONS,
+    reason:
+      "The canonical home for the date-only encoding (#2684): the rule exists to make every OTHER file call these helpers instead of hand-writing the truncation, and the helpers have to write it somewhere.",
+  },
+  {
+    files: MONEY_DOMAIN_MODULES,
+    omits: MONEY_CENTS_RESTRICTIONS,
+    reason:
+      "STRICTER, not weaker (#2685): inside the money-domain modules a bare `x * 100` is a cents conversion by construction, so MONEY_MODULE_RESTRICTIONS below replaces the narrow shape-based arms with one that subsumes them. Listing both reported the same node two and three times at the identical line:column.",
+  },
+  {
+    files: MONEY_HELPER_MODULES,
+    omits: MONEY_CENTS_RESTRICTIONS,
+    reason:
+      "The two reviewed money boundaries (#2685). They own the conversion every other file is sent here to use, so they are the one place allowed to write it; each carries its own written reason on MONEY_GUARD_EXEMPTIONS above.",
+  },
+];
+
+/** The mandatory set, for the integrity test to measure blocks against. */
+export const MANDATORY_SRC_RESTRICTIONS = ALWAYS_RESTRICTED_IN_SRC;
+
+/**
+ * `no-restricted-syntax` for a `src/**` block: the mandatory restrictions, plus
+ * whatever that block adds. Always use this rather than writing the array out.
  */
 function srcRestrictedSyntax(...additional) {
   return ["error", ...ALWAYS_RESTRICTED_IN_SRC, ...additional];
+}
+
+/**
+ * The same, minus ONE named group — for a block that legitimately cannot obey a
+ * single guard (the helper module that implements it, say) but must keep every
+ * other. Dropping a group BY NAME keeps whatever arrives later, which writing
+ * the remaining list out by hand would not.
+ *
+ * The omission must also appear in `SRC_RESTRICTION_EXEMPTIONS`, or the
+ * integrity test rejects it.
+ */
+function srcRestrictedSyntaxWithout(omitted, ...additional) {
+  const dropped = new Set(omitted.map((restriction) => restriction.selector));
+  return [
+    "error",
+    ...ALWAYS_RESTRICTED_IN_SRC.filter((r) => !dropped.has(r.selector)),
+    ...additional,
+  ];
+}
+
+/**
+ * `scripts/` and `prisma/` are not application code, so they take the two groups
+ * that are about the WRITING rather than the domain: the raw-SQL guard (#2289),
+ * because that is where hand-written SQL is most likely, and the money guard
+ * (#2685), because `scripts/` holds the money-adjacent backfills and a one-off
+ * cents conversion by hand is exactly what gets written there.
+ *
+ * The date-only ENCODING restrictions are deliberately not here — the block
+ * below says which two seed files would trip them and why the guard follows the
+ * domain, which lives in `src/`.
+ *
+ * A function like the others so that every block in this file applies a named
+ * list rather than spelling one out.
+ */
+function operatorScriptRestrictedSyntax() {
+  return ["error", ...RAW_SQL_RESTRICTIONS, ...MONEY_CENTS_RESTRICTIONS];
 }
 
 const eslintConfig = defineConfig([
@@ -599,7 +689,6 @@ const eslintConfig = defineConfig([
         NO_BARE_TO_LOCALE_DATE_STRING,
         NO_BARE_TO_LOCALE_TIME_STRING,
         NO_BARE_TO_LOCALE_STRING,
-        ...MONEY_CENTS_RESTRICTIONS,
       ),
     },
   },
@@ -630,16 +719,14 @@ const eslintConfig = defineConfig([
     // `server-only` imports" — importing `@/lib/date-only` would pull
     // `@/config/operational` into a module whose whole contract is that it
     // imports nothing. The guard follows the DOMAIN, which lives in `src/`.
+    //
+    // The money restrictions DO reach here (#2685): `scripts/` holds the
+    // money-adjacent backfills, which is precisely where somebody writes a
+    // one-off cents conversion by hand. Both facts live in
+    // `operatorScriptRestrictedSyntax()` rather than in a list written out here.
     files: ["scripts/**/*.{ts,tsx}", "prisma/**/*.{ts,tsx}"],
     rules: {
-      "no-restricted-syntax": [
-        "error",
-        ...RAW_SQL_RESTRICTIONS,
-        // The money restrictions reach here for the same reason: `scripts/`
-        // holds the money-adjacent backfills, which is precisely where somebody
-        // writes a one-off cents conversion by hand (#2685).
-        ...MONEY_CENTS_RESTRICTIONS,
-      ],
+      "no-restricted-syntax": operatorScriptRestrictedSyntax(),
     },
   },
   {
@@ -669,11 +756,12 @@ const eslintConfig = defineConfig([
     // classified, not a file that needs an exemption.
     files: ["src/lib/date-only.ts"],
     rules: {
-      "no-restricted-syntax": [
-        "error",
-        ...RAW_SQL_RESTRICTIONS,
-        ...MONEY_CENTS_RESTRICTIONS,
-      ],
+      // Drops ONE named group. Every other guard — the raw-SQL restrictions and
+      // the money restrictions today, anything added later — stays on this file
+      // automatically.
+      "no-restricted-syntax": srcRestrictedSyntaxWithout(
+        DATE_ONLY_ENCODING_RESTRICTIONS,
+      ),
     },
   },
   {
@@ -692,7 +780,6 @@ const eslintConfig = defineConfig([
       "no-restricted-syntax": srcRestrictedSyntax(
         NO_BARE_TO_LOCALE_DATE_STRING,
         NO_BARE_TO_LOCALE_TIME_STRING,
-        ...MONEY_CENTS_RESTRICTIONS,
       ),
     },
   },
@@ -715,38 +802,38 @@ const eslintConfig = defineConfig([
     // `src/lib` file and caught nowhere at all in a Xero module, a payment
     // module or an API route. `MONEY_MODULE_RESTRICTIONS` therefore states the
     // ratio-of-a-parse arm explicitly; see the comment above it.
+    //
+    // It drops the narrow money group BY NAME and adds the broad one, so every
+    // OTHER guard rides along untouched. That is not a nicety here: this glob
+    // list is every Xero, finance, membership-cancellation, payment, credit,
+    // refund, promo, fee, invoice, subscription, pricing and Stripe module plus
+    // the whole of `src/app/api/**` — which is to say most of the surface
+    // #2684's encoding guard exists for. A block that spelled its own list out
+    // would have lifted that guard from all of it with lint still green.
     files: MONEY_DOMAIN_MODULES,
     rules: {
-      "no-restricted-syntax": [
-        "error",
+      "no-restricted-syntax": srcRestrictedSyntaxWithout(
+        MONEY_CENTS_RESTRICTIONS,
         NO_BARE_TO_LOCALE_DATE_STRING,
         NO_BARE_TO_LOCALE_TIME_STRING,
         NO_BARE_TO_LOCALE_STRING,
-        ...RAW_SQL_RESTRICTIONS,
-        // #2684's encoding restrictions come here too. Without them this block
-        // would lift the date guard from every Xero, finance, payment, credit
-        // and API-route module — the exact files the guard was written for —
-        // and lint would stay green over it.
-        ...DATE_ONLY_ENCODING_RESTRICTIONS,
         ...MONEY_MODULE_RESTRICTIONS,
-      ],
+      ),
     },
   },
   {
     // #2685 — the exempt paths. The money restrictions are lifted here and ONLY
     // here, each with its written reason on `MONEY_GUARD_EXEMPTIONS` above; the
-    // date and raw-SQL restrictions still apply, which is why this block
-    // re-states them rather than switching the rule off.
+    // date and raw-SQL restrictions still apply, which is why this block drops
+    // one named group rather than switching the rule off.
     files: MONEY_HELPER_MODULES,
     rules: {
-      "no-restricted-syntax": [
-        "error",
+      "no-restricted-syntax": srcRestrictedSyntaxWithout(
+        MONEY_CENTS_RESTRICTIONS,
         NO_BARE_TO_LOCALE_DATE_STRING,
         NO_BARE_TO_LOCALE_TIME_STRING,
         NO_BARE_TO_LOCALE_STRING,
-        ...RAW_SQL_RESTRICTIONS,
-        ...DATE_ONLY_ENCODING_RESTRICTIONS,
-      ],
+      ),
     },
   },
   {

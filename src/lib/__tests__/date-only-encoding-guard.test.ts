@@ -3,7 +3,10 @@ import path from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import eslintConfig from "../../../eslint.config.mjs";
+import eslintConfig, {
+  MANDATORY_SRC_RESTRICTIONS,
+  SRC_RESTRICTION_EXEMPTIONS,
+} from "../../../eslint.config.mjs";
 
 /**
  * #2684 — the date-only ENCODING guard, second arm.
@@ -775,113 +778,194 @@ describe("an instant is never encoded as a calendar day by accident (#2684)", ()
   });
 });
 
+// Does every glob in a block's list name a TEST path?
+//
+// Its own named function because the subtle failure is easy to write and
+// impossible to see: asserting against the JOINED label (does `files.join()`
+// contain "__tests__") passes for a two-glob list whose FIRST glob is a
+// production path under `src/lib` and whose second is a `__tests__` one. Such a
+// block reads as a tests-only exemption and disarms the whole of `src/lib`.
+// EVERY glob must qualify, never the concatenation.
+function isTestOnlyGlobList(files: readonly string[]): boolean {
+  return (
+    files.length > 0 &&
+    files.every(
+      (pattern) => pattern.includes("__tests__") || pattern.includes(".test."),
+    )
+  );
+}
+
 describe("the lint guard cannot be dropped by a neighbouring config block (#2684)", () => {
-  type ConfigEntry = {
-    files?: string[];
-    rules?: Record<string, unknown>;
-  };
+  type Restriction = { selector: string; message: string };
+  type ConfigEntry = { files?: string[]; rules?: Record<string, unknown> };
 
   const entries = (eslintConfig as ConfigEntry[]).filter(
     (entry) => entry?.rules?.["no-restricted-syntax"] !== undefined,
   );
 
-  /** Selectors every `src/**` production block must carry. */
-  const MANDATORY_SELECTORS = [
-    // #2684 — the date-only encoding restrictions.
-    "CallExpression[callee.property.name=/^(slice|substring|substr)$/][callee.object.callee.property.name=/^(toISOString|toJSON)$/]",
-    "MemberExpression[computed=true][property.value=0][object.callee.property.name='split'][object.arguments.0.value='T']",
-    // #2289 — the raw-SQL restrictions, which have the same composition hazard.
-    "TaggedTemplateExpression[typeArguments][tag.property.name=/^\\$(queryRaw|executeRaw)(Unsafe)?$/]",
-  ];
+  const selectorsOf = (option: unknown): Set<string> | null => {
+    if (!Array.isArray(option)) return null;
+    return new Set(
+      option
+        .slice(1)
+        .map((r) => (typeof r === "string" ? r : (r as Restriction)?.selector))
+        .filter((s): s is string => typeof s === "string"),
+    );
+  };
 
-  /**
-   * The ONE block allowed to omit the encoding restrictions: the helper module
-   * that defines them away. Matched on its exact `files` list so widening it is
-   * a visible change here.
-   */
-  const DOCUMENTED_EXEMPTIONS = [["src/lib/date-only.ts"]];
+  const sameFiles = (a: readonly string[], b: readonly string[]) =>
+    a.length === b.length && a.every((f, i) => f === b[i]);
 
-  const isTestGlob = (pattern: string) =>
-    pattern.includes("__tests__") || pattern.includes(".test.");
+  /** Covers production code: names a `src/` path and is not entirely tests. */
+  const coversSrcProduction = (files: string[]) =>
+    files.some((f) => f.startsWith("src/")) && !isTestOnlyGlobList(files);
 
   it("sees the config it is meant to be pinning", () => {
+    // Vacuity guard. If this file stops resolving the config, every assertion
+    // below iterates an empty list and reports a clean bill of health.
     expect(
       entries.length,
-      "No config block sets `no-restricted-syntax` at all. Either the rule is " +
-        "gone or this test is reading the wrong export — both are failures.",
+      "No config block sets `no-restricted-syntax`. Either the rule is gone or " +
+        "this test is reading the wrong export — both are failures.",
     ).toBeGreaterThanOrEqual(4);
+    expect(
+      MANDATORY_SRC_RESTRICTIONS.length,
+      "The mandatory restriction set is empty, so requiring it of every block " +
+        "requires nothing.",
+    ).toBeGreaterThan(0);
   });
 
-  it("carries the mandatory restrictions in every src/** production block", () => {
-    // Flat config REPLACES a rule's option list; it does not merge. So a block
-    // added to lift ONE restriction silently takes every other restriction down
-    // with it for the files it matches, and lint still passes — the failure mode
-    // #2289's comment warned about and nothing enforced. This walks the RESOLVED
-    // config, which is what ESLint actually runs, rather than the source text.
+  it("keeps the guards this repository has already paid for in the mandatory set", () => {
+    // A FLOOR under the array, because every other assertion here measures
+    // blocks AGAINST that array — deleting a restriction from it would
+    // otherwise make the whole file agree that nothing is missing. Named guards
+    // only: one added later needs no edit here, removing one of these does.
+    const selectors = MANDATORY_SRC_RESTRICTIONS.map((r: Restriction) => r.selector);
+    const required: Array<[string, RegExp]> = [
+      ["#2684 date-only truncation", /toISOString\|toJSON/],
+      ["#2684 ISO split on T", /'split'/],
+      ["#2289 raw-SQL result cast", /queryRaw\|executeRaw/],
+    ];
+    for (const [label, pattern] of required) {
+      expect(
+        selectors.some((s) => pattern.test(s)),
+        `The mandatory restriction set no longer contains the ${label} guard. ` +
+          "Every other check in this file measures blocks against that set, so " +
+          "removing a restriction from it silently retires the guard everywhere.",
+      ).toBe(true);
+    }
+  });
+
+  it("carries every mandatory restriction in every src/** production block", () => {
+    // Flat config REPLACES a rule's option list; it does not merge. A block
+    // added to lift ONE restriction silently takes the others down with it for
+    // the files it matches, and lint still passes. This walks the RESOLVED
+    // config — what ESLint actually runs — and measures each block against the
+    // config's OWN mandatory array, so a guard added later is covered here
+    // without this test being touched.
     const gaps: string[] = [];
 
     for (const entry of entries) {
       const files = entry.files ?? [];
-      const coversSrc = files.some((f) => f.startsWith("src/") && !isTestGlob(f));
-      if (!coversSrc) continue;
-      if (
-        DOCUMENTED_EXEMPTIONS.some(
-          (exempt) =>
-            exempt.length === files.length && exempt.every((f, i) => f === files[i]),
-        )
-      ) {
-        continue;
-      }
+      if (!coversSrcProduction(files)) continue;
 
-      const option = entry.rules!["no-restricted-syntax"];
-      if (!Array.isArray(option)) {
-        gaps.push(`${JSON.stringify(files)}: turns the rule ${JSON.stringify(option)}`);
+      const exemption = SRC_RESTRICTION_EXEMPTIONS.find((e) =>
+        sameFiles(e.files, files),
+      );
+      const omitted = new Set(
+        (exemption?.omits ?? []).map((r: Restriction) => r.selector),
+      );
+
+      const selectors = selectorsOf(entry.rules!["no-restricted-syntax"]);
+      if (!selectors) {
+        gaps.push(
+          `${JSON.stringify(files)}: sets the rule to ` +
+            `${JSON.stringify(entry.rules!["no-restricted-syntax"])} over production code`,
+        );
         continue;
       }
-      const selectors = new Set(
-        option
-          .slice(1)
-          .map((r) => (typeof r === "string" ? r : (r as { selector?: string })?.selector))
-          .filter(Boolean),
-      );
-      for (const required of MANDATORY_SELECTORS) {
-        if (!selectors.has(required)) {
-          gaps.push(`${JSON.stringify(files)}: missing ${required}`);
+      for (const restriction of MANDATORY_SRC_RESTRICTIONS as Restriction[]) {
+        if (omitted.has(restriction.selector)) continue;
+        if (!selectors.has(restriction.selector)) {
+          gaps.push(`${JSON.stringify(files)}: missing ${restriction.selector}`);
         }
       }
     }
 
     expect(
       gaps,
-      "INV-DATE-019 and INV-OPS-001: An ESLint block covering " +
-        "`src/**` production code drops a restriction the rest of the config " +
-        "relies on. Flat config replaces the whole option list rather than " +
-        "merging it, so a block written to lift one rule removes the others by " +
-        "omission and lint goes green over an unguarded file. Build the list " +
-        "with `srcRestrictedSyntax(...)` in eslint.config.mjs, which spreads the " +
-        "mandatory restrictions for you.",
+      "INV-DATE-019 and INV-OPS-001: An ESLint block covering `src/**` " +
+        "production code drops a restriction the rest of the config relies on. " +
+        "Flat config replaces the whole option list rather than merging it, so " +
+        "a block written to lift one rule removes the others by omission and " +
+        "lint goes green over an unguarded file. Build the value with " +
+        "`srcRestrictedSyntax(...)`, or `srcRestrictedSyntaxWithout(GROUP)` " +
+        "when a block genuinely cannot obey one guard — and record that in " +
+        "SRC_RESTRICTION_EXEMPTIONS with a reason.",
     ).toEqual([]);
   });
 
-  it("keeps the encoding exemption to the helper module alone", () => {
-    const exempted = entries
-      .filter((entry) => {
-        const files = entry.files ?? [];
-        if (!files.some((f) => f.startsWith("src/") && !isTestGlob(f))) return false;
-        const option = entry.rules!["no-restricted-syntax"];
-        if (!Array.isArray(option)) return true;
-        const selectors = new Set(
-          option
-            .slice(1)
-            .map((r) => (typeof r === "string" ? r : (r as { selector?: string })?.selector))
-            .filter(Boolean),
-        );
-        return !selectors.has(MANDATORY_SELECTORS[0]);
-      })
+  it("switches the rule off only for blocks that are entirely tests", () => {
+    const disarmed = entries
+      .filter((entry) => entry.rules!["no-restricted-syntax"] === "off")
+      .filter((entry) => !isTestOnlyGlobList(entry.files ?? []))
       .map((entry) => JSON.stringify(entry.files));
 
     expect(
-      exempted,
+      disarmed,
+      "A block switches `no-restricted-syntax` off over globs that are not all " +
+        "test paths. Every glob in the list must be a test path — checking the " +
+        "concatenation lets one production glob ride along beside a test one " +
+        "and disarms every guard for it.",
+    ).toEqual([]);
+
+    // Pin the predicate itself, rather than trusting that today's config
+    // happens not to contain the mixed shape.
+    expect(
+      isTestOnlyGlobList(["src/**/__tests__/**/*.ts", "src/**/*.test.ts"]),
+    ).toBe(true);
+    expect(isTestOnlyGlobList(["src/lib/**/*.ts", "src/**/__tests__/**"])).toBe(
+      false,
+    );
+    expect(isTestOnlyGlobList([])).toBe(false);
+  });
+
+  it("keeps every exemption documented, exact, and to a named group", () => {
+    const mandatory = new Set(
+      (MANDATORY_SRC_RESTRICTIONS as Restriction[]).map((r) => r.selector),
+    );
+
+    for (const exemption of SRC_RESTRICTION_EXEMPTIONS) {
+      expect(
+        exemption.reason?.length ?? 0,
+        `The exemption for ${JSON.stringify(exemption.files)} carries no reason.`,
+      ).toBeGreaterThan(20);
+      expect(
+        exemption.omits.length,
+        `The exemption for ${JSON.stringify(exemption.files)} omits nothing, so it is not an exemption.`,
+      ).toBeGreaterThan(0);
+      for (const restriction of exemption.omits as Restriction[]) {
+        expect(
+          mandatory.has(restriction.selector),
+          `${JSON.stringify(exemption.files)} claims an exemption from a restriction that is not mandatory, so it is describing something already unenforced.`,
+        ).toBe(true);
+      }
+      expect(
+        entries.some((entry) => sameFiles(exemption.files, entry.files ?? [])),
+        `${JSON.stringify(exemption.files)} is exempted but no block has exactly those globs. Widening a block's globs must not carry its exemption along.`,
+      ).toBe(true);
+    }
+  });
+
+  it("exempts only the encoder's own module from the encoding restrictions", () => {
+    const exemptFromEncoding = SRC_RESTRICTION_EXEMPTIONS.filter((e) =>
+      (e.omits as Restriction[]).some((r) =>
+        /toISOString\|toJSON|'split'/.test(r.selector),
+      ),
+    ).map((e) => JSON.stringify(e.files));
+
+    expect(
+      exemptFromEncoding,
       "Only `src/lib/date-only.ts` may be exempt from the #2684 encoding " +
         "restrictions — it is where the truncation is supposed to live. Another " +
         "file needing an exemption is a site that was never classified.",
