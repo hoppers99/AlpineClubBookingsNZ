@@ -688,6 +688,56 @@ the components gained the names to make that possible — including a per-device
 name on the display pairing box and a named group per guest card, both of which
 also keep the selector unambiguous once a second row exists.
 
+### Card titles and heading semantics (#2796)
+
+`CardTitle` (`src/components/ui/card.tsx`) renders a `<div>`. It *looks* like a
+heading and every card in the product uses it as one, but until a call site says
+otherwise it carries no `role`, so it does not appear in a screen reader's
+heading list — one of the two main ways an assistive-technology user navigates a
+page — and `getByRole("heading", …)` can never match it.
+
+**Say the level, at the call site:**
+
+```tsx
+<CardHeader>
+  <CardTitle headingLevel={2}>Complete Payment</CardTitle>
+</CardHeader>
+```
+
+Four rules, and they are all deliberate:
+
+1. **There is no default level, and adding one is not a developer's decision.**
+   A card that is a page's main section and a card nested inside another card's
+   content cannot share a level, so a global default would give roughly 167 call
+   sites a level nobody chose. A silently wrong level is worse for a
+   screen-reader user than no heading at all, because it corrupts the outline
+   they navigate by. Whether `CardTitle` should ever gain a default is an open
+   question on #2796 and belongs to the repository owner.
+2. **Pick the level from the page's real outline.** Find the page's `<h1>`, do
+   not skip a level, and go one deeper for a card rendered inside another card's
+   `CardContent`. If the page has no `<h1>` at all, that is a different bug —
+   fix that first rather than inventing a level under nothing.
+3. **It is ARIA (`role="heading" aria-level={n}`), not a native `<h2>`.**
+   `.app-theme-scope :is(h1, h2, h3, h4)` in `src/app/globals.css` puts real
+   heading tags on `--font-heading` (League Spartan) at specificity (0,1,1), and
+   the rule is unlayered, so a native heading inside a card would restyle the
+   title and a Tailwind utility could not override it without `!important`. A
+   `<div>` carrying the role is identical to look at and identical to assistive
+   technology, and it is the pattern `roster-editor.tsx` had already proved
+   here. The prop is therefore purely additive: with no `headingLevel`, the
+   emitted markup is byte-identical to what it has always been, pinned by
+   `src/components/ui/__tests__/card-title-heading.test.tsx`.
+4. **Do not hand-write `role="heading" aria-level={n}` on a `CardTitle`.** That
+   spelling was invented three times independently (#1242, `roster-editor.tsx`,
+   #2779) before the prop existed. `card-title-heading-contract.test.ts` fails a
+   PR that brings it back, and also fails a PR whose Playwright spec asserts
+   `getByRole("heading", { name })` against text that only a plain `CardTitle`
+   renders — a positive assertion of that shape can never pass, and a negative
+   one (`toHaveCount(0)`) passes *vacuously*, which is worse.
+
+The sweep is partial by design. #2796 covered the member-facing journeys; the
+admin, finance and lodge screens are the long tail and are tracked separately.
+
 ### What a browser may say about a write it never saw an answer to (#2668)
 
 `fetch` rejects for two situations a client cannot tell apart: the request never

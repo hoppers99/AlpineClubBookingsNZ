@@ -327,8 +327,13 @@ to in order to pay for a booking the club saved for them.
 
 Fixed on both payment cards in `src/app/(authenticated)/bookings/[id]/page.tsx`
 — the DRAFT "Complete Booking" card and the "Complete Payment" card — with
-`role="heading" aria-level={2}` on the `CardTitle`, the same markup
-`src/components/admin/roster-editor.tsx` already uses. Level 2 sits directly
+`<CardTitle headingLevel={2}>`. Originally written as hand-rolled
+`role="heading" aria-level={2}`; #2796 moved the mechanism into `CardTitle`
+itself and now forbids call sites spelling it out, so both cards were migrated
+onto the prop. It emits identical DOM — pinned by
+`src/components/ui/__tests__/card-title-heading.test.tsx`, which renders both
+forms and compares them — and the convention lives in `docs/ARCHITECTURE.md` →
+"Card titles and heading semantics (#2796)". Level 2 sits directly
 under the page's single `<h1>`, so there is no skipped level, and the two cards
 are mutually exclusive (`DRAFT` is not a payment-owed status) so only one such
 heading is ever present. No visual change: an actual `<h2>` would have been

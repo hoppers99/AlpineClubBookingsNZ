@@ -401,7 +401,7 @@ export function RosterEditor({
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <CardTitle role="heading" aria-level={2}>Roster assignments</CardTitle>
+              <CardTitle headingLevel={2}>Roster assignments</CardTitle>
               <CardDescription>
                 {roster.guestCount} guest{roster.guestCount === 1 ? "" : "s"} staying ·{" "}
                 {draftAssignments.length} assignment{draftAssignments.length === 1 ? "" : "s"}
@@ -463,7 +463,7 @@ export function RosterEditor({
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <span className="font-mono text-lg text-muted-foreground">{template.sortOrder}.</span>
-                  <CardTitle role="heading" aria-level={2} className="text-lg">{template.name}</CardTitle>
+                  <CardTitle headingLevel={2} className="text-lg">{template.name}</CardTitle>
                   {!template.isEssential && <Badge variant="outline">Optional</Badge>}
                   {!template.isDueOnDate && <Badge variant="secondary">Not due this night</Badge>}
                 </div>
@@ -534,7 +534,7 @@ export function RosterEditor({
       })}
 
       <Card>
-        <CardHeader><CardTitle role="heading" aria-level={2} className="text-base">Chore staffing</CardTitle><CardDescription>Every active chore due this night, in roster order.</CardDescription></CardHeader>
+        <CardHeader><CardTitle headingLevel={2} className="text-base">Chore staffing</CardTitle><CardDescription>Every active chore due this night, in roster order.</CardDescription></CardHeader>
         <CardContent><ul className="space-y-2">
           {roster.templates.filter((template) => template.isDueOnDate).map((template) => {
             const count = (byTemplate.get(template.id) ?? []).filter((assignment) => assignment.bookingGuestId).length
@@ -553,7 +553,7 @@ export function RosterEditor({
       </Card>
 
       <Card>
-        <CardHeader><CardTitle role="heading" aria-level={2} className="text-base">Guest assignment check</CardTitle><CardDescription>Everyone in the lodge today, kept with their booking or family group. Someone leaving today is here this morning and can be given morning or anytime chores.</CardDescription></CardHeader>
+        <CardHeader><CardTitle headingLevel={2} className="text-base">Guest assignment check</CardTitle><CardDescription>Everyone in the lodge today, kept with their booking or family group. Someone leaving today is here this morning and can be given morning or anytime chores.</CardDescription></CardHeader>
         <CardContent className="space-y-4">
           {guestGroups.map((group) => (
             <section key={group.key} aria-label={group.label}>

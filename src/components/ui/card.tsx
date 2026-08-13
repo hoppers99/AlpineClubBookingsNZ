@@ -29,16 +29,47 @@ const CardHeader = React.forwardRef<
 ))
 CardHeader.displayName = "CardHeader"
 
-const CardTitle = React.forwardRef<
-  HTMLDivElement,
-  React.HTMLAttributes<HTMLDivElement>
->(({ className, ...props }, ref) => (
-  <div
-    ref={ref}
-    className={cn("font-semibold leading-none tracking-tight", className)}
-    {...props}
-  />
-))
+/**
+ * The level a card title may claim in the page's heading outline.
+ *
+ * There is deliberately **no default**. A card's correct level depends on the
+ * page it sits on — a card that is a page's main section is not the same level
+ * as a card nested inside another card's content — and a silently wrong level
+ * is worse for a screen-reader user than no heading at all (#2796).
+ */
+type CardTitleHeadingLevel = 1 | 2 | 3 | 4 | 5 | 6
+
+type CardTitleProps = React.HTMLAttributes<HTMLDivElement> & {
+  /**
+   * Opt in to heading semantics at this exact level, so the title appears in a
+   * screen reader's heading list and `getByRole("heading", …)` can find it.
+   *
+   * Omit it and `CardTitle` renders exactly what it always has: a plain `<div>`
+   * with no `role`, no `aria-level`, and the same classes. That default is
+   * pinned by `__tests__/card-title-heading.test.tsx`.
+   *
+   * **There is deliberately no default level, and how to choose one is not
+   * repeated here.** The convention — why this is ARIA rather than a native
+   * `<h2>`, how to pick the level from the page's outline, and why a global
+   * default is the owner's decision rather than a developer's — lives in ONE
+   * place: `docs/ARCHITECTURE.md` → "Card titles and heading semantics (#2796)".
+   * Restating it beside the code is how the two drift apart.
+   */
+  headingLevel?: CardTitleHeadingLevel
+}
+
+const CardTitle = React.forwardRef<HTMLDivElement, CardTitleProps>(
+  ({ className, headingLevel, ...props }, ref) => (
+    <div
+      ref={ref}
+      className={cn("font-semibold leading-none tracking-tight", className)}
+      {...(headingLevel === undefined
+        ? {}
+        : { role: "heading", "aria-level": headingLevel })}
+      {...props}
+    />
+  )
+)
 CardTitle.displayName = "CardTitle"
 
 const CardDescription = React.forwardRef<

@@ -740,7 +740,14 @@ export function BookingBedAllocationPanel({
   return (
     <Card id="bed-allocation" className="scroll-mt-20">
       <CardHeader className="pb-3">
-        <CardTitle className="flex flex-wrap items-center gap-2 text-base">
+        {/* Level 2: a top-level card on /bookings/[id], whose page <h1> is
+            "Booking Details" (#2796). e2e/bed-allocation.spec.ts asserts a
+            member sees NO such heading — an assertion that passed vacuously
+            while this was a plain <div>. */}
+        <CardTitle
+          headingLevel={2}
+          className="flex flex-wrap items-center gap-2 text-base"
+        >
           <BedDouble className="h-4 w-4" aria-hidden />
           Bed allocation
           {/* Both counts are this PAGE's, so on a paged stay the badge carries
