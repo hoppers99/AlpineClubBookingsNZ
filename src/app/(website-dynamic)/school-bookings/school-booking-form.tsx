@@ -64,6 +64,11 @@ export function SchoolBookingForm({ club }: { club: ClubIdentity }) {
   const [lodgeId, setLodgeId] = useState("");
   // Default-lodge soft cap for the single-lodge case (no selector).
   const [defaultSoftCap, setDefaultSoftCap] = useState(DEFAULT_SCHOOL_GROUP_SOFT_CAP);
+  // The DB-resolved default-lodge capacity, from the same endpoint. See the
+  // `effectiveCapacity` note below for why the prop alone is not enough.
+  const [defaultLodgeCapacity, setDefaultLodgeCapacity] = useState<number | null>(
+    null,
+  );
   const [cateringPreference, setCateringPreference] = useState<
     "CATERED" | "NON_CATERED" | "QUOTE_BOTH"
   >("QUOTE_BOTH");
@@ -88,16 +93,30 @@ export function SchoolBookingForm({ club }: { club: ClubIdentity }) {
         if (typeof data?.schoolGroupSoftCap === "number") {
           setDefaultSoftCap(data.schoolGroupSoftCap);
         }
+        if (typeof data?.defaultLodgeCapacity === "number") {
+          setDefaultLodgeCapacity(data.defaultLodgeCapacity);
+        }
       })
       .catch(() => setLodges([]));
   }, []);
 
   const lodgeChoiceRequired = lodges.length >= 2;
-  // Cap guests against the chosen lodge; fall back to the club/default
-  // lodge capacity for single-lodge clubs where no selector renders. The
-  // server re-validates against the requested lodge regardless.
+  // Cap guests against the chosen lodge; fall back to the DEFAULT lodge for
+  // single-lodge clubs where no selector renders. The server re-validates
+  // against the requested lodge regardless.
+  //
+  // Three sources in strict order, and the middle one is the fix (#2818
+  // decision 7): the chosen lodge, then the DB-resolved default capacity from
+  // the settings endpoint, then the `club` prop. The prop is only correct on the
+  // dedicated page, which spreads the real figure over the club identity before
+  // rendering; the `{{school-bookings}}` embed on an ordinary CMS page and the
+  // 404 page both pass the identity WITHOUT that spread, so the prop is the
+  // static fallback of 20 there. Preferring the fetched value makes every render
+  // path right, and keeps the prop as the first-frame value until the fetch
+  // lands.
   const selectedLodge = lodges.find((lodge) => lodge.id === lodgeId) ?? null;
-  const effectiveCapacity = selectedLodge?.capacity ?? club.lodgeCapacity;
+  const effectiveCapacity =
+    selectedLodge?.capacity ?? defaultLodgeCapacity ?? club.lodgeCapacity;
   const effectiveSoftCap = selectedLodge?.schoolGroupSoftCap ?? defaultSoftCap;
 
   const childTierLabel = (tier: AgeTier) =>

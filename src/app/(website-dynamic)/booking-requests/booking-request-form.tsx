@@ -58,6 +58,11 @@ export function BookingRequestForm({ club }: { club: ClubIdentity }) {
     Array<{ id: string; name: string }>
   >([]);
   const [otherLodgeId, setOtherLodgeId] = useState("");
+  // The DB-resolved default-lodge capacity, from the same settings endpoint. See
+  // the `effectiveCapacity` note below for why the prop alone is not enough.
+  const [defaultLodgeCapacity, setDefaultLodgeCapacity] = useState<number | null>(
+    null,
+  );
   const [showPricing, setShowPricing] = useState<boolean | null>(null);
   const [indicativePriceCents, setIndicativePriceCents] = useState<number | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
@@ -72,6 +77,9 @@ export function BookingRequestForm({ club }: { club: ClubIdentity }) {
         setShowPricing(Boolean(data?.showPricingToNonMembers));
         setLodges(Array.isArray(data?.lodges) ? data.lodges : []);
         setOtherLodges(Array.isArray(data?.otherLodges) ? data.otherLodges : []);
+        if (typeof data?.defaultLodgeCapacity === "number") {
+          setDefaultLodgeCapacity(data.defaultLodgeCapacity);
+        }
       })
       .catch(() => setShowPricing(false));
   }, []);
@@ -79,10 +87,22 @@ export function BookingRequestForm({ club }: { club: ClubIdentity }) {
   const validGuests = guests.filter((g) => g.firstName.trim() && g.lastName.trim());
   const datesValid = Boolean(checkIn && checkOut && checkOut > checkIn);
   const lodgeChoiceRequired = lodges.length >= 2;
-  // Cap guests against the chosen lodge; fall back to the club/default
-  // lodge for single-lodge clubs. The server re-validates per lodge.
+  // Cap guests against the chosen lodge; fall back to the DEFAULT lodge for
+  // single-lodge clubs. The server re-validates per lodge regardless.
+  //
+  // Three sources in strict order, and the middle one is the fix (#2818
+  // decision 7): the chosen lodge, then the DB-resolved default capacity from
+  // the settings endpoint, then the `club` prop. The prop is only correct on the
+  // dedicated page, which spreads the real figure over the club identity before
+  // rendering; the `{{booking-requests}}` embed on an ordinary CMS page and the
+  // 404 page both pass the identity WITHOUT that spread, so the prop is the
+  // static fallback of 20 there — the #1982 R1 regression, reintroduced on the
+  // paths nobody was looking at. Preferring the fetched value makes every render
+  // path right, and keeps the prop as the first-frame value until the fetch
+  // lands.
   const selectedLodge = lodges.find((lodge) => lodge.id === lodgeId) ?? null;
-  const effectiveCapacity = selectedLodge?.capacity ?? club.lodgeCapacity;
+  const effectiveCapacity =
+    selectedLodge?.capacity ?? defaultLodgeCapacity ?? club.lodgeCapacity;
 
   // The quote refetch is keyed on the serialized guest list, not the array
   // identity: `validGuests` is a fresh filter result every render, so using it
