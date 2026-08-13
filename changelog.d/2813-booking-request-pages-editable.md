@@ -5,7 +5,10 @@
   pages under **Site Appearance & Content → Page Content**, so you can edit the
   heading, the introduction and the copy around each form. The forms themselves
   are content tokens — `{{booking-requests}}` and `{{school-bookings}}` — so you
-  can also drop either form onto a page of your own.
+  can also drop either form onto a page of your own. A form you embed elsewhere
+  follows that page's privacy behaviour (its analytics and its security token),
+  while the dedicated `/booking-requests` and `/school-bookings` pages remain the
+  analytics-free, fresh-per-visit entry points.
 
   **Nothing about who can see them changes when you upgrade.** Both pages arrive
   with an empty menu title, which is what keeps a page out of your site menu and

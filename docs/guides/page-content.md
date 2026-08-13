@@ -64,6 +64,15 @@ button. Page Content is edited under the **content** permission area.
    has already shared, and the confirmation emails the system sends, keep
    working whichever you choose.
 
+   You can also drop either form onto a page of your own with the
+   `{{booking-requests}}` or `{{school-bookings}}` content token. If you do, that
+   page keeps its own privacy behaviour — the form is served under that page's
+   security settings and analytics, not the special handling the dedicated
+   `/booking-requests` and `/school-bookings` pages get. Those two dedicated pages
+   are the ones that never load analytics and always get a fresh per-visit
+   security token, because they are where a visitor types the most personal
+   information; a form you embed elsewhere follows the page it sits on.
+
 ### Hide a page, or delete it
 
 **Hide** is the reversible one. The page and everything you wrote stay exactly
