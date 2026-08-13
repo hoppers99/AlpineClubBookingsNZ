@@ -150,11 +150,22 @@ beforeEach(() => {
 });
 
 describe("admission (#2378, Q6)", () => {
-  it("admits ANY admitted admin — the shell is not a support permission", async () => {
+  it("requires overview:view — the level every admitted admin holds, and nothing narrower", async () => {
     await POST(request());
-    // `permission: false` is the decision: opening the shell grants zero evidence
-    // access, and every tool re-checks its own area at invocation.
-    expect(mocks.requireAdmin).toHaveBeenCalledWith({ permission: false });
+    // Q6: any admitted admin may ask, and the shell must not become a support
+    // permission. `overview:view` is how the codebase spells "any admitted admin" —
+    // every admin access-role grid carries it, and it is `guardAdminLayout`'s own
+    // default for an admin path with no more specific rule.
+    //
+    // The first cut asserted `{ permission: false }` here under a title claiming it
+    // admitted any admin. It did not: `permission: false` falls through to the
+    // Full-Admin check, so every scoped admin the layout had shown the tab to got a
+    // 403. This asserts the call shape because `requireAdmin` is mocked — the
+    // requirement's own semantics are `session-guards.ts`'s to test — but the shape
+    // it pins is now the one whose semantics match the title.
+    expect(mocks.requireAdmin).toHaveBeenCalledWith({
+      permission: { area: "overview", level: "view" },
+    });
   });
 
   it("returns the guard's own refusal untouched", async () => {
@@ -185,9 +196,16 @@ describe("the body is strict (#2378)", () => {
   });
 
   it("requires BOTH ticks to be stated", async () => {
-    const missing = body();
-    delete (missing as Record<string, unknown>).allowPeopleSearch;
-    expect((await POST(request(missing))).status).toBe(400);
+    // One deletion per tick: a `.default(false)` sneaked onto either field would
+    // pass a single-field check while breaking the wire contract's "an absent tick
+    // is a client that does not know the control exists" argument.
+    const missingSearch = body();
+    delete (missingSearch as Record<string, unknown>).allowPeopleSearch;
+    expect((await POST(request(missingSearch))).status).toBe(400);
+
+    const missingPersonal = body();
+    delete (missingPersonal as Record<string, unknown>).allowRecordPersonalDetails;
+    expect((await POST(request(missingPersonal))).status).toBe(400);
   });
 
   it("rejects invalid JSON with a 400", async () => {
@@ -215,6 +233,21 @@ describe("the module gate is indistinguishable from a missing route (#2378)", ()
     expect((await POST(request())).status).toBe(404);
     expect(mocks.runAnswer).not.toHaveBeenCalled();
   });
+
+  it("404s a MALFORMED body too when the module is off — never a 400 that proves the route exists", async () => {
+    // The module gate sits above body validation on purpose: a caller who can
+    // distinguish "invalid request" from "not found" has learned the module-off
+    // deployment carries this route, which is exactly the distinction the frozen
+    // 404 exists to remove.
+    mocks.readModuleFlag.mockResolvedValue(false);
+    const bad = new Request("https://example.test/api/admin/ai-diagnostics/ask", {
+      method: "POST",
+      body: "{{{not json",
+    });
+    const response = await POST(bad);
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "Not found" });
+  });
 });
 
 describe("the failure states are first-class and structured (#2378)", () => {
@@ -237,7 +270,7 @@ describe("the failure states are first-class and structured (#2378)", () => {
     expect(json.nextStep).toContain("AI Diagnostics");
   });
 
-  it("separates a missing credential from a general not-ready", async () => {
+  it("separates a missing credential from a general not-ready — for a support admin", async () => {
     mocks.readiness.mockResolvedValue({
       ready: false,
       moduleEnabled: true,
@@ -248,6 +281,42 @@ describe("the failure states are first-class and structured (#2378)", () => {
     });
     const json = await (await POST(request())).json();
     expect(json.reason).toBe("not_configured");
+  });
+
+  it("hides the credential state from a caller without support:view", async () => {
+    // The stored-credential state is one of exactly three things the readiness
+    // contract keeps behind support:view. Q6 admits every admin to this route, so
+    // without this tiering the ask endpoint would tell a bookings-only admin what
+    // the readiness endpoint refuses to.
+    mocks.freshMatrix.mockResolvedValue({
+      ok: true,
+      matrix: { support: "none", bookings: "view" },
+    });
+    mocks.readiness.mockResolvedValue({
+      ready: false,
+      moduleEnabled: true,
+      keyState: "not_configured",
+      monthlyBudgetCents: 5000,
+      databaseState: "verified",
+      blockers: ["key_missing"],
+    });
+    const readinessJson = await (await POST(request())).json();
+    expect(readinessJson.reason).toBe("not_ready");
+    expect(JSON.stringify(readinessJson)).not.toContain("API key");
+
+    // Same tiering on the operational-credential gate itself.
+    mocks.readiness.mockResolvedValue({
+      ready: true,
+      moduleEnabled: true,
+      keyState: "saved",
+      monthlyBudgetCents: 5000,
+      databaseState: "verified",
+      blockers: [],
+    });
+    mocks.apiKey.mockResolvedValue(null);
+    const credentialJson = await (await POST(request())).json();
+    expect(credentialJson.reason).toBe("not_ready");
+    expect(JSON.stringify(credentialJson)).not.toContain("API key");
   });
 
   it("refuses when metering is unhealthy, before any spend", async () => {
@@ -345,6 +414,18 @@ describe("client values are selectors, never facts (#2378, owner directive 3 Aug
     const selector = mocks.resolveContext.mock.calls[0][0].selector;
     expect(selector.routeKey).toBe("admin.bookings");
     expect(selector.recordId).toBe("clx0123456789abcdefgh");
+  });
+
+  it("drops an ILL-FORMED recordId but keeps the page context", async () => {
+    // The selector parser downstream rejects its whole selector on a malformed id,
+    // which would cost the operator the entire page context. The route drops the id
+    // instead, so the evidence block degrades to "route matched, no record".
+    await POST(
+      request(body({ pathname: "/admin/bookings", recordId: "foo.bar%2e" })),
+    );
+    const selector = mocks.resolveContext.mock.calls[0][0].selector;
+    expect(selector.routeKey).toBe("admin.bookings");
+    expect(selector.recordId).toBeUndefined();
   });
 
   it("ignores a registered recordId on a route that can hold no record", async () => {

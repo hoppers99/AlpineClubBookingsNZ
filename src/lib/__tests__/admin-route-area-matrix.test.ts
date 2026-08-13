@@ -110,13 +110,14 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   // ai-assistant config routes above.
   //
   // The `ask` route (AID-7, #2378) inherits "support" from the same prefix, but
-  // the assignment is DORMANT there by owner decision Q6: the handler calls
-  // `requireAdmin({ permission: false })`, so `inferAdminAccessRequirement`
-  // returns null and no area gate applies — any admitted admin may ask, and
+  // the handler OVERRIDES the inference by owner decision Q6: it passes
+  // `requireAdmin({ permission: { area: "overview", level: "view" } })` — the
+  // level every admin access-role grid carries, i.e. "any admitted admin" — and
   // every tool re-checks its own area at invocation. Its own route test pins
-  // the `permission: false` call. This row exists so that if someone removes
-  // that opt-out, the gate that silently springs into place (`support:view`,
-  // narrowing access against Q6) is at least the one adjudicated here.
+  // that call shape. This row records what the RESOLVER would say, so that if
+  // someone removes the explicit override, the gate that silently springs into
+  // place (`support:view`, narrowing access against Q6) is at least the one
+  // adjudicated here.
   "/api/admin/ai-diagnostics/ask": "support",
   "/api/admin/ai-diagnostics/readiness": "support",
   "/api/admin/ai-diagnostics/settings": "support",

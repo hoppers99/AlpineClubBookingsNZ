@@ -81,12 +81,15 @@ export const DIAGNOSTICS_EVIDENCE_STATES = [
    * WHO PRODUCES IT. Not `evidenceStateForToolResult` — the executor cannot know
    * whether a given question turns on live provider truth, and inventing a
    * heuristic there would be exactly the guessing this vocabulary exists to
-   * prevent. It is raised by the surface that assembles a `DiagnosticCase` (AID-7,
-   * #2378) when the finance pack's own scope disclosure applies to the question
-   * being answered, and folded in with `worstEvidenceState`, which is why it sits
-   * here rather than in the pack. Live provider reads themselves remain out of
-   * scope until an owner-approved issue designs their security, rate-limit,
-   * credential and audit story.
+   * prevent. The intended producer is the surface that assembles a
+   * `DiagnosticCase`, when the finance pack's own scope disclosure applies to the
+   * question being answered, folded in with `worstEvidenceState` — which is why it
+   * sits here rather than in the pack. AID-7 (#2378) shipped that surface WITHOUT
+   * producing this state — its contract review found the gap — so today NOTHING
+   * raises it and stored-only finance evidence presents as `ok`; #2815 is the
+   * filed follow-up that makes the finance pack mark the reads this applies to.
+   * Live provider reads themselves remain out of scope until an owner-approved
+   * issue designs their security, rate-limit, credential and audit story.
    */
   "provider_check_required",
   /**

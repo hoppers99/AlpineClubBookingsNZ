@@ -3,25 +3,30 @@
 /**
  * THE MODULE FLAG IS TRI-STATE ON THIS PAGE, AND `null` IS NOT "OFF" (#2803).
  *
- * This file exists because both bugs it pins actually shipped into this branch, and
- * both were invisible for the same reason: **`false` is unreachable here**.
- * `/admin/ai-diagnostics` is gated by the `aiDiagnostics` feature-route rule, so with
- * the module genuinely off the page 404s and never renders. Every falsy value that
- * reaches this markup is therefore `null` — "the club's module settings could not be
- * read".
- *
- * Which means a `!moduleEnabled` test or a two-armed ternary does not merely RISK
- * being wrong. It is wrong every single time it fires:
+ * This file exists because THREE versions of the same bug shipped into this branch:
  *
  *   1. `{!readiness.moduleEnabled && <Link href="/admin/modules">}` offered "Open
  *      Feature modules" — sending an administrator to switch on a module that may
  *      already be on, while the real fault went unmentioned.
  *   2. `{readiness.moduleEnabled ? "On" : "Off"}` reported the module as **Off** on
  *      the strength of a failed read.
+ *   3. The first version of THIS TEST then "fixed" 1 and 2 while mocking
+ *      `getDiagnosticsReadiness` wholesale and injecting `moduleEnabled: null`
+ *      directly — proving the markup could render `null` while the page itself read
+ *      the flag through `loadEffectiveModuleFlags()`, the lenient route-gating
+ *      loader whose read failure is `false`, so `null` could never actually arrive
+ *      and every branch this file "pinned" was dead code. The correctness review
+ *      (13 Aug 2026) caught it.
+ *
+ * So this file now holds BOTH halves. The markup half: `null` renders as unknown,
+ * `false` as Off, and neither borrows the other's copy. And the wiring half: the
+ * flag flows from `readDiagnosticsModuleFlag()` — the strict reader #2803 added,
+ * whose failure IS `null` — and the lenient loader is mocked to throw, so a
+ * regression back to it fails every case here loudly instead of quietly re-deadening
+ * the branches.
  *
  * The readiness contract states the rule in as many words — "a consumer must render
- * `null` as 'unknown', never as 'off': the two send an operator to different places"
- * — and nothing was checking that any consumer obeyed it. Now something is.
+ * `null` as 'unknown', never as 'off': the two send an operator to different places".
  */
 
 import { render, screen } from "@testing-library/react";
@@ -31,7 +36,7 @@ import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
 import type { DiagnosticsReadiness } from "@/lib/ai-diagnostics-config";
 
 const mocks = vi.hoisted(() => ({
-  readiness: null as DiagnosticsReadiness | null,
+  moduleFlag: null as boolean | null,
 }));
 
 vi.mock("@/lib/admin-layout-guard", () => ({
@@ -51,12 +56,35 @@ vi.mock("@/lib/admin-layout-guard", () => ({
   }),
 }));
 
+// The lenient loader treats a read failure as "modules off", which on this evidence
+// surface is the #2803 misreport itself. The page must not touch it; a regression
+// that does fails every test in this file with this sentence.
 vi.mock("@/lib/module-settings", () => ({
-  loadEffectiveModuleFlags: async () => ({ aiDiagnostics: true }),
+  loadEffectiveModuleFlags: async () => {
+    throw new Error(
+      "wrong loader: this page must read the flag via readDiagnosticsModuleFlag (#2803)",
+    );
+  },
 }));
 
 vi.mock("@/lib/ai-diagnostics-config", () => ({
-  getDiagnosticsReadiness: async () => mocks.readiness,
+  // The strict tri-state reader — the seam `null` genuinely arrives through.
+  readDiagnosticsModuleFlag: async () => mocks.moduleFlag,
+  // Mirrors the real function's documented behaviour of PRESERVING its input's
+  // tri-state rather than collapsing it (#2803), so the value the page passes in is
+  // the value the markup sees. Everything else is a fixed unready verdict.
+  getDiagnosticsReadiness: async (modules: {
+    aiDiagnostics: boolean | null;
+  }): Promise<DiagnosticsReadiness> => ({
+    ready: false,
+    moduleEnabled: modules.aiDiagnostics,
+    keyState: "not_configured",
+    monthlyBudgetCents: 0,
+    databaseState: "not_configured",
+    blockers: [
+      modules.aiDiagnostics === null ? "module_flags_unreadable" : "module_off",
+    ] as DiagnosticsReadiness["blockers"],
+  }),
 }));
 
 // The budget card fetches on mount and is covered by its own suite; this file is
@@ -67,25 +95,8 @@ vi.mock("../_components/diagnostics-budget-card", () => ({
 
 import DiagnosticsPage from "../page";
 
-function readiness(
-  moduleEnabled: DiagnosticsReadiness["moduleEnabled"],
-): DiagnosticsReadiness {
-  return {
-    ready: false,
-    moduleEnabled,
-    keyState: "not_configured",
-    monthlyBudgetCents: 0,
-    databaseState: "not_configured",
-    blockers: [
-      moduleEnabled === null ? "module_flags_unreadable" : "module_off",
-    ] as DiagnosticsReadiness["blockers"],
-  };
-}
-
-async function renderPage(
-  moduleEnabled: DiagnosticsReadiness["moduleEnabled"],
-) {
-  mocks.readiness = readiness(moduleEnabled);
+async function renderPage(moduleFlag: boolean | null) {
+  mocks.moduleFlag = moduleFlag;
   render(await DiagnosticsPage());
 }
 
@@ -117,17 +128,12 @@ describe("a module that really is on", () => {
 
 describe("a module that really is off", () => {
   /**
-   * THIS CASE CANNOT HAPPEN IN PRODUCTION, and is here precisely for that reason.
-   *
-   * The feature-route rule 404s the page when the module is off, so `false` never
-   * reaches this markup — which is what made both shipped bugs invisible. Rendering
-   * the component directly is the only place the distinction can be observed at all,
-   * and without this case the notice's condition is untested: swapping `=== null`
-   * back to `!` still renders the corrected copy, just under a looser test, and
-   * every other assertion here passes.
-   *
-   * So this is the one that holds the CONDITION rather than the wording, and it is
-   * mutation-verified against exactly that swap.
+   * NEARLY unreachable in production — the feature-route rule 404s the page when the
+   * module is off, so `false` shows only in a flip race between the proxy's read and
+   * the page's own. It is here because it is the case that holds the CONDITION
+   * rather than the wording: swapping `=== null` back to `!` still renders the
+   * corrected copy under the null cases, and only this one fails. Mutation-verified
+   * against exactly that swap.
    */
   it("says Off, and does NOT claim the state could not be established", async () => {
     await renderPage(false);

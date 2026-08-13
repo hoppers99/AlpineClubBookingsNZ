@@ -7,13 +7,16 @@
  * gate outstanding, and area permission for the route actually being requested. Only
  * then may chrome appear.
  *
- * WHY THIS IS A MODULE AND NOT A COPIED BLOCK. #2378 adds a SECOND admin-side layout
- * — Diagnostics gets its own workspace instead of inheriting the admin sidebar (owner
- * decision Q4) — and a second copy of this sequence is a second place for it to drift.
- * The failure would be silent and it would be serious: an `active` check that stops
- * being re-read, or a two-factor gate that is not carried into the new layout, does
- * not break a page. It quietly admits somebody. The owner's decision was for a
- * separate LAYOUT, never for separate SECURITY.
+ * WHY THIS IS A MODULE AND NOT A COPIED BLOCK. It was extracted when #2378 was going
+ * to add a second admin-side layout (owner decision Q4: a Diagnostics workspace
+ * without the admin sidebar), where a second copy of this sequence would be a second
+ * place for it to drift. THE OWNER SUPERSEDED Q4 ON 12 AUG 2026 — Diagnostics is
+ * asked from the Help bubble and its page lives under `/admin/*` — so `(admin)` is
+ * once again the only group layout, and the extraction survives for the opposite
+ * reason: the diagnostics page re-runs this ONE guard itself instead of trusting its
+ * parent layout, which only a module makes possible. The drift risk it was built
+ * against is unchanged: an `active` check that stops being re-read, or a two-factor
+ * gate a new layout forgets, does not break a page. It quietly admits somebody.
  *
  * SO THE ORDER IS PART OF THE CONTRACT, not an implementation detail:
  *

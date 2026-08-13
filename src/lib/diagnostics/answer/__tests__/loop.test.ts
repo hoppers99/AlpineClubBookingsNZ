@@ -160,6 +160,19 @@ describe("budget: every exit settles what it reserved (#2378)", () => {
     expect(mocks.settle.mock.calls[0][0]).toMatchObject({ success: false });
   });
 
+  it("builds the offer list BEFORE reserving, so a listing fault strands nothing", async () => {
+    // The one call in a round the provider try/catch does not cover is the tool
+    // listing. The contract review (13 Aug 2026) found it sitting between reserve
+    // and settle, where a throw stranded worst-case budget until the TTL sweep;
+    // the ordering — list, then reserve — is what this pins.
+    mocks.listDefinitions.mockImplementation(() => {
+      throw new Error("registry fault");
+    });
+    await expect(runDiagnosticsAnswer(input())).rejects.toThrow("registry fault");
+    expect(mocks.reserve).not.toHaveBeenCalled();
+    expect(mocks.settle).not.toHaveBeenCalled();
+  });
+
   it("never reserves when the round budget is already spent", async () => {
     // `beginRound` refuses first, so an exhausted loop must not take a reservation it
     // will only have to release.

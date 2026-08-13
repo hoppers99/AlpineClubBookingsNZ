@@ -34,15 +34,35 @@ import { describe, expect, it } from "vitest";
 const APP_DIR = join(import.meta.dirname, "..", "..", "app");
 
 /**
- * Route groups whose layout renders ADMIN surfaces and must therefore clear the
- * admin preamble — session, fresh member, active, forced password, 2FA, and area
- * permission for the requested path.
- *
- * `(authenticated)` and `(lodge)` are deliberately absent: they are member-facing
- * products that perform no admin-area admission at all, and folding them in here
- * would assert a rule they do not have.
+ * Groups that perform NO admin admission, each with the reason it is exempt from
+ * the must-call-the-guard rule. Exemption is from that rule ONLY: the
+ * no-preamble-steps sweep below still covers these, because a public layout that
+ * starts resolving admin route requirements is exactly as wrong as an admin one.
  */
-const ADMIN_LAYOUT_GROUPS = ["(admin)"] as const;
+const NON_ADMIN_GROUPS = [
+  "(authenticated)", // member-facing product; its own session gate, no admin areas
+  "(lodge)", // lodge-facing product; same
+  "(public)", // anonymous pages; admission would be a bug
+  "(website)", // the public website shell
+  "(website-dynamic)", // the public website's dynamic half
+] as const;
+
+/**
+ * The groups that MUST call the shared guard: everything discovered on disk minus
+ * the explicit exemptions above. The first version of this file hand-wrote
+ * `["(admin)"]` here and used discovery only for a containment check — so a
+ * brand-new `(diagnostics)/layout.tsx` re-implementing the preamble without the
+ * two-factor gate would have been discovered, then never read: verbatim the
+ * failure the docblock said this census prevents (contract review, 13 Aug 2026).
+ * Now a new group is swept automatically, and exempting it is a visible edit to
+ * the reasoned list above rather than an accident of a stale list here.
+ */
+const ADMIN_LAYOUT_GROUPS = discoverGroupLayouts()
+  .map((entry) => entry.group)
+  .filter((group) => !(NON_ADMIN_GROUPS as readonly string[]).includes(group));
+
+/** Every discovered group, for the rules that apply to admin and non-admin alike. */
+const ALL_LAYOUT_GROUPS = discoverGroupLayouts().map((entry) => entry.group);
 
 /** Every `layout.tsx` under a route group directly inside `src/app`. */
 function discoverGroupLayouts(): { group: string; path: string }[] {
@@ -87,6 +107,20 @@ const GUARD_MUST_PERFORM = [
   "hasAdminAreaAccess",
 ] as const;
 
+/**
+ * The strictly ADMIN-ADMISSION symbols, forbidden in EVERY group layout including
+ * the exempt member-facing ones. `recordAuthBounce`, the two-factor check and the
+ * onboarding select are deliberately not here — `(authenticated)` and `(lodge)`
+ * legitimately run their own member-session preambles with those pieces. What no
+ * non-admin layout may ever do is resolve admin route requirements or route
+ * refused members through admin logic.
+ */
+const ADMIN_ADMISSION_SYMBOLS = [
+  "getAdminRouteRequirement",
+  "isConsolidatedFeesPath",
+  "getFirstAccessibleAdminHref",
+] as const;
+
 
 /**
  * Source with comments AND import statements removed.
@@ -108,10 +142,17 @@ function executableCode(source: string): string {
 
 describe("the admin security preamble has exactly one implementation (#2378)", () => {
   it("discovered the route groups, so the assertions below are not vacuous", () => {
-    const found = discoverGroupLayouts().map((entry) => entry.group);
-    expect(found.length).toBeGreaterThan(0);
-    for (const required of ADMIN_LAYOUT_GROUPS) {
-      expect(found, `${required} has no layout.tsx`).toContain(required);
+    // The swept list is derived, so the guard here is against deriving an EMPTY
+    // list: `(admin)` must be in it, or discovery broke (moved directory, renamed
+    // group) and every it.each below silently ran zero times.
+    expect(ADMIN_LAYOUT_GROUPS).toContain("(admin)");
+    // And the exemptions must stay real directories: an exemption for a group that
+    // no longer exists is a stale hole waiting for a new group to take the name.
+    for (const exempt of NON_ADMIN_GROUPS) {
+      expect(
+        ALL_LAYOUT_GROUPS,
+        `${exempt} is exempted but has no layout.tsx`,
+      ).toContain(exempt);
     }
   });
 
@@ -168,6 +209,25 @@ describe("the admin security preamble has exactly one implementation (#2378)", (
     expect(guard).toContain("forcePasswordChange");
     expect(guard).toContain("member.active");
   });
+
+  it.each(ALL_LAYOUT_GROUPS)(
+    "%s performs no ADMIN admission logic, exempt or not",
+    (group) => {
+      // The exemption above is from must-call-the-guard, never from this: a public
+      // or member layout that starts resolving admin route requirements has
+      // re-implemented the one thing that must have one implementation.
+      const source = readFileSync(join(APP_DIR, group, "layout.tsx"), "utf8");
+      const code = source
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^[ \t]*\/\/.*$/gm, "");
+      for (const symbol of ADMIN_ADMISSION_SYMBOLS) {
+        expect(
+          code,
+          `${group}/layout.tsx performs "${symbol}" — admin admission belongs to admin-layout-guard.ts alone.`,
+        ).not.toContain(symbol);
+      }
+    },
+  );
 
   it("never redirects on the caller's behalf", () => {
     // `redirect()` throws. A helper that throws control flow makes the caller's

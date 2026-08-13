@@ -81,10 +81,22 @@ test("the module switch controls the tab AND the route together", async ({
   });
   expect(refused.status()).toBe(404);
 
+  // The tab still EXISTS with the module off — its presence is the admin's
+  // permission, decided by the layout; `moduleEnabled` only changes what it says.
+  // The design is deliberate (the docblock on `HelpWidgetProps.diagnostics`): a tab
+  // that says "switched off" beats a box whose every question would be refused.
+  // The first cut of this spec asserted the tab was GONE, which is the opposite of
+  // the shipped behaviour and of the unit test that clicks this very tab.
   await page.goto("/admin/bookings");
   await launcher(page).click();
   await expect(panel(page)).toBeVisible();
-  await expect(diagnosticsTab(page)).toHaveCount(0);
+  await diagnosticsTab(page).click();
+  await expect(page.getByText("AI Diagnostics is switched off")).toBeVisible();
+  // Its call to action must be a page that EXISTS with the module off — Feature
+  // modules — never /admin/ai-diagnostics, which 404s in exactly this state.
+  await expect(
+    panel(page).getByRole("link", { name: "Open Feature modules" }),
+  ).toHaveAttribute("href", "/admin/modules");
 
   // Back on, for the specs that follow.
   await setModuleSettings(page.request, {
@@ -191,14 +203,17 @@ test("the page owns setup and status, and the budget states its own limits", asy
   // and an enabled Save on an unedited field invites a pointless write.
   await expect(page.getByTestId("budget-save")).toBeDisabled();
 
-  // Module off: the budget says it cannot be read or changed and routes the
-  // operator to Feature modules, rather than rendering an editor that can only 404.
+  // Module off: the whole setup page is behind the aiDiagnostics feature-route
+  // rule, so it 404s rather than rendering a budget editor for a switched-off
+  // product. (The budget card's own module-off copy is reachable only in a flip
+  // race between the proxy's module read and the page's, which a browser test
+  // cannot stage — its unit suite covers that state.)
   await setModuleSettings(page.request, {
     ...(previousModules as Record<string, boolean>),
     aiDiagnostics: false,
   });
-  await page.goto("/admin/modules");
-  await expect(page.getByRole("heading").first()).toBeVisible();
+  const offResponse = await page.goto("/admin/ai-diagnostics");
+  expect(offResponse?.status()).toBe(404);
 
   await setModuleSettings(page.request, {
     ...(previousModules as Record<string, boolean>),

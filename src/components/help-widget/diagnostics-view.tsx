@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { Stethoscope } from "lucide-react";
 
+import { DIAGNOSTICS_WIRE_BOUNDS } from "@/lib/diagnostics/answer/contract";
 import { DIAGNOSTICS_TOOL_CONSENT_COPY } from "@/lib/diagnostics/tools/consent";
 
 import { DiagnosticsProvenance } from "./diagnostics-provenance";
@@ -87,8 +88,13 @@ export function DiagnosticsView({
           It cannot answer questions until someone who can manage Feature modules
           turns it on.
         </p>
-        <Link className="underline" href="/admin/ai-diagnostics">
-          Open the AI Diagnostics page
+        {/* Feature modules, NOT /admin/ai-diagnostics: this same PR put that page
+            behind the aiDiagnostics feature-route rule, so it 404s exactly when
+            this panel is on screen. The contract review (13 Aug 2026) caught the
+            first cut linking there — the panel's only call to action was a dead
+            end. The budget card already links here for the same reason. */}
+        <Link className="underline" href="/admin/modules">
+          Open Feature modules
         </Link>
       </div>
     );
@@ -245,7 +251,7 @@ export function DiagnosticsView({
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           rows={2}
-          maxLength={1000}
+          maxLength={DIAGNOSTICS_WIRE_BOUNDS.questionMaxChars}
           disabled={chat.budgetExhausted}
           data-testid="diagnostics-input"
           placeholder="Why will this booking not confirm?"

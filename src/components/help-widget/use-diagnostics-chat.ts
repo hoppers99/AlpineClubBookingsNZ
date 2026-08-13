@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type {
-  DiagnosticsAskProvenance,
-  DiagnosticsAskRequest,
-  DiagnosticsAskResponse,
-  DiagnosticsAskTurn,
+import {
+  DIAGNOSTICS_WIRE_BOUNDS,
+  type DiagnosticsAskProvenance,
+  type DiagnosticsAskRequest,
+  type DiagnosticsAskResponse,
+  type DiagnosticsAskTurn,
 } from "@/lib/diagnostics/answer/contract";
 
 /**
@@ -58,8 +59,11 @@ export interface DiagnosticsMessage {
 export const DIAGNOSTICS_STILL_WORKING_AFTER_MS = 4_000;
 
 /** Prior turns replayed. Mirrors the route's own zod bound; never over-send. */
-const MAX_SENT_TURNS = 8;
-const TURN_MAX_CHARS = 2_000;
+// The wire bounds come from the contract module — the one place both ends import —
+// never restated here. See DIAGNOSTICS_WIRE_BOUNDS's docblock for the drift this
+// replaced.
+const MAX_SENT_TURNS = DIAGNOSTICS_WIRE_BOUNDS.maxReplayedTurns;
+const TURN_MAX_CHARS = DIAGNOSTICS_WIRE_BOUNDS.turnMaxChars;
 
 export interface DiagnosticsAskOptions {
   pathname: string;
@@ -69,7 +73,14 @@ export interface DiagnosticsAskOptions {
    * under the operator's own authority before reading a field.
    */
   recordId?: string;
-  view?: Record<string, string>;
+  /**
+   * The contract's own shape, not a loose `Record<string, string>` — the loose type
+   * was assignable to the request while letting `{ filters: "oops" }` compile, which
+   * defeated the "compiler catches the disagreement" property this hook claims
+   * (correctness review, 13 Aug 2026). Note nothing in the UI sends this yet; the
+   * server-side allowlisting is ready and the wiring is #2816.
+   */
+  view?: DiagnosticsAskRequest["view"];
 }
 
 export interface UseDiagnosticsChat {
@@ -129,6 +140,23 @@ export const DIAGNOSTICS_NETWORK_FAILURE_COPY =
 /** The sentence shown when the module is off, which the route answers with a 404. */
 export const DIAGNOSTICS_UNAVAILABLE_COPY =
   "AI Diagnostics is not switched on for this club, so it cannot answer questions.";
+
+/**
+ * The per-admin limiter's own sentence (15 questions / 10 minutes — the refusal an
+ * operator working a batch of stuck bookings actually hits). The correctness review
+ * (13 Aug 2026) found the first cut collapsing the 429 into the network-failure copy
+ * above — "check your connection" to a throttled operator whose connection is fine,
+ * inviting exactly the retry storm the limiter exists to stop. The wording follows
+ * `DIAGNOSTICS_ASK_BLOCKED_COPY.rate_limited`, which only the rarer global backstop
+ * emits as a structured reply; a 429 arrives as a plain rate-limit response with no
+ * diagnostics body, so the client owns this one sentence.
+ */
+export const DIAGNOSTICS_RATE_LIMITED_COPY =
+  "That is a lot of questions in a short time. Wait a minute or two and ask again — you do not need to reload the page.";
+
+/** Session expired or access revoked mid-conversation: a 401/403 is not a transport fault. */
+export const DIAGNOSTICS_SESSION_FAILURE_COPY =
+  "Your session no longer allows this — it may have expired, or your access may have changed. Sign in again to keep asking.";
 
 export function useDiagnosticsChat(): UseDiagnosticsChat {
   const [messages, setMessages] = useState<DiagnosticsMessage[]>([]);
@@ -213,6 +241,28 @@ export function useDiagnosticsChat(): UseDiagnosticsChat {
           append({
             role: "assistant",
             text: DIAGNOSTICS_UNAVAILABLE_COPY,
+            blocked: true,
+          });
+          return;
+        }
+
+        // STATUS BEFORE BODY, and each refusal gets its own sentence. #2378 requires
+        // failure states to be first-class UX, and the two most reachable non-ok
+        // statuses in normal use are precisely the ones a "check your connection"
+        // collapse misdiagnoses: a 429 (the per-admin limiter) and a 401/403 (the
+        // session expired, or access changed mid-conversation).
+        if (response.status === 429) {
+          append({
+            role: "assistant",
+            text: DIAGNOSTICS_RATE_LIMITED_COPY,
+            blocked: true,
+          });
+          return;
+        }
+        if (response.status === 401 || response.status === 403) {
+          append({
+            role: "assistant",
+            text: DIAGNOSTICS_SESSION_FAILURE_COPY,
             blocked: true,
           });
           return;

@@ -31,12 +31,21 @@
  * The "Asking a question" section below says where to go, in prose, because an empty
  * input that does nothing reads as a fault.
  *
- * THE MODULE FLAG IS TRI-STATE HERE, AND MUST BE READ AS ONE (#2803). `false` is
- * unreachable on this page — the `aiDiagnostics` feature-route rule 404s it when the
- * module is off — so every falsy value that reaches the markup is `null`, meaning the
- * club's module settings could not be READ. A `!moduleEnabled` test or a two-armed
- * ternary therefore does not merely risk being wrong; it is wrong every time it
- * fires. Both are corrected below with the reasoning attached.
+ * THE MODULE FLAG IS TRI-STATE HERE, AND MUST BE READ AS ONE (#2803), which takes
+ * BOTH halves: the markup distinguishing `null` from `false`, and the flag arriving
+ * through the STRICT reader (`readDiagnosticsModuleFlag`), whose read failure is
+ * `null`. The first cut had only the markup half — it read the flag through the
+ * lenient route-gating loader, whose read failure is `false`, so every `null` branch
+ * below was dead and an unreadable settings row still rendered as "Off" (the #2803
+ * misreport, one layer above the fix).
+ *
+ * With the strict reader, `false` is still NEARLY unreachable here — the
+ * `aiDiagnostics` feature-route rule 404s the page when the module is off — but the
+ * proxy's read and this one are separate reads a moment apart, so a flip race can
+ * show it. `null` means the club's module settings could not be READ, and a
+ * `!moduleEnabled` test or a two-armed ternary collapses that into "Off", which is
+ * a statement about the club's settings when the truth is a statement about this
+ * request. Both branches below say which one they mean.
  *
  * READINESS IS TIERED ON THE SERVER (owner decision Q6). `readinessForAdmin` narrows
  * the full verdict for an administrator without `support:view`, and the detailed
@@ -48,9 +57,11 @@
 import { redirect } from "next/navigation";
 
 import { guardAdminLayout } from "@/lib/admin-layout-guard";
-import { getDiagnosticsReadiness } from "@/lib/ai-diagnostics-config";
+import {
+  getDiagnosticsReadiness,
+  readDiagnosticsModuleFlag,
+} from "@/lib/ai-diagnostics-config";
 import { readinessForAdmin } from "@/lib/diagnostics-readiness-tiers";
-import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 
 import { DiagnosticsBudgetCard } from "./_components/diagnostics-budget-card";
 
@@ -64,9 +75,16 @@ export default async function DiagnosticsPage() {
   const guard = await guardAdminLayout();
   if (guard.outcome === "redirect") redirect(guard.destination);
 
-  const flags = await loadEffectiveModuleFlags();
+  // THE STRICT TRI-STATE READER, not `loadEffectiveModuleFlags()`. The lenient
+  // loader treats any read failure as "modules off" — a deliberate fail-closed for
+  // route gating, and exactly the wrong answer on an EVIDENCE surface: it would
+  // render "Module: Off" for a settings row that could not be read, which is the
+  // #2803 misreport this page's own markup exists to avoid. The correctness review
+  // (13 Aug 2026) found the first cut using the lenient loader, which made every
+  // `null` branch on this page and in the budget card dead code.
+  const moduleFlag = await readDiagnosticsModuleFlag();
   const readiness = readinessForAdmin(
-    await getDiagnosticsReadiness({ aiDiagnostics: flags.aiDiagnostics }),
+    await getDiagnosticsReadiness({ aiDiagnostics: moduleFlag }),
     guard.permissionMatrix,
   );
 
@@ -144,21 +162,19 @@ export default async function DiagnosticsPage() {
           </div>
         )}
 
-        {/* THE MODULE STATE COULD NOT BE READ (#2803).
-            `null` is not "off", and on THIS page it is the only falsy value that
-            can reach here: `/admin/ai-diagnostics` is gated by the `aiDiagnostics`
-            feature-route rule, so with the module genuinely off the page 404s and
-            never renders at all.
+        {/* THE MODULE STATE COULD NOT BE READ (#2803). `null` is not "off".
 
             An earlier revision tested `!readiness.moduleEnabled` and offered "Open
-            Feature modules". Because `false` is unreachable, that link could only
-            ever appear for `null` — which means it was wrong every single time it
-            was shown, telling an administrator to go and switch on a module that
-            may well already be on, while the actual fault (the club's module
+            Feature modules" — telling an administrator to go and switch on a module
+            that may well already be on, while the actual fault (the club's module
             settings could not be read) went unmentioned. It is exactly the failure
             #2803 was filed for, and the readiness contract states the rule in as
             many words: a consumer must render `null` as "unknown", never as "off".
-            Testing `=== null` is what makes the branch mean what it says. */}
+            Testing `=== null` is what makes the branch mean what it says — `false`
+            (reachable only in a flip race, since the feature-route rule 404s this
+            page when the module is off) renders as the plain "Off" row above, a
+            true statement about the club's settings rather than this notice's
+            statement about a failed read. */}
         {readiness.moduleEnabled === null && (
           <p className="mt-3 text-sm text-muted-foreground">
             Whether the module is switched on could not be established — this is not

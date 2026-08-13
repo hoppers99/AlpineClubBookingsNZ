@@ -46,27 +46,35 @@ import { DIAGNOSTICS_ANSWER_BOUNDS } from "@/lib/diagnostics/answer/prompt";
  * THE GATE ORDER, and what each one is for. Nothing below may be reordered without
  * re-deciding the reason it sits where it does:
  *
- *   1. ADMISSION      any admitted administrator (owner decision Q6). `permission:
- *                     false` is deliberate: the shell must NOT become a `support:view`
- *                     permission, and every tool re-derives its own areas at
- *                     invocation. Opening this route grants zero evidence access.
+ *   1. ADMISSION      any admitted administrator (owner decision Q6), encoded as
+ *                     `overview:view` — the level every admin access-role grid
+ *                     carries, and the same default `guardAdminLayout` applies to an
+ *                     admin path with no more specific rule. The shell must NOT
+ *                     become a `support:view` permission, and every tool re-derives
+ *                     its own areas at invocation. Opening this route grants zero
+ *                     evidence access.
  *   2. RATE LIMITS    per-IP then per-admin, BEFORE the body is parsed, so an
  *                     unparseable or oversized body is still throttled. Diagnostics
  *                     has its OWN limiters, not page help's: one question is several
  *                     paid roundtrips.
- *   3. BODY           strict zod. Unknown keys are rejected rather than ignored.
- *   4. MODULE         fail-closed, and it answers with the module gate's own 404 —
- *                     see the note on `moduleOffResponse`.
+ *   3. MODULE         fail-closed, BEFORE the body is parsed, and it answers with
+ *                     the module gate's own 404 — see the note on
+ *                     `moduleOffResponse`. A validation 400 here would prove the
+ *                     route exists to exactly the caller the 404 is for.
+ *   4. BODY           strict zod. Unknown keys are rejected rather than ignored.
  *   5. GLOBAL LIMIT   the deployment-wide backstop.
  *   6. METERING       can't-record ⇒ don't-spend (ADR-005 §5).
- *   7. READINESS      the same fail-closed verdict the page shows.
- *   8. CREDENTIAL     the DEDICATED diagnostics key, never the page-help one.
- *   9. CONTEXT        the client's selector is RE-RESOLVED server-side, under this
+ *   7. OFFER MATRIX   the caller's areas, re-read fresh — early, because the
+ *                     refusal tiering in gates 8–9 needs it.
+ *   8. READINESS      the same fail-closed verdict the page shows; the credential
+ *                     detail in the reason is support-only.
+ *   9. CREDENTIAL     the DEDICATED diagnostics key, never the page-help one.
+ *  10. CONTEXT        the client's selector is RE-RESOLVED server-side, under this
  *                     admin's own freshly-read authority, before anything reads a
  *                     record. Client values are selectors, never facts.
- *  10. CONSENT        this question's ledger, seeded ONLY from what step 9 actually
+ *  11. CONSENT        this question's ledger, seeded ONLY from what step 10 actually
  *                     resolved and from the operator's two per-request ticks.
- *  11. ANSWER         the bounded loop.
+ *  12. ANSWER         the bounded loop.
  *
  * NOTHING HERE PERSISTS A CONVERSATION (owner decision Q5). The transcript arrives in
  * the request, is replayed as untrusted data, and is gone when the response is written.
@@ -127,7 +135,7 @@ const bodySchema = z
      * The operator's own allowlisted VIEW state for the page they are on — which tab
      * they have open, which status they filtered to.
      *
-     * It carries no route key: the server derives that from `pathname` (see gate 9).
+     * It carries no route key: the server derives that from `pathname` (see gate 10).
      * These fields are re-validated against the matched route's OWN declared
      * tabs/steps/statuses by `parseDiagnosticsPageSelector`, so an unknown token is
      * refused there rather than trusted here. Bounds are left to that parser too —
@@ -185,8 +193,24 @@ function blocked(
 }
 
 export async function POST(request: Request) {
-  // 1. ADMISSION. Any admitted admin; see the gate note above.
-  const guard = await requireAdmin({ permission: false });
+  // 1. ADMISSION — any admitted administrator (owner decision Q6).
+  //
+  //    `overview:view` IS "any admitted admin", not a permission carve-out: every
+  //    admin access-role grid carries it, and it is the same default requirement
+  //    `guardAdminLayout` applies to an admin path with no more specific rule —
+  //    including `/admin/ai-diagnostics` itself, which deliberately falls to the
+  //    overview catch-all (see `admin-permissions.ts`, OVERVIEW_ALLOWLIST).
+  //
+  //    The first cut of this route wrote `permission: false`, believing that meant
+  //    "any admitted admin". It meant Full Admin only: with no requirement,
+  //    `requireAdmin` falls through to `hasAdminAccess`, the literal `ADMIN` role —
+  //    so every scoped admin the layout had already shown the Diagnostics tab to
+  //    got a 403 their client could only report as a network fault, and the
+  //    per-invocation area checks (the actual security boundary) were never
+  //    exercised by anyone who did not already hold every area.
+  const guard = await requireAdmin({
+    permission: { area: "overview", level: "view" },
+  });
   if (!guard.ok) return guard.response;
   const actingMemberId = guard.session.user.id;
 
@@ -199,7 +223,16 @@ export async function POST(request: Request) {
   );
   if (!adminLimit.success) return rateLimitedResponse(adminLimit);
 
-  // 3. BODY.
+  // 3. MODULE — before the body is parsed. Tri-state: `null` means the setting could
+  //    not be READ (#2803), which is not the same as off — but it is equally not
+  //    authorisation to spend, so both refuse. This gate sits ABOVE body validation
+  //    so a malformed body cannot turn the frozen 404 into a 400 that proves the
+  //    route exists — `moduleOffResponse`'s whole point is that a module-off
+  //    deployment is indistinguishable from an address that was never registered.
+  const moduleEnabled = await readDiagnosticsModuleFlag();
+  if (moduleEnabled !== true) return moduleOffResponse();
+
+  // 4. BODY.
   let json: unknown;
   try {
     json = await request.json();
@@ -223,11 +256,6 @@ export async function POST(request: Request) {
     view,
   } = parsed.data;
 
-  // 4. MODULE. Tri-state: `null` means the setting could not be READ (#2803), which is
-  // not the same as off — but it is equally not authorisation to spend, so both refuse.
-  const moduleEnabled = await readDiagnosticsModuleFlag();
-  if (moduleEnabled !== true) return moduleOffResponse();
-
   // 5. GLOBAL BACKSTOP.
   const globalLimit = await checkRateLimit(rateLimiters.aiDiagnosticsGlobal, "global");
   if (!globalLimit.success) return blocked("rate_limited");
@@ -235,36 +263,21 @@ export async function POST(request: Request) {
   // 6. METERING.
   if (!isDiagnosticsMeteringHealthy()) return blocked("metering_unavailable");
 
-  // 7. READINESS — the same fail-closed verdict the page shows, so the two never
-  //    disagree about whether this product can answer.
-  const readiness = await getDiagnosticsReadiness({ aiDiagnostics: moduleEnabled });
-  if (!readiness.ready) {
-    // The blocker LIST is support-only (owner decision Q6, tiered readiness), so the
-    // reason here is deliberately coarse: "not ready" plus where to look. The page is
-    // where a support admin sees which gate failed.
-    return blocked(
-      readiness.keyState === "not_configured" ? "not_configured" : "not_ready",
-    );
-  }
-
-  // 8. CREDENTIAL — the dedicated diagnostics key.
-  const apiKey = await getOperationalDiagnosticsApiKey();
-  if (!apiKey) return blocked("not_configured");
-
-  // 8a. THE OFFER MATRIX, re-read FRESH from the database.
+  // 7. THE OFFER MATRIX, re-read FRESH from the database — before the readiness
+  //    gates, because the refusal tiering below needs it.
   //
-  //     Not `guard.session.user.adminPermissionMatrix`, even though the guard just
-  //     built one. `readFreshAdminPermissionMatrix` is the substrate's own reader and
-  //     its docblock names this route as the place the two-factor half of the check
-  //     belongs — which `requireAdmin` above has already done, so the pair is complete
-  //     here and nowhere else. It also refuses a member who has been deactivated or
-  //     put under a forced password change, as a typed failure rather than an empty
-  //     matrix that would quietly look like "no areas".
+  //    Not `guard.session.user.adminPermissionMatrix`, even though the guard just
+  //    built one. `readFreshAdminPermissionMatrix` is the substrate's own reader and
+  //    its docblock names this route as the place the two-factor half of the check
+  //    belongs — which `requireAdmin` above has already done, so the pair is complete
+  //    here and nowhere else. It also refuses a member who has been deactivated or
+  //    put under a forced password change, as a typed failure rather than an empty
+  //    matrix that would quietly look like "no areas".
   //
-  //     This matrix ONLY decides which tools are OFFERED. `invoke.ts` re-reads the
-  //     caller's authority on every single invocation, so nothing here is the security
-  //     boundary — see `definitions.ts`, which is emphatic that withholding is
-  //     courtesy and never the control.
+  //    This matrix ONLY decides which tools are OFFERED and how a refusal is worded.
+  //    `invoke.ts` re-reads the caller's authority on every single invocation, so
+  //    nothing here is the security boundary — see `definitions.ts`, which is
+  //    emphatic that withholding is courtesy and never the control.
   const freshMatrix = await readFreshAdminPermissionMatrix(actingMemberId);
   if (!freshMatrix.ok) {
     // A read failure is not a permission answer, so it must not be treated as one.
@@ -273,8 +286,35 @@ export async function POST(request: Request) {
     return blocked("provider_unavailable");
   }
   const matrix = freshMatrix.matrix;
+  // The stored-credential state is one of exactly three things the readiness
+  // contract keeps behind `support:view` (`diagnostics-readiness-tiers.ts`), and
+  // now that ANY admitted admin can reach this route, saying "no API key yet" to a
+  // caller without that area would leak it. They get the same coarse "not ready"
+  // sentence the tiered page shows them, which already says who can resolve it.
+  const canSeeOperationalDetail = matrix.support !== "none";
 
-  // 9. PAGE CONTEXT.
+  // 8. READINESS — the same fail-closed verdict the page shows, so the two never
+  //    disagree about whether this product can answer.
+  const readiness = await getDiagnosticsReadiness({ aiDiagnostics: moduleEnabled });
+  if (!readiness.ready) {
+    // The blocker LIST is support-only (owner decision Q6, tiered readiness), so the
+    // reason here is deliberately coarse: "not ready" plus where to look. The page is
+    // where a support admin sees which gate failed.
+    return blocked(
+      readiness.keyState === "not_configured" && canSeeOperationalDetail
+        ? "not_configured"
+        : "not_ready",
+    );
+  }
+
+  // 9. CREDENTIAL — the dedicated diagnostics key. Same tiering as gate 8: the
+  //    credential state is support-only detail.
+  const apiKey = await getOperationalDiagnosticsApiKey();
+  if (!apiKey) {
+    return blocked(canSeeOperationalDetail ? "not_configured" : "not_ready");
+  }
+
+  // 10. PAGE CONTEXT.
   //
   //    THE SERVER PICKS THE ROUTE, THE CLIENT ONLY SAYS WHERE IT IS. The browser sends
   //    its pathname; `matchDiagnosticsPageRoute` turns that into the registry's own
@@ -298,8 +338,18 @@ export async function POST(request: Request) {
   // from a list they were on before must not override it. `recordId` is offered only
   // where the matched route declares a kind for it — sending one for a static page
   // would be selecting a record the route can never be about.
+  //
+  // An ILL-FORMED id is dropped rather than passed through, because the selector
+  // parser downstream rejects its WHOLE selector on a malformed id — so an operator
+  // sitting on a bogus `/admin/members/foo.bar` would lose the entire page context
+  // instead of degrading to "route matched, no record". Dropping it here keeps the
+  // context and lets the evidence block say the record could not be established.
+  // The pattern matches the selector parser's own (`page-context/parse.ts`).
+  const wellFormed = (id: string | undefined) =>
+    id && /^[A-Za-z0-9_-]+$/.test(id) ? id : undefined;
   const selectedRecordId =
-    matched?.recordId ?? (matched?.route.recordKind ? recordId : undefined);
+    wellFormed(matched?.recordId) ??
+    (matched?.route.recordKind ? wellFormed(recordId) : undefined);
   const pageContext = await resolveDiagnosticsPageContext({
     selector: matched
       ? {
@@ -313,7 +363,7 @@ export async function POST(request: Request) {
   });
   const pageContextBlock = buildPageContextUserTurn(pageContext).content;
 
-  // 10. CONSENT. Seeded ONLY from the record the server itself just resolved — never
+  // 11. CONSENT. Seeded ONLY from the record the server itself just resolved — never
   //     from an id the client named. A `denied` or `unavailable` resolution seeds
   //     NOTHING, which is the fail-closed direction: the operator's ticks then apply to
   //     an empty investigation and every per-record entry refuses, which is exactly
@@ -347,7 +397,7 @@ export async function POST(request: Request) {
     if (excerpts.length > 0) sourceBlock = renderSourceEvidenceBlock(excerpts);
   }
 
-  // 11. ANSWER.
+  // 12. ANSWER.
   const result = await runDiagnosticsAnswer({
     apiKey,
     actingMemberId,
@@ -371,7 +421,11 @@ export async function POST(request: Request) {
       reportAiError({
         tag: "diagnostics-ask-unavailable",
         message: "An AI Diagnostics question could not be answered by the provider",
-        context: { pathname },
+        // The matched ROUTE KEY, never the raw pathname: a members-detail pathname
+        // carries a member id, and the AID substrate keeps identifiers out of
+        // durable rows and telemetry alike. The key names the screen, which is all
+        // an operator debugging provider availability needs.
+        context: { routeKey: matched?.route.key ?? "unmatched" },
       });
     }
     return blocked(result.reason, provenance);

@@ -20,9 +20,11 @@
  *                 in a user turn, never an instruction and never an assistant claim.
  *
  * EVERY EXIT SETTLES WHAT IT RESERVED. A reservation released by nothing pins
- * worst-case budget until the TTL sweep reclaims it, so the settle is in a `finally`
- * around the provider call rather than on the success path. The reservation is the one
- * piece of state in this loop that outlives the request.
+ * worst-case budget until the TTL sweep reclaims it, so NOTHING that can throw sits
+ * between the reserve and the settle: the tool list is built before the reservation,
+ * the provider call is wrapped so a throw becomes the same typed failure any other
+ * provider fault produces, and the settle runs unconditionally after it. The
+ * reservation is the one piece of state in this loop that outlives the request.
  *
  * THE TOOL LIST IS REBUILT EVERY ROUND, and that is not a micro-optimisation in
  * reverse — it is required. `invoke.ts` gate 11 extends the consent ledger with records
@@ -222,7 +224,16 @@ export async function runDiagnosticsAnswer(
     const opened = input.session.beginRound();
     if (!opened.ok) return finish("round_limit_reached");
 
-    // 2. RESERVE.
+    // 2. THE OFFER LIST — rebuilt per round, and BEFORE the reservation. Per round
+    // because a successful call may have widened the investigation: a per-record
+    // entry that was correctly withheld at round 0 becomes offerable once the ledger
+    // holds a record (see the module docblock). Before the reservation because this
+    // call is the one thing in the round the try/catch below does not cover — built
+    // here, a throw from it exits with nothing reserved, instead of stranding
+    // worst-case budget until the TTL sweep.
+    const tools = listDiagnosticsToolDefinitions(input.matrix, input.consent);
+
+    // 3. RESERVE.
     const reservation = await reserveDiagnosticsBudget();
     if (!reservation.ok) {
       return finish(
@@ -232,12 +243,7 @@ export async function runDiagnosticsAnswer(
       );
     }
 
-    // The offer list is rebuilt per round: a successful call may have widened the
-    // investigation, and a per-record entry that was correctly withheld at round 0
-    // becomes offerable once the ledger holds a record. See the module docblock.
-    const tools = listDiagnosticsToolDefinitions(input.matrix, input.consent);
-
-    // 3 + 4. ASK, then SETTLE WHATEVER HAPPENED.
+    // 4 + 5. ASK, then SETTLE WHATEVER HAPPENED.
     //
     // The catch is not decoration. `runDiagnosticsProviderRound` documents itself as
     // never throwing, and today it does not — but the reservation is the one piece of
@@ -307,7 +313,7 @@ export async function runDiagnosticsAnswer(
       };
     }
 
-    // 5 + 6. Run what it asked for. The provider's own content is replayed in the
+    // 6 + 7. Run what it asked for. The provider's own content is replayed in the
     // `assistant` role — see `DiagnosticsProviderResponse.assistantContent` for why
     // that is correct HERE and refused for client-supplied turns.
     messages.push({ role: "assistant", content: response.assistantContent });

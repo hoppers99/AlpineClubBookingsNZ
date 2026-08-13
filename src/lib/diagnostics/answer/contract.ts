@@ -92,6 +92,26 @@ export interface DiagnosticsAskRequest {
   };
 }
 
+/**
+ * THE WIRE BOUNDS, in the one module both ends import.
+ *
+ * These used to live only in the server-only prompt module, with the client
+ * hand-copying `8` and `2_000` under a comment saying "mirrors the route's own zod
+ * bound" and the textarea hard-coding `1000` — three restatements that nothing
+ * pinned, where drift would land as a 400 the client could only misreport as a
+ * network fault (contract review, 13 Aug 2026). Now the server's
+ * `DIAGNOSTICS_ANSWER_BOUNDS` composes these, the route's zod schema reads them,
+ * and the client trims and caps by them, so a bound has exactly one author.
+ */
+export const DIAGNOSTICS_WIRE_BOUNDS = {
+  /** Prior turns replayed per question. Older turns are dropped from the FRONT. */
+  maxReplayedTurns: 8,
+  /** Cap on one replayed turn. */
+  turnMaxChars: 2_000,
+  /** Cap on the operator's new question. */
+  questionMaxChars: 1_000,
+} as const;
+
 /** Why an ask was refused before the model was ever reached. */
 export type DiagnosticsAskBlockedReason =
   | "not_ready"
