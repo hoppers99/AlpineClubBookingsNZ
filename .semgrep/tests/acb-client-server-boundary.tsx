@@ -32,6 +32,35 @@ import { readFile } from "fs/promises";
 // ruleid: acb-client-server-boundary
 import { spawn } from "child_process";
 
+// The built-in that matters most in a repository doing XERO_ENCRYPTION_KEY and
+// webhook-HMAC work, and which the first draft of the list left out entirely.
+// ruleid: acb-client-server-boundary
+import { createHmac } from "node:crypto";
+// ruleid: acb-client-server-boundary
+import { hostname } from "os";
+// ruleid: acb-client-server-boundary
+import { request } from "node:https";
+// ruleid: acb-client-server-boundary
+import { Readable } from "stream";
+
+// The other server-only modules in `@/lib`. `@/lib/audit` pulls in Prisma
+// transitively, so one hop of laundering used to hide the database client from
+// a rule that only knew two module names.
+// ruleid: acb-client-server-boundary
+import { recordAudit } from "@/lib/audit";
+// ruleid: acb-client-server-boundary
+import { getXeroClient } from "@/lib/xero";
+
+// RE-EXPORTS. `export … from …` evaluates the module and puts it in the bundle
+// exactly as an import does, while reading like harmless barrel plumbing. All
+// three of these walked straight through the first version of the rule.
+// ruleid: acb-client-server-boundary
+export { prisma as reExportedPrisma } from "@/lib/prisma";
+// ruleid: acb-client-server-boundary
+export * from "@/lib/auth";
+// ruleid: acb-client-server-boundary
+export { readFileSync } from "node:fs";
+
 // A type-only import is erased before the bundle exists, so it cannot leak
 // anything and must not be reported. This is the shape the one real occurrence
 // in `src/` uses today.
@@ -39,6 +68,12 @@ import { spawn } from "child_process";
 import type { PrismaClient } from "@/lib/prisma";
 // ok: acb-client-server-boundary
 import type { Session } from "@/lib/auth";
+// TypeScript accepts `type` with no space before the brace, and the first
+// draft's `(?!type\s)` lookahead reported this as a violation.
+// ok: acb-client-server-boundary
+import type{ Adapter } from "@/lib/auth";
+// ok: acb-client-server-boundary
+export type { AuditEvent } from "@/lib/audit";
 
 // Ordinary client-side imports.
 // ok: acb-client-server-boundary
@@ -53,6 +88,11 @@ import { Button } from "@/components/ui/button";
 import { describePrismaError } from "@/lib/prisma-error-shape";
 // ok: acb-client-server-boundary
 import { useAuthState } from "@/lib/auth-client-state";
+// Not a Node built-in, whatever the name suggests.
+// ok: acb-client-server-boundary
+import { pathToRegexp } from "path-to-regexp";
+// ok: acb-client-server-boundary
+import { cryptoRandomId } from "@/lib/crypto-random-id";
 
 export function Fixture() {
   const [n] = useState(0);
@@ -60,8 +100,31 @@ export function Fixture() {
     <Button>
       {n} {String(prisma)} {String(siblingPrisma)} {String(auth)} {String(cookies)}
       {String(fs)} {String(readFile)} {String(spawn)} {formatNZDate(new Date())}
-      {String(describePrismaError)} {String(useAuthState)}
-      {String({} as PrismaClient)} {String({} as Session)}
+      {String(describePrismaError)} {String(useAuthState)} {String(createHmac)}
+      {String(hostname)} {String(request)} {String(Readable)} {String(recordAudit)}
+      {String(getXeroClient)} {String(pathToRegexp)} {String(cryptoRandomId)}
+      {String({} as PrismaClient)} {String({} as Session)} {String({} as Adapter)}
     </Button>
   );
+}
+
+// DYNAMIC forms. A lazily-fetched chunk is still shipped to the browser and
+// still readable there, so `await import()` and `require()` are the same defect
+// as a static import — and neither is a statement the static regex can see.
+export async function dynamicViolations() {
+  // ruleid: acb-client-server-boundary
+  const { prisma: lazyPrisma } = await import("@/lib/prisma");
+  // ruleid: acb-client-server-boundary
+  const lazyAuth = require("@/lib/auth");
+  // ruleid: acb-client-server-boundary
+  const lazyFs = await import("node:fs");
+  return { lazyPrisma, lazyAuth, lazyFs };
+}
+
+export async function dynamicPermitted() {
+  // ok: acb-client-server-boundary
+  const chart = await import("@/components/ui/chart");
+  // ok: acb-client-server-boundary
+  const dates = await import("@/lib/nzst-date");
+  return { chart, dates };
 }
