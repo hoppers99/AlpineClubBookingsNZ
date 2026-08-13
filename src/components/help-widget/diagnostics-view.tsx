@@ -4,7 +4,11 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { Stethoscope } from "lucide-react";
 
-import { DIAGNOSTICS_WIRE_BOUNDS } from "@/lib/diagnostics/answer/contract";
+import {
+  DIAGNOSTICS_WIRE_BOUNDS,
+  type DiagnosticsAskRequest,
+} from "@/lib/diagnostics/answer/contract";
+import { DIAGNOSTICS_PAGE_CONTEXT_BOUNDS } from "@/lib/diagnostics/page-context/types";
 import { DIAGNOSTICS_TOOL_CONSENT_COPY } from "@/lib/diagnostics/tools/consent";
 
 import { DiagnosticsProvenance } from "./diagnostics-provenance";
@@ -40,6 +44,63 @@ import {
  */
 
 /**
+ * FALLBACK view state, read from the URL at ask time (#2816).
+ *
+ * The primary channel is the page's own PUBLISHED APPLIED state (owner decision
+ * 13 Aug 2026) — post-parse values, defaults included — via
+ * `usePublishDiagnosticsViewState`. This URL read covers only pages that publish
+ * nothing: better than no context, but it is the operator's ADDRESS, not
+ * necessarily what the page applied, which is exactly why publication wins.
+ *
+ * SENT RAW, FILTERED SERVER-SIDE (registry-row allowlists; enum casing
+ * normalised there). Client-side rules mirror the server where silence would
+ * misrepresent: an overlong value is DROPPED, never truncated — a truncated
+ * filter value would tell the model the operator filtered by something they did
+ * not — and on a repeated key the FIRST value wins, matching how every page
+ * reads its own params (`.get()`), because pages given a repeated key either
+ * take the first or reject the lot.
+ */
+function viewFromLocationSearch():
+  | NonNullable<DiagnosticsAskRequest["view"]>
+  | undefined {
+  if (typeof window === "undefined") return undefined;
+  const params = new URLSearchParams(window.location.search);
+  const view: NonNullable<DiagnosticsAskRequest["view"]> = {};
+  const filters: Record<string, string> = Object.create(null) as Record<
+    string,
+    string
+  >;
+  let kept = 0;
+  let hasFilters = false;
+  for (const [key, rawValue] of params.entries()) {
+    if (kept >= DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.maxFilters * 2) break;
+    const value = rawValue.trim();
+    if (
+      !value ||
+      value.length > DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterValueMaxChars ||
+      key.length > DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterKeyMaxChars
+    ) {
+      continue;
+    }
+    if (key === "tab") {
+      if (view.tab === undefined) view.tab = value;
+    } else if (key === "step") {
+      if (view.step === undefined) view.step = value;
+    } else if (key === "status") {
+      if (view.status === undefined) view.status = value;
+    } else if (key === "errorCode") {
+      if (view.errorCode === undefined) view.errorCode = value;
+    } else if (!(key in filters)) {
+      filters[key] = value;
+      hasFilters = true;
+      kept += 1;
+    }
+  }
+  if (hasFilters) view.filters = { ...filters };
+  return Object.keys(view).length > 0 ? view : undefined;
+}
+
+/**
  * The screen the conversation was MOST RECENTLY asked from, when it is not this one.
  *
  * The last operator turn, not the first: ask on bookings, move to payments, ask
@@ -64,15 +125,20 @@ export function DiagnosticsView({
   pathname,
   moduleEnabled,
   recordId,
+  publishedView,
 }: {
   chat: UseDiagnosticsChat;
   pathname: string;
   moduleEnabled: boolean;
   /** The record the page registered as open, when the address does not name one. */
   recordId?: string;
+  /** The page's PUBLISHED applied view state (#2816). Wins over the URL fallback. */
+  publishedView?: DiagnosticsAskRequest["view"];
 }) {
   const [draft, setDraft] = useState("");
   const searchTickId = useId();
+  /** Ties the "your filters travel" notice to the question box for a screen reader. */
+  const viewDisclosureId = useId();
   const recordTickId = useId();
   const threadEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -115,7 +181,29 @@ export function DiagnosticsView({
     const question = draft.trim();
     if (!question) return;
     setDraft("");
-    void chat.ask(question, { pathname, ...(recordId ? { recordId } : {}) });
+    // THE PRECEDENCE, and there are only these two paths (owner decision,
+    // 13 Aug 2026):
+    //
+    //   a published object  the page's APPLIED state, and it is the answer even
+    //                       when it is EMPTY. A wired page that applied no
+    //                       filters publishes `{}`, and that must SUPPRESS the
+    //                       address read rather than invite it — the page has
+    //                       already said the address is not the state, which is
+    //                       exactly the case where the address is a lie (a
+    //                       malformed parameter the page's parser rejected, so
+    //                       the list is unfiltered while the URL still shows
+    //                       every filter).
+    //   nothing published   the URL fallback, for pages nobody has wired.
+    //
+    // An empty view is then dropped rather than sent: `view: {}` costs a wire
+    // field and tells the model nothing.
+    const view = publishedView ?? viewFromLocationSearch();
+    const hasView = view !== undefined && Object.keys(view).length > 0;
+    void chat.ask(question, {
+      pathname,
+      ...(recordId ? { recordId } : {}),
+      ...(hasView ? { view } : {}),
+    });
   };
 
   return (
@@ -253,11 +341,38 @@ export function DiagnosticsView({
           </div>
         </fieldset>
 
+        {/* THE DISCLOSURE (owner decision, 13 Aug 2026): the operator's current
+            page filters — including a typed search — travel with every question,
+            with NEITHER tick gating them. The decision was to always send and SAY
+            SO, so the sentence sits beside the input where the sending happens,
+            not in a doc nobody re-reads.
+
+            It says "on this page" rather than "that this page applied" because
+            both are true at once: a wired page publishes what it applied, and an
+            unwired one falls back to the address. And it names the ticks, because
+            a control that sits directly above something it does not govern is
+            read as governing it. */}
+        {/* IT IS WIRED TO THE BOX, not merely placed near it (review finding,
+            13 Aug 2026). Without the `id`/`aria-describedby` pair a screen-reader
+            user tabbing straight into the textarea never hears the notice at all,
+            which is the one audience the owner decision's "always send and SAY SO"
+            most obviously covers. */}
+        <p
+          id={viewDisclosureId}
+          data-testid="diagnostics-view-disclosure"
+          className="px-1 text-xs text-muted-foreground"
+        >
+          The filters and search on this page — including anything you have typed
+          into a search box — travel with your question, so Diagnostics can see
+          the list you are looking at. The boxes above do not affect that.
+        </p>
+
         <label htmlFor="diagnostics-question" className="sr-only">
           Ask diagnostics a question
         </label>
         <textarea
           id="diagnostics-question"
+          aria-describedby={viewDisclosureId}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           rows={2}

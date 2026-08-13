@@ -16,7 +16,11 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HelpWidget } from "@/components/help-widget/help-widget";
-import { HelpWidgetProvider } from "@/components/help-widget/help-widget-context";
+import {
+  HelpWidgetProvider,
+  usePublishDiagnosticsViewState,
+  type DiagnosticsViewState,
+} from "@/components/help-widget/help-widget-context";
 import type { HelpPageContent } from "@/lib/help/types";
 import type { DiagnosticsAskResponse } from "@/lib/diagnostics/answer/contract";
 
@@ -341,5 +345,228 @@ describe("the conversation stays with the operator (#2378, D8)", () => {
 
     resolve?.({ ok: true, status: 200, json: async () => answered() });
     await waitFor(() => expect(screen.queryByTestId("diagnostics-pending")).toBeNull());
+  });
+});
+
+/** Stands in for a wired admin list: publishes, then unmounts on "navigation". */
+function ViewPublisher({ view }: { view: DiagnosticsViewState | undefined }) {
+  usePublishDiagnosticsViewState(view);
+  return null;
+}
+
+function renderWidgetWithPublisher(view: DiagnosticsViewState | undefined) {
+  const tree = (published: DiagnosticsViewState | undefined, mounted = true) => (
+    <HelpWidgetProvider>
+      {mounted ? <ViewPublisher view={published} /> : null}
+      <HelpWidget
+        surface="admin"
+        llmEnabled={false}
+        resolveHelp={() => CONTENT}
+        diagnostics={{ moduleEnabled: true }}
+      />
+    </HelpWidgetProvider>
+  );
+  const { rerender } = render(tree(view));
+  return {
+    republish: (next: DiagnosticsViewState | undefined) => rerender(tree(next)),
+    navigateAway: () => rerender(tree(undefined, false)),
+  };
+}
+
+function sentBody(call = 0) {
+  return JSON.parse(
+    (fetch as unknown as { mock: { calls: [string, { body: string }][] } }).mock
+      .calls[call][1].body,
+  );
+}
+
+async function ask(question: string, expectedCalls = 1) {
+  fireEvent.change(screen.getByTestId("diagnostics-input"), {
+    target: { value: question },
+  });
+  fireEvent.click(screen.getByTestId("diagnostics-send"));
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(expectedCalls));
+}
+
+describe("the question carries the page's PUBLISHED APPLIED view state (#2816)", () => {
+  /**
+   * The owner decision of 13 Aug 2026: the channel is what the page APPLIED, not
+   * the address bar. These tests are the precedence half; the pages' own
+   * derivations are proved in `src/lib/__tests__/diagnostics-published-view-*`.
+   */
+  it("prefers the published view over the URL when the two disagree", async () => {
+    // The payments case in miniature: the address says nothing about the
+    // activity window the page actually applied, and it carries a stale status.
+    window.history.pushState({}, "", "/admin/payments?status=FAILED");
+    try {
+      renderWidgetWithPublisher({
+        status: "SUCCEEDED",
+        filters: { lastUpdatedFrom: "2026-05-13", lastUpdatedTo: "2026-08-13" },
+      });
+      openDiagnostics();
+      await ask("why is this payment not here?");
+      expect(sentBody().view).toEqual({
+        status: "SUCCEEDED",
+        filters: { lastUpdatedFrom: "2026-05-13", lastUpdatedTo: "2026-08-13" },
+      });
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
+  it("sends NO view when the page published an empty one, even from a filtered-looking URL", async () => {
+    // THE MALFORMED-ADDRESS CASE. `?from=13-45-2026` fails the bookings query
+    // schema, whose parse is total, so the page applied no filters at all while
+    // the address still displays every one of them. An empty publication must
+    // SUPPRESS the URL fallback — falling back here would report filters the
+    // list is not using, the exact wrong answer to "why is this booking not
+    // showing?".
+    window.history.pushState(
+      {},
+      "",
+      "/admin/bookings?status=CONFIRMED&from=13-45-2026&search=ngata",
+    );
+    try {
+      renderWidgetWithPublisher({});
+      openDiagnostics();
+      await ask("why is this booking not showing?");
+      expect(sentBody().view).toBeUndefined();
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
+  it("republishes when a filter changes, so the second question carries the second view", async () => {
+    const { republish } = renderWidgetWithPublisher({
+      filters: { search: "ngata" },
+    });
+    openDiagnostics();
+    await ask("first");
+    expect(sentBody(0).view).toEqual({ filters: { search: "ngata" } });
+
+    republish({ filters: { search: "hemi" } });
+    await ask("second", 2);
+    expect(sentBody(1).view).toEqual({ filters: { search: "hemi" } });
+  });
+
+  it("clears on navigation, so the next page cannot inherit the last one's filters", async () => {
+    // The conversation deliberately survives a navigation (D8), which is exactly
+    // why the view state must not: an operator who filtered the payments list to
+    // one member, then moved to bookings, must not have that name reported as
+    // the bookings list's filter.
+    const { navigateAway } = renderWidgetWithPublisher({
+      filters: { search: "ngata" },
+    });
+    openDiagnostics();
+    navigateAway();
+    await ask("and on this screen?");
+    expect(sentBody().view).toBeUndefined();
+  });
+});
+
+describe("the operator is told the filters travel (#2816, owner decision)", () => {
+  it("renders the disclosure on the surface where questions are typed", () => {
+    renderWidget();
+    openDiagnostics();
+    const disclosure = screen.getByTestId("diagnostics-view-disclosure");
+    expect(disclosure.textContent).toMatch(/filters and search on this page/);
+    // The free-text search is the part that is easy to be surprised by, and the
+    // ticks do NOT gate it — both facts have to be in the sentence.
+    expect(disclosure.textContent).toMatch(/typed into a search box/);
+    expect(disclosure.textContent).toMatch(/boxes above do not affect that/);
+    // It sits with the input, not somewhere the operator has to go looking.
+    expect(screen.getByTestId("diagnostics-input")).toBeTruthy();
+  });
+
+  it("wires the disclosure to the question box, so it is announced on focus", () => {
+    // Placing it next to the box is not enough: a screen-reader user tabbing
+    // straight into the textarea never hears an unassociated paragraph, and they
+    // are the audience the owner decision's "always send and SAY SO" most
+    // obviously covers (review finding, 13 Aug 2026).
+    renderWidget();
+    openDiagnostics();
+    const disclosure = screen.getByTestId("diagnostics-view-disclosure");
+    const input = screen.getByTestId("diagnostics-input");
+    expect(disclosure.id).toBeTruthy();
+    expect(input.getAttribute("aria-describedby")).toBe(disclosure.id);
+  });
+});
+
+describe("page help never gains the admin view state (#2816)", () => {
+  it("carries no view field, even while an admin list is publishing one", async () => {
+    // Diagnostics and page help are separate products with separate endpoints
+    // (ADR-001). The published state is read by the Diagnostics surface only, so
+    // a member-facing question cannot carry an operator's filters — including a
+    // search term naming a person.
+    render(
+      <HelpWidgetProvider>
+        <ViewPublisher view={{ filters: { search: "ngata" } }} />
+        <HelpWidget
+          surface="member"
+          llmEnabled
+          chatEndpoint="/api/help/chat"
+          resolveHelp={() => CONTENT}
+        />
+      </HelpWidgetProvider>,
+    );
+    fireEvent.click(screen.getByTestId("help-widget-launcher"));
+    // No Diagnostics surface exists at all without the prop that grants it.
+    expect(screen.queryByTestId("help-widget-tab-diagnostics")).toBeNull();
+
+    const input = screen.getByLabelText("Ask about this page");
+    fireEvent.change(input, { target: { value: "how do I book?" } });
+    fireEvent.click(screen.getByLabelText("Send question"));
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    const body = sentBody();
+    expect(body.view).toBeUndefined();
+    // And the published search term is nowhere in the payload at all.
+    expect(JSON.stringify(body)).not.toContain("ngata");
+  });
+});
+
+describe("the URL fallback still serves a page that publishes nothing (#2816)", () => {
+  it("sends the live query string as the view, raw", async () => {
+    // Unwired pages keep the original channel: read at ask time, sent raw,
+    // narrowed to the registry row's allowlists SERVER-side.
+    window.history.pushState({}, "", "/admin/bookings?status=CONFIRMED&from=2026-08-01&page=3");
+    try {
+      renderWidget();
+      openDiagnostics();
+      fireEvent.change(screen.getByTestId("diagnostics-input"), {
+        target: { value: "why is this list so short?" },
+      });
+      fireEvent.click(screen.getByTestId("diagnostics-send"));
+      await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+      const sent = JSON.parse(
+        (fetch as unknown as { mock: { calls: [string, { body: string }][] } }).mock
+          .calls[0][1].body,
+      );
+      expect(sent.view).toEqual({
+        status: "CONFIRMED",
+        filters: { from: "2026-08-01", page: "3" },
+      });
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
+  it("sends no view at all from a bare URL", async () => {
+    window.history.pushState({}, "", "/admin/bookings");
+    try {
+      renderWidget();
+      openDiagnostics();
+      fireEvent.change(screen.getByTestId("diagnostics-input"), {
+        target: { value: "anything" },
+      });
+      fireEvent.click(screen.getByTestId("diagnostics-send"));
+      await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+      const sent = JSON.parse(
+        (fetch as unknown as { mock: { calls: [string, { body: string }][] } }).mock
+          .calls[0][1].body,
+      );
+      expect(sent.view).toBeUndefined();
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
   });
 });

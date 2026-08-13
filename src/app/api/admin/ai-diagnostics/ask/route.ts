@@ -33,6 +33,7 @@ import { readFreshAdminPermissionMatrix } from "@/lib/diagnostics/page-context/a
 import { matchDiagnosticsPageRoute } from "@/lib/diagnostics/page-context/match";
 import { buildPageContextUserTurn } from "@/lib/diagnostics/page-context/render";
 import { resolveDiagnosticsPageContext } from "@/lib/diagnostics/page-context/resolve";
+import { DIAGNOSTICS_PAGE_CONTEXT_BOUNDS } from "@/lib/diagnostics/page-context/types";
 import { createDiagnosticsConsentLedger } from "@/lib/diagnostics/tools/consent";
 import type { DiagnosticsConsentRecordRef } from "@/lib/diagnostics/tools/consent";
 import { createDiagnosticsToolSession } from "@/lib/diagnostics/tools/session";
@@ -82,17 +83,62 @@ import { DIAGNOSTICS_ANSWER_BOUNDS } from "@/lib/diagnostics/answer/prompt";
  * silently introduce persistence to avoid that UX cost."
  */
 
+/**
+ * Refuse a control character in the two free-text fields — the SAME C0/DEL/C1 class
+ * the view filter below uses and `page-context/parse.ts` refuses, minus the three
+ * characters a typed question legitimately contains (tab, newline, carriage return).
+ *
+ * WHY IT IS HERE AT ALL, given `answer/prompt.ts` renders both fields through a fold
+ * that neutralises them (security re-review of PR #2831, 14 Aug 2026). U+0085 is a
+ * line terminator to every reader and to no JavaScript `\s`, so the line-anchored
+ * role-label defusal in that module did not anchor after one — and the two-hop path
+ * is real: a crafted filter value influences an answer, the browser stores it, and it
+ * comes back next turn as an untrusted `assistant` span through that exact renderer.
+ * The renderer is now folded, so this is the boundary half of the same fix: a request
+ * carrying a non-printing character in its question or its history is MALFORMED, and
+ * silently repairing malformed input is how a bypass gets built.
+ *
+ * The cost is stated rather than hidden: a transcript turn whose text somehow holds a
+ * control character makes that conversation unanswerable until the operator starts a
+ * new one. Provider text does not contain C1 characters in practice, and the failure
+ * is a visible 400 rather than a silently altered history.
+ *
+ * An explicit scan, not a regex, for the reason `parse.ts` gives: no escape sequence
+ * has to survive a future edit intact.
+ */
+function noControlCharacters(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x09 || code === 0x0a || code === 0x0d) continue;
+    if (code < 0x20 || code === 0x7f) return false;
+    if (code >= 0x80 && code <= 0x9f) return false;
+  }
+  return true;
+}
+
+const CONTROL_CHARACTER_MESSAGE = "must not contain control characters";
+
 /** Wire caps mirror the prompt module's own bounds, so we never over-send. */
 const bodySchema = z
   .object({
     pathname: z.string().min(1).max(300).regex(/^\//, "pathname must start with /"),
-    question: z.string().min(1).max(DIAGNOSTICS_ANSWER_BOUNDS.questionMaxChars),
+    question: z
+      .string()
+      .min(1)
+      .max(DIAGNOSTICS_ANSWER_BOUNDS.questionMaxChars)
+      .refine(noControlCharacters, { message: CONTROL_CHARACTER_MESSAGE }),
     transcript: z
       .array(
         z
           .object({
             role: z.enum(["operator", "assistant"]),
-            text: z.string().min(1).max(DIAGNOSTICS_ANSWER_BOUNDS.turnMaxChars),
+            text: z
+              .string()
+              .min(1)
+              .max(DIAGNOSTICS_ANSWER_BOUNDS.turnMaxChars)
+              .refine(noControlCharacters, {
+                message: CONTROL_CHARACTER_MESSAGE,
+              }),
           })
           .strict(),
       )
@@ -350,12 +396,117 @@ export async function POST(request: Request) {
   const selectedRecordId =
     wellFormed(matched?.recordId) ??
     (matched?.route.recordKind ? wellFormed(recordId) : undefined);
+  // THE VIEW IS FILTERED TO THE MATCHED ROUTE'S OWN ALLOWLISTS HERE (#2816),
+  // by the same degrade-don't-reject reasoning as the record id above: the
+  // selector parser's rejection is TOTAL, so one stray query parameter — a
+  // pagination key, an uppercase enum spelling, an unregistered filter — would
+  // cost the operator their whole page context. The browser sends its live URL
+  // state raw; this keeps what the row explicitly permits and silently drops
+  // the rest. Nothing here is trusted: whatever survives is re-validated by
+  // `parseDiagnosticsPageSelector` against the same allowlists, so this filter
+  // can only ever NARROW what reaches the resolver, never widen it.
+  //
+  // Status/tab spellings are normalised from the pages' own enum casing
+  // (`PAYMENT_PENDING`) to the registry's token vocabulary (`payment-pending`)
+  // before the allowlist test — a mapping, not a loosening: an unknown token
+  // still matches nothing and is dropped.
+  //
+  // The type is written on the CONST, not left to inference, because the selector
+  // below names these five fields one by one rather than spreading them: an inferred
+  // `{}` from the early return would make `allowlistedView.tab` a compile error and
+  // invite the spread back.
+  const allowlistedView: {
+    tab?: string;
+    step?: string;
+    status?: string;
+    errorCode?: string;
+    filters?: Record<string, string>;
+  } = (() => {
+    if (!matched || !view) return {};
+    const token = (value: string | undefined): string | undefined => {
+      const normalised = value?.trim().toLowerCase().replace(/_/g, "-");
+      return normalised && /^[a-z0-9][a-z0-9._-]*$/.test(normalised)
+        ? normalised
+        : undefined;
+    };
+    const pick = (
+      value: string | undefined,
+      allowed: readonly string[],
+    ): string | undefined => {
+      const candidate = token(value);
+      return candidate && allowed.includes(candidate) ? candidate : undefined;
+    };
+    const out: {
+      tab?: string;
+      step?: string;
+      status?: string;
+      errorCode?: string;
+      filters?: Record<string, string>;
+    } = {};
+    const tab = pick(view.tab, matched.route.tabs);
+    if (tab) out.tab = tab;
+    const step = pick(view.step, matched.route.steps);
+    if (step) out.step = step;
+    const status = pick(view.status, matched.route.statuses);
+    if (status) out.status = status;
+    const errorCode = pick(view.errorCode, matched.route.errorCodes);
+    if (errorCode) out.errorCode = errorCode;
+    if (view.filters) {
+      const filters: Record<string, string> = {};
+      let kept = 0;
+      for (const [key, value] of Object.entries(view.filters)) {
+        // The bounds are IMPORTED, never restated (review finding, 13 Aug 2026).
+        // The selector parser's rejection is total, so tightening `maxFilters` or
+        // `filterValueMaxChars` there and not here would silently cost every
+        // question its page context — the exact failure this filter exists to
+        // avoid.
+        if (kept >= DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.maxFilters) break;
+        if (!matched.route.filterKeys.includes(key)) continue;
+        const trimmed = value.trim();
+        // An overlong or control-carrying value is DROPPED, not truncated: a
+        // truncated filter value would tell the model the operator filtered by
+        // something they did not.
+        //
+        // The C1 block (U+0080–U+009F) is in the class below because U+0085 is a
+        // line terminator that JavaScript's `\s` does NOT match, so it survives
+        // the evidence renderer's newline collapse and can fake a new bullet
+        // inside the block. `page-context/parse.ts` refuses the same range; this
+        // filter must never be the looser of the two, or a value kept here would
+        // sink the whole selector there.
+        if (
+          trimmed.length === 0 ||
+          trimmed.length >
+            DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterValueMaxChars ||
+          /[\u0000-\u001f\u007f\u0080-\u009f]/.test(trimmed)
+        ) {
+          continue;
+        }
+        filters[key] = trimmed;
+        kept += 1;
+      }
+      if (kept > 0) out.filters = filters;
+    }
+    return out;
+  })();
+  // THE FIVE VIEW FIELDS ARE WRITTEN OUT, never spread (hardening finding, 14 Aug
+  // 2026). `...allowlistedView` after `routeKey` was safe only because that object
+  // is a fresh literal built four lines up with exactly these five keys: the day an
+  // edit lets a sixth through — `routeKey`, `recordId`, `includeSensitiveRecord` —
+  // a client-derived value would re-point the route, name another record, or turn on
+  // the personal-details opt-in, and the spread's position is the only thing
+  // deciding it. Naming the fields makes that structurally impossible instead of
+  // conventionally unlikely. (Undefined is what the parser's `.optional()` fields
+  // already expect; it is not a key the selector carries.)
   const pageContext = await resolveDiagnosticsPageContext({
     selector: matched
       ? {
           routeKey: matched.route.key,
           ...(selectedRecordId ? { recordId: selectedRecordId } : {}),
-          ...(view ?? {}),
+          tab: allowlistedView.tab,
+          step: allowlistedView.step,
+          status: allowlistedView.status,
+          errorCode: allowlistedView.errorCode,
+          filters: allowlistedView.filters,
           includeSensitiveRecord: allowRecordPersonalDetails,
         }
       : { routeKey: null },

@@ -43,6 +43,8 @@
 
 import "server-only";
 
+import { defuseRoleLabelLines, foldUntrustedText } from "../untrusted-text";
+
 import { DIAGNOSTICS_WIRE_BOUNDS } from "./contract";
 
 /** The wrapper for the replayed conversation. */
@@ -135,9 +137,19 @@ export const DIAGNOSTICS_SYSTEM_PROMPT =
  * row renderer's `neutralize`, where a value is one field on one line): a diagnostics
  * question can legitimately be several lines, and flattening it would corrupt the
  * operator's own words for no security gain now that the labels are defused.
+ *
+ * THE SPAN IS FOLDED BEFORE ANY OF THAT (security re-review of PR #2831, 14 Aug
+ * 2026), because a line-anchored pattern is only as good as its idea of a line and
+ * a label match only as good as its idea of a colon. `/^b/m.test("a" + U+0085 + "b")` is
+ * FALSE — U+0085 is a line terminator to a reader and to nothing in JavaScript — and
+ * `assistant<ZWSP>:` matched no pattern here at all. `foldUntrustedText` turns every
+ * line terminator into `\n`, every other control character into a space, drops the
+ * invisible code points, and folds the compatibility colons; the anchoring and the
+ * defusal below then see the text the model will. It runs before the bracket strip
+ * because `＜` (U+FF1C) folds to `<`.
  */
 function neutralize(value: string): string {
-  let out = value.replace(/[<>]/g, "");
+  let out = foldUntrustedText(value, "keep").replace(/[<>]/g, "");
   out = out.split(CONVERSATION_TAG).join(NEUTRALIZED_CONVERSATION_TAG);
   out = out.split(QUESTION_TAG).join(NEUTRALIZED_QUESTION_TAG);
   for (const label of Object.values(TURN_LABEL)) {
@@ -156,10 +168,10 @@ function neutralize(value: string): string {
   // `system:`, `user:`…), not only the two this module writes. Line-anchored so an
   // operator legitimately writing "the assistant: replied…" mid-sentence is left
   // alone; only a line that PARSES as a role prefix is defused.
-  out = out.replace(
-    /^(\s*)(assistant|operator|system|user|human|model)(\s*):/gim,
-    "$1$2$3․",
-  );
+  //
+  // Shared with the page-context renderer since #2816, which had no defusal at all
+  // while gaining a link-supplied free-text channel into the same conversation.
+  out = defuseRoleLabelLines(out);
   return out.trim();
 }
 

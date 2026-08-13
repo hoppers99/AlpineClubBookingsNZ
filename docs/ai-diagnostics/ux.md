@@ -41,10 +41,41 @@ which points at the page.
 
 What travels with a question is the **pathname**, the operator's chosen **record id**
 (a selector the server re-resolves; the kind always comes from the route the server
-matches), the replayed transcript, and the two ticks. The route also accepts an
-allowlisted **view state** (tab, status, filters) that the registry re-validates per
-page — the UI does not send it yet; wiring the pages' own view state through is
-#2816.
+matches), the replayed transcript, and the two ticks.
+
+### The question also carries what the page is filtered to (#2816)
+
+The channel is the page's own **applied** state, not the address bar (owner decision,
+13 Aug 2026). Each wired list publishes the filters that actually reached its query —
+post-parse, defaults included — and a page that publishes nothing falls back to the
+bubble reading the query string at ask time. The mechanism, and the four pages wired
+so far, are in [`page-context.md`](page-context.md#where-the-view-state-comes-from);
+the route then keeps only what the matched registry row's allowlists permit and drops
+the rest silently, because one stray pagination key must never cost the whole context.
+
+The address bar was rejected as the channel because on these pages it is routinely
+not what the operator is looking at. Payments defaults its activity window to the last
+three club-timezone months in **React state**: a bare `/admin/payments` is already
+filtered by a window nothing in the address named, and the page's own URL sync effect
+only writes it there afterwards — and that window is the single most common reason a
+payment an operator expects is not on screen. The bookings parse is total, so one
+malformed date drops **every** filter while the URL still displays them all. And a
+page whose load failed publishes that failure, where the address cannot express it at
+all: it still shows the filters, on a screen with no list behind them.
+
+**The operator is told, beside the input, that this happens.** The disclosure sits in
+the Diagnostics panel above the question box rather than in a document, because that is
+where the sending happens:
+
+> The filters and search on this page — including anything you have typed into a search
+> box — travel with your question, so Diagnostics can see the list you are looking at.
+> The boxes above do not affect that.
+
+Its last sentence is the load-bearing one. **A typed search term travels ungated by
+either consent tick** (owner decision, 13 Aug 2026): the ticks govern reading a
+record's personal details and searching for people, not the filter state of the screen,
+and a control sitting directly above something it does not govern would be read as
+governing it.
 
 ## The Diagnostics tab
 

@@ -15,12 +15,15 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { DiagnosticsRecordButton } from "@/components/help-widget/diagnostics-record-button";
+import { DiagnosticsViewStatePublisher } from "@/components/help-widget/diagnostics-view-state-publisher";
+import type { DiagnosticsViewState } from "@/components/help-widget/help-widget-context";
 import { StatusChip } from "@/components/ui/status-chip";
 import { MiniChip } from "@/components/ui/mini-chip";
 import { type ChipTone } from "@/lib/chip-tones";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   adminBookingsQuerySchema,
+  appliedBookingViewFilters,
   buildAdminBookingsWhere,
   getDefaultAdminBookingSortDir,
   listAdminBookings,
@@ -190,6 +193,46 @@ export default async function AdminBookingsPage({
   const consentState = query.consentState;
   const consentExceptions =
     consentState === "attention" ? await listMemberGuestConsentExceptions() : [];
+
+  // WHAT THIS PAGE ACTUALLY FILTERED BY, published for AI Diagnostics (#2816,
+  // owner decision 13 Aug 2026). Built from `query` — the POST-PARSE values —
+  // never from `params`, and that distinction is the whole reason the channel
+  // exists here: `adminBookingsQuerySchema.safeParse` is TOTAL, so one malformed
+  // value (`?from=13-45-2026`) drops the ENTIRE filter set back to defaults while
+  // the address bar still displays every one of them. Reading the address would
+  // tell the model the operator had narrowed a list they are in fact seeing
+  // unfiltered — the exact wrong answer to "why is this booking not here?".
+  //
+  // It always publishes an OBJECT, empty when nothing was applied — never
+  // `undefined`. `undefined` means "this page publishes nothing", which hands the
+  // widget back to its URL fallback and would re-read the very address this page
+  // just refused.
+  //
+  // THE DERIVATION ITSELF IS `appliedBookingViewFilters`, in the service beside
+  // `buildBookingWhere`. It has to be maintained in the same edit as the builder
+  // it describes — the first cut of this block lived here, suppressed the LOSING
+  // legacy alias but never published the WINNING bound, and so reported
+  // `?checkOutTo=<today>` (a URL two dashboard cards deep-link to) as no window at
+  // all. The free-text search travels, per the owner decision, and the Diagnostics
+  // panel says so beside the input.
+  //
+  // ASSIGNED BY NAME ONTO A TYPED EMPTY OBJECT, never built as a spread literal.
+  // That is what makes the compiler-drift claim in `help-widget-context.tsx` true:
+  // a conditional spread or an IIFE loses object-literal freshness, so TypeScript
+  // runs no excess-property check and a field renamed in the contract compiles
+  // clean here (mutation-proven, review 13 Aug 2026).
+  const appliedView: DiagnosticsViewState = {};
+  // The attention queue REPLACES the bookings table with the per-guest consent
+  // exceptions table, and `listMemberGuestConsentExceptions()` takes no filter
+  // arguments at all. Nothing on screen is filtered by these values, so nothing
+  // about them is published. (`consentState` is not in this row's allowlist
+  // either, so the swap itself cannot be described here — it would need a registry
+  // decision.)
+  if (consentState !== "attention") {
+    const applied = appliedBookingViewFilters(query);
+    if (applied.status) appliedView.status = applied.status;
+    if (applied.filters) appliedView.filters = applied.filters;
+  }
   // #2576: the Booking Officer's durable queue belongs in the bookings
   // permission area, not only on the support dashboard.
   const [hostingCoverageIncidentCount, hostingCoverageIncidents] =
@@ -305,6 +348,9 @@ export default async function AdminBookingsPage({
 
   return (
     <div className="space-y-6">
+      {/* Renders nothing; publishes the applied filters above into the help
+          widget so a Diagnostics question carries them (#2816). */}
+      <DiagnosticsViewStatePublisher view={appliedView} />
       <AdminPageHeader
         title="All Bookings"
         actions={

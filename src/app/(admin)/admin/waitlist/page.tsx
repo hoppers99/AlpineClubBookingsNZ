@@ -8,6 +8,15 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { DiagnosticsRecordButton } from "@/components/help-widget/diagnostics-record-button";
+import {
+  usePublishDiagnosticsViewState,
+  type DiagnosticsViewState,
+} from "@/components/help-widget/help-widget-context";
+import {
+  DIAGNOSTICS_PAGE_NETWORK_ERROR_CODE,
+  diagnosticsPageErrorCodeForStatus,
+} from "@/lib/diagnostics/page-context/error-code";
+import type { DiagnosticsPageErrorCode } from "@/lib/diagnostics/page-context/registry";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AdminPageHeader } from "@/components/admin/admin-page-header";
@@ -276,6 +285,9 @@ export default function AdminWaitlistPage() {
   const [forceConfirmReport, setForceConfirmReport] =
     useState<ForceConfirmReport | null>(null);
   const [error, setError] = useState("");
+  /** The code the last QUEUE LOAD failed with, or null (#2816). */
+  const [loadErrorCode, setLoadErrorCode] =
+    useState<DiagnosticsPageErrorCode | null>(null);
   const [errorAttention, setErrorAttention] = useState(0);
   const [from, setFrom] = useState(fromParam);
   const [to, setTo] = useState(toParam);
@@ -284,6 +296,52 @@ export default function AdminWaitlistPage() {
     pageSize: queryPageSize,
     total: 0,
   });
+
+  // WHAT THIS QUEUE ACTUALLY FILTERED BY, published for AI Diagnostics (#2816,
+  // owner decision 13 Aug 2026).
+  //
+  // `from`/`to` STATE IS A DRAFT — the two inputs only reach the list when
+  // "Apply filters" writes them to the URL, so the applied values are
+  // `fromParam`/`toParam`, which is exactly what `queryString` sent to the API.
+  // Publishing the draft would report a window the operator has typed but not
+  // applied.
+  //
+  // AND ONLY WHEN THE LOAD SUCCEEDED. `/api/admin/waitlist` validates the window
+  // with zod and answers 400 on a malformed or over-long one, so the rows on
+  // screen are then not a filtered list at all — they are no list. That is the
+  // same total-rejection trap the bookings page has, arriving over the wire
+  // instead of in a `safeParse`. The failure is published as its ERROR CODE, not
+  // as `{}`: `{}` asserts "I applied no filters", which sends a model looking for
+  // a filtering explanation when the truth is that nothing loaded (review finding,
+  // 13 Aug 2026). The code comes from `loadErrorCode`, not from `error`, because
+  // `error` also carries force-confirm failures that leave the queue on screen
+  // intact.
+  //
+  // NO STATUS is published: the route pins `status: { in: [WAITLISTED,
+  // WAITLIST_OFFERED] }` and the wire's `status` holds one token, so naming
+  // either one alone would tell the model half the queue is not on screen.
+  //
+  // Always an OBJECT, empty when no window applied — never `undefined`, which
+  // means "this page publishes nothing" and hands the widget back to its URL
+  // fallback, re-reading the address this page has just declined to trust.
+  //
+  // The object is rebuilt every render on purpose — the publish hook's dependency
+  // is the SERIALISED value, so an unchanged window republishes nothing.
+  //
+  // ASSIGNED BY NAME onto a typed empty object rather than built as a spread
+  // literal: a conditional spread loses object-literal freshness, so TypeScript
+  // runs no excess-property check and a field renamed in the wire contract would
+  // compile clean here (mutation-proven, review 13 Aug 2026).
+  const publishedView: DiagnosticsViewState = {};
+  if (loadErrorCode) {
+    publishedView.errorCode = loadErrorCode;
+  } else {
+    const filters: Record<string, string> = {};
+    if (fromParam) filters.from = fromParam;
+    if (toParam) filters.to = toParam;
+    if (Object.keys(filters).length > 0) publishedView.filters = filters;
+  }
+  usePublishDiagnosticsViewState(publishedView);
 
   const totalPages = Math.max(1, Math.ceil(pagination.total / pagination.pageSize));
   const resultStart =
@@ -297,12 +355,16 @@ export default function AdminWaitlistPage() {
 
   const loadEntries = useCallback(async () => {
     setLoading(true);
+    // #2816: recorded so the page publishes "there is no list, and here is why"
+    // rather than a window that filtered nothing.
+    let failure: DiagnosticsPageErrorCode | null = null;
 
     try {
       const res = await fetch(buildPathWithSearch("/api/admin/waitlist", queryString));
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
+        failure = diagnosticsPageErrorCodeForStatus(res.status);
         throw new Error(getErrorMessage(data, "Failed to load waitlist"));
       }
 
@@ -326,9 +388,11 @@ export default function AdminWaitlistPage() {
         pageSize: queryPageSize,
         total: 0,
       });
+      failure = failure ?? DIAGNOSTICS_PAGE_NETWORK_ERROR_CODE;
       setError(err instanceof Error ? err.message : "Failed to load waitlist");
       setErrorAttention((value) => value + 1);
     } finally {
+      setLoadErrorCode(failure);
       setLoading(false);
     }
   }, [queryPage, queryPageSize, queryString]);
