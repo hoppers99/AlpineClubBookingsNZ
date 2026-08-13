@@ -83,11 +83,16 @@ export function isSystemPageSlug(slug: string): boolean {
  * must not be unpublished/hidden — those links would 404. Only admin-created
  * pages can be hidden. (`home` is also a system page; listed here for clarity.)
  *
- * `booking-requests` and `school-bookings` are code-backed `(website)` pages (the
- * same makeup as `join/apply`) whose seeded bodies are `{{booking-requests}}` and
- * `{{school-bookings}}`. Their tokenised confirmation flows live under
- * `(website-dynamic)/…` and keep a per-request nonce; the bare pages are listed,
- * indexable public pages.
+ * `booking-requests` and `school-bookings` are built-in too, but they are NOT
+ * like `join/apply`. Each has a `PageContent` row whose seeded body is
+ * `{{booking-requests}}` / `{{school-bookings}}`, but the page and its tokenised
+ * confirmation flows all render from real code-backed `(website-dynamic)` routes
+ * that keep a per-request nonce — the CMS catch-all never stores them (#2818
+ * decision 2). They are also OPT-IN and noindex-by-default: both seed an EMPTY
+ * `menuTitle`, which keeps each page out of the navigation AND out of search
+ * engines until a club types a title (#2818 decision 1). Unlike the footer/
+ * sitemap-linked pages above, they are neither footer- nor sitemap-linked; they
+ * are listed here only so they cannot be hidden, which would 404 the routes.
  */
 const BUILTIN_PAGE_SLUGS: ReadonlySet<string> = new Set([
   "home",
@@ -219,14 +224,21 @@ export function isValidPageSlug(value: string): boolean {
  *     script on it and the page never becomes interactive. Refusing the slug is
  *     what keeps "stored by the catch-all" inside "carries the fixed nonce".
  *
- *     Rule 2 does the work of a reserved WORD for the three `(website-dynamic)`
- *     addresses as well, and does it more precisely than a word would.
- *     `hut-leader-instructions`, `join/<code>` and `join/verify/<token>` are all
- *     refused because a real per-request route claims them, so a CMS page there
- *     could never be served — while `trips/hut-leader-instructions`, which no
- *     route claims, is still a perfectly good page. Adding the name to
- *     {@link RESERVED_PAGE_SLUGS} instead would have refused that second address
- *     too, for no reason: that set matches in EVERY segment position.
+ *     Rule 2 refuses every one of the eight `(website-dynamic)` addresses,
+ *     because none of them is in the fixed-nonce set. For three of them —
+ *     `hut-leader-instructions`, `join/<code>` and `join/verify/<token>` — it is
+ *     the ONLY thing refusing a CMS page, and it does the job more precisely than
+ *     a reserved word would: a real per-request route claims each exact address,
+ *     so a CMS page there could never be served, while `trips/hut-leader-
+ *     instructions`, which no route claims, is still a perfectly good page.
+ *     Adding the name to {@link RESERVED_PAGE_SLUGS} instead would have refused
+ *     that second address too, for no reason: that set matches in EVERY segment
+ *     position. The remaining `(website-dynamic)` addresses — the booking-request
+ *     and school-booking pages and their token flows — are ALSO in
+ *     {@link RESERVED_PAGE_SLUGS} on purpose (#2818 decision 9), because the club
+ *     owns the emailed token links one segment deeper and only a reserved WORD
+ *     closes that whole namespace; rule 2 alone would have left
+ *     `/booking-requests/verify` (which no route claims) creatable.
  *
  * Rule 2 looks at the first segment for the route-GROUP question:
  * `/trips/pay` has root segment `trips`, is a public-website address, and is
