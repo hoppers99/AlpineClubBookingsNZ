@@ -6,14 +6,14 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     seasonalMembershipAssignment: { findUnique: vi.fn().mockResolvedValue(null) },
     familyGroup: {
-      findMany: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
       findUnique: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
     },
     familyGroupMember: {
-      findMany: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
       findUnique: vi.fn(),
       findFirst: vi.fn(),
       count: vi.fn(),
@@ -23,7 +23,7 @@ vi.mock("@/lib/prisma", () => ({
       upsert: vi.fn(),
     },
     familyGroupJoinRequest: {
-      findMany: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
       findFirst: vi.fn(),
       findUnique: vi.fn(),
       create: vi.fn(),
@@ -32,7 +32,7 @@ vi.mock("@/lib/prisma", () => ({
     member: {
       findUnique: vi.fn(),
       findFirst: vi.fn(),
-      findMany: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
@@ -673,7 +673,18 @@ describe("GET /api/members/family", () => {
 });
 
 describe("PUT /api/members/family/[memberId]/details", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // #2821: the delegated-details route now runs its member write and the
+    // email-inheritance re-resolution in ONE interactive transaction, so the
+    // age-tier change and the re-resolution commit together or not at all. The
+    // double therefore has to run the callback and hand it a client — a bare
+    // `vi.fn()` resolves to `undefined`, which surfaced as the route reading
+    // `.id` off nothing. Individual tests may still override this.
+    mockedPrisma.$transaction.mockImplementation(async (arg: any) =>
+      typeof arg === "function" ? arg(mockedPrisma) : Promise.all(arg),
+    );
+  });
 
   const completeAdult = {
     id: "adult-1",

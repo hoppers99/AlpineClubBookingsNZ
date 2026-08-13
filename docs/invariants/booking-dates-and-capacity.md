@@ -385,8 +385,12 @@ derivation).
     **It is not fine for a `DateTime` column.** `createdAt`, `updatedAt` and
     friends are real instants, so `booking.createdAt.toISOString().slice(0, 10)`
     is the clock one hop removed and lands on the previous NZ day all morning.
-    #2684's lint rule is where that whole class gets caught; until then it is a
-    known trap, not a permitted pattern.
+    #2697 closed the two `Booking.createdAt` sites (the Xero booking-invoice due
+    date and the legacy finance export's `created_date`); #2834 closes the
+    remaining Xero document dates, several of which reach this pattern through a
+    local `formatDate` wrapper rather than a literal `.slice(0, 10)`. #2684's
+    lint rule is where the whole class gets caught; until then it is a known
+    trap, not a permitted pattern.
   - *The member booking calendar and the admin kiosk deliberately derive today
     from the BROWSER's calendar day* (`src/components/booking-calendar.tsx`,
     `src/app/(admin)/admin/book/page.tsx`, #2474 — see the next invariant), so

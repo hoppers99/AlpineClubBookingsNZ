@@ -1360,7 +1360,19 @@ re-runnable by design.** `reconcileAllEmailInheritance`, scheduled as
 converges every member who holds a choice or a pointer.
 
 It exists because "every write re-resolves" is a claim about a codebase, and this
-one decides which adult receives a minor's notifications. The specific hazard is a
+one decides which adult receives a minor's notifications. That claim was false
+when first made — several age-tier writers did not call the reconciler (#2821) —
+so the age-tier half is now mechanically enforced by
+`src/lib/__tests__/age-tier-writers-reconcile-census.test.ts`, which discovers
+every member write that SETS the age tier — however the value was derived, so the
+age-up cron and the nomination promotion are caught alongside the writers that
+resolve an enforced tier — and fails if any does not invoke
+`reconcileEmailInheritanceForMemberChange`. That guard is the age-tier subset
+only. #2821 also wired an adjacent email-source site by hand — the dependant
+`link` route, which changes who is a usable source without writing a tier, so the
+census does not see it and never will. Read the census as proof that every
+age-tier WRITE re-resolves, not that every email-source change does. The specific
+hazard is a
 re-resolution that fires on the wrong event or fails partway, which would leave a
 pointer naming somebody nobody chose: the original defect with extra steps.
 Because the rule is a pure, total function of the family tree, a second run always

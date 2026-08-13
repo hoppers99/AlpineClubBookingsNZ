@@ -27,6 +27,7 @@ import {
   resolveAccessRoleTokens,
 } from "@/lib/access-roles";
 import { membershipTypeAgeExemption } from "@/lib/membership-types";
+import { reconcileEmailInheritanceForMemberChange } from "@/lib/member-email-inheritance";
 import { reconcileSeasonSubscriptionForAssignment } from "@/lib/member-subscription-defaults";
 import { resolveEnforcedAgeTier } from "@/lib/age-tier-enforcement";
 import {
@@ -838,6 +839,13 @@ export async function saveSeasonalMembershipAssignment(params: {
         where: { id: params.memberId },
         data: { ageTier: preview.resultingAgeTier },
       });
+      // #2821: an age tier decides whether this member may be anybody's contact
+      // of record (`isUsableEmailSource` requires ADULT), so moving them across
+      // that line has to re-resolve their dependants' pointers. Called on ANY
+      // tier change, not only `tierLeavesAdult` below: entering ADULT makes
+      // them newly usable, and a dependant whose pointer cleared while they were
+      // a person tier should get it back.
+      await reconcileEmailInheritanceForMemberChange(tx, [params.memberId]);
       if (tierLeavesAdult) {
         sweptShares = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
           memberId: params.memberId,
@@ -1490,6 +1498,11 @@ export async function rollForwardSeasonalMembershipAssignments(params: {
                 where: { id: member.id },
                 data: { ageTier: resolved.ageTier },
               });
+              // #2821: same rule as the assignment save above. The roll-forward
+              // moves members across the ADULT line in bulk, so it is the path
+              // most likely to leave a dependant pointing at somebody who is no
+              // longer a qualified contact of record.
+              await reconcileEmailInheritanceForMemberChange(tx, [member.id]);
               chunkReconciled.push({
                 memberId: member.id,
                 previousAgeTier: currentAgeTier,

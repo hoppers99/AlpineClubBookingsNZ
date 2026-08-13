@@ -168,11 +168,29 @@ draft PR is:
 npm run db:generate
 npm run lint
 npm run typecheck
+npm run test:related -- $(git diff --name-only main...HEAD)  # always
 npm test -- src/path/to/touched.test.ts # replace with focused test paths
 npm run docs:linkcheck  # when docs change
 npm run docs:indexcheck # when docs change, or when you cite an INV-* id
 npm run knip            # when files or exports change
 ```
+
+`test:related` is not optional (#2836). Picking test files by reading the diff's
+own filenames cannot reach the suite a change breaks through the **module
+graph** — adding one import to a route drags new modules into the graph of tests
+that name none of the changed files, and a `vi.mock` factory that was complete
+for the old graph then throws at import, killing the file before a single test
+runs. That is what made PR #2813 red on CI after a clean focused gate; `vitest
+related` picked the broken suite in 0.8 seconds.
+
+It follows imports, so it is blind to **contract tests that scan `src/` from
+disk** — those have no import edge and stay CI-caught by design. When your diff
+touches anything under `src/`, re-read it for text a scanner might match; PR
+#2813's other failure was a banned function name written with parentheses inside
+a comment. Running those 186 suites locally was measured and rejected: natively
+on Windows they take ~3 minutes and false-fail on load-sensitive timeouts,
+including the very contract test they would exist to protect
+(`AGENTS.md` → "Split local validation from CI").
 
 GitHub Actions runs the full `npm test`, build, migration-drift, E2E,
 static/secret/dependency, and container gates. Do not duplicate them locally

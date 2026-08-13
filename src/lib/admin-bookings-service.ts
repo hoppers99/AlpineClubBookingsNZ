@@ -20,6 +20,7 @@ import {
   UPCOMING_CHECK_IN_BOOKING_STATUSES,
 } from "@/lib/booking-status";
 import { bookingsOverlap, sameLodgeNullTolerant } from "@/lib/capacity";
+import { isPublishableDiagnosticsFilterValue } from "@/lib/diagnostics/page-context/types";
 import {
   buildBookingDeletedWhere,
   parseBookingDeletedVisibility,
@@ -297,22 +298,196 @@ function sortValue(booking: BookingCandidate, sortBy: BookingSortBy) {
   }
 }
 
+/**
+ * The lifecycle statuses this list actually NARROWS to, in the order the URL asked
+ * for them. Empty means "no status narrowing was applied" — either none was asked
+ * for, or `all` was.
+ *
+ * Shared with `appliedBookingViewFilters` (AI Diagnostics, #2816), which publishes
+ * the filter state the page APPLIED rather than the one the address bar shows and
+ * must therefore ask the same code that builds the query rather than re-deriving
+ * the vocabulary. Note an empty result is NOT the same thing as an empty query
+ * clause: `?status=BOGUS` asks for narrowing and gets `{ in: [] }` below, which
+ * matches nothing — see `bookingStatusWhere`, and `appliedBookingViewFilters` for
+ * how that case is reported.
+ */
+function appliedBookingStatuses(
+  statusFilter: string | undefined,
+): BookingStatus[] {
+  if (!statusFilter || statusFilter === "all") return [];
+  return statusFilter
+    .split(",")
+    .map((status) => status.trim())
+    .filter((status): status is BookingStatus =>
+      validBookingStatuses.has(status as BookingStatus)
+    );
+}
+
 function bookingStatusWhere(statusFilter: string | undefined): Prisma.BookingWhereInput["status"] {
   if (statusFilter === "DRAFT") {
     return BookingStatus.DRAFT;
   }
 
   if (statusFilter && statusFilter !== "all") {
-    const statuses = statusFilter
-      .split(",")
-      .map((status) => status.trim())
-      .filter((status): status is BookingStatus =>
-        validBookingStatuses.has(status as BookingStatus)
-      );
+    const statuses = appliedBookingStatuses(statusFilter);
     return statuses.length === 1 ? statuses[0] : { in: statuses };
   }
 
   return { not: BookingStatus.DRAFT };
+}
+
+/**
+ * The AI Diagnostics registry vocabulary for one booking status: lowercase, with
+ * underscores hyphenated (`PAYMENT_PENDING` → `payment-pending`). It is the SAME
+ * mapping the ask route applies to the wire's `status` token, applied here so the
+ * two spellings the model can be shown — `- status: confirmed` for one applied
+ * status, `- filter status: confirmed,paid` for several — are one vocabulary
+ * rather than two (review finding, 13 Aug 2026).
+ */
+function diagnosticsStatusToken(status: string): string {
+  return status.trim().toLowerCase().replace(/_/g, "-");
+}
+
+/**
+ * THE VIEW STATE THIS LIST ACTUALLY APPLIED, in the AI Diagnostics registry row's
+ * own vocabulary (#2816, owner decision 13 Aug 2026).
+ *
+ * IT LIVES HERE, BESIDE `buildBookingWhere`, because it is a claim about what that
+ * function did. The first cut derived it in the page from `query` alone and got the
+ * date window wrong in both directions: it suppressed the LOSING legacy alias but
+ * never published the WINNING bound, so `?checkOutTo=2026-08-14` — a URL two
+ * dashboard cards deep-link to (`unpaid-finished-stays.ts`) — reported a narrowed
+ * list as unnarrowed. Anything that reads `query` and claims to describe the query
+ * has to be maintained in the same edit as the builder, so it is in the same file.
+ *
+ * WHAT IT PUBLISHES, and the precedence is `buildBookingWhere`'s own, field by
+ * field (last writer wins there, so last writer wins here):
+ *  - `status` — the ONE token the wire's status field holds, when exactly one
+ *    lifecycle status was applied. Several go in the allowlisted `status` FILTER
+ *    instead, because sending the first would misstate the selection.
+ *  - `filters.checkInFrom` / `checkInTo` / `checkOutFrom` / `checkOutTo` — the
+ *    effective bound on each end of each date column, whichever parameter produced
+ *    it: the legacy aliases, the explicit named bounds, `?month=`, or `?upcoming=`
+ *    (whose window is computed, not in the URL at all).
+ *  - `filters.search` / `filters.lodgeId` — post-parse, so post-trim.
+ *
+ * EVERY DATE KEY NAMES THE COLUMN IT BOUNDS, and the first cut's two keys could
+ * not (evidence review of PR #2831, 14 Aug 2026). It published `from`/`to`, and
+ * `buildBookingWhere` is ASYMMETRIC about that pair: legacy `from` feeds
+ * `checkIn.gte`, legacy `to` feeds `checkOut.lte`. So `?month=2026-08` published
+ * `to: 2026-08-31` — a check-IN upper bound — under the key that this page's URL
+ * and its own deployed source both define as a check-OUT bound. A model handed
+ * that source excerpt reads the bound against the wrong column and confidently
+ * names the wrong bookings for "why isn't this booking showing?", which is the
+ * flagship question this channel exists to answer. The registry row now allowlists
+ * the four precise keys and no longer allowlists the ambiguous pair, so a check-in
+ * bound can never again be labelled `to`.
+ *
+ * WHAT IT DELIBERATELY DOES NOT PUBLISH. The default `status: { not: DRAFT }` — a
+ * real narrowing, and inexpressible as an inclusion token. Every filter key this
+ * page has that the registry row does not list (`paymentSource`, `xeroState`,
+ * `bedState`, `additionalOwed`, `changeState`, `updatedFrom`/`updatedTo`,
+ * `deleted`, `consentState`, and the legacy `from`/`to` aliases): the route drops
+ * an unlisted key, and publishing to be dropped is not a contract.
+ */
+export function appliedBookingViewFilters(query: AdminBookingsQuery): {
+  status?: string;
+  filters?: Record<string, string>;
+} {
+  const filters: Record<string, string> = {};
+  const statuses = appliedBookingStatuses(query.status);
+  const upcomingDays = query.upcoming ? parseInt(query.upcoming, 10) : null;
+  const upcomingApplied = upcomingDays !== null && !isNaN(upcomingDays);
+
+  /**
+   * Publish one filter, or DROP it — never truncate it, because a truncated value
+   * would tell the model the operator filtered by something they did not.
+   *
+   * THE LENGTH CHECK IS ON EVERY KEY, not just the unknown-status one (review
+   * finding, 14 Aug 2026), and it asks
+   * `isPublishableDiagnosticsFilterValue` rather than restating the bound: the
+   * ask route drops a value over `filterValueMaxChars`, so publishing one is
+   * publishing to be dropped, and the model is then told nothing about a filter
+   * that IS narrowing the list. `lodgeId` is the live case —
+   * `adminBookingsQuerySchema` bounds `search` to 100 characters and fails the
+   * WHOLE parse above that, but it bounds `lodgeId` only to non-empty, so a
+   * crafted link can apply an arbitrarily long one.
+   */
+  const publish = (key: string, value: string) => {
+    if (!isPublishableDiagnosticsFilterValue(value)) return;
+    filters[key] = value;
+  };
+
+  let singleStatus: string | undefined;
+  if (statuses.length === 1) {
+    singleStatus = diagnosticsStatusToken(statuses[0]);
+  } else if (statuses.length > 1) {
+    publish("status", statuses.map(diagnosticsStatusToken).join(","));
+  } else if (query.status && query.status !== "all") {
+    // `?status=BOGUS` applies `{ in: [] }` — a narrowing that matches NOTHING.
+    // This is the one URL where the list is empty BECAUSE OF the filter, so
+    // saying nothing about it is the worst possible answer to "why is this list
+    // empty?". It goes in the free-text filter rather than the token field
+    // because it is, by construction, not in the token vocabulary. Overlong junk
+    // is dropped rather than published, because the route would drop it anyway.
+    publish("status", diagnosticsStatusToken(query.status));
+  } else if (upcomingApplied && !query.status) {
+    // `?upcoming=N` (the dashboard's "Bookings" card) narrows check-in to
+    // [today, today+N] AND pins a status set. The status half IS expressible
+    // here, so it is published — but the builder's guard is `if (!query.status)`,
+    // and `?status=all` is TRUTHY there: it leaves the default `{ not: DRAFT }`
+    // standing and pins nothing. The guard is repeated exactly rather than
+    // approximated, or `?upcoming=7&status=all` would report a status set the
+    // list is not using.
+    publish(
+      "status",
+      [...UPCOMING_CHECK_IN_BOOKING_STATUSES]
+        .map(diagnosticsStatusToken)
+        .join(","),
+    );
+  }
+
+  // THE DATE BOUNDS, in `buildBookingWhere`'s own assignment order, because there
+  // the LAST writer to each field wins: `?upcoming=` seeds both check-in bounds,
+  // `?month=` overwrites both, then each explicit named bound overwrites its own.
+  let checkInFrom: string | undefined;
+  let checkInTo: string | undefined;
+  if (upcomingApplied) {
+    const today = getTodayDateOnly();
+    checkInFrom = formatDateOnly(today);
+    checkInTo = formatDateOnly(addDaysDateOnly(today, upcomingDays));
+  }
+  if (query.month && /^\d{4}-\d{2}$/.test(query.month)) {
+    const [year, month] = query.month.split("-").map(Number);
+    checkInFrom = `${year}-${String(month).padStart(2, "0")}-01`;
+    checkInTo = monthEndDateOnly(year, month);
+  }
+  // `checkInFrom ?? from`: the legacy alias only ever feeds the check-in lower
+  // bound, and loses to the explicit one.
+  const explicitCheckInFrom = query.checkInFrom ?? query.from;
+  if (explicitCheckInFrom) checkInFrom = explicitCheckInFrom;
+  if (query.checkInTo) checkInTo = query.checkInTo;
+
+  // Legacy `to` bounds CHECK-OUT, and only when neither named upper bound is set —
+  // `legacyToDate` in the builder, repeated here rather than approximated.
+  const checkOutTo =
+    query.checkOutTo ?? (query.checkInTo ? undefined : query.to);
+
+  // Each bound under the key that names the column it narrowed. All four can be
+  // applied at once, which with `status`, `search` and `lodgeId` is seven filters
+  // against the selector's `maxFilters` of eight.
+  if (checkInFrom) publish("checkInFrom", checkInFrom);
+  if (checkInTo) publish("checkInTo", checkInTo);
+  if (query.checkOutFrom) publish("checkOutFrom", query.checkOutFrom);
+  if (checkOutTo) publish("checkOutTo", checkOutTo);
+
+  if (query.search) publish("search", query.search);
+  if (query.lodgeId) publish("lodgeId", query.lodgeId);
+
+  return {
+    ...(singleStatus ? { status: singleStatus } : {}),
+    ...(Object.keys(filters).length > 0 ? { filters } : {}),
+  };
 }
 
 function buildBookingWhere(query: AdminBookingsQuery): Prisma.BookingWhereInput {
