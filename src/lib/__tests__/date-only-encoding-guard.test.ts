@@ -160,11 +160,19 @@ const KNOWN_INSTANT_ENCODING_DEFECTS: Record<string, ReviewedEncoding> = {
   // an enforcement change, and changing what a member sees is a product
   // behaviour change that belongs in its own reviewed pull request (#2684
   // required implementation step 5).
-  "src/lib/member-family-service.ts:515": {
-    kind: "instant",
-    field: "detailsConfirmedAt",
-    why: "Member.detailsConfirmedAt rendered as the confirmation DAY on the profile page — filed as #2839; not part of #2834",
-  },
+  // #2839 is FIXED by this branch — `detailsConfirmedAt` now derives its day
+  // through `formatDateOnlyForTimeZone`, so its entry is deleted rather than
+  // re-anchored. That is the mechanism working: a site that stops encoding an
+  // instant has no line left to anchor to, so "moved" and "fixed" cannot be
+  // confused.
+  //
+  // The list is empty, which is what #2684 decision 2 asks for — but do not read
+  // that as the class being closed. A review of #2839 found the member-merge
+  // comparison screen renders instants through a generic runtime-type formatter
+  // (#2860, PR #2862). It is absent here only because this census keys on the
+  // canonical encoders, and that renderer reaches the pattern by its own route.
+  // When #2862 lands, the class is closed; until then the empty list means
+  // "nothing this census can see", not "nothing left".
 };
 
 /**
