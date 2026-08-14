@@ -1,0 +1,134 @@
+rules:
+  - id: acb-unsafe-raw-sql
+    languages:
+      - typescript
+      - javascript
+    severity: ERROR
+    metadata:
+      category: security
+      confidence: HIGH
+      references:
+        - https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/2686
+        - https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/2289
+    message: >-
+      INV-OPS-014: `$queryRawUnsafe` / `$executeRawUnsafe` take a STRING, so
+      Prisma sends whatever that string says — there is no parameter binding left
+      to protect you. The statement handed to this call is not visibly static at
+      the call site, so a reader cannot tell from here whether a request value
+      reaches the SQL. Use `$queryRaw` / `$executeRaw` as a tagged template
+      (``$executeRaw`… ${value} …` ``), where every `${}` becomes a bound
+      parameter, or `Prisma.sql` composition, or `Prisma.raw()` for an identifier
+      you have validated against a fixed allowlist. If the statement is genuinely
+      static — a literal, a constant holding one, or text generated from a
+      committed manifest rather than from anything a request can reach — keep the
+      call and put `// nosemgrep: acb-unsafe-raw-sql — <why the value cannot be
+      attacker controlled>` on the line above the CALL, so the exemption is
+      reviewed in the diff that adds it. See
+      docs/invariants/operations.md#inv-ops-014.
+
+    # WHY THIS SHAPE, and not the two obvious alternatives (#2686).
+    #
+    # The first draft matched a build expression sitting LITERALLY inside the
+    # call parentheses — an interpolated template, `+`, `.concat`. Measured
+    # against the ways this codebase actually writes the same defect, that is 3
+    # of 13. It missed the most natural one of all: build the string one
+    # statement earlier and pass it by name, which is exactly how the single
+    # permitted site in `src/` is written — so the rule could not see the one
+    # call it was written for. It also missed `+=` accumulation, `.join()`,
+    # `.replace()`, a helper that returns the string, a destructured, bound or
+    # computed receiver, and a wrapper that takes the interpolation at ITS call
+    # site.
+    #
+    # `mode: taint` was the natural next move and was tried. It covers 10 of the
+    # 13 and fails the other three — helper-return, `.bind()` alias, and the
+    # wrapper — because taint tracking in the OSS engine is INTRAPROCEDURAL:
+    # it does not follow a value across a function boundary. That is the
+    # disqualifying property for a required gate, not the missed lines: the same
+    # rule file covers more or less depending on which engine tier happens to run
+    # it, so the gate's real strength is invisible from the repository.
+    #
+    # So the rule is inverted instead. Rather than trying to recognise every way
+    # a string can be BUILT — an open-ended list, where whatever is not
+    # enumerated passes — it requires the statement to be VISIBLY STATIC at the
+    # call site, which is a closed condition. A literal passes. A constant
+    # holding a literal passes, because constant propagation folds it. Anything
+    # else — an interpolation, a concatenation, a parameter, a helper's return
+    # value, a lookup — is reported, whether or not anyone thought of it. That is
+    # also the honest reading of INV-OPS-014: an argument whose value a reader
+    # cannot see at the call site is precisely the one that needs review, and the
+    # `nosemgrep` line is where that review is recorded.
+    patterns:
+      - pattern-either:
+          # The ordinary call, and the transaction-client spelling.
+          - pattern: $DB.$queryRawUnsafe($SQL, ...)
+          - pattern: $DB.$executeRawUnsafe($SQL, ...)
+          # A destructured receiver: `const { $queryRawUnsafe } = prisma`.
+          - pattern: $queryRawUnsafe($SQL, ...)
+          - pattern: $executeRawUnsafe($SQL, ...)
+          # A computed member access — `prisma["$queryRawUnsafe"](sql)` — reads
+          # as an obfuscation of the same call and is treated as the same call.
+          - patterns:
+              - pattern: $DB[$METHOD]($SQL, ...)
+              - metavariable-regex:
+                  metavariable: $METHOD
+                  regex: ^["']\$(?:query|execute)RawUnsafe["']$
+      # ...unless the statement is visibly static. `"..."` matches a string
+      # literal, and constant propagation has already folded a constant that
+      # holds one — which is what keeps `booking-envelope-invariants.ts` and
+      # `induction-baseline.ts` writable exactly as they are.
+      - metavariable-pattern:
+          metavariable: $SQL
+          patterns:
+            - pattern-not: '"..."'
+    paths:
+      exclude:
+        # Tests are exempt for the reason `eslint.config.mjs` gives for exempting
+        # them from RAW_SQL_RESTRICTIONS: a test's raw statement runs against a
+        # throwaway database that the test itself created, and its result is
+        # asserted on the spot. The real-Postgres suites build DDL against
+        # per-run schema names, which is exactly the interpolation this rule
+        # bans in production code.
+        - "**/__tests__/**"
+        - "**/*.test.ts"
+        - "**/*.test.tsx"
+        # Anchored with a leading `/` (repo-root-relative). An unanchored glob is
+        # deprecated under Semgrepignore v2 and prints a warning on every run.
+        - /e2e/**
+        # Fixtures for this rule are deliberate violations.
+        - /.semgrep/tests/**
+
+  - id: acb-unsafe-raw-sql-alias
+    languages:
+      - typescript
+      - javascript
+    severity: ERROR
+    metadata:
+      category: security
+      confidence: HIGH
+      references:
+        - https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/2686
+    message: >-
+      INV-OPS-014: this takes a REFERENCE to `$queryRawUnsafe` /
+      `$executeRawUnsafe` and calls it somewhere else, which puts the statement
+      and the call that sends it in two different places and defeats every review
+      — human or automated — that reads the call site. Call the method directly,
+      and make the statement visibly static there. See
+      docs/invariants/operations.md#inv-ops-014.
+    # The one shape the sibling rule above cannot reach: once the method is
+    # bound to a name, the call site is `run(sql)` and nothing about it says SQL.
+    # So the ALIASING is treated as the violation, at the line that creates it.
+    patterns:
+      - pattern-either:
+          - pattern: $DB.$queryRawUnsafe.bind(...)
+          - pattern: $DB.$executeRawUnsafe.bind(...)
+          - pattern: $DB.$queryRawUnsafe.call
+          - pattern: $DB.$executeRawUnsafe.call
+          - pattern: $DB.$queryRawUnsafe.apply
+          - pattern: $DB.$executeRawUnsafe.apply
+    paths:
+      exclude:
+        - "**/__tests__/**"
+        - "**/*.test.ts"
+        - "**/*.test.tsx"
+        - /e2e/**
+        - /.semgrep/tests/**

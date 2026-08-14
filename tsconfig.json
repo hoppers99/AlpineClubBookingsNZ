@@ -34,6 +34,12 @@
     "node_modules",
     "**/*.test.ts",
     "**/*.test.tsx",
-    "**/__tests__/**"
+    "**/__tests__/**",
+    // #2686: Semgrep rule fixtures. They are deliberately-broken sample code
+    // whose only reader is Semgrep's own `--test` runner — they import modules
+    // that do not resolve from that directory and they exist to be reported.
+    // Type-checking them would fail, and fixing them to type-check would stop
+    // them being fixtures.
+    ".semgrep/**"
   ]
 }

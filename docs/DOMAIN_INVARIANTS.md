@@ -704,6 +704,8 @@ File: [`invariants/operations.md`](invariants/operations.md). Prefix `INV-OPS`.
 | ID | Covers |
 | --- | --- |
 | `INV-OPS-001` | Raw SQL never declares its own result shape: lock raw and read typed, or validate the rows |
+| `INV-OPS-014` | Never interpolate or concatenate into `$queryRawUnsafe` / `$executeRawUnsafe` |
+| `INV-OPS-013` | A `"use client"` module never imports server-only code at runtime |
 | `INV-OPS-002` | Production deployment must respect `docs/BLUE_GREEN_MIGRATION_POLICY.md` |
 | `INV-OPS-012` | An audit reclassification ships its backfill or files one, never neither — and states its MEASURED before/after audience per site |
 | `INV-OPS-005` | A doomed column needs `@ignore`: static defaults and implicit `RETURNING` still name it |
