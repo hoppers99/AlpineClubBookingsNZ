@@ -5,10 +5,10 @@ Diagnostics is an **optional, admin-only, default-off** module (epic
 [#2369](README.md)).
 
 This guide covers what has landed: the module flag, the dedicated Anthropic
-credential, the monthly budget and limits (AID-2, #2371), and the dedicated
-SELECT-only database role (AID-5, #2374). Provider disclosure, zero-retention
-posture, and the private knowledge overlay are documented by AID-8 (#2379) when it
-lands.
+credential, the monthly budget and limits (AID-2, #2371), the dedicated
+SELECT-only database role (AID-5, #2374), and the **private knowledge overlay**
+(#2861, below). Provider disclosure and the zero-retention posture are documented
+by AID-8 (#2379) when it lands.
 
 Extends [`DEPLOYMENT.md`](../../DEPLOYMENT.md) and
 [`CONFIGURATION.md`](../../CONFIGURATION.md).
@@ -18,7 +18,63 @@ Extends [`DEPLOYMENT.md`](../../DEPLOYMENT.md) and
 Every Diagnostics setting is **deployment-owned** and stays out of config-transfer
 bundles ([ADR-006](decisions/ADR-006-deployment-provider-disclosure-private-overlay-config-non-travel.md)).
 Two deployments of this codebase can run Diagnostics with different keys, budgets,
-and database roles, and nothing about one travels to the other.
+and database roles, and nothing about one travels to the other. The private
+knowledge overlay below is deployment-local in the same way — it is never added to
+any config-transfer surface (ADR-006 §6).
+
+## The private knowledge overlay (ADR-006 §4)
+
+A deployment may supply **extra, deployment-specific diagnostic knowledge** — a
+private runbook, fork-only operational notes — layered on top of the public
+deployed [knowledge bundle](../diagnostics/KNOWLEDGE_BUNDLE.md). It is **optional**:
+with none supplied, Diagnostics is fully functional on the public bundle alone, and
+the bundle is byte-identical to one built without the feature.
+
+The mechanism is **generic** — public code names no specific deployment's path or
+content. A deployment populates a **configured location** with a **typed shape**:
+
+- **Location.** By default `config/diagnostics-knowledge.json` — the conventional,
+  git-ignored, hard-excluded slot. A fork may point elsewhere by setting
+  `DIAGNOSTICS_KNOWLEDGE_CONFIG_PATH` in the build environment. The file is read by
+  `npm run diagnostics:bundle` **in the Docker builder**, exactly like the allowlist
+  overlay, so the overlay content is baked into that build's bundle. Changing it
+  needs a rebuild.
+- **Shape.** The same file that carries the allowlist overlay (`include` /
+  `exclude`) may also carry a `knowledge` section — an array of entries, each a
+  `path` handle (the citation label the model and operators see) and its `content`:
+
+  ```json
+  {
+    "knowledge": {
+      "entries": [
+        { "path": "ops/runbook.md", "content": "# Runbook\n\n..." }
+      ]
+    }
+  }
+  ```
+
+Overlay entries are treated as **untrusted evidence, identically to a public bundle
+file** (ADR-003): each is **secret-scanned** with the same fail-closed scanner (a
+secret refuses the whole build, like any bundled file), bounded and hashed into the
+same excerpts, and rendered through the same untrusted-text defusal boundary
+(`renderSourceEvidenceBlock`), so a role-label, NEL, or invisible character in
+overlay content cannot forge a turn. Each entry is namespaced under `overlay/` so it
+is clearly attributable and can neither collide with nor impersonate a real repo
+file, and an entry whose handle names a **hard-excluded** path (an env file, a key,
+the overlay config itself) is refused — the overlay can never re-include one.
+
+Overlay entries are merged into the bundle's `entries` **before** the integrity
+digest is computed, so they participate in the **single** digest and the
+fail-closed verify contract is unchanged with or without an overlay (a
+placeholder/tampered SHA still disables code answers). A **malformed** overlay — bad
+JSON, a wrong shape, an illegal handle — **fails the build closed** rather than
+shipping garbage.
+
+**Migration note.** This tightens the generator's previous "warn and ignore"
+handling of a present-but-unparseable config: a deployment whose existing
+`config/diagnostics-knowledge.json` is invalid JSON (or otherwise malformed) will now
+**fail the build loudly** rather than silently proceeding without it, surfacing a
+latent misconfiguration that would previously have gone unnoticed.
 
 ## Setup order
 

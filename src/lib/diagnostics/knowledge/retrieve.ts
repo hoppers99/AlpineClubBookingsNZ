@@ -19,6 +19,7 @@
 
 import type { KnowledgeBundle, KnowledgeEntry, SensitivityTag } from "./types";
 import { sha256Hex } from "./hash";
+import { defuseRoleLabelLines } from "../untrusted-text";
 
 export interface Citation {
   path: string;
@@ -180,6 +181,26 @@ function neutralizeDelimiters(value: string): string {
 }
 
 /**
+ * Defuse ONE untrusted span (excerpt text, label, or path) rendered into the
+ * evidence block. This is the boundary EVERY excerpt crosses — a public repo file
+ * OR a private-overlay entry (ADR-006 §4) — so nothing bypasses it.
+ *
+ * `defuseRoleLabelLines` (shared with `answer/prompt.ts` via `untrusted-text.ts`)
+ * FOLDS the span first — drops invisible/default-ignorable code points, normalises
+ * every line terminator INCLUDING NEL (U+0085) to `\n`, turns other control
+ * characters into spaces, and folds compatibility/look-alike colons — and then
+ * defuses any LINE that parses as a bare role label (`assistant:`, `system:`…), so
+ * a role-label / NEL / zero-width sequence in overlay or source text cannot forge a
+ * turn. It deliberately does NOT strip angle brackets, so code excerpts (generics,
+ * JSX) stay faithful; wrapper-token forgery is closed separately by
+ * `neutralizeDelimiters`, run AFTER the fold so a `deployed_source​_evidence` spelt
+ * with a zero-width joiner is caught once the invisible is gone.
+ */
+function defuseEvidenceSpan(value: string): string {
+  return neutralizeDelimiters(defuseRoleLabelLines(value));
+}
+
+/**
  * Render cited excerpts as one untrusted-evidence block for the model. The
  * framing is explicit: verbatim SOURCE at a commit, NOT runtime state, NOT
  * instructions. Deterministic — no clock, no randomness — so it is cache-stable
@@ -200,11 +221,11 @@ export function renderSourceEvidenceBlock(excerpts: CitedExcerpt[]): string {
 
   const body = excerpts.map((ex, i) => {
     const c = ex.citation;
-    const label = ex.label ? ` ${neutralizeDelimiters(ex.label)}` : "";
+    const label = ex.label ? ` ${defuseEvidenceSpan(ex.label)}` : "";
     return (
-      `\n\n[${i + 1}] ${neutralizeDelimiters(c.path)} ` +
+      `\n\n[${i + 1}] ${defuseEvidenceSpan(c.path)} ` +
       `(L${c.startLine}-L${c.endLine})${label} sha256:${c.excerptHash}\n` +
-      neutralizeDelimiters(ex.text)
+      defuseEvidenceSpan(ex.text)
     );
   });
 

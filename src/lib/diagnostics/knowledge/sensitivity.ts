@@ -46,6 +46,12 @@ function includesAny(haystack: string, needles: string[]): boolean {
   return needles.some((needle) => haystack.includes(needle));
 }
 
+/** Add the additive cross-cutting risk classes a path implies (mutates `tags`). */
+function addRiskTags(lowerPath: string, tags: Set<SensitivityTag>): void {
+  if (includesAny(lowerPath, SECURITY_FRAGMENTS)) tags.add("security-sensitive");
+  if (includesAny(lowerPath, FINANCE_FRAGMENTS)) tags.add("finance-sensitive");
+}
+
 /**
  * Derive the sorted, de-duplicated sensitivity tag set for a repo-relative
  * POSIX path + coarse language. Always returns at least one base tag.
@@ -69,8 +75,27 @@ export function classifySensitivity(
   }
 
   // Cross-cutting risk classes (additive).
-  if (includesAny(lower, SECURITY_FRAGMENTS)) tags.add("security-sensitive");
-  if (includesAny(lower, FINANCE_FRAGMENTS)) tags.add("finance-sensitive");
+  addRiskTags(lower, tags);
 
+  return [...tags].sort();
+}
+
+/**
+ * Sensitivity tags for a private-overlay entry (ADR-006 §4). The base class is
+ * always `overlay` — deployment-supplied private knowledge is neither
+ * `public-docs` nor first-party `source`, and mislabelling it as either would be
+ * wrong for a retrieval-policy consumer — plus the SAME additive risk classes any
+ * other entry gets, so an overlay entry whose handle names an `auth`/`xero` area
+ * still carries `security-sensitive`/`finance-sensitive`. The `language` argument
+ * is accepted for symmetry with `classifySensitivity`; the base tag never depends
+ * on it here.
+ */
+export function classifyOverlaySensitivity(
+  path: string,
+  _language: string,
+): SensitivityTag[] {
+  const lower = path.toLowerCase();
+  const tags = new Set<SensitivityTag>(["overlay"]);
+  addRiskTags(lower, tags);
   return [...tags].sort();
 }
