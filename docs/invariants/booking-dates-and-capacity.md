@@ -434,6 +434,28 @@ derivation).
   by side (`Booking.draftExpiresAt` and `CalendarEvent.startsAt` against
   `Booking.checkIn`/`checkOut`) and names which is which.
 
+### INV-DATE-024
+
+- **`Member.dateOfBirth` is a CALENDAR DAY, stored at UTC midnight.** The column
+  is still `DateTime?` rather than `@db.Date` (typing it is #2859 decision 2, a
+  follow-up), so nothing in the schema enforces this and every writer has to.
+  Build it with `parseDateOnly(\`${yyyy}-${mm}-${dd}\`)`, an explicit
+  `T00:00:00.000Z`, `Date.UTC(...)`, or `new Date("yyyy-MM-dd")` — which
+  ECMAScript defines as UTC for the date-only form. **Never**
+  `new Date(\`${yyyy}-${mm}-${dd}T00:00:00\`)`: with no `Z` and no offset that
+  is SERVER-LOCAL midnight, and under the `TZ=Pacific/Auckland` pin it stores
+  `(D-1)T12:00Z` or `(D-1)T13:00Z` — a day early, every hour of every day, not
+  only in a morning window. That is the F8/F32 hazard [INV-DATE-013] on a column
+  that is not a lodge date, and it reached 364 of 375 stored dates of birth
+  before #2859 repaired them.
+- **Compare a stored date of birth only against another date-only value.** The
+  age-tier rule reads it through local getters (`computeAge`) or the club zone
+  (`member-age.ts`), both of which recover the calendar day; a SQL range filter
+  does not, so a bound derived from `getSeasonStartDate` — which is local
+  midnight — must cover the whole cutoff calendar day rather than compare
+  instants (`src/lib/cron-age-up.ts`, #2859). Getting that wrong moves an age
+  tier, and an age tier moves a member's price and their hosting eligibility.
+
 ### INV-DATE-019
 
 - **When a server asks for "today", it asks the club's calendar.**

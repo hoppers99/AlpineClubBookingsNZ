@@ -37,6 +37,7 @@ import {
 } from "./xero-api-client";
 import { syncManagedXeroContactGroupForMember } from "./xero-contact-groups";
 import { buildXeroContactUpdatePayload } from "./xero-contact-sync";
+import { buildXeroContactCompanyNumberPatch } from "@/lib/xero-contact-date-of-birth";
 import { isPlaceholderContactEmail } from "@/lib/placeholder-contact-email";
 import {
   ambiguousMemberContactCreateReservationWhere,
@@ -348,23 +349,6 @@ function isDuplicateActiveXeroContactNameError(error: unknown): boolean {
   );
 }
 
-export function parseXeroCompanyNumberDate(
-  companyNumber?: string | null
-): Date | null {
-  if (!companyNumber) {
-    return null;
-  }
-
-  const match = companyNumber.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-  if (!match) {
-    return null;
-  }
-
-  const [, dd, mm, yyyy] = match;
-  const parsed = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
-
 // ---------------------------------------------------------------------------
 // Address builders / validation
 // ---------------------------------------------------------------------------
@@ -412,11 +396,12 @@ function buildXeroAddresses(member: {
 // Server-side create gate (#2089). Xero's contact-create API requires only a
 // unique contact name; this app additionally keeps email required because Xero
 // uses it for invoice delivery and contact matching. Phone, date of birth,
-// joined date, and both addresses are OPTIONAL — the payload builder already
-// omits blank addresses/phone, and joined date / date of birth are never sent
-// to Xero on create at all. This helper is the single source of truth for the
-// create gate; the client mirror (`getMissingFieldsForXeroCreate`,
-// members/_utils.ts) must stay in lockstep with the required set here.
+// joined date, and both addresses are OPTIONAL — the payload builder omits
+// blank addresses/phone and omits `companyNumber` for a member with no date of
+// birth (#2859), and joined date is never sent to Xero at all. This helper is
+// the single source of truth for the create gate; the client mirror
+// (`getMissingFieldsForXeroCreate`, members/_utils.ts) must stay in lockstep
+// with the required set here.
 export function getMissingFieldsForXeroContactCreate(member: {
   firstName?: string | null;
   lastName?: string | null;
@@ -498,6 +483,11 @@ function buildMemberXeroContactCreatePayload(
     firstName: member.firstName,
     lastName: member.lastName,
     emailAddress: isPlaceholderContactEmail(member.email) ? "" : member.email,
+    // #2859: the member's date of birth, in the `dd/mm/yyyy` shape the import
+    // side has always read back out of this field. No `currentCompanyNumber` is
+    // passed because the contact does not exist yet — there is nothing to
+    // clobber — and a member with no date of birth contributes no key at all.
+    ...buildXeroContactCompanyNumberPatch(member.dateOfBirth),
     phones: hasAnyPhonePart
       ? [
           {
@@ -1411,6 +1401,40 @@ export async function updateXeroContact(
     preserveXeroName?: boolean;
   }
 ): Promise<void> {
+  // #2859: what Xero is known to hold in the NZBN field right now, so the date
+  // of birth below never overwrites a real New Zealand Business Number. Read
+  // from the local contact cache — no provider call, and nothing here may run
+  // inside the short Member transactions. `undefined` (no cache row) means
+  // "nothing known", which `buildXeroContactCompanyNumberPatch` treats as
+  // writable; see its docblock for why that is the safe reading.
+  const cachedContact = await prisma.xeroContactCache.findUnique({
+    where: { contactId: xeroContactId },
+    select: { companyNumber: true },
+  });
+  const currentCompanyNumber = cachedContact?.companyNumber ?? undefined;
+
+  /**
+   * The NZBN patch for whichever contact this payload is actually addressed to.
+   *
+   * `retryXeroWriteWithContactRepair` rebuilds this payload against a DIFFERENT
+   * contact when it repairs a stale link, and the cache above was read for the
+   * ORIGINAL one — so applying that reading to the repaired contact would judge
+   * one contact's NZBN field by another's contents. When the id has moved, the
+   * date of birth is simply not sent: omission is the direction that cannot
+   * destroy anything, and the repaired contact picks the value up on its next
+   * update (or already carries it, if this app created it).
+   */
+  const companyNumberPatchFor = (
+    contactId: string,
+    contactData: XeroContactUpdateData,
+  ) =>
+    contactId === xeroContactId
+      ? buildXeroContactCompanyNumberPatch(
+          contactData.dateOfBirth,
+          currentCompanyNumber,
+        )
+      : {};
+
   const buildContact = (
     contactId: string,
     contactData: XeroContactUpdateData,
@@ -1418,6 +1442,7 @@ export async function updateXeroContact(
     const contact: Contact = {
       contactID: contactId,
       emailAddress: contactData.email,
+      ...companyNumberPatchFor(contactId, contactData),
       phones: contactData.phoneNumber
         ? [
             {

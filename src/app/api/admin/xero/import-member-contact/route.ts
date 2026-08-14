@@ -9,6 +9,7 @@ import logger from "@/lib/logger";
 import { ensureMemberAccessRolesFromCompatibilityFields } from "@/lib/member-access-role-writes";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
+import { parseXeroContactDateOfBirth } from "@/lib/xero-contact-date-of-birth";
 import { buildXeroContactUrl } from "@/lib/xero-links";
 import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import { upsertXeroObjectLink } from "@/lib/xero-sync";
@@ -46,21 +47,6 @@ function getContactNameParts(contact: {
     firstName: firstName || "Unknown",
     lastName: lastName || "Unknown",
   };
-}
-
-function parseXeroCompanyNumberDate(companyNumber?: string | null): Date | null {
-  if (!companyNumber) {
-    return null;
-  }
-
-  const match = companyNumber.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-  if (!match) {
-    return null;
-  }
-
-  const [, dd, mm, yyyy] = match;
-  const parsed = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 /**
@@ -174,7 +160,7 @@ export async function POST(request: NextRequest) {
         lastName,
         passwordHash: placeholderHash,
         ageTier: "ADULT",
-        dateOfBirth: parseXeroCompanyNumberDate(cachedContact.companyNumber),
+        dateOfBirth: parseXeroContactDateOfBirth(cachedContact.companyNumber),
         xeroContactId: cachedContact.contactId,
         phoneCountryCode: cachedContact.phoneCountryCode,
         phoneAreaCode: cachedContact.phoneAreaCode,

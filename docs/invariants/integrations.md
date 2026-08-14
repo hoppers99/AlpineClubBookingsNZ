@@ -132,6 +132,28 @@ only the ID heading lines were added.
   advances the CONTACT delta-sync watermark. Members without a Xero contact are
   reported as skipped, never silently omitted.
 
+### INV-INT-017
+
+- **A Xero contact's `CompanyNumber` (NZBN) field carries the member's date of
+  birth, in `dd/mm/yyyy`, and exactly one module encodes and decodes it**:
+  `src/lib/xero-contact-date-of-birth.ts`. Four divergent copies of that parser
+  had grown before #2859 — two of them local-midnight and wrong — so a new
+  reader or writer imports this module rather than matching the pattern again.
+  The stored value is a date-only `Date` at UTC midnight [INV-DATE-024], so the
+  parse is `parseDateOnly` and the render is `formatDateOnly`, both UTC.
+- **The sync is two-directional and neither direction erases the other.** The
+  app SENDS a date of birth it holds, on contact create and on contact update.
+  It never sends `""`: a member with no date of birth contributes no
+  `companyNumber` key at all, because that field is the NZBN and an
+  organisation/school account may carry a real business number in it. It never
+  overwrites a `companyNumber` that is not `dd/mm/yyyy`-shaped, for the same
+  reason. The Xero→app direction
+  (`xero-inbound/contact.ts`, `xero-member-import.ts`) only ever FILLS A GAP —
+  it writes a date of birth onto a member who has none — so the pair cannot
+  loop.
+- Because the outbound payload now carries a date of birth, `companyNumber` is
+  redacted out of anything stored or logged; see [INV-PRIV-011].
+
 ## Endpoint modes external consumers still call (#2678)
 
 ### INV-INT-016

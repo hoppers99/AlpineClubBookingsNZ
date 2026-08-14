@@ -320,6 +320,25 @@ export async function checkAgeUpMembers(): Promise<{
   const cutoffDate = new Date(seasonStart);
   cutoffDate.setFullYear(cutoffDate.getFullYear() - targetAgeTierMinAge);
 
+  // #2859: this comparison is instant-against-instant, and the two sides are
+  // encoded differently. `cutoffDate` derives from `getSeasonStartDate`, which
+  // is `new Date(year, month, 1)` — LOCAL midnight, so `(D-1)T11:00Z` or
+  // `(D-1)T12:00Z` under the `TZ=Pacific/Auckland` pin. A stored date of birth
+  // is a date-only value at UTC MIDNIGHT (INV-DATE-024). A member born on
+  // exactly the season-start anniversary therefore sits a few hours AFTER the
+  // cutoff instant and was filtered out here, one season late for their own
+  // age-up — the same off-by-one INV-DATE-013 names, on the one boundary where
+  // it decides a tier.
+  //
+  // It was reachable before #2859 for any correctly stored date of birth, and
+  // #2859's migration re-encodes 364 more rows into that same shape, so the
+  // prefilter is widened to the END of the cutoff calendar day rather than left
+  // to become the common case. Widening is the safe direction: this query only
+  // proposes candidates, and `computeAgeTierWithSettings` below is the
+  // authority that promotes or skips each one.
+  const cutoffWindowEnd = new Date(cutoffDate);
+  cutoffWindowEnd.setDate(cutoffWindowEnd.getDate() + 1);
+
   const candidates = await prisma.member.findMany({
     where: {
       active: true,
@@ -330,7 +349,7 @@ export async function checkAgeUpMembers(): Promise<{
       ageTier: { notIn: ["ADULT", "NOT_APPLICABLE"] },
       dateOfBirth: {
         not: null,
-        lte: cutoffDate,
+        lt: cutoffWindowEnd,
       },
     },
     select: {

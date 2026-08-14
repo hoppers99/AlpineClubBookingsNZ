@@ -527,7 +527,10 @@ describe("findOrCreateXeroContact", () => {
     );
     const createPayload =
       mocks.xeroClientInstance.accountingApi.createContacts.mock.calls[0][1];
-    expect(createPayload.contacts[0]).not.toHaveProperty("companyNumber");
+    // #2859: the create payload now carries the member's date of birth in the
+    // NZBN field. This line asserted its ABSENCE before #2859, which was the
+    // defect rather than the contract.
+    expect(createPayload.contacts[0].companyNumber).toBe("30/08/1987");
     expect(mocks.tx.member.update).toHaveBeenCalledWith({
       where: { id: "mem_1" },
       data: { xeroContactId: "xero_existing_by_name" },

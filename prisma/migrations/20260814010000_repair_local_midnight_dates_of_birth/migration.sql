@@ -1,0 +1,72 @@
+-- #2859: move the dates of birth that were stored a day early back onto the day
+-- the member was actually born.
+--
+-- WHAT WENT WRONG. Four copies of the same `dd/mm/yyyy` parser had grown across
+-- the Xero surface. Two of them built `new Date(`${yyyy}-${mm}-${dd}T00:00:00`)`
+-- — no `Z`, no offset, so JavaScript reads it as SERVER-LOCAL midnight — and
+-- `Dockerfile` pins `TZ=Pacific/Auckland`. The stored instant therefore landed
+-- on the PREVIOUS UTC day, every hour of every day, not only in a morning
+-- window. Those two parsers are the Xero member import (bulk, dependant and
+-- backfill paths) and the single-contact import route, which between them
+-- created essentially the whole membership at go-live.
+--
+-- THE CENSUS THAT MAKES THIS SAFE. Every writer of `Member.dateOfBirth` was
+-- enumerated before this statement was written, because a migration keyed on a
+-- shape must know that the shape means one thing. Result: the Xero import pair
+-- above are the ONLY writers that ever produced a local-midnight instant. Every
+-- other writer — self-service profile, admin create, admin member-detail edit,
+-- CSV import, all four family-group routes, membership application approval,
+-- nomination, and the inbound Xero contact reconciliation — produces UTC
+-- midnight, via `parseDateOnly`, an explicit `T00:00:00.000Z`, `Date.UTC(...)`,
+-- or `new Date("yyyy-MM-dd")` (which ECMAScript defines as UTC for the date-only
+-- form). So `12:00`/`13:00` means "written by the defect" and `00:00` means
+-- "written correctly", with nothing writing either shape for another reason.
+--
+-- WHAT THIS MATCHES, EXACTLY. A stored `dateOfBirth` whose time-of-day is
+-- precisely 12:00:00.000 or 13:00:00.000 UTC — New Zealand standard time (+12)
+-- and New Zealand daylight time (+13) local midnight, the two offsets the pinned
+-- zone has held for every date of birth in the club's records. Both bounds are
+-- exact to the millisecond, and the hour list is a literal pair rather than a
+-- range.
+--
+-- A RANGE IS THE MISTAKE THIS DELIBERATELY DOES NOT MAKE. The measured live
+-- distribution is 244 rows at 12:00, 120 at 13:00, 10 at 00:00 — and ONE at
+-- 11:39. `BETWEEN 11:00 AND 13:00` would read as generous and would sweep that
+-- row into a shape-matched repair. 11:39 is not a New Zealand local midnight for
+-- any offset the zone has ever held, so nothing about the defect explains it and
+-- nothing about this statement can know what it was meant to be. It is left
+-- exactly as it is, for someone to look at. `date_part` on the minute and second
+-- is what excludes it, and the fixture asserts that it survives untouched.
+--
+-- THE ARITHMETIC. Adding 12 hours and truncating to the day lands both matched
+-- shapes on UTC midnight of the intended day, and only those:
+--   1985-06-14 12:00 + 12h = 1985-06-15 00:00 -> 1985-06-15 00:00  (15/06/1985)
+--   1999-12-31 13:00 + 12h = 2000-01-01 01:00 -> 2000-01-01 00:00  (01/01/2000)
+-- The second is the year-boundary case, where the defect moved the year as well
+-- as the day. Pure timestamp arithmetic, no `AT TIME ZONE`: the column is
+-- `timestamp(3)` without time zone holding a UTC instant, so a zone conversion
+-- here would depend on the database container's tzdata to state something the
+-- matched shape has already established.
+--
+-- SCOPE. Tokoroa is the only live site with a Xero connection (owner, this
+-- session). Every other deployment picks up the corrected parser before it ever
+-- imports a contact, so this statement simply matches no rows there — which is
+-- also what makes it safe to replay after a blue/green cutover: once a row is at
+-- 00:00 it can never match again.
+--
+-- WHAT DOES NOT CHANGE. Age tier. `computeAge` (`src/lib/policies/age-tier.ts`)
+-- reads a date of birth through LOCAL getters, and `member-age.ts` reads it
+-- through the club zone, so under the Pacific/Auckland pin both already recovered
+-- the intended calendar day from the defective instant and read the same day from
+-- the repaired one. The one place the two encodings did NOT agree was the
+-- age-up cron's SQL prefilter, which compares the stored instant against a
+-- local-midnight cutoff; that comparison is widened to the whole cutoff day in
+-- the same release (`src/lib/cron-age-up.ts`, #2859) so this repair cannot move
+-- anybody's tier in either direction.
+
+UPDATE "Member"
+   SET "dateOfBirth" = date_trunc('day', "dateOfBirth" + INTERVAL '12 hours')
+ WHERE "dateOfBirth" IS NOT NULL
+   AND date_part('hour', "dateOfBirth") IN (12, 13)
+   AND date_part('minute', "dateOfBirth") = 0
+   AND date_part('second', "dateOfBirth") = 0;

@@ -1333,7 +1333,12 @@ describe("checkAgeUpMembers", () => {
         ageTier: { notIn: ["ADULT", "NOT_APPLICABLE"] },
         dateOfBirth: {
           not: null,
-          lte: expect.any(Date),
+          // #2859: an exclusive bound on the END of the cutoff calendar day,
+          // not `lte` the cutoff instant. The two sides of this comparison are
+          // encoded differently — a local-midnight cutoff against a UTC-midnight
+          // date of birth — so the member born on exactly the season-start
+          // anniversary used to fall out of the candidate set.
+          lt: expect.any(Date),
         },
       },
       select: expect.objectContaining({
@@ -1353,13 +1358,28 @@ describe("checkAgeUpMembers", () => {
       }),
     });
 
-    // Verify cutoff date is 18 years before season start (April 1, 2026)
-    // Cutoff should be April 1, 2008
+    // Verify the cutoff day is 18 years before season start (April 1, 2026),
+    // i.e. April 1, 2008. #2859: the bound is now EXCLUSIVE on the day AFTER
+    // that, so a member born on 1 April 2008 — who turns 18 on season start and
+    // is an adult that season — is inside the candidate set whichever way their
+    // date of birth is encoded.
     const cutoff = (mockedFindMany.mock.calls[0]![0] as any).where.dateOfBirth;
-    const cutoffDate = cutoff.lte as Date;
-    expect(cutoffDate.getFullYear()).toBe(2008);
-    expect(cutoffDate.getMonth()).toBe(3); // April
-    expect(cutoffDate.getDate()).toBe(1);
+    const cutoffWindowEnd = cutoff.lt as Date;
+    expect(cutoffWindowEnd.getFullYear()).toBe(2008);
+    expect(cutoffWindowEnd.getMonth()).toBe(3); // April
+    expect(cutoffWindowEnd.getDate()).toBe(2);
+    // Exactly the season-start construction plus one day, pinned as an instant
+    // so a widening beyond one day cannot pass. Both sides are built with the
+    // same local-midnight constructor the code uses, so this holds in any
+    // runner zone (docs/TESTING.md rule 6).
+    expect(cutoffWindowEnd.getTime()).toBe(new Date(2008, 3, 2).getTime());
+    // The whole of 1 April 2008 is inside the window, in both encodings: the
+    // UTC-midnight one every correct writer produces, and the local-midnight one
+    // the #2859 migration repairs. Under the club's own Pacific/Auckland pin the
+    // old `lte` bound was 2008-03-31T11:00Z, which excluded the first of these.
+    expect(new Date("2008-04-01T00:00:00.000Z").getTime()).toBeLessThan(
+      cutoffWindowEnd.getTime(),
+    );
   });
 
   it("should use the configured ADULT age tier for cutoff and email data", async () => {
@@ -1413,10 +1433,13 @@ describe("checkAgeUpMembers", () => {
 
     expect(result.upgraded).toBe(1);
     const cutoff = (mockedFindMany.mock.calls[0]![0] as any).where.dateOfBirth;
-    const cutoffDate = cutoff.lte as Date;
-    expect(cutoffDate.getFullYear()).toBe(2005);
-    expect(cutoffDate.getMonth()).toBe(3);
-    expect(cutoffDate.getDate()).toBe(1);
+    // #2859: exclusive bound on the day after the configured cutoff day. With
+    // an ADULT minimum age of 21 the cutoff day is 1 April 2005, so the window
+    // ends at the start of 2 April 2005.
+    const cutoffWindowEnd = cutoff.lt as Date;
+    expect(cutoffWindowEnd.getFullYear()).toBe(2005);
+    expect(cutoffWindowEnd.getMonth()).toBe(3);
+    expect(cutoffWindowEnd.getDate()).toBe(2);
     expect(mockedSendEmail).toHaveBeenCalledWith(
       "adult21@example.com",
       "Alex",

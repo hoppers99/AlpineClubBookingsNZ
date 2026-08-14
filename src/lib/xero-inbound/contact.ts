@@ -9,21 +9,8 @@ import {
   XeroMemberUnavailableError,
   type InboundMemberContactPatch,
 } from "@/lib/xero-contact-create-recovery";
+import { parseXeroContactDateOfBirth } from "@/lib/xero-contact-date-of-birth";
 import { writeXeroInboundAuditLogs } from "./audit";
-
-function parseXeroDateOfBirth(value: string | undefined): Date | null {
-  if (!value) {
-    return null;
-  }
-
-  const match = value.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-  if (!match) {
-    return null;
-  }
-
-  const date = new Date(Date.UTC(Number(match[3]), Number(match[2]) - 1, Number(match[1])));
-  return Number.isNaN(date.getTime()) ? null : date;
-}
 
 function extractContactPhone(contact: Contact) {
   const phones = contact.phones ?? [];
@@ -210,7 +197,7 @@ export async function reconcileXeroContact(contactId: string) {
       joinedDate: true,
     },
   });
-  const dateOfBirth = parseXeroDateOfBirth(contact.companyNumber);
+  const dateOfBirth = parseXeroContactDateOfBirth(contact.companyNumber);
   const joinedDate = members.some((member) => !member.joinedDate)
     ? await getContactFirstInvoiceDate(xero, tenantId, contactId)
     : null;
