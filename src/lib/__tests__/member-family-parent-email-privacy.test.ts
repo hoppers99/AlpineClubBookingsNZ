@@ -455,8 +455,12 @@ describe("GET /api/members/family — delegated-edit provenance (#2284 S3)", () 
       expectClubTimeZonePremise();
     });
 
-    /** Run the route with a delegated confirmation stamped at `confirmedAt`. */
-    async function confirmedDayFor(confirmedAt: Date) {
+    /**
+     * Run the route with a delegated confirmation stamped at `confirmedAt` and
+     * return the WHOLE provenance object, so a caller can tell "no provenance
+     * at all" apart from "provenance with no day".
+     */
+    async function provenanceFor(confirmedAt: Date) {
       mockPrisma.member.findUnique.mockResolvedValue(
         memberRow({ id: "viewer", firstName: "Viewer", groupIds: ["g1"] }),
       );
@@ -478,7 +482,12 @@ describe("GET /api/members/family — delegated-edit provenance (#2284 S3)", () 
           }),
         },
       ]);
-      return (await fetchProvenance("child"))?.at ?? null;
+      return fetchProvenance("child");
+    }
+
+    /** The rendered day only, for the boundary cases below. */
+    async function confirmedDayFor(confirmedAt: Date) {
+      return (await provenanceFor(confirmedAt))?.at ?? null;
     }
 
     it("dates a confirmation made at midnight NZST to the club day, not the UTC day before", async () => {
@@ -487,8 +496,11 @@ describe("GET /api/members/family — delegated-edit provenance (#2284 S3)", () 
       const firstInstantOfClubDay = new Date("2026-06-14T12:00:00.000Z");
       const lastInstantOfPreviousClubDay = new Date("2026-06-14T11:59:59.999Z");
 
-      // Premise: the two calendars really do disagree here. Without this the
-      // test could drift out of the divergence window and pass vacuously.
+      // Records the premise: this instant's UTC day is the day BEFORE the club
+      // day asserted below, which is exactly what the old truncation showed.
+      // It is NOT a drift guard — the instant is a fixed literal and cannot
+      // drift — but it pins the instant to the day named here, so editing one
+      // without the other fails on this line rather than three lines down.
       expect(firstInstantOfClubDay.toISOString().slice(0, 10)).toBe("2026-06-14");
 
       expect(await confirmedDayFor(firstInstantOfClubDay)).toBe("2026-06-15");
@@ -504,6 +516,7 @@ describe("GET /api/members/family — delegated-edit provenance (#2284 S3)", () 
       const firstInstantOfClubDay = new Date("2026-01-14T11:00:00.000Z");
       const lastInstantOfPreviousClubDay = new Date("2026-01-14T10:59:59.999Z");
 
+      // Records the premise, as above — not a drift guard.
       expect(firstInstantOfClubDay.toISOString().slice(0, 10)).toBe("2026-01-14");
 
       expect(await confirmedDayFor(firstInstantOfClubDay)).toBe("2026-01-15");
@@ -515,14 +528,21 @@ describe("GET /api/members/family — delegated-edit provenance (#2284 S3)", () 
       // at a strength a fixed +12 zone (23:30 on the 14th) still fails.
       const justAfterMidnightNzdt = new Date("2026-01-14T11:30:00.000Z");
 
+      // Records the premise, as above — not a drift guard.
       expect(justAfterMidnightNzdt.toISOString().slice(0, 10)).toBe("2026-01-14");
 
       expect(await confirmedDayFor(justAfterMidnightNzdt)).toBe("2026-01-15");
     });
 
     it("still shows nothing when no confirmation instant was recorded", async () => {
-      // The club-calendar derivation must not invent a day out of `null`.
-      expect(await confirmedDayFor(null as unknown as Date)).toBeNull();
+      // The club-calendar derivation must not invent a day out of `null`. The
+      // WHOLE provenance object is asserted, not just its day: `at: null` on a
+      // provenance that still names the confirmer is the intent, and a bare
+      // `toBeNull()` on the day would also pass if the line vanished entirely.
+      expect(await provenanceFor(null as unknown as Date)).toEqual({
+        name: "Vera Viewer",
+        at: null,
+      });
     });
   });
 

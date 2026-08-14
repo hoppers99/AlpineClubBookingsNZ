@@ -10,5 +10,4 @@
 
   Nothing stored changed and nothing was backfilled: the confirmation instant
   itself was always recorded correctly, and only the day shown on that line was
-  wrong. Dates of birth on the same cards were never affected — those are
-  calendar dates already, not points in time.
+  wrong.

@@ -180,10 +180,22 @@ function getDisplayName(member: { firstName?: string | null; lastName?: string |
  * Truncate a **date-only** value to its `yyyy-MM-dd` day for a date input.
  *
  * This is the UTC day, so it is correct only for a receiver that already holds
- * a calendar day pinned to UTC midnight. All three remaining callers are that:
- * `Member.dateOfBirth` and the two join-request dates of birth
- * (`requestedDateOfBirth`, `childDateOfBirth`), each written from a validated
- * `yyyy-MM-dd` through `parseDateOnly`.
+ * a calendar day pinned to UTC midnight. All three remaining callers are
+ * *intended* to be that: `Member.dateOfBirth` and the two join-request dates of
+ * birth (`requestedDateOfBirth`, `childDateOfBirth`).
+ *
+ * The two join-request columns really are — both are written from a validated
+ * `yyyy-MM-dd` through `parseDateOnly`. **`Member.dateOfBirth` is not
+ * guaranteed.** It is `DateTime?`, not `@db.Date`, so only writer convention
+ * holds it at UTC midnight, and the Xero import breaks that convention: it
+ * parses `dd/MM/yyyy` as SERVER-LOCAL midnight
+ * (`parseXeroCompanyNumberDate` in `src/lib/xero-contacts.ts`, byte-identical
+ * clone in `src/app/api/admin/xero/import-member-contact/route.ts`), which
+ * under the container's `TZ=Pacific/Auckland` stores the previous UTC day, so
+ * a Xero-imported date of birth reads a day early here. That is a stored-value
+ * defect tracked as #2859 and fixed at the writer, not papered over in this
+ * reader — do not "fix" it by switching this call to a zone-aware derivation,
+ * which would only mis-date the dates of birth that ARE stored correctly.
  *
  * **Never pass it a real instant.** A `DateTime` stamped with `now` truncates
  * to a UTC day that is still *yesterday* in New Zealand for roughly the first
