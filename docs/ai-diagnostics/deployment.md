@@ -70,6 +70,12 @@ placeholder/tampered SHA still disables code answers). A **malformed** overlay â
 JSON, a wrong shape, an illegal handle â€” **fails the build closed** rather than
 shipping garbage.
 
+**Migration note.** This tightens the generator's previous "warn and ignore"
+handling of a present-but-unparseable config: a deployment whose existing
+`config/diagnostics-knowledge.json` is invalid JSON (or otherwise malformed) will now
+**fail the build loudly** rather than silently proceeding without it, surfacing a
+latent misconfiguration that would previously have gone unnoticed.
+
 ## Setup order
 
 1. **Provision the SELECT-only database role** (below) and set
