@@ -150,12 +150,13 @@ const verification: DataMigrationVerification = {
                  WHERE "id" IN ('dob-nzst-1200', 'dob-nzdt-1100',
                                 'dob-nzdt-1100-new-year', 'dob-nzst-1200-new-year',
                                 'dob-synthetic-1300')
-                 ORDER BY "id"`,
+                 ORDER BY "id" COLLATE "C"`,
+          // ROWS ARE COMPARED IN ORDER, so this array is sorted by `id` in C
+          // (byte) order and must be RE-SORTED whenever a row is renamed. That
+          // is not hypothetical: renaming `dob-measured-1300` to
+          // `dob-synthetic-1300` moved it from the front of this list to the
+          // back, and only the real-PostgreSQL job could see it.
           rows: [
-            {
-              id: "dob-synthetic-1300",
-              dateOfBirth: "2001-07-06 00:00:00.000",
-            },
             {
               id: "dob-nzdt-1100",
               dateOfBirth: "2010-03-15 00:00:00.000",
@@ -173,6 +174,10 @@ const verification: DataMigrationVerification = {
               id: "dob-nzst-1200-new-year",
               dateOfBirth: "1970-01-01 00:00:00.000",
             },
+            {
+              id: "dob-synthetic-1300",
+              dateOfBirth: "2001-07-06 00:00:00.000",
+            },
           ],
         },
         {
@@ -184,15 +189,18 @@ const verification: DataMigrationVerification = {
                  WHERE "id" IN ('dob-correct', 'dob-near-minute-at-eleven', 'dob-near-second',
                                 'dob-near-ten', 'dob-near-half-past',
                                 'dob-near-minute', 'dob-near-millis')
-                 ORDER BY "id"`,
+                 ORDER BY "id" COLLATE "C"`,
+          // Sorted by `id` in C (byte) order — see the note on the readback
+          // above. The two renamed rows sort into the MIDDLE of this list, not
+          // at the end where their old `dob-outlier-*` names put them.
           rows: [
             { id: "dob-correct", dateOfBirth: "1974-09-02 00:00:00.000" },
             { id: "dob-near-half-past", dateOfBirth: "1946-01-01 12:30:00.000" },
             { id: "dob-near-millis", dateOfBirth: "1988-07-19 12:00:00.500" },
             { id: "dob-near-minute", dateOfBirth: "2001-11-30 13:01:00.000" },
-            { id: "dob-near-ten", dateOfBirth: "1990-05-06 10:00:00.000" },
             { id: "dob-near-minute-at-eleven", dateOfBirth: "1968-04-11 11:39:00.000" },
             { id: "dob-near-second", dateOfBirth: "1867-05-20 12:20:56.000" },
+            { id: "dob-near-ten", dateOfBirth: "1990-05-06 10:00:00.000" },
           ],
         },
         {
@@ -218,7 +226,10 @@ const verification: DataMigrationVerification = {
                    AND date_part('hour', "dateOfBirth") IN (11, 12, 13)
                    AND date_part('minute', "dateOfBirth") = 0
                    AND date_part('second', "dateOfBirth") = 0
-                 ORDER BY "id"`,
+                 ORDER BY "id" COLLATE "C"`,
+          // Expected empty, so order cannot bite here — pinned anyway, because
+          // the day this assertion starts failing is the day it returns rows,
+          // and a diff nobody can read is a worse signal than one they can.
           rows: [],
         },
       ],
@@ -284,7 +295,9 @@ const verification: DataMigrationVerification = {
             "nothing moved. A row already at UTC midnight can never match the predicate again, which is what lets an operator run this statement a second time after a blue/green cutover without walking every date of birth forward another day",
           sql: `SELECT "id",
                        to_char("dateOfBirth", 'YYYY-MM-DD HH24:MI:SS.MS') AS "dateOfBirth"
-                  FROM "Member" WHERE "id" LIKE 'dob-replay-%' ORDER BY "id"`,
+                  FROM "Member" WHERE "id" LIKE 'dob-replay-%'
+                 ORDER BY "id" COLLATE "C"`,
+          // Sorted by `id` in C (byte) order — "correct" before "none".
           rows: [
             { id: "dob-replay-correct", dateOfBirth: "1992-10-05 00:00:00.000" },
             { id: "dob-replay-none", dateOfBirth: null },
