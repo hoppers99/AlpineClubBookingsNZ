@@ -1045,7 +1045,13 @@ export async function POST(
       // else's address; their own pointer goes with the rest of their contact
       // details. Reconciling rather than nulling by hand keeps one rule in one
       // place, and catches any pointer the clauses above did not name.
-      await reconcileEmailInheritanceForMemberChange(tx, [member.id]);
+      await reconcileEmailInheritanceForMemberChange(tx, [member.id], {
+        // Anonymisation revokes this member's source eligibility and clears
+        // their own inherited pointer — a lifecycle transition the approving
+        // admin caused (#2822).
+        trigger: "lifecycle-eligibility-change",
+        actorMemberId: session.user.id,
+      });
 
       // 5. Anonymise BookingGuest names for this member's guest appearances
       await tx.bookingGuest.updateMany({

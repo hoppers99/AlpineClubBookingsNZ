@@ -426,7 +426,12 @@ export async function PUT(req: NextRequest) {
           request: getAuditRequestContext(req),
         }),
       );
-      await reconcileEmailInheritanceForMemberChange(tx, [session.user.id]);
+      await reconcileEmailInheritanceForMemberChange(tx, [session.user.id], {
+        // A member editing their own record (address included): a direct
+        // source-member change, actor is the member themselves (#2822).
+        trigger: "source-member-change",
+        actorMemberId: session.user.id,
+      });
       return member;
     });
 

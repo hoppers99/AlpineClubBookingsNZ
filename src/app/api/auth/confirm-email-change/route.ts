@@ -112,6 +112,7 @@ export async function GET(request: NextRequest) {
         const reconciliation = await reconcileEmailInheritanceForMemberChange(
           tx,
           [record.memberId],
+          { trigger: "source-member-change", actorMemberId: record.memberId },
         );
         // Update email for members who inherit email from this member
         const inheritedMembers = await tx.member.updateMany({

@@ -86,13 +86,33 @@ function defaultDelegate() {
  * findMany, etc.). Returns { tx, spies } where spies are the shared delegates
  * used for assertions.
  */
+/**
+ * A member row shaped as `EMAIL_INHERITANCE_SUBJECT_SELECT` returns it — every
+ * selected column present and NULL, never absent. Real Prisma never hands back a
+ * selected column as `undefined`, and the reconciler's "did the pointer move?"
+ * test is `next === before.inheritEmailFromId`: a bare `{ id }` row makes that
+ * `null === undefined` (a false "moved"), which would spuriously write and audit
+ * an effective-source change the merge never made (#2822).
+ */
+function reconcileSubjectRows(ids: string[]) {
+  return ids
+    .slice()
+    .sort()
+    .map((id) => ({
+      id,
+      inheritParentEmail: false,
+      parentMemberId: null,
+      secondaryParentId: null,
+      inheritEmailChoiceId: null,
+      inheritEmailFromId: null,
+    }));
+}
+
 function makeClient(overrides: Record<string, unknown> = {}) {
   const memberDelegate = {
     ...defaultDelegate(),
     findMany: vi.fn(({ where }: { where?: { id?: { in?: string[] } } }) =>
-      Promise.resolve(
-        (where?.id?.in ?? []).slice().sort().map((id) => ({ id })),
-      ),
+      Promise.resolve(reconcileSubjectRows(where?.id?.in ?? [])),
     ),
     findUnique: vi.fn(({ where }: { where: { id: string } }) =>
       Promise.resolve(where.id === MASTER_ID ? master : where.id === LOSER_ID ? loser : null),
@@ -121,9 +141,7 @@ function makeClient(overrides: Record<string, unknown> = {}) {
               args as { where?: { id?: { in?: string[] } } }
             ).where?.id?.in;
             if (ids) {
-              return Promise.resolve(
-                ids.slice().sort().map((id) => ({ id })),
-              );
+              return Promise.resolve(reconcileSubjectRows(ids));
             }
             return overriddenMember.findMany?.(args) ?? Promise.resolve([]);
           }),

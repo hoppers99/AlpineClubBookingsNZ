@@ -53,7 +53,10 @@ vi.mock("@/lib/session-guards", () => ({
 vi.mock("@/lib/logger", () => ({
   default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
-vi.mock("@/lib/audit", () => ({ logAudit: vi.fn() }));
+vi.mock("@/lib/audit", () => ({
+  logAudit: vi.fn(),
+  createStructuredAuditLog: vi.fn(),
+}));
 vi.mock("@/lib/email", () => ({
   sendAdminFamilyGroupRequestAlert: vi.fn().mockResolvedValue(undefined),
   sendJoinRequestConfirmationEmail: vi.fn().mockResolvedValue(undefined),
