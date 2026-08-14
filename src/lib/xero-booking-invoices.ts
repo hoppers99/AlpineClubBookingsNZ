@@ -57,6 +57,7 @@ import {
   getBookingInvoiceDueDate,
   getBookingInvoiceIssueDate,
 } from "./xero-invoice-helpers";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 
 // #1765 — the aggregate Payment statuses that prove cash was captured at some
 // point. Settlement gating must pair one of these with a positive NET capture
@@ -678,10 +679,17 @@ export async function createXeroInvoiceForBooking(
           : "Zero-total invoice does not require Xero payment recording.";
 
     if (shouldRecordStripeInvoicePayment) {
-      const invoiceAmountDueCents =
-        typeof createdInvoice.amountDue === "number"
-          ? Math.round(createdInvoice.amountDue * 100)
-          : null;
+      // THE ONE BEHAVIOUR DELTA IN THIS CONVERSION, stated for the record
+      // (#2685 review). The test this replaced was `typeof … === "number"`;
+      // `providerAmountToCents` also requires the number to be FINITE. The only
+      // inputs that differ are `NaN` and `±Infinity`, which Xero's JSON cannot
+      // produce — and for those the old code took the `Math.min` branch and sent
+      // `amount: NaN` to Xero, while this one falls to `netCapturedCents`, the
+      // same figure an absent `amountDue` has always produced. No finite
+      // provider amount converts to a different cent value.
+      const invoiceAmountDueCents = providerAmountToCents(
+        createdInvoice.amountDue,
+      );
       const invoicePaymentCents =
         invoiceAmountDueCents === null
           ? netCapturedCents

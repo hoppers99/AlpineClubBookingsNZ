@@ -22,11 +22,35 @@ import {
   startXeroSyncOperation,
 } from "@/lib/xero-sync";
 import { XERO_OUTBOX_SUBSCRIPTION_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 
-function invoiceCents(invoice: Invoice) {
-  if (typeof invoice.total === "number") return Math.round(invoice.total * 100);
-  return Math.round((invoice.lineItems ?? []).reduce((sum, line) =>
-    sum + (line.lineAmount ?? ((line.quantity ?? 1) * (line.unitAmount ?? 0))), 0) * 100);
+/**
+ * A Xero invoice's total in integer cents, or `null` when it cannot be read.
+ *
+ * `null` IS THE POINT, and it replaced a `?? 0` (#2685 review). This figure only
+ * ever feeds an ADOPTION comparison, so the answer to "I could not read this
+ * invoice" has to be one that matches nothing. Zero is not that answer: a
+ * snapshot line of `amountCents: 0` — a waived or fully-discounted component —
+ * would have compared equal to an invoice whose amount was unreadable, and the
+ * unreadable invoice would have been adopted as the charge's own. `null` is
+ * never `===` a number, so every caller below refuses instead.
+ *
+ * The unreadable case needs the payload to carry a non-number where a number
+ * belongs, which JSON from the Xero SDK does not produce — but a STRING
+ * `lineAmount` used to coerce through `+` into the running sum and would now
+ * make the sum a string, and a `NaN` used to stay `NaN` all the way to the
+ * comparison. Failing closed costs nothing and removes the question.
+ */
+function invoiceCents(invoice: Invoice): number | null {
+  const totalCents = providerAmountToCents(invoice.total);
+  if (totalCents !== null) return totalCents;
+  return providerAmountToCents(
+    (invoice.lineItems ?? []).reduce(
+      (sum, line) =>
+        sum + (line.lineAmount ?? (line.quantity ?? 1) * (line.unitAmount ?? 0)),
+      0,
+    ),
+  );
 }
 
 /**
@@ -71,9 +95,15 @@ export type SubscriptionInvoiceLine = {
   itemCode: string | null;
 };
 
-function lineCents(line: NonNullable<Invoice["lineItems"]>[number]) {
+/** One invoice line in integer cents, or `null` — see `invoiceCents`. */
+function lineCents(
+  line: NonNullable<Invoice["lineItems"]>[number],
+): number | null {
   const amount = line.lineAmount ?? ((line.quantity ?? 1) * (line.unitAmount ?? 0));
-  return Math.round(amount * 100);
+  // Refuses rather than defaulting, for the reason `invoiceCents` sets out: a
+  // waived component snapshots as `amountCents: 0`, so a zero default made an
+  // unreadable line adopt against it (#2685 review).
+  return providerAmountToCents(amount);
 }
 
 // Adoption/idempotency guard (#1932, E6): the immutable charge now snapshots one

@@ -98,6 +98,90 @@ describe("Xero membership subscription invoice adoption", () => {
     expect(subscriptionInvoiceMatchesSnapshot({ invoice: providerInvoice, ...snapshot })).toBe(false);
   });
 
+  /*
+    #2685 review — AN UNREADABLE AMOUNT MUST MATCH NOTHING.
+
+    `invoiceCents` and `lineCents` fell back to `?? 0` when the provider figure
+    could not be converted. Zero is not a safe "unknown": a WAIVED or fully
+    discounted component snapshots as `amountCents: 0`, so an invoice nobody
+    could read compared EQUAL to it and would have been adopted as that charge's
+    own invoice. Both helpers now refuse, and `null === number` is false, so the
+    match fails instead.
+
+    Reaching it needs a payload the Xero SDK's JSON cannot produce — a string or
+    a `NaN` where a number belongs — which is exactly why it was worth closing
+    rather than arguing about: it costs nothing and removes the question.
+  */
+  describe("an invoice whose amount cannot be read is never adopted", () => {
+    const waived = {
+      contactId: "contact-1",
+      amountCents: 0,
+      lines: [{ amountCents: 0, accountCode: "203", itemCode: "SUB" as string | null }],
+      dueDays: 30,
+      reference: "MEMSUB-reference",
+    };
+
+    it.each([
+      [
+        "a NaN invoice total with unreadable lines",
+        invoice({
+          total: Number.NaN,
+          lineItems: [
+            {
+              quantity: 1,
+              unitAmount: 120,
+              lineAmount: Number.NaN,
+              accountCode: "203",
+              itemCode: "SUB",
+              taxType: "OUTPUT2",
+            },
+          ],
+        }),
+      ],
+      [
+        "a string line amount summing to a string",
+        invoice({
+          total: undefined,
+          lineItems: [
+            {
+              quantity: 1,
+              unitAmount: 120,
+              lineAmount: "0.00" as unknown as number,
+              accountCode: "203",
+              itemCode: "SUB",
+              taxType: "OUTPUT2",
+            },
+          ],
+        }),
+      ],
+    ])("refuses to adopt %s against a zero-cent snapshot", (_label, providerInvoice) => {
+      expect(
+        subscriptionInvoiceMatchesSnapshot({ invoice: providerInvoice, ...waived }),
+      ).toBe(false);
+    });
+
+    it("still adopts a genuinely zero-cent invoice (the control)", () => {
+      // The refusal must be about UNREADABLE, not about zero: a real waived
+      // component still adopts, or this fix would have broken free memberships.
+      const zeroInvoice = invoice({
+        total: 0,
+        lineItems: [
+          {
+            quantity: 1,
+            unitAmount: 0,
+            lineAmount: 0,
+            accountCode: "203",
+            itemCode: "SUB",
+            taxType: "OUTPUT2",
+          },
+        ],
+      });
+      expect(
+        subscriptionInvoiceMatchesSnapshot({ invoice: zeroInvoice, ...waived }),
+      ).toBe(true);
+    });
+  });
+
   it("matches null snapshot item only when the provider item is absent or null", () => {
     const noItemSnapshot = { ...snapshot, lines: [{ amountCents: 12_000, accountCode: "203", itemCode: null as string | null }] };
     expect(subscriptionInvoiceMatchesSnapshot({

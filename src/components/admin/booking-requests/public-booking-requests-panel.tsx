@@ -37,6 +37,7 @@ import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { countNightsDateOnly } from "@/lib/date-only";
 import { formatCents } from "@/lib/utils";
+import { parseDecimalDollarsToCents } from "@/lib/money-input";
 import { FocusedActionError } from "@/components/focused-action-error";
 import {
   BookingRequestContactPicker,
@@ -633,10 +634,11 @@ export function PublicBookingRequestsPanel({
     return request.teachers.length + children;
   }
 
+  // #2685: the canonical exact parser. `null` already reaches the officer as a
+  // thrown "Enter a valid …" message below, and now covers a malformed suffix or
+  // a third decimal place rather than silently keeping the leading digits.
   function dollarsToCents(raw: string) {
-    const dollars = Number.parseFloat(raw);
-    if (!Number.isFinite(dollars) || dollars < 0) return null;
-    return Math.round(dollars * 100);
+    return parseDecimalDollarsToCents(raw);
   }
 
   async function handleCreateQuote(request: PublicBookingRequestData) {

@@ -13,6 +13,7 @@ import { getModificationNetAmountCents } from "@/lib/xero-booking-repair-analysi
 import type { XeroSyncOperation } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { asRecord, readNumber, readString } from "@/lib/xero-json";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 import { shouldRepairXeroContactNameOrder } from "@/lib/xero-contact-sync";
 import { buildXeroIdempotencyKey, completeXeroSyncOperation } from "@/lib/xero-sync";
 import { CLUB_NAME } from "@/config/club-identity";
@@ -275,23 +276,23 @@ function parsePaymentCreditNoteRetryInput(
   }
 
   const allocation = asRecord(payload.allocation);
-  const allocationAmount = readNumber(allocation?.amount);
-  if (allocationAmount !== null) {
+  const allocationAmountCents = providerAmountToCents(readNumber(allocation?.amount));
+  if (allocationAmountCents !== null) {
     return {
-      amountCents: Math.round(allocationAmount * 100),
+      amountCents: allocationAmountCents,
       kind: "refund",
     };
   }
 
   const creditNote = asRecord(asArray(payload.creditNotes)[0]);
   const lineItem = asRecord(creditNote ? asArray(creditNote.lineItems)[0] : null);
-  const unitAmount = readNumber(lineItem?.unitAmount);
-  if (unitAmount === null) {
+  const unitAmountCents = providerAmountToCents(readNumber(lineItem?.unitAmount));
+  if (unitAmountCents === null) {
     return null;
   }
 
   return {
-    amountCents: Math.round(unitAmount * 100),
+    amountCents: unitAmountCents,
     kind: "unapplied",
   };
 }
@@ -355,9 +356,9 @@ function readStoredInvoiceTotalCents(
   const responsePayload = asRecord(operation.responsePayload);
   const invoiceResponse = asRecord(responsePayload?.invoice);
   const responseInvoice = asRecord(asArray(invoiceResponse?.invoices)[0]);
-  const responseTotal = readNumber(responseInvoice?.total);
-  if (responseTotal !== null) {
-    return Math.round(responseTotal * 100);
+  const responseTotalCents = providerAmountToCents(readNumber(responseInvoice?.total));
+  if (responseTotalCents !== null) {
+    return responseTotalCents;
   }
 
   const requestPayload = asRecord(operation.requestPayload);
@@ -377,7 +378,11 @@ function readStoredInvoiceTotalCents(
       return sum;
     }
 
-    return sum + Math.round(unitAmount * quantity * 100);
+    // `unitAmount * quantity` first, then the cents boundary — the same
+    // left-to-right evaluation the inline `Math.round(unitAmount * quantity *
+    // 100)` performed, so the stored-total comparison is unchanged (#2685).
+    const lineTotalCents = providerAmountToCents(unitAmount * quantity);
+    return lineTotalCents === null ? sum : sum + lineTotalCents;
   }, 0);
 
   return totalCents > 0 || lineItems.some((lineItem) => readNumber(lineItem.unitAmount) === 0)
@@ -479,11 +484,16 @@ function parseRefundCreditNoteRepairInput(
     return null;
   }
 
+  const amountCents = providerAmountToCents(amount);
+  if (amountCents === null) {
+    return null;
+  }
+
   const responsePayload = asRecord(operation.responsePayload);
   return {
     creditNoteId: operation.xeroObjectId,
     invoiceId,
-    amountCents: Math.round(amount * 100),
+    amountCents,
     needsRefundPaymentRepair: !asRecord(responsePayload?.refundPayment),
   };
 }

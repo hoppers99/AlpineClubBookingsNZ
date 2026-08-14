@@ -10,6 +10,7 @@ import {
 } from "./redact-sensitive-json";
 import logger from "@/lib/logger";
 import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 
 export interface XeroSyncOperationInput {
   direction: string;
@@ -201,9 +202,9 @@ export async function sumCoveredRefundCreditNoteCents(
     });
     const payload = asRecord(operation?.requestPayload);
     const allocation = asRecord(payload?.allocation);
-    const amountDollars = allocation?.amount;
-    if (typeof amountDollars === "number" && Number.isFinite(amountDollars)) {
-      coveredCents += Math.max(0, Math.round(amountDollars * 100));
+    const allocationCents = providerAmountToCents(allocation?.amount);
+    if (allocationCents !== null) {
+      coveredCents += Math.max(0, allocationCents);
     }
   }
   return coveredCents;

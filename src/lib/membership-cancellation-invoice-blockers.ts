@@ -145,6 +145,7 @@ import {
   getInvoiceCurrency,
 } from "@/lib/finance-sync-xero-datasets/invoice-helpers";
 import logger from "@/lib/logger";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 import type {
   MembershipCancellationInvoiceBlocker,
   MembershipCancellationInvoiceCheckUnavailableReason,
@@ -333,8 +334,8 @@ function toUnpaidInvoiceBlocker(
   // total - paid - credited when Xero omits AmountDue. A part-allocated credit
   // note therefore leaves the residual here, and a fully settled invoice leaves
   // zero, which is not a blocker.
-  const amountDueCents = Math.round(getInvoiceAmountDue(invoice) * 100);
-  if (amountDueCents <= 0) {
+  const amountDueCents = providerAmountToCents(getInvoiceAmountDue(invoice));
+  if (amountDueCents === null || amountDueCents <= 0) {
     return null;
   }
 
