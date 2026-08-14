@@ -23,11 +23,6 @@ import { formatCents as formatMoneyCents } from "@/lib/utils";
 
 export const BASE_URL = getAppBaseUrl();
 
-// Brand colours are pulled per-render from the club (Site Style) theme via
-// `emailPalette()` (see email-theme.ts) so emails match the live site. Each
-// helper/template reads `const p = emailPalette()` once and uses p.gold,
-// p.charcoal, p.deep, p.mist, p.snow, p.ridge. These two are not brand roles
-// and stay fixed.
 const BRAND_LOGO_URL = `${BASE_URL}/branding/logo.png`;
 
 export const WHITE = "#ffffff";
