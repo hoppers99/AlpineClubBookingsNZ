@@ -1,35 +1,41 @@
 import { loadBookingAppliedCredit } from "@/lib/booking-confirmation-credit";
 import logger from "@/lib/logger";
-import type { AppliedCreditSummary } from "@/lib/email-templates";
 import {
-  appliedCreditSummaryRows,
-  settledByPaymentCents,
-  resolveUnpaidCreditNetting,
-  unpaidCreditNoteInput,
-  unpaidMoneySummaryRows,
+  bookingBumpedTemplate,
+  bookingCancelledTemplate,
   bookingConfirmedTemplate,
+  bookingGuestsCancelledTemplate,
+  bookingModifiedTemplate,
   bookingPendingTemplate,
+  setupIntentFailedTemplate,
+  splitGuestPortionCancelledTemplate,
+} from "@/lib/email-templates/booking";
+import {
   bookingPolicyExceptionApprovedTemplate,
   bookingPolicyExceptionRefusedTemplate,
-  bookingBumpedTemplate,
-  bookingGuestsCancelledTemplate,
-  bookingCancelledTemplate,
   bookingReviewApprovedTemplate,
   bookingReviewRejectedTemplate,
-  checkinReminderTemplate,
-  bookingModifiedTemplate,
-  setupIntentFailedTemplate,
-  preArrivalReminderTemplate,
-  additionalPaymentReminderTemplate,
-  splitGuestPortionCancelledTemplate,
-  promoAdjustmentSummaryRows,
-  resolvePromoAdjustmentCents,
-  bookingModificationTypeLabel,
-  bookingModificationSummaryRows,
   hostingCoverageLostTemplate,
   policyExceptionRequestExpiredTemplate,
+} from "@/lib/email-templates/booking-exceptions";
+import {
+  type AppliedCreditSummary,
+  appliedCreditSummaryRows,
+  bookingModificationSummaryRows,
+  bookingModificationTypeLabel,
+  promoAdjustmentSummaryRows,
+  resolvePromoAdjustmentCents,
+  resolveUnpaidCreditNetting,
+  settledByPaymentCents,
+  unpaidCreditNoteInput,
+  unpaidMoneySummaryRows,
+} from "@/lib/email-templates/booking-money";
+import {
+  additionalPaymentReminderTemplate,
+  checkinReminderTemplate,
+  preArrivalReminderTemplate,
   wholeLodgeGuestNamesReminderTemplate,
-} from "../email-templates";
+} from "@/lib/email-templates/booking-reminders";
 import {
   bookingBumpedRebookAction,
   bookingPaymentDueNote,

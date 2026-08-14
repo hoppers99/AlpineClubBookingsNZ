@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { sendEmail } from "@/lib/email";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
-import { escapeHtml } from "@/lib/email-templates";
+import { escapeHtml } from "@/lib/email-templates/escape";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 import { loadEmailMessageSettings } from "@/lib/email-message-settings";

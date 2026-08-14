@@ -17,7 +17,7 @@ vi.mock("../admin-alerts-shared", () => ({
   shouldSendDirectAdminSystemEmail: h.shouldSendDirectAdminSystemEmail,
 }));
 vi.mock("../core", () => ({ sendEmail: h.sendEmail }));
-vi.mock("@/lib/email-templates", () => ({
+vi.mock("@/lib/email-templates/admin-membership", () => ({
   adminMembershipApplicationPendingTemplate: vi.fn(() => "<html></html>"),
   adminFamilyGroupRequestTemplate: vi.fn(() => "<html></html>"),
   adminMembershipCancellationRequestTemplate: vi.fn(() => "<html></html>"),

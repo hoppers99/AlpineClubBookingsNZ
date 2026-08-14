@@ -1318,11 +1318,15 @@ describe("review finding source/schema contracts", () => {
   });
 
   it("renders NZ-local expiry timestamps in email verification and email-change templates", () => {
-    const source = readRepoFile("src/lib/email-templates.ts");
+    // #2689 moved both templates out of the monolith into the account family.
+    // The slice end moved with them: `nominationRequestTemplate` is membership
+    // business and now lives in another module, so the block that follows the
+    // verification template here is the email-change one.
+    const source = readRepoFile("src/lib/email-templates/account.ts");
     const verificationTemplateBlock = sliceFrom(
       source,
       "export function emailVerificationTemplate",
-      "export function nominationRequestTemplate"
+      "export function emailChangeVerificationTemplate"
     );
     const emailChangeTemplateBlock = sliceFrom(
       source,

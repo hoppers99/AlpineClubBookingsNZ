@@ -3,7 +3,7 @@ import {
   type GuestSelfRemovalBlocker,
 } from "@/lib/booking-guest-self-removal";
 import { addDaysDateOnly } from "@/lib/date-only";
-import { escapeHtml } from "@/lib/email-templates";
+import { escapeHtml } from "@/lib/email-templates/escape";
 import { formatNZDate } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/utils";
 

@@ -1,19 +1,19 @@
 import {
-  familyGroupInvitationTemplate,
-  familyGroupInviteAcceptedTemplate,
-  childRequestSubmittedTemplate,
   childRequestApprovedTemplate,
   childRequestRejectedTemplate,
-  joinRequestConfirmationTemplate,
-  groupCreateRequestConfirmationTemplate,
+  childRequestSubmittedTemplate,
+  familyGroupInvitationTemplate,
+  familyGroupInviteAcceptedTemplate,
   groupCreateApprovedTemplate,
   groupCreateRejectedTemplate,
-  partnerInviteTemplate,
+  groupCreateRequestConfirmationTemplate,
+  joinRequestConfirmationTemplate,
   partnerInviteClaimedTemplate,
-  partnerLinkRequestTemplate,
+  partnerInviteTemplate,
   partnerLinkConfirmedTemplate,
   partnerLinkRemovedTemplate,
-} from "../email-templates";
+  partnerLinkRequestTemplate,
+} from "@/lib/email-templates/family";
 import {
   composeOptionalEmailLine,
 } from "../email-message-notes";

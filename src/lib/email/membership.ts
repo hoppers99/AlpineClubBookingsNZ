@@ -1,18 +1,18 @@
 import {
-  membershipPaymentRecordedTemplate,
-  inductionSignOffRequestTemplate,
-  nominationRequestTemplate,
-  membershipApplicationApprovedTemplate,
-  membershipApplicationRejectedTemplate,
   ageUpInvitationTemplate,
   ageUpParentEmailHandoffTemplate,
-  membershipCancellationSubmittedTemplate,
-  membershipCancellationConfirmationTemplate,
-  membershipCancellationApprovedTemplate,
-  membershipCancellationRejectedTemplate,
+  inductionSignOffRequestTemplate,
   memberArchiveApprovedTemplate,
   memberArchiveRejectedTemplate,
-} from "../email-templates";
+  membershipApplicationApprovedTemplate,
+  membershipApplicationRejectedTemplate,
+  membershipCancellationApprovedTemplate,
+  membershipCancellationConfirmationTemplate,
+  membershipCancellationRejectedTemplate,
+  membershipCancellationSubmittedTemplate,
+  membershipPaymentRecordedTemplate,
+  nominationRequestTemplate,
+} from "@/lib/email-templates/membership";
 import {
   composeOptionalEmailLine,
 } from "../email-message-notes";

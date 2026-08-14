@@ -41,15 +41,20 @@ vi.mock("@/lib/xero-link-short-code", () => ({
   getXeroOrgShortCode: h.getXeroOrgShortCode,
 }));
 
-vi.mock("@/lib/email-templates", () => ({
+vi.mock("@/lib/email-templates/admin-finance", () => ({
   adminPaymentFailureTemplate: vi.fn(() => "<html></html>"),
   adminDuplicateCaptureRefundTemplate: vi.fn(() => "<html></html>"),
   adminManualSettlementConflictTemplate: h.settlementTemplate,
   adminManualRefundTaskTemplate: vi.fn(() => "<html></html>"),
   adminXeroSyncErrorTemplate: vi.fn(() => "<html></html>"),
   adminXeroRepeatedFailureTemplate: h.repeatedFailureTemplate,
-  adminXeroReconciliationReportTemplate: h.reconciliationTemplate,
   adminRefundRequestTemplate: vi.fn(() => "<html></html>"),
+}));
+
+// The two scheduled reports live in their own module (#2689), so they need
+// their own factory: a factory only replaces the module it names.
+vi.mock("@/lib/email-templates/admin-xero-reports", () => ({
+  adminXeroReconciliationReportTemplate: h.reconciliationTemplate,
 }));
 
 import {

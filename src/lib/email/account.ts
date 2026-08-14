@@ -1,15 +1,15 @@
 import {
-  passwordResetTemplate,
-  magicLinkLoginTemplate,
-  emailVerificationTemplate,
-  emailChangeVerificationTemplate,
-  emailChangeNotificationTemplate,
-  adminPasswordResetTemplate,
-  memberSetupInviteTemplate,
-  twoFactorCodeTemplate,
   accountDeletionApprovedTemplate,
   accountDeletionRejectedTemplate,
-} from "../email-templates";
+  adminPasswordResetTemplate,
+  emailChangeNotificationTemplate,
+  emailChangeVerificationTemplate,
+  emailVerificationTemplate,
+  magicLinkLoginTemplate,
+  memberSetupInviteTemplate,
+  passwordResetTemplate,
+  twoFactorCodeTemplate,
+} from "@/lib/email-templates/account";
 import {
   composeOptionalEmailLine,
 } from "../email-message-notes";

@@ -55,7 +55,9 @@ import {
   renderTemplateString,
   validateEmailTemplateContent,
 } from "@/lib/email-message-renderer";
-import { memberGuestConsentAnsweredTemplate } from "@/lib/email-templates";
+import {
+  memberGuestConsentAnsweredTemplate,
+} from "@/lib/email-templates/member-guest";
 import { composeMemberGuestConsentAnswered } from "@/lib/member-guest-email-notes";
 import { sendMemberGuestConsentAnsweredEmail } from "@/lib/email/member-guest";
 

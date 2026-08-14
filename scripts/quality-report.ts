@@ -32,7 +32,6 @@ export const KNOWN_OVERSIZED_PRODUCTION_FILES = new Set<string>([
   "src/lib/xero-inbound-reconciliation.ts",
   "src/lib/xero-booking-repair.ts",
   "src/lib/xero-operation-outbox.ts",
-  "src/lib/email-templates.ts",
   "src/lib/email.ts",
   "src/lib/xero-hardening.ts",
   "src/lib/finance-sync-xero-datasets.ts",

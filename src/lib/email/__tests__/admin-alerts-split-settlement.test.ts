@@ -18,7 +18,7 @@ vi.mock("../admin-alerts-shared", () => ({
   sendToAdmins: h.sendToAdmins,
   shouldSendDirectAdminSystemEmail: h.shouldSendDirectAdminSystemEmail,
 }));
-vi.mock("@/lib/email-templates", () => ({
+vi.mock("@/lib/email-templates/admin-booking", () => ({
   adminMinorsReviewRequiredTemplate: vi.fn(() => "<html></html>"),
   adminOwnerSubstitutionTemplate: vi.fn(() => "<html></html>"),
   adminPartnerShareSweptTemplate: vi.fn(() => "<html></html>"),

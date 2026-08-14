@@ -2,7 +2,7 @@
  * Palette source for HTML email templates.
  *
  * Emails derive their brand colours from the club (Site Style) theme so they
- * match the live site. The templates in `email-templates.ts` are synchronous
+ * match the live site. The templates in `email-templates/` are synchronous
  * and are rendered from ~10 `email/*` modules with no single send choke-point,
  * so instead of threading an async palette through every template we keep a
  * self-warming, module-level cache: `emailPalette()` returns the last-known

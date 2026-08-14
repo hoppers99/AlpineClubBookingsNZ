@@ -20,7 +20,9 @@ import {
   reconcileXeroCreditSync,
   type CreditSyncInvoiceRead,
 } from "@/lib/xero-credit-sync-checker";
-import type { CreditSyncDriftReportEmail } from "@/lib/email-templates";
+import {
+  type CreditSyncDriftReportEmail,
+} from "@/lib/email-templates/admin-xero-reports";
 
 interface FakeDbState {
   cronJobRun: unknown;

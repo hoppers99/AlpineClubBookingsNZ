@@ -27,11 +27,197 @@
  * ADDING A TEMPLATE. Add its case here; the test fails if any exported render
  * function, or any registry template key, has no case.
  */
-import type {
-  CreditSyncDriftReportEmail,
-  XeroReconciliationReportEmail,
-} from "@/lib/email-templates";
-import * as T from "@/lib/email-templates";
+import {
+  accountDeletionApprovedTemplate,
+  accountDeletionRejectedTemplate,
+  adminPasswordResetTemplate,
+  emailChangeNotificationTemplate,
+  emailChangeVerificationTemplate,
+  emailVerificationTemplate,
+  magicLinkLoginTemplate,
+  memberSetupInviteTemplate,
+  passwordResetTemplate,
+  twoFactorCodeTemplate,
+} from "@/lib/email-templates/account";
+import {
+  adminBookingBumpedTemplate,
+  adminBookingChangeRequestTemplate,
+  adminBookingRequestHoldCancelledTemplate,
+  adminBookingRequestHoldExpiredTemplate,
+  adminBookingRequestPendingTemplate,
+  adminCapacityWarningTemplate,
+  adminMinorsReviewRequiredTemplate,
+  adminNewBookingTemplate,
+  adminOwnerSubstitutionTemplate,
+  adminPartnerShareSweptTemplate,
+  adminPendingDeadlineTemplate,
+  adminSchoolManualInvoiceTemplate,
+  adminSplitSettlementCancelledTemplate,
+  adminSplitSettlementUnpaidTemplate,
+  adminWaitlistOfferTemplate,
+  adminWholeLodgeManualInvoiceTemplate,
+} from "@/lib/email-templates/admin-booking";
+import {
+  adminDuplicateCaptureRefundTemplate,
+  adminLateCaptureAutoRefundTemplate,
+  adminLateCaptureHandBackConflictTemplate,
+  adminManualRefundTaskTemplate,
+  adminManualSettlementConflictTemplate,
+  adminPaymentFailureTemplate,
+  adminRefundRequestTemplate,
+  adminXeroRepeatedFailureTemplate,
+  adminXeroSyncErrorTemplate,
+} from "@/lib/email-templates/admin-finance";
+import {
+  adminAccountDeletionRequestedTemplate,
+  adminFamilyGroupRequestTemplate,
+  adminMemberArchiveRequestedTemplate,
+  adminMemberDeleteApprovedTemplate,
+  adminMemberDeleteRejectedTemplate,
+  adminMemberDeleteRequestedTemplate,
+  adminMembershipApplicationPendingTemplate,
+  adminMembershipCancellationRequestTemplate,
+} from "@/lib/email-templates/admin-membership";
+import {
+  adminDailyDigestTemplate,
+  adminIssueReportTemplate,
+} from "@/lib/email-templates/admin-ops";
+import {
+  adminCreditSyncDriftTemplate,
+  adminXeroReconciliationReportTemplate,
+  type CreditSyncDriftReportEmail,
+  type XeroReconciliationReportEmail,
+} from "@/lib/email-templates/admin-xero-reports";
+import {
+  arrivalInstructionsSection,
+  bookingBumpedTemplate,
+  bookingCancelledTemplate,
+  bookingConfirmedTemplate,
+  bookingGuestsCancelledTemplate,
+  bookingModifiedTemplate,
+  bookingPendingTemplate,
+  setupIntentFailedTemplate,
+  splitGuestPortionCancelledTemplate,
+} from "@/lib/email-templates/booking";
+import {
+  bookingPolicyExceptionApprovedTemplate,
+  bookingPolicyExceptionRefusedTemplate,
+  bookingReviewApprovedTemplate,
+  bookingReviewRejectedTemplate,
+  hostingCoverageLostTemplate,
+  policyExceptionRequestExpiredTemplate,
+} from "@/lib/email-templates/booking-exceptions";
+import {
+  appliedCreditSummaryRows,
+  bookingModificationSummaryRows,
+  bookingModificationTypeLabel,
+  promoAdjustmentSummaryRows,
+  resolvePromoAdjustmentCents,
+  resolveUnpaidCreditNetting,
+  settledByPaymentCents,
+  unpaidCreditNoteInput,
+  unpaidMoneySummaryRows,
+  wholeLodgeManualInvoiceAmountCents,
+} from "@/lib/email-templates/booking-money";
+import {
+  additionalPaymentReminderTemplate,
+  checkinReminderTemplate,
+  preArrivalReminderTemplate,
+  wholeLodgeGuestNamesReminderTemplate,
+} from "@/lib/email-templates/booking-reminders";
+import {
+  bookingRequestApprovedTemplate,
+  bookingRequestDeclinedTemplate,
+  bookingRequestPaymentExpiredTemplate,
+  bookingRequestQuoteTemplate,
+  bookingRequestVerificationTemplate,
+  schoolAttendeeConfirmationTemplate,
+  splitGuestPaymentLinkTemplate,
+} from "@/lib/email-templates/booking-requests";
+import {
+  choreRosterTemplate,
+  formatChoreRosterDate,
+  hutLeaderAssignmentTemplate,
+} from "@/lib/email-templates/chores";
+import {
+  bulkCommunicationTemplate,
+  noticePublishedTemplate,
+} from "@/lib/email-templates/communications";
+import { escapeHtml } from "@/lib/email-templates/escape";
+import {
+  childRequestApprovedTemplate,
+  childRequestRejectedTemplate,
+  childRequestSubmittedTemplate,
+  familyGroupInvitationTemplate,
+  familyGroupInviteAcceptedTemplate,
+  groupCreateApprovedTemplate,
+  groupCreateRejectedTemplate,
+  groupCreateRequestConfirmationTemplate,
+  joinRequestConfirmationTemplate,
+  partnerInviteClaimedTemplate,
+  partnerInviteTemplate,
+  partnerLinkConfirmedTemplate,
+  partnerLinkRemovedTemplate,
+  partnerLinkRequestTemplate,
+} from "@/lib/email-templates/family";
+import {
+  familyMemberBookingAddedTemplate,
+} from "@/lib/email-templates/family-booking";
+import {
+  groupJoinCancelledTemplate,
+  groupJoinReleasedTemplate,
+  groupJoinSettledTemplate,
+  groupSettlementExpiredTemplate,
+  groupSettlementReceiptTemplate,
+} from "@/lib/email-templates/groups";
+import {
+  alertBox,
+  button,
+  formatCents,
+  heading,
+  infoTable,
+  layout,
+  multilineBlock,
+  muted,
+  paragraph,
+  plainTextEmailTemplate,
+  supportContactMuted,
+  supportContactSentence,
+  supportEmailLink,
+} from "@/lib/email-templates/layout";
+import {
+  memberGuestAddedTemplate,
+  memberGuestConsentAnsweredTemplate,
+  memberGuestConsentExpiredTemplate,
+  memberGuestConsentOutcomeTemplate,
+  memberGuestConsentRequestTemplate,
+  memberGuestRequestWithdrawnTemplate,
+} from "@/lib/email-templates/member-guest";
+import {
+  ageUpInvitationTemplate,
+  ageUpParentEmailHandoffTemplate,
+  inductionSignOffRequestTemplate,
+  memberArchiveApprovedTemplate,
+  memberArchiveRejectedTemplate,
+  membershipApplicationApprovedTemplate,
+  membershipApplicationRejectedTemplate,
+  membershipCancellationApprovedTemplate,
+  membershipCancellationConfirmationTemplate,
+  membershipCancellationRejectedTemplate,
+  membershipCancellationSubmittedTemplate,
+  membershipPaymentRecordedTemplate,
+  nominationRequestTemplate,
+} from "@/lib/email-templates/membership";
+import {
+  refundRequestApprovedTemplate,
+  refundRequestDeclinedTemplate,
+} from "@/lib/email-templates/refunds";
+import {
+  waitlistConfirmationTemplate,
+  waitlistOfferExpiredTemplate,
+  waitlistOfferTemplate,
+  waitlistPlaceRestoredTemplate,
+} from "@/lib/email-templates/waitlist";
 
 export interface EmailRenderCase {
   /** Stable identity: `<functionName>:<argument shape>`. */
@@ -206,18 +392,95 @@ const formatTestCents = (cents: number) => `$${(cents / 100).toFixed(2)}`;
  * through both renderers, and the settlement methods that label the credit
  * lines on a paid confirmation.
  */
+/**
+ * The shared primitives, pinned individually.
+ *
+ * Every email embeds these, so a cascade change inside one would otherwise show
+ * up as 190 red templates with nothing saying which block moved. Pinned here,
+ * the primitive names itself.
+ */
+const PRIMITIVE_CASES: EmailRenderCase[] = [
+  { id: "layout:minimal", fn: "layout", render: () => layout("<p>Body</p>") },
+  { id: "heading:minimal", fn: "heading", render: () => heading("A heading") },
+  { id: "paragraph:minimal", fn: "paragraph", render: () => paragraph("A paragraph.") },
+  {
+    id: "multilineBlock:minimal",
+    fn: "multilineBlock",
+    render: () => multilineBlock("Line one\nLine two"),
+  },
+  { id: "muted:minimal", fn: "muted", render: () => muted("Muted note.") },
+  {
+    id: "supportEmailLink:minimal",
+    fn: "supportEmailLink",
+    render: () => supportEmailLink(),
+  },
+  {
+    id: "supportContactMuted:minimal",
+    fn: "supportContactMuted",
+    render: () => supportContactMuted(),
+  },
+  {
+    id: "supportContactSentence:minimal",
+    fn: "supportContactSentence",
+    render: () => supportContactSentence("If you have any questions, contact the club at "),
+  },
+  {
+    id: "button:same-origin",
+    fn: "button",
+    render: () => button("View booking", "/bookings"),
+  },
+  {
+    id: "button:external",
+    fn: "button",
+    render: () =>
+      button("Open in Xero", "https://go.xero.example/invoice", { sameOrigin: false }),
+  },
+  {
+    id: "infoTable:minimal",
+    fn: "infoTable",
+    render: () =>
+      infoTable([
+        { label: "Check-in", value: "Fri 3 Jul 2026" },
+        { label: "Check-out", value: "Sun 5 Jul 2026" },
+      ]),
+  },
+  // One case per tone: each carries its own background, border and ink.
+  ...(["info", "warning", "success"] as const).map(
+    (tone): EmailRenderCase => ({
+      id: `alertBox:${tone}`,
+      fn: "alertBox",
+      render: () => alertBox(`A ${tone} message.`, tone),
+    }),
+  ),
+  { id: "formatCents:minimal", fn: "formatCents", render: () => formatCents(123456) },
+  {
+    id: "arrivalInstructionsSection:minimal",
+    fn: "arrivalInstructionsSection",
+    render: () => arrivalInstructionsSection({ travelNote: "Turn left at the bridge." }),
+  },
+  {
+    id: "arrivalInstructionsSection:full",
+    fn: "arrivalInstructionsSection",
+    render: () =>
+      arrivalInstructionsSection({
+        travelNote: "Turn left at the bridge.\nThen follow the track.",
+        doorCode: "4821",
+      }),
+  },
+];
+
 const MONEY_BRANCH_CASES: EmailRenderCase[] = [
   ...NETTING_OUTCOMES.flatMap((netting): EmailRenderCase[] => [
     {
       id: `unpaidMoneySummaryRows:outcome-${netting.outcome}`,
       fn: "unpaidMoneySummaryRows",
-      render: () => json(T.unpaidMoneySummaryRows(30000, netting)),
+      render: () => json(unpaidMoneySummaryRows(30000, netting)),
     },
     {
       id: `unpaidCreditNoteInput:outcome-${netting.outcome}`,
       fn: "unpaidCreditNoteInput",
       render: () =>
-        json(T.unpaidCreditNoteInput(30000, netting, formatTestCents)),
+        json(unpaidCreditNoteInput(30000, netting, formatTestCents)),
     },
   ]),
   ...(["card", "bank_transfer", "manual"] as const).map(
@@ -225,19 +488,19 @@ const MONEY_BRANCH_CASES: EmailRenderCase[] = [
       id: `appliedCreditSummaryRows:settled-${settlementMethod}`,
       fn: "appliedCreditSummaryRows",
       render: () =>
-        json(T.appliedCreditSummaryRows(12000, 18000, settlementMethod)),
+        json(appliedCreditSummaryRows(12000, 18000, settlementMethod)),
     }),
   ),
   {
     id: "appliedCreditSummaryRows:settled-zero",
     fn: "appliedCreditSummaryRows",
-    render: () => json(T.appliedCreditSummaryRows(30000, 0, "card")),
+    render: () => json(appliedCreditSummaryRows(30000, 0, "card")),
   },
   {
     id: "bookingConfirmedTemplate:payment-due",
     fn: "bookingConfirmedTemplate",
     render: () =>
-      T.bookingConfirmedTemplate(
+      bookingConfirmedTemplate(
         "Ada",
         FIXED_DATE("2026-07-04T00:00:00.000Z"),
         FIXED_DATE("2026-07-06T00:00:00.000Z"),
@@ -250,7 +513,7 @@ const MONEY_BRANCH_CASES: EmailRenderCase[] = [
     id: "bookingConfirmedTemplate:outstanding-balance",
     fn: "bookingConfirmedTemplate",
     render: () =>
-      T.bookingConfirmedTemplate(
+      bookingConfirmedTemplate(
         "Ada",
         FIXED_DATE("2026-07-04T00:00:00.000Z"),
         FIXED_DATE("2026-07-06T00:00:00.000Z"),
@@ -263,7 +526,7 @@ const MONEY_BRANCH_CASES: EmailRenderCase[] = [
     id: "bookingConfirmedTemplate:applied-credit-only",
     fn: "bookingConfirmedTemplate",
     render: () =>
-      T.bookingConfirmedTemplate(
+      bookingConfirmedTemplate(
         "Ada",
         FIXED_DATE("2026-07-04T00:00:00.000Z"),
         FIXED_DATE("2026-07-06T00:00:00.000Z"),
@@ -276,7 +539,7 @@ const MONEY_BRANCH_CASES: EmailRenderCase[] = [
     id: "bookingCancelledTemplate:refund-manual",
     fn: "bookingCancelledTemplate",
     render: () =>
-      T.bookingCancelledTemplate(
+      bookingCancelledTemplate(
         "Ada",
         FIXED_DATE("2026-07-04T00:00:00.000Z"),
         FIXED_DATE("2026-07-06T00:00:00.000Z"),
@@ -290,362 +553,363 @@ const MONEY_BRANCH_CASES: EmailRenderCase[] = [
 /** Generated from the exported signatures; see the module docblock. */
 const GENERATED_CASES: EmailRenderCase[] = [
   { id: "escapeHtml:minimal", fn: "escapeHtml", render: () =>
-    T.escapeHtml("str-1") },
+    escapeHtml("str-1") },
   { id: "plainTextEmailTemplate:minimal", fn: "plainTextEmailTemplate", render: () =>
-    T.plainTextEmailTemplate("bodyText-1") },
+    plainTextEmailTemplate("bodyText-1") },
   { id: "passwordResetTemplate:minimal", fn: "passwordResetTemplate", render: () =>
-    T.passwordResetTemplate("resetUrl-1") },
+    passwordResetTemplate("resetUrl-1") },
   { id: "magicLinkLoginTemplate:minimal", fn: "magicLinkLoginTemplate", render: () =>
-    T.magicLinkLoginTemplate("loginUrl-1") },
+    magicLinkLoginTemplate("loginUrl-1") },
   { id: "adminPasswordResetTemplate:minimal", fn: "adminPasswordResetTemplate", render: () =>
-    T.adminPasswordResetTemplate("resetUrl-1") },
+    adminPasswordResetTemplate("resetUrl-1") },
   { id: "adminPasswordResetTemplate:full", fn: "adminPasswordResetTemplate", render: () =>
-    T.adminPasswordResetTemplate("resetUrl-1", "1 hour") },
+    adminPasswordResetTemplate("resetUrl-1", "1 hour") },
   { id: "memberSetupInviteTemplate:minimal", fn: "memberSetupInviteTemplate", render: () =>
-    T.memberSetupInviteTemplate("firstName-1", "resetUrl-2") },
+    memberSetupInviteTemplate("firstName-1", "resetUrl-2") },
   { id: "twoFactorCodeTemplate:minimal", fn: "twoFactorCodeTemplate", render: () =>
-    T.twoFactorCodeTemplate({ firstName: "firstName-1", code: "code-2", expiresAt: new Date("2026-03-04T00:00:00.000Z") }) },
+    twoFactorCodeTemplate({ firstName: "firstName-1", code: "code-2", expiresAt: new Date("2026-03-04T00:00:00.000Z") }) },
   { id: "resolvePromoAdjustmentCents:minimal", fn: "resolvePromoAdjustmentCents", render: () =>
-    json(T.resolvePromoAdjustmentCents()) },
+    json(resolvePromoAdjustmentCents()) },
   { id: "resolvePromoAdjustmentCents:full", fn: "resolvePromoAdjustmentCents", render: () =>
-    json(T.resolvePromoAdjustmentCents({ discountCents: 101, promoAdjustmentCents: 102 })) },
+    json(resolvePromoAdjustmentCents({ discountCents: 101, promoAdjustmentCents: 102 })) },
   { id: "promoAdjustmentSummaryRows:minimal", fn: "promoAdjustmentSummaryRows", render: () =>
-    json(T.promoAdjustmentSummaryRows(101, 102)) },
+    json(promoAdjustmentSummaryRows(101, 102)) },
   { id: "promoAdjustmentSummaryRows:full", fn: "promoAdjustmentSummaryRows", render: () =>
-    json(T.promoAdjustmentSummaryRows(101, 102, "promoCode-3")) },
+    json(promoAdjustmentSummaryRows(101, 102, "promoCode-3")) },
   { id: "appliedCreditSummaryRows:minimal", fn: "appliedCreditSummaryRows", render: () =>
-    json(T.appliedCreditSummaryRows(101, 102)) },
+    json(appliedCreditSummaryRows(101, 102)) },
   { id: "appliedCreditSummaryRows:full", fn: "appliedCreditSummaryRows", render: () =>
-    json(T.appliedCreditSummaryRows(101, 102, "manual" as const)) },
+    json(appliedCreditSummaryRows(101, 102, "manual" as const)) },
   { id: "settledByPaymentCents:minimal", fn: "settledByPaymentCents", render: () =>
-    json(T.settledByPaymentCents({ totalCents: 101, appliedCreditCents: 102, unpaid: true, outstandingCents: 103 })) },
+    json(settledByPaymentCents({ totalCents: 101, appliedCreditCents: 102, unpaid: true, outstandingCents: 103 })) },
   { id: "resolveUnpaidCreditNetting:minimal", fn: "resolveUnpaidCreditNetting", render: () =>
-    json(T.resolveUnpaidCreditNetting({ totalCents: 101, appliedCreditCents: 102 })) },
+    json(resolveUnpaidCreditNetting({ totalCents: 101, appliedCreditCents: 102 })) },
   { id: "unpaidCreditNoteInput:minimal", fn: "unpaidCreditNoteInput", render: () =>
-    json(T.unpaidCreditNoteInput(101, { outcome: "netted" as const, creditCents: 2500, toTransferCents: 7500 }, (cents: number) => `$${(cents / 100).toFixed(2)}`)) },
+    json(unpaidCreditNoteInput(101, { outcome: "netted" as const, creditCents: 2500, toTransferCents: 7500 }, (cents: number) => `$${(cents / 100).toFixed(2)}`)) },
   { id: "unpaidCreditNoteInput:full", fn: "unpaidCreditNoteInput", render: () =>
-    json(T.unpaidCreditNoteInput(101, { outcome: "covered" as const, creditCents: 10000, toTransferCents: 0 }, (cents: number) => `$${(cents / 100).toFixed(2)}`)) },
+    json(unpaidCreditNoteInput(101, { outcome: "covered" as const, creditCents: 10000, toTransferCents: 0 }, (cents: number) => `$${(cents / 100).toFixed(2)}`)) },
   { id: "wholeLodgeManualInvoiceAmountCents:minimal", fn: "wholeLodgeManualInvoiceAmountCents", render: () =>
-    json(T.wholeLodgeManualInvoiceAmountCents(101, 102)) },
+    json(wholeLodgeManualInvoiceAmountCents(101, 102)) },
   { id: "unpaidMoneySummaryRows:minimal", fn: "unpaidMoneySummaryRows", render: () =>
-    json(T.unpaidMoneySummaryRows(101, { outcome: "netted" as const, creditCents: 2500, toTransferCents: 7500 })) },
+    json(unpaidMoneySummaryRows(101, { outcome: "netted" as const, creditCents: 2500, toTransferCents: 7500 })) },
   { id: "unpaidMoneySummaryRows:full", fn: "unpaidMoneySummaryRows", render: () =>
-    json(T.unpaidMoneySummaryRows(101, { outcome: "covered" as const, creditCents: 10000, toTransferCents: 0 })) },
+    json(unpaidMoneySummaryRows(101, { outcome: "covered" as const, creditCents: 10000, toTransferCents: 0 })) },
   { id: "bookingConfirmedTemplate:minimal", fn: "bookingConfirmedTemplate", render: () =>
-    T.bookingConfirmedTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, 105) },
+    bookingConfirmedTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, 105) },
   { id: "bookingConfirmedTemplate:full", fn: "bookingConfirmedTemplate", render: () =>
-    T.bookingConfirmedTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, 105, { discountCents: 106, promoAdjustmentCents: 107, promoCode: "promoCode-8", appliedCredit: { amountCents: 12345, settlementMethod: "bank_transfer" as const }, lodgeTravelNote: "lodgeTravelNote-9", doorCode: "doorCode-10", provisionalGuests: { guestCount: 111, holdUntil: new Date("2026-03-13T00:00:00.000Z") }, paymentDue: { reference: "reference-13", invoiceEmailed: true }, outstandingBalance: { amountCents: 114, payableOnline: true } }) },
+    bookingConfirmedTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, 105, { discountCents: 106, promoAdjustmentCents: 107, promoCode: "promoCode-8", appliedCredit: { amountCents: 12345, settlementMethod: "bank_transfer" as const }, lodgeTravelNote: "lodgeTravelNote-9", doorCode: "doorCode-10", provisionalGuests: { guestCount: 111, holdUntil: new Date("2026-03-13T00:00:00.000Z") }, paymentDue: { reference: "reference-13", invoiceEmailed: true }, outstandingBalance: { amountCents: 114, payableOnline: true } }) },
   { id: "bookingPendingTemplate:minimal", fn: "bookingPendingTemplate", render: () =>
-    T.bookingPendingTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, new Date("2026-03-06T00:00:00.000Z")) },
+    bookingPendingTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, new Date("2026-03-06T00:00:00.000Z")) },
   { id: "bookingPolicyExceptionApprovedTemplate:minimal", fn: "bookingPolicyExceptionApprovedTemplate", render: () =>
-    T.bookingPolicyExceptionApprovedTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, paymentNote: "paymentNote-5", adminNotesLine: "adminNotesLine-6" }) },
+    bookingPolicyExceptionApprovedTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, paymentNote: "paymentNote-5", adminNotesLine: "adminNotesLine-6" }) },
   { id: "bookingPolicyExceptionRefusedTemplate:minimal", fn: "bookingPolicyExceptionRefusedTemplate", render: () =>
-    T.bookingPolicyExceptionRefusedTemplate({ firstName: "firstName-1", lodgeName: "lodgeName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), reasonLine: "reasonLine-5", askDescription: "askDescription-6" }) },
+    bookingPolicyExceptionRefusedTemplate({ firstName: "firstName-1", lodgeName: "lodgeName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), reasonLine: "reasonLine-5", askDescription: "askDescription-6" }) },
   { id: "bookingBumpedTemplate:minimal", fn: "bookingBumpedTemplate", render: () =>
-    T.bookingBumpedTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, true) },
+    bookingBumpedTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, true) },
   { id: "bookingCancelledTemplate:minimal", fn: "bookingCancelledTemplate", render: () =>
-    T.bookingCancelledTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104) },
+    bookingCancelledTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104) },
   { id: "bookingCancelledTemplate:full", fn: "bookingCancelledTemplate", render: () =>
-    T.bookingCancelledTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, "credit", 105) },
+    bookingCancelledTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, "credit", 105) },
   { id: "bookingGuestsCancelledTemplate:minimal", fn: "bookingGuestsCancelledTemplate", render: () =>
-    T.bookingGuestsCancelledTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z")) },
+    bookingGuestsCancelledTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z")) },
   { id: "bookingReviewApprovedTemplate:minimal", fn: "bookingReviewApprovedTemplate", render: () =>
-    T.bookingReviewApprovedTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), "adminNotes-4", "bookingId-5") },
+    bookingReviewApprovedTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), "adminNotes-4", "bookingId-5") },
   { id: "bookingReviewRejectedTemplate:minimal", fn: "bookingReviewRejectedTemplate", render: () =>
-    T.bookingReviewRejectedTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), "adminNotes-4") },
+    bookingReviewRejectedTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), "adminNotes-4") },
   { id: "emailVerificationTemplate:minimal", fn: "emailVerificationTemplate", render: () =>
-    T.emailVerificationTemplate("firstName-1", "verifyUrl-2", new Date("2026-03-04T00:00:00.000Z")) },
+    emailVerificationTemplate("firstName-1", "verifyUrl-2", new Date("2026-03-04T00:00:00.000Z")) },
   { id: "nominationRequestTemplate:minimal", fn: "nominationRequestTemplate", render: () =>
-    T.nominationRequestTemplate({ nominatorName: "nominatorName-1", applicantName: "applicantName-2", reviewUrl: "reviewUrl-3", familyMemberCount: 104, expiresAt: new Date("2026-03-06T00:00:00.000Z") }) },
+    nominationRequestTemplate({ nominatorName: "nominatorName-1", applicantName: "applicantName-2", reviewUrl: "reviewUrl-3", familyMemberCount: 104, expiresAt: new Date("2026-03-06T00:00:00.000Z") }) },
   { id: "inductionSignOffRequestTemplate:minimal", fn: "inductionSignOffRequestTemplate", render: () =>
-    T.inductionSignOffRequestTemplate({ signerName: "signerName-1", inducteeName: "inducteeName-2", signerRoleLabel: "signerRoleLabel-3", inductionUrl: "inductionUrl-4" }) },
+    inductionSignOffRequestTemplate({ signerName: "signerName-1", inducteeName: "inducteeName-2", signerRoleLabel: "signerRoleLabel-3", inductionUrl: "inductionUrl-4" }) },
   { id: "emailChangeVerificationTemplate:minimal", fn: "emailChangeVerificationTemplate", render: () =>
-    T.emailChangeVerificationTemplate("newEmail-1", "verifyUrl-2", new Date("2026-03-04T00:00:00.000Z")) },
+    emailChangeVerificationTemplate("newEmail-1", "verifyUrl-2", new Date("2026-03-04T00:00:00.000Z")) },
   { id: "emailChangeNotificationTemplate:minimal", fn: "emailChangeNotificationTemplate", render: () =>
-    T.emailChangeNotificationTemplate("newEmail-1") },
+    emailChangeNotificationTemplate("newEmail-1") },
   { id: "formatChoreRosterDate:minimal", fn: "formatChoreRosterDate", render: () =>
-    T.formatChoreRosterDate("date-1") },
+    formatChoreRosterDate("date-1") },
   { id: "choreRosterTemplate:minimal", fn: "choreRosterTemplate", render: () =>
-    T.choreRosterTemplate("guestName-1", "date-2", [{ name: "name-3", description: "description-4" }]) },
+    choreRosterTemplate("guestName-1", "date-2", [{ name: "name-3", description: "description-4" }]) },
   { id: "choreRosterTemplate:full", fn: "choreRosterTemplate", render: () =>
-    T.choreRosterTemplate("guestName-1", "date-2", [{ name: "name-3", description: "description-4" }], "choreLink-5") },
+    choreRosterTemplate("guestName-1", "date-2", [{ name: "name-3", description: "description-4" }], "choreLink-5") },
   { id: "hutLeaderAssignmentTemplate:minimal", fn: "hutLeaderAssignmentTemplate", render: () =>
-    T.hutLeaderAssignmentTemplate({ firstName: "firstName-1", startDate: new Date("2026-03-03T00:00:00.000Z"), endDate: new Date("2026-03-04T00:00:00.000Z"), pin: "pin-4", assignmentId: "assignmentId-5" }) },
+    hutLeaderAssignmentTemplate({ firstName: "firstName-1", startDate: new Date("2026-03-03T00:00:00.000Z"), endDate: new Date("2026-03-04T00:00:00.000Z"), pin: "pin-4", assignmentId: "assignmentId-5" }) },
   { id: "checkinReminderTemplate:minimal", fn: "checkinReminderTemplate", render: () =>
-    T.checkinReminderTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), [{ firstName: "firstName-4", lastName: "lastName-5" }], [{ name: "name-6", description: "description-7" }]) },
+    checkinReminderTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), [{ firstName: "firstName-4", lastName: "lastName-5" }], [{ name: "name-6", description: "description-7" }]) },
   { id: "preArrivalReminderTemplate:minimal", fn: "preArrivalReminderTemplate", render: () =>
-    T.preArrivalReminderTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, lodgeTravelNote: "lodgeTravelNote-5" }) },
+    preArrivalReminderTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, lodgeTravelNote: "lodgeTravelNote-5" }) },
   { id: "preArrivalReminderTemplate:full", fn: "preArrivalReminderTemplate", render: () =>
-    T.preArrivalReminderTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, expectedArrivalTime: "expectedArrivalTime-5", lodgeTravelNote: "lodgeTravelNote-6", doorCode: "doorCode-7", outstandingAdditionalAmountCents: 108, checkoutChoreNote: "checkoutChoreNote-9" }) },
+    preArrivalReminderTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, expectedArrivalTime: "expectedArrivalTime-5", lodgeTravelNote: "lodgeTravelNote-6", doorCode: "doorCode-7", outstandingAdditionalAmountCents: 108, checkoutChoreNote: "checkoutChoreNote-9" }) },
   { id: "additionalPaymentReminderTemplate:minimal", fn: "additionalPaymentReminderTemplate", render: () =>
-    T.additionalPaymentReminderTemplate({ firstName: "firstName-1", additionalAmountCents: 102, checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), requestedOn: new Date("2026-03-06T00:00:00.000Z") }) },
+    additionalPaymentReminderTemplate({ firstName: "firstName-1", additionalAmountCents: 102, checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), requestedOn: new Date("2026-03-06T00:00:00.000Z") }) },
   { id: "adminNewBookingTemplate:minimal", fn: "adminNewBookingTemplate", render: () =>
-    T.adminNewBookingTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, totalCents: 105, status: "status-6" }) },
+    adminNewBookingTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, totalCents: 105, status: "status-6" }) },
   { id: "adminNewBookingTemplate:full", fn: "adminNewBookingTemplate", render: () =>
-    T.adminNewBookingTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, totalCents: 105, status: "status-6", reviewReason: "reviewReason-7", memberJustification: "memberJustification-8" }) },
+    adminNewBookingTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, totalCents: 105, status: "status-6", reviewReason: "reviewReason-7", memberJustification: "memberJustification-8" }) },
   { id: "adminMinorsReviewRequiredTemplate:minimal", fn: "adminMinorsReviewRequiredTemplate", render: () =>
-    T.adminMinorsReviewRequiredTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, reviewReason: "reviewReason-5" }) },
+    adminMinorsReviewRequiredTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, reviewReason: "reviewReason-5" }) },
   { id: "adminPartnerShareSweptTemplate:minimal", fn: "adminPartnerShareSweptTemplate", render: () =>
-    T.adminPartnerShareSweptTemplate({ memberName: "memberName-1", partnerName: "partnerName-2", reason: "reason-3", nights: [new Date("2026-03-05T00:00:00.000Z")] }) },
+    adminPartnerShareSweptTemplate({ memberName: "memberName-1", partnerName: "partnerName-2", reason: "reason-3", nights: [new Date("2026-03-05T00:00:00.000Z")] }) },
   { id: "adminOwnerSubstitutionTemplate:minimal", fn: "adminOwnerSubstitutionTemplate", render: () =>
-    T.adminOwnerSubstitutionTemplate({ requestId: "requestId-1", bookingId: "bookingId-2", intendedMemberId: "intendedMemberId-3", substituteMemberId: "substituteMemberId-4", reason: "reason-5", requesterName: "requesterName-6", requesterEmail: "requesterEmail-7", checkIn: new Date("2026-03-09T00:00:00.000Z"), checkOut: new Date("2026-03-10T00:00:00.000Z") }) },
+    adminOwnerSubstitutionTemplate({ requestId: "requestId-1", bookingId: "bookingId-2", intendedMemberId: "intendedMemberId-3", substituteMemberId: "substituteMemberId-4", reason: "reason-5", requesterName: "requesterName-6", requesterEmail: "requesterEmail-7", checkIn: new Date("2026-03-09T00:00:00.000Z"), checkOut: new Date("2026-03-10T00:00:00.000Z") }) },
   { id: "adminOwnerSubstitutionTemplate:full", fn: "adminOwnerSubstitutionTemplate", render: () =>
-    T.adminOwnerSubstitutionTemplate({ requestId: "requestId-1", bookingId: "bookingId-2", intendedMemberId: "intendedMemberId-3", intendedMemberName: "intendedMemberName-4", substituteMemberId: "substituteMemberId-5", substituteMemberName: "substituteMemberName-6", reason: "reason-7", requesterName: "requesterName-8", requesterEmail: "requesterEmail-9", checkIn: new Date("2026-03-11T00:00:00.000Z"), checkOut: new Date("2026-03-12T00:00:00.000Z") }) },
+    adminOwnerSubstitutionTemplate({ requestId: "requestId-1", bookingId: "bookingId-2", intendedMemberId: "intendedMemberId-3", intendedMemberName: "intendedMemberName-4", substituteMemberId: "substituteMemberId-5", substituteMemberName: "substituteMemberName-6", reason: "reason-7", requesterName: "requesterName-8", requesterEmail: "requesterEmail-9", checkIn: new Date("2026-03-11T00:00:00.000Z"), checkOut: new Date("2026-03-12T00:00:00.000Z") }) },
   { id: "adminPaymentFailureTemplate:minimal", fn: "adminPaymentFailureTemplate", render: () =>
-    T.adminPaymentFailureTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, errorMessage: "errorMessage-5", paymentIntentId: "paymentIntentId-6" }) },
+    adminPaymentFailureTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, errorMessage: "errorMessage-5", paymentIntentId: "paymentIntentId-6" }) },
   { id: "adminDuplicateCaptureRefundTemplate:minimal", fn: "adminDuplicateCaptureRefundTemplate", render: () =>
-    T.adminDuplicateCaptureRefundTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, paymentIntentId: "paymentIntentId-5", settledPaymentIntentId: "settledPaymentIntentId-6", operationReference: "operationReference-7", reviewUrl: "reviewUrl-8", refundFailed: true }) },
+    adminDuplicateCaptureRefundTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, paymentIntentId: "paymentIntentId-5", settledPaymentIntentId: "settledPaymentIntentId-6", operationReference: "operationReference-7", reviewUrl: "reviewUrl-8", refundFailed: true }) },
   { id: "adminDuplicateCaptureRefundTemplate:full", fn: "adminDuplicateCaptureRefundTemplate", render: () =>
-    T.adminDuplicateCaptureRefundTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, paymentIntentId: "paymentIntentId-5", settledPaymentIntentId: "settledPaymentIntentId-6", operationReference: "operationReference-7", errorMessage: "errorMessage-8", reviewUrl: "reviewUrl-9", refundFailed: true }) },
+    adminDuplicateCaptureRefundTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, paymentIntentId: "paymentIntentId-5", settledPaymentIntentId: "settledPaymentIntentId-6", operationReference: "operationReference-7", errorMessage: "errorMessage-8", reviewUrl: "reviewUrl-9", refundFailed: true }) },
   { id: "adminLateCaptureAutoRefundTemplate:minimal", fn: "adminLateCaptureAutoRefundTemplate", render: () =>
-    T.adminLateCaptureAutoRefundTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, paymentIntentId: "paymentIntentId-5", bookingId: "bookingId-6", bookingDeleted: true, captureKind: "modification", reviewUrl: "reviewUrl-7" }) },
+    adminLateCaptureAutoRefundTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, paymentIntentId: "paymentIntentId-5", bookingId: "bookingId-6", bookingDeleted: true, captureKind: "modification", reviewUrl: "reviewUrl-7" }) },
   { id: "adminLateCaptureAutoRefundTemplate:full", fn: "adminLateCaptureAutoRefundTemplate", render: () =>
-    T.adminLateCaptureAutoRefundTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, paymentIntentId: "paymentIntentId-5", bookingId: "bookingId-6", bookingDeleted: true, captureKind: "primary", reviewUrl: "reviewUrl-7" }) },
+    adminLateCaptureAutoRefundTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, paymentIntentId: "paymentIntentId-5", bookingId: "bookingId-6", bookingDeleted: true, captureKind: "primary", reviewUrl: "reviewUrl-7" }) },
   { id: "adminLateCaptureHandBackConflictTemplate:minimal", fn: "adminLateCaptureHandBackConflictTemplate", render: () =>
-    T.adminLateCaptureHandBackConflictTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, paymentIntentId: "paymentIntentId-5", bookingId: "bookingId-6", bookingDeleted: true, captureKind: "modification", handBackAmountCents: 107, refundSent: true, reviewUrl: "reviewUrl-8" }) },
+    adminLateCaptureHandBackConflictTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, paymentIntentId: "paymentIntentId-5", bookingId: "bookingId-6", bookingDeleted: true, captureKind: "modification", handBackAmountCents: 107, refundSent: true, reviewUrl: "reviewUrl-8" }) },
   { id: "adminLateCaptureHandBackConflictTemplate:full", fn: "adminLateCaptureHandBackConflictTemplate", render: () =>
-    T.adminLateCaptureHandBackConflictTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, paymentIntentId: "paymentIntentId-5", bookingId: "bookingId-6", bookingDeleted: true, captureKind: "primary", handBackAmountCents: 107, refundSent: true, reviewUrl: "reviewUrl-8" }) },
+    adminLateCaptureHandBackConflictTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, paymentIntentId: "paymentIntentId-5", bookingId: "bookingId-6", bookingDeleted: true, captureKind: "primary", handBackAmountCents: 107, refundSent: true, reviewUrl: "reviewUrl-8" }) },
   { id: "adminManualSettlementConflictTemplate:minimal", fn: "adminManualSettlementConflictTemplate", render: () =>
-    T.adminManualSettlementConflictTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, bookingId: "bookingId-5", bookingStatus: "bookingStatus-6", xeroInvoiceNumber: "xeroInvoiceNumber-7", xeroInvoiceUrl: "xeroInvoiceUrl-8", reviewUrl: "reviewUrl-9" }) },
+    adminManualSettlementConflictTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), amountCents: 104, bookingId: "bookingId-5", bookingStatus: "bookingStatus-6", xeroInvoiceNumber: "xeroInvoiceNumber-7", xeroInvoiceUrl: "xeroInvoiceUrl-8", reviewUrl: "reviewUrl-9" }) },
   { id: "adminManualRefundTaskTemplate:minimal", fn: "adminManualRefundTaskTemplate", render: () =>
-    T.adminManualRefundTaskTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), refundAmountCents: 104, bookingId: "bookingId-5", reason: "reason-6", reviewUrl: "reviewUrl-7" }) },
+    adminManualRefundTaskTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), refundAmountCents: 104, bookingId: "bookingId-5", reason: "reason-6", reviewUrl: "reviewUrl-7" }) },
   { id: "adminPendingDeadlineTemplate:minimal", fn: "adminPendingDeadlineTemplate", render: () =>
-    T.adminPendingDeadlineTemplate([{ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, deadline: new Date("2026-03-06T00:00:00.000Z"), hoursRemaining: 106 }]) },
+    adminPendingDeadlineTemplate([{ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, deadline: new Date("2026-03-06T00:00:00.000Z"), hoursRemaining: 106 }]) },
   { id: "adminBookingBumpedTemplate:minimal", fn: "adminBookingBumpedTemplate", render: () =>
-    T.adminBookingBumpedTemplate({ bumpedMemberName: "bumpedMemberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, triggeringMemberName: "triggeringMemberName-5" }) },
+    adminBookingBumpedTemplate({ bumpedMemberName: "bumpedMemberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, triggeringMemberName: "triggeringMemberName-5" }) },
   { id: "adminXeroSyncErrorTemplate:minimal", fn: "adminXeroSyncErrorTemplate", render: () =>
-    T.adminXeroSyncErrorTemplate({ errorType: "errorType-1", operation: "operation-2", errorMessage: "errorMessage-3", timestamp: new Date("2026-03-05T00:00:00.000Z") }) },
+    adminXeroSyncErrorTemplate({ errorType: "errorType-1", operation: "operation-2", errorMessage: "errorMessage-3", timestamp: new Date("2026-03-05T00:00:00.000Z") }) },
   { id: "adminXeroRepeatedFailureTemplate:minimal", fn: "adminXeroRepeatedFailureTemplate", render: () =>
-    T.adminXeroRepeatedFailureTemplate({ correlationKey: "correlation-1", failureCount: 102, windowHours: 103, entityType: "entityType-4", operationType: "operationType-5", localModel: "localModel-6", localId: "localId-7", localUrl: "localUrl-8", xeroObjectUrl: "xeroObjectUrl-9", latestErrorMessage: "latestErrorMessage-10", timestamp: new Date("2026-03-12T00:00:00.000Z") }) },
+    adminXeroRepeatedFailureTemplate({ correlationKey: "correlation-1", failureCount: 102, windowHours: 103, entityType: "entityType-4", operationType: "operationType-5", localModel: "localModel-6", localId: "localId-7", localUrl: "localUrl-8", xeroObjectUrl: "xeroObjectUrl-9", latestErrorMessage: "latestErrorMessage-10", timestamp: new Date("2026-03-12T00:00:00.000Z") }) },
   { id: "adminCapacityWarningTemplate:minimal", fn: "adminCapacityWarningTemplate", render: () =>
-    T.adminCapacityWarningTemplate([{ date: new Date("2026-03-02T00:00:00.000Z"), occupiedBeds: 102, availableBeds: 103 }]) },
+    adminCapacityWarningTemplate([{ date: new Date("2026-03-02T00:00:00.000Z"), occupiedBeds: 102, availableBeds: 103 }]) },
   { id: "adminCapacityWarningTemplate:full", fn: "adminCapacityWarningTemplate", render: () =>
-    T.adminCapacityWarningTemplate([{ date: new Date("2026-03-02T00:00:00.000Z"), occupiedBeds: 102, availableBeds: 103 }], 12, "lodgeName-4") },
+    adminCapacityWarningTemplate([{ date: new Date("2026-03-02T00:00:00.000Z"), occupiedBeds: 102, availableBeds: 103 }], 12, "lodgeName-4") },
   { id: "bulkCommunicationTemplate:minimal", fn: "bulkCommunicationTemplate", render: () =>
-    T.bulkCommunicationTemplate("subject-1", "body-2") },
+    bulkCommunicationTemplate("subject-1", "body-2") },
   { id: "noticePublishedTemplate:minimal", fn: "noticePublishedTemplate", render: () =>
-    T.noticePublishedTemplate("firstName-1", "noticeTitle-2", "noticeUrl-3") },
+    noticePublishedTemplate("firstName-1", "noticeTitle-2", "noticeUrl-3") },
   { id: "adminDailyDigestTemplate:minimal", fn: "adminDailyDigestTemplate", render: () =>
-    T.adminDailyDigestTemplate({ newBookings: 101, paymentFailures: 102, capacityWarnings: 103, bookingsBumped: 104, pendingDeadlines: 105, xeroErrors: 106, totalAlerts: 107 }) },
+    adminDailyDigestTemplate({ newBookings: 101, paymentFailures: 102, capacityWarnings: 103, bookingsBumped: 104, pendingDeadlines: 105, xeroErrors: 106, totalAlerts: 107 }) },
   { id: "adminXeroReconciliationReportTemplate:minimal", fn: "adminXeroReconciliationReportTemplate", render: () =>
-    T.adminXeroReconciliationReportTemplate(XERO_REPORT_MINIMAL) },
+    adminXeroReconciliationReportTemplate(XERO_REPORT_MINIMAL) },
   { id: "adminXeroReconciliationReportTemplate:full", fn: "adminXeroReconciliationReportTemplate", render: () =>
-    T.adminXeroReconciliationReportTemplate(XERO_REPORT_FULL) },
+    adminXeroReconciliationReportTemplate(XERO_REPORT_FULL) },
   { id: "adminCreditSyncDriftTemplate:minimal", fn: "adminCreditSyncDriftTemplate", render: () =>
-    T.adminCreditSyncDriftTemplate(CREDIT_DRIFT_MINIMAL) },
+    adminCreditSyncDriftTemplate(CREDIT_DRIFT_MINIMAL) },
   { id: "adminCreditSyncDriftTemplate:full", fn: "adminCreditSyncDriftTemplate", render: () =>
-    T.adminCreditSyncDriftTemplate(CREDIT_DRIFT_FULL) },
+    adminCreditSyncDriftTemplate(CREDIT_DRIFT_FULL) },
   { id: "bookingModificationSummaryRows:minimal", fn: "bookingModificationSummaryRows", render: () =>
-    json(T.bookingModificationSummaryRows({ oldCheckIn: new Date("2026-03-02T00:00:00.000Z"), oldCheckOut: new Date("2026-03-03T00:00:00.000Z"), newCheckIn: new Date("2026-03-04T00:00:00.000Z"), newCheckOut: new Date("2026-03-05T00:00:00.000Z"), oldGuestCount: 105, newGuestCount: 106, oldFinalPriceCents: 107, newFinalPriceCents: 108, changeFeeCents: 109 })) },
+    json(bookingModificationSummaryRows({ oldCheckIn: new Date("2026-03-02T00:00:00.000Z"), oldCheckOut: new Date("2026-03-03T00:00:00.000Z"), newCheckIn: new Date("2026-03-04T00:00:00.000Z"), newCheckOut: new Date("2026-03-05T00:00:00.000Z"), oldGuestCount: 105, newGuestCount: 106, oldFinalPriceCents: 107, newFinalPriceCents: 108, changeFeeCents: 109 })) },
   { id: "bookingModificationSummaryRows:full", fn: "bookingModificationSummaryRows", render: () =>
-    json(T.bookingModificationSummaryRows({ oldCheckIn: new Date("2026-03-02T00:00:00.000Z"), oldCheckOut: new Date("2026-03-03T00:00:00.000Z"), newCheckIn: new Date("2026-03-04T00:00:00.000Z"), newCheckOut: new Date("2026-03-05T00:00:00.000Z"), oldGuestCount: 105, newGuestCount: 106, oldFinalPriceCents: 107, newFinalPriceCents: 108, changeFeeCents: 109, promoCoverageNote: "promoCoverageNote-10" })) },
+    json(bookingModificationSummaryRows({ oldCheckIn: new Date("2026-03-02T00:00:00.000Z"), oldCheckOut: new Date("2026-03-03T00:00:00.000Z"), newCheckIn: new Date("2026-03-04T00:00:00.000Z"), newCheckOut: new Date("2026-03-05T00:00:00.000Z"), oldGuestCount: 105, newGuestCount: 106, oldFinalPriceCents: 107, newFinalPriceCents: 108, changeFeeCents: 109, promoCoverageNote: "promoCoverageNote-10" })) },
   { id: "bookingModificationTypeLabel:minimal", fn: "bookingModificationTypeLabel", render: () =>
-    T.bookingModificationTypeLabel("modificationType-1") },
+    bookingModificationTypeLabel("modificationType-1") },
   { id: "bookingModifiedTemplate:minimal", fn: "bookingModifiedTemplate", render: () =>
-    T.bookingModifiedTemplate({ firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, additionalAmountCents: 113 }) },
+    bookingModifiedTemplate({ firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, additionalAmountCents: 113 }) },
   { id: "bookingModifiedTemplate:full", fn: "bookingModifiedTemplate", render: () =>
-    T.bookingModifiedTemplate({ firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, accountCreditAmountCents: 113, additionalAmountCents: 114, additionalPaymentMethod: "INTERNET_BANKING", paymentReference: "paymentReference-15", xeroInvoiceNumber: "xeroInvoiceNumber-16", promoCoverageNote: "promoCoverageNote-17" }) },
+    bookingModifiedTemplate({ firstName: "firstName-1", modificationType: "modificationType-2", oldCheckIn: new Date("2026-03-04T00:00:00.000Z"), oldCheckOut: new Date("2026-03-05T00:00:00.000Z"), newCheckIn: new Date("2026-03-06T00:00:00.000Z"), newCheckOut: new Date("2026-03-07T00:00:00.000Z"), oldGuestCount: 107, newGuestCount: 108, oldFinalPriceCents: 109, newFinalPriceCents: 110, changeFeeCents: 111, refundAmountCents: 112, accountCreditAmountCents: 113, additionalAmountCents: 114, additionalPaymentMethod: "INTERNET_BANKING", paymentReference: "paymentReference-15", xeroInvoiceNumber: "xeroInvoiceNumber-16", promoCoverageNote: "promoCoverageNote-17" }) },
   { id: "accountDeletionApprovedTemplate:minimal", fn: "accountDeletionApprovedTemplate", render: () =>
-    T.accountDeletionApprovedTemplate("firstName-1") },
+    accountDeletionApprovedTemplate("firstName-1") },
   { id: "familyGroupInvitationTemplate:minimal", fn: "familyGroupInvitationTemplate", render: () =>
-    T.familyGroupInvitationTemplate("inviterName-1", "groupName-2", "profileUrl-3") },
+    familyGroupInvitationTemplate("inviterName-1", "groupName-2", "profileUrl-3") },
   { id: "familyGroupInviteAcceptedTemplate:minimal", fn: "familyGroupInviteAcceptedTemplate", render: () =>
-    T.familyGroupInviteAcceptedTemplate("inviteeName-1", "groupName-2") },
+    familyGroupInviteAcceptedTemplate("inviteeName-1", "groupName-2") },
   { id: "childRequestSubmittedTemplate:minimal", fn: "childRequestSubmittedTemplate", render: () =>
-    T.childRequestSubmittedTemplate("parentName-1", "childName-2", "groupName-3") },
+    childRequestSubmittedTemplate("parentName-1", "childName-2", "groupName-3") },
   { id: "childRequestApprovedTemplate:minimal", fn: "childRequestApprovedTemplate", render: () =>
-    T.childRequestApprovedTemplate("parentName-1", "childName-2", "groupName-3") },
+    childRequestApprovedTemplate("parentName-1", "childName-2", "groupName-3") },
   { id: "childRequestRejectedTemplate:minimal", fn: "childRequestRejectedTemplate", render: () =>
-    T.childRequestRejectedTemplate("parentName-1", "childName-2") },
+    childRequestRejectedTemplate("parentName-1", "childName-2") },
   { id: "childRequestRejectedTemplate:full", fn: "childRequestRejectedTemplate", render: () =>
-    T.childRequestRejectedTemplate("parentName-1", "childName-2", "reason-3") },
+    childRequestRejectedTemplate("parentName-1", "childName-2", "reason-3") },
   { id: "adminFamilyGroupRequestTemplate:minimal", fn: "adminFamilyGroupRequestTemplate", render: () =>
-    T.adminFamilyGroupRequestTemplate({ requestType: "requestType-1", requesterName: "requesterName-2", groupName: "groupName-3", details: "details-4" }) },
+    adminFamilyGroupRequestTemplate({ requestType: "requestType-1", requesterName: "requesterName-2", groupName: "groupName-3", details: "details-4" }) },
   { id: "joinRequestConfirmationTemplate:minimal", fn: "joinRequestConfirmationTemplate", render: () =>
-    T.joinRequestConfirmationTemplate("requesterName-1", "groupName-2") },
+    joinRequestConfirmationTemplate("requesterName-1", "groupName-2") },
   { id: "groupCreateRequestConfirmationTemplate:minimal", fn: "groupCreateRequestConfirmationTemplate", render: () =>
-    T.groupCreateRequestConfirmationTemplate("requesterName-1", "groupName-2") },
+    groupCreateRequestConfirmationTemplate("requesterName-1", "groupName-2") },
   { id: "groupCreateApprovedTemplate:minimal", fn: "groupCreateApprovedTemplate", render: () =>
-    T.groupCreateApprovedTemplate("requesterName-1", "groupName-2") },
+    groupCreateApprovedTemplate("requesterName-1", "groupName-2") },
   { id: "groupCreateRejectedTemplate:minimal", fn: "groupCreateRejectedTemplate", render: () =>
-    T.groupCreateRejectedTemplate("requesterName-1", "groupName-2") },
+    groupCreateRejectedTemplate("requesterName-1", "groupName-2") },
   { id: "groupCreateRejectedTemplate:full", fn: "groupCreateRejectedTemplate", render: () =>
-    T.groupCreateRejectedTemplate("requesterName-1", "groupName-2", "reason-3") },
+    groupCreateRejectedTemplate("requesterName-1", "groupName-2", "reason-3") },
   { id: "partnerInviteTemplate:minimal", fn: "partnerInviteTemplate", render: () =>
-    T.partnerInviteTemplate({ inviterName: "inviterName-1", groupName: "groupName-2", claimUrl: "claimUrl-3", expiresAt: new Date("2026-03-05T00:00:00.000Z") }) },
+    partnerInviteTemplate({ inviterName: "inviterName-1", groupName: "groupName-2", claimUrl: "claimUrl-3", expiresAt: new Date("2026-03-05T00:00:00.000Z") }) },
   { id: "partnerInviteClaimedTemplate:minimal", fn: "partnerInviteClaimedTemplate", render: () =>
-    T.partnerInviteClaimedTemplate("firstName-1", "groupName-2") },
+    partnerInviteClaimedTemplate("firstName-1", "groupName-2") },
   { id: "partnerLinkRequestTemplate:minimal", fn: "partnerLinkRequestTemplate", render: () =>
-    T.partnerLinkRequestTemplate("requesterName-1", "profileUrl-2") },
+    partnerLinkRequestTemplate("requesterName-1", "profileUrl-2") },
   { id: "partnerLinkConfirmedTemplate:minimal", fn: "partnerLinkConfirmedTemplate", render: () =>
-    T.partnerLinkConfirmedTemplate("partnerName-1") },
+    partnerLinkConfirmedTemplate("partnerName-1") },
   { id: "partnerLinkRemovedTemplate:minimal", fn: "partnerLinkRemovedTemplate", render: () =>
-    T.partnerLinkRemovedTemplate("partnerName-1") },
+    partnerLinkRemovedTemplate("partnerName-1") },
   { id: "membershipCancellationSubmittedTemplate:minimal", fn: "membershipCancellationSubmittedTemplate", render: () =>
-    T.membershipCancellationSubmittedTemplate({ firstName: "firstName-1", participantSummary: "participantSummary-2", reviewUrl: "reviewUrl-3" }) },
+    membershipCancellationSubmittedTemplate({ firstName: "firstName-1", participantSummary: "participantSummary-2", reviewUrl: "reviewUrl-3" }) },
   { id: "membershipCancellationSubmittedTemplate:full", fn: "membershipCancellationSubmittedTemplate", render: () =>
-    T.membershipCancellationSubmittedTemplate({ firstName: "firstName-1", participantSummary: "participantSummary-2", reason: "reason-3", reviewUrl: "reviewUrl-4" }) },
+    membershipCancellationSubmittedTemplate({ firstName: "firstName-1", participantSummary: "participantSummary-2", reason: "reason-3", reviewUrl: "reviewUrl-4" }) },
   { id: "membershipCancellationConfirmationTemplate:minimal", fn: "membershipCancellationConfirmationTemplate", render: () =>
-    T.membershipCancellationConfirmationTemplate({ firstName: "firstName-1", requesterName: "requesterName-2", participantName: "participantName-3", confirmationUrl: "confirmationUrl-4", expiresAt: new Date("2026-03-06T00:00:00.000Z") }) },
+    membershipCancellationConfirmationTemplate({ firstName: "firstName-1", requesterName: "requesterName-2", participantName: "participantName-3", confirmationUrl: "confirmationUrl-4", expiresAt: new Date("2026-03-06T00:00:00.000Z") }) },
   { id: "adminMembershipCancellationRequestTemplate:minimal", fn: "adminMembershipCancellationRequestTemplate", render: () =>
-    T.adminMembershipCancellationRequestTemplate({ requesterName: "requesterName-1", participantSummary: "participantSummary-2", reviewUrl: "reviewUrl-3" }) },
+    adminMembershipCancellationRequestTemplate({ requesterName: "requesterName-1", participantSummary: "participantSummary-2", reviewUrl: "reviewUrl-3" }) },
   { id: "adminMembershipCancellationRequestTemplate:full", fn: "adminMembershipCancellationRequestTemplate", render: () =>
-    T.adminMembershipCancellationRequestTemplate({ requesterName: "requesterName-1", participantSummary: "participantSummary-2", reason: "reason-3", reviewUrl: "reviewUrl-4" }) },
+    adminMembershipCancellationRequestTemplate({ requesterName: "requesterName-1", participantSummary: "participantSummary-2", reason: "reason-3", reviewUrl: "reviewUrl-4" }) },
   { id: "adminMemberArchiveRequestedTemplate:minimal", fn: "adminMemberArchiveRequestedTemplate", render: () =>
-    T.adminMemberArchiveRequestedTemplate({ requesterName: "requesterName-1", memberName: "memberName-2", reason: "reason-3", reviewUrl: "reviewUrl-4" }) },
+    adminMemberArchiveRequestedTemplate({ requesterName: "requesterName-1", memberName: "memberName-2", reason: "reason-3", reviewUrl: "reviewUrl-4" }) },
   { id: "memberArchiveApprovedTemplate:minimal", fn: "memberArchiveApprovedTemplate", render: () =>
-    T.memberArchiveApprovedTemplate({ firstName: "firstName-1", reason: "reason-2" }) },
+    memberArchiveApprovedTemplate({ firstName: "firstName-1", reason: "reason-2" }) },
   { id: "memberArchiveApprovedTemplate:full", fn: "memberArchiveApprovedTemplate", render: () =>
-    T.memberArchiveApprovedTemplate({ firstName: "firstName-1", reason: "reason-2", reviewNote: "reviewNote-3" }) },
+    memberArchiveApprovedTemplate({ firstName: "firstName-1", reason: "reason-2", reviewNote: "reviewNote-3" }) },
   { id: "memberArchiveRejectedTemplate:minimal", fn: "memberArchiveRejectedTemplate", render: () =>
-    T.memberArchiveRejectedTemplate({ firstName: "firstName-1", reason: "reason-2" }) },
+    memberArchiveRejectedTemplate({ firstName: "firstName-1", reason: "reason-2" }) },
   { id: "memberArchiveRejectedTemplate:full", fn: "memberArchiveRejectedTemplate", render: () =>
-    T.memberArchiveRejectedTemplate({ firstName: "firstName-1", reason: "reason-2", reviewNote: "reviewNote-3" }) },
+    memberArchiveRejectedTemplate({ firstName: "firstName-1", reason: "reason-2", reviewNote: "reviewNote-3" }) },
   { id: "adminMemberDeleteRequestedTemplate:minimal", fn: "adminMemberDeleteRequestedTemplate", render: () =>
-    T.adminMemberDeleteRequestedTemplate({ requesterName: "requesterName-1", memberName: "memberName-2", reason: "reason-3", reviewUrl: "reviewUrl-4" }) },
+    adminMemberDeleteRequestedTemplate({ requesterName: "requesterName-1", memberName: "memberName-2", reason: "reason-3", reviewUrl: "reviewUrl-4" }) },
   { id: "adminMemberDeleteApprovedTemplate:minimal", fn: "adminMemberDeleteApprovedTemplate", render: () =>
-    T.adminMemberDeleteApprovedTemplate({ requesterName: "requesterName-1", memberName: "memberName-2", reason: "reason-3" }) },
+    adminMemberDeleteApprovedTemplate({ requesterName: "requesterName-1", memberName: "memberName-2", reason: "reason-3" }) },
   { id: "adminMemberDeleteApprovedTemplate:full", fn: "adminMemberDeleteApprovedTemplate", render: () =>
-    T.adminMemberDeleteApprovedTemplate({ requesterName: "requesterName-1", memberName: "memberName-2", reason: "reason-3", reviewNote: "reviewNote-4" }) },
+    adminMemberDeleteApprovedTemplate({ requesterName: "requesterName-1", memberName: "memberName-2", reason: "reason-3", reviewNote: "reviewNote-4" }) },
   { id: "adminMemberDeleteRejectedTemplate:minimal", fn: "adminMemberDeleteRejectedTemplate", render: () =>
-    T.adminMemberDeleteRejectedTemplate({ requesterName: "requesterName-1", memberName: "memberName-2", reason: "reason-3", reviewUrl: "reviewUrl-4" }) },
+    adminMemberDeleteRejectedTemplate({ requesterName: "requesterName-1", memberName: "memberName-2", reason: "reason-3", reviewUrl: "reviewUrl-4" }) },
   { id: "adminMemberDeleteRejectedTemplate:full", fn: "adminMemberDeleteRejectedTemplate", render: () =>
-    T.adminMemberDeleteRejectedTemplate({ requesterName: "requesterName-1", memberName: "memberName-2", reason: "reason-3", reviewNote: "reviewNote-4", reviewUrl: "reviewUrl-5" }) },
+    adminMemberDeleteRejectedTemplate({ requesterName: "requesterName-1", memberName: "memberName-2", reason: "reason-3", reviewNote: "reviewNote-4", reviewUrl: "reviewUrl-5" }) },
   { id: "membershipCancellationApprovedTemplate:minimal", fn: "membershipCancellationApprovedTemplate", render: () =>
-    T.membershipCancellationApprovedTemplate({ firstName: "firstName-1", participantName: "participantName-2" }) },
+    membershipCancellationApprovedTemplate({ firstName: "firstName-1", participantName: "participantName-2" }) },
   { id: "membershipCancellationApprovedTemplate:full", fn: "membershipCancellationApprovedTemplate", render: () =>
-    T.membershipCancellationApprovedTemplate({ firstName: "firstName-1", participantName: "participantName-2", reason: "reason-3", adminNote: "adminNote-4", rejoinProcessText: "rejoinProcessText-5" }) },
+    membershipCancellationApprovedTemplate({ firstName: "firstName-1", participantName: "participantName-2", reason: "reason-3", adminNote: "adminNote-4", rejoinProcessText: "rejoinProcessText-5" }) },
   { id: "membershipCancellationRejectedTemplate:minimal", fn: "membershipCancellationRejectedTemplate", render: () =>
-    T.membershipCancellationRejectedTemplate({ firstName: "firstName-1", participantName: "participantName-2" }) },
+    membershipCancellationRejectedTemplate({ firstName: "firstName-1", participantName: "participantName-2" }) },
   { id: "membershipCancellationRejectedTemplate:full", fn: "membershipCancellationRejectedTemplate", render: () =>
-    T.membershipCancellationRejectedTemplate({ firstName: "firstName-1", participantName: "participantName-2", reason: "reason-3", adminNote: "adminNote-4" }) },
+    membershipCancellationRejectedTemplate({ firstName: "firstName-1", participantName: "participantName-2", reason: "reason-3", adminNote: "adminNote-4" }) },
   { id: "adminMembershipApplicationPendingTemplate:minimal", fn: "adminMembershipApplicationPendingTemplate", render: () =>
-    T.adminMembershipApplicationPendingTemplate({ applicantName: "applicantName-1", applicantEmail: "applicantEmail-2", familyMemberCount: 103, reviewUrl: "reviewUrl-4" }) },
+    adminMembershipApplicationPendingTemplate({ applicantName: "applicantName-1", applicantEmail: "applicantEmail-2", familyMemberCount: 103, reviewUrl: "reviewUrl-4" }) },
   { id: "adminAccountDeletionRequestedTemplate:minimal", fn: "adminAccountDeletionRequestedTemplate", render: () =>
-    T.adminAccountDeletionRequestedTemplate({ memberName: "memberName-1", memberEmail: "memberEmail-2", reviewUrl: "reviewUrl-3" }) },
+    adminAccountDeletionRequestedTemplate({ memberName: "memberName-1", memberEmail: "memberEmail-2", reviewUrl: "reviewUrl-3" }) },
   { id: "adminAccountDeletionRequestedTemplate:full", fn: "adminAccountDeletionRequestedTemplate", render: () =>
-    T.adminAccountDeletionRequestedTemplate({ memberName: "memberName-1", memberEmail: "memberEmail-2", reason: "reason-3", reviewUrl: "reviewUrl-4" }) },
+    adminAccountDeletionRequestedTemplate({ memberName: "memberName-1", memberEmail: "memberEmail-2", reason: "reason-3", reviewUrl: "reviewUrl-4" }) },
   { id: "membershipApplicationApprovedTemplate:minimal", fn: "membershipApplicationApprovedTemplate", render: () =>
-    T.membershipApplicationApprovedTemplate("firstName-1", "resetUrl-2") },
+    membershipApplicationApprovedTemplate("firstName-1", "resetUrl-2") },
   { id: "membershipApplicationApprovedTemplate:full", fn: "membershipApplicationApprovedTemplate", render: () =>
-    T.membershipApplicationApprovedTemplate("firstName-1", "resetUrl-2", "adminNotes-3") },
+    membershipApplicationApprovedTemplate("firstName-1", "resetUrl-2", "adminNotes-3") },
   { id: "membershipApplicationRejectedTemplate:minimal", fn: "membershipApplicationRejectedTemplate", render: () =>
-    T.membershipApplicationRejectedTemplate("firstName-1") },
+    membershipApplicationRejectedTemplate("firstName-1") },
   { id: "membershipApplicationRejectedTemplate:full", fn: "membershipApplicationRejectedTemplate", render: () =>
-    T.membershipApplicationRejectedTemplate("firstName-1", "adminNotes-2") },
+    membershipApplicationRejectedTemplate("firstName-1", "adminNotes-2") },
   { id: "ageUpInvitationTemplate:minimal", fn: "ageUpInvitationTemplate", render: () =>
-    T.ageUpInvitationTemplate("firstName-1", "resetUrl-2") },
+    ageUpInvitationTemplate("firstName-1", "resetUrl-2") },
   { id: "ageUpInvitationTemplate:full", fn: "ageUpInvitationTemplate", render: () =>
-    T.ageUpInvitationTemplate("firstName-1", "resetUrl-2", { targetAgeTierLabel: "Adult (18+)" }) },
+    ageUpInvitationTemplate("firstName-1", "resetUrl-2", { targetAgeTierLabel: "Adult (18+)" }) },
   { id: "ageUpParentEmailHandoffTemplate:minimal", fn: "ageUpParentEmailHandoffTemplate", render: () =>
-    T.ageUpParentEmailHandoffTemplate({ recipientName: "Pat Parent", memberFirstName: "Sam", memberLastName: "Youth" }) },
+    ageUpParentEmailHandoffTemplate({ recipientName: "Pat Parent", memberFirstName: "Sam", memberLastName: "Youth" }) },
   { id: "ageUpParentEmailHandoffTemplate:full", fn: "ageUpParentEmailHandoffTemplate", render: () =>
-    T.ageUpParentEmailHandoffTemplate({ recipientName: "Pat Parent", memberFirstName: "Sam", memberLastName: "Youth", targetAgeTierLabel: "Adult (18+)" }) },
+    ageUpParentEmailHandoffTemplate({ recipientName: "Pat Parent", memberFirstName: "Sam", memberLastName: "Youth", targetAgeTierLabel: "Adult (18+)" }) },
   { id: "accountDeletionRejectedTemplate:minimal", fn: "accountDeletionRejectedTemplate", render: () =>
-    T.accountDeletionRejectedTemplate("firstName-1", "adminNote-2") },
+    accountDeletionRejectedTemplate("firstName-1", "adminNote-2") },
   { id: "waitlistConfirmationTemplate:minimal", fn: "waitlistConfirmationTemplate", render: () =>
-    T.waitlistConfirmationTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, 105) },
+    waitlistConfirmationTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, 105) },
   { id: "waitlistOfferTemplate:minimal", fn: "waitlistOfferTemplate", render: () =>
-    T.waitlistOfferTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, new Date("2026-03-06T00:00:00.000Z"), "bookingId-6", 107) },
+    waitlistOfferTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, new Date("2026-03-06T00:00:00.000Z"), "bookingId-6", 107) },
   { id: "waitlistOfferTemplate:full", fn: "waitlistOfferTemplate", render: () =>
-    T.waitlistOfferTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, new Date("2026-03-06T00:00:00.000Z"), "bookingId-6", 107, { lodgeName: "lodgeName-8" }, "subscriptionMemberRateNotice-9") },
+    waitlistOfferTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104, new Date("2026-03-06T00:00:00.000Z"), "bookingId-6", 107, { lodgeName: "lodgeName-8" }, "subscriptionMemberRateNotice-9") },
   { id: "waitlistOfferExpiredTemplate:minimal", fn: "waitlistOfferExpiredTemplate", render: () =>
-    T.waitlistOfferExpiredTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104) },
+    waitlistOfferExpiredTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104) },
   { id: "waitlistPlaceRestoredTemplate:minimal", fn: "waitlistPlaceRestoredTemplate", render: () =>
-    T.waitlistPlaceRestoredTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104) },
+    waitlistPlaceRestoredTemplate("firstName-1", new Date("2026-03-03T00:00:00.000Z"), new Date("2026-03-04T00:00:00.000Z"), 104) },
   { id: "adminWaitlistOfferTemplate:minimal", fn: "adminWaitlistOfferTemplate", render: () =>
-    T.adminWaitlistOfferTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, position: 105 }) },
+    adminWaitlistOfferTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, position: 105 }) },
   { id: "setupIntentFailedTemplate:minimal", fn: "setupIntentFailedTemplate", render: () =>
-    T.setupIntentFailedTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z") }) },
+    setupIntentFailedTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z") }) },
   { id: "adminRefundRequestTemplate:minimal", fn: "adminRefundRequestTemplate", render: () =>
-    T.adminRefundRequestTemplate({ memberName: "memberName-1", bookingId: "bookingId-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), reason: "reason-5", requestedAmountCents: 106, paidAmountCents: 107, refundedAmountCents: 108 }) },
+    adminRefundRequestTemplate({ memberName: "memberName-1", bookingId: "bookingId-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), reason: "reason-5", requestedAmountCents: 106, paidAmountCents: 107, refundedAmountCents: 108 }) },
   { id: "adminBookingChangeRequestTemplate:minimal", fn: "adminBookingChangeRequestTemplate", render: () =>
-    T.adminBookingChangeRequestTemplate({ memberName: "memberName-1", memberEmail: "memberEmail-2", bookingId: "bookingId-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z"), requestedSummary: "requestedSummary-6", reason: "reason-7", reviewUrl: "reviewUrl-8" }) },
+    adminBookingChangeRequestTemplate({ memberName: "memberName-1", memberEmail: "memberEmail-2", bookingId: "bookingId-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z"), requestedSummary: "requestedSummary-6", reason: "reason-7", reviewUrl: "reviewUrl-8" }) },
   { id: "adminIssueReportTemplate:minimal", fn: "adminIssueReportTemplate", render: () =>
-    T.adminIssueReportTemplate({ memberName: "memberName-1", memberEmail: "memberEmail-2", pageUrl: "pageUrl-3", description: "description-4", issueReportUrl: "issueReportUrl-5", hasScreenshot: true }) },
+    adminIssueReportTemplate({ memberName: "memberName-1", memberEmail: "memberEmail-2", pageUrl: "pageUrl-3", description: "description-4", issueReportUrl: "issueReportUrl-5", hasScreenshot: true }) },
   { id: "adminIssueReportTemplate:full", fn: "adminIssueReportTemplate", render: () =>
-    T.adminIssueReportTemplate({ memberName: "memberName-1", memberEmail: "memberEmail-2", pageUrl: "pageUrl-3", pageTitle: "pageTitle-4", description: "description-5", issueReportUrl: "issueReportUrl-6", hasScreenshot: true }) },
+    adminIssueReportTemplate({ memberName: "memberName-1", memberEmail: "memberEmail-2", pageUrl: "pageUrl-3", pageTitle: "pageTitle-4", description: "description-5", issueReportUrl: "issueReportUrl-6", hasScreenshot: true }) },
   { id: "refundRequestApprovedTemplate:minimal", fn: "refundRequestApprovedTemplate", render: () =>
-    T.refundRequestApprovedTemplate({ firstName: "firstName-1", amountCents: 102, adminNotes: "adminNotes-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z") }) },
+    refundRequestApprovedTemplate({ firstName: "firstName-1", amountCents: 102, adminNotes: "adminNotes-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z") }) },
   { id: "refundRequestDeclinedTemplate:minimal", fn: "refundRequestDeclinedTemplate", render: () =>
-    T.refundRequestDeclinedTemplate({ firstName: "firstName-1", adminNotes: "adminNotes-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z") }) },
+    refundRequestDeclinedTemplate({ firstName: "firstName-1", adminNotes: "adminNotes-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z") }) },
   { id: "bookingRequestVerificationTemplate:minimal", fn: "bookingRequestVerificationTemplate", render: () =>
-    T.bookingRequestVerificationTemplate({ firstName: "firstName-1", verifyUrl: "verifyUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, expiresAt: new Date("2026-03-07T00:00:00.000Z") }) },
+    bookingRequestVerificationTemplate({ firstName: "firstName-1", verifyUrl: "verifyUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, expiresAt: new Date("2026-03-07T00:00:00.000Z") }) },
   { id: "groupSettlementReceiptTemplate:minimal", fn: "groupSettlementReceiptTemplate", render: () =>
-    T.groupSettlementReceiptTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), joinerCount: 104, totalCents: 105 }) },
+    groupSettlementReceiptTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), joinerCount: 104, totalCents: 105 }) },
   { id: "groupJoinSettledTemplate:minimal", fn: "groupJoinSettledTemplate", render: () =>
-    T.groupJoinSettledTemplate({ firstName: "firstName-1", organiserName: "organiserName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105 }) },
+    groupJoinSettledTemplate({ firstName: "firstName-1", organiserName: "organiserName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105 }) },
   { id: "groupSettlementExpiredTemplate:minimal", fn: "groupSettlementExpiredTemplate", render: () =>
-    T.groupSettlementExpiredTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), joinerCount: 104, totalCents: 105 }) },
+    groupSettlementExpiredTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), joinerCount: 104, totalCents: 105 }) },
   { id: "groupJoinReleasedTemplate:minimal", fn: "groupJoinReleasedTemplate", render: () =>
-    T.groupJoinReleasedTemplate({ firstName: "firstName-1", organiserName: "organiserName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z") }) },
+    groupJoinReleasedTemplate({ firstName: "firstName-1", organiserName: "organiserName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z") }) },
   { id: "groupJoinCancelledTemplate:minimal", fn: "groupJoinCancelledTemplate", render: () =>
-    T.groupJoinCancelledTemplate({ firstName: "firstName-1", organiserName: "organiserName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z") }) },
+    groupJoinCancelledTemplate({ firstName: "firstName-1", organiserName: "organiserName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z") }) },
   { id: "bookingRequestApprovedTemplate:minimal", fn: "bookingRequestApprovedTemplate", render: () =>
-    T.bookingRequestApprovedTemplate({ firstName: "firstName-1", payUrl: "payUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, priceCents: 106, expiresAt: new Date("2026-03-08T00:00:00.000Z") }) },
+    bookingRequestApprovedTemplate({ firstName: "firstName-1", payUrl: "payUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, priceCents: 106, expiresAt: new Date("2026-03-08T00:00:00.000Z") }) },
   { id: "splitGuestPaymentLinkTemplate:minimal", fn: "splitGuestPaymentLinkTemplate", render: () =>
-    T.splitGuestPaymentLinkTemplate({ firstName: "firstName-1", payUrl: "payUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, priceCents: 106, expiresAt: new Date("2026-03-08T00:00:00.000Z") }) },
+    splitGuestPaymentLinkTemplate({ firstName: "firstName-1", payUrl: "payUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, priceCents: 106, expiresAt: new Date("2026-03-08T00:00:00.000Z") }) },
   { id: "bookingRequestQuoteTemplate:minimal", fn: "bookingRequestQuoteTemplate", render: () =>
-    T.bookingRequestQuoteTemplate({ firstName: "firstName-1", respondUrl: "respondUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, options: [{ label: "label-6", totalCents: 107 }], expiresAt: new Date("2026-03-09T00:00:00.000Z") }) },
+    bookingRequestQuoteTemplate({ firstName: "firstName-1", respondUrl: "respondUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, options: [{ label: "label-6", totalCents: 107 }], expiresAt: new Date("2026-03-09T00:00:00.000Z") }) },
   { id: "bookingRequestQuoteTemplate:full", fn: "bookingRequestQuoteTemplate", render: () =>
-    T.bookingRequestQuoteTemplate({ firstName: "firstName-1", respondUrl: "respondUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, options: [{ label: "label-6", totalCents: 107 }], message: "message-8", expiresAt: new Date("2026-03-10T00:00:00.000Z"), schoolName: "schoolName-10", isReminder: true }) },
+    bookingRequestQuoteTemplate({ firstName: "firstName-1", respondUrl: "respondUrl-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, options: [{ label: "label-6", totalCents: 107 }], message: "message-8", expiresAt: new Date("2026-03-10T00:00:00.000Z"), schoolName: "schoolName-10", isReminder: true }) },
   { id: "bookingRequestDeclinedTemplate:minimal", fn: "bookingRequestDeclinedTemplate", render: () =>
-    T.bookingRequestDeclinedTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z") }) },
+    bookingRequestDeclinedTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z") }) },
   { id: "bookingRequestDeclinedTemplate:full", fn: "bookingRequestDeclinedTemplate", render: () =>
-    T.bookingRequestDeclinedTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), reason: "reason-4" }) },
+    bookingRequestDeclinedTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), reason: "reason-4" }) },
   { id: "bookingRequestPaymentExpiredTemplate:minimal", fn: "bookingRequestPaymentExpiredTemplate", render: () =>
-    T.bookingRequestPaymentExpiredTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z") }) },
+    bookingRequestPaymentExpiredTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z") }) },
   { id: "adminBookingRequestPendingTemplate:minimal", fn: "adminBookingRequestPendingTemplate", render: () =>
-    T.adminBookingRequestPendingTemplate({ requesterName: "requesterName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, reviewUrl: "reviewUrl-5" }) },
+    adminBookingRequestPendingTemplate({ requesterName: "requesterName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, reviewUrl: "reviewUrl-5" }) },
   { id: "adminSchoolManualInvoiceTemplate:minimal", fn: "adminSchoolManualInvoiceTemplate", render: () =>
-    T.adminSchoolManualInvoiceTemplate({ schoolName: "schoolName-1", contactEmail: "contactEmail-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, totalCents: 106, reviewUrl: "reviewUrl-7" }) },
+    adminSchoolManualInvoiceTemplate({ schoolName: "schoolName-1", contactEmail: "contactEmail-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, totalCents: 106, reviewUrl: "reviewUrl-7" }) },
   { id: "adminWholeLodgeManualInvoiceTemplate:minimal", fn: "adminWholeLodgeManualInvoiceTemplate", render: () =>
-    T.adminWholeLodgeManualInvoiceTemplate({ memberName: "memberName-1", contactEmail: "contactEmail-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, totalCents: 106, paymentReference: "paymentReference-7", reviewUrl: "reviewUrl-8" }) },
+    adminWholeLodgeManualInvoiceTemplate({ memberName: "memberName-1", contactEmail: "contactEmail-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, totalCents: 106, paymentReference: "paymentReference-7", reviewUrl: "reviewUrl-8" }) },
   { id: "adminWholeLodgeManualInvoiceTemplate:full", fn: "adminWholeLodgeManualInvoiceTemplate", render: () =>
-    T.adminWholeLodgeManualInvoiceTemplate({ memberName: "memberName-1", contactEmail: "contactEmail-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, totalCents: 106, appliedCreditCents: 107, paymentReference: "paymentReference-8", reviewUrl: "reviewUrl-9" }) },
+    adminWholeLodgeManualInvoiceTemplate({ memberName: "memberName-1", contactEmail: "contactEmail-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), guestCount: 105, totalCents: 106, appliedCreditCents: 107, paymentReference: "paymentReference-8", reviewUrl: "reviewUrl-9" }) },
   { id: "adminBookingRequestHoldExpiredTemplate:minimal", fn: "adminBookingRequestHoldExpiredTemplate", render: () =>
-    T.adminBookingRequestHoldExpiredTemplate({ requesterName: "requesterName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, totalCents: 105, holdUntil: new Date("2026-03-07T00:00:00.000Z"), reviewUrl: "reviewUrl-7" }) },
+    adminBookingRequestHoldExpiredTemplate({ requesterName: "requesterName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, totalCents: 105, holdUntil: new Date("2026-03-07T00:00:00.000Z"), reviewUrl: "reviewUrl-7" }) },
   { id: "adminBookingRequestHoldCancelledTemplate:minimal", fn: "adminBookingRequestHoldCancelledTemplate", render: () =>
-    T.adminBookingRequestHoldCancelledTemplate({ requesterName: "requesterName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, totalCents: 105, reviewUrl: "reviewUrl-6" }) },
+    adminBookingRequestHoldCancelledTemplate({ requesterName: "requesterName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, totalCents: 105, reviewUrl: "reviewUrl-6" }) },
   { id: "adminSplitSettlementUnpaidTemplate:minimal", fn: "adminSplitSettlementUnpaidTemplate", render: () =>
-    T.adminSplitSettlementUnpaidTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, totalCents: 105, holdUntil: new Date("2026-03-07T00:00:00.000Z"), reviewUrl: "reviewUrl-7", parentUnpaid: true }) },
+    adminSplitSettlementUnpaidTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, totalCents: 105, holdUntil: new Date("2026-03-07T00:00:00.000Z"), reviewUrl: "reviewUrl-7", parentUnpaid: true }) },
   { id: "adminSplitSettlementCancelledTemplate:minimal", fn: "adminSplitSettlementCancelledTemplate", render: () =>
-    T.adminSplitSettlementCancelledTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, totalCents: 105, reviewUrl: "reviewUrl-6", parentUnpaid: true }) },
+    adminSplitSettlementCancelledTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, totalCents: 105, reviewUrl: "reviewUrl-6", parentUnpaid: true }) },
   { id: "splitGuestPortionCancelledTemplate:minimal", fn: "splitGuestPortionCancelledTemplate", render: () =>
-    T.splitGuestPortionCancelledTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), parentConfirmed: true }) },
+    splitGuestPortionCancelledTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), parentConfirmed: true }) },
   { id: "splitGuestPortionCancelledTemplate:full", fn: "splitGuestPortionCancelledTemplate", render: () =>
-    T.splitGuestPortionCancelledTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), parentConfirmed: true, parentBookingReference: "parentBookingReference-4" }) },
+    splitGuestPortionCancelledTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), parentConfirmed: true, parentBookingReference: "parentBookingReference-4" }) },
   { id: "schoolAttendeeConfirmationTemplate:minimal", fn: "schoolAttendeeConfirmationTemplate", render: () =>
-    T.schoolAttendeeConfirmationTemplate({ firstName: "firstName-1", schoolName: "schoolName-2", confirmUrl: "confirmUrl-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z"), guestCount: 106, isReminder: true }) },
+    schoolAttendeeConfirmationTemplate({ firstName: "firstName-1", schoolName: "schoolName-2", confirmUrl: "confirmUrl-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z"), guestCount: 106, isReminder: true }) },
   { id: "wholeLodgeGuestNamesReminderTemplate:minimal", fn: "wholeLodgeGuestNamesReminderTemplate", render: () =>
-    T.wholeLodgeGuestNamesReminderTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, unnamedGuestCount: 105, isFinal: true, urgencyNote: "urgencyNote-6" }) },
+    wholeLodgeGuestNamesReminderTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, unnamedGuestCount: 105, isFinal: true, urgencyNote: "urgencyNote-6" }) },
   { id: "membershipPaymentRecordedTemplate:minimal", fn: "membershipPaymentRecordedTemplate", render: () =>
-    T.membershipPaymentRecordedTemplate({ firstName: "firstName-1", seasonYear: 102, amountCents: 103, recordedAt: new Date("2026-03-05T00:00:00.000Z") }) },
+    membershipPaymentRecordedTemplate({ firstName: "firstName-1", seasonYear: 102, amountCents: 103, recordedAt: new Date("2026-03-05T00:00:00.000Z") }) },
   { id: "memberGuestConsentRequestTemplate:minimal", fn: "memberGuestConsentRequestTemplate", render: () =>
-    T.memberGuestConsentRequestTemplate({ firstName: "firstName-1", bookerName: "bookerName-2", askHeading: "askHeading-3", askContextNote: "askContextNote-4", lodgeName: "lodgeName-5", checkIn: new Date("2026-03-07T00:00:00.000Z"), checkOut: new Date("2026-03-08T00:00:00.000Z"), guestNightsLabel: "guestNightsLabel-8", consentExpiresAt: new Date("2026-03-10T00:00:00.000Z"), consentUrl: "consentUrl-10", partyList: { text: "Everyone on this booking\n- Ada Guest", html: "<p>Everyone on this booking</p><ul><li>Ada Guest</li></ul>", names: ["Ada Guest"] } }) },
+    memberGuestConsentRequestTemplate({ firstName: "firstName-1", bookerName: "bookerName-2", askHeading: "askHeading-3", askContextNote: "askContextNote-4", lodgeName: "lodgeName-5", checkIn: new Date("2026-03-07T00:00:00.000Z"), checkOut: new Date("2026-03-08T00:00:00.000Z"), guestNightsLabel: "guestNightsLabel-8", consentExpiresAt: new Date("2026-03-10T00:00:00.000Z"), consentUrl: "consentUrl-10", partyList: { text: "Everyone on this booking\n- Ada Guest", html: "<p>Everyone on this booking</p><ul><li>Ada Guest</li></ul>", names: ["Ada Guest"] } }) },
   { id: "memberGuestConsentRequestTemplate:full", fn: "memberGuestConsentRequestTemplate", render: () =>
-    T.memberGuestConsentRequestTemplate({ firstName: "firstName-1", bookerName: "bookerName-2", askHeading: "askHeading-3", askContextNote: "askContextNote-4", lodgeName: "lodgeName-5", checkIn: new Date("2026-03-07T00:00:00.000Z"), checkOut: new Date("2026-03-08T00:00:00.000Z"), guestNightsLabel: "guestNightsLabel-8", consentExpiresAt: new Date("2026-03-10T00:00:00.000Z"), consentUrl: "consentUrl-10", partyList: { text: "Everyone on this booking\n- Ada Guest\n- Bo Member", html: "<p>Everyone on this booking</p><ul><li>Ada Guest</li><li>Bo Member</li></ul>", names: ["Ada Guest", "Bo Member"] } }) },
+    memberGuestConsentRequestTemplate({ firstName: "firstName-1", bookerName: "bookerName-2", askHeading: "askHeading-3", askContextNote: "askContextNote-4", lodgeName: "lodgeName-5", checkIn: new Date("2026-03-07T00:00:00.000Z"), checkOut: new Date("2026-03-08T00:00:00.000Z"), guestNightsLabel: "guestNightsLabel-8", consentExpiresAt: new Date("2026-03-10T00:00:00.000Z"), consentUrl: "consentUrl-10", partyList: { text: "Everyone on this booking\n- Ada Guest\n- Bo Member", html: "<p>Everyone on this booking</p><ul><li>Ada Guest</li><li>Bo Member</li></ul>", names: ["Ada Guest", "Bo Member"] } }) },
   { id: "memberGuestAddedTemplate:minimal", fn: "memberGuestAddedTemplate", render: () =>
-    T.memberGuestAddedTemplate({ firstName: "firstName-1", addedHeading: "addedHeading-2", addedContextNote: "addedContextNote-3", lodgeName: "lodgeName-4", checkIn: new Date("2026-03-06T00:00:00.000Z"), checkOut: new Date("2026-03-07T00:00:00.000Z"), guestNightsLabel: "guestNightsLabel-7", nightsLabel: "nightsLabel-8", partyList: { text: "Everyone on this booking\n- Ada Guest", html: "<p>Everyone on this booking</p><ul><li>Ada Guest</li></ul>", names: ["Ada Guest"] }, removalNote: "removalNote-9" }) },
+    memberGuestAddedTemplate({ firstName: "firstName-1", addedHeading: "addedHeading-2", addedContextNote: "addedContextNote-3", lodgeName: "lodgeName-4", checkIn: new Date("2026-03-06T00:00:00.000Z"), checkOut: new Date("2026-03-07T00:00:00.000Z"), guestNightsLabel: "guestNightsLabel-7", nightsLabel: "nightsLabel-8", partyList: { text: "Everyone on this booking\n- Ada Guest", html: "<p>Everyone on this booking</p><ul><li>Ada Guest</li></ul>", names: ["Ada Guest"] }, removalNote: "removalNote-9" }) },
   { id: "memberGuestAddedTemplate:full", fn: "memberGuestAddedTemplate", render: () =>
-    T.memberGuestAddedTemplate({ firstName: "firstName-1", addedHeading: "addedHeading-2", addedContextNote: "addedContextNote-3", lodgeName: "lodgeName-4", checkIn: new Date("2026-03-06T00:00:00.000Z"), checkOut: new Date("2026-03-07T00:00:00.000Z"), guestNightsLabel: "guestNightsLabel-7", nightsLabel: "nightsLabel-8", partyList: { text: "Everyone on this booking\n- Ada Guest\n- Bo Member", html: "<p>Everyone on this booking</p><ul><li>Ada Guest</li><li>Bo Member</li></ul>", names: ["Ada Guest", "Bo Member"] }, removalNote: "removalNote-9" }) },
+    memberGuestAddedTemplate({ firstName: "firstName-1", addedHeading: "addedHeading-2", addedContextNote: "addedContextNote-3", lodgeName: "lodgeName-4", checkIn: new Date("2026-03-06T00:00:00.000Z"), checkOut: new Date("2026-03-07T00:00:00.000Z"), guestNightsLabel: "guestNightsLabel-7", nightsLabel: "nightsLabel-8", partyList: { text: "Everyone on this booking\n- Ada Guest\n- Bo Member", html: "<p>Everyone on this booking</p><ul><li>Ada Guest</li><li>Bo Member</li></ul>", names: ["Ada Guest", "Bo Member"] }, removalNote: "removalNote-9" }) },
   { id: "familyMemberBookingAddedTemplate:minimal", fn: "familyMemberBookingAddedTemplate", render: () =>
-    T.familyMemberBookingAddedTemplate({ firstName: "firstName-1", addedHeading: "addedHeading-2", addedContextNote: "addedContextNote-3", lodgeName: "lodgeName-4", checkIn: new Date("2026-03-06T00:00:00.000Z"), checkOut: new Date("2026-03-07T00:00:00.000Z"), removalNote: "removalNote-7" }) },
+    familyMemberBookingAddedTemplate({ firstName: "firstName-1", addedHeading: "addedHeading-2", addedContextNote: "addedContextNote-3", lodgeName: "lodgeName-4", checkIn: new Date("2026-03-06T00:00:00.000Z"), checkOut: new Date("2026-03-07T00:00:00.000Z"), removalNote: "removalNote-7" }) },
   { id: "memberGuestConsentOutcomeTemplate:minimal", fn: "memberGuestConsentOutcomeTemplate", render: () =>
-    T.memberGuestConsentOutcomeTemplate({ firstName: "firstName-1", outcomeHeading: "outcomeHeading-2", outcomeSentence: "outcomeSentence-3", consequenceNote: "consequenceNote-4", bookingId: "bookingId-5" }) },
+    memberGuestConsentOutcomeTemplate({ firstName: "firstName-1", outcomeHeading: "outcomeHeading-2", outcomeSentence: "outcomeSentence-3", consequenceNote: "consequenceNote-4", bookingId: "bookingId-5" }) },
   { id: "memberGuestConsentExpiredTemplate:minimal", fn: "memberGuestConsentExpiredTemplate", render: () =>
-    T.memberGuestConsentExpiredTemplate({ firstName: "firstName-1", bookerName: "bookerName-2", lodgeName: "lodgeName-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z") }) },
+    memberGuestConsentExpiredTemplate({ firstName: "firstName-1", bookerName: "bookerName-2", lodgeName: "lodgeName-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z") }) },
   { id: "memberGuestRequestWithdrawnTemplate:minimal", fn: "memberGuestRequestWithdrawnTemplate", render: () =>
-    T.memberGuestRequestWithdrawnTemplate({ firstName: "firstName-1", withdrawnHeading: "withdrawnHeading-2", withdrawnContextNote: "withdrawnContextNote-3", lodgeName: "lodgeName-4", checkIn: new Date("2026-03-06T00:00:00.000Z"), checkOut: new Date("2026-03-07T00:00:00.000Z") }) },
+    memberGuestRequestWithdrawnTemplate({ firstName: "firstName-1", withdrawnHeading: "withdrawnHeading-2", withdrawnContextNote: "withdrawnContextNote-3", lodgeName: "lodgeName-4", checkIn: new Date("2026-03-06T00:00:00.000Z"), checkOut: new Date("2026-03-07T00:00:00.000Z") }) },
   { id: "memberGuestConsentAnsweredTemplate:minimal", fn: "memberGuestConsentAnsweredTemplate", render: () =>
-    T.memberGuestConsentAnsweredTemplate({ firstName: "firstName-1", answeredHeading: "answeredHeading-2", answeredSentence: "answeredSentence-3", answeredNote: "answeredNote-4" }) },
+    memberGuestConsentAnsweredTemplate({ firstName: "firstName-1", answeredHeading: "answeredHeading-2", answeredSentence: "answeredSentence-3", answeredNote: "answeredNote-4" }) },
   { id: "hostingCoverageLostTemplate:minimal", fn: "hostingCoverageLostTemplate", render: () =>
-    T.hostingCoverageLostTemplate({ firstName: "firstName-1", lodgeName: "lodgeName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), uncoveredNights: "uncoveredNights-5" }) },
+    hostingCoverageLostTemplate({ firstName: "firstName-1", lodgeName: "lodgeName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), uncoveredNights: "uncoveredNights-5" }) },
   { id: "policyExceptionRequestExpiredTemplate:minimal", fn: "policyExceptionRequestExpiredTemplate", render: () =>
-    T.policyExceptionRequestExpiredTemplate({ firstName: "firstName-1", lodgeName: "lodgeName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), expiresAt: new Date("2026-03-06T00:00:00.000Z") }) },
+    policyExceptionRequestExpiredTemplate({ firstName: "firstName-1", lodgeName: "lodgeName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), expiresAt: new Date("2026-03-06T00:00:00.000Z") }) },
 ];
 
 export const EMAIL_RENDER_CASES: EmailRenderCase[] = [
   ...GENERATED_CASES,
+  ...PRIMITIVE_CASES,
   ...MONEY_BRANCH_CASES,
 ];

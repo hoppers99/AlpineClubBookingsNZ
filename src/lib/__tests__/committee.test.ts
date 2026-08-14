@@ -51,7 +51,9 @@ vi.mock("@/lib/rate-limit", () => ({
   applyRateLimit: vi.fn().mockReturnValue(null),
   rateLimiters: { contact: { limit: 10, windowSeconds: 3600, prefix: "contact" } },
 }));
-vi.mock("@/lib/email-templates", () => ({ escapeHtml: vi.fn((s: string) => s) }));
+vi.mock("@/lib/email-templates/escape", () => ({
+  escapeHtml: vi.fn((s: string) => s),
+}));
 
 // The contact route resolves its default recipient DB-first from
 // EmailMessageSetting.contactEmail (C6 #1985), no longer the static

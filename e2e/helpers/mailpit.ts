@@ -53,7 +53,7 @@ function toMatches(message: MailpitSummary, recipient: string): boolean {
 }
 
 // Pulls the six-digit code out of the two-factor email. The template renders it
-// as `<strong ...>123456</strong>` (src/lib/email-templates.ts), so anchoring on
+// as `<strong ...>123456</strong>` (src/lib/email-templates/account.ts), so anchoring on
 // the strong tag is exact — it cannot grab a stray digit run elsewhere in the
 // email-HTML wrapper. The plaintext fallback covers mailpit's auto-generated
 // text part.

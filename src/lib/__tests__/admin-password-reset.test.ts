@@ -238,7 +238,7 @@ describe("Admin Send Password Reset API", () => {
 
 describe("Admin Password Reset Email Template", () => {
   it("produces distinct template from self-service reset", async () => {
-    const { passwordResetTemplate, adminPasswordResetTemplate } = await import("@/lib/email-templates");
+    const { passwordResetTemplate, adminPasswordResetTemplate } = await import("@/lib/email-templates/account");
 
     const selfService = passwordResetTemplate("https://example.com/reset?token=abc");
     const adminInitiated = adminPasswordResetTemplate("https://example.com/reset?token=abc");

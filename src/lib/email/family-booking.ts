@@ -3,7 +3,9 @@ import {
   loadEmailMessageSettingsForLodge,
 } from "@/lib/email-message-settings";
 import type { BookingEmailRecipient } from "@/lib/booking-email-contract";
-import { familyMemberBookingAddedTemplate } from "../email-templates";
+import {
+  familyMemberBookingAddedTemplate,
+} from "@/lib/email-templates/family-booking";
 import { formatNZDate } from "../nzst-date";
 import { sendEmail, type EmailSendOutcome } from "./core";
 

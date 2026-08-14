@@ -9,7 +9,7 @@
  * local computation safe: a manual Xero-side edit that diverges from the local
  * ledger surfaces to an admin instead of the two silently disagreeing.
  *
- * WHAT IT RECONCILES (per the docblock in email-templates.ts →
+ * WHAT IT RECONCILES (per the docblock in email-templates/booking-money.ts →
  * `resolveUnpaidCreditNetting`): the population is every booking with at least
  * one `BOOKING_APPLIED` row STAMPED with a Xero credit-note id — i.e. a booking
  * BookingApp believes it has allocated credit onto a Xero invoice for. For each,
@@ -77,10 +77,10 @@ import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { callXeroApi, getAuthenticatedXeroClient } from "./xero-api-client";
 import { sendAdminCreditSyncDriftAlert } from "@/lib/email";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
-import type {
-  CreditSyncDriftItemEmail,
-  CreditSyncDriftReportEmail,
-} from "@/lib/email-templates";
+import {
+  type CreditSyncDriftItemEmail,
+  type CreditSyncDriftReportEmail,
+} from "@/lib/email-templates/admin-xero-reports";
 
 /**
  * Cron job name for this checker. The Xero cron runner records each run under

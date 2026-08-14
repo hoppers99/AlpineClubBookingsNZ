@@ -14,7 +14,28 @@
  * at runtime rather than listed by hand, so a newly exported render function
  * cannot be added without the gate noticing it has no render case.
  */
-import * as templates from "@/lib/email-templates";
+import * as account from "@/lib/email-templates/account";
+import * as adminBooking from "@/lib/email-templates/admin-booking";
+import * as adminFinance from "@/lib/email-templates/admin-finance";
+import * as adminMembership from "@/lib/email-templates/admin-membership";
+import * as adminOps from "@/lib/email-templates/admin-ops";
+import * as adminXeroReports from "@/lib/email-templates/admin-xero-reports";
+import * as booking from "@/lib/email-templates/booking";
+import * as bookingExceptions from "@/lib/email-templates/booking-exceptions";
+import * as bookingMoney from "@/lib/email-templates/booking-money";
+import * as bookingReminders from "@/lib/email-templates/booking-reminders";
+import * as bookingRequests from "@/lib/email-templates/booking-requests";
+import * as chores from "@/lib/email-templates/chores";
+import * as communications from "@/lib/email-templates/communications";
+import * as escape from "@/lib/email-templates/escape";
+import * as family from "@/lib/email-templates/family";
+import * as familyBooking from "@/lib/email-templates/family-booking";
+import * as groups from "@/lib/email-templates/groups";
+import * as layout from "@/lib/email-templates/layout";
+import * as memberGuest from "@/lib/email-templates/member-guest";
+import * as membership from "@/lib/email-templates/membership";
+import * as refunds from "@/lib/email-templates/refunds";
+import * as waitlist from "@/lib/email-templates/waitlist";
 
 function exportedFunctionNames(moduleNamespace: object): string[] {
   return Object.entries(moduleNamespace)
@@ -25,7 +46,28 @@ function exportedFunctionNames(moduleNamespace: object): string[] {
 
 /** Every template module, and the render functions it exports. */
 export const EMAIL_TEMPLATE_MODULE_EXPORTS: Record<string, string[]> = {
-  "email-templates": exportedFunctionNames(templates),
+  "account": exportedFunctionNames(account),
+  "admin-booking": exportedFunctionNames(adminBooking),
+  "admin-finance": exportedFunctionNames(adminFinance),
+  "admin-membership": exportedFunctionNames(adminMembership),
+  "admin-ops": exportedFunctionNames(adminOps),
+  "admin-xero-reports": exportedFunctionNames(adminXeroReports),
+  "booking": exportedFunctionNames(booking),
+  "booking-exceptions": exportedFunctionNames(bookingExceptions),
+  "booking-money": exportedFunctionNames(bookingMoney),
+  "booking-reminders": exportedFunctionNames(bookingReminders),
+  "booking-requests": exportedFunctionNames(bookingRequests),
+  "chores": exportedFunctionNames(chores),
+  "communications": exportedFunctionNames(communications),
+  "escape": exportedFunctionNames(escape),
+  "family": exportedFunctionNames(family),
+  "family-booking": exportedFunctionNames(familyBooking),
+  "groups": exportedFunctionNames(groups),
+  "layout": exportedFunctionNames(layout),
+  "member-guest": exportedFunctionNames(memberGuest),
+  "membership": exportedFunctionNames(membership),
+  "refunds": exportedFunctionNames(refunds),
+  "waitlist": exportedFunctionNames(waitlist),
 };
 
 /**

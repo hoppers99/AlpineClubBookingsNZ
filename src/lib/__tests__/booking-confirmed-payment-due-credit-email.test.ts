@@ -62,13 +62,13 @@ import {
   findDanglingDefaultLines,
 } from "@/lib/email-message-token-contract";
 import { bookingPaymentDueNote } from "@/lib/email-message-notes";
+import { bookingConfirmedTemplate } from "@/lib/email-templates/booking";
 import {
-  bookingConfirmedTemplate,
-  plainTextEmailTemplate,
   resolveUnpaidCreditNetting,
   unpaidMoneySummaryRows,
   wholeLodgeManualInvoiceAmountCents,
-} from "@/lib/email-templates";
+} from "@/lib/email-templates/booking-money";
+import { plainTextEmailTemplate } from "@/lib/email-templates/layout";
 import {
   renderTemplateString,
   type EmailTemplateData,

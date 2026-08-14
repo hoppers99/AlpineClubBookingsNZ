@@ -51,10 +51,10 @@ vi.mock("@/lib/email-message-settings", () => ({
 import { getEmailTemplateDefinition } from "@/lib/email-message-registry";
 import {
   appliedCreditSummaryRows,
-  settledByPaymentCents,
-  plainTextEmailTemplate,
   type ConfirmationSettlementMethod,
-} from "@/lib/email-templates";
+  settledByPaymentCents,
+} from "@/lib/email-templates/booking-money";
+import { plainTextEmailTemplate } from "@/lib/email-templates/layout";
 import {
   renderTemplateString,
   validateEmailTemplateContent,
@@ -601,7 +601,8 @@ describe("#2328 × #2483 the unpaid branch's live-path premise", () => {
   // carries the #2444 paragraph and no netting, and they are the tripwire that
   // says the netting copy has gone LIVE for real members. If either goes red,
   // nothing is broken — re-read `bookingPaymentDueNote`'s credit shape and the
-  // #2483 contract in `email-templates.ts`, confirm the copy reads right for a
+  // #2483 contract in `email-templates/booking-money.ts`, confirm the copy
+  // reads right for a
   // member on the new path, and update this comment.
 
   const SRC_ROOT = path.join(process.cwd(), "src");
