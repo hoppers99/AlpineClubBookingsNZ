@@ -15,7 +15,9 @@
  *
  *  - `defuseRoleLabelLines` is for a MULTI-LINE span (a replayed turn, an
  *    operator's question). Newlines are preserved there, so a role label is only
- *    dangerous when it begins a line, and line-anchoring leaves a sentence like
+ *    dangerous when it begins a line — including behind line-leading Markdown
+ *    punctuation (`- system:`, `> assistant:`, `## operator:`, `1. user:`), which a
+ *    rendered evidence block carries — while line-anchoring leaves a sentence like
  *    "ask the assistant: it knows" untouched.
  *  - `defuseRoleLabels` is for a SINGLE-LINE span (one filter value, one database
  *    fact) in a renderer that has already collapsed whitespace. There is no line
@@ -64,7 +66,31 @@ const ROLE_WORDS = "assistant|operator|system|user|human|model";
  */
 const DEFUSED_COLON = "․";
 
-const ROLE_LABEL_LINE = new RegExp(`^(\\s*)(${ROLE_WORDS})(\\s*):`, "gim");
+/**
+ * Line-leading Markdown / quote / list / heading / table punctuation a role label
+ * may hide BEHIND at the start of a line. A rendered evidence block is Markdown, so
+ * `- system:`, `> assistant:`, `## operator:`, `1. user:`, `2) human:` and
+ * `| model:` all read to a human — and a model — as a bare role label beginning a
+ * line, yet `^(\s*)(role-word)` never matched them because the punctuation sat
+ * between the line start and the word (security re-review of PR #2866, 14 Aug 2026).
+ * One shared token, each repeatable and independently spaced, covers:
+ *   - `-` / `*` / `+` unordered-list bullets;
+ *   - `>` blockquote markers (repeatable: `>> human:`);
+ *   - `#` ATX-heading marks (repeatable: `## system:`);
+ *   - `|` leading table-cell delimiter;
+ *   - `\d+.` / `\d+)` ordered-list markers.
+ * It is deliberately ANCHORED to the line start (after optional whitespace): a role
+ * word genuinely mid-line (`please ask the assistant: do X`) reads as prose, not a
+ * turn, and stays untouched — the same reviewed boundary the line variant has always
+ * kept. A list item that merely carries a colon but no role word (`- note: see
+ * below`) is likewise unchanged, because the word after the punctuation is not a
+ * role word.
+ */
+const LINE_LEADING_MARKUP = "(?:[-*+>|#]|\\d+[.)])";
+const ROLE_LABEL_LINE = new RegExp(
+  `^(\\s*(?:${LINE_LEADING_MARKUP}\\s*)*)(${ROLE_WORDS})(\\s*):`,
+  "gim",
+);
 const ROLE_LABEL_ANYWHERE = new RegExp(`\\b(${ROLE_WORDS})(\\s*):`, "gi");
 
 /**
