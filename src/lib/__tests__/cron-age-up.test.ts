@@ -67,6 +67,7 @@ import {
 import { AGE_TIER_DEFAULTS, invalidateAgeTierCache } from "../age-tier";
 import { getAuditRetentionExpiresAt } from "../audit";
 import { checkAgeUpMembers } from "../cron-age-up";
+import { withTimeZoneAsync } from "./helpers/timezone";
 
 const mockedFindMany = vi.mocked(prisma.member.findMany);
 const mockedMemberFindFirst = vi.mocked(prisma.member.findFirst);
@@ -1380,6 +1381,100 @@ describe("checkAgeUpMembers", () => {
     expect(new Date("2008-04-01T00:00:00.000Z").getTime()).toBeLessThan(
       cutoffWindowEnd.getTime(),
     );
+  });
+
+  // #2859. The two tests above pin the SHAPE of the widened bound. These two
+  // pin the OUTCOME either side of it, which is the thing that actually decides
+  // a member's price and whether they may host — and neither was covered.
+  //
+  // The zone is forced rather than inherited (docs/TESTING.md rules 6 and 7).
+  // Both sides of this comparison are host-local — `getSeasonStartDate` is
+  // `new Date(year, month, 1)` and `computeAge` uses `getFullYear`/`getMonth`/
+  // `getDate` — so the answer depends on the runner. Pinning the club's own zone
+  // makes these assert what production does. Under a host WEST of UTC the
+  // day-after member would be promoted a year early, because UTC midnight is the
+  // previous evening locally: that is a pre-existing `computeAge` defect
+  // (INV-DATE-024 records it), it is unreachable under the Dockerfile's
+  // `TZ=Pacific/Auckland` pin, and it is deliberately not fixed here.
+  it("promotes the member born on exactly the season-start anniversary", async () => {
+    const member = {
+      id: "m-boundary-on",
+      email: "boundary@example.com",
+      firstName: "Bo",
+      lastName: "Boundary",
+      // Stored the way every correct writer stores it, and the way the #2859
+      // migration re-encodes a repaired row: UTC midnight on 1 April 2008. They
+      // turn 18 on season start (1 April 2026) and are an adult that season.
+      dateOfBirth: new Date("2008-04-01T00:00:00.000Z"),
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+    };
+
+    mockedFindMany.mockResolvedValue([member] as any);
+    mockedEmailLogFind.mockResolvedValue(null);
+    mockedUpdate.mockResolvedValue({} as any);
+    mockedCreateToken.mockResolvedValue({} as any);
+    mockedSendEmail.mockResolvedValue(undefined);
+
+    const result = await withTimeZoneAsync("Pacific/Auckland", () =>
+      checkAgeUpMembers(),
+    );
+
+    // The authority agrees with the widened prefilter. Before #2859 this member
+    // never reached `computeAgeTierWithSettings` at all: the old `lte` bound was
+    // 2008-03-31T11:00Z under the club pin, so a UTC-midnight date of birth on
+    // 1 April sat AFTER it and was filtered out — one season late for their own
+    // age-up, with nothing on any screen saying so.
+    expect(result.upgraded).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(mockedUpdate).toHaveBeenCalledTimes(1);
+
+    // Both halves, in one place. The assertions above prove the AUTHORITY
+    // promotes this member; this one proves the PREFILTER would really have
+    // handed them to it, by checking their stored date of birth against the
+    // window the job actually queried. Without it the test passes on a mocked
+    // `findMany` that returns the member whatever the bound is — which is
+    // exactly how the narrowed bound shipped unnoticed the first time.
+    const queried = (mockedFindMany.mock.calls[0]![0] as any).where.dateOfBirth;
+    expect(queried.lte).toBeUndefined();
+    expect(member.dateOfBirth.getTime()).toBeLessThan(
+      (queried.lt as Date).getTime(),
+    );
+  });
+
+  it("does not promote a member born the day AFTER the cutoff day", async () => {
+    const member = {
+      id: "m-boundary-off",
+      email: "dayafter@example.com",
+      firstName: "Cai",
+      lastName: "Dayafter",
+      // One day later: they turn 18 on 2 April 2026, the day after season
+      // start, so they are still YOUTH for this season.
+      dateOfBirth: new Date("2008-04-02T00:00:00.000Z"),
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+    };
+
+    // Deliberately handed to the job as a CANDIDATE. Widening the SQL bound to
+    // the whole cutoff day is what lets this row through the prefilter, so the
+    // assertion below is the half of the argument the widening depends on:
+    // `computeAgeTierWithSettings` is a real authority that re-checks every
+    // candidate, not a formality. If it were not, widening would promote people
+    // a year early.
+    mockedFindMany.mockResolvedValue([member] as any);
+    mockedEmailLogFind.mockResolvedValue(null);
+    mockedUpdate.mockResolvedValue({} as any);
+    mockedCreateToken.mockResolvedValue({} as any);
+    mockedSendEmail.mockResolvedValue(undefined);
+
+    const result = await withTimeZoneAsync("Pacific/Auckland", () =>
+      checkAgeUpMembers(),
+    );
+
+    expect(result.upgraded).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(mockedUpdate).not.toHaveBeenCalled();
+    expect(mockedSendEmail).not.toHaveBeenCalled();
   });
 
   it("should use the configured ADULT age tier for cutoff and email data", async () => {

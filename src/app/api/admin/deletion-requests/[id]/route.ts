@@ -901,7 +901,7 @@ export async function POST(
       // Re-check the complete contact-create recovery set while that fence is
       // held so deletion cannot anonymise a member whose PII may already be in
       // flight to Xero or whose provider-created contact still needs linking.
-      await lockMemberForAccountDeletionXeroFence(tx, member.id);
+      const fencedMember = await lockMemberForAccountDeletionXeroFence(tx, member.id);
 
       // 3. Anonymise the member record
       await tx.member.update({
@@ -972,6 +972,27 @@ export async function POST(
           where: { memberId: member.id },
         }),
       ]);
+
+      // #2859: the cached copy of the member's date of birth goes too. Since
+      // this release the app WRITES the date of birth into the Xero contact's
+      // NZBN field, so the next inbound contact sync caches it straight back
+      // into `XeroContactCache.companyNumber` in plaintext — turning what used
+      // to be a handful of rows into a second local copy of essentially every
+      // member's birthday. Nulling `Member.dateOfBirth` above while leaving that
+      // copy behind would mean an honoured erasure request still left the value
+      // on this server, in a table nothing else in this transaction touches.
+      //
+      // Scoped to the one field, and to this contact. Removing the value from
+      // XERO is a separate question — it conflicts with the standing rule that
+      // this app never blanks that field, because it cannot tell a birthday it
+      // wrote from a business number somebody typed — and is tracked as #2873.
+
+      if (fencedMember.xeroContactId) {
+        await tx.xeroContactCache.updateMany({
+          where: { contactId: fencedMember.xeroContactId },
+          data: { companyNumber: null },
+        });
+      }
 
       // The pointer and canonical ledger are one privacy boundary. A contact
       // update that completed before this transaction may have refreshed the
