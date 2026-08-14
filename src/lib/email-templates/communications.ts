@@ -9,6 +9,8 @@ import { BASE_URL, button, heading, layout, muted } from "./layout";
 import { CLUB_NAME } from "@/config/club-identity";
 import { emailPalette } from "@/lib/email-theme";
 
+// ---- N-09: Bulk Member Communication ----
+
 export function bulkCommunicationTemplate(
   subject: string,
   body: string
@@ -40,5 +42,3 @@ export function noticePublishedTemplate(
     ${button("Manage Preferences", BASE_URL + "/profile")}
   `);
 }
-
-// ---- N-13: Admin Daily Digest ----

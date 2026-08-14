@@ -29,6 +29,8 @@ import {
 import { emailPalette } from "@/lib/email-theme";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 
+// ---- N-04: Admin Alert — Payment Failure ----
+
 export function adminPaymentFailureTemplate(data: {
   memberName: string;
   checkIn: Date;
@@ -414,7 +416,7 @@ export function adminManualRefundTaskTemplate(data: {
   `);
 }
 
-// ---- N-06: Admin Alert — Pending Approaching Deadline ----
+// ---- N-05: Admin Alert — Xero Sync Error ----
 
 export function adminXeroSyncErrorTemplate(data: {
   errorType: string;
@@ -490,8 +492,6 @@ export function adminXeroRepeatedFailureTemplate(data: {
     ${button("Open Xero Admin", BASE_URL + "/admin/xero")}
   `);
 }
-
-// ---- N-03: Admin Alert — Capacity Warning ----
 
 export function adminRefundRequestTemplate(data: {
   memberName: string;

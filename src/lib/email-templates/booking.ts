@@ -78,8 +78,6 @@ export function arrivalInstructionsSection({
   `;
 }
 
-// ---- Exported template functions ----
-
 export function bookingConfirmedTemplate(
   firstName: string,
   checkIn: Date,
@@ -531,6 +529,17 @@ export function setupIntentFailedTemplate(data: {
     ${supportContactSentence("If you need help, contact the club at ")}
   `);
 }
+
+/**
+ * #1993 Part A — member-facing notice that the provisional non-member guest
+ * portion of their stay was auto-cancelled because it stayed unpaid up to the
+ * check-in day. Reassures that nothing was ever charged for the guest portion
+ * and that the cancellation touches only that portion. `parentConfirmed`
+ * selects the reassurance about their own booking: a settled/internet-banking
+ * parent "remains confirmed"; otherwise the copy only states the parent was not
+ * changed by this cancellation, never a false "confirmed". No bearer token, so
+ * this is not sensitive-log material.
+ */
 
 export function splitGuestPortionCancelledTemplate(data: {
   firstName: string;

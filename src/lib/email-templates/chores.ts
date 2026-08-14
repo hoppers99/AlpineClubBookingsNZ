@@ -86,5 +86,3 @@ export function hutLeaderAssignmentTemplate(params: {
     ${muted("If you have any issues accessing the kiosk, please contact a club administrator.")}
   `);
 }
-
-// ---- N-01: Check-in Reminder ----

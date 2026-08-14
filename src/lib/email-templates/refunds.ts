@@ -79,5 +79,3 @@ export function refundRequestDeclinedTemplate(data: {
     adminNotes: data.adminNotes,
   });
 }
-
-// ---- Public booking request flow (issue #707) ----

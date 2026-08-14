@@ -15,6 +15,8 @@ import {
 } from "./layout";
 import { emailPalette } from "@/lib/email-theme";
 
+// ---- N-13: Admin Daily Digest ----
+
 export function adminDailyDigestTemplate(sections: {
   newBookings: number;
   paymentFailures: number;

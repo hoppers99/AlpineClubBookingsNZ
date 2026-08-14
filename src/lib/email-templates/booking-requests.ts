@@ -22,6 +22,8 @@ import {
 import { CLUB_NAME } from "@/config/club-identity";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 
+// ---- Public booking request flow (issue #707) ----
+
 export function bookingRequestVerificationTemplate(data: {
   firstName: string;
   verifyUrl: string;

@@ -26,6 +26,8 @@ import { emailPalette } from "@/lib/email-theme";
 import { FALLBACK_LODGE_CAPACITY } from "@/lib/lodge-capacity";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 
+// ---- N-02: Admin Alert — New Booking ----
+
 export function adminNewBookingTemplate(data: {
   memberName: string;
   checkIn: Date;
@@ -171,7 +173,7 @@ export function adminOwnerSubstitutionTemplate(data: {
   `);
 }
 
-// ---- N-04: Admin Alert — Payment Failure ----
+// ---- N-06: Admin Alert — Pending Approaching Deadline ----
 
 export function adminPendingDeadlineTemplate(bookings: Array<{
   memberName: string;
@@ -235,7 +237,7 @@ export function adminBookingBumpedTemplate(data: {
   `);
 }
 
-// ---- N-05: Admin Alert — Xero Sync Error ----
+// ---- N-03: Admin Alert — Capacity Warning ----
 
 export function adminCapacityWarningTemplate(days: Array<{
   date: Date;
@@ -275,8 +277,6 @@ export function adminCapacityWarningTemplate(days: Array<{
     ${button("View Bookings", BASE_URL + "/admin/bookings")}
   `);
 }
-
-// ---- N-09: Bulk Member Communication ----
 
 export function adminWaitlistOfferTemplate(data: {
   memberName: string;
@@ -579,14 +579,3 @@ export function adminSplitSettlementCancelledTemplate(data: {
     ${button("View Bookings", data.reviewUrl, { sameOrigin: true })}
   `);
 }
-
-/**
- * #1993 Part A — member-facing notice that the provisional non-member guest
- * portion of their stay was auto-cancelled because it stayed unpaid up to the
- * check-in day. Reassures that nothing was ever charged for the guest portion
- * and that the cancellation touches only that portion. `parentConfirmed`
- * selects the reassurance about their own booking: a settled/internet-banking
- * parent "remains confirmed"; otherwise the copy only states the parent was not
- * changed by this cancellation, never a false "confirmed". No bearer token, so
- * this is not sensitive-log material.
- */

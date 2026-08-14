@@ -18,6 +18,8 @@ import {
 } from "./layout";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 
+// ---- Waitlist templates ----
+
 export function waitlistConfirmationTemplate(
   firstName: string,
   checkIn: Date,

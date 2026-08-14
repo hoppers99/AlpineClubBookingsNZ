@@ -136,8 +136,6 @@ export function accountDeletionApprovedTemplate(firstName: string): string {
   `);
 }
 
-// ---- Family group email templates ----
-
 /** F-COMP-04: Account deletion rejected — sent to member with admin note */
 export function accountDeletionRejectedTemplate(
   firstName: string,
@@ -155,5 +153,3 @@ export function accountDeletionRejectedTemplate(
     ${supportContactMuted()}
   `);
 }
-
-// ---- Waitlist templates ----

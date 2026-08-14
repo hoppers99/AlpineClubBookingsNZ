@@ -24,6 +24,8 @@ import { CLUB_LODGE_TRAVEL_NOTE, CLUB_NAME } from "@/config/club-identity";
 import { emailPalette } from "@/lib/email-theme";
 import { formatNZDate } from "@/lib/nzst-date";
 
+// ---- N-01: Check-in Reminder ----
+
 export function checkinReminderTemplate(
   firstName: string,
   checkIn: Date,
@@ -150,8 +152,6 @@ export function additionalPaymentReminderTemplate(params: {
     ${button("Pay Now", BASE_URL + "/bookings")}
   `);
 }
-
-// ---- N-02: Admin Alert — New Booking ----
 
 /**
  * #2550 — member-facing reminder that a whole-lodge booking's party is still
