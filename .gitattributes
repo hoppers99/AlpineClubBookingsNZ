@@ -64,6 +64,15 @@ src/lib/config-transfer/import-types.ts text eol=lf diff
 *.toml text eol=lf
 .gitleaksignore text eol=lf
 
+# #2687: plain-text ledgers are the same class again. The file-size baseline
+# (`scripts/quality/file-size-baseline.txt`) is parsed line by line and compared
+# byte-for-byte against the form the generator produces, so a CRLF checkout would
+# fail the ratchet on Windows and pass on Linux CI — the exact split that took
+# days to diagnose for the migration SQL (#2399) and the shell scripts. Pinned as
+# a class rather than by name so the next tracked `.txt` inherits it; all three
+# tracked `.txt` blobs are already LF, so this is zero churn.
+*.txt text eol=lf
+
 # Shell scripts are the fourth instance of the same class, and the worst of
 # them, because the failure does not look like a line-ending problem at all.
 # Every tracked `*.sh` here opens with `set -Eeuo pipefail`. Materialised as
