@@ -1,51 +1,88 @@
 -- #2859: move the dates of birth that were stored a day early back onto the day
 -- the member was actually born.
 --
--- WHAT WENT WRONG. Four copies of the same `dd/mm/yyyy` parser had grown across
--- the Xero surface. Two of them built `new Date(`${yyyy}-${mm}-${dd}T00:00:00`)`
--- — no `Z`, no offset, so JavaScript reads it as SERVER-LOCAL midnight — and
--- `Dockerfile` pins `TZ=Pacific/Auckland`. The stored instant therefore landed
--- on the PREVIOUS UTC day, every hour of every day, not only in a morning
--- window. Those two parsers are the Xero member import (bulk, dependant and
--- backfill paths) and the single-contact import route, which between them
--- created essentially the whole membership at go-live.
+-- WHAT WENT WRONG. Four copies of the same "dd/mm/yyyy" parser had grown across
+-- the Xero surface. Two of them built a Date from "yyyy-mm-ddT00:00:00" with no
+-- "Z" and no offset, which JavaScript reads as SERVER-LOCAL midnight, and the
+-- Dockerfile pins TZ=Pacific/Auckland. The stored instant therefore landed on
+-- the PREVIOUS UTC day, every hour of every day, not only in a morning window.
+-- Those two parsers are the Xero member import (bulk, dependant and backfill
+-- paths) and the single-contact import route, which between them created
+-- essentially the whole membership at go-live.
 --
--- THE CENSUS THAT MAKES THIS SAFE. Every writer of `Member.dateOfBirth` was
+-- THE CENSUS THAT MAKES THIS SAFE. Every writer of "Member"."dateOfBirth" was
 -- enumerated before this statement was written, because a migration keyed on a
 -- shape must know that the shape means one thing. Result: the Xero import pair
 -- above are the ONLY writers that ever produced a local-midnight instant. Every
 -- other writer — self-service profile, admin create, admin member-detail edit,
 -- CSV import, all four family-group routes, membership application approval,
 -- nomination, and the inbound Xero contact reconciliation — produces UTC
--- midnight, via `parseDateOnly`, an explicit `T00:00:00.000Z`, `Date.UTC(...)`,
--- or `new Date("yyyy-MM-dd")` (which ECMAScript defines as UTC for the date-only
--- form). So `12:00`/`13:00` means "written by the defect" and `00:00` means
--- "written correctly", with nothing writing either shape for another reason.
+-- midnight, via parseDateOnly, an explicit T00:00:00.000Z, Date.UTC(...), or
+-- new Date("yyyy-mm-dd") (which ECMAScript defines as UTC for the date-only
+-- form). So a non-zero time-of-day means "written by the defect" and 00:00
+-- means "written correctly", with nothing writing either shape for another
+-- reason.
 --
--- WHAT THIS MATCHES, EXACTLY. A stored `dateOfBirth` whose time-of-day is
--- precisely 12:00:00.000 or 13:00:00.000 UTC — New Zealand standard time (+12)
--- and New Zealand daylight time (+13) local midnight, the two offsets the pinned
--- zone has held for every date of birth in the club's records. Both bounds are
--- exact to the millisecond, and the hour list is a literal pair rather than a
--- range.
+-- WHICH HOURS, AND WHY THREE RATHER THAN TWO. New Zealand keeps UTC+12 in
+-- standard time and UTC+13 in daylight time, and a local midnight is stored as
+-- (local 00:00 - offset). So the defect writes the PREVIOUS day at:
 --
--- A RANGE IS THE MISTAKE THIS DELIBERATELY DOES NOT MAKE. The measured live
--- distribution is 244 rows at 12:00, 120 at 13:00, 10 at 00:00 — and ONE at
--- 11:39. `BETWEEN 11:00 AND 13:00` would read as generous and would sweep that
--- row into a shape-matched repair. 11:39 is not a New Zealand local midnight for
--- any offset the zone has ever held, so nothing about the defect explains it and
--- nothing about this statement can know what it was meant to be. It is left
--- exactly as it is, for someone to look at. `date_part` on the minute and second
--- is what excludes it, and the fixture asserts that it survives untouched.
+--     11:00 UTC  when the birthday falls in NZ DAYLIGHT time (+13)
+--     12:00 UTC  when it falls in NZ STANDARD time (+12)
 --
--- THE ARITHMETIC. Adding 12 hours and truncating to the day lands both matched
--- shapes on UTC midnight of the intended day, and only those:
---   1985-06-14 12:00 + 12h = 1985-06-15 00:00 -> 1985-06-15 00:00  (15/06/1985)
---   1999-12-31 13:00 + 12h = 2000-01-01 01:00 -> 2000-01-01 00:00  (01/01/2000)
--- The second is the year-boundary case, where the defect moved the year as well
--- as the day. Pure timestamp arithmetic, no `AT TIME ZONE`: the column is
--- `timestamp(3)` without time zone holding a UTC instant, so a zone conversion
--- here would depend on the database container's tzdata to state something the
+-- which is exactly what issue #2859 states ("local midnight is 11:00 or 12:00
+-- UTC on the previous day") and exactly what its two worked examples show:
+-- 15/06/1985 stored as 1985-06-14 12:00 and 01/01/2000 as 1999-12-31 11:00.
+--
+-- The production census on that issue reports its buckets as 12:00 (244 rows),
+-- 13:00 (120), 00:00 (10) and 11:39 (1), labelling the 13:00 bucket "NZDT local
+-- midnight". A 13:00 bucket cannot be a New Zealand local midnight under any
+-- offset the zone has ever held — that would need UTC-13 — so the two readings
+-- of that report disagree by an hour on the daylight-time population. The
+-- likeliest reconciliation is that the column reports the OFFSET (+12, +13, 0,
+-- +11:39) rather than the stored hour, a reading under which all four buckets
+-- fit, including the outlier: +11:39:04 is Auckland's local mean time before
+-- 1868. Under that reading the stored hours are 12:00, 11:00, 00:00 and
+-- 12:20:56.
+--
+-- This statement does not have to decide. It matches 11, 12 AND 13, which is
+-- correct under BOTH readings: whichever hour the daylight-time rows really
+-- carry, they are repaired, and the hour that turns out not to exist simply
+-- matches nothing. Matching only 12 and 13 would have left roughly 120 members
+-- a day early forever while this migration reported them repaired.
+--
+-- WHAT IT STILL WILL NOT TOUCH. The minute and second must both be exactly
+-- zero. That is what excludes the single outlier under either reading — 11:39
+-- literally, or 12:20:56 under the offset reading — and this statement can no
+-- more explain that row than the census could, so it is left exactly as it is
+-- for someone to look at. It also excludes 12:30, which WOULD be a genuine
+-- local midnight for a birthday under New Zealand Mean Time (+11:30, in force
+-- 1868-1941); no row was measured there, and repairing an unmeasured shape is
+-- the same guess this refuses to make for the outlier. If one ever turns up it
+-- needs the same hand review.
+--
+-- THE ARITHMETIC. date_trunc('day', t + INTERVAL 'N hours') on a row at hour H
+-- lands on day D + floor((H+N)/24). With N = 13 and H in (11, 12, 13):
+--
+--     11:00 + 13h = next day 00:00 -> truncates to next day 00:00
+--     12:00 + 13h = next day 01:00 -> truncates to next day 00:00
+--     13:00 + 13h = next day 02:00 -> truncates to next day 00:00
+--
+-- so every matched shape lands on UTC midnight of the intended day, and none
+-- can overshoot by two days (that needs H >= 35). Worked against the issue's
+-- own examples: 1985-06-14 12:00 -> 1985-06-15 (15/06/1985) and 1999-12-31
+-- 11:00 -> 2000-01-01 (01/01/2000), the second carrying the year across the
+-- boundary the defect had moved it over.
+--
+-- N MUST BE 13, NOT 12. At H = 11 an interval of 12 hours reaches only 23:00 on
+-- the SAME day, so the daylight-time rows would keep their wrong day and be
+-- rewritten to UTC midnight ON IT — a day-early value wearing the shape of a
+-- correct one, undetectable afterwards. The verification fixture carries that
+-- exact mutant.
+--
+-- Pure timestamp arithmetic, no AT TIME ZONE: the column is timestamp(3)
+-- without time zone holding a UTC instant, so a zone conversion here would
+-- depend on the database container's historical tzdata to state something the
 -- matched shape has already established.
 --
 -- SCOPE. Tokoroa is the only live site with a Xero connection (owner, this
@@ -54,19 +91,19 @@
 -- also what makes it safe to replay after a blue/green cutover: once a row is at
 -- 00:00 it can never match again.
 --
--- WHAT DOES NOT CHANGE. Age tier. `computeAge` (`src/lib/policies/age-tier.ts`)
--- reads a date of birth through LOCAL getters, and `member-age.ts` reads it
--- through the club zone, so under the Pacific/Auckland pin both already recovered
--- the intended calendar day from the defective instant and read the same day from
+-- WHAT DOES NOT CHANGE. Age tier. computeAge (src/lib/policies/age-tier.ts)
+-- reads a date of birth through LOCAL getters, and member-age.ts through the
+-- club zone, so under the Pacific/Auckland pin both already recovered the
+-- intended calendar day from the defective instant and read the same day from
 -- the repaired one. The one place the two encodings did NOT agree was the
 -- age-up cron's SQL prefilter, which compares the stored instant against a
 -- local-midnight cutoff; that comparison is widened to the whole cutoff day in
--- the same release (`src/lib/cron-age-up.ts`, #2859) so this repair cannot move
+-- the same release (src/lib/cron-age-up.ts, #2859) so this repair cannot move
 -- anybody's tier in either direction.
 
 UPDATE "Member"
-   SET "dateOfBirth" = date_trunc('day', "dateOfBirth" + INTERVAL '12 hours')
+   SET "dateOfBirth" = date_trunc('day', "dateOfBirth" + INTERVAL '13 hours')
  WHERE "dateOfBirth" IS NOT NULL
-   AND date_part('hour', "dateOfBirth") IN (12, 13)
+   AND date_part('hour', "dateOfBirth") IN (11, 12, 13)
    AND date_part('minute', "dateOfBirth") = 0
    AND date_part('second', "dateOfBirth") = 0;
