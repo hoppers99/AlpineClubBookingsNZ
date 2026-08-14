@@ -330,12 +330,18 @@ export async function checkAgeUpMembers(): Promise<{
   // age-up — the same off-by-one INV-DATE-013 names, on the one boundary where
   // it decides a tier.
   //
-  // It was reachable before #2859 for any correctly stored date of birth, and
-  // #2859's migration re-encodes 364 more rows into that same shape, so the
-  // prefilter is widened to the END of the cutoff calendar day rather than left
-  // to become the common case. Widening is the safe direction: this query only
-  // proposes candidates, and `computeAgeTierWithSettings` below is the
-  // authority that promotes or skips each one.
+  // This is not a defect #2859 introduced, and it is not rare: it was already
+  // reachable for EVERY correctly stored date of birth, which on the live site
+  // is 365 of the 375 members who hold one. (An earlier census reported the
+  // reverse — 364 wrong, 10 right — from a query that applied `AT TIME ZONE` to
+  // this naive column and read it back through the session zone; it is
+  // retracted. The ten rows #2859's migration repairs are re-encoded into this
+  // same correct shape, so they join the exposure rather than create it.)
+  //
+  // So the prefilter is widened to the END of the cutoff calendar day. Widening
+  // is the safe direction: this query only proposes candidates, and
+  // `computeAgeTierWithSettings` below is the authority that promotes or skips
+  // each one.
   const cutoffWindowEnd = new Date(cutoffDate);
   cutoffWindowEnd.setDate(cutoffWindowEnd.getDate() + 1);
 

@@ -11,29 +11,27 @@ import type { DataMigrationVerification } from "./types";
  * from the empty tables `Migration drift check` uses: the `UPDATE` would match
  * nothing and be proven to parse while proving nothing (#2418).
  *
- * THE THREE DEFECTIVE HOURS. A New Zealand local midnight is stored as
+ * THE DEFECTIVE HOURS. A New Zealand local midnight is stored as
  * `(local 00:00 - offset)`, so the defect writes the PREVIOUS day at 11:00 UTC
  * for a daylight-time birthday (+13) and 12:00 UTC for a standard-time one
- * (+12) — which is what #2859 states and what its two worked examples show. The
- * production census on that issue reports a `13:00` bucket instead of `11:00`
- * for the daylight population; a 13:00 bucket cannot be a New Zealand local
- * midnight under any offset the zone has held, so the migration matches 11, 12
- * AND 13 and is correct under either reading. All three are seeded below,
- * because a fixture that only carried the hours one reading predicts would pass
- * while the other reading's rows went unrepaired in production.
+ * (+12) — which is what #2859 states, what its two worked examples show, and
+ * what production holds: six rows at `11:00` and four at `12:00`, out of 375
+ * members with a date of birth. A `13:00` bucket was reported once and is
+ * retracted; that census applied `AT TIME ZONE` to a naive column and read it
+ * back through the session zone, which inverted it. The migration still matches
+ * 13 as a known-inert safety margin, so a row is seeded there too — an arm
+ * nobody exercises is an arm nobody can trust.
  *
  * WHAT THE CASES ARE FOR, one property each:
  *
- *  - all three defective hours move to UTC midnight on the day the member was
+ *  - all three matched hours move to UTC midnight on the day the member was
  *    actually born, INCLUDING both year-boundary cases where the defect moved
  *    the year as well as the day;
  *  - a correctly stored row at `00:00` is not touched — the property that stops
  *    the repair running a second time on data it already fixed;
- *  - the outlier measured in production is left exactly as it is, under BOTH
- *    readings of the census (`11:39` literally, `12:20:56` under the offset
- *    reading), rather than swept into a shape-matched repair;
  *  - nothing near the boundary is caught by accident: `10:00`, `12:30`, a
- *    non-zero minute and a non-zero millisecond all stay put;
+ *    non-zero minute (on two different hours), a non-zero whole second and a
+ *    non-zero millisecond all stay put;
  *  - a member with no date of birth at all is untouched and stays NULL;
  *  - every other column on a rewritten row is byte-identical afterwards —
  *    `ageTier` above all, because a repair that helpfully recomputed it would be
@@ -61,11 +59,13 @@ import type { DataMigrationVerification } from "./types";
  * Every shape, seeded together so one pre-state proves both what moves and what
  * does not.
  *
- * The two `nzdt` rows carry 11:00 — the arithmetically derived daylight-time
- * shape, and the hour that separates a correct interval from the plausible wrong
- * one. `measured-13` carries the hour the production census reports for that
- * same population, so whichever reading is right, a real row is covered. The two
- * `new-year` rows are the year-boundary cases, one per offset.
+ * The two `nzdt` rows carry 11:00 — the daylight-time shape, and the hour that
+ * separates a correct interval from the plausible wrong one. `synthetic-1300`
+ * covers the migration's inert 13 arm: no such row exists in production, and an
+ * arm no fixture exercises is one nobody can trust. The two `new-year` rows are
+ * the year-boundary cases, one per offset. The four `near-` rows are SYNTHETIC
+ * near-misses, not observed production values — they exist to pin what the
+ * predicate refuses.
  */
 const memberRows = `(
     'dob-nzst-1200', 'nzst@example.test', 'hash', 'Ada', 'Nzst',
@@ -84,7 +84,7 @@ const memberRows = `(
     TIMESTAMP '1969-12-31 12:00:00', 'ADULT', TIMESTAMP '2026-08-14 00:00:00'
   ),
   (
-    'dob-measured-1300', 'measured@example.test', 'hash', 'Eli', 'Measured',
+    'dob-synthetic-1300', 'synthetic13@example.test', 'hash', 'Eli', 'Synthetic',
     TIMESTAMP '2001-07-05 13:00:00', 'ADULT', TIMESTAMP '2026-08-14 00:00:00'
   ),
   (
@@ -92,11 +92,11 @@ const memberRows = `(
     TIMESTAMP '1974-09-02 00:00:00', 'ADULT', TIMESTAMP '2026-08-14 00:00:00'
   ),
   (
-    'dob-outlier-1139', 'outlier@example.test', 'hash', 'Gus', 'Outlier',
+    'dob-near-minute-at-eleven', 'nearminute11@example.test', 'hash', 'Gus', 'Nearminute',
     TIMESTAMP '1968-04-11 11:39:00', 'ADULT', TIMESTAMP '2026-08-14 00:00:00'
   ),
   (
-    'dob-outlier-lmt', 'lmt@example.test', 'hash', 'Hal', 'Lmt',
+    'dob-near-second', 'nearsecond@example.test', 'hash', 'Hal', 'Nearsecond',
     TIMESTAMP '1867-05-20 12:20:56', 'ADULT', TIMESTAMP '2026-08-14 00:00:00'
   ),
   (
@@ -123,11 +123,11 @@ const memberRows = `(
 const verification: DataMigrationVerification = {
   migration: "20260814010000_repair_local_midnight_dates_of_birth",
   intent:
-    "Move a stored date of birth whose time-of-day is exactly 11:00:00.000, 12:00:00.000 or 13:00:00.000 UTC — the New Zealand local-midnight shapes the two defective Xero parsers wrote, covering both readings of the production census — forward onto UTC midnight of the day the member was actually born; change no other column on those rows, no row already at UTC midnight, no row whose time-of-day is any other value (including the single measured outlier that neither defect explains), and no member without a date of birth.",
+    "Move a stored date of birth whose time-of-day is exactly 11:00:00.000, 12:00:00.000 or 13:00:00.000 UTC — the New Zealand local-midnight shapes the two defective Xero parsers wrote (11 and 12 measured in production, 13 a known-inert safety margin) — forward onto UTC midnight of the day the member was actually born; change no other column on those rows, no row already at UTC midnight, no row whose time-of-day is any other value, and no member without a date of birth.",
   idempotentReRun: true,
   cases: [
     {
-      name: "a club carrying all three defective hours, both year boundaries, a correctly stored row, the outlier under both readings, and four near-misses",
+      name: "a club carrying both measured defective hours and the inert third, both year boundaries, a correctly stored row, and four near-misses",
       seed: `
         INSERT INTO "Member" (
           "id", "email", "passwordHash", "firstName", "lastName",
@@ -139,7 +139,7 @@ const verification: DataMigrationVerification = {
       expectations: [
         {
           claim:
-            "all three defective hours now sit at UTC midnight on the day the member was actually born. The two 11:00 rows are the daylight-time shape #2859's own worked example gives (01/01/2000 stored as 1999-12-31 11:00), and they are the only rows that can distinguish a correct 13-hour interval from a 12-hour one",
+            "all three matched hours now sit at UTC midnight on the day the member was actually born. The two 11:00 rows are the daylight-time shape #2859's own worked example gives (01/01/2000 stored as 1999-12-31 11:00), and they are the only rows that can distinguish a correct 13-hour interval from a 12-hour one",
           // Rendered characters, not a raw Date: a naive timestamp(3) is
           // resolved by the pg driver against the CLIENT's zone, so a raw
           // comparison would pass in UTC CI and fail on a Pacific/Auckland
@@ -149,11 +149,11 @@ const verification: DataMigrationVerification = {
                   FROM "Member"
                  WHERE "id" IN ('dob-nzst-1200', 'dob-nzdt-1100',
                                 'dob-nzdt-1100-new-year', 'dob-nzst-1200-new-year',
-                                'dob-measured-1300')
+                                'dob-synthetic-1300')
                  ORDER BY "id"`,
           rows: [
             {
-              id: "dob-measured-1300",
+              id: "dob-synthetic-1300",
               dateOfBirth: "2001-07-06 00:00:00.000",
             },
             {
@@ -177,11 +177,11 @@ const verification: DataMigrationVerification = {
         },
         {
           claim:
-            "the correctly stored row, BOTH readings of the production outlier, and all four near-misses hold exactly the instant they were written with. 10:00 is no New Zealand offset; 12:30 would be a genuine local midnight under New Zealand Mean Time (+11:30, 1868-1941) but no row was measured there and repairing an unmeasured shape is the guess this migration refuses; a non-zero minute is not a local midnight; neither is 12:00 plus half a second",
+            "the correctly stored row and all six near-misses hold exactly the instant they were written with. These are SYNTHETIC shapes, not observed production values — they exist to pin what the predicate refuses. 10:00 is no New Zealand offset; 12:30 would be a genuine local midnight under New Zealand Mean Time (+11:30, 1868-1941) but no row was measured there and repairing an unmeasured shape is the guess this migration refuses; a non-zero minute is not a local midnight on hour 11 or on hour 13; neither is a non-zero whole second, nor 12:00 plus half a millisecond-bearing second",
           sql: `SELECT "id",
                        to_char("dateOfBirth", 'YYYY-MM-DD HH24:MI:SS.MS') AS "dateOfBirth"
                   FROM "Member"
-                 WHERE "id" IN ('dob-correct', 'dob-outlier-1139', 'dob-outlier-lmt',
+                 WHERE "id" IN ('dob-correct', 'dob-near-minute-at-eleven', 'dob-near-second',
                                 'dob-near-ten', 'dob-near-half-past',
                                 'dob-near-minute', 'dob-near-millis')
                  ORDER BY "id"`,
@@ -191,8 +191,8 @@ const verification: DataMigrationVerification = {
             { id: "dob-near-millis", dateOfBirth: "1988-07-19 12:00:00.500" },
             { id: "dob-near-minute", dateOfBirth: "2001-11-30 13:01:00.000" },
             { id: "dob-near-ten", dateOfBirth: "1990-05-06 10:00:00.000" },
-            { id: "dob-outlier-1139", dateOfBirth: "1968-04-11 11:39:00.000" },
-            { id: "dob-outlier-lmt", dateOfBirth: "1867-05-20 12:20:56.000" },
+            { id: "dob-near-minute-at-eleven", dateOfBirth: "1968-04-11 11:39:00.000" },
+            { id: "dob-near-second", dateOfBirth: "1867-05-20 12:20:56.000" },
           ],
         },
         {
@@ -297,7 +297,7 @@ const verification: DataMigrationVerification = {
     {
       name: "add 12 hours instead of 13 — the interval the first version of this migration actually shipped",
       harm:
-        "Silently abandons the entire New Zealand DAYLIGHT-time population. `date_trunc('day', t + N hours)` lands on day D + floor((H+N)/24), so at H=11 an interval of 12 reaches only 23:00 on the SAME day: those rows keep the wrong day and are rewritten to UTC midnight ON it, which is precisely the shape of a row that was always correct. Roughly 120 of the 364 affected members would be left a day early, permanently, with the evidence of the defect destroyed and no shape left to find them by. This is the most dangerous edit available here because it is not hypothetical — it is what was written first, and only an 11:00 row can tell the two apart.",
+        "Silently abandons the entire New Zealand DAYLIGHT-time population. `date_trunc('day', t + N hours)` lands on day D + floor((H+N)/24), so at H=11 an interval of 12 reaches only 23:00 on the SAME day: those rows keep the wrong day and are rewritten to UTC midnight ON it, which is precisely the shape of a row that was always correct. Six of the ten affected members would be left a day early, permanently, with the evidence of the defect destroyed and no shape left to find them by — and the repair would report having fixed them. This is the most dangerous edit available here because it is not hypothetical: it is what was written first, and only an 11:00 row can tell the two apart.",
       find: `SET "dateOfBirth" = date_trunc('day', "dateOfBirth" + INTERVAL '13 hours')`,
       replace: `SET "dateOfBirth" = date_trunc('day', "dateOfBirth" + INTERVAL '12 hours')`,
     },
@@ -318,7 +318,7 @@ const verification: DataMigrationVerification = {
     {
       name: "match a RANGE of hours instead of the three exact local-midnight offsets",
       harm:
-        "This is the shortcut the issue explicitly forbids. `BETWEEN 11 AND 13` reads as generous and sweeps in the one measured production row that neither defect explains — 11:39 under the literal reading of the census, 12:20:56 under the offset reading — and nothing in this statement can know what day either was meant to be. It would be shifted by arithmetic on a number nobody understands, permanently, with no undo, on a member's personal data. It also catches the 12:30 New Zealand Mean Time shape and the non-zero minute.",
+        "This is the shortcut the issue explicitly forbids. `BETWEEN 11 AND 13` reads as generous and drops the claim the whole repair rests on — that a matched row is EXACTLY a local midnight. Any stored value inside those three hours would then be shifted by arithmetic derived from a shape it does not have, permanently, with no undo, on a member's personal data: 11:39, 12:20:56, the 12:30 New Zealand Mean Time shape and the non-zero minute at 13:01 all get swept in, and nothing in this statement can know what day any of them was meant to be.",
       find: `   AND date_part('hour', "dateOfBirth") IN (11, 12, 13)
    AND date_part('minute', "dateOfBirth") = 0
    AND date_part('second', "dateOfBirth") = 0;`,
