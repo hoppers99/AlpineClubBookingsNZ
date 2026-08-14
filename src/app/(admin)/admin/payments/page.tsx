@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { format } from "date-fns";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
+import { readAdminQueryErrorMessage } from "@/lib/admin-query-error";
 import {
   getPaymentsDatasetDefaults,
   PAYMENT_DATASET_QUERY_KEYS,
@@ -169,6 +170,10 @@ function getSortDir(value: string | null): SortDir {
 function getSourceFilter(value: string | null): PaymentSourceFilter {
   return value === "STRIPE" || value === "INTERNET_BANKING" ? value : "all";
 }
+
+/** Shown when the refusal carries no field message we can quote (#2685). */
+const PAYMENTS_FILTER_FALLBACK_ERROR =
+  "That filter could not be applied, so no payments are shown. Check the amount boxes and try again.";
 
 function formatPendingAge(createdAt: string): string {
   const created = new Date(createdAt).getTime();
@@ -389,6 +394,18 @@ export default function PaymentsPage() {
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState({ totalRevenueCents: 0, refundedCents: 0, count: 0 });
   const [loading, setLoading] = useState(false);
+  /*
+    #2685 review — the query the API REFUSED.
+
+    `fetchData` used to be `if (res.ok) { … }` with no `else`, so a 400 left the
+    previous query's rows on screen underneath the new filter chip. The operator
+    saw a payments table, an active "Amount exact: 007.50" chip, and no
+    indication that the two had nothing to do with each other — the commonest
+    way to reach it is a leading zero or a thousands separator, neither of which
+    looks like a mistake. The rows are now cleared and the reason is rendered
+    beside the amount boxes that cause it.
+  */
+  const [filterError, setFilterError] = useState<string | null>(null);
 
   // The code the last load failed with, or null. It is state rather than a
   // derivation because the failure is the response's, and it is deliberately NOT
@@ -543,8 +560,22 @@ export default function PaymentsPage() {
       if (res.ok) {
         const json = await res.json();
         setData(json.data); setTotal(json.total); setSummary(json.summary);
+        setFilterError(null);
       } else {
+        // #2816 records WHY there is no list, so the page can say so rather than
+        // publishing filters it never got to apply. #2685 adds the other half:
+        // clear the dataset and name the specific reason next to the boxes that
+        // caused it. Leaving the last successful query's rows under a filter
+        // chip that was never applied is the defect; an empty table under an
+        // explicit reason is the honest state. Both are kept — the page-level
+        // code and the field-level message answer different questions.
         failure = diagnosticsPageErrorCodeForStatus(res.status);
+        setData([]);
+        setTotal(0);
+        setSummary({ totalRevenueCents: 0, refundedCents: 0, count: 0 });
+        setFilterError(
+          await readAdminQueryErrorMessage(res, PAYMENTS_FILTER_FALLBACK_ERROR),
+        );
       }
     } catch {
       failure = DIAGNOSTICS_PAGE_NETWORK_ERROR_CODE;
@@ -941,6 +972,18 @@ export default function PaymentsPage() {
               <FieldHint id={PAYMENT_AMOUNT_HINT_ID}>
                 Amounts in dollars. Example: 125.00
               </FieldHint>
+              {/* The refusal sits with the boxes that cause it, not in a banner
+                  at the top of a long screen, and is announced rather than only
+                  drawn (#2685 review). */}
+              {filterError ? (
+                <p
+                  role="alert"
+                  className="text-sm font-medium text-destructive"
+                  data-testid="payments-filter-error"
+                >
+                  {filterError}
+                </p>
+              ) : null}
             </div>
             <DateRangeControls
               presets={auditAndPaymentsDateRangePresets}

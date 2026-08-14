@@ -252,6 +252,9 @@ export function DefaultCancellationPolicySection() {
   })
 
   const { draft, saved, editing, saving, dirty, error, success } = section
+  // #2685: a fixed-fee box holding something that is not an amount blocks Save,
+  // because the draft still carries the previous cents for that field.
+  const [hasInvalidRuleAmounts, setHasInvalidRuleAmounts] = useState(false)
   const { reload } = section
 
   // Re-fetch when the scope changes. The hook's own load is mount-only, so a
@@ -560,6 +563,7 @@ export function DefaultCancellationPolicySection() {
                   rules={draft.rules}
                   onChange={(rules) => section.setDraft({ rules })}
                   disabled={!editing}
+                  onInvalidAmountsChange={setHasInvalidRuleAmounts}
                 />
               </div>
 
@@ -574,7 +578,7 @@ export function DefaultCancellationPolicySection() {
                     canEdit={canEdit}
                     describeReason={false}
                     onClick={() => void section.save()}
-                    disabled={busy || !dirty}
+                    disabled={busy || !dirty || hasInvalidRuleAmounts}
                   >
                     {saving
                       ? "Saving..."

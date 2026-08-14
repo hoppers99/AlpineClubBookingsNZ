@@ -48,6 +48,7 @@ import { getFirstAccessibleAdminHref } from "@/lib/admin-permissions";
 import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { formatNZDate } from "@/lib/nzst-date";
+import { formatDateOnly } from "@/lib/date-only";
 
 function singleSearchParam(value?: string | string[]) {
   return Array.isArray(value) ? value[0] : value;
@@ -254,7 +255,7 @@ export default async function ProfilePage({
     phoneAreaCode: member.phoneAreaCode ?? "",
     phoneNumber: member.phoneNumber ?? "",
     dateOfBirth: member.dateOfBirth
-      ? member.dateOfBirth.toISOString().substring(0, 10)
+      ? formatDateOnly(member.dateOfBirth)
       : "",
     streetAddressLine1: member.streetAddressLine1 ?? "",
     streetAddressLine2: member.streetAddressLine2 ?? "",

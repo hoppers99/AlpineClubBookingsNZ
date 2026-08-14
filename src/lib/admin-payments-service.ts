@@ -15,6 +15,7 @@ import {
   type XeroState,
 } from "@/lib/admin-operational-state";
 import logger from "@/lib/logger";
+import { parseDecimalDollarsToCents } from "@/lib/money-input";
 import { prisma } from "@/lib/prisma";
 import {
   endOfDateOnlyForTimeZone,
@@ -23,7 +24,56 @@ import {
 } from "@/lib/date-only";
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-const amountSchema = z.string().trim().regex(/^\d+(\.\d{1,2})?$/);
+/**
+ * An amount filter typed into the payments search box, in integer cents.
+ *
+ * The string is parsed by the canonical exact parser (#2685) rather than by
+ * `parseFloat` arithmetic, and an amount the parser refuses — including one
+ * above the int32 cent range the `amountCents` column holds, which used to reach
+ * Prisma and fail the whole request with a 500 — becomes an ordinary 400 with a
+ * message. Parsing here, in the schema, is what makes the null case impossible
+ * downstream: `amountExact`/`amountMin`/`amountMax` are already cents by the
+ * time any query is built.
+ */
+/**
+ * What an amount filter must look like, said in the operator's words.
+ *
+ * Exported because the payments screen renders it beside the amount boxes when
+ * the API refuses the query — the operator should not have to open a network
+ * panel to find out why the table stopped changing (#2685 review).
+ */
+export const AMOUNT_FILTER_GRAMMAR_MESSAGE =
+  "Enter an amount in dollars and cents, for example 125.00 — no currency symbol, thousands separator, or leading zero.";
+
+/** The only refusal a well-formed amount can still earn. */
+export const AMOUNT_FILTER_RANGE_MESSAGE =
+  "That amount is larger than any payment this system can hold.";
+
+const amountSchema = z
+  .string()
+  .trim()
+  // THE SAME GRAMMAR THE CANONICAL PARSER ENFORCES, not a looser one.
+  //
+  // `\d+` admitted `"007.50"`, which `parseDecimalDollarsToCents` then refused —
+  // so a leading zero fell through to the range message below and told the
+  // operator their amount was "outside the supported range", which was not what
+  // was wrong with it (#2685 review). Leading zeros stay rejected (owner
+  // decision, 14 Aug 2026); what changes is that the refusal now says so.
+  .regex(/^(0|[1-9]\d*)(\.\d{1,2})?$/, AMOUNT_FILTER_GRAMMAR_MESSAGE)
+  .transform((value, ctx) => {
+    const cents = parseDecimalDollarsToCents(value);
+    if (cents === null) {
+      // Reachable only for a well-formed amount above the int32 cent range the
+      // `amountCents` column holds — which used to reach Prisma and fail the
+      // whole request with a 500. Every other refusal is the grammar's, above.
+      ctx.addIssue({
+        code: "custom",
+        message: AMOUNT_FILTER_RANGE_MESSAGE,
+      });
+      return z.NEVER;
+    }
+    return cents;
+  });
 const sortBySchema = z
   .enum([
     "lastUpdated",
@@ -63,7 +113,7 @@ export const adminPaymentsQuerySchema = z.object({
     value.amountExact === undefined &&
     value.amountMin !== undefined &&
     value.amountMax !== undefined &&
-    moneyStringToCents(value.amountMin) > moneyStringToCents(value.amountMax)
+    value.amountMin > value.amountMax
   ) {
     ctx.addIssue({
       code: "custom",
@@ -120,11 +170,6 @@ type EnrichedPaymentCandidate = PaymentCandidate & {
 
 function jsonResult(body: unknown, init?: ResponseInit): JsonRouteResult {
   return { body, init };
-}
-
-function moneyStringToCents(value: string) {
-  const [dollars, cents = ""] = value.split(".");
-  return Number(dollars) * 100 + Number(cents.padEnd(2, "0"));
 }
 
 function startOfInputDateTime(date: string) {
@@ -243,15 +288,17 @@ export async function listAdminPayments(query: AdminPaymentsQuery): Promise<Json
       where.source = source;
     }
 
-    if (amountExact) {
-      where.amountCents = moneyStringToCents(amountExact);
-    } else if (amountMin || amountMax) {
+    // `!== undefined`, not truthiness: these are cents now, and a deliberate
+    // "$0.00" filter is the falsy value 0 (#2685).
+    if (amountExact !== undefined) {
+      where.amountCents = amountExact;
+    } else if (amountMin !== undefined || amountMax !== undefined) {
       const amountFilter: Prisma.IntFilter = {};
-      if (amountMin) {
-        amountFilter.gte = moneyStringToCents(amountMin);
+      if (amountMin !== undefined) {
+        amountFilter.gte = amountMin;
       }
-      if (amountMax) {
-        amountFilter.lte = moneyStringToCents(amountMax);
+      if (amountMax !== undefined) {
+        amountFilter.lte = amountMax;
       }
       where.amountCents = amountFilter;
     }

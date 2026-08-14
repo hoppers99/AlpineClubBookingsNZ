@@ -11,7 +11,7 @@
  */
 
 import { FinanceMonthlyStatementKind, FinanceSnapshotType } from "@prisma/client";
-import { parseDateOnly } from "@/lib/date-only";
+import { formatMonthOnly, parseDateOnly } from "@/lib/date-only";
 import {
   isMonthKey,
   parseFinanceChartOfAccountsContext,
@@ -89,7 +89,7 @@ function monthKeyToDate(month: string, fieldName: string): Date {
 }
 
 function monthKeyFromDate(month: Date): string {
-  return month.toISOString().slice(0, 7);
+  return formatMonthOnly(month);
 }
 
 function assertReplaceInput(input: ReplaceMonthlyFactsInput): void {

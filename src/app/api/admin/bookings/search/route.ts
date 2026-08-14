@@ -7,6 +7,7 @@ import {
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
 import { z } from "zod";
+import { formatDateOnly } from "@/lib/date-only";
 
 const adminBookingSearchQuerySchema = z.object({
   q: z.string().trim().min(2),
@@ -238,8 +239,8 @@ export async function GET(request: NextRequest) {
         id: booking.id,
         memberName: `${booking.member.firstName} ${booking.member.lastName}`.trim(),
         memberEmail: booking.member.email,
-        checkIn: booking.checkIn.toISOString().split("T")[0],
-        checkOut: booking.checkOut.toISOString().split("T")[0],
+        checkIn: formatDateOnly(booking.checkIn),
+        checkOut: formatDateOnly(booking.checkOut),
         status: booking.status,
         deletedAt: booking.deletedAt?.toISOString() ?? null,
         guestCount: booking._count.guests,

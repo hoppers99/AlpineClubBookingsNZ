@@ -11,7 +11,7 @@ import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { countActiveGuestsForNight } from "@/lib/booking-guest-stay-ranges";
-import { todayDateOnlyForTimeZone } from "@/lib/date-only";
+import { formatDateOnly, todayDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   OPERATIONAL_STAY_BOOKING_STATUSES,
   PAYMENT_OWED_BOOKING_STATUSES,
@@ -23,7 +23,6 @@ import {
   differenceInUtcDays,
   getFinanceBookingMetricsWindowDayCount,
   parseFinanceBookingMetricDate as parseIsoDate,
-  toIsoDate,
 } from "@/lib/finance-booking-metric-calculations";
 
 export const MAX_FINANCE_BOOKING_METRICS_WINDOW_DAYS = 366;
@@ -475,7 +474,7 @@ function normalizeRealizedWindow(
     cutoffDate,
     effectiveFrom: effectiveToDate ? base.from : null,
     effectiveFromDate: effectiveToDate ? base.fromDate : null,
-    effectiveTo: effectiveToDate ? toIsoDate(effectiveToDate) : null,
+    effectiveTo: effectiveToDate ? formatDateOnly(effectiveToDate) : null,
     effectiveToDate,
     dayCount: effectiveToDate
       ? differenceInUtcDays(base.fromDate, addUtcDays(effectiveToDate, 1))
@@ -496,7 +495,7 @@ function normalizeForwardWindow(
   return {
     ...base,
     asOfDate,
-    effectiveFrom: hasEffectiveWindow ? toIsoDate(effectiveFromDate) : null,
+    effectiveFrom: hasEffectiveWindow ? formatDateOnly(effectiveFromDate) : null,
     effectiveFromDate: hasEffectiveWindow ? effectiveFromDate : null,
     effectiveTo: hasEffectiveWindow ? base.to : null,
     effectiveToDate: hasEffectiveWindow ? base.toDate : null,
@@ -834,9 +833,9 @@ function accumulateBookingIntoBucket<Status extends string>(input: {
 
 function getBookingDateRange(booking: BookingMetricsRecord) {
   return {
-    checkInDate: new Date(booking.checkIn.toISOString().slice(0, 10) + "T00:00:00.000Z"),
+    checkInDate: new Date(formatDateOnly(booking.checkIn) + "T00:00:00.000Z"),
     checkOutDate: new Date(
-      booking.checkOut.toISOString().slice(0, 10) + "T00:00:00.000Z"
+      formatDateOnly(booking.checkOut) + "T00:00:00.000Z"
     ),
   };
 }

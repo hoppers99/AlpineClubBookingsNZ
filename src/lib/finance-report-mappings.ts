@@ -23,6 +23,7 @@ import {
 } from "@/lib/finance-pnl-snapshot";
 import { prisma } from "@/lib/prisma";
 import { formatCents } from "@/lib/utils";
+import { formatDateOnly } from "@/lib/date-only";
 
 // test seam
 export const UNMAPPED_FINANCE_CATEGORY_ID = "unmapped";
@@ -189,7 +190,7 @@ function normalizeAccountCode(value: string | null | undefined): string | null {
 }
 
 function dateOnly(date: Date): string {
-  return date.toISOString().slice(0, 10);
+  return formatDateOnly(date);
 }
 
 function parseDateOnlyString(value: string): Date {

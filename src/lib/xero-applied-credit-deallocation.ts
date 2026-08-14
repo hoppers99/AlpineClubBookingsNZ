@@ -21,6 +21,7 @@ import {
   XeroAppliedCreditOperationBusyError,
 } from "./xero-applied-credit-operation-serialization";
 import { repairLegacyAppliedCreditNoteAllocationsForBooking } from "./xero-applied-credit-allocation-repair";
+import { exactProviderAmountToCents } from "@/lib/money-provider-amount";
 
 const APPLIED_CREDIT_ALLOCATION_ROLE = "APPLIED_CREDIT_ALLOCATION";
 const APPLIED_CREDIT_REMAINDER_ALLOCATION_ROLE =
@@ -233,9 +234,10 @@ async function readAffectedLinks(params: {
 }
 
 function centsFromXeroAmount(amount: unknown): number | null {
-  if (typeof amount !== "number" || !Number.isFinite(amount)) return null;
-  const cents = Math.round(amount * 100);
-  return Math.abs(amount * 100 - cents) < 0.0001 ? cents : null;
+  // Sub-cent precision is refused rather than rounded: this reads an allocation
+  // back from Xero to reconcile it, so inventing a cent would manufacture
+  // agreement that does not exist (#2685).
+  return exactProviderAmountToCents(amount);
 }
 
 async function readInvoiceAllocations(

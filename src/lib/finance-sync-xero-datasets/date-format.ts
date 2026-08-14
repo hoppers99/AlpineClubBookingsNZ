@@ -1,5 +1,5 @@
 import { APP_TIME_ZONE } from "@/config/operational";
-import { parseDateOnly } from "@/lib/date-only";
+import { formatDateOnly, parseDateOnly } from "@/lib/date-only";
 
 const FINANCE_SYNC_DATA_TIMEZONE = APP_TIME_ZONE;
 
@@ -52,7 +52,7 @@ export function parseOptionalDateOnly(
     if (Number.isNaN(value.getTime())) {
       return null;
     }
-    const dateOnly = parseDateOnly(value.toISOString().slice(0, 10));
+    const dateOnly = parseDateOnly(formatDateOnly(value));
     return Number.isNaN(dateOnly.getTime()) ? null : dateOnly;
   }
 
@@ -97,10 +97,6 @@ export function toOptionalDate(value: Date | string | null | undefined): Date | 
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-export function toDateOnlyString(value: Date | null): string | null {
-  return value ? value.toISOString().slice(0, 10) : null;
-}
-
 export function toOptionalText(value: unknown): string | null {
   if (value === null || value === undefined) {
     return null;
@@ -120,7 +116,7 @@ export function toOptionalDateOnlyText(value: unknown): string | null {
   }
 
   if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : toDateOnlyString(value);
+    return Number.isNaN(value.getTime()) ? null : formatDateOnly(value);
   }
 
   if (typeof value === "string") {

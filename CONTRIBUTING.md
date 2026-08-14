@@ -31,8 +31,44 @@ the full environment and club config contract.
 - Read the Next.js versioned docs in `node_modules/next/dist/docs/` before
   changing framework APIs.
 - Keep money values in integer cents.
+- Build those cents at one of two boundaries, never inline (#2685). An amount a
+  PERSON typed goes through `parseDecimalDollarsToCents` in
+  `src/lib/money-input.ts` (or `parseSignedDecimalDollarsToCents` where a
+  negative is a real amount), which reads the digit groups as integers rather
+  than scaling a decimal through a double. It returns `null` for anything
+  outside the grammar, and that `null` must reach the person as a visible
+  validation error — never a substituted `0`, a `null` payload field, or a
+  silently retained previous value. An amount an accounting provider has already
+  parsed into a number, such as a Xero API amount, has no decimal text left to
+  read, so it goes through `providerAmountToCents` in
+  `src/lib/money-provider-amount.ts` instead; its `Math.round(value * 100)` is
+  frozen, because that is what live reconciliation computes. Lint and
+  `src/lib/__tests__/money-cents-guard.test.ts` enforce this over non-test code
+  in `src/`, `scripts/` and `prisma/`. The rule matches the composition, not
+  `parseFloat` by name, so percentages and `Math.round(n * 100) / 100` rounding
+  stay legal. A site that genuinely needs an exemption is added to the exported
+  `MONEY_GUARD_EXEMPTIONS` array in `eslint.config.mjs` with a written reason —
+  never an `eslint-disable`. That array is the list the guard test READS, so
+  adding an entry is a move that passes CI rather than one that trades a lint
+  failure for a test failure.
 - Keep booking dates as New Zealand date-only values unless a feature explicitly
   requires time-of-day semantics.
+- Never hand-write a date-only encoding. `formatDateOnly`, `formatMonthOnly` and
+  `dateOnlyFromIsoString` in `src/lib/date-only.ts` are the only place in `src/`
+  that may write `toISOString().slice(0, 10)`, and an `eslint` rule refuses the
+  spellings it names across `src/`, `scripts/` and `prisma/` (#2684) — the ISO
+  cut in every `slice`/`substring`/`substr`/`replace` form, `.split("T")` taken
+  with `[0]`, `.at(0)` or `.shift()`, the same cut assembled through a local, and
+  a date key built from `getUTCFullYear()`-style parts. It reads syntax, so it is
+  a guard rather than a sandbox: `eslint.config.mjs` lists beside the rule both
+  what it catches and the forms that still get past it. Pick the helper that
+  matches what the value MEANS: `formatDateOnly` for a `@db.Date` calendar day
+  (INV-DATE-010), `formatDateOnlyForTimeZone` for a real instant such as
+  `createdAt`, whose UTC day is the previous New Zealand day all morning, and
+  `todayDateOnlyForTimeZone` / `getTodayDateOnly` for "today" (INV-DATE-019).
+  Do not wrap an encoder in an exported one-line rename, and do not rebuild the
+  truncation inside a helper of your own — that is how a whole class of these
+  went unaudited, and `date-only-encoding-guard.test.ts` refuses both.
 - Keep external payment, accounting, and email calls outside long database
   transactions where possible.
 - Never type a raw-SQL result and read it. `$queryRaw<SomeRow[]>` is an

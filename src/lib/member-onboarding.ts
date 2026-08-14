@@ -8,6 +8,7 @@ import {
   type AccessRoleAssignmentInput,
 } from "@/lib/access-roles";
 import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
+import { formatDateOnly } from "@/lib/date-only";
 
 const PARENT_LINK_SELECT = {
   id: true,
@@ -114,7 +115,7 @@ function toDateInputValue(value: Date | string | null | undefined) {
   if (value instanceof Date) {
     return Number.isNaN(value.getTime())
       ? ""
-      : value.toISOString().substring(0, 10);
+      : formatDateOnly(value);
   }
 
   return value.substring(0, 10);

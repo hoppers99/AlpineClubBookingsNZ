@@ -856,8 +856,8 @@ export default async function BookingDetailPage({
   });
   const editorData: BookingEditorData = {
     id: booking.id,
-    checkIn: new Date(booking.checkIn).toISOString().split("T")[0],
-    checkOut: new Date(booking.checkOut).toISOString().split("T")[0],
+    checkIn: formatDateOnly(new Date(booking.checkIn)),
+    checkOut: formatDateOnly(new Date(booking.checkOut)),
     nights,
     status: booking.status,
     guests: booking.guests.map((g) => ({
@@ -867,10 +867,10 @@ export default async function BookingDetailPage({
       ageTier: g.ageTier,
       isMember: g.isMember,
       memberId: g.memberId,
-      stayStart: g.stayStart.toISOString().slice(0, 10),
-      stayEnd: g.stayEnd.toISOString().slice(0, 10),
+      stayStart: formatDateOnly(g.stayStart),
+      stayEnd: formatDateOnly(g.stayEnd),
       priceCents: g.priceCents,
-      nights: g.nights.map((n) => n.stayDate.toISOString().slice(0, 10)),
+      nights: g.nights.map((n) => formatDateOnly(n.stayDate)),
       // #2307 (MG2-M-2): null for family and non-member rows — no badge, no
       // layout change. A conditional spread so those rows' serialised payload
       // carries no `consent` key at all (React Flight serialises the key too).
@@ -953,8 +953,10 @@ export default async function BookingDetailPage({
       // This is the member (non-override) policy, so mode is never
       // "admin-override" here; the ternary only narrows the widened union.
       mode: editPolicy.mode === "admin-override" ? null : editPolicy.mode,
-      today: editPolicy.today.toISOString().slice(0, 10),
-      editableFrom: editPolicy.editableFrom?.toISOString().slice(0, 10) ?? null,
+      today: formatDateOnly(editPolicy.today),
+      editableFrom: editPolicy.editableFrom
+        ? formatDateOnly(editPolicy.editableFrom)
+        : null,
       checkInEditable: editPolicy.checkInEditable,
       adminOverrideAvailable: canAdminOverride,
     },
@@ -1025,13 +1027,13 @@ export default async function BookingDetailPage({
   // above which is PENDING-only because it gates the guest-payment-link route.
   // #796 group joiners (which carry a join row) stay excluded — the organiser
   // group card presents them. Dates are compared as date-only NZ lodge nights.
-  const parentCheckInDate = booking.checkIn.toISOString().split("T")[0];
-  const parentCheckOutDate = booking.checkOut.toISOString().split("T")[0];
+  const parentCheckInDate = formatDateOnly(booking.checkIn);
+  const parentCheckOutDate = formatDateOnly(booking.checkOut);
   const nonMemberGuestChildren: NonMemberGuestChild[] = booking.linkedBookings
     .filter((linked) => linked.hasNonMembers && !linked.groupBookingJoin)
     .map((linked) => {
-      const childCheckIn = linked.checkIn.toISOString().split("T")[0];
-      const childCheckOut = linked.checkOut.toISOString().split("T")[0];
+      const childCheckIn = formatDateOnly(linked.checkIn);
+      const childCheckOut = formatDateOnly(linked.checkOut);
       return {
         id: linked.id,
         status: linked.status,

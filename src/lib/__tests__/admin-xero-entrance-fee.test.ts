@@ -66,17 +66,42 @@ describe("buildXeroEntranceFeeInvoiceOptions", () => {
       expect(result.entranceFeeInvoiceAmountCents).toBe(15050);
     });
 
-    it("rounds half-cents away from zero", () => {
-      const result = buildXeroEntranceFeeInvoiceOptions({
-        createEntranceFeeInvoice: true,
-        skipReason: "",
-        amount: "10.005",
-        narration: "",
-      });
-      // Math.round behaviour: 10.005 * 100 = 1000.4999..., rounds to 1000
-      // but representative behaviour - just check it stays an integer
-      expect(Number.isInteger(result.entranceFeeInvoiceAmountCents)).toBe(true);
+    /*
+      #2685 — this used to assert only that an over-precise amount stayed an
+      INTEGER, with a comment noting that `10.005 * 100` is 1000.4999… and
+      therefore rounds DOWN to $10.00. That pinned the defect as acceptable: the
+      operator typed three decimal places and the form quietly picked a cent for
+      them, in the less generous direction, on a joining-fee invoice.
+
+      The owner's decision (9 Aug 2026) is that unsupported precision in a typed
+      amount is refused with a message the operator can act on, never coerced.
+      The joining fee is a member's money and an accounting document, so guessing
+      is the wrong answer even when the guess is only a cent.
+    */
+    it("refuses an amount with unsupported precision rather than picking a cent", () => {
+      expect(() =>
+        buildXeroEntranceFeeInvoiceOptions({
+          createEntranceFeeInvoice: true,
+          skipReason: "",
+          amount: "10.005",
+          narration: "",
+        }),
+      ).toThrow(/Enter a valid joining fee amount/);
     });
+
+    it.each(["10abc", "1,000.00", "$10.00", "1e2", "10.00.00", "-10.00"])(
+      "refuses the malformed amount %s",
+      (amount) => {
+        expect(() =>
+          buildXeroEntranceFeeInvoiceOptions({
+            createEntranceFeeInvoice: true,
+            skipReason: "",
+            amount,
+            narration: "",
+          }),
+        ).toThrow(/Enter a valid joining fee amount/);
+      },
+    );
 
     it("rejects zero amounts", () => {
       expect(() =>

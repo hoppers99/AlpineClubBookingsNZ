@@ -1274,7 +1274,7 @@ function getCapacityFullNights(
 ): string[] {
   return nightDetails
     .filter((night) => night.availableBeds < 0)
-    .map((night) => night.date.toISOString().split("T")[0]);
+    .map((night) => formatDateOnly(night.date));
 }
 
 // test seam

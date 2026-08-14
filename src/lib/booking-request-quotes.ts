@@ -60,6 +60,7 @@ import { resolveGuestRateMembershipTypes } from "@/lib/membership-type-policy";
 import { prisma } from "@/lib/prisma";
 import { approveSchoolBookingRequest } from "@/lib/school-booking-request";
 import { getSeasonYear } from "@/lib/utils";
+import { formatDateOnly } from "@/lib/date-only";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -1223,7 +1224,7 @@ function getCapacityFullNights(
 ): string[] {
   return nightDetails
     .filter((night) => night.availableBeds < 0)
-    .map((night) => night.date.toISOString().split("T")[0]);
+    .map((night) => formatDateOnly(night.date));
 }
 
 export async function holdBookingRequestSlots(input: {

@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
+import { parseDecimalDollarsToCents } from "@/lib/money-input";
 import {
   JoiningFeePreviewHint,
   useJoiningFeePrefill,
@@ -313,14 +314,16 @@ export default function ApprovalMappingPanel({
     const amountText = effectiveFee.amount.trim();
     let amountCents: number | undefined;
     if (amountText) {
-      const parsedAmount = Number(amountText);
-      amountCents = Math.round(parsedAmount * 100);
-      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0 || amountCents <= 0) {
+      // #2685: the exact parser, so "12.345" and "12abc" are REFUSED here rather
+      // than silently rounded or truncated into a joining-fee invoice.
+      const parsedCents = parseDecimalDollarsToCents(amountText);
+      if (parsedCents === null || parsedCents <= 0) {
         onError(
           "Enter a valid joining fee amount, or leave it blank to use the configured amount.",
         );
         return { ok: false };
       }
+      amountCents = parsedCents;
     }
     return {
       ok: true,

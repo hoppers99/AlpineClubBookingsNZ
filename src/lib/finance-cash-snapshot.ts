@@ -1,5 +1,6 @@
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/utils";
+import { parseProviderReportAmountToCents } from "@/lib/money-provider-amount";
 
 /**
  * Parser for stored BANK_BALANCES finance snapshots. The dashboard's
@@ -249,7 +250,7 @@ function readRowLabel(row: FinanceSnapshotReportRow) {
 
 function readRowAmountCents(row: FinanceSnapshotReportRow) {
   for (const cell of [...row.cells].reverse()) {
-    const amountCents = parseFinanceAmountToCents(cell.value);
+    const amountCents = parseProviderReportAmountToCents(cell.value);
 
     if (amountCents !== null) {
       return amountCents;
@@ -257,31 +258,6 @@ function readRowAmountCents(row: FinanceSnapshotReportRow) {
   }
 
   return null;
-}
-
-function parseFinanceAmountToCents(value: string | null) {
-  if (!value) {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const isBracketNegative =
-    trimmed.startsWith("(") && trimmed.endsWith(")") && trimmed.length > 2;
-  const normalized = (isBracketNegative ? trimmed.slice(1, -1) : trimmed).replace(
-    /,/g,
-    ""
-  );
-  const parsed = Number.parseFloat(normalized);
-
-  if (!Number.isFinite(parsed)) {
-    return null;
-  }
-
-  return Math.round((isBracketNegative ? parsed * -1 : parsed) * 100);
 }
 
 function formatSnapshotWindow(periodStart: Date | null, periodEnd: Date | null) {

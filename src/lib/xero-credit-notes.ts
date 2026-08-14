@@ -43,11 +43,8 @@ import {
   retryXeroWriteWithContactRepair,
   type FindOrCreateXeroContactOptions,
 } from "./xero-contacts";
-import { formatDateOnlyForTimeZone } from "@/lib/date-only";
-import {
-  buildSyntheticAllocationId,
-  formatDate,
-} from "./xero-invoice-helpers";
+import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
+import { buildSyntheticAllocationId } from "./xero-invoice-helpers";
 import {
   buildRefundCreditNotePayment,
   REFUND_CREDIT_NOTE_ALLOCATION_SKIP_REASON,
@@ -247,7 +244,7 @@ export async function createXeroCreditNote(
   const accountCode = refundMapping.code ?? "200";
 
   const refundLineItem: LineItem = {
-    description: `Refund for booking ${payment.booking.id.slice(0, 8)} (${formatDate(new Date(payment.booking.checkIn))} - ${formatDate(new Date(payment.booking.checkOut))})`,
+    description: `Refund for booking ${payment.booking.id.slice(0, 8)} (${formatDateOnly(new Date(payment.booking.checkIn))} - ${formatDateOnly(new Date(payment.booking.checkOut))})`,
     quantity: 1,
     unitAmount: effectiveRefundAmountCents / 100,
     taxType: "OUTPUT2",
@@ -634,7 +631,7 @@ export async function createUnappliedXeroCreditNote(
   const creditLineItem: LineItem = {
     description: bookingModificationId
       ? `Account credit from booking modification ${bookingModificationId.slice(0, 8)} (Booking ${payment.booking.id.slice(0, 8)})`
-      : `Account credit from booking ${payment.booking.id.slice(0, 8)} (${formatDate(new Date(payment.booking.checkIn))} - ${formatDate(new Date(payment.booking.checkOut))})`,
+      : `Account credit from booking ${payment.booking.id.slice(0, 8)} (${formatDateOnly(new Date(payment.booking.checkIn))} - ${formatDateOnly(new Date(payment.booking.checkOut))})`,
     quantity: 1,
     unitAmount: refundAmountCents / 100,
     taxType: "OUTPUT2",

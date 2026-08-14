@@ -8,58 +8,34 @@
  * other just for date / allocation helpers.
  */
 
-import { formatDateOnlyForTimeZone } from "@/lib/date-only";
+import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
 import { buildXeroIdempotencyKey } from "@/lib/xero-sync";
 
 /**
- * Read a **date-only** value back as the calendar day it encodes.
+ * This module used to export a `formatDate` wrapper that spelled out
+ * `date.toISOString().split("T")[0]` a second time. #2834 documented it as
+ * correct for a `@db.Date` receiver, which it was — but a second copy of the
+ * truncation, under a name no date census recognises, is exactly what let a
+ * whole class of instant defects hide: eleven modules imported it, so twenty
+ * Xero document dates reached the forbidden pattern one indirection away from
+ * the spelling anyone was searching for, and neither #2682's sweep nor the
+ * regex census in `nz-today-date-only.test.tsx` could see them.
  *
- * This is UTC truncation, so it is correct ONLY for a receiver that is already an
- * abstract calendar day pinned to UTC midnight — a `@db.Date` column, or a value
- * derived from one (INV-DATE-010).
- *
- * It is NOT correct for a real instant. Passing a `DateTime` — `createdAt`,
- * `updatedAt`, or `new Date()` — yields the UTC calendar day, which for roughly
- * the first half of every New Zealand day is the day before the club's
- * (INV-DATE-019). A calendar date derived from an instant belongs in
- * `formatDateOnlyForTimeZone` instead.
- *
- * This wrapper is the reason that whole class stayed invisible: it hid
- * `toISOString().split("T")[0]` from the regex census in
- * `nz-today-date-only.test.tsx` and from MAD-A2 #2682's sweep, so twenty Xero
- * document dates reached the forbidden pattern one indirection away from the
- * spelling anyone was looking for. #2697 closed the two `Booking.createdAt`
- * consumers and #2834 closed the rest.
- *
- * **Every remaining caller passes either a `@db.Date` receiver or a date-only
- * value read back off a Xero document.** The second class is one site,
- * `normalizeXeroDateOnly` in `src/lib/xero-subscription-invoices.ts`, and it
- * must NOT be zone-converted. What it receives is whatever the Xero SDK
- * deserialised from a document Xero already holds as a plain calendar date; a
- * `Date` there is that calendar date at midnight, so truncation reads it back
- * and zone conversion would move it. Moving it would change
- * `invoiceDueIntervalDays`, hence `subscriptionInvoiceMatchesSnapshot`, hence
- * whether a pre-existing invoice is adopted — the charge would flip to
- * `CONFLICT`/`PROVIDER_MISMATCH` and the member would be left unbilled.
- *
- * So the rule is about the VALUE, not the shape: if you are about to pass this
- * an instant — `createdAt`, `updatedAt`, `new Date()` — you want
- * `formatDateOnlyForTimeZone`. If you are handing it a calendar day that
- * something else already decided, truncation is the correct read.
+ * The encoding now lives once, in `formatDateOnly` (INV-DATE-010), and the
+ * callers name it directly. Nothing about the dates changed: `formatDate` was a
+ * character-for-character duplicate of that helper.
  */
-export function formatDate(date: Date): string {
-  return date.toISOString().split("T")[0];
-}
 
 /**
  * The invoice's issue date is the booking's check-in, which is a `@db.Date`
  * lodge night — an abstract calendar day already pinned to UTC midnight, not an
- * instant. Truncating it reads back the day it encodes (INV-DATE-010).
+ * instant. Reading it back as a date-only value yields the day it encodes
+ * (INV-DATE-010).
  */
 export function getBookingInvoiceIssueDate(booking: {
   checkIn: Date | string;
 }): string {
-  return formatDate(new Date(booking.checkIn));
+  return formatDateOnly(new Date(booking.checkIn));
 }
 
 /**

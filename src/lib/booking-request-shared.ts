@@ -40,6 +40,7 @@ import {
 import { getStayNights } from "@/lib/policies/pricing";
 import { prisma } from "@/lib/prisma";
 import { getSeasonYear } from "@/lib/utils";
+import { formatDateOnly } from "@/lib/date-only";
 
 /** A held booking's owner failed re-validation and a fresh contact was
  * substituted at conversion (issue #1255 residual-risk decision 1). */
@@ -174,7 +175,7 @@ export function getCapacityFullNights(
 ): string[] {
   return nightDetails
     .filter((night) => night.availableBeds < 0)
-    .map((night) => night.date.toISOString().split("T")[0]);
+    .map((night) => formatDateOnly(night.date));
 }
 
 /**

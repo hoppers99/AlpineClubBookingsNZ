@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { parseSignedDecimalDollarsToCents } from "@/lib/money-input";
 import type {
   CreditHistoryItem,
   PendingCreditAdjustmentItem,
@@ -48,8 +49,21 @@ export function useMemberCredits(id: string) {
   };
 
   const handleAdjustmentSubmit = async () => {
-    const cents = Math.round(parseFloat(adjustmentAmount) * 100);
-    if (isNaN(cents) || cents === 0) {
+    /*
+      #2685: the exact parser, and the SIGNED one — a credit adjustment can be a
+      debit, so "-25.00" is a real amount here. `parseFloat` used to accept a
+      malformed entry like "25x" as $25.00 and turn anything it could not read
+      at all into a bare "Enter a non-zero amount", which reads as though the
+      admin typed a zero rather than a typo.
+    */
+    const cents = parseSignedDecimalDollarsToCents(adjustmentAmount);
+    if (cents === null) {
+      setAdjustmentError(
+        "Enter an amount in dollars and cents, for example 25.00 (or -25.00 to take credit away)",
+      );
+      return;
+    }
+    if (cents === 0) {
       setAdjustmentError("Enter a non-zero amount");
       return;
     }

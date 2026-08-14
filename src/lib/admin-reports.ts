@@ -23,7 +23,7 @@ import {
   getGuestStayStart,
   type GuestStayRange,
 } from "@/lib/booking-guest-stay-ranges";
-import { formatDateOnlyForTimeZone } from "@/lib/date-only";
+import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
 
 export type RevenueGranularity = "daily" | "weekly" | "monthly";
 
@@ -358,7 +358,7 @@ function toDateKey(value: Date): string {
 }
 
 function toUtcDateOnly(value: Date): Date {
-  return parseFinanceBookingMetricDate(value.toISOString().slice(0, 10), "date");
+  return parseFinanceBookingMetricDate(formatDateOnly(value), "date");
 }
 
 function minDate(left: Date, right: Date): Date {

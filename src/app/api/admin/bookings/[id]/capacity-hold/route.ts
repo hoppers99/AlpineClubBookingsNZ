@@ -13,6 +13,7 @@ import { bookingHoldsCapacity } from "@/lib/booking-status";
 import { createAuditLog, getAuditRequestContext } from "@/lib/audit";
 import logger from "@/lib/logger";
 import { z } from "zod";
+import { formatDateOnly } from "@/lib/date-only";
 
 const capacityHoldSchema = z.object({
   allowOverbook: z.boolean().optional(),
@@ -22,7 +23,7 @@ function getOverbookedNights(nightDetails: NightAvailability[]) {
   return nightDetails
     .filter((night) => night.availableBeds < 0)
     .map((night) => ({
-      date: night.date.toISOString().slice(0, 10),
+      date: formatDateOnly(night.date),
       availableBeds: night.availableBeds,
     }));
 }

@@ -68,6 +68,7 @@ import {
   type QueuedOutboxExpectedOperation,
   type QueuedOutboxPayload,
 } from "@/lib/xero-operation-outbox-payload";
+import { formatDateOnly } from "@/lib/date-only";
 
 /**
  * Was this operation REFUSED by a process-global Xero cooldown BEFORE any HTTP
@@ -650,8 +651,8 @@ export async function enqueueXeroBookingInvoiceUpdateOperation(
     bookingId,
     "invoice-update",
     booking.payment.xeroInvoiceId,
-    booking.checkIn.toISOString().slice(0, 10),
-    booking.checkOut.toISOString().slice(0, 10),
+    formatDateOnly(booking.checkIn),
+    formatDateOnly(booking.checkOut),
     "v1"
   );
 

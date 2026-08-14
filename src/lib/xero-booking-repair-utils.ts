@@ -7,6 +7,7 @@ import {
   XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE,
   readQueueType,
 } from "@/lib/xero-operation-outbox-payload";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 
 export function makeLocalKey(localModel: string, localId: string) {
   return `${localModel}:${localId}`;
@@ -65,10 +66,6 @@ export function toIsoDate(value: Date) {
   return value.toISOString();
 }
 
-export function toDateOnly(value: Date) {
-  return value.toISOString().slice(0, 10);
-}
-
 export function readJsonRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -90,8 +87,7 @@ function readJsonArray(value: unknown): unknown[] {
 }
 
 function dollarsToCents(value: unknown): number | null {
-  const amount = readJsonNumber(value);
-  return amount === null ? null : Math.round(amount * 100);
+  return providerAmountToCents(readJsonNumber(value));
 }
 
 function readLineItemTotalCents(lineItems: unknown): number | null {

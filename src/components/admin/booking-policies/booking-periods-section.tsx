@@ -25,7 +25,7 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
-import { parseDateOnly } from "@/lib/date-only"
+import { dateOnlyFromIsoString, parseDateOnly } from "@/lib/date-only"
 import { formatNZDate } from "@/lib/nzst-date"
 import type { BookingPeriod, PolicyRule } from "./types"
 
@@ -38,7 +38,7 @@ import type { BookingPeriod, PolicyRule } from "./types"
  * value from throwing out of `Intl` and taking the whole panel down.
  */
 function formatPeriodDate(value: string): string {
-  const parsed = parseDateOnly(value.split("T")[0])
+  const parsed = parseDateOnly(dateOnlyFromIsoString(value))
   return Number.isNaN(parsed.getTime()) ? value : formatNZDate(parsed)
 }
 
@@ -82,8 +82,8 @@ const NEW_PERIOD_DRAFT: PeriodDraft = {
 function toDraft(period: BookingPeriod): PeriodDraft {
   return {
     name: period.name,
-    startDate: period.startDate.split("T")[0],
-    endDate: period.endDate.split("T")[0],
+    startDate: dateOnlyFromIsoString(period.startDate),
+    endDate: dateOnlyFromIsoString(period.endDate),
     holdEnabled: period.nonMemberHoldEnabled ?? true,
     holdDays: period.nonMemberHoldDays,
     rules: period.cancellationRules.map((rule) => normalizeCancellationRule(rule)),
@@ -138,6 +138,9 @@ function PeriodForm({
   })
 
   const { draft, saving, dirty, valid, error } = section
+  // #2685: a fixed-fee box holding something that is not an amount blocks Save,
+  // because the draft still carries the previous cents for that field.
+  const [hasInvalidRuleAmounts, setHasInvalidRuleAmounts] = useState(false)
 
   // The hook owns the save-failure message; this section presents every message
   // in one place above the list, so mirror it up rather than rendering twice.
@@ -224,6 +227,7 @@ function PeriodForm({
           <CancellationRulesEditor
             rules={draft.rules}
             onChange={(rules) => section.setDraft({ rules })}
+            onInvalidAmountsChange={setHasInvalidRuleAmounts}
           />
         </div>
 
@@ -237,7 +241,7 @@ function PeriodForm({
             canEdit={canEdit}
             describeReason={false}
             onClick={() => void section.save()}
-            disabled={saving || !valid || !dirty}
+            disabled={saving || !valid || !dirty || hasInvalidRuleAmounts}
           >
             {saving ? "Saving..." : periodId ? "Update Period" : "Create Period"}
           </ViewOnlyActionButton>

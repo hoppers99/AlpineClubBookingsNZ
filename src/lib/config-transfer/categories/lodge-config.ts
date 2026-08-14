@@ -24,6 +24,7 @@ import {
   type ReadDb,
 } from "../import-types";
 import { RowValidator, asStr, coerceBool, nz, readCsvRows } from "../values";
+import { formatDateOnly } from "@/lib/date-only";
 
 // lodge-config category (part 1): lodges + their rooms + beds + seasons + rates
 // — the structural "multi-lodge" core. Each lodge is a self-contained folder,
@@ -151,7 +152,7 @@ export function folderLodgeSlug(
 
 /** date-only (@db.Date): serialise as YYYY-MM-DD. */
 function toDateStr(value: Date | null | undefined): string {
-  return value ? new Date(value).toISOString().slice(0, 10) : "";
+  return value ? formatDateOnly(new Date(value)) : "";
 }
 
 function asNullableStr(value: unknown): string | null {

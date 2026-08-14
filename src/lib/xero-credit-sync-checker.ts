@@ -76,6 +76,7 @@ import logger from "@/lib/logger";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { callXeroApi, getAuthenticatedXeroClient } from "./xero-api-client";
 import { sendAdminCreditSyncDriftAlert } from "@/lib/email";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 import type {
   CreditSyncDriftItemEmail,
   CreditSyncDriftReportEmail,
@@ -153,10 +154,7 @@ export interface XeroCreditSyncCheckerDeps {
 }
 
 function toFiniteCents(value: number | null | undefined): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return null;
-  }
-  return Math.round(value * 100);
+  return providerAmountToCents(value);
 }
 
 /**
