@@ -116,7 +116,7 @@ export default async function AuthenticatedLayout({
   // and ran this whole window a day behind.
   //
   // That decided which LINKS the nav bar offered, never what the member could
-  // do: `getKioskAccessTier` (`src/lib/kiosk-access.ts:31-77`) is the gate on
+  // do: `getKioskAccessTier` (`src/lib/kiosk-access.ts:31-81`) is the gate on
   // `/lodge/kiosk` and already asked the club's calendar for the same
   // `[checkIn-1, checkOut]`. So the day-before nav link was missing while the
   // access behind it worked, and the day-after link was dead.

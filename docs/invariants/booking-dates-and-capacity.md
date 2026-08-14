@@ -384,7 +384,7 @@ derivation).
   **What #2838 changed on those surfaces is which LINKS a member is shown, not
   what they are allowed to do**, and that distinction is the whole risk
   assessment. Lodge access itself is decided by `getKioskAccessTier`
-  (`src/lib/kiosk-access.ts:31-77`), which derives the day from
+  (`src/lib/kiosk-access.ts:31-81`), which derives the day from
   `getTodayDateOnly()` and already implemented `[checkIn-1, checkOut]` for a stay
   (`:71-73`) and `[startDate-1, endDate]` for a hut-leader assignment (`:46-47`);
   every `/api/lodge/*` route enforces it, `src/lib/lodge-auth.ts` re-derives the

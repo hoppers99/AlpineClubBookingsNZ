@@ -11,7 +11,7 @@
  * ## These decide which LINKS appear, not who may do what
  *
  * Both cards link to `/lodge/kiosk`, and the gate there is `getKioskAccessTier`
- * (`src/lib/kiosk-access.ts:31-77`), which asks `getTodayDateOnly()` and already
+ * (`src/lib/kiosk-access.ts:31-81`), which asks `getTodayDateOnly()` and already
  * implemented the same `[checkIn-1, checkOut]` (`:71-73`) and
  * `[startDate-1, endDate]` (`:46-47`). That is the independent confirmation that
  * the windows asserted below are the INTENDED rule. It also bounds the defect:

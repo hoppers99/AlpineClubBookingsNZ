@@ -155,7 +155,7 @@ export default async function DashboardPage() {
   // so every window below ran a full day behind.
   //
   // WHAT THAT COST WAS VISIBILITY, NOT PERMISSION. `getKioskAccessTier`
-  // (`src/lib/kiosk-access.ts:31-77`) is the authority on lodge access, derives
+  // (`src/lib/kiosk-access.ts:31-81`) is the authority on lodge access, derives
   // its day from `getTodayDateOnly()`, and already implemented
   // `[checkIn-1, checkOut]` and `[startDate-1, endDate]`; every `/api/lodge/*`
   // route enforces it, and both buttons below just link to `/lodge/kiosk`. So on

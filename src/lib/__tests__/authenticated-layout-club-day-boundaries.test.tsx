@@ -7,7 +7,7 @@
  * the day-before offer is deliberate, not incidental.
  *
  * The flag is a link, not a permission. `/lodge/kiosk` is gated by
- * `getKioskAccessTier` (`src/lib/kiosk-access.ts:31-77`), which asks the club's
+ * `getKioskAccessTier` (`src/lib/kiosk-access.ts:31-81`), which asks the club's
  * calendar and already implemented the same `[checkIn-1, checkOut]` (`:71-73`).
  * So the day-before link was missing while the access behind it worked, and the
  * day-after link was dead.
