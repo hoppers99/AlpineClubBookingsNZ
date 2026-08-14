@@ -103,7 +103,7 @@ four are load-bearing; none is inert.
 | `sharp` (`$sharp`) | **Security.** Removing it lets `next` nest `sharp@0.34.5`, which carries two high-severity advisories. Forces every copy onto the `^0.35.3` declared in `dependencies`. Added in `83b25035d`. | `next` requires sharp 0.35.3 or later. |
 | `postcss` (`^8.5.26`) | **Security.** `next` requires postcss at **exactly `8.4.31`**, which carries four advisories including a high. An exact upstream pin cannot be lifted by drift, so this override is the only thing keeping the nested copy safe. | `next` moves its own postcss pin to 8.5.26 or later. |
 | `next-auth` → `nodemailer` (`$nodemailer`) | **Resolution.** `next-auth@5.0.0-beta.32` declares `peerOptional nodemailer@"^7.0.7 \|\| ^8.0.5"`, which conflicts with the `^9.0.1` in `dependencies`; without the override `npm install` fails outright with `ERESOLVE`. Added in `8f366a08c` (#1182). | `next-auth` widens its peer range to admit nodemailer 9. |
-| `eslint-plugin-react-hooks` | **Compatibility hold**, not security — `b1989558f` reads "hold eslint-plugin-react-hooks at 7.0.1". Currently non-binding, since natural resolution lands on the pinned version anyway. | The hold is reviewed and lifted on purpose. |
+| `eslint-plugin-react-hooks` | **Compatibility hold**, not security — `b1989558f` introduced it as "hold eslint-plugin-react-hooks at 7.0.1", and it has since been stepped forward to 7.1.1. Currently non-binding: natural resolution lands on 7.1.1 with or without it. | The hold is reviewed and lifted on purpose. |
 
 ### Checking whether an override still earns its place
 
@@ -112,18 +112,31 @@ touched. Strip the candidate entries in a scratch copy — never in the worktree
 regenerate, and audit:
 
 ```bash
-cp package.json package-lock.json /tmp/ovcheck/ && cd /tmp/ovcheck
-# remove the override(s) under test from package.json, then:
+mkdir -p /tmp/ovcheck && cp package.json package-lock.json /tmp/ovcheck/
+cd /tmp/ovcheck && cp package-lock.json lock-before.json
+
+# remove the override(s) under test from package.json, then re-resolve from
+# scratch — deleting the lockfile is what forces npm to answer "where would
+# this land on its own?" rather than preserving what is already pinned.
 rm package-lock.json
 npm install --package-lock-only --ignore-scripts --no-audit
 npm audit --package-lock-only --audit-level=high
 ```
 
 Anything the audit reports is still load-bearing and stays. Anything it does not
-report has been fixed upstream and the override should go. Compare resolved
-versions between the two lockfiles as well: an override that resolves to a
-*lower* version when removed is doing real work, while one that resolves to the
-same or a higher version is either inert or actively holding the package back.
+report has been fixed upstream and the override should go.
+
+Compare `lock-before.json` against the regenerated lockfile as well, because the
+audit alone does not distinguish an inert override from a harmful one. An entry
+that resolves to a **lower** version once removed is doing real work; one that
+resolves to the **same** version is inert; one that resolves **higher** was
+actively holding the package back.
+
+Two cautions. `npm audit` reflects today's advisory database, so this measures
+whether upstream has caught up as of now, not for all time. And an override may
+exist for a non-security reason that no audit can see — check `git log -S` for
+the entry before removing it, as a hold or a peer-conflict fix will look inert
+to this procedure while still being load-bearing.
 
 ## Supply-Chain And Deployment Security Policy
 
