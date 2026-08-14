@@ -29,6 +29,16 @@ The multi-lodge migration split what used to be one club-wide lock into two
 tiers. **Getting the tier — and the acquisition order — wrong re-opens the exact
 money/capacity races the locks exist to prevent.**
 
+**The rule itself has one home, and it is not this page.** `INV-LOCK-001` (which
+tier a writer takes), `INV-LOCK-002` (global before per-lodge, and the single
+mint of the per-lodge key) and `INV-LOCK-003` (every Tier-2 site is registered
+with its own reason) state it, in
+[`docs/invariants/operations.md`](invariants/operations.md); cite those ids in a
+review, a guard message or an issue. What follows describes the two tiers
+concretely — which writers sit in which cohort, and why — and must not be edited
+into a second, competing statement of the rule. If this section and an
+`INV-LOCK-*` id ever disagree, the id is the rule and this section is the defect.
+
 ### Tier 1 — per-lodge capacity claims
 
 `acquireLodgeCapacityLock(tx, lodgeId)` (`capacity.ts`) serialises **bed/capacity
@@ -54,6 +64,13 @@ one documented exception** — it is a bed-allocation writer that takes the lodg
 tier and deliberately not this key, because it runs on a 120s budget; see "Merge
 joins the bed-allocation cohort" (#2595).
 
+Each of these call sites is registered individually — its stable identity, its
+tier, and the counterpart or race that makes the narrow tier insufficient — in
+`GLOBAL_LOCK_SITE_REGISTRY` (`src/lib/__tests__/advisory-lock-guard.test.ts`).
+That registry is the single home for a site-specific reason; a new Tier-2 site
+fails CI by name until one is written, and a registration that no longer matches
+a live site fails as stale rather than approving nothing (`INV-LOCK-003`).
+
 ### A writer that does BOTH takes BOTH — global first
 
 Many writers do both tiers at once: a Stripe capture claims capacity **and**
@@ -66,7 +83,7 @@ quote-accept flips booking status **and** holds a bed. Every such writer:
 The global-before-per-lodge order is fixed everywhere so composing the two can
 never deadlock. Writers that compose several *same-family* locks (multiple
 per-lodge locks, or multiple per-member locks) acquire them in **sorted key
-order** for the same reason.
+order** for the same reason. (`INV-LOCK-002`.)
 
 ### Status-guarded claims (defense in depth)
 
@@ -2970,12 +2987,14 @@ excuse the invoice again.
 - **Adding a capacity claim?** Take `acquireLodgeCapacityLock(tx, lodgeId)` on
   the booking's own lodge and follow read-key → lock → re-read. If the same
   transaction also performs a global-cohort lifecycle or settlement-money
-  transition, take `lock(1)` FIRST.
+  transition, take `lock(1)` FIRST (`INV-LOCK-002`).
 - **Adding a global-cohort transition (cancel/capture/settle/refund/hold-release)?**
   Take `lock(1)` and status-guard the write
   (`updateMany({ where: { id, status } })`, bail on count 0). A capacity-only
   admission/status claim follows the per-lodge writer matrix instead; do not
-  infer its tier from the fact that it changes a status column.
+  infer its tier from the fact that it changes a status column. Then register the
+  site in `GLOBAL_LOCK_SITE_REGISTRY` with the counterpart it excludes — the
+  guard fails by name until you do (`INV-LOCK-003`).
 - **Adding a member-night writer?** It runs the guard, which self-takes the
   per-member lock; just make sure it calls `assertNoBookingMemberNightConflicts`
   inside the transaction after any per-lodge lock
@@ -2994,7 +3013,8 @@ excuse the invoice again.
   invoice credit #2400) or a status-guarded `updateMany`. A lost claim runs no
   side effect.
 - **Composing two locks in one transaction?** Global `lock(1)` before any
-  per-lodge lock; multiple same-family locks in sorted key order.
+  per-lodge lock; multiple same-family locks in sorted key order
+  (`INV-LOCK-002`).
 - **Writing a compensating transaction?** Give it explicit `maxWait`/`timeout`
   (never the interactive defaults — it runs under the contention that caused it),
   a bounded retry on P2028/P2034, and a guard so it can never throw past the

@@ -2,16 +2,23 @@
 
 Audience: Developer, Agent.
 
-Prefix defined in this file: **`INV-OPS`** — raw SQL result shapes, raw SQL
+Prefixes defined in this file: **`INV-OPS`** — raw SQL result shapes, raw SQL
 construction and row locking, the client/server bundle boundary, production
 deployment including the worked windowed column drop, changing what values
-already stored in a column mean, and what may be used as test input.
+already stored in a column mean, and what may be used as test input — and
+**`INV-LOCK`** (#2722), the two-tier advisory-lock protocol: which tier a writer
+takes, the order it takes them in, and the registration every global site
+carries. `INV-LOCK` sits here because advisory locking is the sibling of the row
+locking `INV-OPS-001` already governs, and both are read by the same person on
+the same day; the concrete lock families, their keys and their composed orders
+stay in [`docs/CONCURRENCY_AND_LOCKING.md`](../CONCURRENCY_AND_LOCKING.md), which
+applies these rules rather than restating them.
 
-Read this file when you are writing raw SQL, taking a row lock, adding an import
-to a `"use client"` module, dropping a column, changing the meaning of a stored
-value (an audit `category`, a status string) so that the rows already written no
-longer match the code, deploying to production, or choosing credentials or data
-for CI and local validation.
+Read this file when you are writing raw SQL, taking a row lock or an advisory
+lock, adding an import to a `"use client"` module, dropping a column, changing
+the meaning of a stored value (an audit `category`, a status string) so that the
+rows already written no longer match the code, deploying to production, or
+choosing credentials or data for CI and local validation.
 
 `INV-OPS-005` to `INV-OPS-011` are the `FamilyGroupMember.role` column drop,
 re-homed here from `membership-lifecycle.md` by #2706: they are migration
@@ -75,6 +82,46 @@ rules first written here. #2765 extended it with the measured-audience half.
   `SELECT 1` connectivity probes), and holds every `FOR UPDATE` to `$executeRaw`
   over a constant. Tests are exempt from both by design. Full protocol in
   `docs/CONCURRENCY_AND_LOCKING.md` -> "Lock raw, read typed".
+
+## INV-LOCK-001
+
+- **The narrow tier is the default; the global key is deliberate (#1881, #2722).**
+  Two transaction-scoped advisory tiers serialise booking work. **Tier 1** is a
+  scoped key — the per-lodge capacity key, or a per-member, per-date or
+  per-subject key — and is what a writer takes whenever its contention domain can
+  be named. **Tier 2** is the single global key `pg_advisory_xact_lock(1)`, and a
+  writer takes it only when it must exclude a counterpart in another scope that
+  no narrow key covers: booking-status and settlement-money transitions (cancel,
+  capture/settle, hold-release, refunds, credit restore, group settlement and its
+  reaper), and the bed-allocation writers whose rows a lifecycle prune removes.
+  The key is not legacy and reaching for it is not itself a defect — reaching for
+  it without one of those reasons is, and so is taking a narrow key where a
+  cross-scope counterpart exists.
+
+## INV-LOCK-002
+
+- **A writer that needs both takes Tier 2 first, then Tier 1, and mints neither
+  key by hand.** Global before per-lodge, everywhere, so composing the two can
+  never deadlock; several keys of one family are taken in sorted key order for
+  the same reason. The per-lodge capacity key is minted only by
+  `acquireLodgeCapacityLock` (`src/lib/lodge-capacity-lock.ts`) — `hashtextextended`
+  appears in no other non-test file — so every participant provably shares one
+  key rather than an ad-hoc reconstruction of it. Member merge is the one
+  documented writer that takes the lodge tier and deliberately not the global key
+  (#2595); any other exception needs the same kind of recorded decision.
+
+## INV-LOCK-003
+
+- **Every Tier-2 call site in non-test `src/` is registered, individually, with
+  its own reason (#2722).** `GLOBAL_LOCK_SITE_REGISTRY` in
+  `src/lib/__tests__/advisory-lock-guard.test.ts` is the single home for why one
+  site holds the global key; a site is identified by the symbol containing it and
+  never by its file, so a refactor that moves a function carries its reason with
+  it. The census is closed-world in four directions and each is a CI failure: an
+  unregistered Tier-2 site, a registration matching no live site, a registered
+  site whose call changed tier, and a duplicate or ambiguous entry. Adding a site
+  means classifying the writer and naming the counterpart it excludes — never
+  editing a count, which is what coupled approval to file layout before #2722.
 
 ## INV-OPS-014
 
