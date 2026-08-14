@@ -63,6 +63,7 @@ import {
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import {
+  formatDateOnly,
   getTodayDateOnly,
   normalizeDateOnlyForTimeZone,
 } from "@/lib/date-only";
@@ -875,7 +876,7 @@ async function removeGuestChoreAssignments(
       assignment.status === "COMPLETED"
     ) {
       choreWarnings.push(
-        `${assignment.choreTemplate.name} on ${assignment.date.toISOString().split("T")[0]} was ${assignment.status}`
+        `${assignment.choreTemplate.name} on ${formatDateOnly(assignment.date)} was ${assignment.status}`
       );
     }
   }

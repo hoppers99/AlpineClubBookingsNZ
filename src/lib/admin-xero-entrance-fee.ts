@@ -17,6 +17,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { parseDecimalDollarsToCents } from "@/lib/money-input";
 
 export interface XeroEntranceFeeInvoiceOptions {
   createEntranceFeeInvoice: boolean;
@@ -58,13 +59,15 @@ export function buildXeroEntranceFeeInvoiceOptions(
   const amountText = state.amount.trim();
   let amountCents: number | undefined;
   if (amountText) {
-    const parsedAmount = Number(amountText);
-    amountCents = Math.round(parsedAmount * 100);
-    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0 || amountCents <= 0) {
+    // #2685: the exact parser, so "12.345" and "12abc" are REFUSED here rather
+    // than silently rounded or truncated into a joining-fee invoice.
+    const parsedCents = parseDecimalDollarsToCents(amountText);
+    if (parsedCents === null || parsedCents <= 0) {
       throw new Error(
         "Enter a valid joining fee amount, or leave it blank to use the configured amount.",
       );
     }
+    amountCents = parsedCents;
   }
 
   const narration = state.narration.trim();

@@ -144,10 +144,12 @@ retrieved with cited excerpts at ask time
 alone. Full reference: [`KNOWLEDGE_BUNDLE.md`](../diagnostics/KNOWLEDGE_BUNDLE.md).
 
 The build-time **allowlist overlay** (`config/diagnostics-knowledge.json`) can widen
-or narrow which of the repository's own files enter the bundle. The broader
-ADR-006 §4 *private-knowledge* overlay — a deployment supplying extra private
-knowledge — is **not built this release** (see
-[deferred](#deferred-adr-006-postures)).
+or narrow which of the repository's own files enter the bundle. A deployment may
+also supply the broader ADR-006 §4 **private knowledge overlay** — extra private
+knowledge layered on the public bundle, entering as untrusted evidence through the
+same secret-scan, role-label defusal, and single integrity digest — **built this
+release** (#2861); see
+[`deployment.md`](deployment.md#the-private-knowledge-overlay-adr-006-4).
 
 ## The consent ledger and the permission model
 
@@ -234,13 +236,12 @@ The control plane is fail-closed and denies the paid call on any doubt
 
 ## Deferred: ADR-006 postures
 
-Three ADR-006 deployment postures are **not implemented in this release** and are
+Two ADR-006 deployment postures are **not implemented in this release** and are
 documented honestly rather than as if they shipped: provider/data-residency
-**disclosure** (§2), the optional **zero-retention** provider posture (§3), and the
-deployment-owned **private-knowledge overlay** (§4). The build-time allowlist overlay
-above is a filter over the repository's own files, not the ADR-006 private-knowledge
-supply contract. The owner is deciding the overlay's scope; a follow-up will track
-all three. See the [deployment guide's deferred table](deployment.md#deferred-provider-disclosure-zero-retention-and-the-private-overlay)
+**disclosure** (§2) and the optional **zero-retention** provider posture (§3). The
+§4 deployment-owned **private knowledge overlay** shipped this release (#2861) —
+distinct from the build-time allowlist overlay above, which is only a filter over the
+repository's own files. See the [deployment guide's deferred table](deployment.md#deferred-provider-disclosure-and-zero-retention)
 for what each means for an operator.
 
 ## Related links

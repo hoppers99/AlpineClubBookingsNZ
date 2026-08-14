@@ -35,6 +35,7 @@ import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
 import { GET as getMemberFamilyRoute } from "@/app/api/members/family/route";
 import { buildParentLinks } from "@/lib/member-parent-links";
+import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
 
 const mockPrisma = prisma as unknown as {
   member: { findUnique: ReturnType<typeof vi.fn> };
@@ -432,6 +433,117 @@ describe("GET /api/members/family — delegated-edit provenance (#2284 S3)", () 
     );
 
     expect(await fetchProvenance("viewer")).toBeNull();
+  });
+
+  /**
+   * #2839 (MAD-A14) — the confirmed-on day is the CLUB's calendar day.
+   *
+   * `Member.detailsConfirmedAt` is a `DateTime` stamped with `now`, so
+   * truncating it to its UTC day showed the PREVIOUS day for roughly the first
+   * half of every New Zealand day (`INV-DATE-019`). It reached that pattern one
+   * indirection away from the spelling, through the local `toDateInputValue`
+   * wrapper that the date-only fields still use correctly.
+   *
+   * **The instants are chosen so a wrong zone FAILS them.** A comfortable
+   * mid-morning NZ time passes under any zone from about UTC+10 up and pins
+   * nothing. Each case below is either the exact first instant of a club day
+   * (which a shallower zone such as `Australia/Brisbane` gets wrong) or sits in
+   * the extra hour NZDT has over NZST (which any fixed +12 zone gets wrong).
+   */
+  describe("shows the club's calendar day, not the UTC day (#2839)", () => {
+    beforeEach(() => {
+      expectClubTimeZonePremise();
+    });
+
+    /**
+     * Run the route with a delegated confirmation stamped at `confirmedAt` and
+     * return the WHOLE provenance object, so a caller can tell "no provenance
+     * at all" apart from "provenance with no day".
+     */
+    async function provenanceFor(confirmedAt: Date) {
+      mockPrisma.member.findUnique.mockResolvedValue(
+        memberRow({ id: "viewer", firstName: "Viewer", groupIds: ["g1"] }),
+      );
+      mockPrisma.familyGroupMember.findMany.mockResolvedValue([
+        {
+          member: memberRow({
+            id: "child",
+            firstName: "Child",
+            ageTier: "CHILD",
+            groupIds: ["g1"],
+            canLogin: false,
+            detailsConfirmedByMemberId: "viewer",
+            detailsConfirmedAt: confirmedAt,
+            detailsConfirmedBy: {
+              id: "viewer",
+              firstName: "Vera",
+              lastName: "Viewer",
+            },
+          }),
+        },
+      ]);
+      return fetchProvenance("child");
+    }
+
+    /** The rendered day only, for the boundary cases below. */
+    async function confirmedDayFor(confirmedAt: Date) {
+      return (await provenanceFor(confirmedAt))?.at ?? null;
+    }
+
+    it("dates a confirmation made at midnight NZST to the club day, not the UTC day before", async () => {
+      // 15 June 2026 is NZST (UTC+12). Midnight exactly, so `Australia/Brisbane`
+      // (+10) and UTC itself both still read 14 June and fail this pair.
+      const firstInstantOfClubDay = new Date("2026-06-14T12:00:00.000Z");
+      const lastInstantOfPreviousClubDay = new Date("2026-06-14T11:59:59.999Z");
+
+      // Records the premise: this instant's UTC day is the day BEFORE the club
+      // day asserted below, which is exactly what the old truncation showed.
+      // It is NOT a drift guard — the instant is a fixed literal and cannot
+      // drift — but it pins the instant to the day named here, so editing one
+      // without the other fails on this line rather than three lines down.
+      expect(firstInstantOfClubDay.toISOString().slice(0, 10)).toBe("2026-06-14");
+
+      expect(await confirmedDayFor(firstInstantOfClubDay)).toBe("2026-06-15");
+      // The far side of the same boundary pins the offset at exactly +12, so a
+      // deeper zone cannot satisfy both halves.
+      expect(await confirmedDayFor(lastInstantOfPreviousClubDay)).toBe("2026-06-14");
+    });
+
+    it("dates a confirmation made at midnight NZDT to the club day, not the UTC day before", async () => {
+      // 15 January 2026 is NZDT (UTC+13). This boundary is an hour earlier in
+      // UTC than the NZST one above, so a fixed +12 zone with no daylight
+      // saving reads 23:00 on the 14th and fails.
+      const firstInstantOfClubDay = new Date("2026-01-14T11:00:00.000Z");
+      const lastInstantOfPreviousClubDay = new Date("2026-01-14T10:59:59.999Z");
+
+      // Records the premise, as above — not a drift guard.
+      expect(firstInstantOfClubDay.toISOString().slice(0, 10)).toBe("2026-01-14");
+
+      expect(await confirmedDayFor(firstInstantOfClubDay)).toBe("2026-01-15");
+      expect(await confirmedDayFor(lastInstantOfPreviousClubDay)).toBe("2026-01-14");
+    });
+
+    it("dates a confirmation made just after midnight NZDT to the club day", async () => {
+      // 00:30 on 15 January 2026 — the member-facing scenario from the issue,
+      // at a strength a fixed +12 zone (23:30 on the 14th) still fails.
+      const justAfterMidnightNzdt = new Date("2026-01-14T11:30:00.000Z");
+
+      // Records the premise, as above — not a drift guard.
+      expect(justAfterMidnightNzdt.toISOString().slice(0, 10)).toBe("2026-01-14");
+
+      expect(await confirmedDayFor(justAfterMidnightNzdt)).toBe("2026-01-15");
+    });
+
+    it("still shows nothing when no confirmation instant was recorded", async () => {
+      // The club-calendar derivation must not invent a day out of `null`. The
+      // WHOLE provenance object is asserted, not just its day: `at: null` on a
+      // provenance that still names the confirmer is the intent, and a bare
+      // `toBeNull()` on the day would also pass if the line vanished entirely.
+      expect(await provenanceFor(null as unknown as Date)).toEqual({
+        name: "Vera Viewer",
+        at: null,
+      });
+    });
   });
 
   it("asks the database for the confirmer's name (whitelist addition)", async () => {

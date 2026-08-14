@@ -286,7 +286,11 @@ export const AUDIT_CENSUS_TOTALS = {
   // sites; the raw `sql.insert` seed row is tracked in `sqlStatements`, not here).
   // 432 -> 434 (#2773/#2774): the two late-capture writers this branch
   // adds. Re-measured with `npm run audit:census` on the merged tree.
-  writeSites: 434,
+  // 434 -> 435 (#2822): the email-inheritance effective-source change event
+  // (`member.email-inheritance-source.changed`), one `createStructuredAuditLog`
+  // inside the reconciler, category `family`. It records a real routing change,
+  // so it is a categorised writer, not an `UNCATEGORISED_AUDIT_WRITERS` entry.
+  writeSites: 435,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -360,7 +364,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // (which carries a recipient email address) goes through
     // `sanitizeAuditMetadata`. Again the row COUNT is unchanged and only the
     // FORM moved, which is what this per-sink pin exists to surface.
-    createStructuredAuditLog: { total: 9, uncategorised: 0 },
+    // 9 -> 10 (#2822): the email-inheritance effective-source change event.
+    createStructuredAuditLog: { total: 10, uncategorised: 0 },
     // 71 -> 72 (#2352 MC-03D): the page-content deletion, above.
     // 72 -> 70 (#2581 child 2): the two dependants writes, above.
     // 70 -> 69 (#2581 child 2 review): the age-up handoff write, above. No
@@ -452,7 +457,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.
-    family: 34,
+    // 34 -> 35 (#2822): the email-inheritance effective-source change event.
+    // `family` because the affected domain is the family contact relationship,
+    // NOT the initiator — so it correlates through membership, never the
+    // support-only `admin`/`system` gate, and stays on the subject's timeline.
+    family: 35,
     // 117 -> 118 (#2352 MC-03D): `PAGE_CONTENT_DELETED`. `admin` is the same
     // category the three sibling page-content writes already use, and it is
     // readable with support:view alone — so this widens nobody's access beyond

@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { formatDateOnlyForTimeZone } from "@/lib/date-only";
+import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
 import { frozenTestNow } from "@/lib/__tests__/helpers/clock";
 import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
-import { formatDate } from "@/lib/xero-invoice-helpers";
 
 /**
  * Every Xero document date derived from an INSTANT is the club's calendar day
@@ -18,9 +17,10 @@ import { formatDate } from "@/lib/xero-invoice-helpers";
  *
  * #2697 closed the two `Booking.createdAt` consumers. This suite covers the rest
  * of the family, which reached the same forbidden pattern one indirection away
- * from the spelling: through `formatDate()` in `xero-invoice-helpers.ts`, which
- * IS `toISOString().split("T")[0]`, and through a private clone of it in
- * `membership-cancellation-xero.ts`.
+ * from the spelling: through the `formatDate()` wrapper that used to live in
+ * `xero-invoice-helpers.ts` and WAS `toISOString().split("T")[0]`, and through a
+ * private clone of it in `membership-cancellation-xero.ts`. #2684 retired both,
+ * so the date-only encoding is now spelled once, as `formatDateOnly`.
  *
  * **The instants are chosen so a wrong zone FAILS them.** A merely "divergent"
  * instant is not enough: 21:30Z sits ~9.5h into a 12h window and passes under any
@@ -304,7 +304,7 @@ describe("#2834 the other half of the premise: a `@db.Date` receiver is read by 
   const lodgeNight = new Date("2026-08-03T00:00:00.000Z");
 
   it("truncation reads back the calendar day the value encodes", () => {
-    expect(formatDate(lodgeNight)).toBe("2026-08-03");
+    expect(formatDateOnly(lodgeNight)).toBe("2026-08-03");
   });
 
   it("zone conversion returns a DIFFERENT day for the same value, west of UTC", () => {
@@ -317,7 +317,7 @@ describe("#2834 the other half of the premise: a `@db.Date` receiver is read by 
 
   it("but the two agree in the club's own zone, which is exactly why the assertions below cannot decide it alone", () => {
     expect(formatDateOnlyForTimeZone(lodgeNight)).toBe("2026-08-03");
-    expect(formatDate(lodgeNight)).toBe("2026-08-03");
+    expect(formatDateOnly(lodgeNight)).toBe("2026-08-03");
   });
 });
 

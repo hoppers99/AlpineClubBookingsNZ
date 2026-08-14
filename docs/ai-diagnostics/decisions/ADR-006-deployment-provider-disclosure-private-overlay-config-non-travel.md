@@ -11,6 +11,16 @@ non-travelling default).
 **Governance:** no implementation child (#2371–#2379) may weaken the contract in
 this ADR without an owner decision recorded on-repo.
 
+**§4 built (14 August 2026, #2861).** The generic private knowledge overlay supply
+mechanism described in §4 is implemented: a deployment populates a configured
+location (`config/diagnostics-knowledge.json` by default, overridable via
+`DIAGNOSTICS_KNOWLEDGE_CONFIG_PATH`) with a typed `knowledge` section, whose entries
+are secret-scanned, bounded, cited, defused, and merged into the single bundle
+integrity digest — optional, and with no deployment-specific path or content in
+public code. See
+[`docs/ai-diagnostics/deployment.md`](../deployment.md#the-private-knowledge-overlay-adr-006-4)
+and [`docs/diagnostics/KNOWLEDGE_BUNDLE.md`](../../diagnostics/KNOWLEDGE_BUNDLE.md).
+
 ## Context
 
 AlpineClubBookingsNZ is open-source and forked per club; a private production
@@ -51,6 +61,13 @@ privacy-sensitive club use Diagnostics without provider-side retention of its
 excerpts.
 
 ### 4. A generic, deployment-owned private-overlay supply contract
+
+> **Built — 14 August 2026 (#2861).** Implemented as a `knowledge` section in the
+> configured `config/diagnostics-knowledge.json` slot (overridable via
+> `DIAGNOSTICS_KNOWLEDGE_CONFIG_PATH`), validated against a typed shape,
+> secret-scanned + defused + bounded as untrusted evidence, namespaced under
+> `overlay/`, and merged into the single bundle integrity digest. Absent ⇒ the
+> public bundle is byte-identical. See the operator guide and KNOWLEDGE_BUNDLE doc.
 
 A deployment may supply an **optional private knowledge overlay** — extra,
 deployment-specific diagnostic knowledge layered on top of the public deployed

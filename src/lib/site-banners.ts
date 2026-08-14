@@ -1,7 +1,7 @@
 import "server-only";
 
 import type { SiteBannerPriority } from "@prisma/client";
-import { getTodayDateOnly } from "@/lib/date-only";
+import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 
 // Display order for stacked banners: most severe first.
@@ -77,8 +77,8 @@ export function siteBannerAuditSnapshot(banner: {
   return {
     message: banner.message,
     priority: banner.priority,
-    startDate: banner.startDate.toISOString().slice(0, 10),
-    endDate: banner.endDate.toISOString().slice(0, 10),
+    startDate: formatDateOnly(banner.startDate),
+    endDate: formatDateOnly(banner.endDate),
     active: banner.active,
   };
 }
@@ -88,8 +88,8 @@ export function serializeAdminSiteBanner(banner: SiteBannerRow): AdminSiteBanner
     id: banner.id,
     message: banner.message,
     priority: banner.priority,
-    startDate: banner.startDate.toISOString().slice(0, 10),
-    endDate: banner.endDate.toISOString().slice(0, 10),
+    startDate: formatDateOnly(banner.startDate),
+    endDate: formatDateOnly(banner.endDate),
     active: banner.active,
     createdAt: banner.createdAt.toISOString(),
     updatedAt: banner.updatedAt.toISOString(),

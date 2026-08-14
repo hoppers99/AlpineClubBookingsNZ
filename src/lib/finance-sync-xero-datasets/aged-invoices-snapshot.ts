@@ -17,7 +17,6 @@ import {
 } from "./invoice-helpers";
 import {
   parseOptionalDateOnly,
-  toDateOnlyString,
   toOptionalDate,
   toOptionalDateOnlyText,
   toOptionalText,
@@ -27,6 +26,7 @@ import type {
   FinanceAgedInvoiceBucketTotals,
   FinanceOpenInvoiceType,
 } from "./types";
+import { formatDateOnly } from "@/lib/date-only";
 
 type FinanceAgedSnapshotType = "AGED_RECEIVABLES" | "AGED_PAYABLES";
 
@@ -189,8 +189,8 @@ function buildFinanceAgedInvoiceSnapshot(input: {
         contactStatus: contact.contactStatus,
         currency: contact.currency,
         invoiceCount: contact.invoiceCount,
-        oldestDueDate: toDateOnlyString(contact.oldestDueDate),
-        latestDueDate: toDateOnlyString(contact.latestDueDate),
+        oldestDueDate: contact.oldestDueDate ? formatDateOnly(contact.oldestDueDate) : null,
+        latestDueDate: contact.latestDueDate ? formatDateOnly(contact.latestDueDate) : null,
         totals: contact.totals,
         invoices: contact.invoices.sort((left, right) =>
           compareOpenInvoicePayloadsByDueDate(left, right)
@@ -222,7 +222,7 @@ function buildFinanceAgedInvoiceSnapshot(input: {
     .sort((left, right) => compareNullableStrings(left.currency, right.currency));
 
   const payload = {
-    asOfDate: toDateOnlyString(input.asOfDate),
+    asOfDate: input.asOfDate ? formatDateOnly(input.asOfDate) : null,
     invoiceCount,
     contactCount: contactPayloads.length,
     currencies: currencyPayloads.map((currency) => currency.currency),

@@ -6,7 +6,14 @@
  * to walk that structure: the revenue and costs report pages, and the revenue
  * reconciliation. This module centralises the row-walking and amount-parsing so
  * those callers agree on how a P&L is read.
+ *
+ * Cell AMOUNT parsing is not owned here: a Xero report cell is provider text, so
+ * it goes through `parseProviderReportAmountToCents` in
+ * `@/lib/money-provider-amount`. This module and the cash snapshot each carried
+ * a byte-identical private copy of that parser until #2685.
  */
+
+import { parseProviderReportAmountToCents } from "@/lib/money-provider-amount";
 
 interface PnlReportAttribute {
   id: string | null;
@@ -156,39 +163,10 @@ export function readPnlReportPayload(value: unknown): PnlReportPayload | null {
   };
 }
 
-/**
- * Parse a Xero report cell amount into integer cents. Handles thousands
- * separators and bracketed negatives, e.g. "(1,234.50)" -> -123450.
- */
-export function parsePnlAmountToCents(value: string | null): number | null {
-  if (!value) {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const isBracketNegative =
-    trimmed.startsWith("(") && trimmed.endsWith(")") && trimmed.length > 2;
-  const normalized = (isBracketNegative ? trimmed.slice(1, -1) : trimmed).replace(
-    /,/g,
-    ""
-  );
-  const parsed = Number.parseFloat(normalized);
-
-  if (!Number.isFinite(parsed)) {
-    return null;
-  }
-
-  return Math.round((isBracketNegative ? parsed * -1 : parsed) * 100);
-}
-
 /** The right-most cell that parses as an amount is the period figure. */
 export function readRowAmountCents(row: PnlReportRow): number | null {
   for (const cell of [...row.cells].reverse()) {
-    const amountCents = parsePnlAmountToCents(cell.value);
+    const amountCents = parseProviderReportAmountToCents(cell.value);
     if (amountCents !== null) {
       return amountCents;
     }

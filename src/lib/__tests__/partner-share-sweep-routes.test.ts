@@ -120,6 +120,7 @@ vi.mock("@/lib/audit", () => ({
   getAuditEmailDomain: vi.fn(() => null),
   getAuditRequestContext: vi.fn(() => ({ ipAddress: "127.0.0.1" })),
   createAuditLog: vi.fn(),
+  createStructuredAuditLog: vi.fn(),
   logAudit: vi.fn(),
 }));
 

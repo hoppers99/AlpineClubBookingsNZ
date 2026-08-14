@@ -18,8 +18,8 @@
  * concern.
  */
 
+import { parseProviderReportAmountToCents } from "@/lib/money-provider-amount";
 import {
-  parsePnlAmountToCents,
   readPnlReportPayload,
   readRowAccountId,
   readRowLabel,
@@ -270,7 +270,7 @@ function collectLeafRows(rows: PnlReportRow[]): PnlReportRow[] {
 
 function rowHasNonZeroAmount(row: PnlReportRow): boolean {
   return row.cells.some((cell) => {
-    const amountCents = parsePnlAmountToCents(cell.value);
+    const amountCents = parseProviderReportAmountToCents(cell.value);
     return amountCents !== null && amountCents !== 0;
   });
 }
@@ -346,7 +346,7 @@ export function extractMonthlyFactsFromReport(input: {
     const accountCode = account.code;
 
     for (const column of columns) {
-      const amountCents = parsePnlAmountToCents(
+      const amountCents = parseProviderReportAmountToCents(
         row.cells[column.cellIndex]?.value ?? null
       );
       if (amountCents === null) {

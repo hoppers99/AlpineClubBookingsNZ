@@ -41,22 +41,102 @@ SHADOW_DATABASE_URL=postgresql://user:pass@localhost:5432/drift_shadow \
 CI also runs independent static and container checks:
 
 - `npm audit --audit-level=high --package-lock-only` on pull requests
-- Semgrep with Next.js, TypeScript, JavaScript, and React rules
-- gitleaks full-history and pull-request diff scans
+- Semgrep with Next.js, TypeScript, JavaScript and React registry rules, **plus
+  the repository's own rules in `.semgrep/rules/`** for the two boundaries no
+  registry pack can know about — a `"use client"` module importing server-only
+  code, and interpolated SQL reaching `$queryRawUnsafe`/`$executeRawUnsafe`.
+  Each custom rule ships must-fail and must-pass fixtures in `.semgrep/tests/`,
+  which the same job runs before the scan (#2686)
+- gitleaks in one pinned container over **three** scopes — the pull request's own
+  commits, the history of `main`, and the checked-out tree — preceded by
+  `scripts/ci/gitleaks-selftest.sh`, which plants a credential and proves the
+  scanner still reports it. `Secret scan (gitleaks)` (#2686; **pending** as a
+  required check, see `AGENTS.md` for the rollout order)
 - TypeScript, test, and Docker image build validation
 - Migration drift check (`migration-drift` job) running `db:check-drift` against
   a throwaway Postgres, so schema-vs-migration drift fails the PR rather than the
   deploy
-- Trivy critical vulnerability gate with high-severity warnings
+- Trivy critical vulnerability gate with high-severity warnings, as
+  `Image security gate (Trivy CRITICAL)` (#2686; **pending** as a required
+  check)
+- CodeQL, as **advisory** analysis via GitHub code scanning **default setup**
+  (repository settings, not a workflow file — languages `actions`, `javascript`,
+  `javascript-typescript`, `typescript`; default query suite; weekly schedule
+  plus every push and pull request on `main`). It is deliberately not a required
+  check, and it does not report on pull requests from forks
 
 ## Dependency Policy
 
 - Keep `package-lock.json` committed.
 - Prefer small dependency update PRs with explicit validation results.
-- Keep security overrides documented in `package.json` and remove them when the
-  upstream dependency graph no longer needs them.
+- Keep the `overrides` block in `package.json` to the minimum that is still
+  load-bearing, and retire an entry as soon as the upstream dependency graph no
+  longer needs it. `package.json` is strict JSON and cannot carry a comment, so
+  the register below — not the manifest — is where an override records why it
+  exists and when it retires. Adding an override means adding a row.
 - Use test or demo credentials for Stripe, Xero, SES, and Sentry in local and
   CI environments.
+
+### Why a stale override is not harmless
+
+A transitive dependency normally maintains itself: when a Dependabot group PR
+bumps a parent, npm re-resolves and every child floats up to the newest version
+its parent's range allows. An **exact** override switches that off for one
+package permanently, so the package silently stops being maintained by the
+system and becomes ours to carry. Prefer a `^` floor over an exact pin — the
+lockfile still pins one resolved version, so nothing about build or deploy
+determinism changes, but the package can drift upward within the range instead
+of freezing.
+
+This is not theoretical. #2863 found eleven of thirteen overrides had outlived
+the advisories that prompted them, two of them holding a package back a full
+minor version and two more pinning packages that had left the dependency tree
+altogether.
+
+### The override register
+
+Every row below was verified by removing that entry and re-resolving (#2863). All
+four are load-bearing; none is inert.
+
+| override | why it exists | retires when |
+| --- | --- | --- |
+| `sharp` (`$sharp`) | **Security.** Removing it lets `next` nest `sharp@0.34.5`, which carries two high-severity advisories. Forces every copy onto the `^0.35.3` declared in `dependencies`. Added in `83b25035d`. | `next` requires sharp 0.35.3 or later. |
+| `postcss` (`^8.5.26`) | **Security.** `next` requires postcss at **exactly `8.4.31`**, which carries four advisories including a high. An exact upstream pin cannot be lifted by drift, so this override is the only thing keeping the nested copy safe. | `next` moves its own postcss pin to 8.5.26 or later. |
+| `next-auth` → `nodemailer` (`$nodemailer`) | **Resolution.** `next-auth@5.0.0-beta.32` declares `peerOptional nodemailer@"^7.0.7 \|\| ^8.0.5"`, which conflicts with the `^9.0.1` in `dependencies`; without the override `npm install` fails outright with `ERESOLVE`. Added in `8f366a08c` (#1182). | `next-auth` widens its peer range to admit nodemailer 9. |
+| `eslint-plugin-react-hooks` | **Compatibility hold**, not security — `b1989558f` introduced it as "hold eslint-plugin-react-hooks at 7.0.1", and it has since been stepped forward to 7.1.1. Currently non-binding: natural resolution lands on 7.1.1 with or without it. | The hold is reviewed and lifted on purpose. |
+
+### Checking whether an override still earns its place
+
+`npm audit` answers this directly, and it is worth running whenever the block is
+touched. Strip the candidate entries in a scratch copy — never in the worktree —
+regenerate, and audit:
+
+```bash
+mkdir -p /tmp/ovcheck && cp package.json package-lock.json /tmp/ovcheck/
+cd /tmp/ovcheck && cp package-lock.json lock-before.json
+
+# remove the override(s) under test from package.json, then re-resolve from
+# scratch — deleting the lockfile is what forces npm to answer "where would
+# this land on its own?" rather than preserving what is already pinned.
+rm package-lock.json
+npm install --package-lock-only --ignore-scripts --no-audit
+npm audit --package-lock-only --audit-level=high
+```
+
+Anything the audit reports is still load-bearing and stays. Anything it does not
+report has been fixed upstream and the override should go.
+
+Compare `lock-before.json` against the regenerated lockfile as well, because the
+audit alone does not distinguish an inert override from a harmful one. An entry
+that resolves to a **lower** version once removed is doing real work; one that
+resolves to the **same** version is inert; one that resolves **higher** was
+actively holding the package back.
+
+Two cautions. `npm audit` reflects today's advisory database, so this measures
+whether upstream has caught up as of now, not for all time. And an override may
+exist for a non-security reason that no audit can see — check `git log -S` for
+the entry before removing it, as a hold or a peer-conflict fix will look inert
+to this procedure while still being load-bearing.
 
 ## Supply-Chain And Deployment Security Policy
 
@@ -76,7 +156,109 @@ CI also runs independent static and container checks:
   publishing uses the workflow `GITHUB_TOKEN` in the publish job only.
 - Treat Docker image security as two gates: CRITICAL Trivy findings fail the PR,
   while HIGH findings are warning-only until reviewed and promoted to a blocking
-  policy.
+  policy. Since #2686 the CRITICAL half is intended as a **required**
+  protected-branch check (`Image security gate (Trivy CRITICAL)`), so it blocks
+  the merge rather than only turning a job red; the HIGH step keeps
+  `continue-on-error: true` and the two steps are named "REQUIRED" and
+  "ADVISORY" so the distinction is readable from the checks list.
+- Keep a scanner's configuration file honest about what it actually enables. A
+  `.gitleaks.toml` without `[extend] useDefault = true` REPLACES the built-in
+  rule set instead of adding to it, and this repository shipped exactly that for
+  months: both gitleaks jobs ran green over a rule set with nothing in it
+  (#2686). Whenever a scanner config changes, prove the scanner still fails on a
+  deliberate violation before trusting the green —
+  `bash scripts/ci/gitleaks-selftest.sh` is that proof, and it runs in CI ahead
+  of the scans it vouches for.
+- Keep gitleaks allowlists CONTENT-scoped **and pinned to exact literals**. A
+  global `[[allowlists]]` entry carrying `paths` suppresses everything under
+  those paths in gitleaks 8.28.0 whatever else the entry says, and
+  `matchCondition = "AND"` does not narrow it. A global allowlist also applies to
+  every RULE, not the one its description names, so a SHAPE — a UUID, a
+  `sk_test_` prefix — silences rules nobody considered: measured, the UUID shape
+  dropped `heroku-api-key` and a UUID `CRON_SECRET`. `targetRules` is not the fix
+  either; in 8.28.0 it silently voids the allowlist entirely.
+
+### Two Semgrep scans run per pull request, and only one of them blocks
+
+This trips up every reader of a `nosemgrep` annotation, so it is written down
+rather than inferred:
+
+- **`Static analysis gate`** (`ci.yml` → `static-analysis`) is the blocking one.
+  It runs `p/nextjs`, `p/typescript`, `p/javascript`, `p/react` and
+  `.semgrep/rules/`, and nothing else.
+- **`semgrep-cloud-platform/scan`** is a Semgrep AppSec Platform GitHub App
+  check. Its ruleset is configured at semgrep.dev, not in this repository, it
+  costs no GitHub Actions time, and it is advisory.
+
+Measured at 527eb74fc by re-running the exact blocking invocation with
+`--disable-nosem`: **the blocking rule set produces exactly ONE finding in the
+whole repository**, `acb-unsafe-raw-sql` at `src/lib/audit-retention.ts`. So
+exactly one of this repository's `nosemgrep` annotations is live against the
+gate that can stop a merge. The other 87 name ids from `p/default` /
+`p/security-audit` — packs the blocking scan does not run — and serve the cloud
+scan.
+
+They are deliberately **not** pruned. Their effect is only observable in a scan
+whose ruleset this repository does not control, so "these suppress nothing"
+cannot be verified from here, and deleting 87 annotations on that assumption
+would be a blind change to a security surface. Two things follow for anyone
+adding or reading one:
+
+- say which scan an annotation is for. If it names a `javascript.…` /
+  `generic.…` registry id, it is for the cloud scan and the blocking gate will
+  never emit it;
+- Semgrep matches `nosemgrep: <id>` by **exact suffix**, so a rule-id variant is
+  a different id. The 41 `path-traversal.path-join-resolve-traversal`
+  annotations do not suppress an `express-path-join-resolve-traversal` finding,
+  and a rename upstream silently un-suppresses every one of them.
+
+### Break-glass: a new CRITICAL image finding with no code change
+
+Trivy scans the built image against a vulnerability database that moves on its
+own. A newly published CRITICAL against the `node:24.15-alpine` base therefore
+turns `Image security gate (Trivy CRITICAL)` red on **every** open pull request,
+including the one that would fix it, with nobody having changed a line. Branch
+protection has `enforce_admins` off, so the owner can force a merge through; an
+agent cannot, and must not try. Do this instead, in order:
+
+1. **Rebuild first.** If the base image has already been patched upstream, a
+   fresh `docker build` picks it up and the finding disappears. Check the
+   advisory for a fixed version before anything else.
+2. **If there is no fix yet, add a dated `.trivyignore` entry** at the
+   repository root, one CVE per line, each with a comment giving the CVE, the
+   date, why the application is not exposed, and the issue tracking removal:
+
+   ```
+   # CVE-2026-12345 — added 2026-08-14. openssl in node:24.15-alpine; no fixed
+   # version published yet. Reachable only from the TLS client path, which this
+   # image does not use at build time. Remove when 24.15.x ships the fix.
+   # Tracked by #NNNN.
+   CVE-2026-12345
+   ```
+
+3. **File the removal issue in the same pull request**, never as prose. An
+   undated, untracked `.trivyignore` entry is a permanently disabled gate.
+4. **Owner admin-merge is the last resort**, and it is an owner action: an agent
+   escalates by commenting, and waits.
+
+Review `.trivyignore` whenever the base image moves, and delete every entry whose
+advisory now has a fixed version.
+
+### The repository-wide secret sweep
+
+`Secret scan (gitleaks)` is deliberately scoped to `main`, not to every branch:
+`git log --all` walks every `refs/remotes/origin/*` that `fetch-depth: 0`
+materialised, so one leak on anybody's abandoned branch would turn a REQUIRED
+check red on every open pull request, unfixable from the author's own branch.
+A wider sweep is still worth running — a secret on an unmerged branch is public
+on a public repository — but it belongs in a scheduled, non-blocking job where a
+finding is a task rather than a merge freeze. Until that job exists, run it by
+hand when a branch is abandoned:
+
+```bash
+docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.28.0 \
+  git /repo --log-opts="--diff-merges=first-parent --all" --exit-code=1 --redact
+```
 
 Accepted residual risk:
 

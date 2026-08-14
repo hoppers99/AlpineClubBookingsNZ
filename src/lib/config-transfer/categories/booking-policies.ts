@@ -26,6 +26,7 @@ import {
   lodgeFolderSegments,
 } from "./lodge-config";
 import { asStr, RowValidator, type Valid } from "../values";
+import { formatDateOnly } from "@/lib/date-only";
 
 // Unlike the other upsert-only config-transfer entities, minimum-stay policy is
 // a complete replace-set. A header-only file intentionally clears the set, and
@@ -121,7 +122,7 @@ function describePolicyRow(policy: {
 }
 
 function toDateOnly(value: Date): string {
-  return value.toISOString().slice(0, 10);
+  return formatDateOnly(value);
 }
 
 function triggerDaysValue(value: unknown): Valid<number[]> {

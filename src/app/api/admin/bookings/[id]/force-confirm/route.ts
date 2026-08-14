@@ -12,7 +12,7 @@ import {
 import { wholeLodgeBlockedNights } from "@/lib/over-capacity-confirmation";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { createAuditLog, getAuditRequestContext } from "@/lib/audit";
-import { getTodayDateOnly } from "@/lib/date-only";
+import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
 import { sendBookingConfirmedEmail } from "@/lib/email";
 import { getProvisionalNonMemberChildSummary } from "@/lib/booking-split-summary";
 import logger from "@/lib/logger";
@@ -31,7 +31,7 @@ const forceConfirmSchema = z.object({
 });
 
 function formatOverbookDate(night: NightAvailability) {
-  return night.date.toISOString().slice(0, 10);
+  return formatDateOnly(night.date);
 }
 
 function getOverbookedNights(nightDetails: NightAvailability[]) {

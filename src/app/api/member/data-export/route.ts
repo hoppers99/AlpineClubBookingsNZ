@@ -11,7 +11,7 @@ import { requireActiveSessionUser } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit, rateLimiters } from "@/lib/rate-limit";
 import logger from "@/lib/logger";
-import { todayDateOnlyForTimeZone } from "@/lib/date-only";
+import { formatDateOnly, todayDateOnlyForTimeZone } from "@/lib/date-only";
 
 export async function GET() {
   const session = await auth();
@@ -213,13 +213,13 @@ export async function GET() {
         phoneAreaCode: member.phoneAreaCode ?? null,
         phoneNumber: member.phoneNumber ?? null,
         dateOfBirth: member.dateOfBirth
-          ? member.dateOfBirth.toISOString().substring(0, 10)
+          ? formatDateOnly(member.dateOfBirth)
           : null,
         role: member.role,
         ageTier: member.ageTier,
         active: member.active,
         joinedDate: member.joinedDate
-          ? member.joinedDate.toISOString().substring(0, 10)
+          ? formatDateOnly(member.joinedDate)
           : null,
         memberSince: member.createdAt.toISOString(),
         streetAddress: {
@@ -240,8 +240,8 @@ export async function GET() {
         },
       },
       bookings: bookings.map((b) => ({
-        checkIn: b.checkIn.toISOString().substring(0, 10),
-        checkOut: b.checkOut.toISOString().substring(0, 10),
+        checkIn: formatDateOnly(b.checkIn),
+        checkOut: formatDateOnly(b.checkOut),
         status: b.status,
         totalPriceCents: b.totalPriceCents,
         discountCents: b.discountCents,
@@ -281,7 +281,7 @@ export async function GET() {
       })),
       choreAssignments: [
         ...choreAssignments.map((c) => ({
-          date: c.date.toISOString().substring(0, 10),
+          date: formatDateOnly(c.date),
           choreName: c.choreTemplate.name,
           choreDescription: c.choreTemplate.description ?? null,
           assignedTo: c.bookingGuest
@@ -292,7 +292,7 @@ export async function GET() {
           createdAt: c.createdAt.toISOString(),
         })),
         ...guestChoreAssignments.map((c) => ({
-          date: c.date.toISOString().substring(0, 10),
+          date: formatDateOnly(c.date),
           choreName: c.choreTemplate.name,
           choreDescription: c.choreTemplate.description ?? null,
           assignedTo: c.bookingGuest

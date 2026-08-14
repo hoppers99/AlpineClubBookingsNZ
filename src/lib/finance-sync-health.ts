@@ -14,6 +14,7 @@ import {
   type XeroAdminHealthSnapshot,
 } from "@/lib/xero-admin-health";
 import { prisma } from "@/lib/prisma";
+import { formatMonthOnly } from "@/lib/date-only";
 
 /**
  * Treasurer sync-confidence view: aggregates the health signals the platform
@@ -103,10 +104,16 @@ function formatHoursAgo(now: Date, value: Date): string {
   return `${Math.floor(hours / 24)} days ago`;
 }
 
+// The month key one month back. `Date.UTC(year, month - 2, 1)` is the first of
+// the PREVIOUS month pinned to UTC midnight — a date-only value by construction,
+// built from a `yyyy-MM` key rather than from any clock or `DateTime` column —
+// so the canonical date-only encoder reads back exactly the month it encodes
+// (INV-DATE-010). It used to assemble the same string from `getUTCFullYear()`
+// and a padded `getUTCMonth()`, which is the truncation written a fourth way and
+// invisible to every guard that looks for the ISO spellings (#2684).
 function previousMonthKey(monthKey: string): string {
   const [year, month] = monthKey.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 2, 1));
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+  return formatMonthOnly(new Date(Date.UTC(year, month - 2, 1)));
 }
 
 function classifyLatestSyncRun(input: FinanceSyncHealthSourceData): FinanceSyncHealthSignal {
@@ -414,7 +421,7 @@ async function loadFactFreshness(
     kind,
     maxSyncedAt: aggregate._max.syncedAt,
     latestFinalMonth: latestFinal
-      ? latestFinal.month.toISOString().slice(0, 7)
+      ? formatMonthOnly(latestFinal.month)
       : null,
   };
 }

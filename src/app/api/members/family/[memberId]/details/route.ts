@@ -300,7 +300,12 @@ export async function PUT(
       },
       select: DELEGATED_MEMBER_SELECT,
     });
-    await reconcileEmailInheritanceForMemberChange(tx, [target.id]);
+    await reconcileEmailInheritanceForMemberChange(tx, [target.id], {
+      // A delegate confirming/editing the member's own details (address, etc.):
+      // a direct source-member change, attributed to the acting delegate (#2822).
+      trigger: "source-member-change",
+      actorMemberId: requester.id,
+    });
     return member;
   });
 

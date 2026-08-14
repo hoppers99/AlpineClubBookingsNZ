@@ -36,6 +36,7 @@ import {
   refreshXeroContactCachesFromContact,
 } from "@/lib/xero";
 import { XERO_OUTBOX_MEMBERSHIP_CANCELLATION_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 
 const MEMBERSHIP_CANCELLATION_CREDIT_ROLE = "MEMBERSHIP_CANCELLATION_CREDIT_NOTE";
 const MEMBERSHIP_CANCELLATION_CREDIT_ALLOCATION_ROLE =
@@ -64,11 +65,10 @@ function seasonLabel(seasonYear: number): string {
 }
 
 function centsFromAmount(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return 0;
-  }
-
-  return Math.max(0, Math.round(value * 100));
+  const cents = providerAmountToCents(value);
+  // An unreadable amount stays 0 and a negative one still clamps to 0: this
+  // feeds an outstanding-balance figure, where "owes nothing" is the safe read.
+  return cents === null ? 0 : Math.max(0, cents);
 }
 
 function getContactGroupId(group: unknown): string | null {

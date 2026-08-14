@@ -9,6 +9,7 @@ import {
   sendBookingConfirmedEmail,
 } from "@/lib/email";
 import { claimAlertCooldown } from "@/lib/alert-cooldown";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
   MANUAL_SETTLEMENT_CONFLICT_EVENT_KIND,
@@ -70,11 +71,9 @@ function classifyXeroInvoiceCashEvidence(
   ) {
     return "cash";
   }
-  if (
-    typeof invoice.amountPaid === "number" &&
-    Number.isFinite(invoice.amountPaid)
-  ) {
-    return Math.round(invoice.amountPaid * 100) > 0 ? "cash" : "none";
+  const amountPaidCents = providerAmountToCents(invoice.amountPaid);
+  if (amountPaidCents !== null) {
+    return amountPaidCents > 0 ? "cash" : "none";
   }
   if (Array.isArray(invoice.payments)) {
     const cashPayments = invoice.payments.filter(
@@ -113,11 +112,9 @@ function quantifyXeroInvoiceCashCents(
   let knownCents = 0;
   let complete = true;
 
-  if (
-    typeof invoice.amountPaid === "number" &&
-    Number.isFinite(invoice.amountPaid)
-  ) {
-    knownCents += Math.round(invoice.amountPaid * 100);
+  const amountPaidCents = providerAmountToCents(invoice.amountPaid);
+  if (amountPaidCents !== null) {
+    knownCents += amountPaidCents;
   } else {
     if (invoice.amountPaid !== undefined && invoice.amountPaid !== null) {
       // Present but unreadable (e.g. a stringly-typed degraded payload).
@@ -128,11 +125,9 @@ function quantifyXeroInvoiceCashCents(
         if (String(payment.status ?? "").toUpperCase() === "DELETED") {
           continue;
         }
-        if (
-          typeof payment.amount === "number" &&
-          Number.isFinite(payment.amount)
-        ) {
-          knownCents += Math.round(payment.amount * 100);
+        const paymentCents = providerAmountToCents(payment.amount);
+        if (paymentCents !== null) {
+          knownCents += paymentCents;
         } else {
           complete = false;
         }
@@ -144,16 +139,12 @@ function quantifyXeroInvoiceCashCents(
     ...(invoice.overpayments ?? []),
     ...(invoice.prepayments ?? []),
   ]) {
-    if (
-      typeof allocation.appliedAmount === "number" &&
-      Number.isFinite(allocation.appliedAmount)
-    ) {
-      knownCents += Math.round(allocation.appliedAmount * 100);
-    } else if (
-      typeof allocation.total === "number" &&
-      Number.isFinite(allocation.total)
-    ) {
-      knownCents += Math.round(allocation.total * 100);
+    const appliedCents = providerAmountToCents(allocation.appliedAmount);
+    const totalCents = providerAmountToCents(allocation.total);
+    if (appliedCents !== null) {
+      knownCents += appliedCents;
+    } else if (totalCents !== null) {
+      knownCents += totalCents;
       complete = false;
     } else {
       complete = false;

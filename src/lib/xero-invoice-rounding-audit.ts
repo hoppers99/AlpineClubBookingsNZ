@@ -28,7 +28,7 @@
 
 import { BookingStatus } from "@prisma/client";
 import { getStayNights } from "./pricing";
-import { formatDate } from "./xero-invoice-helpers";
+import { formatDateOnly } from "@/lib/date-only";
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -109,7 +109,7 @@ export interface InvoiceRoundingDrift {
  * apply the old `round(totalCents / nightCount)` per-night rounding.
  *
  * This intentionally reproduces the old code byte-for-byte, including the same
- * float `Math.round(...)` and the same `formatDate`-based contiguity check, so
+ * float `Math.round(...)` and the same `formatDateOnly`-based contiguity check, so
  * it detects the exact half-cent cases the audit exists to find. Do not
  * "improve" the rounding here.
  */
@@ -158,7 +158,7 @@ export function computeGuestRoundingDrift(
       const last = rawRuns[rawRuns.length - 1];
       const contiguous =
         last !== undefined &&
-        formatDate(new Date(last.endExclusive)) === formatDate(night.stayDate);
+        formatDateOnly(new Date(last.endExclusive)) === formatDateOnly(night.stayDate);
       if (last && contiguous) {
         // Pre-#1231: extend on date contiguity ALONE (no price check).
         last.endExclusive = new Date(night.stayDate.getTime() + ONE_DAY_MS);
@@ -184,8 +184,8 @@ export function computeGuestRoundingDrift(
           : raw.totalCents;
       const emitted = raw.nightCount * rounded;
       runs.push({
-        startDate: formatDate(new Date(raw.startDate)),
-        endExclusive: formatDate(new Date(raw.endExclusive)),
+        startDate: formatDateOnly(new Date(raw.startDate)),
+        endExclusive: formatDateOnly(new Date(raw.endExclusive)),
         nightCount: raw.nightCount,
         totalCents: raw.totalCents,
         roundedPerNightCents: rounded,

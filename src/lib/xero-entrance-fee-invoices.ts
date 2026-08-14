@@ -47,6 +47,7 @@ import {
   parseDateOnly,
 } from "@/lib/date-only";
 import { buildJoiningFeeNarration } from "./joining-fee-narration";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 
 export interface CreateXeroEntranceFeeInvoiceOptions
   extends FindOrCreateXeroContactOptions {
@@ -136,18 +137,22 @@ async function deriveLegacyEntranceFeeCategoryLabel(
   return "Adult";
 }
 
-// Total of a Xero invoice in integer cents. Prefers the provider-computed
-// `total`; falls back to summing line amounts for summary payloads. Mirrors the
-// subscription path's `invoiceCents`.
-function entranceFeeInvoiceCents(invoice: Invoice): number {
-  if (typeof invoice.total === "number") return Math.round(invoice.total * 100);
-  return Math.round(
+// Total of a Xero invoice in integer cents, or `null` when it cannot be read.
+// Prefers the provider-computed `total`; falls back to summing line amounts for
+// summary payloads. Mirrors the subscription path's `invoiceCents`, including
+// its refusal: this figure only feeds adoption and conflict comparisons, so an
+// unreadable invoice must match NOTHING. A `?? 0` default made it compare equal
+// to a zero expected fee, which would have adopted an invoice nobody could read
+// (#2685 review).
+function entranceFeeInvoiceCents(invoice: Invoice): number | null {
+  const totalCents = providerAmountToCents(invoice.total);
+  if (totalCents !== null) return totalCents;
+  return providerAmountToCents(
     (invoice.lineItems ?? []).reduce(
       (sum, line) =>
-        sum +
-        (line.lineAmount ?? (line.quantity ?? 1) * (line.unitAmount ?? 0)),
+        sum + (line.lineAmount ?? (line.quantity ?? 1) * (line.unitAmount ?? 0)),
       0,
-    ) * 100,
+    ),
   );
 }
 
@@ -503,6 +508,13 @@ export async function createXeroEntranceFeeInvoice(
         referenceMatchesWrongAmount,
       );
       const conflictInvoiceId = referenceMatchesWrongAmount.invoiceID ?? null;
+      // `null` here means the invoice's amount could not be read at all, which
+      // is a different operator story from "it says a different number" — and
+      // an alert that reads "is nullc" tells nobody anything (#2685 review).
+      const providerAmountLabel =
+        providerAmountCents === null
+          ? "an amount that could not be read"
+          : `${providerAmountCents}c`;
       logger.error(
         {
           memberId,
@@ -519,7 +531,7 @@ export async function createXeroEntranceFeeInvoice(
       await notifyXeroSyncError({
         errorType: "entrance-fee-provider-mismatch",
         operation: `createXeroEntranceFeeInvoice:${memberId}`,
-        errorMessage: `Entrance fee for member ${memberId} was NOT billed: existing AUTHORISED Xero invoice ${conflictInvoiceId} on reference "${reference}" is ${providerAmountCents}c but the expected fee is ${feeAmountCents}c. No invoice was minted; manual reconciliation required.`,
+        errorMessage: `Entrance fee for member ${memberId} was NOT billed: existing AUTHORISED Xero invoice ${conflictInvoiceId} on reference "${reference}" is ${providerAmountLabel} but the expected fee is ${feeAmountCents}c. No invoice was minted; manual reconciliation required.`,
       });
       await completeXeroSyncOperation(operationId!, {
         status: "SUCCEEDED",

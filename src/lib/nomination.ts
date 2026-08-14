@@ -78,6 +78,7 @@ import {
   NOMINATION_AUTOMATIC_REMINDER_LIMIT,
   getNominationTokenExpiryDate,
 } from "@/lib/nomination-token-policy";
+import { formatDateOnly } from "@/lib/date-only";
 
 const maxStr = (len: number) => z.string().max(len).optional().nullable();
 const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD format");
@@ -1452,7 +1453,7 @@ export async function approveMemberApplication(
           mappingAgeTierSettings
         )
       : await computeTier(
-          lockedApplication.applicantDateOfBirth.toISOString().slice(0, 10)
+          formatDateOnly(lockedApplication.applicantDateOfBirth)
         );
     // The application form captures the booking-gate profile details, so
     // approval counts as initial confirmation for the applicant and dependents.
@@ -1642,7 +1643,10 @@ export async function approveMemberApplication(
       // is cleared just above. Anyone who already holds a choice naming them was
       // resolving to nobody while they were inheriting, and should now resolve
       // to them. Nothing re-pointed those dependants until the daily sweep.
-      await reconcileEmailInheritanceForMemberChange(tx, [target.id]);
+      await reconcileEmailInheritanceForMemberChange(tx, [target.id], {
+        trigger: "nomination-promotion",
+        actorMemberId: adminMemberId,
+      });
       mappedMemberIds.push(target.id);
       if (outcome.skipSeasonalAssignment) {
         skipBillingIds.add(target.id);

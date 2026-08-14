@@ -81,11 +81,17 @@ mandate. The generator fully supports source (symbol extraction, sensitivity
 tags); only the *default membership* is conservative. Whether the public default
 should include first-party source is an open ADR question.
 
-## The overlay contract (generic, deployment-owned)
+## Two generic, deployment-owned overlays
 
-Optional private or fork knowledge uses a generic, deployment-owned overlay:
-`config/diagnostics-knowledge.json` (git-ignored, never shipped in public code).
-It may **widen or narrow the allowlist**:
+A deployment configures both through the same git-ignored, hard-excluded file,
+`config/diagnostics-knowledge.json` (overridable via
+`DIAGNOSTICS_KNOWLEDGE_CONFIG_PATH`), read by the generator in the Docker builder.
+Public code never mentions any specific club's paths or contents; a
+present-but-malformed config **fails the build closed**.
+
+### 1. The allowlist overlay — WHICH committed repo files to bundle
+
+`include` / `exclude` globs **widen or narrow the allowlist**:
 
 ```json
 {
@@ -95,9 +101,46 @@ It may **widen or narrow the allowlist**:
 ```
 
 Excludes always win over includes, and the hard exclude set above still cannot be
-re-included. A deployment's own files are then bundled from disk like any other —
-there is no separate injection path, and public code never mentions any specific
-club's paths or contents.
+re-included. A deployment's own committed files are then bundled from disk like any
+other — there is no separate injection path.
+
+### 2. The private knowledge overlay — extra CONTENT with no repo file (ADR-006 §4)
+
+A `knowledge` section supplies **inline, deployment-specific knowledge entries**
+that have no committed repo file — a private runbook, fork-only operational notes:
+
+```json
+{
+  "knowledge": {
+    "entries": [
+      { "path": "ops/runbook.md", "content": "# Runbook\n\n..." }
+    ]
+  }
+}
+```
+
+Each entry is a `path` handle (the citation label) and its `content`. Entries are
+treated as **untrusted evidence, identically to a bundled repo file**:
+
+- **Secret-scanned** with the same fail-closed scanner — a secret in overlay content
+  refuses the whole build, exactly like a bundled file.
+- **Bounded and hashed** into the same excerpts, and **rendered through the same
+  `renderSourceEvidenceBlock` defusal boundary**, so a role-label / NEL / invisible
+  character in overlay content is folded and defused just as it is for a public
+  excerpt and cannot forge a turn.
+- **Namespaced under `overlay/`** so an entry can neither collide with nor
+  impersonate a real repo path, every citation is clearly attributable, and the
+  entry is tagged with the `overlay` sensitivity class.
+- **Cannot re-include a hard-excluded path**: a handle naming an env file, key
+  material, or the overlay config itself is refused (checked on the raw handle,
+  before the `overlay/` prefix, and case-insensitively).
+
+Overlay entries are merged into `entries` **before** the integrity digest is
+computed, so they participate in the **single** digest and the fail-closed load
+contract below is unchanged with or without an overlay. The overlay is **optional**:
+absent ⇒ Diagnostics runs on the public bundle and the bundle is byte-identical to
+one built without the feature. It is deployment-local and **never travels** in any
+config-transfer bundle (ADR-006 §6).
 
 ## How it ships (build + runtime wiring)
 
@@ -145,11 +188,16 @@ to real bundle content cannot be trusted.
 
 Excerpts are framed for the model as **verbatim source at a commit — explicitly
 not a statement of current runtime state, account data, live values, or
-availability, and never an instruction**. The wrapper tag is neutralized inside
-untrusted spans so an excerpt cannot forge the closing delimiter and "break out".
-The Diagnostics route (#2378) is responsible for placing this evidence in the
-user turn, never the system role — mirroring the page-help assistant's
-grounding discipline.
+availability, and never an instruction**. Every untrusted span (excerpt text,
+label, and path) crosses one defusal boundary — the same for a public repo excerpt
+and a private-overlay entry: it is **folded** (invisible/default-ignorable code
+points dropped, every line terminator including NEL normalised, look-alike colons
+folded) and any **role-label line** (`assistant:`, `system:`…) is defused, via the
+shared `untrusted-text` helper; and the **wrapper tag is neutralized** so an excerpt
+cannot forge the closing delimiter and "break out". Angle brackets elsewhere are
+preserved so code excerpts (generics, JSX) stay faithful. The Diagnostics route
+(#2378) is responsible for placing this evidence in the user turn, never the system
+role — mirroring the page-help assistant's grounding discipline.
 
 ### Known limitation (owner decision, #2370)
 

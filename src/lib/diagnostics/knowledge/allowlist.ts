@@ -149,6 +149,22 @@ function matchesAny(path: string, globs: readonly string[]): boolean {
   return globs.some((glob) => globToRegExp(glob).test(path));
 }
 
+/**
+ * True when a path matches the security-critical HARD_EXCLUDE set — the paths no
+ * overlay of any kind may re-include (env files, key material, the private
+ * deployment overlay files, build output, generated code). Checked BOTH as given
+ * and lower-cased, because the globs are lowercase and a HARD_EXCLUDE must not be
+ * evadable with `.ENV` / `ID_RSA`. Used by the private-knowledge overlay
+ * (`overlay.ts`) to refuse an entry whose handle claims to be an excluded file,
+ * and available to any other caller that must honour the same floor.
+ */
+export function isHardExcluded(path: string): boolean {
+  return (
+    matchesAny(path, HARD_EXCLUDE_GLOBS) ||
+    matchesAny(path.toLowerCase(), HARD_EXCLUDE_GLOBS)
+  );
+}
+
 function extensionOf(path: string): string {
   const slash = path.lastIndexOf("/");
   const dot = path.lastIndexOf(".");

@@ -15,6 +15,7 @@ import {
 import { buildMemberFacingParentLinks } from "@/lib/member-parent-links";
 import { getMissingMemberProfileFieldDetails } from "@/lib/member-profile-completeness";
 import { loadMemberFieldsFlags } from "@/lib/member-fields-settings";
+import { formatDateOnly } from "@/lib/date-only";
 
 function serializeStatus(member: MemberOnboardingProfile) {
   const status = getMemberOnboardingStatus(member);
@@ -238,14 +239,14 @@ export async function GET() {
           ? `${request.requestedFirstName} ${request.requestedLastName}`
           : null,
       requestedDateOfBirth: request.requestedDateOfBirth
-        ? request.requestedDateOfBirth.toISOString().substring(0, 10)
+        ? formatDateOnly(request.requestedDateOfBirth)
         : null,
       childName:
         request.childFirstName && request.childLastName
           ? `${request.childFirstName} ${request.childLastName}`
           : null,
       childDateOfBirth: request.childDateOfBirth
-        ? request.childDateOfBirth.toISOString().substring(0, 10)
+        ? formatDateOnly(request.childDateOfBirth)
         : null,
       direction:
         request.requesterId === currentMember.id

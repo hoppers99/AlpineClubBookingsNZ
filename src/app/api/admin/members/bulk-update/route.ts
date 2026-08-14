@@ -494,7 +494,12 @@ export async function POST(req: NextRequest) {
             // tier — has to re-resolve their dependants' pointers. In the same
             // transaction, so a rolled-back grant rolls the re-resolution back
             // with it.
-            await reconcileEmailInheritanceForMemberChange(tx, [member.id]);
+            await reconcileEmailInheritanceForMemberChange(tx, [member.id], {
+              // An ORG grant forcing N/A, or a revoke restoring a person tier:
+              // an age-tier eligibility change the acting admin caused (#2822).
+              trigger: "lifecycle-eligibility-change",
+              actorMemberId: currentUserId,
+            });
           }
           // #1756: an ORG grant that moves the member off ADULT breaks the
           // double-bed sharing precondition, so sweep their future shared-double

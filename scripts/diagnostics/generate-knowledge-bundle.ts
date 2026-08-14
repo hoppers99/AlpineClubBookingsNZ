@@ -37,6 +37,7 @@ import {
   KnowledgeBundleSecretError,
   type KnowledgeSourceFile,
 } from "../../src/lib/diagnostics/knowledge/generate";
+import { KnowledgeOverlayError } from "../../src/lib/diagnostics/knowledge/overlay";
 import { serializeBundle } from "../../src/lib/diagnostics/knowledge/serialize";
 import {
   KNOWLEDGE_BUNDLE_PLACEHOLDER_SHA,
@@ -44,7 +45,24 @@ import {
 } from "../../src/lib/diagnostics/knowledge/types";
 
 const REPO_ROOT = process.cwd();
-const OVERLAY_PATH = path.join(REPO_ROOT, "config", "diagnostics-knowledge.json");
+
+/**
+ * The conventional, git-ignored, HARD_EXCLUDE-d slot a deployment populates with
+ * its private Diagnostics knowledge config. GENERIC MECHANISM (ADR-006 §4): the
+ * DEFAULT location only. A fork may point elsewhere with
+ * `DIAGNOSTICS_KNOWLEDGE_CONFIG_PATH` — public code embeds no deployment-specific
+ * path or content, and assumes nothing about what the file contains.
+ *
+ * The file carries two independent, both-optional sections:
+ *   - `include` / `exclude` — the ALLOWLIST overlay (which committed repo files to
+ *     bundle), consumed by `resolveAllowlist`;
+ *   - `knowledge` — the PRIVATE KNOWLEDGE OVERLAY (ADR-006 §4), extra inline
+ *     knowledge entries with no committed repo file, consumed by the generator as
+ *     `knowledgeOverlay` (validated + secret-scanned + fail-closed there).
+ */
+const DIAGNOSTICS_KNOWLEDGE_CONFIG_PATH =
+  process.env.DIAGNOSTICS_KNOWLEDGE_CONFIG_PATH?.trim() ||
+  path.join(REPO_ROOT, "config", "diagnostics-knowledge.json");
 
 /** Directories never worth descending into (fast prune before per-file globbing). */
 const PRUNE_DIRS = new Set([
@@ -88,31 +106,59 @@ function resolveObservedAt(): string {
   return new Date().toISOString();
 }
 
-function loadOverlay(): KnowledgeAllowlistOverlay {
+interface DeploymentKnowledgeConfig {
+  /** The allowlist overlay (which committed repo files to bundle). */
+  allowlist: KnowledgeAllowlistOverlay;
+  /**
+   * The raw private-knowledge overlay section, passed through UNVALIDATED — the
+   * pure generator owns its schema, secret scan, and fail-closed contract so the
+   * one validation lives in one place. `undefined` when the section is absent.
+   */
+  knowledge: unknown;
+}
+
+/**
+ * Read the deployment's Diagnostics knowledge config, or empty defaults when the
+ * file is absent (the normal case). FAILS CLOSED on a present-but-malformed file:
+ * a config we cannot parse must stop the build, not be silently ignored — the same
+ * posture as a detected secret. (This tightens the previous "warn and ignore"
+ * behaviour, deliberately, now that the file can carry knowledge CONTENT.)
+ */
+function loadDeploymentKnowledgeConfig(): DeploymentKnowledgeConfig {
   let raw: string;
   try {
-    raw = readFileSync(OVERLAY_PATH, "utf8");
+    raw = readFileSync(DIAGNOSTICS_KNOWLEDGE_CONFIG_PATH, "utf8");
   } catch {
-    return {}; // absent overlay is the normal case
+    return { allowlist: {}, knowledge: undefined };
   }
+
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    const overlay = parsed as { include?: unknown; exclude?: unknown };
-    const asStringArray = (v: unknown): string[] | undefined =>
-      Array.isArray(v) && v.every((x) => typeof x === "string")
-        ? (v as string[])
-        : undefined;
-    return {
-      include: asStringArray(overlay.include),
-      exclude: asStringArray(overlay.exclude),
-    };
+    parsed = JSON.parse(raw);
   } catch (err) {
-    console.warn(
-      `[knowledge-bundle] Ignoring malformed overlay at ${OVERLAY_PATH}: ` +
+    throw new KnowledgeOverlayError(
+      `config at ${DIAGNOSTICS_KNOWLEDGE_CONFIG_PATH} is not valid JSON — ` +
         `${err instanceof Error ? err.message : String(err)}`,
     );
-    return {};
   }
+
+  const config = parsed as {
+    include?: unknown;
+    exclude?: unknown;
+    knowledge?: unknown;
+  };
+  const asStringArray = (v: unknown): string[] | undefined =>
+    Array.isArray(v) && v.every((x) => typeof x === "string")
+      ? (v as string[])
+      : undefined;
+
+  return {
+    allowlist: {
+      include: asStringArray(config.include),
+      exclude: asStringArray(config.exclude),
+    },
+    knowledge: config.knowledge,
+  };
 }
 
 function walk(dirAbs: string, relBase: string, out: string[]): void {
@@ -132,8 +178,17 @@ function walk(dirAbs: string, relBase: string, out: string[]): void {
 }
 
 function main(): void {
-  const overlay = loadOverlay();
-  const allowlist = resolveAllowlist(overlay);
+  let config: DeploymentKnowledgeConfig;
+  try {
+    config = loadDeploymentKnowledgeConfig();
+  } catch (err) {
+    if (err instanceof KnowledgeOverlayError) {
+      console.error(`[knowledge-bundle] FAIL CLOSED — ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+  const allowlist = resolveAllowlist(config.allowlist);
 
   const allPaths: string[] = [];
   walk(REPO_ROOT, "", allPaths);
@@ -149,15 +204,28 @@ function main(): void {
 
   let serialized: string;
   try {
-    const bundle = buildKnowledgeBundle({ files, commitSha, observedAt, overlay });
+    const bundle = buildKnowledgeBundle({
+      files,
+      commitSha,
+      observedAt,
+      overlay: config.allowlist,
+      knowledgeOverlay: config.knowledge,
+    });
     serialized = serializeBundle(bundle);
+    const overlayCount = bundle.entries.filter((e) =>
+      e.sensitivity.includes("overlay"),
+    ).length;
     console.log(
-      `[knowledge-bundle] ${bundle.entries.length} entries, ` +
+      `[knowledge-bundle] ${bundle.entries.length} entries ` +
+        `(${overlayCount} from the private overlay), ` +
         `${bundle.entries.reduce((n, e) => n + e.excerpts.length, 0)} excerpts, ` +
         `commit ${commitSha.slice(0, 12)}, digest ${bundle.integrity.entriesDigest.slice(0, 12)}.`,
     );
   } catch (err) {
-    if (err instanceof KnowledgeBundleSecretError) {
+    if (
+      err instanceof KnowledgeBundleSecretError ||
+      err instanceof KnowledgeOverlayError
+    ) {
       console.error(`[knowledge-bundle] FAIL CLOSED — ${err.message}`);
       process.exit(1);
     }

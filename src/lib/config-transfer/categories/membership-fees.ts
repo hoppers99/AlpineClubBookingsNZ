@@ -21,6 +21,7 @@ import {
   type ReadDb,
 } from "../import-types";
 import { RowValidator, nz, readCsvRows } from "../values";
+import { formatDateOnly } from "@/lib/date-only";
 
 // membership-fees category (#1941, follow-up to #1931/#1932): the first-class
 // transfer of the MEMBERSHIP FEE SCHEDULES — joining fees (JoiningFee, #1931/E5)
@@ -163,7 +164,7 @@ registerEntity({
 
 /** date-only (@db.Date): serialise as YYYY-MM-DD. */
 function toDateStr(value: Date | null | undefined): string {
-  return value ? new Date(value).toISOString().slice(0, 10) : "";
+  return value ? formatDateOnly(new Date(value)) : "";
 }
 
 /**

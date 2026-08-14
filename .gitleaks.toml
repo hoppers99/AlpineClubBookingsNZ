@@ -1,6 +1,186 @@
 title = "TACBookings Gitleaks config"
 
+# #2686 — this file MUST extend the default rule set.
+#
+# Before #2686 it did not, and that made every gitleaks job in CI vacuous. A
+# gitleaks config without `[extend] useDefault = true` REPLACES the built-in
+# rules rather than adding to them, and this file declared no `[[rules]]` of its
+# own — so the effective rule set was empty and the scan could not fail on
+# anything. Measured on the tree at 66448740c: a file containing an AWS access
+# key id, an AWS secret access key and a `sk_live_` Stripe key scanned clean
+# with this config and reported two findings without it. Never delete the
+# `[extend]` block below; a required check that cannot fail is worse than no
+# check, because it reads as covered.
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Allowlists: CONTENT-scoped, and pinned to EXACT LITERALS.
+# ---------------------------------------------------------------------------
+#
+# Two rules, and both were learned the hard way.
+#
+# 1. NEVER path-scoped. A global `[[allowlists]]` entry that carries `paths`
+#    suppresses EVERYTHING under those paths in gitleaks 8.28.0, whatever else
+#    the entry says, and `matchCondition = "AND"` does not change that — it is
+#    silently ignored at this level. Measured: an entry with
+#    `paths = ['(^|/)__tests__/']` AND `regexes = ['<uuid shape>']` suppressed a
+#    plain AWS access key sitting in a `__tests__/` file. The pre-#2686 version
+#    of this file had exactly that shape (`paths = ['^\.env\.example$']` plus a
+#    `sk_test_placeholder` regex), so it allowlisted the whole of `.env.example`
+#    — every rule, every value.
+#
+# 2. NEVER a SHAPE. A global allowlist applies to EVERY rule, not to the one its
+#    description happens to name, so a shape class silences rules nobody thought
+#    about. The first draft of this file allowlisted the UUID shape "because no
+#    credential this application holds is UUID-shaped" — measured, that entry
+#    dropped `heroku_api_key = <uuid>` (rule `heroku-api-key`) and
+#    `CRON_SECRET=<uuid>` on the floor, and the premise was false in-repo
+#    anyway: `adult-member-hosting-coverage-queue.ts` and
+#    `adult-member-hosting-coverage-incidents.ts` both mint `randomUUID()` claim
+#    tokens that are used as BEARER values. The same draft allowlisted
+#    `^(?:pk|sk)_test_[A-Za-z0-9_]+$`, which silenced every Stripe test-mode key
+#    that will ever exist in this repository — and a `sk_test_` key is a real
+#    test-mode credential, not a placeholder.
+#
+#    So every entry below names the one literal value it forgives, anchored
+#    `^…$`. It can hide that value and nothing else. Adding a new fixture that
+#    trips the scanner means adding a line here, in the diff that adds the
+#    fixture, which is the review point we want.
+#
+# Why literals here rather than fingerprints in `.gitleaksignore`: see that
+# file's header. Short version — the history scan diffs merge commits against
+# their first parent (#2686), so the same line is re-reported at every merge
+# that carried it forward, and a `commit:file:rule:line` fingerprint would need
+# re-pinning after every merge. A literal is pinned to the value, so it holds.
+#
+# Writing the literal down here is safe for exactly one reason: each value is
+# forgiven by its own entry, so the copy in this file is not itself a new
+# finding. That reason does NOT extend to anything real — never paste a value
+# here that you would not publish, because this file is public.
+
 [[allowlists]]
-description = "Allow documented Stripe test placeholder in the example env file"
-paths = ['''^\.env\.example$''']
-regexes = ['''sk_test_placeholder''']
+description = "The repeating-hex placeholder used for AUTH_SECRET/NEXTAUTH_SECRET/XERO_ENCRYPTION_KEY in the example env files, in CI env blocks, and in the Xero encryption tests. 64 characters of `0123456789abcdef` repeated four times — a value no generator would ever produce. 16 findings across history."
+regexes = ['''^(?:0123456789abcdef){4}$''']
+
+[[allowlists]]
+description = "The three Stripe TEST-mode placeholders this repository writes down, as exact literals: the diagnostics knowledge-bundle fixtures, the Playwright environment's publishable placeholder, and the booking-payment wrapper's fixture key. Any OTHER Stripe test key still fails the gate — `sk_test_` is a real test-mode credential and only these three named strings are forgiven. Live keys (`sk_live_`, `pk_live_`, `rk_live_`) are never allowlisted by shape. 51 findings across history."
+regexes = [
+  '''^sk_test_placeholder$''',
+  '''^pk_test_e2e_placeholder$''',
+  '''^sk_test_51SecretKeyMaterial$''',
+]
+
+[[allowlists]]
+description = "The two canonical fake `live` Stripe keys the redaction/diagnostics suites assert on: they exist to prove the redactor masks a live-looking key, so the scanner must not stop them being written down. 32 findings across history."
+regexes = ['''^sk_live_ABCDEF1234567890$''', '''^sk-live-abcdef123456$''']
+
+[[allowlists]]
+description = "The fake Stripe PaymentIntent client secret the redaction suites assert gets masked, in `redact-sensitive-json.test.ts` and `xero-inbound-reconciliation.test.ts`. The string has to be written down for the test to prove the redactor removes it."
+regexes = ['''^pi_123_secret_liveSecret$''']
+
+[[allowlists]]
+description = "The two UUID fixtures `member-credit.test.ts` and `admin-member-credit-routes.test.ts` use as idempotency keys, as exact literals. NOT the UUID shape: this application does mint UUID bearer tokens (the adult-member-hosting coverage claim tokens), so forgiving the shape would forgive a real one."
+regexes = [
+  '''^9a13b0af-7ffc-451b-a50b-81f6fb8630f4$''',
+  '''^26822a78-5929-4471-889f-b49f7c88914d$''',
+]
+
+[[allowlists]]
+description = "A readable snake_case fixture id used as the idempotency key in the pending-charge confirmation tests. Not a UUID and not a credential — it is a test's own label for a row it created."
+regexes = ['''^pending_charge_b1$''']
+
+[[allowlists]]
+description = "Prose, not credentials. `generic-api-key` matches the entropy of a sentence listing what the diagnostics tool returns — an auth outcome, then row, byte and timing counts — written as a slash-separated list. Same sentence in `diagnostics/tools/types.ts`, in the ADR that introduced it, and in the knowledge-bundle doc."
+regexes = ['''^row/byte/timing$''', '''^row/count/byte/timing$''']
+
+[[allowlists]]
+description = "Two settings lines from `.env.example`'s Mirotalk block. The JWT key line above them has an EMPTY value, and the rule matched across the line break onto the neighbouring expiry and presenter settings. Neither string is a secret; both are the setting name and its default, which is why they can be written here."
+regexes = ['''^MIRO_JWT_EXP=1h$''', '''^MIRO_MEETING_PRESENTER=true$''']
+
+[[allowlists]]
+description = "The signed test JWT built by the mirotalk-token suite so it can assert the token is verified and rejected on tamper. Signed with the suite's own throwaway key, over a payload that decodes to fixture data, and expired since 2023."
+regexes = ['''^eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJkYXRhIjoiVTJGc2RHVmtYMThBQVFJREJBVUdCOHdmSWF4NHJTaWc3N2txVkVYL210eEZTR05uUytzaHdOOVNsb283b2l4TFpZMm9xMlgvYitJSjAyaFJnNU1lTGJvT1Mvekg4QmtpU1BQT05CYk9OTG89IiwiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDM2MDB9\.Tpa8rwDsiXuKPVud59TmKAkW_jTuSlIUYiW-d7w06aQ$''']
+
+[[allowlists]]
+description = "A fixture database password in the measurement harness's own self-test, whose value is a hyphenated English phrase naming the UTF-16 test material it exists to exercise. It is a password to nothing."
+regexes = ['''^utf16-secret-material$''']
+
+# ---------------------------------------------------------------------------
+# Repository-owned rules
+# ---------------------------------------------------------------------------
+
+# #2686. gitleaks' default rule set has no rule for a database/broker connection
+# string, so `postgresql://user:<password>@host/db` and `redis://default:<pw>@…`
+# were both undetected — measured on v8.28.0 with the default rules and no
+# allowlists. On a PUBLIC repository holding a club's member and payment data
+# that is the most damaging plausible leak available, because the URL carries
+# the host as well as the credential.
+#
+# Precision, and why the thresholds are where they are. This repository writes
+# hundreds of connection strings in docs, Compose files, CI env blocks and test
+# harnesses — 28 distinct passwords in the working tree alone — and every one of
+# them is a local development or fixture value. Three filters keep those out:
+#
+#   * the password must be at least 8 characters. Every dev value in the tree
+#     is shorter (`pw`, `codex`, `s3cr3t`, `apppass`, `tacdev`, `rotated`);
+#     nothing this application would ever hold for real is, since its own
+#     generated secrets are 32+ hex characters;
+#   * `entropy` requires the password to look random rather than typed, which
+#     is what separates a generated credential from a chosen one;
+#   * a placeholder or an interpolation is excluded by construction — the
+#     password character class refuses `$`, `{`, `}`, `<`, `>` and backtick, so
+#     `${DB_PASSWORD}` and `<your-password>` cannot match at all — and the
+#     stopwords below drop the spelled-out ones.
+#
+# The cost is stated rather than hidden: a real credential shorter than 8
+# characters, or one a human chose and typed, is not caught by this rule. It is
+# still caught by review, and by the provider-specific default rules for every
+# credential shape that has a recognisable prefix.
+#
+# `scripts/ci/gitleaks-selftest.sh` proves this rule both fires and stays quiet,
+# on generated samples, as a step of the required `Secret scan (gitleaks)` job.
+[[rules]]
+id = "acb-connection-string-password"
+description = "Database or message-broker connection string carrying an inline password"
+regex = '''(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?|mssql|sqlserver|clickhouse|cockroachdb)://[a-z0-9._%+\-]{1,64}:([^\s/@"'`<>${}\[\]()]{8,128})@'''
+secretGroup = 1
+entropy = 3.0
+keywords = [
+  "postgres",
+  "postgresql",
+  "mysql",
+  "mariadb",
+  "mongodb",
+  "redis",
+  "rediss",
+  "amqp",
+  "amqps",
+  "mssql",
+  "sqlserver",
+  "clickhouse",
+  "cockroachdb",
+]
+
+  # Rule-SCOPED, unlike the global entries above: a `[[rules.allowlists]]` block
+  # can only ever affect this rule, so a spelled-out placeholder forgiven here
+  # is still a finding for every other rule. (`targetRules` on a global
+  # allowlist is NOT an equivalent — in 8.28.0 it silently voids the allowlist
+  # entirely, so it is never used in this file.)
+  [[rules.allowlists]]
+  description = "Spelled-out development and placeholder passwords. `stopwords` are case-insensitive SUBSTRING matches, so `staging-password-change-me`, `example-password` and `placeholder-pw` are all covered by the words they contain."
+  stopwords = [
+    "postgres",
+    "password",
+    "passwd",
+    "placeholder",
+    "example",
+    "changeme",
+    "change-me",
+    "change_me",
+    "redacted",
+    "fixture",
+    "dummy",
+    "localhost",
+  ]

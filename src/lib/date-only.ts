@@ -98,8 +98,59 @@ export function endOfDateOnlyForTimeZone(
   return new Date(nextStart.getTime() - 1);
 }
 
+/**
+ * The NZ calendar day a date-only value encodes, as `yyyy-MM-dd`.
+ *
+ * THE CANONICAL ENCODER, and the only place in `src/` allowed to write the
+ * truncation by hand (#2684). The receiver must be a date-only value — a
+ * `@db.Date` column, or a `Date` this module produced — whose instant is UTC
+ * midnight, because that is what makes the UTC reading and the NZ calendar day
+ * the same day (INV-DATE-010).
+ *
+ * It is NOT the encoder for a real instant. `createdAt`, `updatedAt` and every
+ * other bare `DateTime` column is a moment, and its UTC calendar day is the
+ * PREVIOUS NZ day for roughly the first half of every New Zealand day — the
+ * defect #2697 fixed on a Xero due date and a finance export. Deriving a club
+ * calendar day from an instant is `formatDateOnlyForTimeZone`'s job
+ * (INV-DATE-019).
+ */
 export function formatDateOnly(date: Date): string {
   return date.toISOString().slice(0, 10);
+}
+
+/**
+ * The calendar MONTH a date-only value falls in, as `yyyy-MM`.
+ *
+ * Same receiver contract as `formatDateOnly`: a date-only value, never an
+ * instant. Month keys are the finance subsystem's period identity (the
+ * `@db.Date` `FinanceMonthlyFact.month`, a reconciliation window's start), and
+ * they were the one hand-written ISO truncation left over once the day-level
+ * ones were single-sourced — a neighbouring hole in a rule that claims to close
+ * the class, so it lives here too (#2684).
+ */
+export function formatMonthOnly(date: Date): string {
+  return formatDateOnly(date).slice(0, 7);
+}
+
+/**
+ * The `yyyy-MM-dd` day a SERIALISED date-only value carries.
+ *
+ * The same value as `formatDateOnly`, one hop later: once a `@db.Date` has
+ * crossed a JSON boundary into a client component or an API payload it is a
+ * string (`"2026-07-01T00:00:00.000Z"`, or already `"2026-07-01"`), and the
+ * caller wants the day back out of it. Both shapes return their leading day,
+ * which is why this is a plain fixed-width prefix rather than a parse: the
+ * date-only prefix of an ISO value is exactly ten characters, so this and the
+ * `.split("T")[0]` spelling it replaces agree on every input either can be
+ * handed.
+ *
+ * It carries the SAME receiver contract as `formatDateOnly` and provides no
+ * more safety than it: a serialised instant truncated here is the identical
+ * off-by-one-day defect. If what you hold is a serialised `DateTime`, parse it
+ * and go through `formatDateOnlyForTimeZone` instead.
+ */
+export function dateOnlyFromIsoString(value: string): string {
+  return value.slice(0, 10);
 }
 
 /**

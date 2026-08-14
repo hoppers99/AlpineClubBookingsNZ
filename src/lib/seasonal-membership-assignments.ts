@@ -845,7 +845,10 @@ export async function saveSeasonalMembershipAssignment(params: {
       // tier change, not only `tierLeavesAdult` below: entering ADULT makes
       // them newly usable, and a dependant whose pointer cleared while they were
       // a person tier should get it back.
-      await reconcileEmailInheritanceForMemberChange(tx, [params.memberId]);
+      await reconcileEmailInheritanceForMemberChange(tx, [params.memberId], {
+        trigger: "lifecycle-eligibility-change",
+        actorMemberId: params.adminMemberId,
+      });
       if (tierLeavesAdult) {
         sweptShares = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
           memberId: params.memberId,
@@ -1502,7 +1505,10 @@ export async function rollForwardSeasonalMembershipAssignments(params: {
               // moves members across the ADULT line in bulk, so it is the path
               // most likely to leave a dependant pointing at somebody who is no
               // longer a qualified contact of record.
-              await reconcileEmailInheritanceForMemberChange(tx, [member.id]);
+              await reconcileEmailInheritanceForMemberChange(tx, [member.id], {
+                trigger: "lifecycle-eligibility-change",
+                actorMemberId: params.adminMemberId,
+              });
               chunkReconciled.push({
                 memberId: member.id,
                 previousAgeTier: currentAgeTier,

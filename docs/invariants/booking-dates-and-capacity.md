@@ -396,6 +396,28 @@ derivation).
     or through a private clone of it in `membership-cancellation-xero.ts` — so
     census that call graph, not the spelling. `formatDate` is still correct and
     still used, but only for `@db.Date` receivers, and its docblock says so.
+    #2839 closed the only member-facing one: the "Details last confirmed by X
+    on date" line built from `Member.detailsConfirmedAt` in
+    `src/lib/member-family-service.ts`, which reached the pattern through that
+    file's own `toDateInputValue` wrapper. That wrapper is still correct, and
+    still used, for the three date-only receivers beside it — with one
+    exception worth knowing about. `Member.dateOfBirth` is `DateTime?`, not
+    `@db.Date`, so nothing but writer convention pins it to UTC midnight, and
+    the Xero import parses `dd/MM/yyyy` as SERVER-LOCAL midnight
+    (`parseXeroCompanyNumberDate`, in `src/lib/xero-contacts.ts` and a
+    byte-identical clone in the import-member-contact route). Under the
+    container's `TZ=Pacific/Auckland` that stores the previous UTC day, so a
+    Xero-imported date of birth is a day early in storage and reads a day early
+    everywhere — #2859, which is fixed at the writer, not at the reader.
+
+    #2839 did **not** close the last one outside Xero. The member-merge
+    comparison screen (`src/app/(admin)/admin/members/[id]/merge/page.tsx`)
+    truncates every `Date` in the field-by-field diff to its UTC day from a
+    single generic renderer, so real instants such as `photoUpdatedAt`,
+    `lifeMemberDate` and `hutLeaderEligibleAt` all read a day early there for
+    the first half of every NZ day — in front of an irreversible merge (#2860).
+    Treat any census reporting this class as empty outside Xero, including one
+    that ships an empty known-defects list (#2855), as not yet meeting the bar.
     #2684's lint rule is where the whole class gets caught; until then it is a
     known trap, not a permitted pattern.
   - *A number of days added to a document date is added in CALENDAR days*, with

@@ -51,12 +51,12 @@ import {
   retryXeroWriteWithContactRepair,
   type FindOrCreateXeroContactOptions,
 } from "./xero-contacts";
-import { formatDateOnlyForTimeZone } from "@/lib/date-only";
+import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
 import {
-  formatDate,
   getBookingInvoiceDueDate,
   getBookingInvoiceIssueDate,
 } from "./xero-invoice-helpers";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 
 // #1765 — the aggregate Payment statuses that prove cash was captured at some
 // point. Settlement gating must pair one of these with a positive NET capture
@@ -130,7 +130,7 @@ function splitNightsIntoPriceRuns(
     const last = runs[runs.length - 1];
     const contiguous =
       last !== undefined &&
-      formatDate(new Date(last.endExclusive)) === formatDate(night.stayDate);
+      formatDateOnly(new Date(last.endExclusive)) === formatDateOnly(night.stayDate);
     // Extend the current run only when the date is contiguous AND the nightly
     // price is unchanged; otherwise open a new run. This keeps every run a
     // single price over a whole number of nights.
@@ -234,7 +234,7 @@ export function buildInvoiceLineItems(
       // `describeGuestRateMembershipLabel`.
       `(${guest.ageTier}, ${describeGuestRateMembershipLabel(itemCodeResolver, guest)})`,
       `${run.nightCount} night${run.nightCount !== 1 ? "s" : ""}`,
-      `${formatDate(run.startDate)} - ${formatDate(run.endExclusive)}`,
+      `${formatDateOnly(run.startDate)} - ${formatDateOnly(run.endExclusive)}`,
     ].join(" - ");
     // perNightCents * nightCount === totalCents by construction, so the line
     // reconciles to the exact cent total (#1163).
@@ -263,7 +263,7 @@ export function buildInvoiceLineItems(
           // #2543 — same rate-driven label as `runToLineItem`.
           `(${guest.ageTier}, ${describeGuestRateMembershipLabel(itemCodeResolver, guest)})`,
           `${nights} night${nights !== 1 ? "s" : ""}`,
-          `${formatDate(checkIn)} - ${formatDate(checkOut)}`,
+          `${formatDateOnly(checkIn)} - ${formatDateOnly(checkOut)}`,
         ].join(" - ");
         return [applyCodes({
           description,
@@ -678,10 +678,17 @@ export async function createXeroInvoiceForBooking(
           : "Zero-total invoice does not require Xero payment recording.";
 
     if (shouldRecordStripeInvoicePayment) {
-      const invoiceAmountDueCents =
-        typeof createdInvoice.amountDue === "number"
-          ? Math.round(createdInvoice.amountDue * 100)
-          : null;
+      // THE ONE BEHAVIOUR DELTA IN THIS CONVERSION, stated for the record
+      // (#2685 review). The test this replaced was `typeof … === "number"`;
+      // `providerAmountToCents` also requires the number to be FINITE. The only
+      // inputs that differ are `NaN` and `±Infinity`, which Xero's JSON cannot
+      // produce — and for those the old code took the `Math.min` branch and sent
+      // `amount: NaN` to Xero, while this one falls to `netCapturedCents`, the
+      // same figure an absent `amountDue` has always produced. No finite
+      // provider amount converts to a different cent value.
+      const invoiceAmountDueCents = providerAmountToCents(
+        createdInvoice.amountDue,
+      );
       const invoicePaymentCents =
         invoiceAmountDueCents === null
           ? netCapturedCents
@@ -967,7 +974,7 @@ function mergeBookingInvoiceLineItemDescriptions(
   checkOut: Date,
   nights: number
 ): LineItem[] {
-  const stayNarration = `${nights} night${nights !== 1 ? "s" : ""} - ${formatDate(checkIn)} - ${formatDate(checkOut)}`;
+  const stayNarration = `${nights} night${nights !== 1 ? "s" : ""} - ${formatDateOnly(checkIn)} - ${formatDateOnly(checkOut)}`;
   let guestLineIndex = 0;
 
   return existingLineItems.map((existingLineItem) => {
@@ -1109,8 +1116,8 @@ export async function updateXeroBookingInvoiceForBooking(
     bookingId,
     "invoice-update",
     invoiceId,
-    formatDate(checkIn),
-    formatDate(checkOut),
+    formatDateOnly(checkIn),
+    formatDateOnly(checkOut),
     "v1"
   );
 

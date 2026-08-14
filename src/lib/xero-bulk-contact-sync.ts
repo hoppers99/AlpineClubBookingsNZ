@@ -51,6 +51,7 @@ import {
   throttle,
   upsertXeroSyncCursor,
 } from "./xero-sync-cursors";
+import { formatDateOnly } from "@/lib/date-only";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -477,7 +478,7 @@ export async function syncContactsFromXero(
         });
         if (applied.appliedFields.includes("joinedDate") && updateData.joinedDate) {
           changes.push(
-            `Joined date set to ${updateData.joinedDate.toISOString().split("T")[0]}`,
+            `Joined date set to ${formatDateOnly(updateData.joinedDate)}`,
           );
         }
         if (applied.appliedFields.includes("phoneNumber") && updateData.phoneNumber) {
@@ -628,7 +629,7 @@ export async function syncContactsFromXero(
       if (applied.linked) changes.push("Linked to Xero contact");
       if (applied.appliedFields.includes("joinedDate") && updateData.joinedDate) {
         changes.push(
-          `Joined date set to ${updateData.joinedDate.toISOString().split("T")[0]}`,
+          `Joined date set to ${formatDateOnly(updateData.joinedDate)}`,
         );
       }
       if (applied.appliedFields.includes("phoneNumber") && updateData.phoneNumber) {

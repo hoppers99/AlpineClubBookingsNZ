@@ -45,13 +45,13 @@ import {
 } from "./xero-booking-repair-findings";
 import {
   getOperationQueueTypeHint,
-  toDateOnly,
 } from "./xero-booking-repair-utils";
 import { hasCapturedPayment } from "@/lib/booking-payment-state";
 import {
   XERO_OUTBOX_MODIFICATION_ACCOUNT_CREDIT_NOTE_TYPE,
   XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE,
 } from "@/lib/xero-operation-outbox-payload";
+import { formatDateOnly } from "@/lib/date-only";
 
 export function classifyBookingContext(
   context: BookingClassificationContext
@@ -337,8 +337,8 @@ export function classifyBookingContext(
           paymentId: payment.id,
           modificationId: latestDateChangingModification.id,
           xeroInvoiceId: primaryInvoice.objectId,
-          currentCheckIn: toDateOnly(booking.checkIn),
-          currentCheckOut: toDateOnly(booking.checkOut),
+          currentCheckIn: formatDateOnly(booking.checkIn),
+          currentCheckOut: formatDateOnly(booking.checkOut),
         },
         actionKeys: [action.key],
       });

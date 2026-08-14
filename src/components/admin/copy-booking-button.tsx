@@ -19,6 +19,7 @@ import {
   ADMIN_VIEW_ONLY_ACTION_REASON,
   useAdminAreaEditAccess,
 } from "@/hooks/use-admin-area-edit-access";
+import { formatDateOnly } from "@/lib/date-only";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -31,7 +32,7 @@ function addDaysDateOnly(date: string, days: number) {
   const parsed = parseDateOnly(date);
   if (!parsed) return "";
   parsed.setUTCDate(parsed.getUTCDate() + days);
-  return parsed.toISOString().slice(0, 10);
+  return formatDateOnly(parsed);
 }
 
 function getNights(checkIn: string, checkOut: string) {
