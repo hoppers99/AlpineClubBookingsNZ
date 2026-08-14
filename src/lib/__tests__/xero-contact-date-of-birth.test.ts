@@ -118,7 +118,36 @@ describe("parseXeroContactDateOfBirth", () => {
     expect(parseXeroContactDateOfBirth("9429041234567")).toBeNull();
     expect(parseXeroContactDateOfBirth("1985-06-15")).toBeNull();
     expect(parseXeroContactDateOfBirth("5/6/1985")).toBeNull();
-    expect(parseXeroContactDateOfBirth(" 15/06/1985")).toBeNull();
+  });
+
+  it("trims, so the guard and the six importers cannot disagree about one stored string", () => {
+    // The trim lives in this reader rather than at any call site. It used to
+    // live only in `buildXeroContactCompanyNumberPatch`, so a Xero field
+    // holding " 15/06/1985" was `null` to every importer — not a date of birth
+    // — and simultaneously a date the guard was willing to overwrite. Same
+    // string, two answers, which is the disagreement this module exists to end.
+    expect(parseXeroContactDateOfBirth(" 15/06/1985")?.toISOString()).toBe(
+      "1985-06-15T00:00:00.000Z",
+    );
+    expect(parseXeroContactDateOfBirth("15/06/1985 ")?.toISOString()).toBe(
+      "1985-06-15T00:00:00.000Z",
+    );
+    expect(parseXeroContactDateOfBirth("  ")).toBeNull();
+    // And a padded value the reader accepts is one the guard must NOT
+    // overwrite, because it IS a date of birth.
+    expect(
+      buildXeroContactCompanyNumberPatch(
+        new Date("1990-01-01T00:00:00.000Z"),
+        " 15/06/1985",
+      ),
+    ).toEqual({ companyNumber: "01/01/1990" });
+    // A padded NZBN is still an NZBN.
+    expect(
+      buildXeroContactCompanyNumberPatch(
+        new Date("1990-01-01T00:00:00.000Z"),
+        " 9429041234567 ",
+      ),
+    ).toEqual({});
   });
 
   it("refuses a day that does not exist rather than rolling it over, which is a DELIBERATE tightening", () => {

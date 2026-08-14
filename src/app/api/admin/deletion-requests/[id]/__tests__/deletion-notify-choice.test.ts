@@ -11,10 +11,11 @@ const h = vi.hoisted(() => {
     booking: { findMany: vi.fn(), findUnique: vi.fn() },
     xeroSyncOperation: { findFirst: vi.fn() },
     xeroObjectLink: { updateMany: vi.fn() },
-    // #2859: erasure clears the CACHED copy of the date of birth too — the app
-    // now writes it into the Xero contact's NZBN field, so an inbound sync
-    // caches it back here in plaintext.
-    xeroContactCache: { updateMany: vi.fn() },
+    // #2859: erasure DELETES the cached contact row. Nulling the one field
+    // would leave a row reading as "we looked, Xero holds nothing" — which is
+    // the outbound guard's permission to write — about a field Xero still
+    // holds.
+    xeroContactCache: { deleteMany: vi.fn() },
     // #2255: `findMany` reads who the anonymisation is about to detach and
     // `updateMany` sweeps their inheritance pointers, so club email stops being
     // aimed at the @deleted.invalid address the route has just written.
@@ -176,7 +177,7 @@ beforeEach(() => {
   h.prisma.familyGroupMember.deleteMany.mockResolvedValue({ count: 0 });
   h.prisma.bookingGuest.updateMany.mockResolvedValue({ count: 0 });
   h.prisma.xeroObjectLink.updateMany.mockResolvedValue({ count: 0 });
-  h.prisma.xeroContactCache.updateMany.mockResolvedValue({ count: 0 });
+  h.prisma.xeroContactCache.deleteMany.mockResolvedValue({ count: 0 });
   h.prisma.$transaction.mockImplementation(
     async (cb: (tx: typeof h.prisma) => Promise<unknown>) => cb(h.tx),
   );
@@ -1379,7 +1380,7 @@ describe("POST /api/admin/deletion-requests/[id] clears the cached date of birth
     h.prisma.booking.findMany.mockResolvedValue([]);
   });
 
-  it("nulls the cached companyNumber for the member's Xero contact in the anonymisation transaction", async () => {
+  it("DELETES the cached contact row in the anonymisation transaction, rather than nulling one field", async () => {
     h.prisma.member.findUnique.mockResolvedValue({
       id: member.id,
       email: member.email,
@@ -1390,16 +1391,24 @@ describe("POST /api/admin/deletion-requests/[id] clears the cached date of birth
     const response = await POST(req({ action: "approve" }), { params });
 
     expect(response.status).toBe(200);
-    expect(h.prisma.xeroContactCache.updateMany).toHaveBeenCalledWith({
+    expect(h.prisma.xeroContactCache.deleteMany).toHaveBeenCalledWith({
       where: { contactId: "contact-1" },
-      data: { companyNumber: null },
     });
+    // Deleting, not nulling, and this is a correctness property rather than a
+    // tidiness one. `buildXeroContactCompanyNumberPatch` reads a cache row that
+    // EXISTS and holds `null` as "we looked, and Xero's NZBN field is empty" —
+    // its permission to write. A null-ing erasure would manufacture exactly
+    // that permission about a field Xero still holds (#2873), so a later
+    // namesake matched onto the same contact would have a real business number
+    // overwritten by a birthday. It also leaves the erased member's cached
+    // name, email, phone and address in the row.
+    expect(h.prisma.xeroContactCache).not.toHaveProperty("updateMany");
     // In the SAME commit as the anonymisation, not after it: a clear that
     // landed outside the transaction would survive a rollback that put the
     // member's own row back.
     const anonymiseOrder = h.prisma.member.update.mock.invocationCallOrder[0];
     const cacheClearOrder =
-      h.prisma.xeroContactCache.updateMany.mock.invocationCallOrder[0];
+      h.prisma.xeroContactCache.deleteMany.mock.invocationCallOrder[0];
     expect(anonymiseOrder).toBeLessThan(cacheClearOrder);
     const linkDeactivateOrder =
       h.prisma.xeroObjectLink.updateMany.mock.invocationCallOrder[0];
@@ -1408,13 +1417,13 @@ describe("POST /api/admin/deletion-requests/[id] clears the cached date of birth
 
   it("touches no cache row when the member has no Xero contact", async () => {
     // The default stub already has `xeroContactId: null`. A blanket
-    // `updateMany` with an undefined contactId would clear the field on EVERY
-    // cached contact in the organisation, so "no contact" must mean no write at
-    // all rather than an unscoped one.
+    // `deleteMany` with an undefined contactId would wipe EVERY cached contact
+    // in the organisation, so "no contact" must mean no write at all rather
+    // than an unscoped one.
     const response = await POST(req({ action: "approve" }), { params });
 
     expect(response.status).toBe(200);
     expect(h.prisma.member.update).toHaveBeenCalled();
-    expect(h.prisma.xeroContactCache.updateMany).not.toHaveBeenCalled();
+    expect(h.prisma.xeroContactCache.deleteMany).not.toHaveBeenCalled();
   });
 });

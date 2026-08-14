@@ -952,6 +952,32 @@ export async function findOrCreateXeroContact(
           where: { id: memberId },
           data: { xeroContactId: finalResolved.contactId },
         });
+        // #2859: record that THIS APP CREATED this contact, as a positive fact.
+        // `buildXeroContactCompanyNumberPatch` may write the member's date of
+        // birth into a contact the app made without first observing its NZBN
+        // field, because a contact that did not exist a moment ago can hold
+        // nothing in that field but this app's own writes. It may NOT assume
+        // that of a contact it merely linked.
+        //
+        // It has to be a positive marker rather than the ABSENCE of the
+        // `linkedVia: "email_match" | "name_match"` that `linkMatchedXeroContact`
+        // writes: `xero-member-import.ts` links members onto pre-existing Xero
+        // contacts by setting `xeroContactId` directly, with no link metadata at
+        // all, and that is how essentially the whole live membership got its
+        // contacts. Reading "no match metadata" as "we created it" would hand
+        // exactly those contacts' business numbers to the birthday writer.
+        await upsertXeroObjectLink(
+          {
+            localModel: "Member",
+            localId: memberId,
+            xeroObjectType: "CONTACT",
+            xeroObjectId: finalResolved.contactId,
+            xeroObjectUrl: buildXeroContactUrl(finalResolved.contactId),
+            role: "CONTACT",
+            metadata: { linkedVia: "created" },
+          },
+          { store: tx },
+        );
       }
       // #2623 T7: if an EARLIER create already made this very contact in Xero
       // and only failed to link it, this write is the local half it was waiting
@@ -1413,18 +1439,47 @@ export async function updateXeroContact(
   // `findOrCreateXeroContact` links a pre-existing contact by email or exact
   // name match without ever writing a cache row, and that contact may carry a
   // genuine NZBN. See `buildXeroContactCompanyNumberPatch`'s docblock, rule 3.
-  const cachedContact = await prisma.xeroContactCache.findUnique({
-    where: { contactId: xeroContactId },
-    select: { companyNumber: true },
-  });
+  const [cachedContact, contactLink] = await Promise.all([
+    prisma.xeroContactCache.findUnique({
+      where: { contactId: xeroContactId },
+      select: { companyNumber: true },
+    }),
+    // #2859: did THIS APP create this contact? A positive `linkedVia: "created"`
+    // marker, written by `findOrCreateXeroContact`'s create branch, is the only
+    // thing that answers yes — see the note there for why absence cannot.
+    prisma.xeroObjectLink.findFirst({
+      where: {
+        localModel: "Member",
+        xeroObjectType: "CONTACT",
+        xeroObjectId: xeroContactId,
+        role: "CONTACT",
+      },
+      select: { metadata: true },
+    }),
+  ]);
+  const appCreatedThisContact =
+    contactLink?.metadata !== null &&
+    typeof contactLink?.metadata === "object" &&
+    !Array.isArray(contactLink.metadata) &&
+    (contactLink.metadata as Record<string, unknown>).linkedVia === "created";
+
   // `undefined` ONLY when there is no cache row. A row that exists and holds
   // `null` is a positive fact — Xero's NZBN field is empty — and must stay
-  // distinguishable from "never cached", because the two now have opposite
+  // distinguishable from "never cached", because the two have opposite
   // outcomes. `?? undefined` here would collapse them and silently restore the
   // defect this guard exists to close.
+  //
+  // A contact this app created is the one case where "never cached" is still
+  // safe: it held nothing when it was made, and nothing but this app's own
+  // writes has reached that field since. Without this, a default install never
+  // sends a date-of-birth EDIT at all — `syncManagedXeroContactGroupForMember`
+  // is the only create-time cache writer and it short-circuits before any Xero
+  // call when the grouping mode is `NONE`, which is the schema default.
   const currentCompanyNumber = cachedContact
     ? cachedContact.companyNumber
-    : undefined;
+    : appCreatedThisContact
+      ? null
+      : undefined;
 
   /**
    * The NZBN patch for whichever contact this payload is actually addressed to.

@@ -81,7 +81,12 @@ export function parseXeroContactDateOfBirth(
     return null;
   }
 
-  const match = companyNumber.match(XERO_CONTACT_DATE_OF_BIRTH_PATTERN);
+  // Trimmed HERE, not at the call sites, so that "is this field a date of
+  // birth?" has exactly one answer for a given stored string. The guard used to
+  // trim before asking and the six importers did not, so `" 15/06/1985"` was
+  // `null` to every reader and yet writable past the guard — the two-predicate
+  // disagreement this module exists to remove, in a second form.
+  const match = companyNumber.trim().match(XERO_CONTACT_DATE_OF_BIRTH_PATTERN);
   if (!match) {
     return null;
   }
@@ -190,11 +195,11 @@ export function buildXeroContactCompanyNumberPatch(
     return {};
   }
 
-  // Trimmed once, then handed to the reader — so the string this guard judges
-  // is exactly the string that reader is given, and the two cannot disagree
-  // about a value with surrounding whitespace.
+  // The reader does its own trimming, so this hands it the raw stored string
+  // and the two cannot disagree. The trim here is only to decide EMPTINESS —
+  // a field holding nothing but whitespace is a field holding nothing.
   const current = currentCompanyNumber?.trim();
-  if (current && !parseXeroContactDateOfBirth(current)) {
+  if (current && !parseXeroContactDateOfBirth(currentCompanyNumber)) {
     return {};
   }
 

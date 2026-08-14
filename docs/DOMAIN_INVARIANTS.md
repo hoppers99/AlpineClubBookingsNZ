@@ -695,7 +695,7 @@ File: [`invariants/integrations.md`](invariants/integrations.md). Prefix
 | `INV-INT-014` | The per-member sync keeps Xero calls outside transactions, ledgers each op, and adds before removing |
 | `INV-INT-015` | The bulk re-sync is admin-triggered, dry-run-first, chunked, resumable, and never moves the watermark |
 | `INV-INT-016` | `GET /api/bookings/rooms` keeps its no-`lodgeId` mode for FORKED/EXTERNAL consumers, excluding archived lodges; no `src/` client may use it |
-| `INV-INT-017` | The Xero NZBN field carries the date of birth through ONE shared codec; never blank it, never overwrite a non-date, and the inbound direction only fills a gap |
+| `INV-INT-017` | The Xero NZBN field carries the date of birth through ONE shared codec; never blank it, never overwrite what the decoder cannot read as a day, never write without an observed cache row, and the inbound direction only fills a gap |
 
 ## Operations
 
