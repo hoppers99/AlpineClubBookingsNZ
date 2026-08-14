@@ -392,6 +392,392 @@ const RAW_SQL_RESTRICTIONS = [
 // `src/lib/__tests__/money-cents-guard.test.ts` fails the build if one ever
 // does (#2685).
 
+// #2684 — the date-only ENCODING must be written once, in `src/lib/date-only.ts`.
+//
+// A lodge night, a stay bound, a finance window edge and a Xero document date
+// are all `yyyy-MM-dd`, and the codebase had 119 hand-written copies of the
+// truncation that produces one, in five spellings: `.slice(0, 10)`,
+// `.substring(0, 10)`, `.substr(0, 10)`, and `.split("T")[0]` in either quote
+// style. That is a maintainability problem on its own, but the reason it is a
+// LINT rule rather than a style note is what the duplication hides.
+//
+// The truncation is only correct for a DATE-ONLY receiver. A `@db.Date` column
+// is pinned to UTC midnight as the ENCODING of an NZ calendar day, so reading
+// the UTC day back returns the day it encodes (INV-DATE-010). A bare `DateTime`
+// is a real instant, and New Zealand runs 12-13 hours ahead of UTC, so its UTC
+// day is the PREVIOUS NZ day for roughly the first half of every NZ day — which
+// is how a Xero invoice due date and a finance export both landed a day early
+// (#2697, INV-DATE-019), and how #2682's fifteen "today" sites went wrong before
+// them. The two cases are indistinguishable at a glance and identical in syntax;
+// the only thing that separates them is what the value MEANS.
+//
+// Scattered across 119 sites nobody could audit that. Routed through named
+// helpers, the choice is written down at every call: `formatDateOnly` for a
+// date-only value, `formatDateOnlyForTimeZone` for an instant,
+// `todayDateOnlyForTimeZone` / `getTodayDateOnly` for "today" (INV-DATE-019).
+// This rule only enforces that the choice is MADE somewhere named; which one is
+// right for a given receiver is what `date-only-encoding-guard.test.ts` checks,
+// because a syntactic rule cannot see a Prisma column type.
+//
+// A WRAPPER DOES NOT GET A FREE PASS, but it is also not impossible — and this
+// comment used to claim otherwise. The rule is over the syntax wherever it
+// appears in `src/**`, so the forbidden pattern is illegal inside a helper's own
+// body as much as at a call site, which matters because one exported
+// `formatDate` one-liner in `xero-invoice-helpers` was enough to put roughly
+// eighteen live Xero document dates beyond reach of the #2682 spelling census.
+// What defeats a selector anchored on the truncation is a wrapper that takes ONE
+// intermediate step — `const iso = d.toISOString(); return iso.slice(0, 10);` —
+// because the slice's receiver is then a plain identifier. That is `formatDate`
+// reconstituted and harder to spot, so `NO_TRUNCATION_ASSEMBLED_IN_A_WRAPPER`
+// below matches the function that contains both halves. The only body in `src/`
+// allowed to contain the truncation is the helper module exempted below, and the
+// guard test additionally refuses an EXPORTED bare delegation so the blind spot
+// cannot re-form under a new name.
+//
+// KNOWN LIMITATION (accepted, and the same one INV-DATE-015's rule carries). The
+// selectors are syntactic, so they match spellings rather than meanings. Named
+// exactly, what still gets through today is:
+//
+//   * a DETACHED METHOD ALIAS — `const f = d.toISOString; f().slice(0, 10)`;
+//   * the truncation assembled across TWO functions — one returning the ISO
+//     string, another cutting it — rather than inside one. The wrapper arm below
+//     is scoped to a single function body on purpose: widening it to "calls
+//     toISOString anywhere, slices ten characters anywhere" was measured and
+//     reported two real files where the two halves are unrelated, so the loose
+//     version costs more than it catches;
+//   * a bare `.slice(0, 10)` on a value ALREADY serialised to a string, where
+//     nothing in the expression says it is a date. This one is deliberate:
+//     `.slice(0, 10)` on a string is indistinguishable from an array take-10 or
+//     an ordinary text truncation, and this tree has both, so banning it would
+//     be a false-positive generator rather than a guard;
+//   * an encoding derived from a NON-UTC clock face — `getFullYear()` and
+//     friends — which is a different defect (the BROWSER's calendar day) that
+//     INV-DATE-014 and #2474 own, not this rule.
+//
+// What IS covered, and was not before this list was measured against real lint
+// runs: every `(0, 10)` cut of a `toISOString()`/`toJSON()` result including
+// through computed access (`d["toISOString"]()`), the same cut assembled through
+// a local inside one function, `.split("T")` taken with `[0]`, `.at(0)` or
+// `.shift()` and with the separator written as a string or as `/T/`, the
+// `.replace(/T.*$/, "")` spelling, and the encoding assembled from UTC parts in
+// a template literal — which was live in three files, and which no arm of this
+// rule could see until it was added.
+const DATE_TRUNCATION_MESSAGE =
+  "INV-DATE-019: Do not hand-write an ISO date truncation (#2684). Use formatDateOnly / formatMonthOnly from @/lib/date-only for a DATE-ONLY value (a `@db.Date` column, whose UTC midnight IS the NZ calendar day — INV-DATE-010) — and formatDateOnlyForTimeZone for a real instant such as `createdAt`, whose UTC day is the PREVIOUS New Zealand day all morning (#2697). Asking for today? todayDateOnlyForTimeZone() / getTodayDateOnly().";
+
+const DATE_SPLIT_MESSAGE =
+  "INV-DATE-019: Do not hand-write an ISO date truncation (#2684). Holding a Date? formatDateOnly (a date-only value — INV-DATE-010) or formatDateOnlyForTimeZone (a real instant) from @/lib/date-only. Holding a value already serialised to a string? dateOnlyFromIsoString.";
+
+// The ISO producers, spelled both ways a member access can reach them:
+// `d.toISOString()` reads `callee.property.name`, `d["toISOString"]()` reads
+// `callee.property.value`. The computed form was named in this file's own
+// limitations paragraph as something that slipped past — it does not any more.
+const ISO_PRODUCER_SELECTORS = [
+  "[callee.object.callee.property.name=/^(toISOString|toJSON)$/]",
+  "[callee.object.callee.property.value=/^(toISOString|toJSON)$/]",
+];
+
+// `d.toISOString().slice(0, 10)` and its `substring` / `substr` spellings.
+const NO_HAND_WRITTEN_DATE_ONLY_TRUNCATION = ISO_PRODUCER_SELECTORS.map(
+  (producer) => ({
+    selector: `CallExpression[callee.property.name=/^(slice|substring|substr)$/]${producer}`,
+    message: DATE_TRUNCATION_MESSAGE,
+  }),
+);
+
+// `.replace(/T.*$/, "")` — the same cut written as a substitution, on a `Date`
+// or on a string that is already ISO.
+//
+// Anchored on the PATTERN, not on the receiver, which was measured rather than
+// assumed. Anchoring on the receiver instead — any `.replace()` on a
+// `toISOString()` result — read as the tighter rule and was in fact far looser:
+// it reported `new Date().toISOString().replace(/[:.]/g, "-")` in
+// `src/lib/backup.ts`, which builds a filename out of the WHOLE timestamp and
+// truncates nothing. A regex beginning with a capital `T` followed by a wildcard
+// is the time half of an ISO value and cannot be much else.
+const NO_ISO_DATE_REPLACE = {
+  selector:
+    'CallExpression[callee.property.name="replace"][arguments.0.regex.pattern=/^T[.*+?]/]',
+  message: DATE_TRUNCATION_MESSAGE,
+};
+
+// The head of a split on a capital T, taken any of the three ways JavaScript
+// offers, with the separator written as a string or as a regex. Including on a
+// value that is ALREADY a string, because splitting on a capital T and keeping
+// the front has exactly one meaning.
+const SPLIT_ON_T_SELECTORS = [
+  "[object.callee.property.name='split'][object.arguments.0.value='T']",
+  "[object.callee.property.name='split'][object.arguments.0.regex.pattern='T']",
+];
+
+const NO_ISO_DATE_SPLIT_ON_T = [
+  // `parts[0]`
+  ...SPLIT_ON_T_SELECTORS.map((split) => ({
+    selector: `MemberExpression[computed=true][property.value=0]${split}`,
+    message: DATE_SPLIT_MESSAGE,
+  })),
+  // `parts.at(0)` and `parts.shift()`
+  ...SPLIT_ON_T_SELECTORS.flatMap((split) => {
+    // EVERY attribute moves under `callee`, not just the first. Anchoring this
+    // with `^` rewrote only the leading one and left `[object.arguments.0…]`
+    // behind, so both arms silently matched nothing — which is why the fixture
+    // probe lints each spelling rather than trusting the string surgery.
+    const onSplit = split.replace(/\[object\./g, "[callee.object.");
+    return [
+      {
+        selector: `CallExpression[callee.property.name="at"][arguments.0.value=0]${onSplit}`,
+        message: DATE_SPLIT_MESSAGE,
+      },
+      {
+        selector: `CallExpression[callee.property.name="shift"]${onSplit}`,
+        message: DATE_SPLIT_MESSAGE,
+      },
+    ];
+  }),
+];
+
+// The truncation ASSEMBLED INSIDE ONE FUNCTION rather than written as a single
+// expression:
+//
+//   export function formatDocumentDate(date: Date): string {
+//     const iso = date.toISOString();
+//     return iso.slice(0, 10);
+//   }
+//
+// Every arm above anchors the cut on its receiver, and here the receiver is a
+// plain identifier, so all of them missed it — and so did the census test, whose
+// wrapper-following only recognised delegations to a canonical encoder, not a
+// body that writes the truncation itself. This is `formatDate` rebuilt one step
+// at a time, which is exactly the shape that hid roughly eighteen Xero document
+// dates, so it is matched at the level where both halves are visible: the
+// function.
+//
+// BOTH HALVES ARE PINNED TIGHTLY, and the loose version was measured before this
+// one was written. Requiring only "a function that calls toISOString somewhere
+// and slices ten characters somewhere" reported two real files —
+// `email-failure-review.ts` and `token-email-recovery.ts` — where the
+// `toISOString()` calls serialise full timestamps into a response object and the
+// `.slice(0, 10)` is an ARRAY take-ten of the ten most recent rows. Those are not
+// the same expression and never were.
+//
+// So the ISO half must be STORED (`const iso = d.toISOString()`, or assigned to
+// an existing binding), and the cut must be taken on a plain IDENTIFIER. That is
+// the shape of the escape and not the shape of the coincidence.
+const ISO_STORED_IN_A_BINDING = [
+  'VariableDeclarator[init.callee.property.name=/^(toISOString|toJSON)$/]',
+  'AssignmentExpression[right.callee.property.name=/^(toISOString|toJSON)$/]',
+];
+
+const CUT_TEN_OFF_A_BINDING =
+  'CallExpression[callee.property.name=/^(slice|substring|substr)$/][callee.object.type="Identifier"][arguments.0.value=0][arguments.1.value=10]';
+
+const NO_TRUNCATION_ASSEMBLED_IN_A_WRAPPER = [
+  "FunctionDeclaration",
+  "FunctionExpression",
+  "ArrowFunctionExpression",
+].flatMap((fn) =>
+  ISO_STORED_IN_A_BINDING.map((stored) => ({
+    selector: `${fn}:has(${stored}):has(${CUT_TEN_OFF_A_BINDING})`,
+    message:
+      "INV-DATE-019: This function stores a toISOString()/toJSON() result and then cuts ten characters off a binding, which is a hand-written date-only encoding assembled in two steps (#2684). One expression or two, it is the same duplication — and splitting it across a local is precisely what hid the last one from both this rule and the census. Call formatDateOnly / formatMonthOnly from @/lib/date-only for a DATE-ONLY value (INV-DATE-010), formatDateOnlyForTimeZone for a real instant (#2697), or dateOnlyFromIsoString when what you hold is already an ISO string.",
+  })),
+);
+
+// The encoding assembled from UTC CLOCK-FACE PARTS, which produces the identical
+// `yyyy-MM-dd` (or `yyyy-MM`) string with no ISO spelling anywhere in it:
+//
+//   `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`
+//
+// This was LIVE IN THREE FILES when the rule was written and no arm could see
+// any of them — `previousMonthKey` in `finance-sync-health.ts` (in a file this
+// very branch was already editing), and the EXPORTED `formatDateKey` and
+// `monthKey` helpers on the kiosk week strip and the occupancy calendar. All
+// three are migrated; the selector is what stops a fourth.
+//
+// A template literal interpolating BOTH the UTC year and the UTC month or day is
+// a date key and nothing else. Reading one part alone — `getUTCFullYear()` for a
+// season label, `getUTCMonth()` for arithmetic — is untouched, which is why this
+// costs no false positives on the tree today.
+const NO_DATE_ONLY_FROM_UTC_PARTS = {
+  selector:
+    'TemplateLiteral:has(CallExpression[callee.property.name="getUTCFullYear"]):has(CallExpression[callee.property.name=/^getUTC(Month|Date)$/])',
+  message:
+    "INV-DATE-019: Do not assemble a date key from UTC clock-face parts (#2684). `${d.getUTCFullYear()}-${...getUTCMonth() + 1...}` is the same hand-written encoding as toISOString().slice(0, 10), written in a spelling no date census recognises. Use formatDateOnly / formatMonthOnly from @/lib/date-only for a DATE-ONLY value (INV-DATE-010), or formatDateOnlyForTimeZone for a real instant (#2697). Building a Date FROM parts is the opposite direction and is fine — this is about reading one back out.",
+};
+
+const DATE_ONLY_ENCODING_RESTRICTIONS = [
+  ...NO_HAND_WRITTEN_DATE_ONLY_TRUNCATION,
+  NO_ISO_DATE_REPLACE,
+  ...NO_ISO_DATE_SPLIT_ON_T,
+  ...NO_TRUNCATION_ASSEMBLED_IN_A_WRAPPER,
+  NO_DATE_ONLY_FROM_UTC_PARTS,
+];
+
+// #2264, one hole later — an `Intl.DateTimeFormat` built with NO `timeZone`.
+//
+// The rule above bans `toLocaleDateString()` because it renders in the VIEWER's
+// zone, and the message sends the author to "a module-level Intl.DateTimeFormat
+// pinned to APP_LOCALE + APP_TIME_ZONE". An unpinned `new Intl.DateTimeFormat()`
+// has exactly the defect the ban exists for and is clean under every arm of it,
+// which makes it the obvious workaround for anyone the rule inconveniences —
+// and `new Intl.DateTimeFormat("en-CA").format(d)` is worse than the general
+// case, because `en-CA` numeric IS `yyyy-MM-dd`. That is a date-only ENCODING
+// taken from the viewer's calendar: a lodge night rendered in Vancouver comes
+// out a day early, silently, with no ISO spelling and no `toLocale*` call for
+// either guard to catch.
+//
+// Every `new Intl.DateTimeFormat` in `src/` already passes a `timeZone`, so this
+// costs nothing today. A formatter that genuinely must follow the reader's own
+// clock passes `timeZone: undefined` explicitly, which says so in the source.
+const NO_UNZONED_INTL_DATE_TIME_FORMAT = {
+  selector:
+    'NewExpression[callee.object.name="Intl"][callee.property.name="DateTimeFormat"]:not(:has(Property[key.name="timeZone"]))',
+  message:
+    "INV-DATE-015: An Intl.DateTimeFormat with no `timeZone` renders in the VIEWER's zone, which is the whole defect the toLocaleDateString ban exists for (#2264) — and `en-CA` numeric is `yyyy-MM-dd`, so an unpinned one is a date-only encoding taken from the reader's calendar rather than the club's. Pass `timeZone: APP_TIME_ZONE` from @/config/operational, or use the helpers in @/lib/nzst-date. A formatter that really must follow the reader's clock passes `timeZone: undefined` explicitly.",
+};
+
+const ZONED_FORMATTER_RESTRICTIONS = [NO_UNZONED_INTL_DATE_TIME_FORMAT];
+
+/**
+ * The date arm families as bare selector strings, for
+ * `date-only-encoding-guard.test.ts` — the mirror of `MONEY_GUARD_ARMS` below.
+ *
+ * The suite resolves this config through ESLint's own
+ * `calculateConfigForFile()` at the shared production roster and checks the
+ * resolved rule still carries every selector each family declares. It reads them
+ * from HERE rather than from a copy, because a copy passes happily while the
+ * config that ships has dropped the arm.
+ */
+export const DATE_GUARD_ARMS = {
+  encoding: DATE_ONLY_ENCODING_RESTRICTIONS.map((entry) => entry.selector),
+  zonedFormatter: ZONED_FORMATTER_RESTRICTIONS.map((entry) => entry.selector),
+};
+
+// ---------------------------------------------------------------------------
+// Composition: every restriction that must survive in EVERY `src/**` block,
+// whatever else that block is there to lift.
+// ---------------------------------------------------------------------------
+//
+// A comment saying "re-state these" was the whole mechanism until now, and it
+// only holds while everyone reads it — flat config REPLACES a rule's option list
+// rather than merging it, so a block written to lift one rule takes every other
+// rule down with it and lint still passes.
+//
+// A MERGE can do the same thing from the other direction, and more quietly. When
+// two branches each add a block here, git can align the conflict so one side's
+// whole restriction group sits inside the hunk and the other side's is a closing
+// paren; resolving THAT the obvious way deletes a guard outright and the file
+// still parses. So the rule LISTS live here as named arrays, separately from the
+// blocks that apply them, and every block's rule value is a function CALL —
+// never an array literal. Merging two named arrays is a decision somebody can
+// see; merging two block literals is how a guard disappears.
+//
+// THAT IS NOT A HYPOTHETICAL. #2684 and #2685 were built in parallel, each
+// adding its own guard and its own blocks, and a three-way merge of the two
+// aligned #2685's whole money group inside a hunk whose #2684 side was a single
+// `),`. Resolving it the obvious way deleted the money guard's broad arm and its
+// helper exemption, and the file still parsed. The fold below is the answer:
+// ONE mandatory array, THREE named groups inside it, and no block that spells
+// out a list of its own.
+//
+// ADDING A GUARD: put its restrictions in a named array beside the four below
+// and add that array here. That is the only edit needed — every block picks it
+// up, INCLUDING the `scripts/` and `prisma/` blocks, and BOTH
+// `date-only-encoding-guard.test.ts` and `money-cents-guard.test.ts` read this
+// same array, so the integrity checks extend themselves rather than each needing
+// its own copy of the list.
+//
+// "INCLUDING the `scripts/` and `prisma/` blocks" is a promise this file used to
+// break. `operatorScriptRestrictedSyntax()` hand-wrote `[...RAW_SQL,
+// ...MONEY_CENTS]` four lines under a comment saying adding an array here was
+// the only edit needed — so a guard added here would silently not have reached
+// either directory, and NEITHER suite could have noticed, because both skipped
+// any block whose globs do not start with `src/`. Both now go through the shared
+// path, and the roster in `eslint-guard-coverage.ts` carries a `scripts/` and a
+// `prisma/` path so the audit sees them.
+const ALWAYS_RESTRICTED_IN_SRC = [
+  ...RAW_SQL_RESTRICTIONS,
+  ...DATE_ONLY_ENCODING_RESTRICTIONS,
+  ...ZONED_FORMATTER_RESTRICTIONS,
+  ...MONEY_CENTS_RESTRICTIONS,
+];
+
+/**
+ * Blocks allowed to omit part of the mandatory set, each with the group it omits
+ * and why. Exported so the integrity test reads the SAME record instead of
+ * keeping its own copy, which would drift out of step with this file.
+ *
+ * `files` must match a block's list EXACTLY, so widening a block's globs does
+ * not quietly widen its exemption too.
+ */
+export const SRC_RESTRICTION_EXEMPTIONS = [
+  {
+    files: ["src/lib/date-only.ts"],
+    omits: DATE_ONLY_ENCODING_RESTRICTIONS,
+    reason:
+      "The canonical home for the date-only encoding (#2684): the rule exists to make every OTHER file call these helpers instead of hand-writing the truncation, and the helpers have to write it somewhere.",
+  },
+  {
+    files: ["prisma/**/*.{ts,tsx}"],
+    omits: DATE_ONLY_ENCODING_RESTRICTIONS,
+    reason:
+      "The seed and fixture files synthesise date STRINGS for a throwaway database rather than reading a domain column (#2684), and `prisma/e2e-fixtures.ts` is contractually a pure constants module — importing `@/lib/date-only` would pull `@/config/operational` into a file whose whole point is that it imports nothing. `scripts/` gets no such exemption: it carries the full set.",
+  },
+  {
+    files: MONEY_DOMAIN_MODULES,
+    omits: MONEY_CENTS_RESTRICTIONS,
+    reason:
+      "STRICTER, not weaker (#2685): inside the money-domain modules a bare `x * 100` is a cents conversion by construction, so MONEY_MODULE_RESTRICTIONS below replaces the narrow shape-based arms with one that subsumes them. Listing both reported the same node two and three times at the identical line:column.",
+  },
+  {
+    files: MONEY_HELPER_MODULES,
+    omits: MONEY_CENTS_RESTRICTIONS,
+    reason:
+      "The two reviewed money boundaries (#2685). They own the conversion every other file is sent here to use, so they are the one place allowed to write it; each carries its own written reason on MONEY_GUARD_EXEMPTIONS above.",
+  },
+];
+
+/** The mandatory set, for the integrity test to measure blocks against. */
+export const MANDATORY_SRC_RESTRICTIONS = ALWAYS_RESTRICTED_IN_SRC;
+
+/**
+ * `no-restricted-syntax` for a `src/**` block: the mandatory restrictions, plus
+ * whatever that block adds. Always use this rather than writing the array out.
+ */
+function srcRestrictedSyntax(...additional) {
+  return ["error", ...ALWAYS_RESTRICTED_IN_SRC, ...additional];
+}
+
+/**
+ * The same, minus ONE named group — for a block that legitimately cannot obey a
+ * single guard (the helper module that implements it, say) but must keep every
+ * other. Dropping a group BY NAME keeps whatever arrives later, which writing
+ * the remaining list out by hand would not.
+ *
+ * The omission must also appear in `SRC_RESTRICTION_EXEMPTIONS`, or the
+ * integrity test rejects it.
+ */
+function srcRestrictedSyntaxWithout(omitted, ...additional) {
+  const dropped = new Set(omitted.map((restriction) => restriction.selector));
+  return [
+    "error",
+    ...ALWAYS_RESTRICTED_IN_SRC.filter((r) => !dropped.has(r.selector)),
+    ...additional,
+  ];
+}
+
+/**
+ * `prisma/` takes everything except the date-only ENCODING restrictions, which
+ * two seed files there genuinely cannot obey; the block below gives the reason,
+ * and it is recorded on `SRC_RESTRICTION_EXEMPTIONS` like every other omission.
+ *
+ * `scripts/` needs no function of its own: it takes the whole mandatory set
+ * through `srcRestrictedSyntax()`, exactly as `src/**` does.
+ */
+function operatorSeedRestrictedSyntax() {
+  return srcRestrictedSyntaxWithout(DATE_ONLY_ENCODING_RESTRICTIONS);
+}
+
 const eslintConfig = defineConfig([
   ...fixupConfigRules(nextVitals),
   ...fixupConfigRules(nextTs),
@@ -504,14 +890,11 @@ const eslintConfig = defineConfig([
     //     an `off` block for `e2e/**`.
     files: ["src/**/*.{ts,tsx}"],
     rules: {
-      "no-restricted-syntax": [
-        "error",
+      "no-restricted-syntax": srcRestrictedSyntax(
         NO_BARE_TO_LOCALE_DATE_STRING,
         NO_BARE_TO_LOCALE_TIME_STRING,
         NO_BARE_TO_LOCALE_STRING,
-        ...RAW_SQL_RESTRICTIONS,
-        ...MONEY_CENTS_RESTRICTIONS,
-      ],
+      ),
     },
   },
   {
@@ -532,36 +915,73 @@ const eslintConfig = defineConfig([
     // are exempt for the same reason `src/**/__tests__/**` is (see the last
     // block) — a test's raw statement runs against a throwaway database and its
     // result is asserted on the spot.
-    files: ["scripts/**/*.{ts,tsx}", "prisma/**/*.{ts,tsx}"],
+    //
+    // `scripts/` takes the WHOLE mandatory set, date-only encoding included.
+    //
+    // This used to be one block over both directories that omitted the #2684
+    // encoding restrictions, on the ground that "the guard follows the DOMAIN,
+    // which lives in `src/`" — four lines above extending the MONEY guard here
+    // because "`scripts/` holds the money-adjacent backfills". Both arguments
+    // apply equally to both guards, so the asymmetry was reasoning, not a
+    // reason. `scripts/` contains ZERO truncations today (the only two outside
+    // `src/` are `prisma/demo-seed.ts:81` and `prisma/e2e-fixtures.ts:46`), so
+    // extending the date restrictions here costs nothing and closes it. The real
+    // exemption belongs to `prisma/`, and it has its own block below.
+    files: ["scripts/**/*.{ts,tsx}"],
     rules: {
-      "no-restricted-syntax": [
-        "error",
-        ...RAW_SQL_RESTRICTIONS,
-        // The money restrictions reach here for the same reason: `scripts/`
-        // holds the money-adjacent backfills, which is precisely where somebody
-        // writes a one-off cents conversion by hand (#2685).
-        ...MONEY_CENTS_RESTRICTIONS,
-      ],
+      "no-restricted-syntax": srcRestrictedSyntax(),
     },
   },
   {
-    // The date helpers themselves, and the one documented format exclusion.
-    // Flat config replaces a rule's whole option list rather than merging it, so
-    // this block re-states the raw-SQL restrictions (#2289) instead of switching
-    // `no-restricted-syntax` off outright: none of these three files contains
-    // raw SQL, and the exemption they need is from the DATE rules only. Same
-    // reasoning in the Number-formatting block below.
-    files: [
-      "src/lib/nzst-date.ts",
-      "src/lib/date-only.ts",
-      "src/lib/email-templates.ts",
-    ],
+    // `prisma/` — same as `scripts/`, minus the #2684 encoding restrictions, and
+    // the two files that need that say why. `prisma/demo-seed.ts` and
+    // `prisma/e2e-fixtures.ts` synthesise date STRINGS for a throwaway database
+    // rather than reading a domain column, and `e2e-fixtures.ts` declares itself
+    // "a pure constants module: no Playwright, no Prisma, no `server-only`
+    // imports" — importing `@/lib/date-only` would pull `@/config/operational`
+    // into a module whose whole contract is that it imports nothing.
+    //
+    // Dropped BY NAME, and recorded on `SRC_RESTRICTION_EXEMPTIONS`, so every
+    // other guard — raw SQL, money, the zoned-formatter rule, anything added
+    // later — still reaches every seed and migration helper.
+    files: ["prisma/**/*.{ts,tsx}"],
     rules: {
-      "no-restricted-syntax": [
-        "error",
-        ...RAW_SQL_RESTRICTIONS,
-        ...MONEY_CENTS_RESTRICTIONS,
-      ],
+      "no-restricted-syntax": operatorSeedRestrictedSyntax(),
+    },
+  },
+  {
+    // The rendering helper, and the one documented format exclusion.
+    // Flat config replaces a rule's whole option list rather than merging it, so
+    // this block re-states the mandatory restrictions (#2289, #2684) instead of
+    // switching `no-restricted-syntax` off outright: neither file contains raw
+    // SQL or a hand-written date truncation, and the exemption they need is from
+    // the toLocale* DATE-RENDERING rules only. Same reasoning in the
+    // Number-formatting block below.
+    files: ["src/lib/nzst-date.ts", "src/lib/email-templates.ts"],
+    rules: {
+      "no-restricted-syntax": srcRestrictedSyntax(),
+    },
+  },
+  {
+    // `src/lib/date-only.ts` is the ONE file exempt from the #2684 encoding
+    // restrictions, because it is the sanctioned home for the truncation: the
+    // rule exists to make every other file call `formatDateOnly` instead of
+    // writing `toISOString().slice(0, 10)`, and that helper has to write it
+    // somewhere. It is exempt from the toLocale* rules for the same reason
+    // (it formats with a pinned `Intl.DateTimeFormat`), and still carries the
+    // raw-SQL restrictions, which have nothing to do with either.
+    //
+    // This is the only entry `date-only-encoding-guard.test.ts` accepts on its
+    // exemption list. A second file added here is a site that was never
+    // classified, not a file that needs an exemption.
+    files: ["src/lib/date-only.ts"],
+    rules: {
+      // Drops ONE named group. Every other guard — the raw-SQL restrictions and
+      // the money restrictions today, anything added later — stays on this file
+      // automatically.
+      "no-restricted-syntax": srcRestrictedSyntaxWithout(
+        DATE_ONLY_ENCODING_RESTRICTIONS,
+      ),
     },
   },
   {
@@ -577,13 +997,10 @@ const eslintConfig = defineConfig([
       "src/app/(admin)/admin/promo-codes/promo-redemptions-panel.tsx",
     ],
     rules: {
-      "no-restricted-syntax": [
-        "error",
+      "no-restricted-syntax": srcRestrictedSyntax(
         NO_BARE_TO_LOCALE_DATE_STRING,
         NO_BARE_TO_LOCALE_TIME_STRING,
-        ...RAW_SQL_RESTRICTIONS,
-        ...MONEY_CENTS_RESTRICTIONS,
-      ],
+      ),
     },
   },
   {
@@ -605,32 +1022,38 @@ const eslintConfig = defineConfig([
     // `src/lib` file and caught nowhere at all in a Xero module, a payment
     // module or an API route. `MONEY_MODULE_RESTRICTIONS` therefore states the
     // ratio-of-a-parse arm explicitly; see the comment above it.
+    //
+    // It drops the narrow money group BY NAME and adds the broad one, so every
+    // OTHER guard rides along untouched. That is not a nicety here: this glob
+    // list is every Xero, finance, membership-cancellation, payment, credit,
+    // refund, promo, fee, invoice, subscription, pricing and Stripe module plus
+    // the whole of `src/app/api/**` — which is to say most of the surface
+    // #2684's encoding guard exists for. A block that spelled its own list out
+    // would have lifted that guard from all of it with lint still green.
     files: MONEY_DOMAIN_MODULES,
     rules: {
-      "no-restricted-syntax": [
-        "error",
+      "no-restricted-syntax": srcRestrictedSyntaxWithout(
+        MONEY_CENTS_RESTRICTIONS,
         NO_BARE_TO_LOCALE_DATE_STRING,
         NO_BARE_TO_LOCALE_TIME_STRING,
         NO_BARE_TO_LOCALE_STRING,
-        ...RAW_SQL_RESTRICTIONS,
         ...MONEY_MODULE_RESTRICTIONS,
-      ],
+      ),
     },
   },
   {
     // #2685 — the exempt paths. The money restrictions are lifted here and ONLY
     // here, each with its written reason on `MONEY_GUARD_EXEMPTIONS` above; the
-    // date and raw-SQL restrictions still apply, which is why this block
-    // re-states them rather than switching the rule off.
+    // date and raw-SQL restrictions still apply, which is why this block drops
+    // one named group rather than switching the rule off.
     files: MONEY_HELPER_MODULES,
     rules: {
-      "no-restricted-syntax": [
-        "error",
+      "no-restricted-syntax": srcRestrictedSyntaxWithout(
+        MONEY_CENTS_RESTRICTIONS,
         NO_BARE_TO_LOCALE_DATE_STRING,
         NO_BARE_TO_LOCALE_TIME_STRING,
         NO_BARE_TO_LOCALE_STRING,
-        ...RAW_SQL_RESTRICTIONS,
-      ],
+      ),
     },
   },
   {

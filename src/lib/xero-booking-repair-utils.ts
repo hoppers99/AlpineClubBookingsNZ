@@ -66,10 +66,6 @@ export function toIsoDate(value: Date) {
   return value.toISOString();
 }
 
-export function toDateOnly(value: Date) {
-  return value.toISOString().slice(0, 10);
-}
-
 export function readJsonRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;

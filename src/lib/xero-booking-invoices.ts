@@ -51,9 +51,8 @@ import {
   retryXeroWriteWithContactRepair,
   type FindOrCreateXeroContactOptions,
 } from "./xero-contacts";
-import { formatDateOnlyForTimeZone } from "@/lib/date-only";
+import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
 import {
-  formatDate,
   getBookingInvoiceDueDate,
   getBookingInvoiceIssueDate,
 } from "./xero-invoice-helpers";
@@ -131,7 +130,7 @@ function splitNightsIntoPriceRuns(
     const last = runs[runs.length - 1];
     const contiguous =
       last !== undefined &&
-      formatDate(new Date(last.endExclusive)) === formatDate(night.stayDate);
+      formatDateOnly(new Date(last.endExclusive)) === formatDateOnly(night.stayDate);
     // Extend the current run only when the date is contiguous AND the nightly
     // price is unchanged; otherwise open a new run. This keeps every run a
     // single price over a whole number of nights.
@@ -235,7 +234,7 @@ export function buildInvoiceLineItems(
       // `describeGuestRateMembershipLabel`.
       `(${guest.ageTier}, ${describeGuestRateMembershipLabel(itemCodeResolver, guest)})`,
       `${run.nightCount} night${run.nightCount !== 1 ? "s" : ""}`,
-      `${formatDate(run.startDate)} - ${formatDate(run.endExclusive)}`,
+      `${formatDateOnly(run.startDate)} - ${formatDateOnly(run.endExclusive)}`,
     ].join(" - ");
     // perNightCents * nightCount === totalCents by construction, so the line
     // reconciles to the exact cent total (#1163).
@@ -264,7 +263,7 @@ export function buildInvoiceLineItems(
           // #2543 — same rate-driven label as `runToLineItem`.
           `(${guest.ageTier}, ${describeGuestRateMembershipLabel(itemCodeResolver, guest)})`,
           `${nights} night${nights !== 1 ? "s" : ""}`,
-          `${formatDate(checkIn)} - ${formatDate(checkOut)}`,
+          `${formatDateOnly(checkIn)} - ${formatDateOnly(checkOut)}`,
         ].join(" - ");
         return [applyCodes({
           description,
@@ -975,7 +974,7 @@ function mergeBookingInvoiceLineItemDescriptions(
   checkOut: Date,
   nights: number
 ): LineItem[] {
-  const stayNarration = `${nights} night${nights !== 1 ? "s" : ""} - ${formatDate(checkIn)} - ${formatDate(checkOut)}`;
+  const stayNarration = `${nights} night${nights !== 1 ? "s" : ""} - ${formatDateOnly(checkIn)} - ${formatDateOnly(checkOut)}`;
   let guestLineIndex = 0;
 
   return existingLineItems.map((existingLineItem) => {
@@ -1117,8 +1116,8 @@ export async function updateXeroBookingInvoiceForBooking(
     bookingId,
     "invoice-update",
     invoiceId,
-    formatDate(checkIn),
-    formatDate(checkOut),
+    formatDateOnly(checkIn),
+    formatDateOnly(checkOut),
     "v1"
   );
 

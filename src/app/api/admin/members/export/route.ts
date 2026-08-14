@@ -19,6 +19,7 @@ import {
 } from "@/lib/membership-types";
 import { UNASSIGNED_MEMBERSHIP_TYPE_VALUE } from "@/lib/membership-type-filter";
 import {
+  formatDateOnly,
   formatDateOnlyForTimeZone,
   todayDateOnlyForTimeZone,
 } from "@/lib/date-only";
@@ -391,14 +392,14 @@ export async function GET(req: NextRequest) {
           header: "Date of Birth",
           value: (m: MemberRow) =>
             m.dateOfBirth
-              ? new Date(m.dateOfBirth).toISOString().split("T")[0]
+              ? formatDateOnly(new Date(m.dateOfBirth))
               : "",
         },
         {
           header: "Life Member Date",
           value: (m: MemberRow) =>
             m.lifeMemberDate
-              ? new Date(m.lifeMemberDate).toISOString().split("T")[0]
+              ? formatDateOnly(new Date(m.lifeMemberDate))
               : "",
         },
         { header: "Role", value: (m: MemberRow) => m.role },

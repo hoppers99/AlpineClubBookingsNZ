@@ -19,7 +19,7 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
-import { parseDateOnly } from "@/lib/date-only"
+import { dateOnlyFromIsoString, parseDateOnly } from "@/lib/date-only"
 import { formatNZDate } from "@/lib/nzst-date"
 import { DAY_LABELS, type MinStayPolicy } from "./types"
 
@@ -33,7 +33,7 @@ import { DAY_LABELS, type MinStayPolicy } from "./types"
  * Deliberately the twin of `formatPeriodDate` in `booking-periods-section`.
  */
 function formatPolicyDate(value: string): string {
-  const parsed = parseDateOnly(value.split("T")[0])
+  const parsed = parseDateOnly(dateOnlyFromIsoString(value))
   return Number.isNaN(parsed.getTime()) ? value : formatNZDate(parsed)
 }
 
@@ -75,8 +75,8 @@ const NEW_MIN_STAY_DRAFT: MinStayDraft = {
 function toDraft(policy: MinStayPolicy): MinStayDraft {
   return {
     name: policy.name,
-    startDate: policy.startDate.split("T")[0],
-    endDate: policy.endDate.split("T")[0],
+    startDate: dateOnlyFromIsoString(policy.startDate),
+    endDate: dateOnlyFromIsoString(policy.endDate),
     triggerDays: [...policy.triggerDays].sort((a, b) => a - b),
     minimumNights: policy.minimumNights,
     capacityMode: policy.capacityMode,

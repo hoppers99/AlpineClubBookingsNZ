@@ -1952,7 +1952,7 @@ export async function POST(
       ? {}
       : {
           nightDetails: capacity.nightDetails.map((n) => ({
-            date: n.date.toISOString().split("T")[0],
+            date: formatDateOnly(n.date),
             availableBeds: n.availableBeds,
           })),
         }),

@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAgeTierOptions } from "@/lib/use-age-tier-options";
 import { GuestNightGrid } from "@/components/guest-night-grid";
+import { formatDateOnly } from "@/lib/date-only";
 
 export interface GuestData {
   firstName: string;
@@ -87,7 +88,7 @@ interface GuestFormProps {
 function shiftDateOnly(date: string, days: number): string {
   const parsed = new Date(`${date}T00:00:00.000Z`);
   parsed.setUTCDate(parsed.getUTCDate() + days);
-  return parsed.toISOString().slice(0, 10);
+  return formatDateOnly(parsed);
 }
 
 /** All night keys (yyyy-mm-dd) from checkIn (inclusive) to checkOut (exclusive). */

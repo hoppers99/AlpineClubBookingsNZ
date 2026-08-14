@@ -15,7 +15,6 @@ import {
   parseDateOnly,
 } from "@/lib/date-only";
 import { buildXeroInvoiceUrl, stripXeroOrgShortCode } from "@/lib/xero-links";
-import { formatDate } from "@/lib/xero-invoice-helpers";
 import {
   buildXeroIdempotencyKey,
   completeXeroSyncOperation,
@@ -56,19 +55,20 @@ function invoiceCents(invoice: Invoice): number | null {
 /**
  * Read a date back off a Xero invoice as the calendar day Xero holds.
  *
- * `formatDate` here is deliberate and must NOT become
+ * `formatDateOnly` here is deliberate and must NOT become
  * `formatDateOnlyForTimeZone` (#2834). This is not a clock read and not a
  * `DateTime` column: `invoice.date` / `invoice.dueDate` are plain calendar dates
  * on a document Xero already has, and whatever the SDK deserialised them into —
  * a `Date` at midnight, an ISO prefix, a `/Date(…)/` string — encodes that day,
- * so truncation reads it back and zone conversion would shift it. A shift here
- * changes `invoiceDueIntervalDays`, so `subscriptionInvoiceMatchesSnapshot`
- * stops matching, so a pre-existing invoice stops being adopted: the charge goes
- * to `CONFLICT`/`PROVIDER_MISMATCH` and the member is left unbilled.
+ * so reading it back as a date-only value yields that day, and zone conversion
+ * would shift it. A shift here changes `invoiceDueIntervalDays`, so
+ * `subscriptionInvoiceMatchesSnapshot` stops matching, so a pre-existing invoice
+ * stops being adopted: the charge goes to `CONFLICT`/`PROVIDER_MISMATCH` and the
+ * member is left unbilled.
  */
 function normalizeXeroDateOnly(value: unknown): string | null {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return formatDate(value);
+    return formatDateOnly(value);
   }
   if (typeof value !== "string") return null;
   const dateOnly = value.match(/^(\d{4}-\d{2}-\d{2})(?:T|$)/)?.[1];
@@ -76,7 +76,7 @@ function normalizeXeroDateOnly(value: unknown): string | null {
   const microsoftJsonMs = value.match(/^\/Date\((-?\d+)(?:[+-]\d{4})?\)\/$/)?.[1];
   if (!microsoftJsonMs) return null;
   const parsed = new Date(Number(microsoftJsonMs));
-  return Number.isNaN(parsed.getTime()) ? null : formatDate(parsed);
+  return Number.isNaN(parsed.getTime()) ? null : formatDateOnly(parsed);
 }
 
 function invoiceDueIntervalDays(invoice: Invoice): number | null {

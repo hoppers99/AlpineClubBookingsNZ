@@ -25,6 +25,7 @@ import {
   initialLodgeIdFromLocation,
   useLodgeOptions,
 } from "@/components/lodge-select";
+import { dateOnlyFromIsoString } from "@/lib/date-only";
 
 // The Hut Fees section of the consolidated /admin/fees console (#1933, E7):
 // per-lodge → per-season → membership-type × age-tier nightly rate grid (E4).
@@ -296,8 +297,8 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
     setEditingId(season.id);
     setName(season.name);
     setType(season.type);
-    setStartDate(season.startDate.split("T")[0]);
-    setEndDate(season.endDate.split("T")[0]);
+    setStartDate(dateOnlyFromIsoString(season.startDate));
+    setEndDate(dateOnlyFromIsoString(season.endDate));
     setActive(season.active);
     setRates(seasonToRatesMap(season.membershipTypeRates, rateTypes, ageTiers));
     clearAmountDrafts();

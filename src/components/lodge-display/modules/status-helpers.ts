@@ -7,6 +7,7 @@
 // "YYYY-MM-DD" strings, so a plain string compare is a calendar compare.
 
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { formatDateOnly } from "@/lib/date-only";
 
 /**
  * Not one of the shared `nzst-date` helpers (#2264). A lobby-display column head
@@ -36,7 +37,7 @@ export type StayStatus = "arriving" | "staying" | "departing";
 export function shiftDateOnly(date: string, days: number): string {
   const day = new Date(`${date}T00:00:00Z`);
   day.setUTCDate(day.getUTCDate() + days);
-  return day.toISOString().slice(0, 10);
+  return formatDateOnly(day);
 }
 
 /** A status plus the run of nights it was read from. */

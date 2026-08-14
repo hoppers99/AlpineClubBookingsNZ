@@ -11,6 +11,7 @@ import {
   buildParentLinks,
 } from "@/lib/member-parent-links";
 import type { BookingGuestProfileAction } from "@/lib/booking-guests";
+import { formatDateOnly } from "@/lib/date-only";
 
 type JsonRouteResult = {
   body: unknown;
@@ -178,7 +179,7 @@ function getDisplayName(member: { firstName?: string | null; lastName?: string |
 function toDateInputValue(value: Date | string | null | undefined) {
   if (!value) return null;
   if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value.toISOString().substring(0, 10);
+    return Number.isNaN(value.getTime()) ? null : formatDateOnly(value);
   }
   return value.substring(0, 10);
 }

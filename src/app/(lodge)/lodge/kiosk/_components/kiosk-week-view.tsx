@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import type { RosterDayStatus } from "@/lib/roster-status";
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { formatDateOnly } from "@/lib/date-only";
 import { formatNZDate } from "@/lib/nzst-date";
 
 // Neither of these is one of the shared helpers: the kiosk week strip is scanned
@@ -111,32 +112,35 @@ const rosterStatusMeta: Record<
 
   UTC midnight has no such edge. New Zealand is UTC+12/+13, so a UTC-midnight
   instant is always midday-ish the SAME calendar day in club time, and the key,
-  the arithmetic and the rendered label can never disagree. `formatDateKey` is
-  only ever handed a `parseDateKey` result, so the pair stays exact.
+  the arithmetic and the rendered label can never disagree.
+
+  The way BACK is `formatDateOnly` from `@/lib/date-only`, called by name at each
+  site. There used to be a `formatDateKey` helper here that assembled the string
+  from `getUTCFullYear()` / `getUTCMonth()` / `getUTCDate()` — the date-only
+  encoding written a fourth way, in an EXPORTED function, which is precisely the
+  shape that put roughly eighteen Xero document dates beyond the reach of #2682's
+  census (#2684). Every value it was handed is a `parseDateKey` result, so it is
+  a date-only value and the canonical encoder reads back the day it encodes
+  (INV-DATE-010). Deliberately NOT `formatDateOnlyForTimeZone`: the key and the
+  instant are two spellings of the same abstract calendar day, and converting one
+  into the club's zone would reintroduce the very drift this block removed.
 */
 export function parseDateKey(dateKey: string): Date {
   const [year, month, day] = dateKey.split("-").map(Number);
   return new Date(Date.UTC(year, month - 1, day));
 }
 
-export function formatDateKey(date: Date): string {
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(date.getUTCDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 export function addDaysToDateKey(dateKey: string, days: number): string {
   const date = parseDateKey(dateKey);
   date.setUTCDate(date.getUTCDate() + days);
-  return formatDateKey(date);
+  return formatDateOnly(date);
 }
 
 export function getWeekStartDateKey(dateKey: string): string {
   const date = parseDateKey(dateKey);
   const mondayOffset = (date.getUTCDay() + 6) % 7;
   date.setUTCDate(date.getUTCDate() - mondayOffset);
-  return formatDateKey(date);
+  return formatDateOnly(date);
 }
 
 export function buildWeekDateKeys(weekStart: string): string[] {

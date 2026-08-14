@@ -42,7 +42,7 @@ import {
   readExceptionOffer,
   type ExceptionOffer,
 } from "@/lib/booking-exception-offer";
-import { countNightsDateOnly, parseDateOnly } from "@/lib/date-only";
+import { countNightsDateOnly, formatDateOnly, parseDateOnly } from "@/lib/date-only";
 import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 // Both constants live in `member-guest-refusal.ts`, which has NO imports of its
@@ -213,7 +213,7 @@ function renderExistingGuestConsentHelper(guest: Guest) {
 function shiftDateKey(date: string, days: number): string {
   const parsed = new Date(`${date}T00:00:00.000Z`);
   parsed.setUTCDate(parsed.getUTCDate() + days);
-  return parsed.toISOString().slice(0, 10);
+  return formatDateOnly(parsed);
 }
 
 /** All night keys (yyyy-mm-dd) from checkIn (inclusive) to checkOut (exclusive). */
@@ -646,14 +646,14 @@ function previousDateOnly(dateString: string | null) {
   const date = new Date(`${dateString}T00:00:00.000Z`);
   if (Number.isNaN(date.getTime())) return null;
   date.setUTCDate(date.getUTCDate() - 1);
-  return date.toISOString().slice(0, 10);
+  return formatDateOnly(date);
 }
 
 function shiftDateOnly(dateString: string, days: number) {
   const date = new Date(`${dateString}T00:00:00.000Z`);
   if (Number.isNaN(date.getTime())) return dateString;
   date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
+  return formatDateOnly(date);
 }
 
 function formatSignedCents(cents: number) {

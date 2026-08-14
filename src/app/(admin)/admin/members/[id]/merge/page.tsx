@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { BackLink } from "@/components/admin/back-link";
 import { Input } from "@/components/ui/input";
 import { MemberPicker, type PickedMember } from "@/components/admin/member-picker";
+import { formatDateOnly } from "@/lib/date-only";
 
 type MemberBasic = {
   id: string;
@@ -44,7 +45,7 @@ type MergePreview = {
 function display(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "boolean") return value ? "Yes" : "No";
-  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  if (value instanceof Date) return formatDateOnly(value);
   if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
     return value.slice(0, 10);
   }
