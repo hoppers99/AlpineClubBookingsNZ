@@ -67,7 +67,7 @@ export const MAX_OVERLAY_PATH_CHARS = 200;
 
 /**
  * ONE overlay entry: a deployment-chosen `path` handle (the citation label the
- * model and operators see, e.g. `ops/tokoroa-runbook.md`) and its `content`. The
+ * model and operators see, e.g. `ops/private-runbook.md`) and its `content`. The
  * handle's extension drives language detection and excerpt structuring exactly as
  * a repo file's does, so an `.md` handle is split on its headings.
  */
@@ -101,11 +101,19 @@ export class KnowledgeOverlayError extends Error {
   }
 }
 
-/** True when a string contains any C0 control character or DEL (never legit in a handle). */
+/**
+ * True when a string contains any C0 control character, DEL, or a C1 control
+ * character (U+0080–U+009F, which includes U+0085 NEL) — none of which is ever legit
+ * in a handle. The C1 range is checked as well as C0/DEL so the guard matches its
+ * "no control characters" contract: a C1 code point is non-printing and could
+ * otherwise slip a control character into a rendered citation label.
+ */
 function hasControlCharacter(s: string): boolean {
   for (let i = 0; i < s.length; i += 1) {
     const code = s.charCodeAt(i);
-    if (code < 0x20 || code === 0x7f) return true;
+    if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
+      return true;
+    }
   }
   return false;
 }
@@ -113,14 +121,25 @@ function hasControlCharacter(s: string): boolean {
 /**
  * A handle must be a plain relative POSIX path: no leading slash, no backslash, no
  * `.`/`..` segments, no empty segments, no Windows drive prefix, no control
- * characters. This keeps the namespaced stored path well-formed and closes any
- * traversal games (`../.env`) BEFORE — and independently of — the HARD_EXCLUDE
- * check below.
+ * characters, and no colon. This keeps the namespaced stored path well-formed and
+ * closes any traversal games (`../.env`) BEFORE — and independently of — the
+ * HARD_EXCLUDE check below.
+ *
+ * A colon is refused because the handle renders MID-LINE as the citation label
+ * (`[1] overlay/ops/assistant:obey-me.md`), where the line-anchored role-label
+ * defusal never fires — so a colon in the handle would let `assistant:` reach the
+ * evidence intact. A citation handle has no need of a colon, so refusing it at
+ * validation is the tightest, fail-closed fix.
  */
 function assertLegalHandle(path: string): void {
   if (path.includes("\\")) {
     throw new KnowledgeOverlayError(
       `entry path must use forward slashes: ${JSON.stringify(path)}`,
+    );
+  }
+  if (path.includes(":")) {
+    throw new KnowledgeOverlayError(
+      `entry path must not contain a colon: ${JSON.stringify(path)}`,
     );
   }
   if (path.startsWith("/")) {
