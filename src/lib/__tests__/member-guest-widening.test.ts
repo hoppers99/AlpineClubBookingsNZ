@@ -819,7 +819,15 @@ describe("consent columns have exactly one writer", () => {
       // --- MG4's edit surface (#2309). Neither WRITES a column.
       // The panel builds one of the two legal preview shapes for the pre-save
       // badge, exactly as the wizard's predictor does — no row exists yet.
-      "src/components/edit-booking-panel.tsx":
+      //
+      // #2690 moved the entry from `edit-booking-panel.tsx` to the types module
+      // the panel split produced, because the panel's ONLY match was ever a
+      // sentence in the `NewGuest.memberGuestConsentPreview` docblock explaining
+      // why the preview is predicted rather than read — there is no
+      // `consentRequestedAt` on an unsaved row to show. This census matches raw
+      // text rather than stripping comments, deliberately: a file that discusses
+      // a consent column is a file whose author was reasoning about one.
+      "src/components/edit-booking/types.ts":
         "the edit panel's pre-save consent prediction for a newly added member guest",
       // Reads the status of a guest the edit REMOVED, to decide whether the
       // member was ever told about this booking and which sentence they are
