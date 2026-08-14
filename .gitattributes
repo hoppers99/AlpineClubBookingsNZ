@@ -92,6 +92,15 @@ src/lib/config-transfer/import-types.ts text eol=lf diff
 # the stored blob is already LF; this only stops Windows re-materialising CRLF.
 docs/BLUE_GREEN_MIGRATION_SAFETY.tsv text eol=lf
 
+# The rendered-email pin file (#2689) is the sixth instance of the same class.
+# `email-render-equivalence.test.ts` splits it on `\n` and then on TAB, so a
+# CRLF checkout appends `\r` to every sha256 field and the gate goes red on all
+# 193 templates at once — on Windows only, green on Linux CI, which is exactly
+# the shape that gets written off as an environment flake. The file it guards
+# is the whole safety argument for a 5,000-line content move, so it must not be
+# the thing that cries wolf. Zero churn: the stored blob is already LF.
+src/lib/__tests__/support/email-render-pins.txt text eol=lf
+
 # CHANGELOG.md: every concurrent lane prepends its entry to `## Unreleased`,
 # so plain three-way merge conflicts on nearly every rebase and every
 # update-from-main — all session long, on every agent stream. `union` keeps

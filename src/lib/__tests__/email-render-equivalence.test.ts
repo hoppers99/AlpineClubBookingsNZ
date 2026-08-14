@@ -91,7 +91,10 @@ function renderAll(): Map<string, { bytes: number; sha256: string }> {
 function readPins(): Map<string, { bytes: number; sha256: string }> {
   const raw = readFileSync(PINS_PATH, "utf8");
   const pins = new Map<string, { bytes: number; sha256: string }>();
-  for (const line of raw.split("\n")) {
+  for (const rawLine of raw.split("\n")) {
+    // Belt and braces with the `eol=lf` pin in .gitattributes: a stray CR would
+    // otherwise ride on the sha256 field and fail every template at once.
+    const line = rawLine.replace(/\r$/, "");
     if (!line.trim() || line.startsWith("#")) continue;
     const [id, bytes, sha256] = line.split("\t");
     if (!id || !bytes || !sha256) {
