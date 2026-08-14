@@ -163,27 +163,54 @@ function specifiersOf(file: string): string[] {
   return value;
 }
 
-/*
-  Leading whitespace and comments before the "use client" directive.
-
-  Written as ONE alternation where every branch is decided by its opening
-  characters — a whitespace character, `//`, or `/*` — and every branch consumes
-  at least one character. That is what keeps it linear. The obvious spelling,
-  `(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*`, is ambiguous: the trailing `\s*` inside
-  a starred group can match the same run of whitespace in more than one way, and
-  CodeQL flagged it as exponential backtracking on input of the shape `*//*`
-  repeated (`js/redos`, high). This file reads repository sources rather than
-  untrusted input, so it was not reachable — but a quadratic-or-worse regex in a
-  test that walks every file in `src/` is not worth keeping for the sake of a
-  shorter pattern. The block-comment branch also spells its interior as
-  "not-a-star, or a star not followed by a slash" so it cannot backtrack into the
-  terminator.
-*/
-const LEADING_TRIVIA_THEN_USE_CLIENT =
-  /^(?:\s|\/\/[^\n]*|\/\*(?:[^*]|\*(?!\/))*\*\/)*["']use client["']/;
+/**
+ * Does this source begin with a `"use client"` directive, once leading
+ * whitespace and comments are skipped?
+ *
+ * Deliberately NOT a regular expression. The obvious spelling —
+ * `^(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*["']use client["']` — is ambiguous,
+ * because the trailing `\s*` inside a starred group can match one run of
+ * whitespace in more than one way, and CodeQL flagged it as exponential
+ * backtracking on input shaped like a repeated `*//*` (`js/redos`, high).
+ *
+ * The first attempt at a fix rewrote it as one alternation whose branches are
+ * each decided by their opening characters. That reasoning was right, but CodeQL
+ * still flagged it — a nested quantifier inside a starred group is enough for the
+ * analysis regardless of whether the branches can actually overlap. Arguing with a
+ * checker that only runs in CI is a poor trade for a helper this small.
+ *
+ * A scanner has no backtracking to reason about at all. Every branch below
+ * advances `i` strictly, and `indexOf` is linear, so this is O(n) by
+ * construction rather than by argument. That it also reads more plainly than the
+ * regex is a bonus.
+ */
+function startsWithUseClientDirective(head: string): boolean {
+  let i = 0;
+  while (i < head.length) {
+    const ch = head[i];
+    if (ch === " " || ch === "\t" || ch === "\r" || ch === "\n") {
+      i += 1;
+      continue;
+    }
+    if (ch === "/" && head[i + 1] === "/") {
+      const newline = head.indexOf("\n", i + 2);
+      if (newline === -1) return false;
+      i = newline + 1;
+      continue;
+    }
+    if (ch === "/" && head[i + 1] === "*") {
+      const close = head.indexOf("*/", i + 2);
+      if (close === -1) return false;
+      i = close + 2;
+      continue;
+    }
+    return head.startsWith('"use client"', i) || head.startsWith("'use client'", i);
+  }
+  return false;
+}
 
 const clientModules = files.filter((file) =>
-  LEADING_TRIVIA_THEN_USE_CLIENT.test(read(file).slice(0, 400)),
+  startsWithUseClientDirective(read(file).slice(0, 400)),
 );
 
 /** Breadth-first, so the path reported is the shortest one. */
