@@ -21,8 +21,9 @@ import {
 } from "./allowlist";
 import { buildExcerpts } from "./excerpt";
 import { normalizeContent, sha256Hex } from "./hash";
+import { overlayFilesFrom } from "./overlay";
 import { scanForSecrets, type SecretFinding } from "./secret-scan";
-import { classifySensitivity } from "./sensitivity";
+import { classifyOverlaySensitivity, classifySensitivity } from "./sensitivity";
 import { computeEntriesDigest } from "./serialize";
 import {
   KNOWLEDGE_BUNDLE_SCHEMA_VERSION,
@@ -46,8 +47,16 @@ export interface BuildKnowledgeBundleInput {
   commitSha: string;
   /** Explicit ISO-8601 observed-at (never read from the clock here). */
   observedAt: string;
-  /** Optional deployment-owned allowlist widening/narrowing. */
+  /** Optional deployment-owned allowlist widening/narrowing (WHICH repo files). */
   overlay?: KnowledgeAllowlistOverlay;
+  /**
+   * Optional deployment-owned PRIVATE KNOWLEDGE OVERLAY (ADR-006 §4) — extra,
+   * deployment-supplied knowledge CONTENT with no committed repo file. Distinct
+   * from `overlay` above. Passed as the raw (untrusted) parsed object; it is
+   * validated here and FAILS CLOSED (`KnowledgeOverlayError`) if malformed. Absent
+   * ⇒ the bundle is byte-identical to one built without this feature.
+   */
+  knowledgeOverlay?: unknown;
 }
 
 /** Thrown when a secret would enter the bundle. Fail-closed signal. */
@@ -63,7 +72,10 @@ export class KnowledgeBundleSecretError extends Error {
   }
 }
 
-function buildEntry(file: KnowledgeSourceFile): KnowledgeEntry {
+function buildEntry(
+  file: KnowledgeSourceFile,
+  opts: { overlay?: boolean } = {},
+): KnowledgeEntry {
   const content = normalizeContent(file.content);
   const { language, symbols, excerpts } = buildExcerpts(file.path, content);
   const lineCount =
@@ -77,17 +89,24 @@ function buildEntry(file: KnowledgeSourceFile): KnowledgeEntry {
     contentHash: sha256Hex(content),
     byteLength: Buffer.byteLength(content, "utf8"),
     lineCount,
-    sensitivity: classifySensitivity(file.path, language),
+    // A private-overlay entry carries the `overlay` base tag (plus the same
+    // additive risk classes); a repo file gets its location/language base tag.
+    sensitivity: opts.overlay
+      ? classifyOverlaySensitivity(file.path, language)
+      : classifySensitivity(file.path, language),
     symbols,
     excerpts,
   };
 }
 
 /**
- * Build the deterministic knowledge bundle. Files are (defensively) re-filtered
- * through the resolved allowlist, secret-scanned (fail closed), sorted by path,
- * and de-duplicated (a duplicate path is a fatal input error). The returned
- * bundle carries an integrity digest over the entries.
+ * Build the deterministic knowledge bundle. Repo files are (defensively)
+ * re-filtered through the resolved allowlist; an optional private knowledge
+ * overlay (ADR-006 §4) contributes additional entries. BOTH sources are
+ * secret-scanned (fail closed), sorted by path, and de-duplicated (a duplicate
+ * path is a fatal input error), and BOTH participate in the single integrity
+ * digest over the entries — so `verify.ts`'s fail-closed contract is unchanged
+ * whether or not an overlay is present.
  */
 export function buildKnowledgeBundle(
   input: BuildKnowledgeBundleInput,
@@ -96,21 +115,36 @@ export function buildKnowledgeBundle(
 
   // Defense in depth: even though the script pre-filters, only allowlisted paths
   // are ever considered here.
-  const candidates = input.files.filter((f) => isAllowlisted(f.path, allowlist));
+  const fileCandidates = input.files.filter((f) =>
+    isAllowlisted(f.path, allowlist),
+  );
+
+  // The PRIVATE KNOWLEDGE OVERLAY (ADR-006 §4). Validated + HARD_EXCLUDE-checked +
+  // namespaced under `overlay/` by `overlayFilesFrom`, which FAILS CLOSED
+  // (`KnowledgeOverlayError`) on a malformed overlay or a boundary-violating handle.
+  // From here on overlay entries are ordinary source files: the SAME dedupe, the
+  // SAME secret scan, the SAME excerpting/hashing, and the SAME single integrity
+  // digest apply — the only difference is the `overlay` sensitivity base tag.
+  const overlayCandidates = overlayFilesFrom(input.knowledgeOverlay);
 
   // Reject duplicate paths outright — silently keeping "the last one" would make
-  // the output depend on input order, breaking determinism.
+  // the output depend on input order, breaking determinism. The `overlay/`
+  // namespace means an overlay entry can never collide with a repo file, so a
+  // collision here is two overlay entries sharing a handle, or genuinely duplicate
+  // repo input — both are input errors.
+  const allCandidates = [...fileCandidates, ...overlayCandidates];
   const seen = new Set<string>();
-  for (const f of candidates) {
+  for (const f of allCandidates) {
     if (seen.has(f.path)) {
       throw new Error(`Duplicate path in knowledge bundle input: ${f.path}`);
     }
     seen.add(f.path);
   }
 
-  // Secret scan every included file BEFORE building anything. Fail closed.
+  // Secret scan every included file — repo AND overlay — BEFORE building anything.
+  // Fail closed: an overlay secret refuses the whole build exactly like a repo one.
   const secretFindings: Array<{ path: string; finding: SecretFinding }> = [];
-  for (const f of candidates) {
+  for (const f of allCandidates) {
     for (const finding of scanForSecrets(normalizeContent(f.content))) {
       secretFindings.push({ path: f.path, finding });
     }
@@ -119,9 +153,10 @@ export function buildKnowledgeBundle(
     throw new KnowledgeBundleSecretError(secretFindings);
   }
 
-  const entries = candidates
-    .map(buildEntry)
-    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const entries = [
+    ...fileCandidates.map((f) => buildEntry(f)),
+    ...overlayCandidates.map((f) => buildEntry(f, { overlay: true })),
+  ].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
   return {
     schemaVersion: KNOWLEDGE_BUNDLE_SCHEMA_VERSION,
