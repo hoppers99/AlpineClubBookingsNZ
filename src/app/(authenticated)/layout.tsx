@@ -111,10 +111,23 @@ export default async function AuthenticatedLayout({
   // encoded at UTC midnight, and the pg driver adapter narrows whatever `Date`
   // is bound against them to its UTC calendar date. So both ends must be
   // date-only values from the club's own calendar (#2838; INV-DATE-013).
-  // `new Date()` + `setHours(0, 0, 0, 0)` was NZ-LOCAL midnight — `(D-1)T12:00Z`
-  // under the `TZ=Pacific/Auckland` server pin — which narrowed to D-1 and ran
-  // this whole window a day behind: the day-before access this comment
-  // describes never fired, and the badge instead survived a day past check-out.
+  // `new Date()` + `setHours(0, 0, 0, 0)` was NZ-LOCAL midnight — the PREVIOUS
+  // UTC day under the `TZ=Pacific/Auckland` server pin — which narrowed to D-1
+  // and ran this whole window a day behind.
+  //
+  // That decided which LINKS the nav bar offered, never what the member could
+  // do: `getKioskAccessTier` (`src/lib/kiosk-access.ts:31-77`) is the gate on
+  // `/lodge/kiosk` and already asked the club's calendar for the same
+  // `[checkIn-1, checkOut]`. So the day-before nav link was missing while the
+  // access behind it worked, and the day-after link was dead.
+  //
+  // NARROWER THAN THE DASHBOARD'S COPY OF THE SAME RULE, deliberately recorded
+  // rather than assumed: this asks about `memberId` alone — the booking OWNER —
+  // while `src/app/(authenticated)/dashboard/page.tsx` also admits a linked
+  // member guest, and so does `getKioskAccessTier`. A member linked as somebody
+  // else's guest therefore reaches the kiosk and sees the dashboard card, but
+  // gets no nav link. Pre-existing and untouched by #2838, which changed only
+  // the DAY this window asks about.
   const today = getTodayDateOnly();
   const tomorrow = addDaysDateOnly(today, 1);
 

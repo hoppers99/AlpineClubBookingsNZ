@@ -218,14 +218,15 @@ describe("PUT /api/admin/age-tier-settings — subset save (#2009)", () => {
     // `BookingGuest.stayEnd` is `@db.Date`, and `@prisma/adapter-pg` narrows a
     // bound `Date` for such a column to its UTC calendar date, discarding the
     // time (`formatDate` in `mapArg`). So `new Date()` + `setHours(0, 0, 0, 0)`
-    // — NZ-local midnight, `(D-1)T12:00Z` under the `TZ=Pacific/Auckland`
-    // server pin — arrived as the day D-1 and counted a guest whose stay ended
-    // YESTERDAY as still live. That erred towards refusing a tier removal
-    // rather than towards deleting a tier someone still classifies into, so it
-    // was a spurious block, never an unsafe allow. This pins the cut-off to the
-    // club's own day.
+    // — NZ-local midnight, which is the PREVIOUS UTC day under the
+    // `TZ=Pacific/Auckland` server pin — arrived as the day D-1 and counted a
+    // guest whose stay ended YESTERDAY as still live. That erred towards
+    // refusing a tier removal rather than towards deleting a tier someone still
+    // classifies into, so it was a spurious block, never an unsafe allow. This
+    // pins the cut-off to the club's own day.
     //
-    // 01:30 on 2 July in New Zealand; 23:30 on 1 July in UTC and in Brisbane.
+    // 01:30 on 2 July in New Zealand; 13:30 on 1 July in UTC; 23:30 on 1 July
+    // in Brisbane.
     vi.setSystemTime(new Date("2026-07-01T13:30:00.000Z"));
     expectClubTimeZonePremise();
 

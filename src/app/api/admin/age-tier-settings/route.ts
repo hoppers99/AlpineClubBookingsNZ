@@ -158,8 +158,8 @@ export async function PUT(request: NextRequest) {
       if (removedTiers.length > 0) {
         // `BookingGuest.stayEnd` is `@db.Date`, so the cut-off has to be a
         // date-only value from the club's calendar (#2838; INV-DATE-013). The
-        // old `new Date()` + `setHours(0, 0, 0, 0)` was NZ-LOCAL midnight —
-        // `(D-1)T12:00Z` under the `TZ=Pacific/Auckland` server pin — which the
+        // old `new Date()` + `setHours(0, 0, 0, 0)` was NZ-LOCAL midnight — the
+        // PREVIOUS UTC day under the `TZ=Pacific/Auckland` server pin — which the
         // pg adapter narrows to D-1, so a guest whose stay ended YESTERDAY was
         // still counted as live and could block a tier removal for an extra
         // day. That erred towards refusing, never towards deleting a tier

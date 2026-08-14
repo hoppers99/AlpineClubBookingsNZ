@@ -2,20 +2,43 @@
  * The staying-guest day boundary in the authenticated layout (#2838).
  *
  * This layout wraps every member page, and the `isStayingGuest` flag it hands
- * the nav bar is what puts the lodge surfaces in front of a guest. Its own
- * comment states the rule — a PAID booking where `checkIn - 1 <= today <=
- * checkOut` — so the day-before access is deliberate, not incidental.
+ * the nav bar is what puts the lodge LINK in front of a guest. Its own comment
+ * states the rule — a PAID booking where `checkIn - 1 <= today <= checkOut` — so
+ * the day-before offer is deliberate, not incidental.
+ *
+ * The flag is a link, not a permission. `/lodge/kiosk` is gated by
+ * `getKioskAccessTier` (`src/lib/kiosk-access.ts:31-77`), which asks the club's
+ * calendar and already implemented the same `[checkIn-1, checkOut]` (`:71-73`).
+ * So the day-before link was missing while the access behind it worked, and the
+ * day-after link was dead.
+ *
+ * SUBJECT SET: this query asks about `memberId` alone — the booking OWNER —
+ * whereas the dashboard's copy of the rule and `getKioskAccessTier` both also
+ * admit a LINKED MEMBER GUEST. That difference is pre-existing and untouched by
+ * #2838; the fixtures below are all owner bookings, so nothing here depends on
+ * which way it is resolved.
  *
  * `Booking.checkIn`/`checkOut` are `@db.Date`, and `@prisma/adapter-pg` narrows
  * a bound `Date` for such a column to its UTC calendar date (`formatDate` in
  * `mapArg`). The old `new Date()` + `setHours(0, 0, 0, 0)` was NZ-LOCAL
- * midnight, `(D-1)T12:00Z` under the `TZ=Pacific/Auckland` server pin, so it
- * narrowed to D-1 and moved the whole window a day late.
+ * midnight — the PREVIOUS UTC day under the `TZ=Pacific/Auckland` server pin,
+ * `(D-1)T12:00Z` in NZST and `(D-1)T11:00Z` under NZ daylight saving — so it
+ * narrowed to D-1 either way and moved the whole window a day late.
  *
- * The pinned instant is 01:30 on 2 July in New Zealand and 23:30 on 1 July in
- * both UTC and Brisbane, so a wrong club zone changes the answer rather than
- * merely the arithmetic; `expectClubTimeZonePremise()` says so out loud when it
- * does (docs/TESTING.md rule 6).
+ * The pinned instant is 01:30 on 2 July in New Zealand, 13:30 on 1 July in UTC
+ * and 23:30 on 1 July in Brisbane, so a wrong club zone changes the answer
+ * rather than merely the arithmetic; `expectClubTimeZonePremise()` says so out
+ * loud when it does (docs/TESTING.md rule 6).
+ *
+ * Measured against explicitly-configured club zones, with the premise guard
+ * stubbed: `Australia/Brisbane` and `UTC` each turn 3 of the 5 tests here red;
+ * `Etc/GMT-13` turns none red, because it names the same calendar DAY at this
+ * instant and this file asserts no instant (the dashboard suite's two
+ * `DateTime` assertions are what catch that zone); and `Etc/GMT-12` is New
+ * Zealand in July, so nothing can tell them apart. Do not read "red under
+ * `TZ=...`" as evidence of anything: `TZ` also moves `APP_TIME_ZONE`
+ * (`src/config/operational.ts`), so the premise guard fires first and every zone
+ * reports the same environment failure whatever the instant.
  */
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
