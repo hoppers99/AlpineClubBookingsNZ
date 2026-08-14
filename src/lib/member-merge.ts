@@ -841,6 +841,31 @@ const GROUP_FILL_SPECS: { name: string; key: string; fields: string[] }[] = [
   },
 ];
 
+/** Booleans where either record's `true` wins. */
+const OR_BOOLEAN_FIELDS = ["requiresInduction", "hutLeaderEligible"] as const;
+
+/**
+ * Every field `mergeMemberFields` emits on EVERY call, assembled from the lists
+ * it actually loops over (#2860).
+ *
+ * Exported for `member-merge-field-kinds.test.ts`, which uses it to prove the
+ * value-kind declaration is exhaustive WITHOUT trusting a hand-built fixture to
+ * trigger each row. A hand-built fixture only tests the rows someone remembered
+ * to populate; adding a field to `FILL_IF_BLANK_FIELDS` or to a group would
+ * otherwise pass unclassified until someone extended the fixture too.
+ *
+ * The two CONDITIONAL rows (`hutLeaderEligibleAt`, `joinedDate`) are not here —
+ * they are pushed by hand rather than by a loop. That test finds them by
+ * scanning this file for the literal field names handed to `fieldMergeRow`,
+ * which is exhaustive for the same reason the constructor exists: it is the
+ * single place a diff row can be built.
+ */
+export const UNCONDITIONALLY_MERGED_FIELDS: readonly string[] = [
+  ...FILL_IF_BLANK_FIELDS,
+  ...GROUP_FILL_SPECS.flatMap((group) => group.fields),
+  ...OR_BOOLEAN_FIELDS,
+];
+
 export type FieldMergeRow = {
   field: string;
   master: unknown;
@@ -942,7 +967,7 @@ export function mergeMemberFields(
   }
 
   // OR booleans.
-  for (const field of ["requiresInduction", "hutLeaderEligible"] as const) {
+  for (const field of OR_BOOLEAN_FIELDS) {
     const m = Boolean(master[field]);
     const l = Boolean(loser[field]);
     const result = m || l;

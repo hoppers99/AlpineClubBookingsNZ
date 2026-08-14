@@ -1,14 +1,21 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
 import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
+import { DATE_ONLY_IN_DATETIME_COLUMN } from "@/lib/__tests__/support/date-only-reviewed-fields";
 import {
   formatMergeFieldValue,
   mergeFieldValueKind,
   MERGE_FIELD_VALUE_KINDS,
   type MergeFieldValueKind,
 } from "@/lib/member-merge-field-kinds";
-import { mergeMemberFields } from "@/lib/member-merge";
+import {
+  mergeMemberFields,
+  UNCONDITIONALLY_MERGED_FIELDS,
+} from "@/lib/member-merge";
 
 /**
  * The member-merge comparison screen dates each value by what the field MEANS,
@@ -176,7 +183,69 @@ describe("#2860 every merged field is classified, and only merged fields are", (
     expect(strays).toEqual([]);
   });
 
-  it("classifies the three instants and the three calendar days as such", () => {
+  /*
+    THE TWO ASSERTIONS ABOVE ARE ONLY AS EXHAUSTIVE AS THE FIXTURE.
+
+    `emittedFields()` is a hand-built pair of member records. It is honest about
+    the rows it triggers, but a NEW conditional row — another
+    `hutLeaderEligibleAt`, pushed only when some flag is set — would simply not
+    be emitted by it. "Declares a kind for every field the merge emits" would
+    then pass over a field it never saw, and that field would reach
+    `mergeFieldValueKind`'s `plain` fallback in production.
+
+    So the two tests below take the field names from the merge module itself
+    rather than from the fixture, and between them they cover every way a row
+    can be built: the loops (via the exported list) and the hand-written pushes
+    (via the single constructor's literal arguments).
+  */
+
+  it("declares a kind for every field the merge's own lists loop over", () => {
+    const undeclared = UNCONDITIONALLY_MERGED_FIELDS.filter(
+      (field) => !(field in MERGE_FIELD_VALUE_KINDS),
+    );
+    expect(
+      undeclared,
+      "A field was added to FILL_IF_BLANK_FIELDS, a GROUP_FILL_SPECS group or " +
+        "the OR booleans without a declared value kind (#2860). It would render " +
+        "through the `plain` fallback — raw, and for a date, wrong.",
+    ).toEqual([]);
+
+    // Vacuity guard: an export that became empty would pass the filter above
+    // perfectly while asserting nothing.
+    expect(UNCONDITIONALLY_MERGED_FIELDS.length).toBeGreaterThan(20);
+  });
+
+  it("declares a kind for every field pushed as a one-off derived row", () => {
+    // `fieldMergeRow` is the SINGLE constructor for a diff row (#2860), so every
+    // hand-written push names its field as a string literal in a call to it.
+    // Reading them out of the source is what makes this exhaustive for rows no
+    // fixture is guaranteed to trigger — the same "read the tree, not a
+    // remembered list" method as #2684's encoding guard.
+    const source = fs.readFileSync(
+      path.join(process.cwd(), "src/lib/member-merge.ts"),
+      "utf8",
+    );
+    const derived = [
+      ...source.matchAll(/fieldMergeRow\(\s*"([A-Za-z0-9_]+)"/g),
+    ].map((match) => match[1]!);
+
+    expect(
+      derived.length,
+      "Found NO literal fieldMergeRow(\"...\") call. Either the derived rows are " +
+        "gone, or they are built some other way and this test now asserts nothing.",
+    ).toBeGreaterThan(0);
+
+    const undeclared = derived.filter(
+      (field) => !(field in MERGE_FIELD_VALUE_KINDS),
+    );
+    expect(
+      undeclared,
+      "A derived diff row is emitted for a field with no declared value kind " +
+        "(#2860). Conditional rows are exactly the ones a fixture can miss.",
+    ).toEqual([]);
+  });
+
+  it("classifies the two instants and the three calendar days as such", () => {
     // The classification is proved from the schema and the write paths in
     // `member-merge-field-kinds.ts`; this pins the conclusions so a later edit
     // cannot flip one silently. `lifeMemberDate` is a calendar day: every writer
@@ -195,9 +264,76 @@ describe("#2860 every merged field is classified, and only merged fields are", (
   });
 });
 
+describe("#2860 the classification agrees with #2684's reviewed record of the same columns", () => {
+  /*
+    TWO DECLARATIONS, ONE SUBJECT. #2684's guard keeps
+    `DATE_ONLY_IN_DATETIME_COLUMN`: the reviewed record of which bare-`DateTime`
+    columns actually hold a calendar day. `MERGE_FIELD_VALUE_KINDS` decides the
+    same question for the merge screen.
+
+    They are not redundant — the guard classifies a call site by the field name
+    written in the ARGUMENT, and the merge screen renders `unknown` values whose
+    field is a runtime string, so the guard passes over it in silence (it does
+    today: the whole suite is green against this branch). But two records of the
+    same fact drift, and a drift here is a date silently a day wrong on the
+    screen before an irreversible merge. So they are bound: a calendar day here
+    must be a reviewed calendar day there, and an instant here must NOT be.
+  */
+
+  const dateKinds = Object.entries(MERGE_FIELD_VALUE_KINDS).filter(
+    ([, kind]) => kind !== "plain",
+  );
+
+  it("has some date-kinded fields to check", () => {
+    // Vacuity guard: if every field became `plain`, both assertions below would
+    // pass over an empty list.
+    expect(dateKinds.length).toBeGreaterThan(0);
+  });
+
+  it("records every calendar day it declares on #2684's reviewed list", () => {
+    const missing = dateKinds
+      .filter(([, kind]) => kind === "calendarDay")
+      .map(([field]) => field)
+      .filter((field) => !(field in DATE_ONLY_IN_DATETIME_COLUMN));
+
+    expect(
+      missing,
+      "This field is rendered by TRUNCATION on the merge screen, which is only " +
+        "correct for a column that holds a calendar day — but it is not on " +
+        "#2684's reviewed list in src/lib/__tests__/support/" +
+        "date-only-reviewed-fields.ts. Add it there WITH THE WRITE THAT PROVES " +
+        "IT, or classify it as an instant here (INV-DATE-019).",
+    ).toEqual([]);
+  });
+
+  it("declares no instant that #2684 reviewed as a calendar day", () => {
+    const contradictory = dateKinds
+      .filter(([, kind]) => kind === "instant")
+      .map(([field]) => field)
+      .filter((field) => field in DATE_ONLY_IN_DATETIME_COLUMN);
+
+    expect(
+      contradictory,
+      "Two guards now disagree about what this column means: it is an instant " +
+        "here and a reviewed calendar day on #2684's list. One of them is wrong, " +
+        "and whichever it is, some surface is showing a date a day early.",
+    ).toEqual([]);
+  });
+});
+
 describe.each(CLUB_DAY_CASES)(
   "#2860 the merge comparison table — $label",
   ({ instant, utcDay, clubDay }) => {
+    // Every case in this block pins a DIVERGENT instant — its club day is not
+    // its UTC day — so each one is only meaningful while the club zone really is
+    // New Zealand. `expectClubTimeZonePremise`'s own docblock asks to be called
+    // from the `beforeEach` of exactly such a block: without it a mis-set zone
+    // reports as a bare date mismatch here, and the reader debugs the renderer
+    // instead of the environment.
+    beforeEach(() => {
+      expectClubTimeZonePremise();
+    });
+
     // One table, both receiver kinds: the photo group's `photoUpdatedAt` and the
     // hut-leader `hutLeaderEligibleAt` are instants; `dateOfBirth`,
     // `lifeMemberDate` and `joinedDate` are calendar days. They are asserted
@@ -332,5 +468,24 @@ describe("#2860 the non-date cells are untouched", () => {
     expect(formatMergeFieldValue(new Date(NaN), "calendarDay")).toBe(
       "Invalid Date",
     );
+  });
+
+  it("shows the raw value for a kind it does not recognise, rather than truncating it", () => {
+    // The rolling-deploy case, and the reason the renderer has no trailing
+    // `else`. A NEW server can stamp a kind an OLD bundle has never heard of;
+    // the browser must not guess, because the only guess available is exactly
+    // the truncation #2860 removed. TypeScript cannot express this call — `kind`
+    // is a closed union at compile time and an arbitrary string at runtime — so
+    // the cast is the point of the test, not a shortcut around it.
+    const futureKind = "zonedDay" as unknown as MergeFieldValueKind;
+    const value = new Date("2026-06-14T12:00:00.000Z");
+
+    const rendered = formatMergeFieldValue(value, futureKind);
+    expect(rendered).toBe(String(value));
+    // Specifically NOT the UTC truncation, which is the silent-day-early defect.
+    expect(rendered).not.toBe("2026-06-14");
+    // And not the club-zone reading either — an unknown kind is not a date at
+    // all as far as this renderer is concerned.
+    expect(rendered).not.toBe("2026-06-15");
   });
 });

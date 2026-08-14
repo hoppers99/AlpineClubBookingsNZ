@@ -22,11 +22,20 @@ import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
  *   first half of every club day — on the screen whose whole purpose is to let a
  *   human judge which record is more recent, where `photoUpdatedAt` is a recency
  *   signal by construction (`INV-DATE-019`).
- * - `dateOfBirth`, `joinedDate` and `lifeMemberDate` are CALENDAR DAYS pinned to
- *   UTC midnight by their writers, and for those the same truncation is exactly
- *   right (`INV-DATE-010`). Reading one through the club-zone formatter would
- *   happen to agree in New Zealand — UTC midnight is midday NZ, still the same
- *   day — and be wrong by a day for any club sitting behind UTC.
+ * - `dateOfBirth`, `joinedDate` and `lifeMemberDate` are CALENDAR DAYS — their
+ *   writers mean to pin them to UTC midnight, and for a value stored that way
+ *   the same truncation is exactly right (`INV-DATE-010`). Reading one through
+ *   the club-zone formatter would happen to agree in New Zealand — UTC midnight
+ *   is midday NZ, still the same day — and be wrong by a day for any club
+ *   sitting behind UTC.
+ *
+ *   ONE WRITER DOES NOT HONOUR THAT INTENT, so do not read the line above as a
+ *   promise about the stored data. `parseXeroCompanyNumberDate`
+ *   (`xero-contacts.ts`) builds SERVER-LOCAL midnight, so some Xero-imported
+ *   dates of birth are STORED a day early and this screen faithfully shows the
+ *   day-early value. That is a storage defect on a calendar-day field
+ *   (**#2859**, open), not a second meaning, and it is fixed by fixing the
+ *   write — see the `dateOfBirth` entry below.
  *
  * So the kind is declared here, once, next to the evidence for it, and the
  * renderer is told which one it holds. The classification below is proved from
@@ -35,6 +44,18 @@ import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
  * NONE of the merged Member date columns is `@db.Date` — they are all bare
  * `DateTime?`. The column type therefore settles nothing on this screen and the
  * writers are what decide, which is why each row below cites one.
+ *
+ * THIS IS NOT A SECOND OPINION ON THOSE COLUMNS. #2684's guard already keeps a
+ * reviewed record of which bare-`DateTime` columns hold a calendar day
+ * (`DATE_ONLY_IN_DATETIME_COLUMN`, in
+ * `src/lib/__tests__/support/date-only-reviewed-fields.ts`), and all three of
+ * the calendar days below were on it before #2860. The guard cannot reach this
+ * screen — its scanner classifies a site by the field name written in the
+ * argument, and here the values arrive as `unknown` with the field as a runtime
+ * string — so the judgement has to be restated where the renderer can act on
+ * it. `member-merge-field-kinds.test.ts` binds the two lists together: a
+ * `calendarDay` here that is absent from that record, or an `instant` here that
+ * appears on it, fails. Neither list can move without the other.
  */
 export type MergeFieldValueKind = "calendarDay" | "instant" | "plain";
 
@@ -118,8 +139,20 @@ export const MERGE_FIELD_VALUE_KINDS: Readonly<
   // validated `^\d{4}-\d{2}-\d{2}$` and parsed to UTC midnight
   // (admin-member-detail-service.ts:1161, admin-members-service.ts:1458);
   // `parseDateOnly` on CSV import; and on the Xero backfill it is the first
-  // invoice's date (xero-bulk-contact-sync.ts:439), which is a Xero date-only
-  // field. A membership start date, not a moment.
+  // invoice's date (xero-bulk-contact-sync.ts:440). A membership START DATE,
+  // not a moment.
+  //
+  // On that last path, be precise about WHAT makes it safe, because "it is a
+  // Xero date-only field" is a claim about Xero and the risk is in the PARSE.
+  // `getContactFirstInvoiceDate` does `new Date(invoices[0].date)`
+  // (xero-contacts.ts:1282). That lands on UTC midnight because the SDK hands
+  // back a value carrying an explicit UTC offset — Xero's `/Date(…+0000)/` wire
+  // form — and `new Date` honours the offset. An offset-less
+  // `yyyy-MM-dd HH:mm:ss` string would instead parse as SERVER-LOCAL midnight,
+  // which is the identical hazard `parseXeroCompanyNumberDate` already realises
+  // on `dateOfBirth`. Whether that can happen here is **#2869**; either way the
+  // KIND is unaffected, because a wrongly-parsed start date is still a calendar
+  // day and is still fixed at the write.
   joinedDate: "calendarDay",
 };
 
@@ -170,6 +203,15 @@ function toInstant(value: unknown): Date | null {
  * club-zone formatter. Passing a zone behind UTC is what separates them — and it
  * is passed here rather than set via `TZ`, which would move `APP_TIME_ZONE`
  * itself (docs/TESTING.md rule 6).
+ *
+ * EVERY BRANCH IS NAMED, INCLUDING THE IMPOSSIBLE ONE. `kind` is a closed union
+ * to TypeScript and an arbitrary string at runtime: this is a client component,
+ * and during a rolling deploy a NEW server can stamp a kind an OLD bundle has
+ * never heard of. A trailing `else` would have truncated that value silently,
+ * which is the one outcome this module exists to prevent — a date quietly a day
+ * wrong. An unrecognised kind therefore renders the RAW value: visibly odd, and
+ * never a day wrong. It is the same choice `mergeFieldValueKind` makes for an
+ * unknown field, for the same reason.
  */
 export function formatMergeFieldValue(
   value: unknown,
@@ -185,9 +227,11 @@ export function formatMergeFieldValue(
   const instant = toInstant(value);
   if (!instant) return String(value);
 
+  if (kind === "instant") return formatDateOnlyForTimeZone(instant, timeZone);
   // `formatDateOnly` takes no zone on purpose: a calendar day is already pinned
   // to UTC midnight, so truncation names the same day from anywhere.
-  return kind === "instant"
-    ? formatDateOnlyForTimeZone(instant, timeZone)
-    : formatDateOnly(instant);
+  if (kind === "calendarDay") return formatDateOnly(instant);
+
+  // Unreachable for TypeScript; reachable across a rolling deploy. See above.
+  return String(value);
 }

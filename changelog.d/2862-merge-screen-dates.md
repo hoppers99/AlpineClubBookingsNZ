@@ -10,7 +10,13 @@
   now show the club's calendar day — which matters here because the photo date
   is one of the few signals on the screen for deciding which record is the more
   recent. Date of birth, joined date and life member date are ordinary calendar
-  dates rather than moments, so they were already right and are unchanged.
+  dates rather than moments, so the way they are displayed is unchanged.
+
+  One thing this does **not** fix, so that nobody reads the above as a clean bill
+  of health: some dates of birth brought in from Xero were SAVED a day early when
+  they were imported, and this screen shows what was saved. Those still read a
+  day early here, and correcting them means correcting the stored value — which
+  is being handled separately (#2859).
 
   Nothing stored has changed, no merge behaves differently, and no other screen
   is affected: this only fixes which day those two values are shown as.

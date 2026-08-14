@@ -9,6 +9,7 @@ import eslintConfig, {
   MANDATORY_SRC_RESTRICTIONS,
   SRC_RESTRICTION_EXEMPTIONS,
 } from "../../../eslint.config.mjs";
+import { DATE_ONLY_IN_DATETIME_COLUMN } from "./support/date-only-reviewed-fields";
 import {
   auditEnforcedGuardCoverage,
   auditResolvedGuardCoverage,
@@ -78,40 +79,18 @@ const ENCODER_MODULE = "src/lib/date-only.ts";
 
 /**
  * `DateTime` columns that nevertheless hold a DATE-ONLY value, with the write
- * that proves it.
+ * that proves it — the list this file consults before calling a bare-`DateTime`
+ * truncation a defect.
  *
- * The column type is a good first filter and not the last word. These fields
- * were declared `DateTime` without `@db.Date`, but every write pins them to UTC
- * midnight from a `yyyy-MM-dd` string, so they are calendar days living in an
- * un-annotated column — `formatDateOnly` reads back exactly the day that was
- * stored. Sending them through the club-timezone helper instead would agree on
- * every correctly-pinned row and quietly DISAGREE on a corrupt one, which is the
- * wrong way round for a value whose meaning is a plain date.
- *
- * The honest fix is to annotate the columns `@db.Date`, which is a migration and
- * a data audit rather than a lint pass; until then this list is the record of
- * which ones were checked.
+ * It LIVES in `./support/date-only-reviewed-fields.ts` rather than here, because
+ * #2860 added a second consumer: the member-merge screen classifies the same
+ * columns per field (`src/lib/member-merge-field-kinds.ts`) for a renderer this
+ * file's scanner cannot see — it resolves field names out of the argument
+ * expression, and that screen's values arrive as `unknown` with the field as a
+ * runtime string. `member-merge-field-kinds.test.ts` binds that declaration to
+ * this list so the two cannot drift into disagreeing about what a column means.
+ * The support module's docblock has the full reasoning.
  */
-const DATE_ONLY_IN_DATETIME_COLUMN: Record<string, string> = {
-  dateOfBirth:
-    "Member.dateOfBirth — written via parseDateOnly() on the profile route and new Date('yyyy-mm-dd') on the admin/import paths; a birthday is a calendar day, never an instant",
-  requestedDateOfBirth:
-    "FamilyGroupJoinRequest.requestedDateOfBirth — the same date-of-birth value carried through the join request",
-  childDateOfBirth:
-    "FamilyGroupJoinRequest.childDateOfBirth — as above, for the child on a family join request",
-  applicantDateOfBirth:
-    "MemberApplication.applicantDateOfBirth — the date of birth captured on the membership application",
-  joinedDate:
-    "Member.joinedDate — the membership START DATE, written from a date string on the admin/import paths and from the Xero first-invoice date on the sync",
-  lifeMemberDate:
-    "Member.lifeMemberDate — the calendar day life membership was granted",
-  validFrom:
-    "PromoCode.validFrom — written via parseDateOnly() from a `dateOnlyString` schema; a promo window edge is a calendar day",
-  validUntil: "PromoCode.validUntil — same window, same write",
-  bookingStartFrom:
-    "PromoCode.bookingStartFrom — gates on the booking's CHECK-IN, itself a `@db.Date` lodge night",
-  bookingStartUntil: "PromoCode.bookingStartUntil — same gate, same write",
-};
 
 /**
  * Call sites that encode a real instant, or the raw clock, as a calendar day.
