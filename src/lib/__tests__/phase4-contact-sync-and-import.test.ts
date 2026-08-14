@@ -329,6 +329,12 @@ describe("Phase 4 contact sync and cached import", () => {
   // is exactly what the club reported. These two tests are the write, and the
   // guard that stops it destroying somebody's real business number.
   it("sends the locked member's date of birth as the Xero company number", async () => {
+    // The cache row exists and says the NZBN field is empty, so this app's
+    // value wins. The absent-cache-row case is the test below, and it is the
+    // opposite outcome.
+    mocks.prisma.xeroContactCache.findUnique.mockResolvedValue({
+      companyNumber: null,
+    });
     mocks.prisma.member.findUnique.mockResolvedValue({
       id: "member_1",
       firstName: "Jane",
@@ -359,6 +365,42 @@ describe("Phase 4 contact sync and cached import", () => {
       where: { contactId: "contact_1" },
       select: { companyNumber: true },
     });
+  });
+
+  it("sends nothing at all when no cached contact says what the NZBN field holds", async () => {
+    // The blocker a review found here. `findOrCreateXeroContact` links a member
+    // onto a PRE-EXISTING Xero contact by email match (and failing that by
+    // exact-name match), and nothing on that path writes a contact-cache row —
+    // `syncContactGroupsBestEffort` returns before it fetches the contact when
+    // grouping is off. So "no cache row" is not "a contact this app created and
+    // therefore an empty field": it is routinely a contact somebody else made,
+    // possibly carrying a real New Zealand Business Number. Writing a birthday
+    // over it would destroy a value this system cannot recover. The date of
+    // birth goes out on the next update, once the contact has been cached.
+    mocks.prisma.xeroContactCache.findUnique.mockResolvedValue(null);
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      id: "member_1",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: "contact_1",
+      dateOfBirth: new Date("1985-06-15T00:00:00.000Z"),
+    });
+
+    await updateXeroContact(
+      "contact_1",
+      { firstName: "Jane", lastName: "Doe", email: "jane@example.com" },
+      { localModel: "Member", localId: "member_1", preserveXeroName: false },
+    );
+
+    const sent = (mocks.accountingApi.updateContact.mock.calls as unknown as Array<
+      [string, string, { contacts: Array<Record<string, unknown>> }, string]
+    >)[0][2];
+    expect(sent.contacts[0]).not.toHaveProperty("companyNumber");
+    // The rest of the update still goes as normal — this drops one field, not
+    // the write.
+    expect(sent.contacts[0].emailAddress).toBe("jane@example.com");
   });
 
   it("refuses to overwrite a real NZBN with a date of birth", async () => {

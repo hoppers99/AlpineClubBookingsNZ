@@ -84,14 +84,16 @@ describe("xero-contact-sync helpers", () => {
     ).toBe(true);
   });
 
-  // The comparison is on the calendar DAY, not the instant. Two `Date` objects
-  // for the same birthday are never `===`, and a `getTime()` comparison would
-  // have reported a change for every member the #2859 migration re-encoded.
-  it("does not treat a re-encoded date of birth as a change when the day is the same", () => {
+  // The comparison is on the string Xero would be told, not on the instant.
+  // The two instants below are DELIBERATELY different — same calendar day,
+  // 9.5 hours apart — because two identical instants would also pass a
+  // `getTime()` comparison and this test would then pin nothing. Both encode
+  // `15/01/1990`, so there is nothing to say to Xero and no update is queued.
+  it("does not treat two instants on the same birthday as a change", () => {
     expect(
       hasMemberXeroContactChanges(baseContactSnapshot, {
         ...baseContactSnapshot,
-        dateOfBirth: new Date("1990-01-15T00:00:00.000Z"),
+        dateOfBirth: new Date("1990-01-15T09:30:00.000Z"),
       })
     ).toBe(false);
   });

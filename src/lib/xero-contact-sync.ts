@@ -23,10 +23,21 @@ function normalizeOptionalString(value: string | null | undefined): string | nul
 }
 
 /**
- * A date of birth compared as the CALENDAR DAY it is, not the instant it is
- * stored as (#2859). Two `Date` objects for the same birthday are never `===`,
- * and comparing `getTime()` would report a change for a row the #2859 migration
- * re-encoded without altering the day it means.
+ * A date of birth compared as the STRING XERO WOULD BE TOLD, not as the instant
+ * it happens to be stored as (#2859).
+ *
+ * This function's whole question is "is there anything to say to Xero?", and
+ * what the writer says is `formatXeroContactDateOfBirth`'s output. Comparing
+ * that output answers the question exactly rather than approximately: two
+ * `Date` objects are never `===`, and `getTime()` would report a change for two
+ * values that encode the same `dd/mm/yyyy` and would produce a Xero call with
+ * nothing in it to change.
+ *
+ * It deliberately does NOT suppress the #2859 migration's repair. A repaired
+ * row moves from `(D-1)T11:00Z` to `DT00:00Z`, which is a different calendar
+ * day and therefore a different string, so the comparison reports a change and
+ * the corrected birthday is pushed to Xero — which is the outcome wanted, not
+ * one to be filtered out.
  */
 function normalizeOptionalDateOfBirth(
   value: Date | null | undefined,

@@ -484,10 +484,12 @@ function buildMemberXeroContactCreatePayload(
     lastName: member.lastName,
     emailAddress: isPlaceholderContactEmail(member.email) ? "" : member.email,
     // #2859: the member's date of birth, in the `dd/mm/yyyy` shape the import
-    // side has always read back out of this field. No `currentCompanyNumber` is
-    // passed because the contact does not exist yet — there is nothing to
-    // clobber — and a member with no date of birth contributes no key at all.
-    ...buildXeroContactCompanyNumberPatch(member.dateOfBirth),
+    // side has always read back out of this field. `null` — an EXPLICIT "the
+    // field is known to be empty" — because this payload creates the contact,
+    // so there is nothing in Xero to clobber. Omitting the argument would mean
+    // "nothing is known", which the guard refuses to write into. A member with
+    // no date of birth contributes no key at all.
+    ...buildXeroContactCompanyNumberPatch(member.dateOfBirth, null),
     phones: hasAnyPhonePart
       ? [
           {
@@ -1405,13 +1407,24 @@ export async function updateXeroContact(
   // of birth below never overwrites a real New Zealand Business Number. Read
   // from the local contact cache — no provider call, and nothing here may run
   // inside the short Member transactions. `undefined` (no cache row) means
-  // "nothing known", which `buildXeroContactCompanyNumberPatch` treats as
-  // writable; see its docblock for why that is the safe reading.
+  // "nothing known", and on THIS path — an update to a contact that already
+  // exists in Xero — nothing known means the date of birth is not sent at all.
+  // A member's contact is not necessarily one this app created:
+  // `findOrCreateXeroContact` links a pre-existing contact by email or exact
+  // name match without ever writing a cache row, and that contact may carry a
+  // genuine NZBN. See `buildXeroContactCompanyNumberPatch`'s docblock, rule 3.
   const cachedContact = await prisma.xeroContactCache.findUnique({
     where: { contactId: xeroContactId },
     select: { companyNumber: true },
   });
-  const currentCompanyNumber = cachedContact?.companyNumber ?? undefined;
+  // `undefined` ONLY when there is no cache row. A row that exists and holds
+  // `null` is a positive fact — Xero's NZBN field is empty — and must stay
+  // distinguishable from "never cached", because the two now have opposite
+  // outcomes. `?? undefined` here would collapse them and silently restore the
+  // defect this guard exists to close.
+  const currentCompanyNumber = cachedContact
+    ? cachedContact.companyNumber
+    : undefined;
 
   /**
    * The NZBN patch for whichever contact this payload is actually addressed to.
