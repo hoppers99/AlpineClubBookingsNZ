@@ -478,14 +478,16 @@ derivation).
     byte-identical clone in the import-member-contact route). Under the
     container's `TZ=Pacific/Auckland` that stores the previous UTC day, so a
     Xero-imported date of birth is a day early in storage and reads a day early
-    everywhere — #2859, which is fixed at the writer, not at the reader.
+    everywhere — #2859, which is fixed at the writer, not at the reader. Every
+    reader shows what is stored, so those rows keep reading a day early until
+    #2859 lands.
 
     #2839 did **not** close the last one outside Xero. The member-merge
     comparison screen (`src/app/(admin)/admin/members/[id]/merge/page.tsx`)
-    truncates every `Date` in the field-by-field diff to its UTC day from a
-    single generic renderer, so real instants such as `photoUpdatedAt`,
-    `lifeMemberDate` and `hutLeaderEligibleAt` all read a day early there for
-    the first half of every NZ day — in front of an irreversible merge (#2860).
+    truncated every `Date` in the field-by-field diff to its UTC day from a
+    single generic renderer, so real instants such as `photoUpdatedAt` and
+    `hutLeaderEligibleAt` read a day early there for the first half of every NZ
+    day — in front of an irreversible merge. That is fixed by #2860, below.
     Treat any census reporting this class as empty outside Xero, including one
     that ships an empty known-defects list (#2855), as not yet meeting the bar.
     #2684's lint rule is where the whole class gets caught; until then it is a
@@ -498,6 +500,38 @@ derivation).
     #2684's lint rule nor its guard test sees that class — `setHours` is not an
     ISO truncation — which is why a clean report from either says nothing about
     it.
+
+    **A generic renderer cannot decide any of this from the runtime type**,
+    because an instant and a calendar day are the same `Date` and the same ISO
+    string — so a `value instanceof Date` branch has to guess, and guessing is
+    how #2860 dated the member-merge comparison screen a day early. That screen
+    renders both kinds side by side, so since #2860 the kind is DECLARED per
+    field in `src/lib/member-merge-field-kinds.ts`, stamped onto each diff row,
+    and the renderer is told which it holds rather than sniffing for it.
+
+    **That declaration adds no exception to the rule above; it applies it.**
+    `photoUpdatedAt` and `hutLeaderEligibleAt` are real instants and are read
+    through `formatDateOnlyForTimeZone`, exactly as this bullet requires.
+    `dateOfBirth`, `joinedDate` and `lifeMemberDate` are bare `DateTime?`
+    columns holding a date-only value, which is the pre-existing reviewed
+    exception the guard already records field-by-field in
+    `DATE_ONLY_IN_DATETIME_COLUMN` — all three were on that list before #2860
+    and the merge screen simply reads them the way the list says they may be
+    read. The flat prohibition on truncating a `DateTime` is unchanged: it is
+    the *column type* that never settles the question, and the reviewed list is
+    where a field is allowed to settle it instead.
+
+    Note which way each goes, because it is the opposite of the reflex: the
+    calendar days are deliberately NOT routed through
+    `formatDateOnlyForTimeZone`. In New Zealand that would agree — UTC midnight
+    is midday NZ — which is exactly why only a test reading them from a club
+    BEHIND UTC can tell the two apart.
+
+    One caveat on the calendar days, because the guard's list records the
+    *intent* of the writers and one writer does not honour it:
+    `parseXeroCompanyNumberDate` stores SERVER-LOCAL midnight, as recorded
+    above. That is a storage defect on a calendar-day field (**#2859**), not a
+    second meaning, and fixing it means fixing the write.
   - *A number of days added to a document date is added in CALENDAR days*, with
     `addDaysDateOnly` over the date-only value — never by adding `days x 24h` to
     an instant and then reading the result on the club's calendar. The Xero

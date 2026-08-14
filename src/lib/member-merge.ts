@@ -14,6 +14,10 @@ import {
   MAX_PARENT_LINK_CHAIN_LENGTH,
 } from "@/lib/member-family-link-depth";
 import { OPEN_DELETION_REQUEST_STATUSES } from "@/lib/deletion-request-decision";
+import {
+  mergeFieldValueKind,
+  type MergeFieldValueKind,
+} from "@/lib/member-merge-field-kinds";
 import { deleteOwnedMemberPhotoBlobs } from "@/lib/member-photo";
 import { memberDisplayName } from "@/lib/member-serialization";
 import { prisma } from "@/lib/prisma";
@@ -843,6 +847,20 @@ export type FieldMergeRow = {
   loser: unknown;
   result: unknown;
   source: "master" | "loser" | "or" | "earliest";
+  /**
+   * What this field's values MEAN, so the merge screen can render them without
+   * inferring it from the runtime type (#2860). Declared once per field in
+   * `member-merge-field-kinds.ts`, stamped here so the row and its meaning
+   * travel together and the browser cannot classify a value differently from
+   * the server that produced it.
+   *
+   * Deliberately NOT part of the preview token: `outcomeDigest` hashes only
+   * `field`/`result`/`source`, so how a value is DISPLAYED can never invalidate
+   * a preview an admin is holding. It does appear in the `MEMBER_MERGED` audit
+   * metadata, which records the diff verbatim — an addition to that record's
+   * shape, and no change to any merged value.
+   */
+  kind: MergeFieldValueKind;
 };
 
 export type FieldMergeOutcome = {
@@ -863,6 +881,27 @@ function toTime(value: unknown): number | null {
 }
 
 /**
+ * The single constructor for a diff row, so no branch below can emit one
+ * without its declared value kind (#2860).
+ */
+function fieldMergeRow(
+  field: string,
+  master: unknown,
+  loser: unknown,
+  result: unknown,
+  source: FieldMergeRow["source"],
+): FieldMergeRow {
+  return {
+    field,
+    master,
+    loser,
+    result,
+    source,
+    kind: mergeFieldValueKind(field),
+  };
+}
+
+/**
  * Pure additive field merge. Returns the write patch (only the fields that
  * actually change) plus a full diff for the preview. Auth / login / privilege /
  * Xero identity and onboarding/state fields are NEVER merged — they stay the
@@ -880,9 +919,9 @@ export function mergeMemberFields(
     const l = loser[field];
     if (isBlank(m) && !isBlank(l)) {
       patch[field] = l;
-      diff.push({ field, master: m, loser: l, result: l, source: "loser" });
+      diff.push(fieldMergeRow(field, m, l, l, "loser"));
     } else {
-      diff.push({ field, master: m, loser: l, result: m, source: "master" });
+      diff.push(fieldMergeRow(field, m, l, m, "master"));
     }
   }
 
@@ -895,9 +934,9 @@ export function mergeMemberFields(
       const l = loser[field];
       if (takeLoser) {
         patch[field] = l;
-        diff.push({ field, master: m, loser: l, result: l, source: "loser" });
+        diff.push(fieldMergeRow(field, m, l, l, "loser"));
       } else {
-        diff.push({ field, master: m, loser: l, result: m, source: "master" });
+        diff.push(fieldMergeRow(field, m, l, m, "master"));
       }
     }
   }
@@ -908,7 +947,7 @@ export function mergeMemberFields(
     const l = Boolean(loser[field]);
     const result = m || l;
     if (result !== m) patch[field] = result;
-    diff.push({ field, master: m, loser: l, result, source: "or" });
+    diff.push(fieldMergeRow(field, m, l, result, "or"));
   }
 
   // hutLeaderEligibleAt follows hutLeaderEligible: earliest non-null when eligible.
@@ -922,13 +961,15 @@ export function mergeMemberFields(
         mAt === null ? lAt : lAt === null ? mAt : Math.min(mAt, lAt);
       if (earliest !== null && earliest !== mAt) {
         patch.hutLeaderEligibleAt = new Date(earliest);
-        diff.push({
-          field: "hutLeaderEligibleAt",
-          master: master.hutLeaderEligibleAt,
-          loser: loser.hutLeaderEligibleAt,
-          result: new Date(earliest),
-          source: "earliest",
-        });
+        diff.push(
+          fieldMergeRow(
+            "hutLeaderEligibleAt",
+            master.hutLeaderEligibleAt,
+            loser.hutLeaderEligibleAt,
+            new Date(earliest),
+            "earliest",
+          ),
+        );
       }
     }
   }
@@ -942,13 +983,15 @@ export function mergeMemberFields(
     if (earliest !== null && earliest !== mAt) {
       patch.joinedDate = new Date(earliest);
     }
-    diff.push({
-      field: "joinedDate",
-      master: master.joinedDate,
-      loser: loser.joinedDate,
-      result: earliest === null ? null : new Date(earliest),
-      source: earliest !== null && earliest === lAt && earliest !== mAt ? "loser" : "master",
-    });
+    diff.push(
+      fieldMergeRow(
+        "joinedDate",
+        master.joinedDate,
+        loser.joinedDate,
+        earliest === null ? null : new Date(earliest),
+        earliest !== null && earliest === lAt && earliest !== mAt ? "loser" : "master",
+      ),
+    );
   }
 
   return { patch, diff };
