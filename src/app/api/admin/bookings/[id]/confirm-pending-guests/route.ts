@@ -36,6 +36,7 @@ import {
 import { bookingPromoEmailOptions } from "@/lib/booking-promo-email-options";
 import { createStructuredAuditLog, getAuditRequestContext } from "@/lib/audit";
 import logger from "@/lib/logger";
+import { formatDateOnly } from "@/lib/date-only";
 
 const confirmPendingGuestsSchema = z.object({
   allowOverbook: z.boolean().optional(),
@@ -49,7 +50,7 @@ const confirmPendingGuestsSchema = z.object({
 function getOverbookedNightDates(nightDetails: NightAvailability[]): string[] {
   return nightDetails
     .filter((night) => night.availableBeds < 0)
-    .map((night) => night.date.toISOString().slice(0, 10));
+    .map((night) => formatDateOnly(night.date));
 }
 
 /**

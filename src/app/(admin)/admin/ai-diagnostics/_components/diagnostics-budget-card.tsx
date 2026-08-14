@@ -7,6 +7,7 @@ import {
   ADMIN_VIEW_ONLY_ACTION_REASON,
   useAdminAreaEditAccess,
 } from "@/hooks/use-admin-area-edit-access";
+import { parseDecimalDollarsToCents } from "@/lib/money-input";
 
 /**
  * THE MONTHLY DIAGNOSTICS BUDGET, shown and edited (AID-7, #2378, owner decision 3).
@@ -67,15 +68,14 @@ function centsToDollars(cents: number): string {
 }
 
 /**
- * Dollars typed by a human to integer cents, or null when it is not a number.
+ * Dollars typed by a human to integer cents, or null when it is not an amount.
  *
- * `Math.round` rather than a truncation, because "12.005" typed into a money box is
- * a person aiming at a cent, not asking to lose one.
+ * A leading "$" is tolerated because people paste one; everything after that is
+ * the canonical exact parser's job (#2685), which is also what refuses "12.005"
+ * outright rather than quietly deciding which cent the person meant.
  */
 function dollarsToCents(value: string): number | null {
-  const trimmed = value.trim().replace(/^\$/, "");
-  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) return null;
-  return Math.round(Number(trimmed) * 100);
+  return parseDecimalDollarsToCents(value.trim().replace(/^\$/, ""));
 }
 
 export function DiagnosticsBudgetCard({
@@ -216,7 +216,12 @@ export function DiagnosticsBudgetCard({
   const handleSave = async () => {
     const cents = dollarsToCents(draft);
     if (cents === null) {
-      setSaveError("Enter an amount in dollars, like 25.00.");
+      // Names what is actually refused. A leading "$" is stripped before the
+      // parser sees it, so it is not listed; a thousands separator and a leading
+      // zero are refused and were previously unexplained (#2685 review).
+      setSaveError(
+        "Enter an amount in dollars and cents, for example 25.00 — no thousands separator or leading zero.",
+      );
       return;
     }
     if (cents > state.maxMonthlyBudgetCents) {

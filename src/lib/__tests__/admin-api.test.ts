@@ -486,6 +486,35 @@ describe("Admin Payments API", () => {
     expect(prisma.payment.findMany).not.toHaveBeenCalled();
   });
 
+  /*
+    #2685 — the filter is parsed to cents in the schema now, so the `where`
+    builder tests a number rather than a string. A deliberate "$0.00" filter is
+    the FALSY value 0, and a truthiness check would drop it and quietly return
+    every payment instead of the zero-amount ones.
+  */
+  it("keeps a deliberate $0.00 exact-amount filter", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "a1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } } as any);
+    vi.mocked(prisma.payment.findMany).mockResolvedValue([]);
+
+    const req = new NextRequest("http://localhost/api/admin/payments?amountExact=0.00");
+    await getPayments(req);
+
+    const callArgs = vi.mocked(prisma.payment.findMany).mock.calls[0][0] as any;
+    expect(callArgs.where.amountCents).toBe(0);
+  });
+
+  it("refuses an amount beyond the storable cent range instead of failing the query", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "a1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } } as any);
+
+    // 99999999999.99 is 9,999,999,999,999 cents — far past the int32 the
+    // amountCents column holds. It used to reach Prisma and fail the request.
+    const req = new NextRequest("http://localhost/api/admin/payments?amountExact=99999999999.99");
+    const res = await getPayments(req);
+
+    expect(res.status).toBe(400);
+    expect(prisma.payment.findMany).not.toHaveBeenCalled();
+  });
+
   it("filters payments by source and failed Xero activity", async () => {
     mockedAuth.mockResolvedValue({ user: { id: "a1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } } as any);
     vi.mocked(prisma.payment.findMany)

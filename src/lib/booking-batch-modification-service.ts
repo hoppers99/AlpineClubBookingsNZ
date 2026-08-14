@@ -89,6 +89,7 @@ import {
   lockRosterDateRangesAndDates,
   rosterOperationalDayRange,
 } from "@/lib/roster-lock";
+import { formatDateOnly } from "@/lib/date-only";
 
 type ModifiedBooking = Booking & {
   guests: BookingGuest[];
@@ -828,8 +829,8 @@ export async function modifyBookingBatch({
                 ? "CREDIT_ELECTION"
                 : "BATCH_MODIFY",
         previousData: {
-          checkIn: new Date(booking.checkIn).toISOString().split("T")[0],
-          checkOut: new Date(booking.checkOut).toISOString().split("T")[0],
+          checkIn: formatDateOnly(new Date(booking.checkIn)),
+          checkOut: formatDateOnly(new Date(booking.checkOut)),
           guestCount: booking.guests.length,
           totalPriceCents: booking.totalPriceCents,
           discountCents: booking.discountCents,
@@ -857,8 +858,8 @@ export async function modifyBookingBatch({
             : {}),
         },
         newData: {
-          checkIn: dates.newCheckIn.toISOString().split("T")[0],
-          checkOut: dates.newCheckOut.toISOString().split("T")[0],
+          checkIn: formatDateOnly(dates.newCheckIn),
+          checkOut: formatDateOnly(dates.newCheckOut),
           guestCount: updatedBooking.guests.length,
           addedGuests: (guestPlan.normalizedAddGuests ?? []).map((g) => ({
             firstName: g.firstName,
@@ -1282,10 +1283,10 @@ async function dispatchBatchPostTransactionSideEffects({
           confirmOverCapacity: result.capacityOverridden,
           notifyMember: result.notifyMember,
           capacityOverridden: result.capacityOverridden,
-          oldCheckIn: new Date(result.oldCheckIn).toISOString().split("T")[0],
-          oldCheckOut: new Date(result.oldCheckOut).toISOString().split("T")[0],
-          newCheckIn: result.booking.checkIn.toISOString().split("T")[0],
-          newCheckOut: result.booking.checkOut.toISOString().split("T")[0],
+          oldCheckIn: formatDateOnly(new Date(result.oldCheckIn)),
+          oldCheckOut: formatDateOnly(new Date(result.oldCheckOut)),
+          newCheckIn: formatDateOnly(result.booking.checkIn),
+          newCheckOut: formatDateOnly(result.booking.checkOut),
           linkedChangeRequestId,
         }
       : result.notifyMember

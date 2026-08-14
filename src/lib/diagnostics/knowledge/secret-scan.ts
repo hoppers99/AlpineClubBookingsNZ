@@ -4,10 +4,14 @@
  * is refused, never truncated-and-included — so a committed credential can
  * never reach the bundle (and, through it, Anthropic).
  *
- * This is a second, independent line to the repo's gitleaks gates
- * (`.gitleaks.toml`, `gitleaks-full-repo`/`gitleaks-pr-diff` in CI): those
- * guard what is committed; this guards what is EXTRACTED into a shipped
- * artifact. The rules are deliberately HIGH-PRECISION (provider-shaped tokens
+ * This is a second, independent line to the repo's gitleaks gate
+ * (`.gitleaks.toml` plus the required `Secret scan (gitleaks)` job, which since
+ * #2686 covers both the pull request's own commits and the full repository
+ * history): that guards what is committed; this guards what is EXTRACTED into a
+ * shipped artifact. Independence earned its keep — before #2686 the gitleaks
+ * config disabled every rule it was meant to run, and this scanner was the only
+ * secret gate actually working.
+ * The rules are deliberately HIGH-PRECISION (provider-shaped tokens
  * and key blocks), not a generic entropy sweep, so a real deploy is not broken
  * by a false positive — while a genuine live key is still caught.
  *

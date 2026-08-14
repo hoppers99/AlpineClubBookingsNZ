@@ -31,6 +31,7 @@ import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice"
 import { getCancellationSettlementBreakdown } from "@/lib/payment-status-display"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date"
+import { parseDecimalDollarsToCents } from "@/lib/money-input"
 
 type ReviewFilter = "PENDING" | "APPROVED" | "REJECTED" | "ALL"
 const reviewFilters = new Set<ReviewFilter>(["PENDING", "APPROVED", "REJECTED", "ALL"])
@@ -208,8 +209,9 @@ export default function RefundRequestsPage() {
   function startRefundNotifyChoice(id: string, status: "APPROVED" | "REJECTED") {
     setError("")
     if (status === "APPROVED") {
-      const cents = Math.round(parseFloat(approvedAmount) * 100)
-      if (!cents || cents <= 0) {
+      // #2685: the exact parser, so "50x" is refused instead of approving $50.
+      const cents = parseDecimalDollarsToCents(approvedAmount)
+      if (cents === null || cents <= 0) {
         setError("Please enter a valid refund amount")
         return
       }
@@ -273,8 +275,8 @@ export default function RefundRequestsPage() {
       }
 
       if (status === "APPROVED") {
-        const cents = Math.round(parseFloat(approvedAmount) * 100)
-        if (!cents || cents <= 0) {
+        const cents = parseDecimalDollarsToCents(approvedAmount)
+        if (cents === null || cents <= 0) {
           setError("Please enter a valid refund amount")
           setProcessingRefund(false)
           return

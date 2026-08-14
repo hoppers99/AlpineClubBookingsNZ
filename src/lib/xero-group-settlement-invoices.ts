@@ -50,8 +50,7 @@ import {
   type FindOrCreateXeroContactOptions,
 } from "./xero-contacts";
 import { buildInvoiceLineItems } from "./xero-booking-invoices";
-import { formatDateOnlyForTimeZone } from "@/lib/date-only";
-import { formatDate } from "./xero-invoice-helpers";
+import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
 import { enqueueXeroGroupSettlementInvoiceVoidOperation } from "@/lib/xero-group-settlement-void-outbox";
 
 export interface CreateXeroGroupSettlementInvoiceOptions
@@ -336,7 +335,7 @@ export async function createXeroInvoiceForGroupSettlement(
   // forbids: New Zealand runs 12-13 hours ahead of UTC, so for roughly the first
   // half of every club day the UTC day is still yesterday, and a settlement
   // invoice raised at 09:00 NZ on 1 July carried a due date of 30 June (#2834).
-  const issueDate = formatDate(
+  const issueDate = formatDateOnly(
     new Date(settlement.groupBooking.organiserBooking.checkIn)
   );
   const dueDate = formatDateOnlyForTimeZone(new Date(settlement.createdAt));

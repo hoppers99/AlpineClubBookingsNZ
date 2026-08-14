@@ -18,6 +18,7 @@ import {
   initialLodgeIdFromLocation,
   useLodgeOptions,
 } from "@/components/lodge-select"
+import { dateOnlyFromIsoString } from "@/lib/date-only";
 
 // Season WINDOWS only (#1933, E7): name, type, dates, and active state per
 // lodge. Nightly rates moved to the consolidated Fees console (Fees → Hut Fees)
@@ -92,8 +93,8 @@ export default function SeasonsPage() {
     setEditingId(season.id)
     setName(season.name)
     setType(season.type)
-    setStartDate(season.startDate.split("T")[0])
-    setEndDate(season.endDate.split("T")[0])
+    setStartDate(dateOnlyFromIsoString(season.startDate))
+    setEndDate(dateOnlyFromIsoString(season.endDate))
     setActive(season.active)
   }
 

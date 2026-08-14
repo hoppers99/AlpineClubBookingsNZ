@@ -1,7 +1,7 @@
 import { prisma } from "./prisma";
 import { eachDayOfInterval, addDays } from "date-fns";
 import { calculateOverlapDays } from "./hut-leader-overlap";
-import { getTodayDateOnly } from "@/lib/date-only";
+import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
 import { getDefaultLodgeId } from "./lodges";
 import { loadHutLeaderLookaheadDays } from "./lodge-settings";
 import { loadEffectiveModuleFlags } from "./module-settings";
@@ -161,7 +161,7 @@ export async function autoAssignHutLeaders(): Promise<{
         },
       });
 
-      const dateStr = day.toISOString().split("T")[0];
+      const dateStr = formatDateOnly(day);
       assignedDates.push(dateStr);
       logger.info(
         { memberId: member.id, date: dateStr },

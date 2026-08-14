@@ -72,7 +72,11 @@ async function rollbackAgeUpUpgrade(
     // upgrade landed; putting the member back a tier has to put those pointers
     // back too, and reconciliation does it from the same rule rather than by
     // replaying a remembered list.
-    await reconcileEmailInheritanceForMemberChange(tx, [memberId]);
+    await reconcileEmailInheritanceForMemberChange(tx, [memberId], {
+      // A compensating age-DOWN after a failed age-up email: a system-origin
+      // lifecycle transition, no human actor to claim (#2822).
+      trigger: "lifecycle-eligibility-change",
+    });
   });
 }
 
@@ -494,7 +498,11 @@ export async function checkAgeUpMembers(): Promise<{
         // exactly when they NAMED this member, so a child with two parents whose
         // choice is the other parent is untouched — not because the heuristic
         // happens to miss them, but because the question is now answerable.
-        await reconcileEmailInheritanceForMemberChange(tx, [member.id]);
+        await reconcileEmailInheritanceForMemberChange(tx, [member.id], {
+          // The scheduled age-up crossing the ADULT line: a system-origin
+          // lifecycle transition, no human actor (#2822).
+          trigger: "lifecycle-eligibility-change",
+        });
 
         const { token, tokenHash } = issueActionToken();
         const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);

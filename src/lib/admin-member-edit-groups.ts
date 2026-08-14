@@ -12,6 +12,7 @@ import {
   type MemberAddressValues,
 } from "@/lib/member-address"
 import type { AppRole } from "@/lib/member-roles"
+import { formatDateOnly } from "@/lib/date-only";
 
 // Per-group edit forms for the admin member detail page. Each group unlocks
 // and saves independently; its payload builder emits ONLY that group's fields
@@ -91,7 +92,7 @@ interface MemberAccountSource {
 }
 
 function toDateInputValue(value: string | null) {
-  return value ? new Date(value).toISOString().split("T")[0] : ""
+  return value ? formatDateOnly(new Date(value)) : ""
 }
 
 export function buildContactEditForm(

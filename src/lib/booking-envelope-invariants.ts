@@ -33,6 +33,16 @@ export const FLUSH_BOOKING_ENVELOPE_CONSTRAINTS_SQL = `SET CONSTRAINTS ${BOOKING
 export async function assertBookingEnvelopeInvariants(
   tx: Prisma.TransactionClient,
 ): Promise<void> {
+  // The second of the two interpolations into an `Unsafe` raw statement in
+  // non-test `src/` (#2686). `FLUSH_BOOKING_ENVELOPE_CONSTRAINTS_SQL` is built
+  // at module load from `BOOKING_ENVELOPE_CONSTRAINTS`, a two-element
+  // `as const` array of constraint names committed a few lines above, mapped to
+  // quoted identifiers and joined. There is no parameter, no argument and no
+  // reachable input: `assertBookingEnvelopeInvariants` takes only the
+  // transaction client, and Prisma cannot express SET CONSTRAINTS at all, so
+  // there is no parameterised form to move to. This module's own suite pins the
+  // generated statement.
+  // nosemgrep: acb-unsafe-raw-sql — SET CONSTRAINTS generated from a committed two-element const array; no argument and no request-reachable input
   await tx.$executeRawUnsafe(FLUSH_BOOKING_ENVELOPE_CONSTRAINTS_SQL);
 }
 

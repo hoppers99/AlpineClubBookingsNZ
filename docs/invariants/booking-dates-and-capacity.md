@@ -338,6 +338,13 @@ derivation).
   The UTC-midnight pinning is an internal encoding of the NZ date and nothing
   more: it is NOT the midday boundary instant, NZ time is the semantic truth,
   and no rule may be derived from the UTC reading of these values.
+- **Writing that encoding is `src/lib/date-only.ts`'s job alone** (#2684).
+  `formatDateOnly` produces the `yyyy-MM-dd`, `formatMonthOnly` the `yyyy-MM`
+  month key, and `dateOnlyFromIsoString` the day out of a value that has already
+  been serialised to a string; that module is the only file in `src/` permitted
+  to write the truncation those helpers perform. They encode a DATE-ONLY value,
+  which is what this invariant licenses — never an instant, which
+  `INV-DATE-019` governs.
 
 ## Date handling rules
 
@@ -362,7 +369,12 @@ derivation).
   `src/lib/date-only.ts`), never a raw `new Date()` or a local-midnight
   (`setHours(0,0,0,0)`) instant: under the `TZ=Pacific/Auckland` server pin the
   latter resolves to `(D-1)T12:00Z` and shifts the boundary by a day for the
-  first ~13h of each NZ day (F8/F32, #1888).
+  first ~13h of each NZ day (F8/F32, #1888). Three sites still do it —
+  `src/app/(authenticated)/dashboard/page.tsx`,
+  `src/app/(authenticated)/layout.tsx` and
+  `src/app/api/admin/age-tier-settings/route.ts` — surfaced by #2684's inventory
+  and filed as **#2838**. #2684's lint rule does not catch them: `setHours` is
+  not an ISO truncation, so this stays a prose rule until #2838 lands.
 
 ### INV-DATE-019
 
@@ -380,24 +392,43 @@ derivation).
 
   Three exact boundaries on that rule, because each is easy to get wrong:
 
-  - *Truncating an existing `@db.Date` value the same way is fine* — those are
-    already pinned to UTC midnight and encode a calendar day, not an instant.
-    **It is not fine for a `DateTime` column.** `createdAt`, `updatedAt` and
-    friends are real instants, so `booking.createdAt.toISOString().slice(0, 10)`
+  - *Reading an existing `@db.Date` value back as its calendar day is fine* —
+    those are already pinned to UTC midnight and encode a calendar day, not an
+    instant. **It is not fine for a `DateTime` column.** `createdAt`, `updatedAt`
+    and friends are real instants, so `booking.createdAt.toISOString().slice(0, 10)`
     is the clock one hop removed and lands on the previous NZ day all morning.
-    #2697 closed the two `Booking.createdAt` sites (the Xero booking-invoice due
-    date and the legacy finance export's `created_date`), and #2834 closed the
-    twenty Xero document dates that remained: every invoice, credit note,
-    payment and allocation date derived from the clock or from a stored
-    `DateTime`, across ten modules. Every one of them is now
-    `formatDateOnlyForTimeZone`. **Most of them were invisible to a grep**,
-    because they reached the pattern through the `formatDate` wrapper in
-    `src/lib/xero-invoice-helpers.ts` (which is `toISOString().split("T")[0]`)
+    Since #2684 the encoding lives once, in `src/lib/date-only.ts`
+    (`formatDateOnly`, `formatMonthOnly`, `dateOnlyFromIsoString`), and an
+    `eslint` `no-restricted-syntax` rule refuses the hand-written spellings
+    across `src/` and `scripts/`. It is a syntax rule, so it catches the
+    spellings it names and not every possible one; `eslint.config.mjs` lists
+    both, the arms and the forms that still get past them, next to the rule
+    itself. `src/lib/__tests__/date-only-encoding-guard.test.ts` is the other
+    half: it reads the `@db.Date`-versus-`DateTime` split out of
+    `prisma/schema.prisma` and fails on any encoding of an instant, or of the
+    raw clock, that is not a listed reviewed decision — which lint cannot judge,
+    because the two cases are identical in syntax. It also refuses an EXPORTED
+    bare rename of an encoder: one such one-liner in `xero-invoice-helpers` put
+    roughly eighteen live Xero document dates beyond the reach of #2682's
+    census, and #2684 deleted it.
+
+    What the syntax rule does **not** settle is which helper each of those sites
+    should have been calling. #2697 closed the two `Booking.createdAt` sites (the
+    Xero booking-invoice due date and the legacy finance export's
+    `created_date`), and #2834 closed the twenty Xero document dates that
+    remained: every invoice, credit note, payment and allocation date derived
+    from the clock or from a stored `DateTime`, across ten modules. Every one of
+    them is now `formatDateOnlyForTimeZone`. **Most of them were invisible to a
+    grep**, because they reached the pattern through that `formatDate` wrapper
     or through a private clone of it in `membership-cancellation-xero.ts` — so
-    census that call graph, not the spelling. `formatDate` is still correct and
-    still used, but only for `@db.Date` receivers, and its docblock says so.
-    #2684's lint rule is where the whole class gets caught; until then it is a
-    known trap, not a permitted pattern.
+    census the call graph, not the spelling. One site the guard surfaced is
+    still open, **#2839** (`Member.detailsConfirmedAt` rendered as a UTC day on
+    the profile page); it is the single entry left in
+    `KNOWN_INSTANT_ENCODING_DEFECTS` in the guard test, and the guard's
+    staleness assertion empties that list for you — the moment a site stops
+    encoding an instant, its entry fails as stale. **#2838** (the three
+    `setHours(0, 0, 0, 0)` "today" comparisons against `@db.Date` lodge nights)
+    is filed separately.
   - *A number of days added to a document date is added in CALENDAR days*, with
     `addDaysDateOnly` over the date-only value — never by adding `days x 24h` to
     an instant and then reading the result on the club's calendar. The Xero

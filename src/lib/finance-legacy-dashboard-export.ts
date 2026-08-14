@@ -4,7 +4,7 @@ import {
   FINANCE_FORWARD_COMMITTED_BOOKING_STATUSES,
   FINANCE_REALIZED_BOOKING_STATUSES,
 } from "@/lib/finance-booking-metrics";
-import { formatDateOnlyForTimeZone } from "@/lib/date-only";
+import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -62,7 +62,7 @@ function parseIsoDate(value: string, fieldName: string): Date {
   }
 
   const parsed = new Date(`${value}T00:00:00.000Z`);
-  if (parsed.toISOString().slice(0, 10) !== value) {
+  if (formatDateOnly(parsed) !== value) {
     throw new Error(`${fieldName} must be a valid date`);
   }
 
@@ -70,7 +70,7 @@ function parseIsoDate(value: string, fieldName: string): Date {
 }
 
 function toIsoDate(value: Date): string {
-  return value.toISOString().slice(0, 10);
+  return formatDateOnly(value);
 }
 
 function addUtcDays(date: Date, days: number): Date {
@@ -105,10 +105,10 @@ function allocateCentsEvenly(totalCents: number, parts: number): number[] {
 function getBookingDateRange(booking: LegacyDashboardBookingExportRecord) {
   return {
     checkInDate: new Date(
-      `${booking.checkIn.toISOString().slice(0, 10)}T00:00:00.000Z`
+      `${formatDateOnly(booking.checkIn)}T00:00:00.000Z`
     ),
     checkOutDate: new Date(
-      `${booking.checkOut.toISOString().slice(0, 10)}T00:00:00.000Z`
+      `${formatDateOnly(booking.checkOut)}T00:00:00.000Z`
     ),
   };
 }
@@ -296,7 +296,7 @@ export async function getLegacyDashboardBookingExport(input: {
     }
 
     const originalCheckInDate = new Date(
-      `${booking.checkIn.toISOString().slice(0, 10)}T00:00:00.000Z`
+      `${formatDateOnly(booking.checkIn)}T00:00:00.000Z`
     );
 
     forwardRows.push({

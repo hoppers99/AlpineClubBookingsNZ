@@ -25,6 +25,7 @@
  *     classified), so a new status cannot default into visibility.
  */
 import { BookingRequestStatus } from "@prisma/client";
+import { formatDateOnly } from "@/lib/date-only";
 
 /**
  * The non-terminal statuses that count against the open-request cap and that a
@@ -182,5 +183,5 @@ export function toMyWholeLodgeRequestItem(request: {
 }
 
 function toDateOnly(value: Date): string {
-  return value.toISOString().slice(0, 10);
+  return formatDateOnly(value);
 }

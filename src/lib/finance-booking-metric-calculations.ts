@@ -1,3 +1,5 @@
+import { formatDateOnly } from "@/lib/date-only";
+
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const MILLISECONDS_PER_DAY = 86_400_000;
 
@@ -10,7 +12,7 @@ export function parseFinanceBookingMetricDate(
   }
 
   const parsed = new Date(`${value}T00:00:00.000Z`);
-  if (parsed.toISOString().slice(0, 10) !== value) {
+  if (formatDateOnly(parsed) !== value) {
     throw new Error(`${fieldName} must be a valid date`);
   }
 
@@ -42,10 +44,6 @@ export function getFinanceBookingMetricsWindowDayCount(
   return differenceInUtcDays(fromDate, addUtcDays(toDate, 1));
 }
 
-export function toIsoDate(value: Date): string {
-  return value.toISOString().slice(0, 10);
-}
-
 export function buildIsoDateRange(
   start: Date,
   endInclusive: Date
@@ -57,7 +55,7 @@ export function buildIsoDateRange(
     cursor.getTime() <= endInclusive.getTime();
     cursor = addUtcDays(cursor, 1)
   ) {
-    dates.push(toIsoDate(cursor));
+    dates.push(formatDateOnly(cursor));
   }
 
   return dates;

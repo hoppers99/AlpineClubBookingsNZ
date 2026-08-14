@@ -10,6 +10,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
+import { FocusedActionError } from "@/components/focused-action-error";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +32,7 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
+import { MONEY_INPUT_PROPS, parseDecimalDollarsToCents } from "@/lib/money-input";
 import { PromoRedemptionsPanel } from "./promo-redemptions-panel";
 
 interface RedemptionsPromoSummary {
@@ -151,6 +153,25 @@ export function PromoCodesPageClient({
   const [archivedCodes, setArchivedCodes] = useState<PromoCode[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  /*
+    #2685 review — the Save button on this form sits roughly 630 lines of markup
+    BELOW the error banner, so a refused amount put its explanation somewhere
+    the admin could not see, in a plain `<div>` with no role and no live region:
+    nothing was announced, nothing took focus, and nothing scrolled. The banner
+    is now `FocusedActionError`, which is a permanently mounted assertive live
+    region that takes focus and scrolls itself into view.
+
+    The counter is what makes it work the SECOND time. Pressing Save again with
+    the same amount still in the box produces the identical message string, so
+    `error` does not change and the effect keyed on it would not re-fire. Every
+    submit-time refusal bumps this.
+  */
+  const [errorAttention, setErrorAttention] = useState(0);
+  /** Record a failure AND re-announce it, even when the text has not changed. */
+  const raiseError = useCallback((message: string) => {
+    setError(message);
+    setErrorAttention((version) => version + 1);
+  }, []);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -488,12 +509,37 @@ export function PromoCodesPageClient({
       ...(multiLodge ? { lodgeIds: restrictedLodgeIds } : {}),
     };
 
+    /*
+      #2685: every dollar box on this form is parsed exactly, and a malformed
+      amount stops the save with a message. It used to be
+      `Math.round(parseFloat(x) * 100)`, which produced `NaN` — and
+      `JSON.stringify` writes `NaN` as `null`, so a typo reached the API as
+      "this promo has no value" rather than as an error.
+    */
+    const amountField = (raw: string, label: string): number | null => {
+      const cents = parseDecimalDollarsToCents(raw);
+      if (cents === null) {
+        // `raiseError`, not `setError`: pressing Save twice with the same bad
+        // amount produces the identical string, and the banner is ~630 lines of
+        // markup above the button, so it has to re-announce and re-scroll each
+        // time rather than sit there unchanged (#2685 review).
+        raiseError(`Enter ${label} in dollars and cents, for example 25.00.`);
+        // The caller returns straight away, so release the Save button here.
+        setSaving(false);
+      }
+      return cents;
+    };
+
     if (type === "PERCENTAGE") {
       payload.percentOff = percentOff ? parseInt(percentOff) : null;
     } else if (type === "FIXED_AMOUNT") {
-      payload.valueCents = valueDollars
-        ? Math.round(parseFloat(valueDollars) * 100)
-        : null;
+      if (valueDollars) {
+        const cents = amountField(valueDollars, "the discount amount");
+        if (cents === null) return;
+        payload.valueCents = cents;
+      } else {
+        payload.valueCents = null;
+      }
     } else if (type === "FREE_NIGHTS") {
       payload.freeNightsPerIndividual = freeNightsPerIndividual
         ? parseInt(freeNightsPerIndividual)
@@ -502,16 +548,30 @@ export function PromoCodesPageClient({
         ? parseInt(lifetimeFreeNightsCap)
         : null;
     } else if (type === "FIXED_NIGHTLY_PRICE") {
-      payload.fixedNightlyPriceCents = fixedNightlyPriceDollars
-        ? Math.round(parseFloat(fixedNightlyPriceDollars) * 100)
-        : null;
+      if (fixedNightlyPriceDollars) {
+        const cents = amountField(
+          fixedNightlyPriceDollars,
+          "the fixed nightly price",
+        );
+        if (cents === null) return;
+        payload.fixedNightlyPriceCents = cents;
+      } else {
+        payload.fixedNightlyPriceCents = null;
+      }
       payload.fixedNightlyMode = fixedNightlyMode;
     }
 
     if (type !== "FIXED_AMOUNT" && type !== "FIXED_NIGHTLY_PRICE") {
-      payload.maxNightlyValueCents = maxNightlyValueDollars
-        ? Math.round(parseFloat(maxNightlyValueDollars) * 100)
-        : null;
+      if (maxNightlyValueDollars) {
+        const cents = amountField(
+          maxNightlyValueDollars,
+          "the maximum nightly value",
+        );
+        if (cents === null) return;
+        payload.maxNightlyValueCents = cents;
+      } else {
+        payload.maxNightlyValueCents = null;
+      }
     }
 
     try {
@@ -537,7 +597,7 @@ export function PromoCodesPageClient({
       resetForm();
       fetchPromoCodes();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
+      raiseError(err instanceof Error ? err.message : "Unknown error");
     } finally {
       setSaving(false);
     }
@@ -915,11 +975,13 @@ export function PromoCodesPageClient({
         )}
       </div>
 
-      {error && (
-        <div className="bg-destructive/10 text-destructive px-4 py-3 rounded-md">
-          {error}
-        </div>
-      )}
+      <FocusedActionError
+        id="promo-codes-error"
+        error={error}
+        attentionKey={errorAttention}
+        className="scroll-mt-20"
+      />
+
 
       {showForm && (
         <Card>
@@ -1005,9 +1067,7 @@ export function PromoCodesPageClient({
                       </span>
                       <Input
                         id="valueDollars"
-                        type="number"
-                        step="0.01"
-                        min="0.01"
+                        {...MONEY_INPUT_PROPS}
                         className="pl-7"
                         value={valueDollars}
                         onChange={(e) => setValueDollars(e.target.value)}
@@ -1077,9 +1137,7 @@ export function PromoCodesPageClient({
                         </span>
                         <Input
                           id="fixedNightlyPrice"
-                          type="number"
-                          step="0.01"
-                          min="0.01"
+                          {...MONEY_INPUT_PROPS}
                           className="pl-7"
                           value={fixedNightlyPriceDollars}
                           onChange={(e) => setFixedNightlyPriceDollars(e.target.value)}
@@ -1126,9 +1184,7 @@ export function PromoCodesPageClient({
                     </span>
                     <Input
                       id="maxNightlyValue"
-                      type="number"
-                      step="0.01"
-                      min="0"
+                      {...MONEY_INPUT_PROPS}
                       className="pl-7"
                       value={maxNightlyValueDollars}
                       onChange={(e) => setMaxNightlyValueDollars(e.target.value)}

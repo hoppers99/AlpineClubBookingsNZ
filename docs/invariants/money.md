@@ -59,6 +59,85 @@ records). Three facets, not three statements of one rule (#2707, owner decision
 
 - Do not introduce floating point money arithmetic.
 
+- **Cents are built at one of two boundaries, never inline (#2685, owner
+  decision 9 Aug 2026).** Money a PERSON typed still has its decimal text, so it
+  goes through `parseDecimalDollarsToCents` in `src/lib/money-input.ts` — the
+  digit groups are read as integers and never scaled through a double — or
+  through `parseSignedDecimalDollarsToCents` where a negative is a real amount
+  (a member credit debit adjustment). It returns `null` for anything outside the
+  grammar, and **that `null` must reach the person as a validation error**: no
+  caller may substitute a zero, a `null` payload field, or a previous value
+  silently. A money box is therefore spelled `type="text"` with
+  `inputMode="decimal"` — `MONEY_INPUT_PROPS` from the same module (owner
+  decision 14 Aug 2026): a `type="number"` control's value-sanitization strips
+  anything that is not a floating-point number to `""` before any handler runs,
+  so the parser never saw `"50abc"`, `"$45.00"` or `"1,000.00"` and the box read
+  as deliberately cleared. An amount an accounting provider has ALREADY parsed into a number —
+  a Xero API amount — cannot use that parser, because the decimal text is gone;
+  it goes through `providerAmountToCents` in `src/lib/money-provider-amount.ts`,
+  whose rounding is `Math.round(value * 100)` and is FROZEN at that, since it is
+  what every reconciliation currently in production computes. Changing it is an
+  owner decision, not a refactor. `exactProviderAmountToCents` is the variant
+  that refuses sub-cent precision, and `parseProviderReportAmountToCents` is the
+  one Xero report-cell text parser.
+
+  An `eslint` `no-restricted-syntax` rule enforces this over `src/`, `scripts/`
+  and `prisma/`. It matches the dangerous COMPOSITION rather than a function
+  name — an inline numeric parse scaled by 100, a unary `+` coercion scaled by
+  100, anything scaled by 100 on the way into a `…Cents` binding, and the two
+  spellings that carry no `* 100` at all (`c *= 100` and `x / 0.01`) — plus, in
+  the money-domain modules, a bare `x * 100`. Banning `parseFloat` by name was
+  measured on this tree and rejected: it added no coverage and four false
+  positives.
+
+  The money-domain glob is the Xero, finance, membership-cancellation, payment,
+  credit, refund, promo, fee, invoice, subscription, pricing and Stripe modules
+  under `src/lib/`, plus every route under `src/app/api/`. That breadth is what
+  catches the intermediate-variable form — `const d = parseFloat(raw); const c =
+  Math.round(d * 100);` — which no shape-based arm can see, because by the time
+  the multiplication happens there is nothing left in it to recognise. Inside
+  those modules ONE shape is excluded on purpose: a division sitting directly
+  inside the multiplication (`(calls / budget) * 100`) is a percentage by
+  construction, and nothing here builds cents from a quotient.
+
+  That exclusion is narrow only because the money-domain block states the arms
+  the broad one does not cover. It does NOT subsume them, and while the config
+  claimed it did, a typed amount that was DIVIDED and then scaled — a GST split
+  `(parseFloat(gross) / 1.15) * 100`, a per-guest share
+  `(parseFloat(raw) / guests) * 100`, a unit price
+  `(parseFloat(line.total) / line.qty) * 100` — was caught in an ordinary
+  `src/lib` file and caught nowhere at all in a Xero module, a payment module or
+  an API route, which is the guard at its weakest exactly where money lives.
+  Both give-backs are therefore explicit: a quotient of PARSED TEXT, and a
+  quotient scaled into a `…Cents` binding. What stays legal is a quotient that
+  is neither.
+
+  Percentages, `Math.round(n * 100) / 100` two-decimal rounding and date-key
+  packing are deliberately untouched OUTSIDE the money-domain modules. Inside
+  them a bare `x * 100` IS reported, whatever it computes — that is what the
+  narrower glob buys, and it is why the glob covers only files that compute no
+  percentages. All of it is pinned as fixtures in
+  `src/lib/__tests__/money-cents-guard.test.ts`, which runs the REAL config.
+
+  That suite decides whether the guard reaches production code by asking ESLint,
+  never by reading glob text. It resolves `no-restricted-syntax` through
+  `calculateConfigForFile()` at a roster of representative production paths,
+  requires an `error`-severity rule still carrying every arm that path needs, and
+  then lints an actual violation at each of them. A glob that avoids the `src/`
+  prefix, a config block with no `files` key at all, and a severity quietly
+  downgraded to `warn` each disarm the guard while leaving a glob-text check
+  green, so none of the three is trusted. The roster and both audits live in
+  `src/lib/__tests__/support/eslint-guard-coverage.ts`, shared with the date
+  guard, which has the same hazard.
+
+  The exported `MONEY_GUARD_EXEMPTIONS` array in `eslint.config.mjs` is the only
+  escape hatch — never an `eslint-disable`, and the guard test asserts there are
+  none in the tree. Each entry names a path and states in writing why it is
+  allowed to build cents itself; the test READS that array rather than a copy of
+  it, so adding an entry passes CI. It currently holds exactly the two helper
+  modules, and both are on the roster, so an exemption still has to resolve to an
+  armed `error` rule carrying the date and raw-SQL restrictions.
+
 ## INV-MONEY-004
 
 - **Member whole-lodge approval pricing has a fixed precedence (#2338, owner

@@ -27,10 +27,18 @@ written." Follow `AGENTS.md` → "Completion and Merge":
 1. Push the branch and open a PR using `.github/pull_request_template.md`.
 2. Monitor CI to green. Fix any failure — lint, typecheck, `npm test`, build,
    migration-drift, dependency/secret/static scans — and push until every
-   required check passes. `main` is now branch-protected (the `verify`,
-   `Migration drift check`, `Playwright E2E`, `E2E multi-lodge`, and
-   `Static analysis gate` checks
-   must pass to merge, and force-pushes/deletions are blocked), but because
+   required check passes. `main` is now branch-protected — six checks are
+   required today (`verify`, `Migration drift check`,
+   `Data migration verification`, `Static analysis gate`, `Playwright E2E`,
+   `E2E multi-lodge`), and force-pushes/deletions are blocked. Two more,
+   `Secret scan (gitleaks)` and `Image security gate (Trivy CRITICAL)`, are
+   **pending an owner action** (#2686) and must be added only AFTER the change
+   that renames those jobs has merged, because a branch that predates the rename
+   would otherwise wait forever on a context it cannot produce.
+   `AGENTS.md` → "Completion and Merge" carries the authoritative table, the
+   rollout order, the `gh api` call that reads the applied list, and the
+   advisory checks (CodeQL, `Semgrep OSS`, `semgrep-cloud-platform/scan`,
+   `dependency-review`) that must never be added to it. But because
    `enforce_admins` is off and no review approval is required, an admin merge can
    still occasionally land `main` red, so keep comparing against `main`'s own
    latest CI before assuming a failure is yours.

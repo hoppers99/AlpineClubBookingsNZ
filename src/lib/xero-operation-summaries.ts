@@ -1,5 +1,6 @@
 import { redactSensitiveRecord } from "@/lib/redact-sensitive-json";
 import { formatCents } from "@/lib/utils";
+import { providerAmountToCents } from "@/lib/money-provider-amount";
 
 /**
  * Plain-English summaries of Xero sync operations for the admin Xero
@@ -83,9 +84,9 @@ function formatCentsValue(value: unknown): string | null {
  * currency formatter — the actual formatting still goes through `formatCents`.
  */
 function formatDollarsValue(value: unknown): string | null {
-  const dollars = readNumberLike(value);
-  if (dollars === null) return null;
-  return formatCents(Math.round(dollars * 100));
+  const cents = providerAmountToCents(readNumberLike(value));
+  if (cents === null) return null;
+  return formatCents(cents);
 }
 
 function shortId(value: unknown): string | null {

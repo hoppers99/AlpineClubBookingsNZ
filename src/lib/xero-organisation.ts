@@ -8,7 +8,7 @@
  */
 
 import logger from "@/lib/logger";
-import { parseDateOnly } from "@/lib/date-only";
+import { formatDateOnly, parseDateOnly } from "@/lib/date-only";
 import {
   getXeroErrorHeader,
   getXeroErrorStatusCode,
@@ -826,7 +826,7 @@ function parseXeroLockDate(value: string | Date | undefined | null): Date | null
   if (value instanceof Date) {
     if (!Number.isNaN(value.getTime())) {
       // Normalize to a date-only Date in UTC, matching the MS-JSON path below.
-      const parsed = parseDateOnly(value.toISOString().slice(0, 10));
+      const parsed = parseDateOnly(formatDateOnly(value));
       if (!Number.isNaN(parsed.getTime())) return parsed;
     }
     logger.warn({ value }, "Unparseable Xero lock date; treating as unset");
@@ -838,7 +838,7 @@ function parseXeroLockDate(value: string | Date | undefined | null): Date | null
     const epochMs = Number(msJson[1]);
     if (Number.isFinite(epochMs)) {
       // Normalize to a date-only Date in UTC (lock dates are whole days).
-      const parsed = parseDateOnly(new Date(epochMs).toISOString().slice(0, 10));
+      const parsed = parseDateOnly(formatDateOnly(new Date(epochMs)));
       if (!Number.isNaN(parsed.getTime())) return parsed;
     }
   } else {

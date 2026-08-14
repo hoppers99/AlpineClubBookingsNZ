@@ -1,10 +1,49 @@
-7922b5219515e863049bf2305f6055e6296ec854:src/lib/__tests__/member-credit.test.ts:generic-api-key:62
-7922b5219515e863049bf2305f6055e6296ec854:src/lib/__tests__/member-credit.test.ts:generic-api-key:272
-7922b5219515e863049bf2305f6055e6296ec854:src/lib/__tests__/admin-member-credit-routes.test.ts:generic-api-key:97
-7922b5219515e863049bf2305f6055e6296ec854:src/lib/__tests__/member-credit.test.ts:generic-api-key:653
-7922b5219515e863049bf2305f6055e6296ec854:src/lib/__tests__/member-credit.test.ts:generic-api-key:896
-7922b5219515e863049bf2305f6055e6296ec854:src/lib/__tests__/member-credit.test.ts:generic-api-key:901
-7922b5219515e863049bf2305f6055e6296ec854:src/lib/__tests__/member-credit.test.ts:generic-api-key:906
-1ec776ee3aa6db1e6196f75d262c09a73546da43:.github/workflows/ci.yml:generic-api-key:33
-81c6a66125a3ab51eba00f08b0c4246806925933:src/lib/__tests__/phase4-contact-sync-and-import.test.ts:generic-api-key:4
-321ac3277e02ed410b2d9a1cceb56f0cb507cede:src/lib/__tests__/xero.test.ts:generic-api-key:18
+# gitleaks fingerprints: `<commit>:<file>:<rule-id>:<line>`.
+#
+# THIS FILE IS DELIBERATELY EMPTY, and that is the finding rather than the
+# absence of one.
+#
+# It used to hold nine fingerprints, described as "RE-VERIFIED against gitleaks
+# v8.28.0". #2686's review re-ran the check and none of the nine suppressed
+# anything: replacing this file with a genuinely empty one changed no scan
+# result, and each named commit scanned on its own reported nothing at the named
+# line. They were pinned to the wrong commit, the wrong line, or both — the
+# `measurement/phase2/bin/self-test.mjs` entry named commit `e093c620…` line 97
+# while the real findings sit at three other commits on lines 111 and 276. An
+# ignore file full of entries that suppress nothing is worse than an empty one,
+# because it reads as coverage.
+#
+# WHY THE SUPPRESSIONS MOVED TO `.gitleaks.toml`, AND WHY THEY BELONG THERE.
+#
+# A fingerprint names ONE finding in ONE commit, which is genuinely the narrowest
+# suppression gitleaks offers — but it is not a durable one here. Since #2686 the
+# history scan passes `--diff-merges=first-parent`, without which gitleaks sees
+# no patch for a merge commit and skips a third of this repository. That flag
+# also means a line is re-reported at EVERY merge commit that carried it forward,
+# each with its own fingerprint, so pinning by fingerprint would require a new
+# entry after every merge — an unbounded, always-stale list, on a REQUIRED check.
+# Measured: one fixture password in `measurement/` is reported at three separate
+# commits over the same two source lines.
+#
+# So every real suppression is now an EXACT-LITERAL content allowlist in
+# `.gitleaks.toml`, which is pinned to the value rather than to a commit, applies
+# identically to the history scan and the tree scan, and can only ever hide the
+# one string it names. That file explains each entry and why the value is not a
+# secret.
+#
+# WHEN A FINGERPRINT IS STILL THE RIGHT ANSWER: when the finding is genuinely
+# tied to one historical commit and the VALUE must not be written down — a real
+# credential that was committed and has since been rotated. In that case the
+# rotation is the fix and the fingerprint is the bookkeeping; add it here with a
+# comment naming the rotation, never the value.
+#
+# WHEN YOU WRITE THAT COMMENT, DESCRIBE THE VALUE — NEVER PASTE IT.
+# gitleaks scans this file like any other, so a comment that reproduces the
+# suppressed value in its original `NAME=value` or `key: "value"` shape becomes a
+# NEW finding, in a new commit, which this file then has to suppress as well. The
+# first draft of these annotations did exactly that and added four findings to a
+# branch whose whole purpose was to make the scan blocking.
+#
+# To add one: run the scan the `Secret scan (gitleaks)` job runs, take the
+# `Fingerprint` field from the JSON report, and paste it here. `SECURITY.md` →
+# "Which CI security checks block a merge" has the full command.

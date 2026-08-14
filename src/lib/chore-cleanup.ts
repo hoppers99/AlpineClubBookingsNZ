@@ -9,6 +9,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { isGuestOperationallyPresentOnDay } from "@/lib/booking-guest-stay-ranges";
 import { lockRosterDates } from "@/lib/roster-lock";
+import { formatDateOnly } from "@/lib/date-only";
 
 type Tx = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">;
 
@@ -74,7 +75,7 @@ export async function cleanupChoreAssignmentsForDateChange(
       deletedCount += deleted.count;
     } else {
       choreWarnings.push(
-        `${assignment.choreTemplate.name} on ${assignment.date.toISOString().split("T")[0]} is ${assignment.status} and was not auto-removed`
+        `${assignment.choreTemplate.name} on ${formatDateOnly(assignment.date)} is ${assignment.status} and was not auto-removed`
       );
     }
   }
@@ -148,7 +149,7 @@ export async function cleanupChoreAssignmentsForGuestStayRanges(
       deletedCount += deleted.count;
     } else {
       choreWarnings.push(
-        `${assignment.choreTemplate.name} on ${assignment.date.toISOString().split("T")[0]} is ${assignment.status} and falls outside the guest's stay range`
+        `${assignment.choreTemplate.name} on ${formatDateOnly(assignment.date)} is ${assignment.status} and falls outside the guest's stay range`
       );
     }
   }

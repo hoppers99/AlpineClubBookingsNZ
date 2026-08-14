@@ -54,6 +54,16 @@ src/lib/config-transfer/import-types.ts text eol=lf diff
 *.yml text eol=lf
 *.yaml text eol=lf
 
+# #2686: the secret scanner's own two config files were the remaining tracked
+# text class with no pin, and both are parsed in ways CRLF breaks. gitleaks
+# reads `.gitleaksignore` a line at a time and compares each line to a finding
+# fingerprint, so a trailing `\r` makes an entry match nothing and the required
+# `Secret scan (gitleaks)` check goes red over a finding somebody already
+# reviewed and suppressed. `.toml` is pinned as a class rather than by name, so
+# a second TOML file added later inherits it.
+*.toml text eol=lf
+.gitleaksignore text eol=lf
+
 # Shell scripts are the fourth instance of the same class, and the worst of
 # them, because the failure does not look like a line-ending problem at all.
 # Every tracked `*.sh` here opens with `set -Eeuo pipefail`. Materialised as
