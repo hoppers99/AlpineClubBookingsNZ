@@ -3667,10 +3667,17 @@ describe("review finding source/schema contracts", () => {
   });
 
   it("surfaces the booking status glossary and cancellation schedule to members (F28)", () => {
-    const contextualHelp = readRepoFile("src/lib/contextual-help.ts");
-    expect(contextualHelp).toContain("export const BOOKING_STATUS_GLOSSARY");
+    // #2689 moved the glossary to its own leaf module, so a member page can
+    // render eleven strings without importing the whole admin help corpus.
+    const glossary = readRepoFile(
+      "src/lib/contextual-help/booking-status-glossary.ts",
+    );
+    expect(glossary).toContain("export const BOOKING_STATUS_GLOSSARY");
     // Admin help still renders the same shared glossary (no divergent copy).
-    expect(contextualHelp).toContain("details: BOOKING_STATUS_GLOSSARY,");
+    const adminBookingsHelp = readRepoFile(
+      "src/lib/contextual-help/admin/bookings-and-beds.ts",
+    );
+    expect(adminBookingsHelp).toContain("details: BOOKING_STATUS_GLOSSARY,");
 
     // Epic #2094 C2 retired the BookingHelpDialog: the same four blocks now feed
     // the global help widget via this render-null extras leaf. The PR #1389

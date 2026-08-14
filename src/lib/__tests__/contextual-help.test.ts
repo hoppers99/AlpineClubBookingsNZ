@@ -1,8 +1,11 @@
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   getContextualHelp,
   getContextualHelpPaths,
 } from "@/lib/contextual-help";
+import type { HelpEntry } from "@/lib/contextual-help/types";
 
 describe("contextual help registry", () => {
   it.each([
@@ -174,5 +177,43 @@ describe("contextual help registry", () => {
       ]),
     );
     expect(getContextualHelpPaths("finance")).toEqual(["/finance"]);
+  });
+
+  /**
+   * #2689 split the corpus into one module per admin sidebar section. The
+   * failure that split makes possible is a silent one: add a section module,
+   * forget the line in `contextual-help/index.ts`, and every page in it drops
+   * to the generic fallback with nothing red. So read the directory rather than
+   * trusting a list, and require every module's entries to be registered.
+   */
+  it("registers every admin section module", async () => {
+    const sectionDir = join(process.cwd(), "src/lib/contextual-help/admin");
+    const modules = readdirSync(sectionDir).filter((f) => f.endsWith(".ts"));
+    expect(modules.length).toBeGreaterThan(0);
+
+    const registered = new Set(getContextualHelpPaths("admin"));
+    const orphaned: string[] = [];
+    for (const file of modules) {
+      // The `.ts` stays in the static part of the specifier: Vite's
+      // dynamic-import-vars plugin needs an extension there to build the glob.
+      const loaded: Record<string, unknown> = await import(
+        `@/lib/contextual-help/admin/${file.replace(/\.ts$/, "")}.ts`
+      );
+      const entries = Object.values(loaded).find(Array.isArray) as
+        | HelpEntry[]
+        | undefined;
+      expect(entries, `${file} exports no help-entry array`).toBeDefined();
+      for (const helpEntry of entries ?? []) {
+        if (!registered.has(helpEntry.path)) {
+          orphaned.push(`${file}: ${helpEntry.path}`);
+        }
+      }
+    }
+    expect(
+      orphaned,
+      "These section modules are not spread into `adminHelpEntries` in " +
+        "src/lib/contextual-help/index.ts, so their pages silently fall back to " +
+        "the generic admin help:\n" + orphaned.join("\n"),
+    ).toEqual([]);
   });
 });
