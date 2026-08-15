@@ -427,13 +427,22 @@ describe("an arriving answer is announced and focus is not stranded (WCAG 4.1.3)
 
     // The question box is now disabled, so focus cannot go there; it must land on a
     // real control rather than be lost to <body>.
+    //
+    // Both conditions are awaited, and the focus one separately, because disabling the
+    // box and moving focus are different effects. Waiting only for `disabled` and then
+    // asserting focus synchronously races the second effect: on a loaded runner the
+    // assertion lands while focus is still on the announcement heading, which is the
+    // intermediate state, and the test fails for a reason that has nothing to do with
+    // the behaviour it guards (#2883).
     await waitFor(() =>
       expect(
         (screen.getByTestId("diagnostics-input") as HTMLTextAreaElement).disabled,
       ).toBe(true),
     );
-    expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: "Start again" }),
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Start again" }),
+      ),
     );
   });
 });
