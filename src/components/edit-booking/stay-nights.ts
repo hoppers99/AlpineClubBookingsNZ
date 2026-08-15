@@ -7,6 +7,17 @@ import { formatDateOnly } from "@/lib/date-only";
  * NZ date-only lodge night (`yyyy-mm-dd`), shifted through UTC midnight and
  * re-encoded by the shared `formatDateOnly` — never through a local-time Date,
  * which is what makes the day slide for a booker browsing from overseas.
+ *
+ * KNOWN DUPLICATION, CARRIED ACROSS DELIBERATELY AND NOT FIXED HERE (#2690
+ * review). `shiftDateKey` and `shiftDateOnly` below are the same computation
+ * written twice, and `addDaysDateOnly` in `@/lib/date-only` is a third copy of
+ * it. They differ only in how they answer a date that will not parse:
+ * `shiftDateKey` propagates the resulting `Invalid Date` into `formatDateOnly`,
+ * while `shiftDateOnly` catches it and returns its input unchanged. That is a
+ * behaviour difference, not a formatting one, so collapsing them is a behaviour
+ * change and belongs to its own issue rather than to a no-behaviour-change
+ * split. Both are exported so the divergence is visible to the next reader
+ * instead of being hidden inside one module; do not add a fourth.
  */
 
 export function shiftDateKey(date: string, days: number): string {
