@@ -36,7 +36,8 @@ import {
   initialLodgeIdFromLocation,
   useLodgeOptions,
 } from "@/components/lodge-select";
-import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status";
+import { LodgeScopeStatusNotice } from "@/components/admin/lodge-options-status";
+import { deriveSettledLodgeOptionScope } from "@/lib/lodge-option-scope";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
@@ -120,18 +121,24 @@ export default function LockersPage() {
     allocated to members, with no lodge named anywhere on screen. While that is
     true this page does no lodge-scoped work at all.
 
-    A `?lodgeId=` hub link still counts as resolved: that lodge came from the
-    link, not from the list, so a deep link keeps working through the outage.
-    A 403 (`forbidden`) is NOT this state — `ADMIN_MEMBERSHIP` holds membership
-    but not `lodge:view`, so a refusal is that role's normal answer and it keeps
-    the club-wide view it has always had, explained by the notice below.
+    A `?lodgeId=` hub link is retained through failure/retry, but remains inert
+    until a successful lodge response validates that id. Loading, failure, 403,
+    and a successful empty response are all distinct stopped states.
   */
-  const lodgeScopeUnresolved = lodgeOptionsFailed && !lodgeId;
+  const lodgeScope = deriveSettledLodgeOptionScope({
+    lodges,
+    selectedLodgeId: lodgeId,
+    loading: lodgesLoading,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+  });
+  const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
+  const lodgeScopeReady = scopedLodgeId !== null;
 
   const loadData = useCallback(async (signal?: AbortSignal) => {
     // #2701: no lodge, no read. Clear what the pre-failure unscoped request
     // put on screen too — those are some other lodge's lockers.
-    if (lodgeScopeUnresolved) {
+    if (!scopedLodgeId) {
       setMembers([]);
       setLockers([]);
       setLoading(false);
@@ -141,9 +148,7 @@ export default function LockersPage() {
     setError("");
     try {
       const response = await fetch(
-        lodgeId
-          ? `/api/admin/lockers?lodgeId=${encodeURIComponent(lodgeId)}`
-          : "/api/admin/lockers",
+        `/api/admin/lockers?lodgeId=${encodeURIComponent(scopedLodgeId)}`,
         { signal },
       );
       const body = await response.json();
@@ -167,7 +172,7 @@ export default function LockersPage() {
     } finally {
       setLoading(false);
     }
-  }, [lodgeId, lodgeScopeUnresolved]);
+  }, [scopedLodgeId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -177,6 +182,7 @@ export default function LockersPage() {
 
   async function handleFormSubmit(event: React.FormEvent) {
     event.preventDefault();
+    if (!scopedLodgeId) return;
     setSaving(true);
     setError("");
 
@@ -187,7 +193,7 @@ export default function LockersPage() {
           allocatedToMemberId === "UNALLOCATED" ? null : allocatedToMemberId,
         // Lodge is set at creation from the page's lodge context and cannot
         // be changed by an update.
-        ...(editingLockerId ? {} : { lodgeId: lodgeId ?? undefined }),
+        ...(editingLockerId ? {} : { lodgeId: scopedLodgeId }),
       };
       const response = editingLockerId
         ? await fetch(`/api/admin/lockers/${editingLockerId}`, {
@@ -244,6 +250,7 @@ export default function LockersPage() {
   }
 
   function beginEdit(locker: LockerRecord) {
+    if (!lodgeScopeReady) return;
     setEditingLockerId(locker.id);
     setName(locker.name);
     setAllocatedToMemberId(locker.allocatedToMemberId ?? "UNALLOCATED");
@@ -260,6 +267,7 @@ export default function LockersPage() {
   }
 
   async function deleteLocker(locker: LockerRecord) {
+    if (!lodgeScopeReady) return;
     if (
       !(await confirm({
         title: `Delete locker ${locker.name}?`,
@@ -304,6 +312,7 @@ export default function LockersPage() {
   }
 
   async function bulkCreateLockers() {
+    if (!scopedLodgeId) return;
     const count = Number(bulkCount);
     setBulkSaving(true);
     setError("");
@@ -314,7 +323,7 @@ export default function LockersPage() {
         body: JSON.stringify({
           count,
           namePrefix: bulkNamePrefix.trim() || undefined,
-          ...(lodgeId ? { lodgeId } : {}),
+          lodgeId: scopedLodgeId,
         }),
       });
       const body = await response.json();
@@ -406,9 +415,8 @@ export default function LockersPage() {
 
       {/* #2701: say the lodge list failed, above the lodge-scoped content it
           silently replaced with the default lodge's. */}
-      <LodgeOptionsUnavailableNotice
-        failed={lodgeOptionsFailed}
-        forbidden={lodgeOptionsForbidden}
+      <LodgeScopeStatusNotice
+        scope={lodgeScope}
         onRetry={reloadLodgeOptions}
         what="lockers and their allocations"
       />
@@ -418,10 +426,12 @@ export default function LockersPage() {
             // #2701: an empty list from a FAILED request is not evidence the
             // caller's lodge is gone, so the ADR-002 normaliser must not wipe a
             // ?lodgeId= hub link (ADR-003) while the outage lasts.
-            deferDefaultSelection={lodgeOptionsFailed}
+            deferDefaultSelection={lodgeOptionsFailed || lodgeOptionsForbidden}
           />
       </div>
 
+      {lodgeScopeReady ? (
+        <>
       <Card>
         <CardHeader>
           <CardTitle>{editingLockerId ? "Edit Locker" : "New Locker"}</CardTitle>
@@ -445,7 +455,7 @@ export default function LockersPage() {
                 required
                 // #2701: nothing here is safe to fill in while the lodge the
                 // locker would be created against is unknown.
-                disabled={!canEdit || lodgeScopeUnresolved}
+                disabled={!canEdit}
                 {...lockerNameHint.fieldProps}
               />
               <FieldHint {...lockerNameHint.hintProps}>
@@ -456,7 +466,7 @@ export default function LockersPage() {
               <Label htmlFor="locker-allocated">Allocated To</Label>
               <Select
                 value={allocatedToMemberId}
-                disabled={!canEdit || lodgeScopeUnresolved}
+                disabled={!canEdit}
                 onValueChange={(value) => {
                   setAllocatedToMemberId(value);
                   setAllocatedToSearch("");
@@ -496,7 +506,7 @@ export default function LockersPage() {
                 canEdit={canEdit}
                 describeReason={false}
                 type="submit"
-                disabled={saving || lodgeScopeUnresolved}
+                disabled={saving}
                 className="w-full sm:w-auto"
               >
                 {saving
@@ -545,7 +555,7 @@ export default function LockersPage() {
                 onChange={(event) => setBulkCount(event.target.value)}
                 // #2701: a bulk create with no lodgeId seeds the DEFAULT
                 // lodge — up to 100 lockers on the wrong property.
-                disabled={!canEdit || lodgeScopeUnresolved}
+                disabled={!canEdit}
                 {...bulkCountHint.fieldProps}
               />
               <FieldHint {...bulkCountHint.hintProps}>
@@ -558,7 +568,7 @@ export default function LockersPage() {
                 id="bulk-locker-prefix"
                 value={bulkNamePrefix}
                 onChange={(event) => setBulkNamePrefix(event.target.value)}
-                disabled={!canEdit || lodgeScopeUnresolved}
+                disabled={!canEdit}
                 {...bulkPrefixHint.fieldProps}
               />
               <FieldHint {...bulkPrefixHint.hintProps}>
@@ -576,7 +586,7 @@ export default function LockersPage() {
                   bulkSaving ||
                   !bulkCount ||
                   Number(bulkCount) < 1 ||
-                  lodgeScopeUnresolved
+                  false
                 }
                 className="w-full sm:w-auto"
               >
@@ -681,6 +691,8 @@ export default function LockersPage() {
           )}
         </CardContent>
       </Card>
+        </>
+      ) : null}
       </div>
     </div>
   );

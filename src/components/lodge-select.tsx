@@ -93,7 +93,11 @@ export function LodgeSelect({
     // A deliberate club-wide selection is a settled value, never normalised
     // away — that is the entire point of making it explicit.
     if (allowAllLodges && value === ALL_LODGES) return;
-    if (value === null || value === ALL_LODGES) {
+    if (
+      value === null ||
+      value === ALL_LODGES ||
+      !lodges.some((lodge) => lodge.id === value)
+    ) {
       onChange(lodges[0].id, "auto");
     }
   }, [lodges, value, onChange, loading, allowAllLodges, deferDefaultSelection]);

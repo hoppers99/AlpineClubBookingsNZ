@@ -37,9 +37,10 @@ import {
   type BedTypeValue,
 } from "@/components/admin/bed-type-indicator";
 import { AdminViewOnlyNotice } from "@/components/admin/view-only-action";
-import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status";
+import { LodgeScopeStatusNotice } from "@/components/admin/lodge-options-status";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
 import type { LodgeCapacityStatus } from "@/lib/lodge-capacity";
+import { deriveSettledLodgeOptionScope } from "@/lib/lodge-option-scope";
 
 const BED_TYPE_OPTIONS: Array<{ value: BedTypeValue; label: string }> = [
   { value: "SINGLE", label: "Single" },
@@ -303,9 +304,8 @@ export function RoomsBedsManager({
   // #2701: a FAILED lodge list used to look exactly like a club with no lodges —
   // the selector disappeared, the selection normalised to null, and the server
   // resolved null to the club's DEFAULT lodge. Rooms were then renamed and
-  // deleted in a lodge that was never named on screen. `lodgesFailed` stops all
-  // of that below; a 403 (`lodgesForbidden`) is a permissions fact, not an
-  // outage, and leaves behaviour exactly as it was.
+  // deleted in a lodge that was never named on screen. The settled-scope gate
+  // stops loading, failure, 403, and successful-empty states alike.
   const {
     lodges,
     loading: lodgesLoading,
@@ -313,10 +313,19 @@ export function RoomsBedsManager({
     forbidden: lodgesForbidden,
     reload: reloadLodges,
   } = useLodgeOptions("admin");
-  const canWrite = canEdit && !lodgesFailed;
   // Hub links (ADR-003) land pre-filtered; read synchronously so the first
   // fetch is already lodge-filtered.
   const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation);
+  const lodgeScope = deriveSettledLodgeOptionScope({
+    lodges,
+    selectedLodgeId: lodgeId,
+    loading: lodgesLoading,
+    failed: lodgesFailed,
+    forbidden: lodgesForbidden,
+  });
+  const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
+  const lodgeScopeReady = scopedLodgeId !== null;
+  const canWrite = canEdit && lodgeScopeReady;
   const [bulkRoomCount, setBulkRoomCount] = useState("");
   const [bulkBedsPerRoom, setBulkBedsPerRoom] = useState("4");
   const [bulkNamePrefix, setBulkNamePrefix] = useState("Room");
@@ -363,7 +372,8 @@ export function RoomsBedsManager({
     // missing lodgeId to the club's default lodge, so this would quietly show
     // (and then let the admin edit) one particular lodge's inventory while the
     // page named no lodge at all. Stop instead, and let the notice explain.
-    if (lodgesFailed) {
+    if (!scopedLodgeId) {
+      setPayload(null);
       setLoading(false);
       return;
     }
@@ -371,9 +381,7 @@ export function RoomsBedsManager({
     setLoading(true);
     try {
       const response = await fetch(
-        lodgeId
-          ? `/api/admin/bed-allocation/rooms?lodgeId=${encodeURIComponent(lodgeId)}`
-          : "/api/admin/bed-allocation/rooms",
+        `/api/admin/bed-allocation/rooms?lodgeId=${encodeURIComponent(scopedLodgeId)}`,
         {
           cache: "no-store",
           signal,
@@ -442,7 +450,7 @@ export function RoomsBedsManager({
         setLoading(false);
       }
     }
-  }, [lodgeId, lodgesFailed]);
+  }, [scopedLodgeId]);
 
   useEffect(() => {
     // Skip the bookings-area fetch entirely for a viewer who lacks bookings
@@ -453,7 +461,7 @@ export function RoomsBedsManager({
     // a page that names no lodge. Retire it — the effect's own cleanup has
     // already aborted anything still in flight — so the notice is all that is
     // left, rather than an editable-looking inventory nobody chose.
-    if (lodgesFailed) {
+    if (!scopedLodgeId) {
       setPayload(null);
       setLoading(false);
       return;
@@ -461,7 +469,7 @@ export function RoomsBedsManager({
     const controller = new AbortController();
     void loadRooms(controller.signal);
     return () => controller.abort();
-  }, [loadRooms, canManageBeds, lodgesFailed]);
+  }, [loadRooms, canManageBeds, scopedLodgeId]);
 
   // Returns true only when the request succeeded, so callers can clear an
   // add-form draft on success and preserve it on failure.
@@ -476,6 +484,7 @@ export function RoomsBedsManager({
     // render an inline message (bed create/save) also receive the text here.
     onError?: (message: string) => void,
   ): Promise<boolean> {
+    if (!scopedLodgeId) return false;
     setSaving(label);
     try {
       const response = await request();
@@ -554,7 +563,7 @@ export function RoomsBedsManager({
             active: roomDraft.active,
             notes: roomDraft.notes || null,
             // Lodge is set at creation from the page's lodge context.
-            ...(lodgeId ? { lodgeId } : {}),
+            lodgeId: scopedLodgeId,
           }),
         }),
       "Room created",
@@ -698,6 +707,7 @@ export function RoomsBedsManager({
   // message itself and stores it per room. The Active toggle stays visible as
   // the steered "deactivate instead" alternative.
   async function deleteRoom(roomId: string) {
+    if (!lodgeScopeReady) return;
     if (
       !(await confirm({
         title: "Delete this room?",
@@ -746,7 +756,7 @@ export function RoomsBedsManager({
             roomCount,
             bedsPerRoom,
             namePrefix: bulkNamePrefix.trim() || undefined,
-            ...(lodgeId ? { lodgeId } : {}),
+            lodgeId: scopedLodgeId,
           }),
         }),
       `Created ${roomCount} room${roomCount === 1 ? "" : "s"}`,
@@ -808,7 +818,7 @@ export function RoomsBedsManager({
         <Button
           variant="outline"
           onClick={() => void loadRooms()}
-          disabled={loading || lodgesFailed}
+          disabled={loading || !lodgeScopeReady}
           className="gap-2 md:w-auto"
         >
           <LoaderCircle className={loading ? "h-4 w-4 animate-spin" : "hidden"} />
@@ -821,20 +831,21 @@ export function RoomsBedsManager({
             // #2701: an empty list from a FAILED request is not evidence the
             // caller's lodge is gone, so the ADR-002 normaliser must not wipe a
             // ?lodgeId= hub link (ADR-003) while the outage lasts.
-            deferDefaultSelection={lodgesFailed}
+            deferDefaultSelection={lodgesFailed || lodgesForbidden}
           />
       </div>
 
       {/* #2701: says which lodge context is missing, and offers the retry that
           brings the inventory back. Retrying the lodge list re-runs loadRooms
           through the effect below, so there is one button, not two. */}
-      <LodgeOptionsUnavailableNotice
-        failed={lodgesFailed}
-        forbidden={lodgesForbidden}
+      <LodgeScopeStatusNotice
+        scope={lodgeScope}
         onRetry={reloadLodges}
         what="this lodge's rooms and beds"
       />
 
+      {lodgeScopeReady ? (
+        <>
       {loading ? (
         <div className="flex items-center gap-2 rounded-md border bg-card p-6 text-sm text-muted-foreground">
           <LoaderCircle className="h-4 w-4 animate-spin" />
@@ -1453,6 +1464,8 @@ export function RoomsBedsManager({
             )}
           </CardContent>
         </Card>
+      ) : null}
+        </>
       ) : null}
     </div>
   );

@@ -18,8 +18,9 @@ import {
   initialLodgeIdFromLocation,
   useLodgeOptions,
 } from "@/components/lodge-select"
-import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status"
+import { LodgeScopeStatusNotice } from "@/components/admin/lodge-options-status"
 import { dateOnlyFromIsoString } from "@/lib/date-only";
+import { deriveSettledLodgeOptionScope } from "@/lib/lodge-option-scope"
 
 // Season WINDOWS only (#1933, E7): name, type, dates, and active state per
 // lodge. Nightly rates moved to the consolidated Fees console (Fees → Hut Fees)
@@ -59,10 +60,18 @@ export default function SeasonsPage() {
     and nothing on screen names. While that is true this page does no
     lodge-scoped work at all.
 
-    A `?lodgeId=` hub link still counts as resolved: that lodge came from the
-    link, not from the list, so a deep link keeps working through the outage.
+    A `?lodgeId=` hub link is retained through failure/retry, but remains inert
+    until a successful lodge response validates that id.
   */
-  const lodgeScopeUnresolved = lodgeOptionsFailed && !lodgeId
+  const lodgeScope = deriveSettledLodgeOptionScope({
+    lodges,
+    selectedLodgeId: lodgeId,
+    loading: lodgesLoading,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+  })
+  const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null
+  const lodgeScopeReady = scopedLodgeId !== null
 
   // Form state (window fields only)
   const [name, setName] = useState("")
@@ -78,17 +87,16 @@ export default function SeasonsPage() {
     // #2701: no lodge, no read. Clear what the pre-failure unscoped request
     // put on screen too, and drop any half-open edit: a window opened from a
     // row we can no longer vouch for must not stay editable.
-    if (lodgeScopeUnresolved) {
+    if (!scopedLodgeId) {
       setSeasons([])
       setEditingId(null)
+      setError("")
       setLoading(false)
       return
     }
     try {
       const res = await fetch(
-        lodgeId
-          ? `/api/admin/seasons?lodgeId=${encodeURIComponent(lodgeId)}`
-          : "/api/admin/seasons",
+        `/api/admin/seasons?lodgeId=${encodeURIComponent(scopedLodgeId)}`,
         { signal },
       )
       if (!res.ok) throw new Error("Failed to fetch seasons")
@@ -100,7 +108,7 @@ export default function SeasonsPage() {
     } finally {
       setLoading(false)
     }
-  }, [lodgeId, lodgeScopeUnresolved])
+  }, [scopedLodgeId])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -119,6 +127,7 @@ export default function SeasonsPage() {
   }
 
   function startEdit(season: Season) {
+    if (!lodgeScopeReady) return
     setEditingId(season.id)
     setName(season.name)
     setType(season.type)
@@ -129,7 +138,7 @@ export default function SeasonsPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!editingId) return
+    if (!editingId || !lodgeScopeReady) return
     setSaving(true)
     setError("")
 
@@ -158,6 +167,7 @@ export default function SeasonsPage() {
   }
 
   async function handleDelete(id: string) {
+    if (!lodgeScopeReady) return
     if (!confirm("Are you sure you want to delete this season?")) return
     try {
       const res = await fetch(`/api/admin/seasons/${id}`, { method: "DELETE" })
@@ -172,6 +182,7 @@ export default function SeasonsPage() {
   }
 
   async function handleToggleActive(season: Season) {
+    if (!lodgeScopeReady) return
     try {
       const res = await fetch(`/api/admin/seasons/${season.id}`, {
         method: "PUT",
@@ -223,9 +234,8 @@ export default function SeasonsPage() {
 
       {/* #2701: say the lodge list failed, above the lodge-scoped windows it
           silently replaced with another lodge's. */}
-      <LodgeOptionsUnavailableNotice
-        failed={lodgeOptionsFailed}
-        forbidden={lodgeOptionsForbidden}
+      <LodgeScopeStatusNotice
+        scope={lodgeScope}
         onRetry={reloadLodgeOptions}
         what="season windows"
       />
@@ -235,7 +245,7 @@ export default function SeasonsPage() {
             // #2701: an empty list from a FAILED request is not evidence the
             // caller's lodge is gone, so the ADR-002 normaliser must not wipe a
             // ?lodgeId= hub link (ADR-003) while the outage lasts.
-            deferDefaultSelection={lodgeOptionsFailed}
+            deferDefaultSelection={lodgeOptionsFailed || lodgeOptionsForbidden}
           />
       </div>
 
@@ -245,7 +255,7 @@ export default function SeasonsPage() {
         </div>
       )}
 
-      {editingId && canEdit && (
+      {lodgeScopeReady && editingId && canEdit && (
         <Card>
           <CardHeader>
             <CardTitle>Edit Season Window</CardTitle>
@@ -290,7 +300,7 @@ export default function SeasonsPage() {
                 {/* #2701: belt and braces — clearing `editingId` already closes
                     this card when the lodge list fails, so this only covers a
                     failure that lands mid-edit. */}
-                <Button type="submit" disabled={saving || lodgeScopeUnresolved}>
+                <Button type="submit" disabled={saving || !lodgeScopeReady}>
                   {saving ? "Saving..." : "Update Season"}
                 </Button>
                 <Button type="button" variant="outline" onClick={resetForm}>Cancel</Button>
@@ -300,7 +310,7 @@ export default function SeasonsPage() {
         </Card>
       )}
 
-      {loading ? (
+      {!lodgeScopeReady ? null : loading ? (
         <div className="text-center py-8">Loading seasons...</div>
       ) : seasons.length === 0 ? (
         <Card>

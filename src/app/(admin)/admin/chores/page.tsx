@@ -14,13 +14,14 @@ import {
   initialLodgeIdFromLocation,
   useLodgeOptions,
 } from "@/components/lodge-select"
-import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status"
+import { LodgeScopeStatusNotice } from "@/components/admin/lodge-options-status"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
+import { deriveSettledLodgeOptionScope } from "@/lib/lodge-option-scope"
 
 interface ChoreTemplate {
   id: string
@@ -92,10 +93,18 @@ export default function ChoresPage() {
     and nothing on screen names. While that is true this page does no
     lodge-scoped work at all.
 
-    A `?lodgeId=` hub link still counts as resolved: that lodge came from the
-    link, not from the list, so a deep link keeps working through the outage.
+    A `?lodgeId=` hub link is retained through failure/retry, but remains inert
+    until a successful lodge response validates that id.
   */
-  const lodgeScopeUnresolved = lodgeOptionsFailed && !lodgeId
+  const lodgeScope = deriveSettledLodgeOptionScope({
+    lodges,
+    selectedLodgeId: lodgeId,
+    loading: lodgesLoading,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+  })
+  const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null
+  const lodgeScopeReady = scopedLodgeId !== null
 
   // Form state
   const [name, setName] = useState("")
@@ -122,16 +131,17 @@ export default function ChoresPage() {
     // unscoped request this effect fired before the lodge list failed, so drop
     // it too rather than leave another lodge's templates sitting under a
     // heading that claims to be this lodge's.
-    if (lodgeScopeUnresolved) {
+    if (!scopedLodgeId) {
       setChores([])
+      setShowForm(false)
+      setEditingId(null)
+      setError("")
       setLoading(false)
       return
     }
     try {
       const res = await fetch(
-        lodgeId
-          ? `/api/admin/chores?lodgeId=${encodeURIComponent(lodgeId)}`
-          : "/api/admin/chores",
+        `/api/admin/chores?lodgeId=${encodeURIComponent(scopedLodgeId)}`,
         { signal }
       )
       if (!res.ok) throw new Error("Failed to fetch chores")
@@ -145,7 +155,7 @@ export default function ChoresPage() {
     } finally {
       setLoading(false)
     }
-  }, [lodgeId, lodgeScopeUnresolved])
+  }, [scopedLodgeId])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -174,6 +184,7 @@ export default function ChoresPage() {
   }
 
   function startEdit(chore: ChoreTemplate) {
+    if (!lodgeScopeReady) return
     setEditingId(chore.id)
     setName(chore.name)
     setDescription(chore.description ?? "")
@@ -194,6 +205,7 @@ export default function ChoresPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (!scopedLodgeId) return
     setSaving(true)
     setError("")
 
@@ -214,7 +226,7 @@ export default function ChoresPage() {
       active,
       // Lodge is set at creation from the page's lodge context and cannot be
       // changed by an update.
-      ...(editingId ? {} : { lodgeId: lodgeId ?? undefined }),
+      ...(editingId ? {} : { lodgeId: scopedLodgeId }),
     }
 
     try {
@@ -243,6 +255,7 @@ export default function ChoresPage() {
   }
 
   async function handleDelete(id: string) {
+    if (!lodgeScopeReady) return
     if (!confirm("Are you sure you want to delete this chore template?")) return
     try {
       const res = await fetch(`/api/admin/chores/${id}`, { method: "DELETE" })
@@ -261,6 +274,7 @@ export default function ChoresPage() {
   }
 
   async function handleToggleActive(chore: ChoreTemplate) {
+    if (!lodgeScopeReady) return
     try {
       const res = await fetch(`/api/admin/chores/${chore.id}`, {
         method: "PUT",
@@ -297,7 +311,7 @@ export default function ChoresPage() {
     </AdminViewOnlySectionBanner>
   )
 
-  if (loading) {
+  if (loading && lodgeScopeReady) {
     return (
       <div>
         {viewOnlyBanner}
@@ -317,10 +331,10 @@ export default function ChoresPage() {
             Configure chore definitions for the lodge roster
           </p>
         </div>
-        {!showForm && (
+        {lodgeScopeReady && !showForm && (
           // #2701: creating a template with no lodge resolved would file it
           // against the club's default lodge.
-          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} disabled={lodgeScopeUnresolved} onClick={() => { setSortOrder(chores.length + 1); setShowForm(true) }}>
+          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={() => { setSortOrder(chores.length + 1); setShowForm(true) }}>
             Add Chore
           </ViewOnlyActionButton>
         )}
@@ -328,9 +342,8 @@ export default function ChoresPage() {
 
       {/* #2701: say the lodge list failed, above the lodge-scoped content it
           silently replaced with the default lodge's. */}
-      <LodgeOptionsUnavailableNotice
-        failed={lodgeOptionsFailed}
-        forbidden={lodgeOptionsForbidden}
+      <LodgeScopeStatusNotice
+        scope={lodgeScope}
         onRetry={reloadLodgeOptions}
         what="chore templates"
       />
@@ -340,7 +353,7 @@ export default function ChoresPage() {
             // #2701: an empty list from a FAILED request is not evidence the
             // caller's lodge is gone, so the ADR-002 normaliser must not wipe a
             // ?lodgeId= hub link (ADR-003) while the outage lasts.
-            deferDefaultSelection={lodgeOptionsFailed}
+            deferDefaultSelection={lodgeOptionsFailed || lodgeOptionsForbidden}
           />
       </div>
 
@@ -350,7 +363,7 @@ export default function ChoresPage() {
         </div>
       )}
 
-      {showForm && (
+      {lodgeScopeReady && showForm && (
         <Card>
           <CardHeader>
             <CardTitle>{editingId ? "Edit Chore" : "New Chore"}</CardTitle>
@@ -553,7 +566,7 @@ export default function ChoresPage() {
                 {/* #2701: an edit is safe (the route ignores lodgeId on
                     update), but a create with no lodge lands on the default
                     lodge — so the one button both use stays shut. */}
-                <ViewOnlyActionButton canEdit={canEdit} describeReason={false} type="submit" disabled={saving || lodgeScopeUnresolved}>
+                <ViewOnlyActionButton canEdit={canEdit} describeReason={false} type="submit" disabled={saving || !lodgeScopeReady}>
                   {saving ? "Saving..." : editingId ? "Update Chore" : "Create Chore"}
                 </ViewOnlyActionButton>
                 <Button type="button" variant="outline" onClick={resetForm}>
@@ -565,7 +578,7 @@ export default function ChoresPage() {
         </Card>
       )}
 
-      {chores.length === 0 ? (
+      {!lodgeScopeReady ? null : chores.length === 0 ? (
         <Card>
           <CardContent className="py-8 text-center text-muted-foreground">
             No chore templates configured yet. Click &quot;Add Chore&quot; to get started.

@@ -2,6 +2,7 @@
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import type { SettledLodgeOptionScope } from "@/lib/lodge-option-scope";
 
 /**
  * The ONE way a lodge-scoped surface says its lodge list did not load (#2701).
@@ -76,4 +77,48 @@ export function LodgeOptionsUnavailableNotice({
       </Button>
     </Alert>
   );
+}
+
+/**
+ * Status half of the settled-scope gate. The caller still owns suppression of
+ * its data transport and actions, but every ordinary editor explains the same
+ * unresolved states in the same words.
+ */
+export function LodgeScopeStatusNotice({
+  scope,
+  onRetry,
+  what,
+  className,
+}: {
+  scope: SettledLodgeOptionScope;
+  onRetry: () => void;
+  what: string;
+  className?: string;
+}) {
+  if (scope.kind === "failed" || scope.kind === "forbidden") {
+    return (
+      <LodgeOptionsUnavailableNotice
+        failed={scope.kind === "failed"}
+        forbidden={scope.kind === "forbidden"}
+        onRetry={onRetry}
+        what={what}
+        className={className}
+      />
+    );
+  }
+  if (scope.kind === "empty") {
+    return (
+      <Alert variant="info" title="No active lodges" className={className}>
+        {what} cannot be shown or changed until an active lodge exists.
+      </Alert>
+    );
+  }
+  if (scope.kind === "loading") {
+    return (
+      <p className={className ?? "text-sm text-muted-foreground"}>
+        Loading lodge options...
+      </p>
+    );
+  }
+  return null;
 }

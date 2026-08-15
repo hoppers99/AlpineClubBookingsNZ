@@ -20,7 +20,8 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
-import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status";
+import { LodgeScopeStatusNotice } from "@/components/admin/lodge-options-status";
+import { deriveSettledLodgeOptionScope } from "@/lib/lodge-option-scope";
 
 interface LodgeSettingsResponse {
   capacity: number | null;
@@ -38,9 +39,8 @@ export function LodgeCapacityCard() {
   // `lodges`, the picker disappears either way, and `lodgeId` stays null — which
   // /api/admin/lodge-settings resolves to the club's DEFAULT lodge. So a capacity
   // typed here would have been saved against a lodge that was never named on
-  // screen. `lodgesFailed` stops the read and the save below; a 403
-  // (`lodgesForbidden`) is a permissions fact rather than an outage and leaves
-  // behaviour as it was.
+  // screen. The settled-scope gate stops loading, failure, 403, and empty
+  // responses until a successful response validates a real lodge.
   const {
     lodges,
     loading: lodgesLoading,
@@ -54,7 +54,16 @@ export function LodgeCapacityCard() {
   // change (#1940).
   const canEdit = useAdminAreaEditAccess("lodge");
   // Role AND a known lodge. Every control below gates on this, not on canEdit.
-  const canWrite = canEdit && !lodgesFailed;
+  const lodgeScope = deriveSettledLodgeOptionScope({
+    lodges,
+    selectedLodgeId: lodgeId,
+    loading: lodgesLoading,
+    failed: lodgesFailed,
+    forbidden: lodgesForbidden,
+  });
+  const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
+  const lodgeScopeReady = scopedLodgeId !== null;
+  const canWrite = canEdit && lodgeScopeReady;
   const { hutLeaderLabel } = useClubIdentity();
   // This card writes the label as a hyphenated compound adjective ("hut-leader"),
   // so hyphenate the lowercased label to keep the default render byte-identical.
@@ -82,7 +91,7 @@ export function LodgeCapacityCard() {
     // #2701: without the lodge list, an unfiltered read resolves server-side to
     // the club's default lodge — so the numbers below would describe one lodge
     // while the card names none. Do not read, and do not fall back club-wide.
-    if (lodgesFailed) {
+    if (!scopedLodgeId) {
       setLoading(false);
       return;
     }
@@ -90,9 +99,7 @@ export function LodgeCapacityCard() {
     setError("");
     try {
       const response = await fetch(
-        lodgeId
-          ? `/api/admin/lodge-settings?lodgeId=${encodeURIComponent(lodgeId)}`
-          : "/api/admin/lodge-settings",
+        `/api/admin/lodge-settings?lodgeId=${encodeURIComponent(scopedLodgeId)}`,
         { credentials: "same-origin" },
       );
       // The embedding page normally hides this card by permission matrix; this
@@ -126,7 +133,7 @@ export function LodgeCapacityCard() {
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lodgeId, lodgesFailed]);
+  }, [scopedLodgeId]);
 
   useEffect(() => {
     if (error) scrollToError(feedbackRef);
@@ -140,7 +147,7 @@ export function LodgeCapacityCard() {
     // #2701 backstop for the disabled Save button: a PUT with no lodgeId lands
     // on the club's default lodge, and while the lodge list is down nobody has
     // chosen that lodge.
-    if (lodgesFailed) return;
+    if (!scopedLodgeId) return;
     setSaving(true);
     setError("");
     setSavedMessage("");
@@ -189,7 +196,7 @@ export function LodgeCapacityCard() {
           capacity,
           hutLeaderLookaheadDays,
           schoolGroupSoftCap,
-          ...(lodgeId ? { lodgeId } : {}),
+          lodgeId: scopedLodgeId,
         }),
       });
       // A stale tab whose permissions were narrowed after load surfaces a
@@ -249,16 +256,16 @@ export function LodgeCapacityCard() {
           value={lodgeId}
           onChange={setLodgeId}
           loading={lodgesLoading}
+          deferDefaultSelection={lodgesFailed || lodgesForbidden}
         />
         {/* #2701: without this the picker simply vanished and the card read as
             a single-lodge club's settings. */}
-        <LodgeOptionsUnavailableNotice
-          failed={lodgesFailed}
-          forbidden={lodgesForbidden}
+        <LodgeScopeStatusNotice
+          scope={lodgeScope}
           onRetry={reloadLodges}
           what="these lodge capacity settings"
         />
-        {(error || savedMessage) && (
+        {lodgeScopeReady && (error || savedMessage) && (
           <div
             ref={feedbackRef}
             role={error ? "alert" : "status"}
@@ -273,6 +280,7 @@ export function LodgeCapacityCard() {
           </div>
         )}
 
+        {lodgeScopeReady ? (
         <div className="flex flex-wrap items-end gap-3">
           <div className="space-y-1">
             <Label htmlFor="lodge-capacity">Capacity (beds/guests)</Label>
@@ -346,7 +354,7 @@ export function LodgeCapacityCard() {
             // #2701: `canEdit` still carries the ROLE reason (that is what the
             // view-only affordance explains); a missing lodge list disables the
             // save here instead, with the notice above saying why.
-            disabled={loading || saving || lodgesFailed}
+            disabled={loading || saving}
           >
             {saving ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -356,6 +364,7 @@ export function LodgeCapacityCard() {
             Save
           </ViewOnlyActionButton>
         </div>
+        ) : null}
 
         <p className="text-xs text-muted-foreground">
           Leave capacity blank to use the club default

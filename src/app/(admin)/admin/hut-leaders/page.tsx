@@ -29,7 +29,8 @@ import {
 } from "@/lib/date-only";
 import { calculateOverlapDays } from "@/lib/hut-leader-overlap";
 import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
-import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status";
+import { LodgeScopeStatusNotice } from "@/components/admin/lodge-options-status";
+import { deriveSettledLodgeOptionScope } from "@/lib/lodge-option-scope";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
@@ -181,10 +182,19 @@ export default function HutLeadersPage() {
     take a real bed out of the bookable pool at a property nobody chose. Neither
     is offered while the list has failed.
 
-    The assignments TABLE and the coverage calendar are club-wide reads that
-    carry no lodgeId at all, so they are untouched by this and stay on screen.
+    The assignments table and coverage calendar are club-wide reads, but they
+    stay stopped too: no downstream state is trustworthy until the selector's
+    lodge universe has settled.
   */
-  const lodgeScopeUnresolved = lodgeOptionsFailed && !lodgeId;
+  const lodgeScope = deriveSettledLodgeOptionScope({
+    lodges,
+    selectedLodgeId: lodgeId,
+    loading: lodgesLoading,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+  });
+  const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
+  const lodgeScopeReady = scopedLodgeId !== null;
 
   // The over-capacity question appears below the form after a declined save, so
   // it takes focus when it arrives (#2286 review M6) — otherwise a keyboard or
@@ -204,6 +214,11 @@ export default function HutLeadersPage() {
   >({});
 
   const fetchAssignments = useCallback(async () => {
+    if (!lodgeScopeReady) {
+      setAssignments([]);
+      setLoading(false);
+      return;
+    }
     try {
       const res = await fetch("/api/admin/hut-leaders");
       if (res.ok) {
@@ -213,11 +228,15 @@ export default function HutLeadersPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [lodgeScopeReady]);
 
   // Default lookahead window — feeds the amber "Upcoming Dates Without…" card.
   // Intentionally the un-windowed variant so that card is byte-for-byte unchanged.
   const fetchUnassignedDates = useCallback(async () => {
+    if (!lodgeScopeReady) {
+      setUnassignedDates([]);
+      return;
+    }
     try {
       const res = await fetch("/api/admin/hut-leaders/unassigned-dates");
       if (res.ok) {
@@ -227,11 +246,12 @@ export default function HutLeadersPage() {
     } catch {
       // ignore
     }
-  }, []);
+  }, [lodgeScopeReady]);
 
   // Per-month overlay data: red (needs-leader) nights via the windowed variant,
   // and occupied nights (for violet fill-vs-ring emphasis) via the occupancy API.
   const refreshOverlay = useCallback(async (monthKey: string) => {
+    if (!lodgeScopeReady) return;
     try {
       const res = await fetch(
         `/api/admin/hut-leaders/unassigned-dates?month=${monthKey}`,
@@ -267,7 +287,7 @@ export default function HutLeadersPage() {
     } catch {
       // non-essential overlay
     }
-  }, []);
+  }, [lodgeScopeReady]);
 
   const handleVisibleMonthChange = useCallback(
     (monthKey: string) => {
@@ -286,6 +306,7 @@ export default function HutLeadersPage() {
   // Fetch eligible members whenever the picked range changes.
   useEffect(() => {
     if (
+      !lodgeScopeReady ||
       !selection.startDate ||
       !selection.endDate ||
       selection.startDate > selection.endDate
@@ -314,16 +335,18 @@ export default function HutLeadersPage() {
     return () => {
       cancelled = true;
     };
-  }, [selection.startDate, selection.endDate]);
+  }, [selection.startDate, selection.endDate, lodgeScopeReady]);
 
   // Step 1 — picking new nights always drops any selected target.
   function handlePickNights(next: { startDate: string; endDate: string }) {
+    if (!lodgeScopeReady) return;
     setSelection(next);
     setTarget(null);
   }
 
   // Step 2a — a suggestion adopts the member's conflict-free suggested range.
   function handleSelectEligible(member: EligibleMember) {
+    if (!lodgeScopeReady) return;
     setSelection({
       startDate: member.suggestedStartDate,
       endDate: member.suggestedEndDate,
@@ -337,6 +360,7 @@ export default function HutLeadersPage() {
 
   // Step 2b — any member (including a no-booking custodian) keeps the picked range.
   function handleSelectAnyMember(member: PickedMember) {
+    if (!lodgeScopeReady) return;
     setTarget({
       memberId: member.id,
       memberName: `${member.firstName} ${member.lastName}`,
@@ -349,7 +373,7 @@ export default function HutLeadersPage() {
     // #2701: the Confirm button is already disabled in this state; this is the
     // defence behind it, because a pending over-capacity card re-invokes this
     // through a captured closure rather than through the button.
-    if (lodgeScopeUnresolved) return;
+    if (!scopedLodgeId) return;
     setError(null);
     setCreating(true);
     try {
@@ -360,7 +384,7 @@ export default function HutLeadersPage() {
           memberId: target.memberId,
           startDate: selection.startDate,
           endDate: selection.endDate,
-          ...(lodgeId ? { lodgeId } : {}),
+          lodgeId: scopedLodgeId,
           // #2286: omitted entirely for a role-only assignment, so the request
           // is byte-for-byte what it was before this feature.
           ...(selectedBedId ? { bedId: selectedBedId } : {}),
@@ -425,6 +449,7 @@ export default function HutLeadersPage() {
     bedId: string | null,
     confirmOverCapacity = false,
   ) {
+    if (!lodgeScopeReady) return;
     setError(null);
     setSavingBedForId(assignment.id);
     try {
@@ -471,6 +496,7 @@ export default function HutLeadersPage() {
   }
 
   async function handleDelete(id: string) {
+    if (!lodgeScopeReady) return;
     if (!confirm(`Delete this ${hutLeaderLabel.toLowerCase()} assignment?`)) return;
     const res = await fetch(`/api/admin/hut-leaders/${id}`, { method: "DELETE" });
     if (res.ok) {
@@ -483,6 +509,7 @@ export default function HutLeadersPage() {
   }
 
   async function handleResetPin(assignment: HutLeaderAssignment) {
+    if (!lodgeScopeReady) return;
     if (
       !confirm(
         `Generate a new kiosk PIN for ${assignment.memberName}? Their existing PIN will stop working.`,
@@ -520,6 +547,7 @@ export default function HutLeadersPage() {
   }
 
   function handleAssignForDate(date: string) {
+    if (!lodgeScopeReady) return;
     setSelection({ startDate: date, endDate: date });
     setTarget(null);
   }
@@ -648,22 +676,33 @@ export default function HutLeadersPage() {
         description={`Paint the calendar: assign a member as ${hutLeaderLabel.toLowerCase()} for the nights that need cover.`}
       />
 
+      <div className="max-w-xs">
+        <LodgeSelect
+          lodges={lodges}
+          value={lodgeId}
+          onChange={setLodgeId}
+          loading={lodgesLoading}
+          deferDefaultSelection={lodgeOptionsFailed || lodgeOptionsForbidden}
+        />
+      </div>
+
       {/* #2701: say the lodge list failed, above the form whose lodge picker it
           silently removed. */}
-      <LodgeOptionsUnavailableNotice
-        failed={lodgeOptionsFailed}
-        forbidden={lodgeOptionsForbidden}
+      <LodgeScopeStatusNotice
+        scope={lodgeScope}
         onRetry={reloadLodgeOptions}
         what={`${hutLeaderLabel.toLowerCase()} assignments for a particular lodge`}
       />
 
+      {lodgeScopeReady ? (
+        <>
       {/*
         Page-level (more prominent than a form-scoped banner): reset-PIN errors
         originate in the assignments table, so a form banner would never show
         them. This guarantees every error — create, reset-PIN — is visible
         without scrolling.
       */}
-      {error && (
+      {lodgeScopeReady && error && (
         <div
           role="alert"
           aria-live="assertive"
@@ -673,7 +712,7 @@ export default function HutLeadersPage() {
         </div>
       )}
 
-      {unassignedDates.length > 0 && (
+      {lodgeScopeReady && unassignedDates.length > 0 && (
         <Card className="border-warning/20 bg-warning-muted">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-base text-warning">
@@ -710,7 +749,7 @@ export default function HutLeadersPage() {
         </Card>
       )}
 
-      <AssignmentForm
+      {lodgeScopeReady ? <AssignmentForm
         hutLeaderLabel={hutLeaderLabel}
         selectedStartDate={selection.startDate}
         selectedEndDate={selection.endDate}
@@ -735,20 +774,13 @@ export default function HutLeadersPage() {
           The table's own row controls below keep the plain `canEdit` — deleting
           an assignment or resetting a kiosk PIN needs no lodge.
         */
-        canEdit={canEdit && !lodgeScopeUnresolved}
+        canEdit={canEdit}
         // #2160: the page banner above already states view-only access for this
         // whole surface, including the assignments table below, so the form must
         // not repeat it — both are unconditional, so every view-only lodge admin
         // would otherwise meet the same sentence twice in two live regions.
         renderViewOnlyBanner={false}
-        lodgeSelector={
-          <LodgeSelect
-            lodges={lodges}
-            value={lodgeId}
-            onChange={setLodgeId}
-            loading={lodgesLoading}
-          />
-        }
+        lodgeSelector={null}
         /*
           #2701: not rendered at all while the lodge is unresolved, because the
           picker's `available-beds` lookup is the lodge-keyed fetch on this page
@@ -756,9 +788,9 @@ export default function HutLeadersPage() {
           a picker offering another property's beds is worse than none.
         */
         bedPicker={
-          lodgeScopeUnresolved ? null : (
+          (
             <CustodianBedPicker
-              lodgeId={lodgeId}
+              lodgeId={scopedLodgeId}
               startDate={selection.startDate}
               endDate={selection.endDate}
               value={selectedBedId}
@@ -771,7 +803,7 @@ export default function HutLeadersPage() {
             />
           )
         }
-      />
+      /> : null}
 
       {overCapacity && overCapacity.nights.length > 0 && (
         /*
@@ -1067,6 +1099,8 @@ export default function HutLeadersPage() {
           </TableBody>
         </AdminDataTable>
       )}
+        </>
+      ) : null}
       </div>
     </div>
   );

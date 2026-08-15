@@ -3,6 +3,20 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/components/lodge-select", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/components/lodge-select")>();
+  return {
+    ...actual,
+    useLodgeOptions: () => ({
+      lodges: [{ id: "lodge-1", name: "Lodge One" }],
+      loading: false,
+      failed: false,
+      forbidden: false,
+      reload: vi.fn(),
+    }),
+  };
+});
+
 // #1940: the card reads the session permission matrix for view-only gating;
 // provide an edit-level admin session so the pre-existing cases keep working.
 vi.mock("next-auth/react", () => ({

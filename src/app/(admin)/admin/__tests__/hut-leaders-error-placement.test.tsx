@@ -76,6 +76,9 @@ function stubFetch() {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
+    if (url === "/api/admin/lodges") {
+      return { ok: true, status: 200, json: async () => ({ lodges: [{ id: "lodge-1", name: "Lodge One" }] }) };
+    }
     if (url.startsWith("/api/admin/hut-leaders/eligible-members")) {
       return { ok: true, json: async () => ({ members: [eligibleMember] }) };
     }
@@ -183,6 +186,9 @@ describe("custodian bed hold controls (#2286)", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/admin/lodges") {
+        return { ok: true, status: 200, json: async () => ({ lodges: [{ id: "lodge-1", name: "Lodge One" }] }) };
+      }
       calls.push({
         url,
         method,

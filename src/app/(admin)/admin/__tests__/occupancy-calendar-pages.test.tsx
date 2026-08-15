@@ -57,6 +57,9 @@ vi.mock("@/components/admin/occupancy-calendar", () => ({
 function stubFetch() {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
+    if (url === "/api/admin/lodges") {
+      return { ok: true, status: 200, json: async () => ({ lodges: [{ id: "lodge-1", name: "Lodge One" }] }) };
+    }
     if (url.startsWith("/api/admin/hut-leaders/eligible-members")) {
       return { ok: true, json: async () => ({ members: [] }) };
     }
@@ -125,7 +128,7 @@ describe("occupancy calendar page integration", () => {
     // pattern, unrelated to lodge scoping).
     await waitFor(() =>
       expect(global.fetch).toHaveBeenCalledWith(
-        "/api/admin/roster/2099-07-11",
+        "/api/admin/roster/2099-07-11?lodgeId=lodge-1",
         expect.anything(),
       ),
     );

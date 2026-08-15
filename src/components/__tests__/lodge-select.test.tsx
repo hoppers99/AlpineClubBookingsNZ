@@ -138,6 +138,31 @@ describe("LodgeSelect — explicit All lodges (#2701)", () => {
     expect(onChange).toHaveBeenCalledWith("lodge-1", "auto");
   });
 
+  it("holds an unvalidated deep link during an outage, then normalises it after a successful response", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <LodgeSelect
+        lodges={[]}
+        value="lodge-from-link"
+        onChange={onChange}
+        deferDefaultSelection
+      />,
+    );
+
+    expect(onChange).not.toHaveBeenCalled();
+
+    rerender(
+      <LodgeSelect
+        lodges={TWO_LODGES}
+        value="lodge-from-link"
+        onChange={onChange}
+      />,
+    );
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith("lodge-1", "auto");
+  });
+
   it("normalises All lodges away in a single-lodge club (ADR-002)", () => {
     // There is no club-wide view to choose when there is one lodge, and the
     // selector does not render at all.
