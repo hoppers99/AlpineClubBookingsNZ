@@ -34,15 +34,17 @@ tier a writer takes), `INV-LOCK-002` (global before per-lodge, and the single
 mint of the per-lodge key) and `INV-LOCK-003` (every Tier-2 site is registered
 with its own reason) state it, in
 [`docs/invariants/operations.md`](invariants/operations.md); cite those ids in a
-review, a guard message or an issue. What follows describes the two tiers
-concretely — which writers sit in which cohort, and why — and must not be edited
-into a second, competing statement of the rule. If this section and an
-`INV-LOCK-*` id ever disagree, the id is the rule and this section is the defect.
+review, a guard message or an issue. What follows **expands** them against the
+real writers — which cohort each sits in, and why — which is work the ids
+deliberately do not do. Expanding is not restating: this section may say more
+than an id, and it may say it about a named writer, but it may not say something
+different. If this section and an `INV-LOCK-*` id ever disagree, the id is the
+rule and this section is the defect.
 
 ### Tier 1 — per-lodge capacity claims
 
-`acquireLodgeCapacityLock(tx, lodgeId)` (`capacity.ts`) serialises **bed/capacity
-claims for ONE lodge**. Bookings at different lodges never contend, so two
+`acquireLodgeCapacityLock(tx, lodgeId)` (`lodge-capacity-lock.ts`, re-exported by
+`capacity.ts`) serialises **bed/capacity claims for ONE lodge**. Bookings at different lodges never contend, so two
 members booking different lodges proceed in parallel. Every path that reads
 occupancy and then claims a bed (create, confirm-from-draft, settle-to-CONFIRMED,
 date/guest modification, waitlist confirm, the Internet-Banking capacity gate)
@@ -67,9 +69,13 @@ joins the bed-allocation cohort" (#2595).
 Each of these call sites is registered individually — its stable identity, its
 tier, and the counterpart or race that makes the narrow tier insufficient — in
 `GLOBAL_LOCK_SITE_REGISTRY` (`src/lib/__tests__/advisory-lock-guard.test.ts`).
-That registry is the single home for a site-specific reason; a new Tier-2 site
-fails CI by name until one is written, and a registration that no longer matches
-a live site fails as stale rather than approving nothing (`INV-LOCK-003`).
+That registry is where a site's reason is registered and enforced: a new Tier-2
+site fails CI by name until one is written, and a registration that no longer
+matches a live site fails as stale rather than approving nothing
+(`INV-LOCK-003`). Where a section of this page walks one of those sites in more
+detail — the deleted-booking refund tasks below are the longest example — it is
+expanding that entry and must agree with it; if the two ever diverge, the entry
+is what CI enforces and this page is the defect.
 
 ### A writer that does BOTH takes BOTH — global first
 

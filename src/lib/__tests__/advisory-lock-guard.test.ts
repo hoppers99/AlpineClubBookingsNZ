@@ -36,13 +36,17 @@ const SRC_DIR = path.join(process.cwd(), "src");
 /**
  * Which tier a raw advisory-lock statement takes, decided from the call itself.
  *
- * `GLOBAL` is the literal `pg_advisory_xact_lock(1)` — the one Tier-2 key.
- * `SCOPED` is every other advisory key: per-lodge, per-member, per-date, and the
- * policy/singleton keyspaces. Deciding the tier from the CALL rather than from
- * the registry is what makes "a registered site quietly changed tier" a failure
- * rather than a silent re-approval.
+ * `GLOBAL` is the literal key `1` — the one Tier-2 key — in either the blocking
+ * or the fail-fast form. `SCOPED` is a `hashtext`/`hashtextextended` key:
+ * per-lodge, per-member, per-date, and the policy/singleton keyspaces.
+ * `UNCLASSIFIED` is anything this scan cannot read, and it FAILS the census
+ * rather than being counted as scoped — see `classifyLockArgument`.
+ *
+ * Deciding the tier from the CALL rather than from the registry is what makes
+ * "a registered site quietly changed tier" a failure rather than a silent
+ * re-approval.
  */
-type LockTier = "GLOBAL" | "SCOPED";
+type LockTier = "GLOBAL" | "SCOPED" | "UNCLASSIFIED";
 
 interface AdvisoryLockSite {
   /** Repository-relative path. Reported in failures; NOT part of the identity. */
@@ -613,8 +617,8 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     site: "syncInternetBankingPaymentsForPaidInvoice#1",
     tier: "GLOBAL",
     reason:
-      "Inbound Xero PAID mints local payment state per matched payment, and cancellation and capture take the same key, so a paid-invoice effect cannot land on a booking another writer has just terminated. Each payment is fenced in its own short transaction; the provider work is already done.",
-    invariant: "INV-LOCK-001",
+      "Inbound Xero PAID mints local payment state per matched payment, and cancellation and capture take the same key, so a paid-invoice effect cannot land on a booking another writer has just terminated. It is a two-lock composition: the same closure then takes acquireLodgeCapacityLock on the booking's immutable lodge, because flipping an unheld PAYMENT_PENDING booking to PAID is a net-new capacity claim and the global key no longer excludes per-lodge creators. Each payment is fenced in its own short transaction; the provider work has already returned.",
+    invariant: "INV-LOCK-002",
   },
 
   // ── Capacity-adjacent writers with their own counterparts ─────────────────
@@ -773,12 +777,15 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // adult-member-hosting-policy-set key before any read by an admin CRUD write
   // or a configuration import, and the migration's BEFORE STATEMENT trigger
   // takes the same key ahead of any tuple lock so operator DML joins the same
-  // order. The drain's fail-fast `pg_try_advisory_xact_lock` helper lives in this
-  // file too, but deliberately does not match the blocking-call inventory below.
+  // order. TWO since #2722: the drain's fail-fast `pg_try_advisory_xact_lock`
+  // helper lives in this file too, and used to be exempt because the census
+  // matched only the blocking spelling. That exemption was a detection hole, not
+  // a decision — the same blindness would have hidden a fail-fast acquisition of
+  // the GLOBAL key — so both spellings are now scanned and both are counted.
   // Config import, member merge and drain compose the key only in the documented
   // forward order; no counterpart reverses it. Counterpart analysis in
   // docs/CONCURRENCY_AND_LOCKING.md.
-  "src/lib/adult-member-hosting-policy-set.ts": 1,
+  "src/lib/adult-member-hosting-policy-set.ts": 2,
   // #2596: after the hosting policy-set key, the drain takes sorted
   // member-lifecycle keys for claimed owner + actor before Member rows and the
   // exact payload refresh. Merge takes those keys before relation moves. No
@@ -809,10 +816,12 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // one transaction costs nothing. Callers resolve the lodge policy first and skip the
   // lock entirely unless the lodge has the scope enabled, so no unrelated write is
   // serialised per member. ONE site: every acquisition in the tree goes through this
-  // helper.
+  // helper. TWO since #2722, for the reason given under the hosting policy set
+  // above: the fail-fast `tryLockHostingCoverageOwners` sibling is the second
+  // spelling of the same key and is now counted rather than invisible.
   // Counterpart analysis and compatibility evidence in
   // docs/CONCURRENCY_AND_LOCKING.md → "Same-owner coverage takes a per-owner key".
-  "src/lib/adult-member-hosting-coverage-lock.ts": 1,
+  "src/lib/adult-member-hosting-coverage-lock.ts": 2,
   // AI Diagnostics budget reserve (AID-2, #2371). Both writers take the SAME
   // per-month key `pg_advisory_xact_lock(hashtext('diagnostics-budget-reserve'),
   // hashtext(<month>))`: `reserveDiagnosticsBudget` (the guarded spend claim) and
@@ -1019,6 +1028,16 @@ function walk(dir: string, files: string[] = []): string[] {
   return files;
 }
 
+/**
+ * Test files are skipped by NAME, which is a stated limit of every census here.
+ * `.integration.` anywhere in a path drops the file, so a production module named
+ * `probe-fence.integration.ts` would take locks this scan never sees. Nothing in
+ * this repository is named that way today — the integration modules that exist
+ * spell it `integration-credentials.ts` — and the rule is kept because it is the
+ * one the sibling guards use. It sits alongside the other boundary worth knowing:
+ * only non-test `src/` is walked, so a lock taken in a migration's trigger or in
+ * `scripts/` is outside every census in this file.
+ */
 function isTestFile(relPath: string): boolean {
   return (
     relPath.includes("__tests__") ||
@@ -1111,11 +1130,70 @@ function routePathOf(rel: string): string | null {
   return `/${segments.join("/")}`;
 }
 
+/** Any acquisition of a transaction-scoped advisory lock, blocking or fail-fast. */
+const ADVISORY_LOCK_CALL = /pg_(?:try_)?advisory_xact_lock\(/g;
+
+/**
+ * The first argument of a lock call, read across line breaks from the opening
+ * parenthesis. Returns `null` when the call cannot be parsed — an unbalanced or
+ * unterminated argument list — which the caller must treat as unclassifiable
+ * rather than as anything in particular.
+ *
+ * Reading ACROSS lines is load-bearing, not tidiness. Both `pg_try_` sites this
+ * repository already ships are written over three lines, so a line-local reader
+ * is not an edge case here: it is the shape the codebase actually uses, and it
+ * would score `SELECT pg_advisory_xact_lock(\n  1\n)` as a scoped key.
+ */
+function firstLockArgument(text: string, openParenIndex: number): string | null {
+  let depth = 0;
+  const limit = Math.min(text.length, openParenIndex + 2000);
+  for (let i = openParenIndex; i < limit; i += 1) {
+    const character = text[i];
+    if (character === "(") {
+      depth += 1;
+      continue;
+    }
+    if (character === ")") {
+      depth -= 1;
+      if (depth === 0) return text.slice(openParenIndex + 1, i);
+      continue;
+    }
+    if (character === "," && depth === 1) return text.slice(openParenIndex + 1, i);
+  }
+  return null;
+}
+
+/**
+ * FAIL CLOSED. An argument this scan cannot read is `UNCLASSIFIED`, which fails
+ * the census, and is never quietly `SCOPED`.
+ *
+ * The direction matters because the two failure modes are not symmetric. Calling
+ * a scoped key global costs a build failure and one line of registry. Calling a
+ * global key scoped costs nothing at all at the time — it lands in a per-file
+ * COUNT, which is the approval model #2722 exists to abolish, and the guard's own
+ * remediation message is what tells the author to bump it. Only two shapes are
+ * recognised, and everything else is handed to a human.
+ */
+function classifyLockArgument(argument: string | null): LockTier {
+  if (argument === null) return "UNCLASSIFIED";
+  const normalised = argument.replace(/\s+/g, "").replace(/::[A-Za-z0-9_]+$/, "");
+  if (normalised === "1") return "GLOBAL";
+  if (/^hashtext(?:extended)?\(/.test(normalised)) return "SCOPED";
+  return "UNCLASSIFIED";
+}
+
 /**
  * Every raw advisory-lock acquisition in non-test `src/`, with its tier and its
- * stable identity. `pg_try_advisory_xact_lock` is included deliberately: a
- * fail-fast form of the GLOBAL key would otherwise be an unregistered Tier-2
- * acquisition that no census could see.
+ * stable identity.
+ *
+ * `pg_try_advisory_xact_lock` is scanned by the SAME matcher and classified by
+ * the same argument reader as the blocking form, deliberately: a fail-fast
+ * acquisition of key `1` is a Tier-2 acquisition. Matching the blocking spelling
+ * alone left it in neither census — the tier test did not see it because the
+ * anchored pattern failed, and the scoped count did not see it because
+ * `pg_try_advisory_xact_lock(` does not contain the substring
+ * `pg_advisory_xact_lock(`. Both censuses now derive from this one function, so
+ * the two cannot disagree about what a site is again.
  */
 function collectAdvisoryLockSites(
   sources: ReadonlyArray<{ rel: string; text: string }>,
@@ -1124,37 +1202,71 @@ function collectAdvisoryLockSites(
   for (const { rel, text } of sources) {
     const routePath = routePathOf(rel);
     const ordinals = new Map<string, number>();
-    let symbol = "(module scope)";
-    text.split("\n").forEach((rawLine, index) => {
-      const declaration = TOP_LEVEL_DECLARATION.exec(rawLine);
-      if (declaration) symbol = declaration[1] ?? declaration[2] ?? symbol;
-      const line = codeOnly(rawLine);
-      if (line === null) return;
-      for (const match of line.matchAll(/pg_(?:try_)?advisory_xact_lock\(/g)) {
-        const tier: LockTier = /^pg_advisory_xact_lock\(1\)/.test(
-          line.slice(match.index ?? 0),
-        )
-          ? "GLOBAL"
-          : "SCOPED";
-        const ordinal = (ordinals.get(symbol) ?? 0) + 1;
-        ordinals.set(symbol, ordinal);
-        const key =
-          routePath !== null && ROUTE_HANDLER_SYMBOLS.has(symbol)
-            ? `${symbol} ${routePath}#${ordinal}`
-            : `${symbol}#${ordinal}`;
-        sites.push({
-          rel,
-          line: index + 1,
-          symbol,
-          ordinal,
-          tier,
-          key,
-          qualifiedKey: `${rel}::${symbol}#${ordinal}`,
-        });
+
+    // One masked copy of the whole file, line boundaries preserved, so an offset
+    // in it still names a line while the argument reader can cross line breaks.
+    const rawLines = text.split("\n");
+    const maskedLines = rawLines.map((rawLine) => codeOnly(rawLine) ?? "");
+    const maskedText = maskedLines.join("\n");
+    const lineStarts: number[] = [];
+    let offset = 0;
+    for (const maskedLine of maskedLines) {
+      lineStarts.push(offset);
+      offset += maskedLine.length + 1;
+    }
+    const lineOf = (index: number): number => {
+      let low = 0;
+      let high = lineStarts.length - 1;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if ((lineStarts[middle] ?? 0) <= index) low = middle;
+        else high = middle - 1;
       }
+      return low;
+    };
+
+    // The symbol is still read line by line, from the RAW lines: a declaration
+    // inside a block comment should not open a symbol.
+    const symbolByLine: string[] = [];
+    let symbol = "(module scope)";
+    rawLines.forEach((rawLine, index) => {
+      const declaration = TOP_LEVEL_DECLARATION.exec(rawLine);
+      if (declaration && codeOnly(rawLine) !== null) {
+        symbol = declaration[1] ?? declaration[2] ?? symbol;
+      }
+      symbolByLine[index] = symbol;
     });
+
+    for (const match of maskedText.matchAll(ADVISORY_LOCK_CALL)) {
+      const index = match.index ?? 0;
+      const lineIndex = lineOf(index);
+      const siteSymbol = symbolByLine[lineIndex] ?? "(module scope)";
+      const tier = classifyLockArgument(
+        firstLockArgument(maskedText, index + match[0].length - 1),
+      );
+      const ordinal = (ordinals.get(siteSymbol) ?? 0) + 1;
+      ordinals.set(siteSymbol, ordinal);
+      const key =
+        routePath !== null && ROUTE_HANDLER_SYMBOLS.has(siteSymbol)
+          ? `${siteSymbol} ${routePath}#${ordinal}`
+          : `${siteSymbol}#${ordinal}`;
+      sites.push({
+        rel,
+        line: lineIndex + 1,
+        symbol: siteSymbol,
+        ordinal,
+        tier,
+        key,
+        qualifiedKey: `${rel}::${siteSymbol}#${ordinal}`,
+      });
+    }
   }
   return sites;
+}
+
+/** The symbol half of a site key or a registry entry — the key without `#n`. */
+function symbolOfKey(key: string): string {
+  return key.replace(/#\d+$/, "");
 }
 
 /** Both accepted spellings of every site, so an entry may use either form. */
@@ -1228,17 +1340,25 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
       }
     }
 
+    // Symbols whose site population is in question: an unregistered or
+    // unclassifiable site, or an entry that no longer resolves cleanly. Every one
+    // of them puts EVERY entry for that symbol in doubt — see the ordinal-shift
+    // note below.
+    const unsettledSymbols = new Set<string>();
+
     // Resolve every entry to exactly one live site.
     const claimedBy = new Map<string, string[]>();
     for (const entry of GLOBAL_LOCK_SITE_REGISTRY) {
       const matches = byKey.get(entry.site) ?? [];
       if (matches.length === 0) {
+        unsettledSymbols.add(symbolOfKey(entry.site));
         problems.push(
           `STALE ENTRY: "${entry.site}" matches no advisory-lock site. The call was removed or renamed — delete the entry, or re-point it at the symbol that now holds the lock. A registry entry approving nothing is worse than no entry.`,
         );
         continue;
       }
       if (matches.length > 1) {
+        unsettledSymbols.add(symbolOfKey(entry.site));
         problems.push(
           `AMBIGUOUS ENTRY: "${entry.site}" matches ${matches.length} sites (${matches
             .map((match) => `${match.rel}:${match.line}`)
@@ -1253,6 +1373,7 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
       const site = matches[0];
       if (!site) continue;
       if (site.tier !== entry.tier) {
+        unsettledSymbols.add(symbolOfKey(entry.site));
         problems.push(
           `TIER CHANGED: "${entry.site}" is registered as ${entry.tier} but ${site.rel}:${site.line} now takes a ${site.tier} key. Re-classify the writer before updating the registry — a tier change is a lock-topology change, not an edit.`,
         );
@@ -1271,14 +1392,51 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
       }
     }
 
-    // Closed world: every Tier-2 acquisition must be one somebody approved.
+    // Closed world: every Tier-2 acquisition must be one somebody approved, and
+    // an acquisition nobody can classify is held to the same standard.
     for (const site of sites) {
-      if (site.tier !== "GLOBAL") continue;
+      if (site.tier === "SCOPED") continue;
+      if (site.tier === "UNCLASSIFIED") {
+        unsettledSymbols.add(symbolOfKey(site.key));
+        unsettledSymbols.add(symbolOfKey(site.qualifiedKey));
+        problems.push(
+          `UNCLASSIFIABLE lock argument: ${site.rel}:${site.line} in ${site.symbol} takes an advisory lock whose first argument this scan cannot read. It is treated as Tier 2 until a human says otherwise — write the key as the literal 1, or as hashtext(...)/hashtextextended(...), or classify it here explicitly. It is deliberately NOT counted as scoped.`,
+        );
+        continue;
+      }
       if (claimedBy.has(site.qualifiedKey)) continue;
+      unsettledSymbols.add(symbolOfKey(site.key));
+      unsettledSymbols.add(symbolOfKey(site.qualifiedKey));
       const suggested =
         (byKey.get(site.key) ?? []).length === 1 ? site.key : site.qualifiedKey;
       problems.push(
-        `UNREGISTERED Tier-2 site: ${site.rel}:${site.line} takes pg_advisory_xact_lock(1) inside ${site.symbol}. Add { site: "${suggested}", tier: "GLOBAL", reason: "<which counterpart or race needs the global key>", invariant: "INV-LOCK-001" }.`,
+        `UNREGISTERED Tier-2 site: ${site.rel}:${site.line} takes the global advisory key inside ${site.symbol}. Add { site: "${suggested}", tier: "GLOBAL", reason: "<which counterpart or race needs the global key>", invariant: "INV-LOCK-001" if this transaction takes the global key ALONE, or "INV-LOCK-002" if it also takes a scoped key such as acquireLodgeCapacityLock }.`,
+      );
+    }
+
+    // THE ORDINAL SHIFT (#2688's hazard), in both directions. An ordinal is
+    // stable only while the symbol's site population is. Insert a lock ahead of
+    // existing ones and the report names the LAST call as unregistered; delete an
+    // early one and it reports the TAIL as stale — and in both cases the entries
+    // in between now describe calls they no longer match, silently, so doing
+    // exactly what the message says re-approves them under the wrong reasons, or
+    // deletes the wrong reason. Whenever a symbol's population is in question —
+    // from either side, an unresolved site or an unresolved entry — every entry
+    // for that symbol is named and has to be re-read.
+    for (const unsettled of unsettledSymbols) {
+      const affected = GLOBAL_LOCK_SITE_REGISTRY.filter(
+        (entry) => symbolOfKey(entry.site) === unsettled,
+      );
+      if (affected.length === 0) continue;
+      const population = sites.filter(
+        (site) => symbolOfKey(site.key) === unsettled || symbolOfKey(site.qualifiedKey) === unsettled,
+      ).length;
+      problems.push(
+        `ORDINAL SHIFT — RE-VERIFY EVERY ENTRY FOR "${unsettled}": it now holds ${population} advisory site(s), so the ordinals may have moved under the ${affected.length} existing entr${affected.length === 1 ? "y" : "ies"} (${affected
+          .map((entry) => `"${entry.site}"`)
+          .join(
+            ", ",
+          )}). Re-read each against the call it now names before adding or deleting one — renumbering is silent, and a reason bound to the wrong call is worse than no reason.`,
       );
     }
 
@@ -1295,12 +1453,15 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
   });
 
   it("keeps every scoped advisory-lock family inside the reviewed inventory", () => {
+    // Derived from the SAME scan as the Tier-2 census, not from an independent
+    // substring count. The two disagreeing is what let a `pg_try_` acquisition of
+    // the global key fall between them: the tier test read it as scoped, and the
+    // substring count could not see it at all because
+    // `pg_try_advisory_xact_lock(` does not contain `pg_advisory_xact_lock(`.
     const found: Record<string, number> = {};
-    for (const { rel, text } of sources) {
-      const allLocks = countCodeOccurrences(text, "pg_advisory_xact_lock(");
-      const globalLocks = countCodeOccurrences(text, "pg_advisory_xact_lock(1)");
-      const scopedLocks = allLocks - globalLocks;
-      if (scopedLocks > 0) found[rel] = scopedLocks;
+    for (const site of collectAdvisoryLockSites(sources)) {
+      if (site.tier !== "SCOPED") continue;
+      found[site.rel] = (found[site.rel] ?? 0) + 1;
     }
 
     expect(

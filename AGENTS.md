@@ -214,7 +214,10 @@ id and need the file it lives in.
 
 Before changing a transaction, booking lifecycle, capacity check, settlement,
 credit writer, webhook, or cron, read `docs/CONCURRENCY_AND_LOCKING.md` and
-classify every mutation it composes:
+classify every mutation it composes. The rules this list applies are
+`INV-LOCK-001` (which tier), `INV-LOCK-002` (the order, and the single mint of
+the per-lodge key) and `INV-LOCK-003` (register the site); cite those ids rather
+than this checklist, which is a working aid and not their home:
 
 - global-cohort lifecycle and settlement-money transitions that must exclude
   cancel/capture/refund/hold-release counterparts use global

@@ -375,8 +375,9 @@ deliberately left unpointered, so a later reader does not repeat the sweep.
 
 15 files in this directory, 17 prefixes, 497 IDs, plus this scheme and
 [`_FOLLOW_UPS.md`](_FOLLOW_UPS.md). (`INV-LOCK` is the seventeenth, added by
-#2722 beside `INV-OPS` in [`operations.md`](operations.md); the figures are what
-`npm run docs:indexcheck` reports.)
+#2722; the figures are what `npm run docs:indexcheck` reports, and the count in
+this sentence was 29 IDs stale before it was corrected — which is the rot the
+paragraph below is about.)
 
 **The index is authoritative for prefix → file and ID → file**, and it is the
 only place that mapping is written down. It is deliberately not repeated here: a

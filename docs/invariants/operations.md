@@ -10,9 +10,12 @@ already stored in a column mean, and what may be used as test input — and
 takes, the order it takes them in, and the registration every global site
 carries. `INV-LOCK` sits here because advisory locking is the sibling of the row
 locking `INV-OPS-001` already governs, and both are read by the same person on
-the same day; the concrete lock families, their keys and their composed orders
-stay in [`docs/CONCURRENCY_AND_LOCKING.md`](../CONCURRENCY_AND_LOCKING.md), which
-applies these rules rather than restating them.
+the same day; [`SCHEME.md`](SCHEME.md) §1.2 already reserved the prefix for
+exactly this — "this codebase's 'lock' means an advisory row lock", which is why
+subscription lockout takes `INV-LOCKOUT` instead. The concrete lock families,
+their keys and their composed orders stay in
+[`docs/CONCURRENCY_AND_LOCKING.md`](../CONCURRENCY_AND_LOCKING.md), which expands
+these rules against real writers rather than restating them.
 
 Read this file when you are writing raw SQL, taking a row lock or an advisory
 lock, adding an import to a `"use client"` module, dropping a column, changing
@@ -90,36 +93,58 @@ rules first written here. #2765 extended it with the measured-audience half.
   scoped key — the per-lodge capacity key, or a per-member, per-date or
   per-subject key — and is what a writer takes whenever its contention domain can
   be named. **Tier 2** is the single global key `pg_advisory_xact_lock(1)`, and a
-  writer takes it only when it must exclude a counterpart in another scope that
-  no narrow key covers: booking-status and settlement-money transitions (cancel,
-  capture/settle, hold-release, refunds, credit restore, group settlement and its
-  reaper), and the bed-allocation writers whose rows a lifecycle prune removes.
-  The key is not legacy and reaching for it is not itself a defect — reaching for
-  it without one of those reasons is, and so is taking a narrow key where a
-  cross-scope counterpart exists.
+  writer takes it when it must exclude a counterpart in another scope that no
+  narrow key covers. That is booking-status and settlement-money transitions
+  (cancel, capture/settle, hold-release, refunds, credit restore, group
+  settlement and its reaper); the bed-allocation writers — inventory, placement,
+  move, range, explicit auto-allocation, approval and reviewed removal — whose
+  rows a lifecycle prune can remove, even though they move no money themselves;
+  and the capacity-adjacent writers whose counterpart is one of those, such as
+  roster eligibility and requested-room editing. The list is the current
+  population, not a closed vocabulary: what makes a site legitimate is naming the
+  cross-scope counterpart, which is why every one of them is registered
+  (`INV-LOCK-003`) rather than matched against a list. The key is not legacy and
+  reaching for it is not itself a defect — reaching for it with no such
+  counterpart is, and so is taking a narrow key where one exists.
 
 ## INV-LOCK-002
 
-- **A writer that needs both takes Tier 2 first, then Tier 1, and mints neither
-  key by hand.** Global before per-lodge, everywhere, so composing the two can
-  never deadlock; several keys of one family are taken in sorted key order for
-  the same reason. The per-lodge capacity key is minted only by
-  `acquireLodgeCapacityLock` (`src/lib/lodge-capacity-lock.ts`) — `hashtextextended`
-  appears in no other non-test file — so every participant provably shares one
-  key rather than an ad-hoc reconstruction of it. Member merge is the one
+- **A writer that needs both takes Tier 2 first, then Tier 1, and never
+  reconstructs the per-lodge key by hand.** Global before per-lodge, everywhere,
+  so composing the two can never deadlock; several keys of one family are taken
+  in sorted key order for the same reason. The global key needs no helper and has
+  none — it is the literal `1`, written inline as `` tx.$executeRaw`SELECT
+  pg_advisory_xact_lock(1)` ``, and there is nothing about it to get wrong. The
+  per-lodge key is the opposite: it is minted only by `acquireLodgeCapacityLock`
+  (`src/lib/lodge-capacity-lock.ts`, re-exported by `capacity.ts`), and
+  `hashtextextended` is *called* in no other non-test file under `src/`, so every
+  participant provably shares one key instead of an ad-hoc reconstruction that
+  could drift from it. Among the bed-allocation writers, member merge is the one
   documented writer that takes the lodge tier and deliberately not the global key
-  (#2595); any other exception needs the same kind of recorded decision.
+  (#2595) — it runs on a 120s budget. That is an exception to the bed-allocation
+  cohort, not a general licence: a writer whose contention domain is genuinely
+  scoped takes the narrow tier alone by default (`INV-LOCK-001`) and needs no
+  decision at all.
 
 ## INV-LOCK-003
 
 - **Every Tier-2 call site in non-test `src/` is registered, individually, with
   its own reason (#2722).** `GLOBAL_LOCK_SITE_REGISTRY` in
-  `src/lib/__tests__/advisory-lock-guard.test.ts` is the single home for why one
-  site holds the global key; a site is identified by the symbol containing it and
-  never by its file, so a refactor that moves a function carries its reason with
-  it. The census is closed-world in four directions and each is a CI failure: an
+  `src/lib/__tests__/advisory-lock-guard.test.ts` is where that reason is
+  registered and enforced; where a narrative page discusses one of these sites at
+  length it must agree with the entry, never contradict it. A site is identified
+  by the symbol containing it rather than by its line, so a refactor that moves a
+  function carries its reason with it untouched. Two shapes are identified
+  differently and deliberately: an App Router handler keys on its method and route
+  path, because `POST` is a framework name and the URL is the real identity, and
+  where two modules use one private helper name the entry is file-qualified —
+  those entries are the ones a file split has to update, and the guard refuses an
+  ambiguous entry rather than binding a reason to whichever site it found first.
+  The census is closed-world in five directions and each is a CI failure: an
   unregistered Tier-2 site, a registration matching no live site, a registered
-  site whose call changed tier, and a duplicate or ambiguous entry. Adding a site
+  site whose call changed tier, a duplicate or ambiguous entry, and an advisory
+  key the scan cannot classify — which fails as Tier 2 rather than being counted
+  as scoped. Adding a site
   means classifying the writer and naming the counterpart it excludes — never
   editing a count, which is what coupled approval to file layout before #2722.
 

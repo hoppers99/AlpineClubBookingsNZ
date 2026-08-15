@@ -707,7 +707,7 @@ the row-locking rules it is the sibling of.
 | ID | Covers |
 | --- | --- |
 | `INV-OPS-001` | Raw SQL never declares its own result shape: lock raw and read typed, or validate the rows |
-| `INV-LOCK-001` | The scoped tier is the default; the global key is deliberate, never legacy |
+| `INV-LOCK-001` | The scoped tier is the default; the global key is deliberate |
 | `INV-LOCK-002` | Global before per-lodge; one helper mints the per-lodge capacity key |
 | `INV-LOCK-003` | Every global-lock call site is registered, by site, with its own reason |
 | `INV-OPS-014` | Never interpolate or concatenate into `$queryRawUnsafe` / `$executeRawUnsafe` |
