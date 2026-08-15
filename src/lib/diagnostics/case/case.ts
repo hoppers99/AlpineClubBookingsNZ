@@ -6,7 +6,7 @@
  * (AID-6B, #2376), finance evidence (AID-6C, #2377) and system evidence (this pack)
  * together — under whichever areas that administrator actually holds. This module
  * is the shape they all write into, and it exists in AID-6A because #2375 owns the
- * shared contracts the later packs plug into without touching the security
+ * shared contracts the sibling packs plug into without touching the security
  * substrate.
  *
  * WHY A CONTRACT AND NOT JUST ROWS. #2375's product requirement is explicit that

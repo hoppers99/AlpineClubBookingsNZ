@@ -23,11 +23,12 @@
  * `derivedFact` (closed-vocabulary server values), `textFact` (non-identifying
  * free text) and `sensitiveFact` (identifying free text, opt-in only).
  *
- * DATABASE ROLE. These reads currently run on the application's Prisma client.
- * ADR-007's dedicated SELECT-only role is the substrate AID-5 (#2374) builds;
- * when it lands, these readers move onto it. That is a defence-in-depth layer
- * beneath — never a substitute for — the fixed projections here and the fresh
- * `area:view` gate in `resolve.ts` (ADR-007 §2).
+ * DATABASE ROLE. These reads run on the application's Prisma client. AID-5
+ * (#2374) shipped ADR-007's dedicated SELECT-only role for the tool substrate,
+ * but this separate page-context path did not move onto it. Its controls remain
+ * the fixed projections here and the fresh `area:view` gate in `resolve.ts`;
+ * moving it would require a new hardening design, not completion of AID-5
+ * (ADR-007 §2).
  */
 
 import "server-only";

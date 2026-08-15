@@ -41,10 +41,10 @@
  *    `membership`), per-night capacity (`bookings`), and member eligibility
  *    (`membership`).
  *
- * Still to come in their own children: AID-7 (#2378, the permission-aware
- * Diagnostics UI and conversation surface, which also owns ADR-004's
- * per-invocation opt-in for any entry declaring `surfacesPersonalData`) and #2379
- * (release hardening and final security testing).
+ * AID-7 (#2378) delivered the permission-aware Diagnostics UI and conversation
+ * surface, including ADR-004's per-invocation opt-in for any entry declaring
+ * `surfacesPersonalData`. AID-8 (#2379) then completed release hardening and final
+ * adversarial security verification.
  *
  * ADDING A TOOL (the checklist a reviewer should hold you to):
  *  1. `requiredAreas` names the area(s) that already govern this data in the
