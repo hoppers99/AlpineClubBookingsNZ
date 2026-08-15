@@ -585,6 +585,12 @@ custom fixture prefixes remain legal examples. This document, and any future
 one, can therefore teach the shape without being allowed to invent what looks
 like a live maximum or a malformed live ID.
 
+Both sides come from one CommonMark fence scanner. It remembers whether the
+opener used backticks or tildes and how long that marker run was. Only the same
+marker with at least that length closes the block; a triple-backtick line inside
+a four-backtick fence, or a tilde run inside a backtick fence, stays content and
+cannot invert which audits see the following lines.
+
 **Definition** — collected only from `docs/invariants/**/*.md`:
 
 ```js
@@ -601,9 +607,10 @@ Every unfenced Markdown heading under `docs/invariants/` that contains a numeric
 invariant-shaped token is checked against that exact shape. Numeric tokens in
 headings are reserved for definitions: a legitimate narrative heading names the
 topic and puts any invariant citation in its body. This catches a lower-cased,
-backticked, wrongly levelled, wrongly padded, decorated or Setext heading that
-would otherwise be invisible as a definition or pass merely because its
-embedded ID resolved as a citation.
+backticked, wrongly levelled, wrongly padded, decorated, Setext or
+identifier-suffixed heading (`INV-<PREFIX>-002a`,
+`INV-<PREFIX>-002_extra`) that would otherwise be invisible as a definition or
+pass merely because an embedded ID resolved as a citation.
 
 **Citation** — collected from every tracked `*.md`, `*.ts`, `*.tsx`, `*.mjs`,
 `*.js`, `*.sql`, `*.yml` and `*.json` file:
@@ -629,7 +636,7 @@ every Xero invoice fixture in the test suite (§1.2.1).
 
 1. Every unfenced invariant-document heading containing a numeric invariant
    token is exactly a canonical definition heading: correct case, level, digit
-   width and no decoration.
+   width, no identifier suffix and no decoration.
 2. No duplicate definition of any ID, across all files.
 3. Every ordinary citation whose prefix is a **declared invariant prefix**
    resolves to a definition.

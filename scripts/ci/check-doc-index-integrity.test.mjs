@@ -29,6 +29,7 @@ import {
   loadInvariantFilesAtRef,
   resolveInvariantBaselineRef,
   routingTableRows,
+  scanMarkdownFenceLines,
   scannableLines,
 } from "./check-doc-index-integrity.mjs";
 
@@ -188,6 +189,65 @@ describe("scannableLines", () => {
     const lines = fencedLines("real\n```ts\nfenced\n```\nreal again\n");
     expect(lines).toEqual([{ number: 3, text: "fenced" }]);
   });
+
+  it("keeps a triple-backtick run inside a four-backtick fence", () => {
+    const source = [
+      "outside",
+      "````md",
+      "```",
+      "still fenced",
+      "`````",
+      "outside again",
+      "",
+    ].join("\n");
+
+    expect(scanMarkdownFenceLines(source)).toEqual({
+      fenced: [
+        { number: 3, text: "```" },
+        { number: 4, text: "still fenced" },
+      ],
+      scannable: [
+        { number: 1, text: "outside" },
+        { number: 6, text: "outside again" },
+        { number: 7, text: "" },
+      ],
+    });
+  });
+
+  it("treats the other marker and a short same-marker run as fenced content", () => {
+    const source = [
+      "~~~text",
+      "```",
+      "~~",
+      "inside",
+      "~~~~",
+      "outside",
+      "",
+    ].join("\n");
+
+    expect(fencedLines(source).map((line) => line.text)).toEqual([
+      "```",
+      "~~",
+      "inside",
+    ]);
+    expect(scannableLines(source).map((line) => line.text)).toEqual([
+      "outside",
+      "",
+    ]);
+  });
+
+  it("does not treat an over-indented or invalid backtick opener as a fence", () => {
+    const source = "    ```\ncode\n```bad`info\ntext\n";
+
+    expect(fencedLines(source)).toEqual([]);
+    expect(scannableLines(source).map((line) => line.text)).toEqual([
+      "    ```",
+      "code",
+      "```bad`info",
+      "text",
+      "",
+    ]);
+  });
 });
 
 describe("auditDefinitionHeadingShapes", () => {
@@ -283,6 +343,23 @@ describe("auditDocs — the whole check", () => {
     expect(problems[0]).toContain("docs/invariants/money.md:9");
     expect(problems[0]).toContain("canonical");
   });
+
+  it.each(["INV-MONEY-001a", "INV-MONEY-001_extra"])(
+    "fails identifier-suffixed heading %s in the whole audit",
+    (malformed) => {
+      const files = repo();
+      files.set(
+        "docs/invariants/money.md",
+        `${files.get("docs/invariants/money.md")}\n## ${malformed}\n\n- Not a definition.\n`,
+      );
+
+      const problems = auditDocs(files);
+
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain("docs/invariants/money.md:9");
+      expect(problems[0]).toContain("no identifier suffix");
+    },
+  );
 });
 
 describe("auditInvariantIds", () => {

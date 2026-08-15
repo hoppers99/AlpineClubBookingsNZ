@@ -59,10 +59,13 @@
  *
  * Definitions, ordinary citations and malformed shapes skip fenced code blocks,
  * so a document may show placeholders and fixture ids without treating them as
- * definitions. A second, narrower pass does inspect fences: a well-formed id
- * under a prefix the repository really declares must resolve there too. That
- * catches an invented live-prefix example while leaving `INV-<PREFIX>-<NNN>`
- * placeholders, reserved invoice numbers and custom fixture prefixes alone.
+ * definitions. One CommonMark fence scanner retains the opener's marker and
+ * length for both its outside and inside views: a shorter run or the other
+ * marker is content, not a state toggle. A second, narrower pass does inspect
+ * the inside view: a well-formed id under a prefix the repository really
+ * declares must resolve there too. That catches an invented live-prefix example
+ * while leaving `INV-<PREFIX>-<NNN>` placeholders, reserved invoice numbers and
+ * custom fixture prefixes alone.
  * Inline backticks are **not** skipped — most real citations in prose are
  * written `` `INV-CAP-021` `` and skipping them would make the check blind to
  * the common case.
@@ -99,11 +102,11 @@ export const DEFINITION_PATTERN = /^#{2,4} (INV-[A-Z][A-Z0-9]*-\d{3})\s*$/;
  * {@link DEFINITION_PATTERN} exactly.
  */
 export const DEFINITION_LIKE_HEADING_PATTERN =
-  /^ {0,3}#{1,6}[ \t]+.*\bINV-[A-Z][A-Z0-9]*-\d+\b.*$/i;
+  /^ {0,3}#{1,6}[ \t]+.*\bINV-[A-Z][A-Z0-9]*-\d+.*$/i;
 
 /** A numeric invariant-shaped token, used to recognise Setext headings too. */
 export const INVARIANT_SHAPED_TOKEN_PATTERN =
-  /\bINV-[A-Z][A-Z0-9]*-\d+\b/i;
+  /\bINV-[A-Z][A-Z0-9]*-\d+/i;
 
 /** The underline that turns the immediately preceding line into a Setext heading. */
 export const SETEXT_HEADING_UNDERLINE_PATTERN = /^ {0,3}(?:=+|-+)[ \t]*$/;
@@ -307,22 +310,57 @@ const INLINE_LINK = /!?\[[^\]]*\]\(\s*(<[^>]+>|[^)\s]+)/g;
 // Reference definitions at line start: [label]: target
 const REF_DEF = /^\s*\[[^\]]+\]:\s*(\S+)/;
 
+const FENCE_OPENER_PATTERN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+const FENCE_CLOSER_PATTERN = /^ {0,3}(`+|~+)[ \t]*$/;
+
 /**
- * Split a file into the lines a pattern may match, dropping fenced code blocks.
+ * Classify Markdown lines with one CommonMark-correct fenced-block state.
  *
- * Returns `{ number, text }` pairs so a problem can name the line it is on.
+ * A closer uses the opener's marker and at least its length. A shorter run, the
+ * other marker, or a candidate closer carrying non-whitespace is fenced content.
+ * Backtick info strings may not themselves contain a backtick. Opener/closer
+ * lines belong to neither output.
  */
-export function scannableLines(text) {
-  const out = [];
-  let inFence = false;
+export function scanMarkdownFenceLines(text) {
+  const scannable = [];
+  const fenced = [];
+  let opener = null;
+
   text.split(/\r?\n/).forEach((line, index) => {
-    if (/^\s*(```|~~~)/.test(line)) {
-      inFence = !inFence;
+    const numberedLine = { number: index + 1, text: line };
+    if (opener) {
+      const closer = line.match(FENCE_CLOSER_PATTERN);
+      if (
+        closer &&
+        closer[1][0] === opener.marker &&
+        closer[1].length >= opener.length
+      ) {
+        opener = null;
+      } else {
+        fenced.push(numberedLine);
+      }
       return;
     }
-    if (!inFence) out.push({ number: index + 1, text: line });
+
+    const candidate = line.match(FENCE_OPENER_PATTERN);
+    const markerRun = candidate?.[1];
+    const info = candidate?.[2] ?? "";
+    const isValidOpener =
+      markerRun && (markerRun[0] === "~" || !info.includes("`"));
+    if (isValidOpener) {
+      opener = { marker: markerRun[0], length: markerRun.length };
+      return;
+    }
+
+    scannable.push(numberedLine);
   });
-  return out;
+
+  return { fenced, scannable };
+}
+
+/** Lines outside fenced code blocks, with their original line numbers. */
+export function scannableLines(text) {
+  return scanMarkdownFenceLines(text).scannable;
 }
 
 /**
@@ -333,16 +371,7 @@ export function scannableLines(text) {
  * enough of them to reject an invented id under a real prefix.
  */
 export function fencedLines(text) {
-  const out = [];
-  let inFence = false;
-  text.split(/\r?\n/).forEach((line, index) => {
-    if (/^\s*(```|~~~)/.test(line)) {
-      inFence = !inFence;
-      return;
-    }
-    if (inFence) out.push({ number: index + 1, text: line });
-  });
-  return out;
+  return scanMarkdownFenceLines(text).fenced;
 }
 
 /** The prefix half of an id: `INV-CAP-021` -> `CAP`. */
@@ -448,10 +477,10 @@ export function auditDefinitionHeadingShapes(files) {
         problems.push(
           `${rel}:${number} looks like an invariant definition heading but is not in ` +
             "the canonical `##`-to-`#### INV-<PREFIX>-<NNN>` shape with an uppercase " +
-            "prefix, exactly three digits and no decoration. Only that canonical heading " +
-            "defines a rule, even when an embedded existing ID resolves as a citation. " +
-            "Make this heading canonical, or give a narrative heading ordinary topic text " +
-            "and put the invariant citation in its body.",
+            "prefix, exactly three digits, no identifier suffix and no decoration. Only " +
+            "that canonical heading defines a rule, even when an embedded existing ID " +
+            "resolves as a citation. Make this heading canonical, or give a narrative " +
+            "heading ordinary topic text and put the invariant citation in its body.",
         );
       }
     }
