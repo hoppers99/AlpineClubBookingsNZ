@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useLodgeOptions } from "../lodge-select";
 
 function stubFetch(responder: () => unknown) {
-  const fetchMock = vi.fn(async (_url: string) => responder());
+  const fetchMock = vi.fn(async () => responder());
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }

@@ -68,7 +68,6 @@ export function ReviewStep({
   nights,
   guests,
   priceQuote,
-  lodges,
   lodgeId,
   selectedLodge,
   reviewGuestPayload,
@@ -135,7 +134,6 @@ export function ReviewStep({
   nights: number;
   guests: GuestData[];
   priceQuote: PriceQuote;
-  lodges: LodgeOption[];
   lodgeId: string | null;
   selectedLodge: LodgeOption | null;
   reviewGuestPayload: GuestData[];

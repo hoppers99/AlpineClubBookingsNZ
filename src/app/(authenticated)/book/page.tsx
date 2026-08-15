@@ -604,7 +604,6 @@ export default function BookPage() {
           nights={nights}
           guests={guests}
           priceQuote={priceQuote}
-          lodges={lodges}
           lodgeId={lodgeId}
           selectedLodge={selectedLodge}
           reviewGuestPayload={reviewGuestPayload}
