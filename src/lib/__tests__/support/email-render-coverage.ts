@@ -6,69 +6,55 @@
  * function that renders it. It is NOT a new grouping scheme: each key/function
  * pair was read off the `sendEmail({ html: <fn>(...), templateName: "<key>" })`
  * call in the sender module that owns it, and the comment headings below name
- * that sender module. `src/lib/email/<family>.ts` is the repository's own
- * message-family boundary, and the #2689 split of the template monolith mirrors
- * it exactly — one `src/lib/email-templates/<family>.ts` per sender family.
+ * that sender module.
  *
- * COVERAGE. `EMAIL_TEMPLATE_MODULE_EXPORTS` is read from the module namespaces
- * at runtime rather than listed by hand, so a newly exported render function
- * cannot be added without the gate noticing it has no render case.
+ * `src/lib/email/<family>.ts` is the repository's own message-family boundary,
+ * and the split follows it — but NOT one-to-one. Fourteen modules mirror a
+ * sender module directly; `communications` and `refunds` cover the two families
+ * sent from a route or a lib module rather than a sender; and four more
+ * (`booking-reminders`, `booking-exceptions`, `booking-money`,
+ * `admin-xero-reports`) are sub-modules of a family that would otherwise be
+ * over the 700-line budget, `src/lib/email/booking.ts` alone accounting for
+ * three of them. Twenty-two modules, fourteen families. Each sub-module's own
+ * docblock names the family it belongs to.
+ *
+ * COVERAGE. `readEmailTemplateModuleExports()` reads the module DIRECTORY at
+ * run time and imports whatever is in it. It is deliberately not a hand-written
+ * list: a list is a second place to forget, and a whole new module added
+ * without a line here would have been invisible to the gate — which is the
+ * failure the contextual-help side already guards against the same way.
  */
-import * as account from "@/lib/email-templates/account";
-import * as adminBooking from "@/lib/email-templates/admin-booking";
-import * as adminFinance from "@/lib/email-templates/admin-finance";
-import * as adminMembership from "@/lib/email-templates/admin-membership";
-import * as adminOps from "@/lib/email-templates/admin-ops";
-import * as adminXeroReports from "@/lib/email-templates/admin-xero-reports";
-import * as booking from "@/lib/email-templates/booking";
-import * as bookingExceptions from "@/lib/email-templates/booking-exceptions";
-import * as bookingMoney from "@/lib/email-templates/booking-money";
-import * as bookingReminders from "@/lib/email-templates/booking-reminders";
-import * as bookingRequests from "@/lib/email-templates/booking-requests";
-import * as chores from "@/lib/email-templates/chores";
-import * as communications from "@/lib/email-templates/communications";
-import * as escape from "@/lib/email-templates/escape";
-import * as family from "@/lib/email-templates/family";
-import * as familyBooking from "@/lib/email-templates/family-booking";
-import * as groups from "@/lib/email-templates/groups";
-import * as layout from "@/lib/email-templates/layout";
-import * as memberGuest from "@/lib/email-templates/member-guest";
-import * as membership from "@/lib/email-templates/membership";
-import * as refunds from "@/lib/email-templates/refunds";
-import * as waitlist from "@/lib/email-templates/waitlist";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 
-function exportedFunctionNames(moduleNamespace: object): string[] {
-  return Object.entries(moduleNamespace)
-    .filter(([, value]) => typeof value === "function")
-    .map(([name]) => name)
+/** The one directory every email-template module lives in. */
+export const EMAIL_TEMPLATE_MODULE_DIR = "src/lib/email-templates";
+
+/**
+ * Every template module, and the render functions it exports, read from disk so
+ * a new module cannot arrive uncovered.
+ */
+export async function readEmailTemplateModuleExports(): Promise<
+  Record<string, string[]>
+> {
+  const files = readdirSync(join(process.cwd(), EMAIL_TEMPLATE_MODULE_DIR))
+    .filter((file) => file.endsWith(".ts"))
     .sort();
+  const byModule: Record<string, string[]> = {};
+  for (const file of files) {
+    const moduleName = file.replace(/\.ts$/, "");
+    // The `.ts` stays in the static part of the specifier: Vite's
+    // dynamic-import-vars plugin needs an extension there to build the glob.
+    const loaded: Record<string, unknown> = await import(
+      `@/lib/email-templates/${moduleName}.ts`
+    );
+    byModule[moduleName] = Object.entries(loaded)
+      .filter(([, value]) => typeof value === "function")
+      .map(([name]) => name)
+      .sort();
+  }
+  return byModule;
 }
-
-/** Every template module, and the render functions it exports. */
-export const EMAIL_TEMPLATE_MODULE_EXPORTS: Record<string, string[]> = {
-  "account": exportedFunctionNames(account),
-  "admin-booking": exportedFunctionNames(adminBooking),
-  "admin-finance": exportedFunctionNames(adminFinance),
-  "admin-membership": exportedFunctionNames(adminMembership),
-  "admin-ops": exportedFunctionNames(adminOps),
-  "admin-xero-reports": exportedFunctionNames(adminXeroReports),
-  "booking": exportedFunctionNames(booking),
-  "booking-exceptions": exportedFunctionNames(bookingExceptions),
-  "booking-money": exportedFunctionNames(bookingMoney),
-  "booking-reminders": exportedFunctionNames(bookingReminders),
-  "booking-requests": exportedFunctionNames(bookingRequests),
-  "chores": exportedFunctionNames(chores),
-  "communications": exportedFunctionNames(communications),
-  "escape": exportedFunctionNames(escape),
-  "family": exportedFunctionNames(family),
-  "family-booking": exportedFunctionNames(familyBooking),
-  "groups": exportedFunctionNames(groups),
-  "layout": exportedFunctionNames(layout),
-  "member-guest": exportedFunctionNames(memberGuest),
-  "membership": exportedFunctionNames(membership),
-  "refunds": exportedFunctionNames(refunds),
-  "waitlist": exportedFunctionNames(waitlist),
-};
 
 /**
  * Registry template keys that deliberately have no template function: their

@@ -255,7 +255,7 @@ const FIXED_DATE = (iso: string) => new Date(iso);
  * (the value) for an undefined result, which is not a body to pin — spell that
  * outcome as text so it is pinned like any other.
  */
-const json = (value: unknown) => JSON.stringify(value) ?? "undefined";
+const json = (value: unknown) => JSON.stringify(value) ?? "__UNDEFINED__";
 
 /**
  * The Xero reconciliation report with only the fields the template always
@@ -408,11 +408,6 @@ const NETTING_OUTCOMES = [
 const formatTestCents = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
 /**
- * Money-branch cases the generated corpus cannot reach: every netting outcome
- * through both renderers, and the settlement methods that label the credit
- * lines on a paid confirmation.
- */
-/**
  * The shared primitives, pinned individually.
  *
  * Every email embeds these, so a cascade change inside one would otherwise show
@@ -489,6 +484,11 @@ const PRIMITIVE_CASES: EmailRenderCase[] = [
   },
 ];
 
+/**
+ * Money-branch cases the generated corpus cannot reach: every netting outcome
+ * through both renderers, and the settlement methods that label the credit
+ * lines on a paid confirmation.
+ */
 const MONEY_BRANCH_CASES: EmailRenderCase[] = [
   ...NETTING_OUTCOMES.flatMap((netting): EmailRenderCase[] => [
     {
@@ -583,7 +583,7 @@ const GENERATED_CASES: EmailRenderCase[] = [
   { id: "adminPasswordResetTemplate:minimal", fn: "adminPasswordResetTemplate", render: () =>
     adminPasswordResetTemplate("resetUrl-1") },
   { id: "adminPasswordResetTemplate:full", fn: "adminPasswordResetTemplate", render: () =>
-    adminPasswordResetTemplate("resetUrl-1", "1 hour") },
+    adminPasswordResetTemplate("resetUrl-1", "30 minutes") },
   { id: "memberSetupInviteTemplate:minimal", fn: "memberSetupInviteTemplate", render: () =>
     memberSetupInviteTemplate("firstName-1", "resetUrl-2") },
   { id: "twoFactorCodeTemplate:minimal", fn: "twoFactorCodeTemplate", render: () =>
@@ -647,11 +647,11 @@ const GENERATED_CASES: EmailRenderCase[] = [
   { id: "emailChangeNotificationTemplate:minimal", fn: "emailChangeNotificationTemplate", render: () =>
     emailChangeNotificationTemplate("newEmail-1") },
   { id: "formatChoreRosterDate:minimal", fn: "formatChoreRosterDate", render: () =>
-    formatChoreRosterDate("date-1") },
+    formatChoreRosterDate("2026-04-16") },
   { id: "choreRosterTemplate:minimal", fn: "choreRosterTemplate", render: () =>
-    choreRosterTemplate("guestName-1", "date-2", [{ name: "name-3", description: "description-4" }]) },
+    choreRosterTemplate("guestName-1", "2026-04-16", [{ name: "name-3", description: "description-4" }]) },
   { id: "choreRosterTemplate:full", fn: "choreRosterTemplate", render: () =>
-    choreRosterTemplate("guestName-1", "date-2", [{ name: "name-3", description: "description-4" }], "choreLink-5") },
+    choreRosterTemplate("guestName-1", "2026-04-16", [{ name: "name-3", description: "description-4" }], "choreLink-5") },
   { id: "hutLeaderAssignmentTemplate:minimal", fn: "hutLeaderAssignmentTemplate", render: () =>
     hutLeaderAssignmentTemplate({ firstName: "firstName-1", startDate: new Date("2026-03-03T00:00:00.000Z"), endDate: new Date("2026-03-04T00:00:00.000Z"), pin: "pin-4", assignmentId: "assignmentId-5" }) },
   { id: "checkinReminderTemplate:minimal", fn: "checkinReminderTemplate", render: () =>
@@ -819,11 +819,11 @@ const GENERATED_CASES: EmailRenderCase[] = [
   { id: "ageUpInvitationTemplate:minimal", fn: "ageUpInvitationTemplate", render: () =>
     ageUpInvitationTemplate("firstName-1", "resetUrl-2") },
   { id: "ageUpInvitationTemplate:full", fn: "ageUpInvitationTemplate", render: () =>
-    ageUpInvitationTemplate("firstName-1", "resetUrl-2", { targetAgeTierLabel: "Adult (18+)" }) },
+    ageUpInvitationTemplate("firstName-1", "resetUrl-2", { targetAgeTierLabel: "Senior (65+)" }) },
   { id: "ageUpParentEmailHandoffTemplate:minimal", fn: "ageUpParentEmailHandoffTemplate", render: () =>
     ageUpParentEmailHandoffTemplate({ recipientName: "Pat Parent", memberFirstName: "Sam", memberLastName: "Youth" }) },
   { id: "ageUpParentEmailHandoffTemplate:full", fn: "ageUpParentEmailHandoffTemplate", render: () =>
-    ageUpParentEmailHandoffTemplate({ recipientName: "Pat Parent", memberFirstName: "Sam", memberLastName: "Youth", targetAgeTierLabel: "Adult (18+)" }) },
+    ageUpParentEmailHandoffTemplate({ recipientName: "Pat Parent", memberFirstName: "Sam", memberLastName: "Youth", targetAgeTierLabel: "Senior (65+)" }) },
   { id: "accountDeletionRejectedTemplate:minimal", fn: "accountDeletionRejectedTemplate", render: () =>
     accountDeletionRejectedTemplate("firstName-1", "adminNote-2") },
   { id: "waitlistConfirmationTemplate:minimal", fn: "waitlistConfirmationTemplate", render: () =>
@@ -928,8 +928,49 @@ const GENERATED_CASES: EmailRenderCase[] = [
     policyExceptionRequestExpiredTemplate({ firstName: "firstName-1", lodgeName: "lodgeName-2", checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), expiresAt: new Date("2026-03-06T00:00:00.000Z") }) },
 ];
 
+/**
+ * HTML ESCAPING. `escapeHtml` is the one primitive here whose failure is a
+ * security bug rather than a cosmetic one, and the generated corpus could not
+ * see it at all: every generated value is `<field>-<n>`, so not one of the
+ * bodies contained a single escaped entity and `escapeHtml` could be reduced to
+ * `return str` with the whole gate still green.
+ *
+ * These cases carry all five characters the escaper maps — `&`, `<`, `>`, `"`
+ * and `'` — through both of the contexts the output lands in: element text, and
+ * the `href` attribute `button()` builds. A partial mutation matters as much as
+ * a total one: dropping only `&` or only `'` still breaks `Fish & chips` and
+ * `O'Brien`, and nothing else in the repository asserts either.
+ */
+const ESCAPING_CASES: EmailRenderCase[] = [
+  {
+    id: "escapeHtml:entities",
+    fn: "escapeHtml",
+    render: () => escapeHtml(`<a href="x?a=1&b=2">R&D 'q' </a>`),
+  },
+  {
+    // Escaped output inside an attribute: `button()` escapes the sanitised href.
+    id: "button:ampersand-in-href",
+    fn: "button",
+    render: () => button("View & confirm", "/bookings?from=a&to=b"),
+  },
+  {
+    // A complete member-facing body whose name, title and link all carry the
+    // five characters, so the escaping is exercised through a real template
+    // rather than only through the primitive.
+    id: "noticePublishedTemplate:escaping",
+    fn: "noticePublishedTemplate",
+    render: () =>
+      noticePublishedTemplate(
+        `O'Brien & Sons`,
+        `Fish & chips <b>"today"</b> — O'Brien's note`,
+        "/notices?id=1&ref=2",
+      ),
+  },
+];
+
 export const EMAIL_RENDER_CASES: EmailRenderCase[] = [
   ...GENERATED_CASES,
   ...PRIMITIVE_CASES,
+  ...ESCAPING_CASES,
   ...MONEY_BRANCH_CASES,
 ];

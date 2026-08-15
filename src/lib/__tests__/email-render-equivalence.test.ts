@@ -43,7 +43,7 @@ import {
   type EmailRenderCase,
 } from "@/lib/__tests__/support/email-render-cases";
 import {
-  EMAIL_TEMPLATE_MODULE_EXPORTS,
+  readEmailTemplateModuleExports,
   REGISTRY_KEY_RENDERERS,
   REGISTRY_KEYS_WITHOUT_A_TEMPLATE_FUNCTION,
 } from "@/lib/__tests__/support/email-render-coverage";
@@ -163,12 +163,16 @@ describe("rendered-email equivalence (#2689)", () => {
     ).toEqual([]);
   });
 
-  it("covers every exported render function in every template module", () => {
+  // Reads the module DIRECTORY rather than a list, because a list is a second
+  // place to forget: with the module names written out by hand, a whole new
+  // family module could be added and stay invisible to this gate.
+  it("covers every exported render function in every template module", async () => {
+    const moduleExports = await readEmailTemplateModuleExports();
+    expect(Object.keys(moduleExports).length).toBeGreaterThan(0);
+
     const coveredFns = new Set(EMAIL_RENDER_CASES.map((c: EmailRenderCase) => c.fn));
     const uncovered: string[] = [];
-    for (const [moduleName, exportNames] of Object.entries(
-      EMAIL_TEMPLATE_MODULE_EXPORTS,
-    )) {
+    for (const [moduleName, exportNames] of Object.entries(moduleExports)) {
       for (const exportName of exportNames) {
         if (!coveredFns.has(exportName)) uncovered.push(`${moduleName}.${exportName}`);
       }

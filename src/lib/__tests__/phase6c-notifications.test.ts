@@ -199,11 +199,12 @@ describe("N-12: dormant feedback flow removal", () => {
   it("does not export the removed feedback template", async () => {
     // #2689 split the template monolith into one module per message family,
     // so "not exported" now means not exported by ANY of them. The coverage
-    // map reads each module's namespace at runtime, so this cannot go stale.
-    const { EMAIL_TEMPLATE_MODULE_EXPORTS } = await import(
+    // helper reads the module directory at run time, so this cannot go stale.
+    const { readEmailTemplateModuleExports } = await import(
       "@/lib/__tests__/support/email-render-coverage"
     );
-    expect(Object.values(EMAIL_TEMPLATE_MODULE_EXPORTS).flat()).not.toContain(
+    const moduleExports = await readEmailTemplateModuleExports();
+    expect(Object.values(moduleExports).flat()).not.toContain(
       "postStayFeedbackTemplate",
     );
   });
