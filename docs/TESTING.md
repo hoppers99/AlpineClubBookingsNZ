@@ -29,7 +29,11 @@ the full local gate.
 ## Which project typechecks a test
 
 `npm run typecheck` runs two TypeScript projects, and between them they must
-read every tracked `.ts`, `.tsx`, `.mts` and `.cts` file in the repository:
+read every tracked `.ts`, `.tsx`, `.mts` and `.cts` file in the repository
+except `.semgrep/tests/acb-client-server-boundary.tsx` and
+`.semgrep/tests/acb-unsafe-raw-sql.ts`. Those two files are deliberately broken
+samples read only by Semgrep's `--test` runner; typechecking them would defeat
+their purpose:
 
 - **`tsconfig.json`** — the app. It excludes Vitest test/spec files under
   `src/` and `scripts/`, plus everything under `__tests__/`, so that test code
@@ -47,12 +51,12 @@ document does **not** claim TypeScript statically checks their bodies. MEP-E1
 
 Put a supported new Vitest test under `src/` or `scripts/` and the existing
 patterns cover it; put one somewhere else and you must add the pattern.
-`src/lib/__tests__/typecheck-project-coverage.test.ts` fails if any tracked
-TypeScript file ends up in neither project. It also pins Vitest's actual default
-extension glob, requires every supported Vitest file in the test project, and
-refuses compound JSX extensions that Vitest would collect but TypeScript cannot
-load. It asks TypeScript itself which files each project resolves rather than
-reimplementing tsconfig's glob rules.
+`src/lib/__tests__/typecheck-project-coverage.test.ts` fails if any other
+tracked TypeScript file ends up in neither project. It also pins Vitest's actual
+default extension glob, requires every supported Vitest file in the test
+project, and refuses compound JSX extensions that Vitest would collect but
+TypeScript cannot load. It asks TypeScript itself which files each project
+resolves rather than reimplementing tsconfig's glob rules.
 
 That guard exists because the gap was real and silent (#2875): `tsconfig.json`
 excluded the test files and `tsconfig.test.json` re-included only the `src/`
