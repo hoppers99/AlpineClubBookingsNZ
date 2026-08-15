@@ -153,11 +153,22 @@ export function initialLodgeIdFromLocation(): string | null {
  * an unscoped club-wide read nobody chose. Existing callers that destructure
  * only `lodges`/`loading` are unaffected: on failure they still see the empty
  * list they saw before.
+ *
+ * `forbidden` is kept SEPARATE from `failed`, and the distinction is not
+ * academic. `/api/admin/lodges` needs `lodge:view`; the bed-allocation board
+ * needs `bookings`. Two shipped role presets — `ADMIN_MEMBERSHIP` and
+ * `FINANCE_ADMIN` — hold `bookings: "view"` and no `lodge` entry at all, so for
+ * them a 403 here is the NORMAL answer, not an outage. Collapsing it into
+ * `failed` hands those roles a permanent error with a retry that can only 403
+ * again (PR #2885 review, HIGH 2). A caller can offer them the club-wide
+ * read-only view instead, which is what they saw before the board learned to
+ * distinguish these states at all.
  */
 export function useLodgeOptions(scope: "member" | "admin" = "member") {
   const [lodges, setLodges] = useState<LodgeOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  const [forbidden, setForbidden] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
@@ -165,15 +176,25 @@ export function useLodgeOptions(scope: "member" | "admin" = "member") {
     const url = scope === "admin" ? "/api/admin/lodges" : "/api/lodges";
     setLoading(true);
     setFailed(false);
+    setForbidden(false);
     fetch(url)
-      .then((response) => {
-        // A refusal is a failure, not an empty club. Previously this returned
+      .then(async (response) => {
+        // A refusal is not an empty club. Previously this returned
         // `{ lodges: [] }` and the caller could not tell the difference.
+        if (response.status === 403) {
+          if (!cancelled) {
+            setLodges([]);
+            setForbidden(true);
+          }
+          return null;
+        }
         if (!response.ok) throw new Error(`lodge options ${response.status}`);
-        return response.json();
+        return (await response.json()) as {
+          lodges?: Array<LodgeOption & { active?: boolean }>;
+        };
       })
-      .then((data: { lodges?: Array<LodgeOption & { active?: boolean }> }) => {
-        if (cancelled) return;
+      .then((data) => {
+        if (cancelled || data === null) return;
         const rows = (data.lodges ?? []).filter(
           (lodge) => !("active" in lodge) || lodge.active !== false,
         );
@@ -194,5 +215,5 @@ export function useLodgeOptions(scope: "member" | "admin" = "member") {
 
   const reload = useCallback(() => setAttempt((current) => current + 1), []);
 
-  return { lodges, loading, failed, reload };
+  return { lodges, loading, failed, forbidden, reload };
 }

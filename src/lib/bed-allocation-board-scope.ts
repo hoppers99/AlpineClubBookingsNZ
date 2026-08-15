@@ -12,7 +12,7 @@
  *
  * Client-safe: no imports, no Prisma, no Next.
  *
- * The rule these three exports serve is `INV-CAP-042`.
+ * The rule these three exports serve is `INV-CAP-033`.
  */
 
 /**

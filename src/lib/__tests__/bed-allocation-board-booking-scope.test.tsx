@@ -72,9 +72,18 @@ vi.mock("@/components/club-identity-provider", () => ({
  *
  * Partially mocked (#2701): the board now reads the module's own `ALL_LODGES`
  * constant, so a factory that replaced the whole module would break at import
- * rather than at an assertion. The two buttons deliberately pass NO source, the
- * way a caller written before the source argument would, which pins that an
- * absent source still reads as the admin's own change.
+ * rather than at an assertion.
+ *
+ * Both buttons pass an explicit SOURCE (PR #2885 review). They used to pass
+ * none and rely on the page defaulting to `"user"`, which was fail-open — a
+ * caller that forgets the argument silently claims the admin browsed away from
+ * the focused booking. The page now requires it, so the mock states which it
+ * is, which is also what the real component does.
+ *
+ * The lodge list here is EMPTY, because `onChange(null)` is only something the
+ * real `LodgeSelect` ever reports when it has no options left. With two lodges
+ * in the list the old version of this mock was driving a state the component
+ * cannot produce, so the test that used it was pinning nothing reachable.
  */
 vi.mock("@/components/lodge-select", async (importOriginal) => {
   const actual =
@@ -84,24 +93,22 @@ vi.mock("@/components/lodge-select", async (importOriginal) => {
     LodgeSelect: ({
       onChange,
     }: {
-      onChange: (value: string | null) => void;
+      onChange: (value: string | null, source: "user" | "auto") => void;
     }) => (
       <div>
-        <button type="button" onClick={() => onChange("lodge-2")}>
+        <button type="button" onClick={() => onChange("lodge-2", "user")}>
           Pick lodge two
         </button>
-        <button type="button" onClick={() => onChange(null)}>
+        <button type="button" onClick={() => onChange(null, "auto")}>
           Report no lodge
         </button>
       </div>
     ),
     useLodgeOptions: () => ({
-      lodges: [
-        { id: "lodge-1", name: "Test Lodge" },
-        { id: "lodge-2", name: "Other Lodge" },
-      ],
+      lodges: [],
       loading: false,
-      failed: false,
+      failed: true,
+      forbidden: false,
       reload: vi.fn(),
     }),
   };
@@ -242,11 +249,12 @@ describe("bed allocation board — booking scope on the deep link (#2678)", () =
     render(<AdminBedAllocationPage />);
     await screen.findByTestId("room-table");
 
-    // `LodgeSelect` calls `onChange(null)` by itself when `/api/admin/lodges`
-    // fails and it is left with no options — the outage state, not a choice.
-    // Losing the focus there would be the worst possible moment for it: the
-    // server's derivation from `bookingId` is the only thing then keeping the
-    // board off a club-wide read.
+    // `LodgeSelect` calls `onChange(null, "auto")` by itself when
+    // `/api/admin/lodges` fails and it is left with no options — the outage
+    // state this mock now models, not a choice. Losing the focus there would be
+    // the worst possible moment for it: the server's derivation from
+    // `bookingId` is the only thing then keeping the board off a club-wide
+    // read.
     fireEvent.click(screen.getByRole("button", { name: "Report no lodge" }));
 
     await waitFor(() => {

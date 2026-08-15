@@ -29,7 +29,7 @@
  */
 
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardPayload } from "@/app/(admin)/admin/bed-allocation/_components/types";
@@ -156,6 +156,34 @@ function buildPayload(scopedLodgeId: string | null): DashboardPayload {
   } as unknown as DashboardPayload;
 }
 
+/**
+ * The board is allowed a handful of requests while its scope settles: the first
+ * read, and at most one more after adopting the lodge the server named. Anything
+ * beyond this is a feedback loop, and the assertion that catches one has to be a
+ * COUNT — "a request was made" passes just as happily at 62 (PR #2885 review).
+ */
+const SETTLED_REQUEST_BUDGET = 3;
+
+/**
+ * Hard stop inside the fake server. A loop here would otherwise run until the
+ * test timed out with no useful message; this turns it into a named failure at
+ * the point of the offending request.
+ */
+const RUNAWAY_REQUEST_CAP = 25;
+
+/**
+ * Let every pending microtask AND a few macrotask turns drain. A storm is
+ * paced by its own round trips, so a single `await waitFor` can photograph it
+ * mid-loop and see a perfectly innocent count.
+ */
+async function settle(turns = 6) {
+  for (let turn = 0; turn < turns; turn += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+}
+
 interface FakeServer {
   /** Every board request the page made, in order. */
   boardRequests: URLSearchParams[];
@@ -167,10 +195,20 @@ interface FakeServer {
   releaseFirstBoard: () => void;
   /** Make the next `/api/admin/lodges` attempt fail (or succeed again). */
   setLodgesFailing: (failing: boolean) => void;
+  /** Fail the next N board reads with a 500, then behave normally. */
+  failNextBoardReads: (count: number) => void;
 }
 
 function installFakeServer(options?: {
   holdLodges?: boolean;
+  /** The ACTIVE lodges `/api/admin/lodges` reports. Defaults to both. */
+  lodges?: Array<{ id: string; name: string; active: boolean }>;
+  /**
+   * Answer `/api/admin/lodges` with 403 — the shipped `ADMIN_MEMBERSHIP` and
+   * `FINANCE_ADMIN` presets, which may open this board and may not read the
+   * lodge list.
+   */
+  lodgesForbidden?: boolean;
   /**
    * Serve payloads with NO `scopedLodgeId` field at all — an old-colour server
    * during a deploy drain, which cannot answer the lodge question.
@@ -193,8 +231,13 @@ function installFakeServer(options?: {
     setLodgesFailing: (failing) => {
       lodgesFailing = failing;
     },
+    failNextBoardReads: (count) => {
+      boardFailuresLeft = count;
+    },
   };
   let lodgesFailing = options?.lodgesFailing ?? false;
+  let boardFailuresLeft = 0;
+  const activeLodges = options?.lodges ?? LODGES;
   let release = () => {};
   const gate = options?.holdLodges
     ? new Promise<void>((resolve) => {
@@ -218,6 +261,13 @@ function installFakeServer(options?: {
 
       if (url.startsWith("/api/admin/lodges")) {
         await gate;
+        if (options?.lodgesForbidden) {
+          return {
+            ok: false,
+            status: 403,
+            json: async () => ({ error: "Forbidden" }),
+          };
+        }
         if (lodgesFailing) {
           return {
             ok: false,
@@ -225,12 +275,33 @@ function installFakeServer(options?: {
             json: async () => ({ error: "boom" }),
           };
         }
-        return { ok: true, status: 200, json: async () => ({ lodges: LODGES }) };
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ lodges: activeLodges }),
+        };
       }
 
       if (url.startsWith("/api/admin/bed-allocation?")) {
         const params = new URLSearchParams(url.split("?")[1]);
         state.boardRequests.push(params);
+        if (state.boardRequests.length > RUNAWAY_REQUEST_CAP) {
+          throw new Error(
+            `runaway board requests: ${state.boardRequests.length} reads for one settled scope — ` +
+              `the last two were ${state.boardRequests
+                .slice(-2)
+                .map((request) => request.toString())
+                .join(" then ")}`,
+          );
+        }
+        if (boardFailuresLeft > 0) {
+          boardFailuresLeft -= 1;
+          return {
+            ok: false,
+            status: 500,
+            json: async () => ({ error: "The board could not be loaded" }),
+          };
+        }
         if (boardGate) {
           const pending = boardGate;
           boardGate = null;
@@ -416,6 +487,144 @@ describe("bed-allocation board — a deep-linked booking brings its own lodge (#
   });
 });
 
+/*
+ * PR #2885 review, HIGH 1 — the request storm, and its root cause.
+ *
+ * `LodgeSelect`'s ADR-002 normaliser fires whenever fewer than two ACTIVE
+ * lodges are offered, and it fires even though the same condition makes it
+ * render nothing. So it overwrote the lodge the board had just adopted from the
+ * server, the scope key changed, the board refetched, the echo re-adopted, and
+ * round it went — 62 dashboard reads in about a second, paced by network round
+ * trips so React never saw a synchronous cycle and nothing crashed.
+ *
+ * Every test here asserts a COUNT. "A request was made" passes at 62 too.
+ */
+describe("bed-allocation board — the scope settles instead of looping (#2701)", () => {
+  it("stops after adopting the lodge when the lodge list has FAILED", async () => {
+    // The state the board's own comment calls the one that "matters most", and
+    // the one with no test before this.
+    search.current = "from=2026-07-01&to=2026-07-08&bookingId=booking-b";
+    const server = installFakeServer({ lodgesFailing: true });
+
+    render(<AdminBedAllocationPage />);
+    await screen.findByTestId("room-table");
+    await settle();
+
+    expect(server.boardRequests.length).toBeLessThanOrEqual(
+      SETTLED_REQUEST_BUDGET,
+    );
+    expect(server.refusals).toEqual([]);
+    // And it settled on the RIGHT lodge, not merely quietly.
+    expect(server.boardRequests.at(-1)?.get("lodgeId")).toBe("lodge-2");
+  });
+
+  it("stops when the lodge list is SUCCESSFUL but empty", async () => {
+    // Not only the failure path: the trigger is `lodges.length < 2`, so a
+    // perfectly healthy club with no active lodges looped identically — and
+    // without even the error alert to hint at it.
+    search.current = "from=2026-07-01&to=2026-07-08&bookingId=booking-b";
+    const server = installFakeServer({ lodges: [] });
+
+    render(<AdminBedAllocationPage />);
+    await screen.findByTestId("room-table");
+    await settle();
+
+    expect(server.boardRequests.length).toBeLessThanOrEqual(
+      SETTLED_REQUEST_BUDGET,
+    );
+    expect(server.refusals).toEqual([]);
+  });
+
+  it("stops with ONE active lodge and the booking's lodge on the link", async () => {
+    // The half of the defect that a same-tick test photographs as "exactly 1
+    // request" and calls clean. The loop needs the lodge options to land after
+    // the first board read — which is what happens in production, where the
+    // lodges query is the smaller one.
+    search.current =
+      "from=2026-07-01&to=2026-07-08&bookingId=booking-b&lodgeId=lodge-2";
+    const server = installFakeServer({
+      lodges: [{ id: "lodge-1", name: "Alpine Lodge", active: true }],
+      holdFirstBoard: true,
+    });
+
+    render(<AdminBedAllocationPage />);
+    await settle();
+    server.releaseFirstBoard();
+    await screen.findByTestId("room-table");
+    await settle();
+
+    expect(server.boardRequests.length).toBeLessThanOrEqual(
+      SETTLED_REQUEST_BUDGET,
+    );
+    expect(server.refusals).toEqual([]);
+  });
+});
+
+/*
+ * PR #2885 review, HIGH 2 — `unavailable` was reachable by ROLE.
+ *
+ * `/admin/bed-allocation` is gated on `bookings`; `GET /api/admin/lodges` needs
+ * `lodge:view`. The shipped `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` presets hold
+ * `bookings: "view"` and no `lodge` entry at all, so for them the 403 is the
+ * normal answer. Treating it as an outage handed them a permanent error and a
+ * retry that could only 403 again, where before #2701 they had a working
+ * club-wide board.
+ */
+describe("bed-allocation board — a role that may not read the lodge list (#2701)", () => {
+  it("gets the club-wide read-only board, not an error it cannot clear", async () => {
+    const server = installFakeServer({ lodgesForbidden: true });
+
+    render(<AdminBedAllocationPage />);
+    await screen.findByTestId("room-table");
+    await settle();
+
+    // The board they had before, and a club-wide read they did not have to
+    // choose because they cannot choose anything.
+    expect(server.boardRequests.at(-1)?.has("lodgeId")).toBe(false);
+    expect(
+      screen.queryByText("The lodge list could not be loaded"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Try again" }),
+    ).not.toBeInTheDocument();
+
+    // Distinguishable from a deliberate All lodges, and from an outage: it says
+    // which one it is.
+    expect(
+      screen.getByText("Every lodge — read-only overview"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("All lodges — read-only overview"),
+    ).not.toBeInTheDocument();
+
+    // Still read-only. Their role is view-only anyway, but the lock does not
+    // depend on that.
+    expect(
+      screen.getByRole("button", { name: /Reset allocations/ }),
+    ).toBeDisabled();
+  });
+});
+
+/*
+ * PR #2885 review, MEDIUM 5 — the state set has to be TOTAL.
+ */
+describe("bed-allocation board — a club with no active lodge (#2701)", () => {
+  it("says so instead of spinning for ever", async () => {
+    const server = installFakeServer({ lodges: [] });
+
+    render(<AdminBedAllocationPage />);
+    await screen.findByText("No active lodge");
+    await settle();
+
+    // It is a terminal state, not a stuck one: no endless spinner, and no
+    // request it cannot scope.
+    expect(
+      screen.queryAllByText("Choosing which lodge to show"),
+    ).toHaveLength(0);
+    expect(server.boardRequests).toHaveLength(0);
+  });
+});
+
 describe("bed-allocation board — the LODGE_MISMATCH backstop (#2701)", () => {
   it("never fires on normal navigation: arrive on a deep link, then browse to another lodge", async () => {
     // This is the test the 409 exists for. The fake server refuses through the
@@ -480,6 +689,88 @@ describe("bed-allocation board — the LODGE_MISMATCH backstop (#2701)", () => {
     ).toBeDisabled();
   });
 
+  it("does not fire on a booking whose lodge has been DEACTIVATED", async () => {
+    // PR #2885 review, HIGH 3 — an honest in-app link, refused.
+    //
+    // `useLodgeOptions` drops inactive lodges, so a booking still sitting at a
+    // deactivated lodge-2 leaves the selector holding only lodge-1. The
+    // ADR-002 normaliser would substitute lodge-1 and pair it with the
+    // booking — a 409 on the exact URL `AdminBookingToolsCard` builds, with no
+    // board and no way back.
+    // ORDERING IS THE WHOLE TEST. The lodge options must land AFTER the board
+    // has adopted the booking's lodge, which is the sequence the reviewer
+    // observed and the only one in which the normaliser's overwrite survives:
+    // the adoption effect re-runs only when the served lodge CHANGES, so once
+    // it has settled it is no longer there to undo a later default. Let the
+    // options arrive first and the two writes race in the same commit, the
+    // adoption happens to win, and the defect hides.
+    search.current =
+      "from=2026-07-01&to=2026-07-08&bookingId=booking-b&lodgeId=lodge-2";
+    const server = installFakeServer({
+      lodges: [{ id: "lodge-1", name: "Alpine Lodge", active: true }],
+      holdLodges: true,
+    });
+
+    render(<AdminBedAllocationPage />);
+    await screen.findByTestId("room-table");
+    server.releaseLodges();
+    await settle();
+
+    expect(server.refusals).toEqual([]);
+    expect(
+      screen.queryByText("This link points at two different lodges"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Focused booking")).toBeInTheDocument();
+    // Never substituted the surviving active lodge for the booking's own.
+    expect(
+      server.boardRequests.some(
+        (request) => request.get("lodgeId") === "lodge-1",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not fire on a deactivated-lodge booking linked by booking id alone", async () => {
+    search.current = "from=2026-07-01&to=2026-07-08&bookingId=booking-b";
+    const server = installFakeServer({
+      lodges: [{ id: "lodge-1", name: "Alpine Lodge", active: true }],
+    });
+
+    render(<AdminBedAllocationPage />);
+    await screen.findByTestId("room-table");
+    await settle();
+
+    expect(server.refusals).toEqual([]);
+    expect(server.boardRequests.length).toBeLessThanOrEqual(
+      SETTLED_REQUEST_BUDGET,
+    );
+  });
+
+  it("does not turn a one-off board failure into a permanent wrong 409", async () => {
+    // PR #2885 review, MEDIUM 4. The deferral used to clear on ANY dashboard
+    // error, so a single 500 let the selector default to the first lodge and
+    // the retry came back 409 — a recoverable blip converted into an
+    // unrecoverable and actively misleading one. Same ordering point as above:
+    // the options land while the board is showing its error.
+    search.current = "from=2026-07-01&to=2026-07-08&bookingId=booking-b";
+    const server = installFakeServer({ holdLodges: true });
+    server.failNextBoardReads(1);
+
+    render(<AdminBedAllocationPage />);
+    await screen.findByText("Bed allocation could not be loaded");
+    server.releaseLodges();
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await screen.findByTestId("room-table");
+    await settle();
+
+    expect(server.refusals).toEqual([]);
+    expect(
+      screen.queryByText("This link points at two different lodges"),
+    ).not.toBeInTheDocument();
+    expect(server.boardRequests.at(-1)?.get("lodgeId")).toBe("lodge-2");
+  });
+
   it("explains itself when a hand-made link names a booking at one lodge and a board at another", async () => {
     // Only reachable by typing the URL or by a bug, which is precisely why it
     // may be a hard refusal rather than a silent correction.
@@ -496,6 +787,20 @@ describe("bed-allocation board — the LODGE_MISMATCH backstop (#2701)", () => {
     expect(screen.queryByTestId("room-table")).not.toBeInTheDocument();
     expect(
       screen.queryByText("Bed allocation could not be loaded"),
+    ).not.toBeInTheDocument();
+
+    // It is not a dead end. Dropping the link's lodge and letting the server
+    // scope from the booking is the only recovery that can succeed, so it is
+    // offered as a button rather than described.
+    fireEvent.click(
+      screen.getByRole("button", { name: /Show this booking’s lodge/ }),
+    );
+    await screen.findByTestId("room-table");
+    await settle();
+
+    expect(server.boardRequests.at(-1)?.get("lodgeId")).toBe("lodge-2");
+    expect(
+      screen.queryByText("This link points at two different lodges"),
     ).not.toBeInTheDocument();
   });
 });

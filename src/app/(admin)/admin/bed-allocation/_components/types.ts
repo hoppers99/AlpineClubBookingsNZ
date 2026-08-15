@@ -216,6 +216,28 @@ export const ALL_LODGES_ALLOCATION_LOCK_REASON =
 export const UNSCOPED_ALLOCATION_LOCK_REASON =
   "The board is still settling on this booking's lodge. Allocation changes become available once it has.";
 
+/**
+ * A role that may open this board but may not read the lodge list — shipped
+ * `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` both hold `bookings: "view"` and no
+ * `lodge` entry. Club-wide read-only is the only view they can have, and it is
+ * the view they had before #2701; saying "choose a lodge" to someone who has no
+ * way to choose one would be worse than saying nothing.
+ */
+export const NO_LODGE_PERMISSION_ALLOCATION_LOCK_REASON =
+  "Your admin role cannot choose a lodge, so this board shows every lodge and is read-only.";
+
+/**
+ * The lodge list genuinely failed. Distinct from the club-wide reasons because
+ * a retry can fix it, and distinct from the settling reason because this one
+ * does NOT clear by itself (PR #2885 review, LOW).
+ */
+export const LODGE_LIST_FAILED_ALLOCATION_LOCK_REASON =
+  "The lodge list could not be loaded, so allocation changes are unavailable until it is.";
+
+/** The list loaded and the club has no active lodge to allocate against. */
+export const NO_ACTIVE_LODGE_ALLOCATION_LOCK_REASON =
+  "This club has no active lodge, so there is nothing to allocate beds in.";
+
 export interface BedOption {
   id: string;
   roomId: string;

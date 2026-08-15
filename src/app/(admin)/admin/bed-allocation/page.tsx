@@ -69,6 +69,9 @@ import { BucketBoard } from "./_components/bucket-board";
 import { RoomTable } from "./_components/room-table";
 import {
   ALL_LODGES_ALLOCATION_LOCK_REASON,
+  LODGE_LIST_FAILED_ALLOCATION_LOCK_REASON,
+  NO_ACTIVE_LODGE_ALLOCATION_LOCK_REASON,
+  NO_LODGE_PERMISSION_ALLOCATION_LOCK_REASON,
   UNSCOPED_ALLOCATION_LOCK_REASON,
   type AllocationLockReason,
   type BedOption,
@@ -144,8 +147,8 @@ async function readApiError(response: Response, fallback: string) {
 }
 
 /**
- * The board's lodge scope, as four states that cannot be confused with each
- * other (#2701).
+ * The board's lodge scope, as states that cannot be confused with each other
+ * (#2701).
  *
  * `null` used to stand for all of "I chose to see every lodge", "the selector
  * has not resolved yet" and "/api/admin/lodges failed", and the four bed
@@ -154,18 +157,76 @@ async function readApiError(response: Response, fallback: string) {
  * page derives from which one is active.
  *
  * - `lodge`    — one concrete lodge. The only state in which allocations change.
- * - `all`      — a DELIBERATE club-wide overview, chosen from the selector.
- * - `resolving`— the options have not arrived, or a deep-linked booking's lodge
- *                has not been reported back yet. Renders no board.
- * - `unavailable` — the lodge list failed and there is nothing to select from,
- *                so club-wide is unreachable BY CONSTRUCTION rather than by an
- *                error message bolted onto an ambiguous state.
+ * - `all`      — club-wide, read-only. `reason` records how it was reached:
+ *                `chosen` from the selector, or `no-lodge-permission` for a role
+ *                that may open this board but may not read the lodge list at
+ *                all. Both are honest club-wide views and both say so on
+ *                screen; neither is an outage wearing a club-wide costume.
+ * - `empty`    — the lodge list loaded and holds no ACTIVE lodge. There is
+ *                nothing to scope to and nothing to choose.
+ * - `resolving`— the options are still arriving, or a deep-linked booking's
+ *                lodge has not been reported back yet.
+ * - `unavailable` — the lodge list genuinely failed (transport, 500, anything
+ *                that is not a 403), so club-wide is unreachable BY
+ *                CONSTRUCTION rather than by an error message bolted onto an
+ *                ambiguous state.
+ *
+ * **The set is TOTAL, and `deriveBoardLodgeScope` below is where that is
+ * enforced.** PR #2885 review, MEDIUM 5: an earlier version had no `empty`, so
+ * a club with zero active lodges and a successful response fell through to
+ * `resolving` and sat on a spinner for ever with no error and a disabled
+ * Refresh. Every combination of (selection, forbidden, failed, loading, option
+ * count) now lands on exactly one of these, and the function returns on every
+ * path rather than falling through to a default.
  */
 type BoardLodgeScope =
   | { kind: "lodge"; lodgeId: string }
-  | { kind: "all" }
+  | { kind: "all"; reason: "chosen" | "no-lodge-permission" }
+  | { kind: "empty" }
   | { kind: "resolving" }
   | { kind: "unavailable" };
+
+/**
+ * The single place the scope is decided. Pure and exported-shaped so the branch
+ * table can be read in one screen: the review that found the request storm
+ * could only find it because the derivation was readable in isolation.
+ */
+function deriveBoardLodgeScope(input: {
+  selection: string | null;
+  optionsLoading: boolean;
+  optionsForbidden: boolean;
+  optionsFailed: boolean;
+  optionCount: number;
+}): BoardLodgeScope {
+  // 1. A selection, once made, decides the scope on its own — this function
+  //    never second-guesses one. Note what that does NOT claim: whether a
+  //    selection SURVIVES is `LodgeSelect`'s business, and its ADR-002
+  //    normaliser will replace one that names a lodge no longer among the
+  //    active options. A comment here once asserted that a deep link's own
+  //    lodgeId "still has a real scope to show" even when the options failed;
+  //    that was false, the normaliser wiped it within one commit, and the
+  //    false reassurance is what hid three defects (PR #2885 review).
+  //    `ALL_LODGES` is a value no lodge id can collide with.
+  if (input.selection === ALL_LODGES) return { kind: "all", reason: "chosen" };
+  if (input.selection) return { kind: "lodge", lodgeId: input.selection };
+  // 2. No selection. A role that may not read the lodge list can never make
+  //    one, so club-wide read-only is the only view it can have — and it is the
+  //    view it had before this issue existed.
+  if (input.optionsForbidden) {
+    return { kind: "all", reason: "no-lodge-permission" };
+  }
+  // 3. A real failure. Distinct from (2) because a retry can fix it.
+  if (input.optionsFailed) return { kind: "unavailable" };
+  // 4. Still arriving. Bounded: the request settles, and then 5 or 6 applies.
+  if (input.optionsLoading) return { kind: "resolving" };
+  // 5. Loaded, and the club has no active lodge at all.
+  if (input.optionCount === 0) return { kind: "empty" };
+  // 6. Loaded with options but no selection yet — the selector's own
+  //    normalisation supplies one on the next commit, unless a focused booking
+  //    is holding it off, in which case that booking's board is already
+  //    loading. Either way this state does not persist unattended.
+  return { kind: "resolving" };
+}
 
 function buildBucketGroups(
   unallocatedGuestNights: DashboardGuestNight[],
@@ -332,6 +393,7 @@ export default function AdminBedAllocationPage() {
     lodges,
     loading: lodgesLoading,
     failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
     reload: reloadLodgeOptions,
   } = useLodgeOptions("admin");
   // The raw selection: a lodge id, the explicit ALL_LODGES sentinel, or null
@@ -351,12 +413,16 @@ export default function AdminBedAllocationPage() {
    * A `null` selection is never a choice: it is only ever reported by the
    * component when it has no options left, which is the outage state.
    *
+   * `source` is REQUIRED, not defaulted (PR #2885 review). A default of `"user"`
+   * is fail-open: any caller that forgets it silently claims the admin browsed
+   * away from a focused booking, which drops the focus.
+   *
    * Stable rather than inline, because `LodgeSelect`'s normalising effect lists
    * `onChange` among its dependencies — a fresh closure every render would re-run
    * that effect on every render for no reason.
    */
   const handleLodgeChange = useCallback(
-    (next: string | null, source: LodgeChangeSource = "user") => {
+    (next: string | null, source: LodgeChangeSource) => {
       if (source === "user" && next !== null && next !== lodgeSelection) {
         setLodgeChosenAwayFromBooking(true);
       }
@@ -365,36 +431,50 @@ export default function AdminBedAllocationPage() {
     [lodgeSelection, setLodgeChosenAwayFromBooking, setLodgeSelection],
   );
 
-  const lodgeScope = useMemo<BoardLodgeScope>(() => {
-    // A concrete selection wins over an options failure: a deep link that
-    // carried its own lodgeId still has a real scope to show, even though the
-    // selector itself could not load.
-    if (lodgeSelection === ALL_LODGES) return { kind: "all" };
-    if (lodgeSelection) return { kind: "lodge", lodgeId: lodgeSelection };
-    if (lodgeOptionsFailed) return { kind: "unavailable" };
-    return { kind: "resolving" };
-  }, [lodgeSelection, lodgeOptionsFailed]);
+  const lodgeScope = useMemo<BoardLodgeScope>(
+    () =>
+      deriveBoardLodgeScope({
+        selection: lodgeSelection,
+        optionsLoading: lodgesLoading,
+        optionsForbidden: lodgeOptionsForbidden,
+        optionsFailed: lodgeOptionsFailed,
+        optionCount: lodges.length,
+      }),
+    [
+      lodgeSelection,
+      lodgesLoading,
+      lodgeOptionsForbidden,
+      lodgeOptionsFailed,
+      lodges.length,
+    ],
+  );
 
   // The concrete lodge, or null. Everything that must not act club-wide gates
   // on this, so the ALL_LODGES sentinel can never leak into a query string or
   // a removal anchor.
   const lodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
-  const allLodgesMode = lodgeScope.kind === "all";
   /**
-   * `INV-CAP-042`, owner decisions 4 and 6: every allocation control that needs
+   * `INV-CAP-033`, owner decisions 4 and 6: every allocation control that needs
    * a concrete lodge is disabled without one, with the reason on screen. This
    * governs what is OFFERED; the writer-side refusals are untouched and remain
-   * what protects the data. Club-wide is the
-   * chosen case; the unscoped case is the transient one where a deep link's
-   * lodge has not come back yet — and it is what stops "Remove allocation"
-   * being a clickable silent no-op, since its handler simply returns with no
-   * lodge.
+   * what protects the data.
+   *
+   * The reason is per-STATE (PR #2885 review, LOW): telling an admin the choice
+   * "becomes available once the board settles" is false in the two states that
+   * never settle by themselves.
    */
-  const allocationLockReason: AllocationLockReason = lodgeId
-    ? undefined
-    : allLodgesMode
-      ? ALL_LODGES_ALLOCATION_LOCK_REASON
-      : UNSCOPED_ALLOCATION_LOCK_REASON;
+  const allocationLockReason: AllocationLockReason =
+    lodgeScope.kind === "lodge"
+      ? undefined
+      : lodgeScope.kind === "all"
+        ? lodgeScope.reason === "chosen"
+          ? ALL_LODGES_ALLOCATION_LOCK_REASON
+          : NO_LODGE_PERMISSION_ALLOCATION_LOCK_REASON
+        : lodgeScope.kind === "unavailable"
+          ? LODGE_LIST_FAILED_ALLOCATION_LOCK_REASON
+          : lodgeScope.kind === "empty"
+            ? NO_ACTIVE_LODGE_ALLOCATION_LOCK_REASON
+            : UNSCOPED_ALLOCATION_LOCK_REASON;
 
   const dashboardScopeKey = `${lodgeScope.kind}:${lodgeId ?? "-"}:${fromDate}:${toDate}:${highlightedBookingId}`;
   const [saving, setSaving] = useState<string | null>(null);
@@ -475,8 +555,10 @@ export default function AdminBedAllocationPage() {
    *     regardless of what the client knows — so the board still works during
    *     a lodge-list outage, and still is not club-wide.
    *
-   * `resolving` and `unavailable` with no focused booking fetch nothing, which
-   * is what makes the club-wide read unreachable except by choosing it.
+   * `resolving`, `unavailable` and `empty` with no focused booking fetch
+   * nothing, which is what makes the club-wide read unreachable except by
+   * choosing it — or by holding a role that cannot choose at all, which is the
+   * `all` state's other reason and is equally deliberate.
    */
   const scopeCanLoadBoard =
     lodgeScope.kind === "lodge" ||
@@ -549,32 +631,52 @@ export default function AdminBedAllocationPage() {
   }, [highlightedBookingId, servedLodgeId]);
 
   /**
-   * Hold `LodgeSelect`'s first-lodge default off until the booking's lodge is
-   * known (#2701). Without this the selector would fire `lodges[0]` the instant
-   * the options arrived, which both shows the wrong lodge and sends the server
-   * a `bookingId`/`lodgeId` pair it now refuses with a 409 — the defence firing
-   * on ordinary navigation, which is the one thing it must never do.
+   * WHILE A BOOKING IS FOCUSED, ITS LODGE IS AUTHORITATIVE AND `LodgeSelect`'S
+   * DEFAULT MUST NOT WRITE AT ALL. This is the root fix for three separate
+   * HIGH findings on PR #2885, and it replaces a narrower deferral that only
+   * covered the window before the first payload arrived.
    *
-   * It clears as soon as the first load settles either way, so an unresolvable
-   * `bookingId` (a stale link, whose lodge the server cannot report) still
-   * lands on a real lodge rather than deferring for ever.
+   * The component's ADR-002 normaliser fires `onChange(lodges[0]?.id ?? null)`
+   * whenever `lodges.length < 2` and the value differs — and that effect runs
+   * even though the same condition makes it render nothing. So once the board
+   * adopted the booking's lodge from the server echo, the normaliser overwrote
+   * it on the very next commit, the scope key changed, the board refetched, the
+   * echo re-adopted, and round it went. Measured by a reviewer at **62 dashboard
+   * requests in about a second**, each iteration separated by a network round
+   * trip so React never sees a synchronous cycle and nothing crashes — the page
+   * just flickers and hammers the database for as long as the tab is open. It
+   * needed neither a failure nor a deep link with no lodge: any club with fewer
+   * than two ACTIVE lodges reached it, including a successful but empty list.
    *
-   * "Settled" means the server ANSWERED the lodge question — `scopedLodgeId`
-   * present, whether a lodge id or an explicit null for a club-wide read. A
-   * payload with no such field at all is the deploy-drain case: an old-colour
-   * server that cannot answer it. Letting the default fire there would pair a
-   * focused booking with `lodges[0]` and earn a 409 on a legitimate link, so the
-   * board stays deferred instead — read-only under the unscoped reason, showing
-   * the booking's own server-scoped board, and self-healing once the drain ends.
-   * A load ERROR clears the deferral either way; a wedged selector helps nobody.
+   * The same overwrite is what fired the 409 on honest in-app links. A booking
+   * at a deactivated lodge is filtered out of the options, so the normaliser
+   * replaced its lodge with the one surviving active lodge and paired that with
+   * the booking — `LODGE_MISMATCH`, on a link `AdminBookingToolsCard` itself
+   * built. And it is what turned a one-off dashboard 500 into a permanent,
+   * wrong "two different lodges" screen, because the old deferral cleared on
+   * any error.
+   *
+   * Deferring for the WHOLE time a booking is focused fixes all three at once,
+   * and it is not a special case bolted on: the normaliser exists to pick a
+   * DEFAULT, and a focused booking means there is nothing left to default —
+   * the server has already answered the question from `Booking.lodgeId`. The
+   * deferral lifts the moment the admin deliberately changes lodge, because
+   * that clears the focus.
    */
-  const servedScopeAnswered =
-    payload !== null && payload.scopedLodgeId !== undefined;
+  const focusedBookingOwnsLodge = highlightedBookingId !== "";
+
+  /**
+   * Narrower, and only for COPY: the board is focused on a booking and has not
+   * yet been told which lodge that is. "Told" means the server ANSWERED —
+   * `scopedLodgeId` present, whether an id or an explicit null. A payload
+   * without the field is the deploy-drain case (an old-colour server that
+   * cannot answer), and there the board stays honestly unresolved rather than
+   * guessing.
+   */
   const awaitingFocusedBookingLodge =
-    highlightedBookingId !== "" &&
+    focusedBookingOwnsLodge &&
     lodgeSelection === null &&
-    !servedScopeAnswered &&
-    dashboardError === "";
+    !(payload !== null && payload.scopedLodgeId !== undefined);
 
   // A refused window has NO columns. Enumerating it anyway would build a column
   // per night for whatever the admin typed — a year, a century — and the board
@@ -812,7 +914,13 @@ export default function AdminBedAllocationPage() {
   }
 
   async function allocateFullStay(group: BucketGuestGroup, bedId: string) {
-    if (!canEditBookings) return;
+    // The lock guard belongs here for the same reason it belongs on the others
+    // (PR #2885 review, LOW): consistency is what makes the layer a rule
+    // instead of a habit. Unreachable today — every entry point is a disabled
+    // control — and the bulk endpoint derives its own lodge from the guest, so
+    // this is defence in depth on the OFFER, never the thing that protects the
+    // write.
+    if (!canEditBookings || allocationLockReason) return;
 
     const bed = bedById.get(bedId);
     if (!bed || !payload) return;
@@ -875,7 +983,8 @@ export default function AdminBedAllocationPage() {
     bedId: string,
     stayDate: string,
   ) {
-    if (!canEditBookings) return;
+    // See `allocateFullStay`: same guard, same reasoning.
+    if (!canEditBookings || allocationLockReason) return;
 
     if (!group.stayDates.includes(stayDate)) {
       toast.error(`${group.guestName} is not staying on ${stayDate}`);
@@ -1230,12 +1339,17 @@ export default function AdminBedAllocationPage() {
    * The board asks for nothing until its lodge scope settles (#2701), so
    * "waiting for the lodge" is its own visible state rather than a silent blank
    * — and, critically, rather than a club-wide board rendered while the options
-   * are in flight. `unavailable` is excluded: its own error alert is the
-   * explanation, and a spinner that never resolves would contradict it.
+   * are in flight.
+   *
+   * `unavailable` and `empty` are excluded because their own alerts are the
+   * explanation, and a spinner that never resolves would contradict them. So is
+   * every state that IS loading a board: a focused booking's board can render
+   * while the selector is still unresolved (the deploy-drain case), and a
+   * permanent spinner under a rendered board would be nonsense.
    */
   const boardBusyLabel = loading
     ? "Loading bed allocation"
-    : lodgeScope.kind === "resolving" && !windowError
+    : lodgeScope.kind === "resolving" && !scopeCanLoadBoard && !windowError
       ? "Choosing which lodge to show"
       : null;
 
@@ -1281,7 +1395,7 @@ export default function AdminBedAllocationPage() {
             // #2701 decision 1: club-wide is a deliberate operator view here,
             // and this is the only page that offers it.
             allowAllLodges
-            deferDefaultSelection={awaitingFocusedBookingLodge}
+            deferDefaultSelection={focusedBookingOwnsLodge}
           />
           {/*
             Month steppers (#2251): one press moves the whole window a calendar
@@ -1369,9 +1483,11 @@ export default function AdminBedAllocationPage() {
         club-wide board. The two are distinguishable BY CONSTRUCTION and not
         only by this message: with no options there is nothing to select, so
         "All lodges" cannot have been chosen, and the board below asks for
-        nothing at all unless a focused booking scopes it server-side. Shown
-        whenever the request failed, including when a deep link's own lodgeId
-        still gives the board something real to display.
+        nothing at all unless a focused booking scopes it server-side.
+
+        A 403 is deliberately NOT this state (PR #2885 review, HIGH 2): for a
+        role that may open this board and may not read the lodge list, a refusal
+        is the normal answer, and a retry could only refuse again.
       */}
       {lodgeOptionsFailed ? (
         <Alert variant="error" title="The lodge list could not be loaded">
@@ -1389,28 +1505,60 @@ export default function AdminBedAllocationPage() {
       {/*
         #2701 decision 4: one explanation for the whole read-only board, at the
         top, instead of scattering unexplained disabled states across a dozen
-        controls. Every control below also carries this same sentence as its
-        tooltip.
+        controls. Every control below also carries the same sentence as its
+        tooltip. The two ways of reaching club-wide say different things,
+        because "choose a single lodge" is not advice you can act on when your
+        role cannot read the lodge list.
       */}
-      {allLodgesMode ? (
+      {lodgeScope.kind === "all" && lodgeScope.reason === "chosen" ? (
         <Alert variant="info" title="All lodges — read-only overview">
           {ALL_LODGES_ALLOCATION_LOCK_REASON} Choose a single lodge to allocate,
           move, approve or remove beds.
         </Alert>
       ) : null}
 
+      {lodgeScope.kind === "all" &&
+      lodgeScope.reason === "no-lodge-permission" ? (
+        <Alert variant="info" title="Every lodge — read-only overview">
+          {NO_LODGE_PERMISSION_ALLOCATION_LOCK_REASON} Ask for lodge access if
+          you need to allocate beds at a particular lodge.
+        </Alert>
+      ) : null}
+
+      {lodgeScope.kind === "empty" ? (
+        <Alert variant="warning" title="No active lodge">
+          {NO_ACTIVE_LODGE_ALLOCATION_LOCK_REASON} Add or reactivate a lodge in{" "}
+          <Link className="underline" href="/admin/lodge">
+            Lodge settings
+          </Link>{" "}
+          before allocating beds.
+        </Alert>
+      ) : null}
+
       {/*
         The board-level LODGE_MISMATCH backstop (#2701). It cannot be reached by
-        navigating: the board sends the focused booking's own lodge, or sends no
-        lodge and adopts the one the server derived. Reaching it means the URL
-        was hand-made or something is wrong, so it explains rather than retries.
+        navigating: while a booking is focused, the board sends that booking's
+        own lodge or no lodge at all, and the selector's default is held off
+        entirely so it can never substitute another one. Reaching it means the
+        URL was hand-made or something is wrong.
+
+        It still offers a way OUT (PR #2885 review): dropping the link's lodge
+        and letting the server scope the board from the booking is both the
+        correct recovery and the only one that can succeed, so it is a button
+        rather than advice.
       */}
       {dashboardError === BOARD_LODGE_MISMATCH_MESSAGE ? (
         <Alert
           variant="error"
           title="This link points at two different lodges"
         >
-          {BOARD_LODGE_MISMATCH_MESSAGE}
+          <p className="mb-3">{BOARD_LODGE_MISMATCH_MESSAGE}</p>
+          <Button
+            variant="outline"
+            onClick={() => handleLodgeChange(null, "auto")}
+          >
+            Show this booking&rsquo;s lodge
+          </Button>
         </Alert>
       ) : null}
 
@@ -1468,18 +1616,22 @@ export default function AdminBedAllocationPage() {
             <CardTitle className="text-base">Allocation preferences</CardTitle>
           </CardHeader>
           {/*
-            One card, four honest messages (#2701). This used to say "Choose a
-            lodge to continue" in every state including the one where there was
-            nothing to choose from.
+            One card, one honest message per scope state (#2701). This used to
+            say "Choose a lodge to continue" in every state, including the three
+            where there is nothing to choose from.
           */}
           <CardContent className="text-sm text-muted-foreground">
             {lodgeScope.kind === "all"
-              ? "Preferences are set per lodge. Choose a single lodge to see and edit them."
+              ? lodgeScope.reason === "chosen"
+                ? "Preferences are set per lodge. Choose a single lodge to see and edit them."
+                : "Preferences are set per lodge, and your admin role cannot choose one."
               : lodgeScope.kind === "unavailable"
                 ? "The lodge list could not be loaded, so preferences cannot be shown. Retry above."
-                : lodgesLoading || awaitingFocusedBookingLodge
-                  ? "Loading lodge…"
-                  : "Choose a lodge to continue."}
+                : lodgeScope.kind === "empty"
+                  ? "This club has no active lodge, so there are no preferences to show."
+                  : lodgesLoading || awaitingFocusedBookingLodge
+                    ? "Loading lodge…"
+                    : "Choose a lodge to continue."}
           </CardContent>
         </Card>
       )}

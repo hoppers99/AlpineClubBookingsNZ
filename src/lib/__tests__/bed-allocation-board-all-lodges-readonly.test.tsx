@@ -21,7 +21,7 @@
  */
 
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardPayload } from "@/app/(admin)/admin/bed-allocation/_components/types";
@@ -33,22 +33,54 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams("from=2026-07-01&to=2026-07-08"),
 }));
 
+/*
+ * The dnd stubs RECORD what they are told and expose the context's handlers
+ * (PR #2885 review). The previous versions discarded the `disabled` argument
+ * entirely and rendered `DndContext` as a plain `<div>`, so nothing here
+ * touched the drag path at all: `handleDragEnd` never ran, and the only thing
+ * actually asserted was that some buttons were disabled.
+ */
+const dndCalls = vi.hoisted(() => ({
+  droppable: [] as boolean[],
+  draggable: [] as boolean[],
+  onDragEnd: null as null | ((event: unknown) => void),
+  onDragStart: null as null | ((event: unknown) => void),
+}));
+
 vi.mock("@dnd-kit/core", () => ({
-  DndContext: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DndContext: ({
+    children,
+    onDragEnd,
+    onDragStart,
+  }: {
+    children: ReactNode;
+    onDragEnd?: (event: unknown) => void;
+    onDragStart?: (event: unknown) => void;
+  }) => {
+    dndCalls.onDragEnd = onDragEnd ?? null;
+    dndCalls.onDragStart = onDragStart ?? null;
+    return <div>{children}</div>;
+  },
   DragOverlay: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   KeyboardSensor: class {},
   PointerSensor: class {},
   closestCenter: vi.fn(),
   useSensor: vi.fn(),
   useSensors: () => [],
-  useDroppable: () => ({ setNodeRef: vi.fn(), isOver: false }),
-  useDraggable: () => ({
-    attributes: {},
-    listeners: {},
-    setNodeRef: vi.fn(),
-    transform: null,
-    isDragging: false,
-  }),
+  useDroppable: ({ disabled }: { disabled?: boolean }) => {
+    dndCalls.droppable.push(Boolean(disabled));
+    return { setNodeRef: vi.fn(), isOver: false };
+  },
+  useDraggable: ({ disabled }: { disabled?: boolean }) => {
+    dndCalls.draggable.push(Boolean(disabled));
+    return {
+      attributes: {},
+      listeners: {},
+      setNodeRef: vi.fn(),
+      transform: null,
+      isDragging: false,
+    };
+  },
 }));
 
 vi.mock("sonner", () => ({
@@ -254,6 +286,10 @@ function allocationControls() {
 describe("bed-allocation board — All lodges is a read-only overview (#2701)", () => {
   beforeEach(() => {
     editAccessMock.mockReturnValue(true);
+    dndCalls.droppable.length = 0;
+    dndCalls.draggable.length = 0;
+    dndCalls.onDragEnd = null;
+    dndCalls.onDragStart = null;
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -319,6 +355,66 @@ describe("bed-allocation board — All lodges is a read-only overview (#2701)", 
       expect(latest?.has("lodgeId")).toBe(false);
       expect(latest?.has("bookingId")).toBe(false);
     });
+  });
+
+  it("takes every cell and chip out of the drag/drop path club-wide", async () => {
+    // The lock has to reach dnd-kit itself, not only the buttons beside it: a
+    // keyboard drag never touches a button's `disabled`.
+    render(<AdminBedAllocationPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Pick lodge one" }));
+    await screen.findByText("Placed Guest");
+
+    // Concrete lodge: real drop targets and real drag sources exist.
+    expect(dndCalls.droppable.some((disabled) => !disabled)).toBe(true);
+    expect(dndCalls.draggable.some((disabled) => !disabled)).toBe(true);
+
+    dndCalls.droppable.length = 0;
+    dndCalls.draggable.length = 0;
+    fireEvent.click(screen.getByRole("button", { name: "Pick all lodges" }));
+    await screen.findByText("Placed Guest");
+
+    // Club-wide: every single one is disabled — the bucket, every board cell,
+    // every bucket guest and every placed chip.
+    expect(dndCalls.droppable.length).toBeGreaterThan(0);
+    expect(dndCalls.droppable.every((disabled) => disabled)).toBe(true);
+    expect(dndCalls.draggable.length).toBeGreaterThan(0);
+    expect(dndCalls.draggable.every((disabled) => disabled)).toBe(true);
+  });
+
+  it("refuses a drop that reaches the handler anyway", async () => {
+    // The guard behind the disabled targets. A stale sensor or a future entry
+    // point must not be able to route round them, so `handleDragEnd` is driven
+    // directly with a drop dnd-kit would never deliver.
+    render(<AdminBedAllocationPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Pick all lodges" }));
+    await screen.findByText("Placed Guest");
+
+    const before = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+    expect(dndCalls.onDragEnd).toBeTypeOf("function");
+    act(() => {
+      dndCalls.onDragEnd?.({
+        active: {
+          id: "bucket-guest:guest-1",
+          data: { current: { type: "bucket-guest", bookingGuestId: "guest-1" } },
+        },
+        over: {
+          id: "cell:bed-1:2026-07-02",
+          data: {
+            current: {
+              type: "cell",
+              bedId: "bed-1",
+              roomId: "room-1",
+              stayDate: "2026-07-02",
+            },
+          },
+        },
+      });
+    });
+
+    // No allocation write, and no optimistic board mutation either.
+    expect((global.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(
+      before,
+    );
   });
 
   it("cannot leave Remove allocation as a clickable silent no-op (decision 6)", async () => {

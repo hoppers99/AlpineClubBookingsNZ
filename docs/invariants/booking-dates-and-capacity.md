@@ -1537,18 +1537,30 @@ move, never a capacity or double-booking violation.
   transaction finite, and is **refused at, never silently truncated to** — as is
   every board window the admin types.
 
-### INV-CAP-042
+### INV-CAP-033
 
 - **The bed-allocation board never offers a bed choice without a concrete lodge,
-  and club-wide is a state somebody chose (#2701):** the board's lodge scope is
-  one of four named states — `lodge`, `all`, `resolving`, `unavailable` — and
-  never a single nullable value standing for several of them. `all` is reachable
-  only by picking **All lodges** from the selector, which no other page offers;
+  and every club-wide board says why it is club-wide (#2701):** the board's
+  lodge scope is one of five named states — `lodge`, `all`, `empty`,
+  `resolving`, `unavailable` — never a single nullable value standing for
+  several of them, and **the set is total**: every combination of selection,
+  permission, failure, loading and option count lands on exactly one, with no
+  fall-through. A club with zero active lodges is `empty` and says so; before
+  that state existed it fell through to `resolving` and sat on a spinner for
+  ever.
+  `all` carries the REASON it was reached — `chosen` from the selector (the only
+  page that offers the option), or `no-lodge-permission` for a role that may
+  open this board and may not read the lodge list, which the shipped
+  `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` presets both are. Both are honest
+  club-wide views, both are read-only, and each says which it is; neither is an
+  outage wearing a club-wide costume. A `?lodgeId=` naming the sentinel also
+  reaches `chosen`, which is the same deliberate act by another route.
   `resolving` fetches no dashboard at all, so a direct visit cannot render a
-  club-wide board on its way to a real lodge; `unavailable` (a failed
-  `/api/admin/lodges`) is an error with a retry, and is distinguishable from
-  `all` **by construction** — with no options there is nothing that could have
-  been chosen — rather than by a message. Without a concrete lodge, every
+  club-wide board on its way to a real lodge; `unavailable` (a `/api/admin/lodges`
+  failure that is **not** a 403) is an error with a retry, and is distinguishable
+  from `all` **by construction** — with no options there is nothing that could
+  have been chosen — rather than by a message.
+  Without a concrete lodge, every
   allocation control that needs one is disabled with its reason on screen: the
   bucket's Select bed and Allocate, the chip's Move to bed, drag-and-drop onto a
   cell, Assign range, Run Auto Allocation, Approve Visible (which otherwise
@@ -1559,9 +1571,17 @@ move, never a capacity or double-booking violation.
   `LODGE_MISMATCH` in `bed-allocation-move.ts` — which stay exactly as they
   were and remain the thing that protects the data. A read-side backstop mirrors
   them: `GET /api/admin/bed-allocation` refuses a `lodgeId` contradicting a
-  named `bookingId` with a 409 `LODGE_MISMATCH`, which the selection rules above
-  make unreachable through honest navigation, and which an unresolvable
-  `bookingId` never triggers.
+  named `bookingId` with a 409 `LODGE_MISMATCH`, and an unresolvable `bookingId`
+  never triggers it.
+  **What keeps that 409 off honest navigation is a single rule: while a booking
+  is focused, its lodge is authoritative and the selector's ADR-002 default must
+  not write at all.** That default fires whenever fewer than two ACTIVE lodges
+  are offered — including when it renders nothing — so left running it
+  overwrites the lodge the server derived, which both re-fires the request in a
+  loop and pairs the wrong lodge with the booking. A booking at a DEACTIVATED
+  lodge is the reachable case: the lodge is filtered out of the options, so the
+  default would substitute the surviving one and refuse a link the product
+  itself built.
 
 ### INV-LIFE-062
 
