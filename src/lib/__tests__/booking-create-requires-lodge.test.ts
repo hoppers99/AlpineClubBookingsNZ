@@ -157,6 +157,11 @@ function collectProductionCreateCalls(): ProductionCreateCall[] {
   return calls;
 }
 
+// Parse the production tree once per test file. Running this census separately
+// in both assertions made the gate vulnerable to Vitest's five-second timeout
+// when the focused suite shared a busy worker pool.
+const PRODUCTION_CREATE_CALLS = collectProductionCreateCalls();
+
 describe("POST /api/bookings — the lodge is required (#2701)", () => {
   it("refuses before resolving, so the default lodge is never reached", () => {
     // MUTATION PROBE: delete the `if (!parsed.data.lodgeId)` block and this
@@ -214,7 +219,7 @@ describe("POST /api/bookings — the lodge is required (#2701)", () => {
     // lodge. An exact census makes a newly-added internal door a deliberate
     // contract change rather than another silent default-lodge write.
     expect(
-      collectProductionCreateCalls()
+      PRODUCTION_CREATE_CALLS
         .map(({ file, service }) => `${file}:${service}`)
         .sort(),
     ).toEqual(
@@ -235,7 +240,7 @@ describe("POST /api/bookings — the lodge is required (#2701)", () => {
     // group-booking.ts and this reports the exact internal writer that would
     // fall through the service's legacy default-lodge compatibility path.
     expect(
-      collectProductionCreateCalls()
+      PRODUCTION_CREATE_CALLS
         .filter((call) => !call.hasLodgeId)
         .map(({ file, service }) => `${file}:${service}`),
     ).toEqual([]);

@@ -136,8 +136,12 @@ describe("useLodgeOptions", () => {
 
     act(() => result.current.reload());
 
-    await waitFor(() => expect(result.current.failed).toBe(false));
-    expect(result.current.lodges.map((lodge) => lodge.id)).toEqual(["lodge-1"]);
+    await waitFor(() =>
+      expect(result.current.lodges.map((lodge) => lodge.id)).toEqual([
+        "lodge-1",
+      ]),
+    );
+    expect(result.current.failed).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
