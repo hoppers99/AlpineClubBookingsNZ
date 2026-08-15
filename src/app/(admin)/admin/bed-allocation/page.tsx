@@ -381,8 +381,10 @@ export default function AdminBedAllocationPage() {
   const lodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
   const allLodgesMode = lodgeScope.kind === "all";
   /**
-   * Owner decisions 4 and 6: every allocation control that needs a concrete
-   * lodge is disabled without one, with the reason on screen. Club-wide is the
+   * `INV-CAP-042`, owner decisions 4 and 6: every allocation control that needs
+   * a concrete lodge is disabled without one, with the reason on screen. This
+   * governs what is OFFERED; the writer-side refusals are untouched and remain
+   * what protects the data. Club-wide is the
    * chosen case; the unscoped case is the transient one where a deep link's
    * lodge has not come back yet — and it is what stops "Remove allocation"
    * being a clickable silent no-op, since its handler simply returns with no

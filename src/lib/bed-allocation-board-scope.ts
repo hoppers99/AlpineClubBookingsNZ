@@ -11,6 +11,8 @@
  * away from what the route actually refuses.
  *
  * Client-safe: no imports, no Prisma, no Next.
+ *
+ * The rule these three exports serve is `INV-CAP-042`.
  */
 
 /**

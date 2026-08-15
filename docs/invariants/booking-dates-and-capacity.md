@@ -1537,6 +1537,32 @@ move, never a capacity or double-booking violation.
   transaction finite, and is **refused at, never silently truncated to** — as is
   every board window the admin types.
 
+### INV-CAP-042
+
+- **The bed-allocation board never offers a bed choice without a concrete lodge,
+  and club-wide is a state somebody chose (#2701):** the board's lodge scope is
+  one of four named states — `lodge`, `all`, `resolving`, `unavailable` — and
+  never a single nullable value standing for several of them. `all` is reachable
+  only by picking **All lodges** from the selector, which no other page offers;
+  `resolving` fetches no dashboard at all, so a direct visit cannot render a
+  club-wide board on its way to a real lodge; `unavailable` (a failed
+  `/api/admin/lodges`) is an error with a retry, and is distinguishable from
+  `all` **by construction** — with no options there is nothing that could have
+  been chosen — rather than by a message. Without a concrete lodge, every
+  allocation control that needs one is disabled with its reason on screen: the
+  bucket's Select bed and Allocate, the chip's Move to bed, drag-and-drop onto a
+  cell, Assign range, Run Auto Allocation, Approve Visible (which otherwise
+  approves the whole club's visible window), Reset allocations, Remove
+  allocation, and the per-lodge preferences section. This is a rule about what
+  the operator is OFFERED. It layers on top of, and never replaces, the
+  writer-side refusals — `assertGuestAndBedForAllocation` and
+  `LODGE_MISMATCH` in `bed-allocation-move.ts` — which stay exactly as they
+  were and remain the thing that protects the data. A read-side backstop mirrors
+  them: `GET /api/admin/bed-allocation` refuses a `lodgeId` contradicting a
+  named `bookingId` with a 409 `LODGE_MISMATCH`, which the selection rules above
+  make unreachable through honest navigation, and which an unresolvable
+  `bookingId` never triggers.
+
 ### INV-LIFE-062
 
 A `HutLeaderAssignment` may additionally hold ONE bed (`bedId`), which makes it

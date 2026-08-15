@@ -4,8 +4,9 @@
  * The bed-allocation board's own half of the #2678 fix.
  *
  * WHY THIS FILE EXISTS AT ALL. `bed-allocation-get-lodge-validation.test.ts`
- * proves the API derives the board's lodge from `bookingId` and ignores any
- * `lodgeId` beside it. That proof is worth nothing to the board unless the board
+ * proves the API derives the board's lodge from `bookingId` and (since #2701)
+ * refuses a `lodgeId` that contradicts it. That proof is worth nothing to the
+ * board unless the board
  * actually SENDS `bookingId` on its own fetch — and nothing pinned that. The
  * whole of #2678's fix for the four board bed pickers (bucket "Select bed", the
  * allocation chip's "Move to bed", drag-and-drop onto a cell, and
@@ -14,7 +15,8 @@
  * server-side test still passes while the board goes club-wide again.
  *
  * AND THE FLIP SIDE, which is the regression the fix itself created. Because the
- * API now ignores a `lodgeId` sent beside a `bookingId`, an admin who arrived on
+ * API does not take its scope from a `lodgeId` sent beside a `bookingId`, an
+ * admin who arrived on
  * the deep link and then chose a DIFFERENT lodge from the board's own selector
  * would have been served the booking's lodge under a selector reading the lodge
  * they picked. The board answers that by letting the focus go on a deliberate

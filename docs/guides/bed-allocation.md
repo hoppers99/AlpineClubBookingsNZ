@@ -60,8 +60,22 @@ year in one go).
    Arriving from a booking's "Bed allocation" link also opens the board **on
    that booking's own lodge**, so the bed pickers only offer beds the booking's
    guests can actually be put in. The server works the lodge out from the
-   booking itself, so a link naming a different lodge is ignored rather than
-   obeyed (#2678).
+   booking itself and tells the board which lodge that was, so the selector and
+   the board below it always agree — even when the booking is not at the first
+   lodge in the list (#2678, #2701). A link that names a booking at one lodge
+   and a board at another cannot be produced by anything in the app; typing one
+   by hand gets a plain refusal instead of a board that contradicts itself.
+
+   **In a club with more than one lodge the selector also offers "All lodges".**
+   That is a deliberate club-wide overview and it is **read-only**: you can see
+   every lodge's board at once, but Select bed, Allocate, Assign range,
+   drag-and-drop, Move to bed, Remove allocation, Run Auto Allocation, Approve
+   Visible and Reset allocations are all switched off, with one line at the top
+   saying allocation changes need a single lodge selected. Choose a lodge and
+   they come back. Opening the board any other way always settles on a real
+   lodge first, so you never see a flash of every lodge's beds on the way in. If
+   the lodge list itself cannot be loaded you get an error with a **Try again**
+   button — never a club-wide board standing in for one (#2701).
 
    ![Bed Allocation board: the date controls, allocation preferences, the "Bookings approved, awaiting allocation" pool with Run Auto Allocation, and the room-by-night Allocation Board](../images/admin/admin-bed-allocation.png)
 
@@ -357,15 +371,15 @@ that booking, so the booking's own **Audit log** link finds it.
 | Single-night drag mode | Drag allocates one night vs the whole stay | off | Client-side only, not saved |
 | Move an existing chip | Review a bed change while preserving original nights | — | Choose this allocation night or every existing night for this person on the booking (including off-screen rows, up to 366); hovered date is ignored; changed approved rows become Manual drafts; all-noop confirmation is audit-free |
 | Edit / Save / Cancel | Stage, persist, or discard this lodge's allocation preferences | — | Needs bookings edit; Save is dirty-gated |
-| Run Auto Allocation | Apply suggested placements | — | Needs auto-allocation on and suggestions available |
-| Approve Visible | Approve the visible draft allocations | — | Disabled when nothing is unapproved |
-| Reset allocations… | Review removal of selected categories in this lodge's visible window | — | Requires a preview; never includes off-screen nights and never runs automatic allocation afterwards |
-| Remove allocation / Remove | Review removal from one chip or an in-booking run | — | Starts with one night; may widen to the person or whole booking, including off-screen rows; apply is atomic and needs bookings edit |
-| Select bed / Allocate | Place a guest on a chosen bed | — | Needs bookings edit access |
-| Refresh | Reload the board | — | — |
+| Run Auto Allocation | Apply suggested placements | — | Needs auto-allocation on, suggestions available, and a single lodge selected |
+| Approve Visible | Approve the visible draft allocations | — | Disabled when nothing is unapproved, or while All lodges is selected (#2701) |
+| Reset allocations… | Review removal of selected categories in this lodge's visible window | — | Requires a preview; never includes off-screen nights and never runs automatic allocation afterwards; needs a single lodge selected |
+| Remove allocation / Remove | Review removal from one chip or an in-booking run | — | Starts with one night; may widen to the person or whole booking, including off-screen rows; apply is atomic and needs bookings edit; unavailable while All lodges is selected, where it could only do nothing (#2701) |
+| Select bed / Allocate | Place a guest on a chosen bed | — | Needs bookings edit access and a single lodge selected |
+| Refresh | Reload the board | — | Disabled until the board has settled on which lodge to show |
 | Bed allocation card (on a booking) | Assign, remove and confirm this booking's beds without leaving it | — | Admin-only; needs bookings edit access; long stays are paged 31 nights at a time |
 | Confirm draft beds (on a booking) | Approve every draft bed night on that booking | — | Never touches another booking's drafts; locks the member's room request |
-| Lodge selector | Which lodge's board is shown | the focused booking's lodge, otherwise the first/only lodge | Only shown with more than one active lodge. While a booking is focused, changing the lodge **drops the focus** — the "Focused booking" badge disappears and you get the lodge you chose (#2678) |
+| Lodge selector | Which lodge's board is shown, or **All lodges** | the focused booking's lodge, otherwise the first/only lodge | Only shown with more than one active lodge. **All lodges** is a read-only club-wide overview — every allocation control is disabled with a reason on screen (#2701). While a booking is focused, changing the lodge **drops the focus** — the "Focused booking" badge disappears and you get the lodge you chose (#2678). If the lodge list fails to load you get an error and a retry, never a club-wide board (#2701) |
 
 Notes: bed types (single, bunk top/bottom, double) are descriptive and do not
 change capacity; a double bed-night can hold two occupants (declared partners).
