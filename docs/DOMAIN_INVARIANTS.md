@@ -34,7 +34,7 @@ description, so you can find the right file without opening more than one.
 | [`analytics-and-privacy.md`](invariants/analytics-and-privacy.md) | `INV-PRIV` | analytics loading, the consent banner, the public Analytics preferences control, the analytics route policy, what leaves this application for Google, what personal data may appear in a log, the audit `category` a writer records and who may therefore read the row |
 | [`membership-lifecycle.md`](invariants/membership-lifecycle.md) | `INV-LIFE` (except `INV-LIFE-062`) | applications and nomination, cancellation, archive and deletion, roles and the admin lock-out guards, seasonal membership type and age tier, family groups, partner and parent/dependant links, email inheritance, inductions, member merge |
 | [`integrations.md`](invariants/integrations.md) | `INV-INT` | webhooks, cron idempotency, provider callbacks, Xero member grouping |
-| [`operations.md`](invariants/operations.md) | `INV-OPS` | raw SQL, row locking, deployment, dropping a column, changing what a value already stored in a column means (an audit `category`, a status string) so the rows already written no longer match the code, what may be used as test input |
+| [`operations.md`](invariants/operations.md) | `INV-OPS`, `INV-LOCK` | raw SQL, advisory or row locking, which lock tier a writer takes, deployment, dropping a column, changing what a value already stored in a column means (an audit `category`, a status string) so the rows already written no longer match the code, what may be used as test input |
 
 Two supporting files sit beside them: the full id scheme in
 [`SCHEME.md`](invariants/SCHEME.md), and the imperfections found
@@ -699,14 +699,19 @@ File: [`invariants/integrations.md`](invariants/integrations.md). Prefix
 
 ## Operations
 
-Raw SQL and row locking, production deployment including the worked windowed
-column drop, changing what values already stored in a column mean, and what may
-be used as test input.
-File: [`invariants/operations.md`](invariants/operations.md). Prefix `INV-OPS`.
+Raw SQL, advisory and row locking, production deployment including the worked
+windowed column drop, changing what values already stored in a column mean, and
+what may be used as test input.
+File: [`invariants/operations.md`](invariants/operations.md). Prefixes `INV-OPS`
+and `INV-LOCK` — the latter is the two-tier advisory-lock protocol, kept beside
+the row-locking rules it is the sibling of.
 
 | ID | Covers |
 | --- | --- |
 | `INV-OPS-001` | Raw SQL never declares its own result shape: lock raw and read typed, or validate the rows |
+| `INV-LOCK-001` | The scoped tier is the default; the global key is deliberate |
+| `INV-LOCK-002` | Global before per-lodge; one helper mints the per-lodge capacity key |
+| `INV-LOCK-003` | Every global-lock call site is registered, by site, with its own reason |
 | `INV-OPS-014` | Never interpolate or concatenate into `$queryRawUnsafe` / `$executeRawUnsafe` |
 | `INV-OPS-013` | A `"use client"` module never imports server-only code at runtime |
 | `INV-OPS-002` | Production deployment must respect `docs/BLUE_GREEN_MIGRATION_POLICY.md` |
