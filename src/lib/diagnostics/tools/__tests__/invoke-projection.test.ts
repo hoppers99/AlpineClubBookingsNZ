@@ -2,12 +2,11 @@
  * The projection, redaction and byte-ceiling gates, exercised against HOSTILE
  * registry entries.
  *
- * These cases cannot be reached through the shipped registry, and that is the
- * point: AID-5's only entry reads no relation and returns three short scalars, so
- * it can never produce a nested value, a 400-character note, or an oversized
- * result. A future tool pack (AID-6A/B/C) absolutely can. Mocking the registry
- * here is how the guards get tested BEFORE the tool that would trip them exists —
- * which is the only order in which testing them is any use.
+ * These cases use hostile synthetic registry entries so each guard can be exercised
+ * in isolation from the shipped pack bounds. The AID-6A/B/C entries carry real
+ * database-derived values and can encounter long or structurally hostile evidence;
+ * mocking the registry here proves the shared guards independently of the current
+ * catalogue.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 

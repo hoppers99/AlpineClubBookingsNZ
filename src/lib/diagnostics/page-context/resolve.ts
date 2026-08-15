@@ -270,8 +270,8 @@ const AREA_DENIAL_MESSAGE: Record<AdminPermissionArea, string> = {
  * (deactivated, or under a forced password change), so a caller that could pass
  * an arbitrary id would be able to ask "does this member exist, and is their
  * account locked out?" for any id it liked — the field that makes these incidents
- * triageable would become an account-state oracle. The route AID-7 (#2378) builds
- * must therefore take the id from `requireAdmin`, never from the request body.
+ * triageable would become an account-state oracle. The shipped AID-7 route (#2378)
+ * therefore takes the id from `requireAdmin`, never from the request body.
  */
 export async function resolveDiagnosticsPageContext(
   input: ResolveDiagnosticsPageContextInput,

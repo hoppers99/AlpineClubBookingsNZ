@@ -134,7 +134,7 @@ function consentTo(records: { kind: "booking" | "member"; id: string }[]) {
 /**
  * ONE QUESTION IS ONE SESSION, and the ledger binds to it (#2785 review). Every test
  * that runs two invocations under the SAME ledger has to run them under the same
- * session too, exactly as the AID-7 loop will: a ledger presented to a second
+ * session too, exactly as the shipped AID-7 loop does: a ledger presented to a second
  * session is a ledger that outlived its question, and the executor refuses it.
  * `question()` is that pairing, made explicit so a test cannot get it wrong silently.
  */

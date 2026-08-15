@@ -88,7 +88,7 @@ problem — every failure is a structured, evidence-free result.
    separating a database outage from an ordinary lock-out means reading the
    resolved context, not the audit row alone. The two-factor gate is
    deliberately NOT here: it decides on session facts no member row carries, so it
-   stays with `requireAdmin` on the route AID-7 (#2378) builds.
+   stays with `requireAdmin` on the shipped AID-7 route (#2378).
 3. **Re-fetch** (`projections.ts`) — a fixed, typed, column-allowlisted read of
    the one record, by id. No dynamic columns, no caller-influenced filter, no
    model-authored SQL.
@@ -172,8 +172,8 @@ Five drift guards keep this table honest, all in
 them: pagination and sort keys are excluded because they say nothing about why a
 page shows what it shows. Because rejection in `parse.ts` is total, a client must
 send only allowlisted keys — one unlisted key would cost the operator their whole
-page context, so this is a contract AID-7 (#2378) builds against, not a hint. (The
-ask route's `view` path therefore **pre-narrows** to the matched row's allowlists and
+page context, so this is a contract the shipped AID-7 route (#2378) enforces, not a
+hint. (The ask route's `view` path therefore **pre-narrows** to the matched row's allowlists and
 drops what the row does not permit, rather than handing the parser a live URL to
 refuse outright; what survives is re-validated there, so the filter can only narrow.
 Total rejection governs the direct selector path.)
@@ -367,11 +367,12 @@ record ids is fully attributable.
 
 ## Known limits
 
-- **The reads run on the application's Prisma client today.** ADR-007's
-  dedicated non-superuser SELECT-only role is the substrate AID-5 (#2374)
-  builds; these readers move onto it when it lands. That is defence in depth
-  *beneath* — never a substitute for — the fixed column allowlists here and the
-  fresh `area:view` gate, and ADR-007 §2 says so explicitly.
+- **The reads run on the application's Prisma client.** AID-5 (#2374) shipped the
+  dedicated non-superuser SELECT-only role for the tool substrate, but the
+  page-context readers did not move onto it. Their controls remain the fixed
+  column allowlists here and the fresh `area:view` gate. Moving this separate
+  Prisma path would require a new hardening design; it is not unfinished AID-5
+  delivery (ADR-007 §2).
 - **The registry is small on purpose.** A page belongs here when an operator
   plausibly asks "why is this page showing me this?", not merely because it
   exists. Every row is a place personal data could be re-read.

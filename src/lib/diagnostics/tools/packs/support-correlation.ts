@@ -133,8 +133,7 @@
  *     this pack found — extra `field=value` pairs inside its own row.
  *
  * Both layers stay, deliberately: (1) is specific to this column's provenance and (2)
- * is what the later packs' free text (member names, booking notes, payment
- * narrations) will actually depend on.
+ * is what the sibling packs' free-text member, lodge, room, and bed names depend on.
  */
 
 import "server-only";
