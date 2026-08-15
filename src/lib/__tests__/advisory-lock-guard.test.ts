@@ -914,7 +914,16 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // lock-only row statement. Reviewed removal locks its selected/causal rows,
   // and requested-room editing locks the booking before its authoritative
   // approval check and guarded update.
-  "src/lib/admin-bed-allocation.ts": 2,
+  //
+  // These two were one entry of 2 against `admin-bed-allocation.ts` until #2688
+  // split that file. Both moved WHOLE, inside their enclosing functions, to the
+  // module that owns their concern — the count is unchanged and neither site
+  // changed strength, order or counterpart. Note that this inventory is keyed by
+  // FILE, unlike the Tier-2 registry above, so a structural move re-keys it even
+  // when nothing about the lock moves; #2722 converted the advisory census to
+  // per-site identity and deliberately left this one per-file.
+  "src/lib/bed-allocation-approval.ts": 1,
+  "src/lib/bed-allocation-bunk-pairing.ts": 1,
   // #2595 reviewed moves lock every selected/destination/old-bed counterpart
   // tuple after the advisory tiers and before their authoritative re-read.
   "src/lib/bed-allocation-move.ts": 1,
