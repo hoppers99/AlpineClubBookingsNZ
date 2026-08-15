@@ -17,15 +17,16 @@
 #
 # The ratchet: a file that is not listed may not go over budget, and a file
 # that is listed may not exceed the number recorded below. Shrinking is
-# always allowed and lowers the ceiling.
+# always allowed; regeneration records the lower ceiling.
 #
 #   npm run quality:budget          verify (also a step in CI's `verify` job)
-#   npm run quality:budget:update   regenerate against the working tree
+#   npm run quality:budget:update   intentionally accept the working tree as the new baseline
 #
 # Regenerate; never hand-edit, and after a rebase regenerate against the
 # rebased tree rather than merging counts by hand. A deliberate increase is
-# allowed but must land as a changed line here, with the reason in the PR
-# body - there is no exceptions list that bypasses this file.
+# allowed but must land as an added, removed or changed record here, with
+# the reason in the PR body. Update is the reviewed escape, not a verification
+# pass, and there is no exceptions list that bypasses this file.
 #
 # Format: one record per line, sorted by path.
 #   <path> <loc> <budget-category>

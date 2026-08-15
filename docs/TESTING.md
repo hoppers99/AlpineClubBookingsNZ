@@ -29,7 +29,7 @@ the full local gate.
 ## Which project typechecks a test
 
 `npm run typecheck` runs two TypeScript projects, and between them they must
-read every tracked `.ts`/`.tsx` file in the repository:
+read every tracked `.ts`, `.tsx`, `.mts` and `.cts` file in the repository:
 
 - **`tsconfig.json`** — the app. It excludes `*.test.ts`, `*.test.tsx` and
   everything under `__tests__/`, so test code stays out of the app's type

@@ -3,12 +3,14 @@
  * File-size budget ratchet — the blocking half (#2687).
  *
  * `npm run quality:budget`        verify the tree against the committed baseline
- * `npm run quality:budget:update` regenerate the baseline from the tree
+ * `npm run quality:budget:update` intentionally accept the tree as the new,
+ *                                 review-visible baseline
  *
  * The rule, in one sentence: current size debt may stay, but new debt and debt
  * growth may not appear silently. A file that is not in the baseline may not go
  * over its documented budget, and a file that is in the baseline may not exceed
- * the number recorded there. Shrinking is always allowed and lowers the ceiling.
+ * the number recorded there. Shrinking is always allowed; regeneration records
+ * the lower ceiling.
  *
  * Exits 1 on any finding, including a missing, stale or malformed baseline —
  * an enforcement tool that cannot trust its own input must fail loudly rather
@@ -16,6 +18,12 @@
  *
  * Reads `git ls-files` and the working tree only: no network, no build, no
  * database, no provider.
+ *
+ * Update mode is the owner-approved escape, not another verification mode. It
+ * deliberately writes the tree even when verification found new or growing
+ * debt, because an exceptional increase has to be possible. The resulting
+ * added/removed/changed ledger records, plus the debt delta printed below, are
+ * the evidence a reviewer accepts. CI never runs update mode.
  */
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -133,6 +141,7 @@ export function run(root: string, argv: readonly string[]): number {
             : delta === 0
               ? " (unchanged)"
               : ` (${delta > 0 ? "+" : ""}${delta} vs the previous baseline)`),
+        "  Intentional baseline update: review the ledger diff; this is not a verification pass.",
         delta !== null && delta > 0
           ? "  This PR ACCEPTS more size debt. Say in the PR body why splitting is worse here."
           : "",

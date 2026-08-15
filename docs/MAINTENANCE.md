@@ -1,5 +1,7 @@
 # Maintenance
 
+Audience: Developer, Agent
+
 This document describes the public maintenance baseline for AlpineClubBookingsNZ.
 
 ## Required Gates
@@ -311,11 +313,14 @@ the existing surface.
 
 ### File-size budget ratchet
 
-The tree does not meet the budgets today and will not for some time: 281 of
-1,901 production files are over one of them, carrying about 131,000 lines of
-size debt. Failing all of them at once would produce either a permanently red
-gate or a mass exception list, and both are worse than no gate, because they
-look like enforcement while providing none. So the rule CI enforces is:
+The tree does not meet the budgets today and will not for some time. At the
+baseline carried after `main` commit `aafbd08f3`, the scanner measured 1,903
+production files; 281 were over budget and carried 131,709 lines of size debt.
+These are an anchored measurement, not acceptance constants — rerun
+`npm run quality:budget` for the current tree. Failing all debt at once would
+produce either a permanently red gate or a mass exception list, and both are
+worse than no gate, because they look like enforcement while providing none.
+So the rule CI enforces is:
 
 > Current size debt may stay. New debt and debt growth may not appear silently.
 
@@ -325,7 +330,8 @@ with the line count that is now its ceiling. From that:
 
 - a file **not** in the baseline may not exceed its budget;
 - a file **in** the baseline may not exceed its recorded line count;
-- shrinking is always allowed and **lowers** the ceiling;
+- shrinking is always allowed; verification reports the old ceiling as stale
+  until regeneration **lowers** it;
 - a missing, stale or malformed baseline fails too — an enforcement tool that
   cannot trust its own input must say so rather than report a pass it has not
   earned.
@@ -359,7 +365,9 @@ read as a split going well.
 #### Changing the baseline
 
 The baseline is generated, never hand-edited. Regenerate it whenever the tree
-legitimately changes and commit the result in the same PR:
+legitimately changes and commit the result in the same PR. Update mode is an
+intentional, reviewed escape from the old ceiling, not a verification pass: CI
+runs only `npm run quality:budget`, never the update command.
 
 - **A split or a thinning** lowers a number, or removes a line entirely. This is
   the expected direction. Never edit a reduced file back upward to avoid a
@@ -370,8 +378,8 @@ legitimately changes and commit the result in the same PR:
   concurrent branches touching different files usually merge without a
   conflict at all.
 - **A deliberate increase** is allowed, and is the only escape path. It must
-  land as a changed line in this file, and the PR body must say why the
-  increase is necessary and why splitting is worse at that point. There is no
+  land as added, removed or changed records in this file, and the PR body must
+  say why the increase is necessary and why splitting is worse at that point. There is no
   second exceptions list, and there is no way to pass the gate without the
   changed line: hand-raising a ceiling the tree does not justify, deleting a
   record for a file that is still over budget, or retyping a route handler as a
@@ -379,7 +387,13 @@ legitimately changes and commit the result in the same PR:
 
 `npm run quality:budget:update` prints how much accepted debt the change adds
 or removes, so the number that needs justifying is in front of you before you
-write the PR body.
+write the PR body. A pure rename of an oversized file fails verification before
+that update as one new-debt record plus one stale old-path record; regeneration
+moves the ledger entry and reports an unchanged debt total. A rename that also
+grows fails the same pre-update check, then regeneration exposes both the path
+change in the ledger diff and the positive debt delta in command output. That
+visible, reviewed acceptance is the intended contract — neither case is a
+silent bypass.
 
 ### Quality report
 

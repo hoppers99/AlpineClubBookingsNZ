@@ -1,7 +1,16 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import { run } from "../ci/check-file-size-budget";
 
 import {
   BASELINE_PATH,
@@ -37,6 +46,66 @@ const CLEAN_TREE: FileStat[] = [
 
 function baselineFor(stats: FileStat[]): string {
   return serializeBaseline(baselineEntriesFor(stats));
+}
+
+function git(root: string, args: readonly string[]): string {
+  return execFileSync("git", [...args], {
+    cwd: root,
+    encoding: "utf8",
+  });
+}
+
+function writeLines(root: string, file: string, lines: number): void {
+  const target = path.join(root, file);
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, "line\n".repeat(lines), "utf8");
+}
+
+function createTrackedRepo(file: string, lines: number): string {
+  const root = mkdtempSync(path.join(os.tmpdir(), "acb-file-size-budget-"));
+  git(root, ["init", "--quiet"]);
+  git(root, ["config", "core.autocrlf", "false"]);
+  writeFileSync(
+    path.join(root, ".gitattributes"),
+    "*.ts text eol=lf\n*.txt text eol=lf\n",
+    "utf8",
+  );
+  writeLines(root, file, lines);
+  const baseline = serializeBaseline(
+    baselineEntriesFor([{ file, lines }]),
+  );
+  const baselineTarget = path.join(root, BASELINE_PATH);
+  mkdirSync(path.dirname(baselineTarget), { recursive: true });
+  writeFileSync(baselineTarget, baseline, "utf8");
+  git(root, ["add", "--", ".gitattributes", file, BASELINE_PATH]);
+  return root;
+}
+
+function captureRun(root: string, argv: readonly string[]): {
+  code: number;
+  stdout: string;
+  stderr: string;
+} {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const stdoutSpy = vi
+    .spyOn(process.stdout, "write")
+    .mockImplementation((chunk: string | Uint8Array) => {
+      stdout.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    });
+  const stderrSpy = vi
+    .spyOn(process.stderr, "write")
+    .mockImplementation((chunk: string | Uint8Array) => {
+      stderr.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    });
+  try {
+    return { code: run(root, argv), stdout: stdout.join(""), stderr: stderr.join("") };
+  } finally {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  }
 }
 
 describe("budget classification", () => {
@@ -345,6 +414,64 @@ describe("the ratchet", () => {
     expect(new Set(kinds(result.findings))).toEqual(
       new Set(["grown-beyond-baseline", "new-over-budget"]),
     );
+  });
+});
+
+describe("the visible baseline-update escape", () => {
+  it("refuses a pure rename before update, then moves the ledger record with unchanged debt", () => {
+    const root = createTrackedRepo("src/lib/original.ts", 800);
+    try {
+      git(root, ["mv", "src/lib/original.ts", "src/lib/renamed.ts"]);
+
+      const refused = captureRun(root, []);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("src/lib/original.ts");
+      expect(refused.stderr).toContain("src/lib/renamed.ts");
+      expect(refused.stderr).toContain("REGRESSION");
+      expect(refused.stderr).toContain("STALE BASELINE");
+
+      const accepted = captureRun(root, ["--update"]);
+      expect(accepted.code).toBe(0);
+      expect(accepted.stdout).toContain("Intentional baseline update");
+      expect(accepted.stdout).toContain("(unchanged)");
+
+      const ledger = readFileSync(path.join(root, BASELINE_PATH), "utf8");
+      expect(ledger).not.toContain("src/lib/original.ts 800 domain-module");
+      expect(ledger).toContain("src/lib/renamed.ts 800 domain-module");
+      const ledgerDiff = git(root, ["diff", "--", BASELINE_PATH]);
+      expect(ledgerDiff).toContain("-src/lib/original.ts 800 domain-module");
+      expect(ledgerDiff).toContain("+src/lib/renamed.ts 800 domain-module");
+      expect(captureRun(root, []).code).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses rename-and-grow before update, then exposes the positive debt delta and ledger change", () => {
+    const root = createTrackedRepo("src/lib/original.ts", 800);
+    try {
+      git(root, ["mv", "src/lib/original.ts", "src/lib/renamed.ts"]);
+      writeLines(root, "src/lib/renamed.ts", 850);
+
+      const refused = captureRun(root, []);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("src/lib/renamed.ts");
+      expect(refused.stderr).toContain("850 LOC, over by 150");
+      expect(refused.stderr).toContain("src/lib/original.ts");
+
+      const accepted = captureRun(root, ["--update"]);
+      expect(accepted.code).toBe(0);
+      expect(accepted.stdout).toContain("Intentional baseline update");
+      expect(accepted.stdout).toContain("+50 vs the previous baseline");
+      expect(accepted.stdout).toContain("This PR ACCEPTS more size debt");
+
+      const ledgerDiff = git(root, ["diff", "--", BASELINE_PATH]);
+      expect(ledgerDiff).toContain("-src/lib/original.ts 800 domain-module");
+      expect(ledgerDiff).toContain("+src/lib/renamed.ts 850 domain-module");
+      expect(captureRun(root, []).code).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
