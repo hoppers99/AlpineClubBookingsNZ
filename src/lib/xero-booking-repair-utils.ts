@@ -8,9 +8,39 @@ import {
   readQueueType,
 } from "@/lib/xero-operation-outbox-payload";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
+import { isDateOnlyString } from "@/lib/date-only";
 
 export function makeLocalKey(localModel: string, localId: string) {
   return `${localModel}:${localId}`;
+}
+
+/**
+ * A club calendar day for the repair scope, or a refusal (#2868).
+ *
+ * Shared by the CLI's `--from`/`--to` and by `buildScopeWhere`, so the sweep
+ * cannot be handed a day the CLI would have rejected. Both callers fail CLOSED:
+ * the alternative for a tool that can `--apply` is a window quietly wider than
+ * the operator asked for, and `scope.from` was previously only kept out of that
+ * state by a truthiness check — `""` read as "not supplied" and produced an
+ * unbounded-below sweep.
+ *
+ * `isDateOnlyString` is the canonical validator, and it is STRICTER than the
+ * `new Date(`${day}T00:00:00`)` + `Number.isNaN` pair the CLI used to run.
+ * Measured on Node 24: that pair ACCEPTED `2026-02-30` (rolling it to 2 March),
+ * `2026-04-31` (to 1 May) and `2026-02-29` (to 1 March), because a `Date` built
+ * from out-of-range parts rolls over rather than failing. `isDateOnlyString`
+ * round-trips the value through `toISOString()` and compares, so a day that
+ * rolled is a day that changed and is refused. `2024-02-29`, a real leap day,
+ * is accepted by both.
+ */
+export function parseRepairScopeDay(value: string, label: string): string {
+  const trimmed = value.trim();
+  if (!isDateOnlyString(trimmed)) {
+    throw new Error(
+      `${label} must be a real calendar day in YYYY-MM-DD format (received ${JSON.stringify(value)}).`
+    );
+  }
+  return trimmed;
 }
 
 // #1427: which outbox queue type did this operation belong to? The immutable
@@ -159,17 +189,16 @@ export function readStoredXeroAmountCents(payload: unknown): number | null {
   );
 }
 
-export function startOfDay(value: Date) {
-  const next = new Date(value);
-  next.setHours(0, 0, 0, 0);
-  return next;
-}
-
-export function addDays(value: Date, days: number) {
-  const next = new Date(value);
-  next.setDate(next.getDate() + days);
-  return next;
-}
+// #2868: `startOfDay` (a bare `setHours(0, 0, 0, 0)` wrapper) and `addDays` (its
+// local-calendar partner) were DELETED rather than fixed. Their only two callers
+// were the repair scope window in `xero-booking-repair-load.ts`, which now
+// derives its bounds from `@/lib/date-only` — a date-only value for the
+// `@db.Date` `Booking.checkIn` and a club-zone start-of-day instant for the
+// three `DateTime` columns beside it. An exported local-midnight helper is not
+// a thing this file should offer: it hides the truncation from a `setHours`
+// grep at the call site, which is exactly how this defect outlived #2684's
+// inventory and #2838's census (INV-DATE-013). Anything needing either shape
+// takes it from `@/lib/date-only`, where the receiver contract is documented.
 
 export function createCountMap(items: string[]): Record<string, number> {
   const counts = new Map<string, number>();
