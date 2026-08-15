@@ -404,7 +404,7 @@ Larger subsystems keep their own hub. Each links back to this page.
 - **Member photos (design)** — storage, visibility, and what a member merge does
   to a photo:
   [`member-photos/decisions/ADR-001-member-photos.md`](member-photos/decisions/ADR-001-member-photos.md).
-- **AI Diagnostics (delivered; in release hardening)** — the admin-only, read-only
+- **AI Diagnostics (delivered and release-hardened)** — the admin-only, read-only
   diagnostics assistant: its [architecture](ai-diagnostics/architecture.md), the
   [security verification matrix](ai-diagnostics/e2e-matrix.md), and the security,
   privacy, authority, and evidence contracts (ADRs, the STRIDE threat model, the

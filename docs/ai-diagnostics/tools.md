@@ -559,8 +559,8 @@ recorded and not a live answer from Stripe — and the operator's next move for 
 (open the provider's own console) is specific enough that folding it into
 `indeterminate` would lose it.
 
-`src/lib/diagnostics/case/` also holds the shared **diagnostic-case** contract the
-later packs contribute to, so one conversation can combine booking, membership and
+`src/lib/diagnostics/case/` also holds the shared **diagnostic-case** contract every
+shipped pack contributes to, so one conversation can combine booking, membership and
 finance evidence under whichever areas the administrator holds. Two properties there
 are load-bearing: a permission denial is recorded as an *outcome* rather than as a
 missing source, and every finding carries a `confidence` so an inference can never be
