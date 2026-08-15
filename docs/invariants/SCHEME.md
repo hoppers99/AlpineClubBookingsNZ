@@ -407,11 +407,13 @@ deliberately left unpointered, so a later reader does not repeat the sweep.
 
 ## 5. The files
 
-15 files in this directory, plus this scheme and
-[`_FOLLOW_UPS.md`](_FOLLOW_UPS.md). Prefix and ID counts are deliberately not
-written here: an exact figure written by hand is wrong within the week — this
-sentence once carried a count 29 IDs stale — and `npm run docs:indexcheck`
-prints the live figures on every run.
+One file per domain in this directory, plus this scheme and
+[`_FOLLOW_UPS.md`](_FOLLOW_UPS.md) — around fifteen files carrying roughly five
+hundred IDs. The counts here are deliberately approximate, and the prefix count
+is gone altogether: it read sixteen until `INV-LOCK` arrived mid-review and made
+it seventeen. A figure written by hand is wrong within the week, and
+`npm run docs:indexcheck` prints the live ones — files, IDs and prefixes — on
+every run.
 
 **The index is authoritative for prefix → file and ID → file**, and it is the
 only place that mapping is written down. It is deliberately not repeated here: a
