@@ -1330,6 +1330,7 @@ truth. The public POST endpoints are:
 | `POST /api/cron/xero?task=link-cleanup` | Deactivate stale canonical Xero object links. | Daily when the Xero module is effectively enabled. | `xero-link-cleanup` |
 | `POST /api/cron/xero?task=report` | Send the Xero reconciliation report. | Daily when the Xero module is effectively enabled. | `xero-reconciliation-report` |
 | `POST /api/cron/issue-reports` | Redact expired issue-report sensitive data. | Daily. | Not recorded |
+| `POST /api/cron/alpine-server-sync` | Bidirectional Other Clubs sync with the Alpine Central Server: upload local rows changed since the last upload, download centrally-distributed rows changed since the last cursor. No-op when Other Clubs sync is disabled or the server is not configured. | Daily at 03:00 in the cron leader. | `alpine-server-other-lodges-sync` |
 
 Without `/api/cron/payments?task=recovery` running on a regular schedule,
 abandoned zero-dollar batch edits leave PaymentIntents held in Stripe

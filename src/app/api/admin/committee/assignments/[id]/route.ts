@@ -11,6 +11,7 @@ import {
   normalizeCommitteeText,
   serializeCommitteeAssignment,
 } from "@/lib/committee";
+import { syncBookingOfficerForRole } from "@/lib/committee-booking-officer-sync";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
 
@@ -182,6 +183,10 @@ export async function PATCH(
       }),
     );
 
+    // If this is the Booking Officer role, refresh the OtherLodge registry's
+    // booking-officer contact from the current holder (no-op for other roles).
+    await syncBookingOfficerForRole(tx, existing.committeeRoleId);
+
     return assignment;
   });
 
@@ -247,6 +252,10 @@ export async function DELETE(
         request: getAuditRequestContext(request),
       }),
     );
+
+    // Deactivating the Booking Officer clears (or reassigns to the next active
+    // holder) the OtherLodge registry's booking-officer contact.
+    await syncBookingOfficerForRole(tx, existing.committeeRoleId);
 
     return assignment;
   });

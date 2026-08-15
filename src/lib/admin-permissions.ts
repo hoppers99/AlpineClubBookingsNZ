@@ -145,6 +145,11 @@ const ROUTE_AREA_PREFIXES: Array<{
       // and Stripe (#2087). NOT feature-gated by googleLogin — setup + verify
       // must be reachable while the module is still off.
       "/admin/google",
+      // Alpine Central Server (ServerNZ) integration lives on the Integrations
+      // hub (finance), like Xero/Stripe/Google. NOT feature-gated so setup +
+      // API-key entry stay reachable while the module is still off.
+      "/admin/alpine_server",
+      "/api/admin/alpine_server",
       "/admin/payments",
       "/admin/internet-banking",
       "/admin/refund-requests",

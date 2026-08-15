@@ -28,6 +28,7 @@ export const MODULE_KEYS = [
   "aiAssistant",
   "memberGuests",
   "aiDiagnostics",
+  "alpineCentralServer",
 ] as const;
 
 export type ModuleKey = (typeof MODULE_KEYS)[number];
@@ -86,6 +87,7 @@ export const DEFAULT_MODULE_SETTINGS: ModuleSettingsValues = {
   aiAssistant: false,
   memberGuests: false,
   aiDiagnostics: false,
+  alpineCentralServer: false,
 };
 
 export interface ModuleDefinition {
@@ -339,6 +341,15 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
       // check, are what make the product usable.
       "Enter a DEDICATED Anthropic API key under Admin → Integrations (a separate key from the AI help assistant — the keys are never shared).",
       "Set a monthly spend budget on the AI Diagnostics settings. It ships at NZ$0, which hard-stops every paid diagnostics call until you raise it.",
+    ],
+  },
+  alpineCentralServer: {
+    key: "alpineCentralServer",
+    label: "Alpine Central Server",
+    description:
+      "Connect this club to the Alpine Central Server (ServerNZ) to upload and download data shared across clubs — starting with the Other Clubs registry. Marked entries are distributed centrally to every connected club.",
+    dependencies: [
+      "Request a connection and obtain an API key from the central server, then enter it under Admin → Integrations → Alpine Central Server.",
     ],
   },
 };

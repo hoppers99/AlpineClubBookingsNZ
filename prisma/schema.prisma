@@ -4312,6 +4312,10 @@ model ClubModuleSettings {
   // note in config-transfer/categories/club-settings.ts) — enabling a paid,
   // separately-keyed product is a per-deployment decision like magicLink/googleLogin.
   aiDiagnostics           Boolean  @default(false)
+  // Alpine Central Server (ServerNZ) integration — connect this club to the
+  // central hub to upload/download shared data. Off by default; configured
+  // under Admin → Integrations → Alpine Central Server.
+  alpineCentralServer     Boolean  @default(false)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @default(now()) @updatedAt
@@ -4420,6 +4424,30 @@ model OtherLodge {
   updatedAt           DateTime @updatedAt
 
   bookingRequests     BookingRequest[]
+}
+
+// Alpine Central Server (ServerNZ) connection — non-secret settings only. The
+// API key is NOT here; it lives in the encrypted IntegrationCredential store
+// (provider "servernz"). Singleton row keyed on the fixed id "default", mirroring
+// LodgeSettings. Per-shared-item enable flags and last-sync bookkeeping live
+// here so the setup page can render status without touching the secret store.
+model ServerNzSettings {
+  id      String  @id @default("default")
+  // Base URL of the central server, e.g. https://central.alpineclub.nz
+  baseUrl String? @db.VarChar(500)
+
+  // Shared item: "Other Clubs" details (the OtherLodge registry).
+  otherLodgesEnabled        Boolean   @default(false)
+  otherLodgesLastUploadAt   DateTime?
+  otherLodgesLastDownloadAt DateTime?
+  // Opaque cursor returned by the server's pull endpoint for incremental sync.
+  otherLodgesCursor         String?   @db.VarChar(64)
+
+  updatedByMemberId String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @default(now()) @updatedAt
+
+  @@index([updatedByMemberId])
 }
 
 model LodgeSettings {
