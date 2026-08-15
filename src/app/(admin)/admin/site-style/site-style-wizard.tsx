@@ -63,7 +63,7 @@ import {
 // type position emits no runtime import, so naming the schema's type here never
 // pulls zod into the admin/site-style client bundle (#1278).
 type ClubThemeUpdateSchema =
-  typeof import("@/lib/club-theme-update-schema")["clubThemeUpdateSchema"];
+  (typeof import("@/lib/club-theme-update-schema"))["clubThemeUpdateSchema"];
 
 type SiteStyleThemeResponse = ClubThemeValues & {
   completedAt: string | null;
@@ -128,9 +128,8 @@ function previewStyle(values: ClubThemeValues): CSSProperties {
   // shipping emitter as `buildClubThemeAppCss` (`--gen-*` / `--gen-*-dark`), not
   // just the `--brand-*` shims, so the sample paints exactly the palette that
   // ships for the seeds being edited.
-  const generated = buildAppThemeTokens(
-    themeSeedsFromValues(values),
-  ).tokens as Record<string, string>;
+  const generated = buildAppThemeTokens(themeSeedsFromValues(values))
+    .tokens as Record<string, string>;
   return {
     ...generated,
     "--app-muted-foreground": muted.light,
@@ -156,7 +155,12 @@ function previewStyle(values: ClubThemeValues): CSSProperties {
  * support seeds; the derived neutral character for the neutral seed) so the
  * wizard can show a before → after swatch pair whenever the two differ.
  */
-type SeedAdjustment = { key: ClubThemeColourKey; label: string; before: string; after: string };
+type SeedAdjustment = {
+  key: ClubThemeColourKey;
+  label: string;
+  before: string;
+  after: string;
+};
 
 function seedAdjustments(values: ClubThemeValues): SeedAdjustment[] {
   const light = buildThemeSubstrate(themeSeedsFromValues(values), "light");
@@ -338,7 +342,9 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
         method: "PUT",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(themePayload({ ...values, rawCss }, completeSetup)),
+        body: JSON.stringify(
+          themePayload({ ...values, rawCss }, completeSetup),
+        ),
       });
       const body = await response.json().catch(() => null);
       if (!response.ok || !body?.theme) {
@@ -487,500 +493,523 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
   */
   const viewOnlyBanner = (
     <AdminViewOnlySectionBanner canEdit={canEdit} className="mb-6">
-      Your admin role can view the site style but cannot change it. The
-      controls below are read-only.
+      Your admin role can view the site style but cannot change it. The controls
+      below are read-only.
     </AdminViewOnlySectionBanner>
   );
 
   return (
     <div>
       {viewOnlyBanner}
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <CardTitle>Style Setup Wizard</CardTitle>
-            <CardDescription>
-              {completedAt
-                ? "The public website, member area, and admin area are using this style."
-                : "The member and admin areas use this style immediately; the public website stays on the setup holding page until setup is finished."}
-            </CardDescription>
-          </div>
-          <Badge variant={completedAt ? "success" : "warning"}>
-            {completedAt ? "Complete" : "Setup required"}
-          </Badge>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-6">
-        {forbidden ? <AdminForbiddenSaveNotice /> : null}
-        <div className="grid gap-2 sm:grid-cols-5">
-          {steps.map((item) => {
-            const Icon = item.icon;
-            const active = item.id === step;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setStep(item.id)}
-                className={`flex min-h-11 items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
-                  active
-                    ? "border-brand-gold bg-brand-gold text-brand-charcoal"
-                    : "border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-                }`}
-              >
-                <Icon className="h-4 w-4" />
-                {item.label}
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
-          <section className="space-y-5">
-            <div className="flex items-center gap-2">
-              <ActiveStepIcon className="h-5 w-5 text-foreground" />
-              <h2 className="text-lg font-semibold text-foreground">
-                {activeStep.label}
-              </h2>
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle>Style Setup Wizard</CardTitle>
+              <CardDescription>
+                {completedAt
+                  ? "The public website, member area, and admin area are using this style."
+                  : "The member and admin areas use this style immediately; the public website stays on the setup holding page until setup is finished."}
+              </CardDescription>
             </div>
-
-            {step === "colours" && (
-              <div className="space-y-5">
-                <div className="rounded-md border bg-muted p-4 text-sm text-muted-foreground">
-                  <p className="font-medium text-foreground">Editable brand layer</p>
-                  <p className="mt-1">
-                    These colours set the identity, neutral warmth, primary actions,
-                    navigation, and occupancy meter across the public website,
-                    member area, and admin area. The primary accent is glacial teal
-                    by default and may be club gold or another accessible brand colour.
-                  </p>
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  {CLUB_THEME_COLOUR_FIELDS.map((field) => (
-                    <div key={field.key} className="space-y-2">
-                      <Label htmlFor={field.key}>
-                        {field.label}{" "}
-                        <span className="text-xs font-normal text-muted-foreground">
-                          {field.required ? "(required)" : "(optional)"}
-                        </span>
-                      </Label>
-                      <p className="text-xs text-muted-foreground">
-                        {field.role}
-                      </p>
-                      <div className="flex gap-2">
-                        <Input
-                          id={field.key}
-                          type="color"
-                          value={
-                            values[field.key].startsWith("#")
-                              ? values[field.key]
-                              : DEFAULT_CLUB_THEME_VALUES[field.key]
-                          }
-                          onChange={(event) =>
-                            updateColour(field.key, event.target.value)
-                          }
-                          className="h-10 w-14 shrink-0 p-1"
-                          aria-label={`${field.label} swatch`}
-                          disabled={!canEdit}
-                        />
-                        <Input
-                          value={values[field.key]}
-                          onChange={(event) =>
-                            updateColour(field.key, event.target.value)
-                          }
-                          aria-label={`${field.label} value`}
-                          readOnly={!canEdit}
-                        />
-                      </div>
-                      {fieldErrors[field.key]?.[0] && (
-                        <p className="text-sm text-danger-11">
-                          {fieldErrors[field.key]?.[0]}
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-                <div className="rounded-md border p-4 text-sm text-muted-foreground">
-                  <p className="font-medium text-foreground">Fixed semantic layer</p>
-                  <p className="mt-1">
-                    Success, warning, information, danger/error, and waitlist states
-                    use curated light/dark colour pairs. They are not brand pickers,
-                    so operational meaning and contrast stay consistent.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {step === "fonts" && (
-              <div className="grid gap-5 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>Heading font</Label>
-                  <Select
-                    value={values.headingFontKey}
-                    disabled={!canEdit}
-                    onValueChange={(value) =>
-                      updateFont("headingFontKey", value as ClubThemeFontKey)
-                    }
-                  >
-                    <SelectTrigger aria-label="Heading font">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {CLUB_THEME_FONT_OPTIONS.map((font) => (
-                        <SelectItem key={font.key} value={font.key}>
-                          {font.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>Body font</Label>
-                  <Select
-                    value={values.bodyFontKey}
-                    disabled={!canEdit}
-                    onValueChange={(value) =>
-                      updateFont("bodyFontKey", value as ClubThemeFontKey)
-                    }
-                  >
-                    <SelectTrigger aria-label="Body font">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {CLUB_THEME_FONT_OPTIONS.map((font) => (
-                        <SelectItem key={font.key} value={font.key}>
-                          {font.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            )}
-
-            {step === "raw-css" && (
-              <div className="space-y-3">
-                <p className="text-sm text-muted-foreground">
-                  Add custom CSS rules that will be appended to the generated
-                  theme stylesheet on the public website only. Member and admin
-                  areas receive the validated brand variables above, never raw
-                  CSS. Use sparingly — prefer colour and font settings where
-                  possible.
-                </p>
-                {/* Tall default so it uses the space under the editor, and stays
-                    manually resizable (resize-y restores the drag handle). */}
-                <textarea
-                  value={rawCss}
-                  onChange={(e) => updateRawCss(e.target.value)}
-                  rows={24}
-                  spellCheck={false}
-                  readOnly={!canEdit}
-                  placeholder={`/* Example */\n.dynamic-header {\n  background: linear-gradient(135deg, #1a1a2e, #16213e);\n}`}
-                  className="w-full resize-y rounded-md border border-slate-300 bg-white p-3 font-mono text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400"
-                />
-                <p
-                  className={`text-sm ${
-                    rawCss.length > 45_000
-                      ? "text-warning-11"
-                      : "text-muted-foreground"
+            <Badge variant={completedAt ? "success" : "warning"}>
+              {completedAt ? "Complete" : "Setup required"}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {forbidden ? <AdminForbiddenSaveNotice /> : null}
+          <div className="grid gap-2 sm:grid-cols-5">
+            {steps.map((item) => {
+              const Icon = item.icon;
+              const active = item.id === step;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setStep(item.id)}
+                  className={`flex min-h-11 items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
+                    active
+                      ? "border-brand-gold bg-brand-gold text-brand-charcoal"
+                      : "border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                   }`}
                 >
-                  {rawCss.length.toLocaleString()} / 50,000 characters used.
-                </p>
-              </div>
-            )}
+                  <Icon className="h-4 w-4" />
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
 
-            {step === "logo" && (
-              <div className="space-y-4">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp,image/gif"
-                  className="hidden"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) {
-                      void uploadLogo(file);
-                    }
-                    event.target.value = "";
-                  }}
-                />
-                <div className="flex flex-wrap gap-3">
-                  <ViewOnlyActionButton
-                    canEdit={canEdit}
-                    describeReason={false}
-                    type="button"
-                    variant="outline"
-                    disabled={uploadingLogo}
-                    onClick={() => fileInputRef.current?.click()}
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
+            <section className="space-y-5">
+              <div className="flex items-center gap-2">
+                <ActiveStepIcon className="h-5 w-5 text-foreground" />
+                <h2 className="text-lg font-semibold text-foreground">
+                  {activeStep.label}
+                </h2>
+              </div>
+
+              {step === "colours" && (
+                <div className="space-y-5">
+                  <div className="rounded-md border bg-muted p-4 text-sm text-muted-foreground">
+                    <p className="font-medium text-foreground">
+                      Editable brand layer
+                    </p>
+                    <p className="mt-1">
+                      These colours set the identity, neutral warmth, primary
+                      actions, navigation, and occupancy meter across the public
+                      website, member area, and admin area. The primary accent
+                      is glacial teal by default and may be club gold or another
+                      accessible brand colour.
+                    </p>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {CLUB_THEME_COLOUR_FIELDS.map((field) => (
+                      <div key={field.key} className="space-y-2">
+                        <Label htmlFor={field.key}>
+                          {field.label}{" "}
+                          <span className="text-xs font-normal text-muted-foreground">
+                            {field.required ? "(required)" : "(optional)"}
+                          </span>
+                        </Label>
+                        <p className="text-xs text-muted-foreground">
+                          {field.role}
+                        </p>
+                        <div className="flex gap-2">
+                          <Input
+                            id={field.key}
+                            type="color"
+                            value={
+                              values[field.key].startsWith("#")
+                                ? values[field.key]
+                                : DEFAULT_CLUB_THEME_VALUES[field.key]
+                            }
+                            onChange={(event) =>
+                              updateColour(field.key, event.target.value)
+                            }
+                            className="h-10 w-14 shrink-0 p-1"
+                            aria-label={`${field.label} swatch`}
+                            disabled={!canEdit}
+                          />
+                          <Input
+                            value={values[field.key]}
+                            onChange={(event) =>
+                              updateColour(field.key, event.target.value)
+                            }
+                            aria-label={`${field.label} value`}
+                            readOnly={!canEdit}
+                          />
+                        </div>
+                        {fieldErrors[field.key]?.[0] && (
+                          <p className="text-sm text-danger-11">
+                            {fieldErrors[field.key]?.[0]}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="rounded-md border p-4 text-sm text-muted-foreground">
+                    <p className="font-medium text-foreground">
+                      Fixed semantic layer
+                    </p>
+                    <p className="mt-1">
+                      Success, warning, information, danger/error, and waitlist
+                      states use curated light/dark colour pairs. They are not
+                      brand pickers, so operational meaning and contrast stay
+                      consistent.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {step === "fonts" && (
+                <div className="grid gap-5 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Heading font</Label>
+                    <Select
+                      value={values.headingFontKey}
+                      disabled={!canEdit}
+                      onValueChange={(value) =>
+                        updateFont("headingFontKey", value as ClubThemeFontKey)
+                      }
+                    >
+                      <SelectTrigger aria-label="Heading font">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {CLUB_THEME_FONT_OPTIONS.map((font) => (
+                          <SelectItem key={font.key} value={font.key}>
+                            {font.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Body font</Label>
+                    <Select
+                      value={values.bodyFontKey}
+                      disabled={!canEdit}
+                      onValueChange={(value) =>
+                        updateFont("bodyFontKey", value as ClubThemeFontKey)
+                      }
+                    >
+                      <SelectTrigger aria-label="Body font">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {CLUB_THEME_FONT_OPTIONS.map((font) => (
+                          <SelectItem key={font.key} value={font.key}>
+                            {font.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              )}
+
+              {step === "raw-css" && (
+                <div className="space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    Add custom CSS rules that will be appended to the generated
+                    theme stylesheet on the public website only. Member and
+                    admin areas receive the validated brand variables above,
+                    never raw CSS. Use sparingly — prefer colour and font
+                    settings where possible.
+                  </p>
+                  {/* Tall default so it uses the space under the editor, and stays
+                    manually resizable (resize-y restores the drag handle). */}
+                  <textarea
+                    value={rawCss}
+                    onChange={(e) => updateRawCss(e.target.value)}
+                    rows={40}
+                    spellCheck={false}
+                    readOnly={!canEdit}
+                    placeholder={`/* Example */\n.dynamic-header {\n  background: linear-gradient(135deg, #1a1a2e, #16213e);\n}`}
+                    className="w-full resize-y rounded-md border border-slate-300 bg-white p-3 font-mono text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  />
+                  <p
+                    className={`text-sm ${
+                      rawCss.length > 45_000
+                        ? "text-warning-11"
+                        : "text-muted-foreground"
+                    }`}
                   >
-                    <Upload className="mr-2 h-4 w-4" />
-                    {uploadingLogo ? "Uploading…" : "Choose logo"}
-                  </ViewOnlyActionButton>
-                  {(values.logoUrl || values.logoDataUrl) && (
+                    {rawCss.length.toLocaleString()} / 50,000 characters used.
+                  </p>
+                </div>
+              )}
+
+              {step === "logo" && (
+                <div className="space-y-4">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    className="hidden"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) {
+                        void uploadLogo(file);
+                      }
+                      event.target.value = "";
+                    }}
+                  />
+                  <div className="flex flex-wrap gap-3">
                     <ViewOnlyActionButton
                       canEdit={canEdit}
                       describeReason={false}
                       type="button"
                       variant="outline"
                       disabled={uploadingLogo}
-                      onClick={() => {
-                        // Bumping the generation makes any in-flight upload
-                        // discard its result, so Remove cannot be undone by a
-                        // response that lands afterwards.
-                        logoGenerationRef.current += 1;
-                        setUploadingLogo(false);
-                        setError("");
-                        setValues((current) => ({
-                          ...current,
-                          logoUrl: null,
-                          logoDataUrl: null,
-                        }));
-                        setSavedMessage("");
-                      }}
+                      onClick={() => fileInputRef.current?.click()}
                     >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Remove logo
+                      <Upload className="mr-2 h-4 w-4" />
+                      {uploadingLogo ? "Uploading…" : "Choose logo"}
                     </ViewOnlyActionButton>
+                    {(values.logoUrl || values.logoDataUrl) && (
+                      <ViewOnlyActionButton
+                        canEdit={canEdit}
+                        describeReason={false}
+                        type="button"
+                        variant="outline"
+                        disabled={uploadingLogo}
+                        onClick={() => {
+                          // Bumping the generation makes any in-flight upload
+                          // discard its result, so Remove cannot be undone by a
+                          // response that lands afterwards.
+                          logoGenerationRef.current += 1;
+                          setUploadingLogo(false);
+                          setError("");
+                          setValues((current) => ({
+                            ...current,
+                            logoUrl: null,
+                            logoDataUrl: null,
+                          }));
+                          setSavedMessage("");
+                        }}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Remove logo
+                      </ViewOnlyActionButton>
+                    )}
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    PNG, JPEG, WebP, or GIF, up to 2MB. Larger images are shrunk
+                    to at most 160px tall and 640px wide — never enlarged — so a
+                    high-resolution original is fine. SVG is not accepted.
+                  </p>
+                  {(fieldErrors.logoUrl?.[0] ??
+                    fieldErrors.logoDataUrl?.[0]) && (
+                    <p className="text-sm text-danger-11">
+                      {fieldErrors.logoUrl?.[0] ?? fieldErrors.logoDataUrl?.[0]}
+                    </p>
                   )}
                 </div>
-                <p className="text-sm text-muted-foreground">
-                  PNG, JPEG, WebP, or GIF, up to 2MB. Larger images are shrunk to
-                  at most 160px tall and 640px wide — never enlarged — so a
-                  high-resolution original is fine. SVG is not accepted.
-                </p>
-                {(fieldErrors.logoUrl?.[0] ?? fieldErrors.logoDataUrl?.[0]) && (
-                  <p className="text-sm text-danger-11">
-                    {fieldErrors.logoUrl?.[0] ?? fieldErrors.logoDataUrl?.[0]}
-                  </p>
-                )}
-              </div>
-            )}
+              )}
 
-            {step === "review" && (
-              <div className="space-y-4">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-md border p-4">
-                    <p className="text-sm font-medium text-foreground">Fonts</p>
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      Heading: {fontLabel(values.headingFontKey)}
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      Body: {fontLabel(values.bodyFontKey)}
-                    </p>
+              {step === "review" && (
+                <div className="space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-md border p-4">
+                      <p className="text-sm font-medium text-foreground">
+                        Fonts
+                      </p>
+                      <p className="mt-2 text-sm text-muted-foreground">
+                        Heading: {fontLabel(values.headingFontKey)}
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        Body: {fontLabel(values.bodyFontKey)}
+                      </p>
+                    </div>
+                    <div className="rounded-md border p-4">
+                      <p className="text-sm font-medium text-foreground">
+                        Logo
+                      </p>
+                      <p className="mt-2 text-sm text-muted-foreground">
+                        {values.logoUrl || values.logoDataUrl
+                          ? "Custom logo stored"
+                          : "Club name fallback"}
+                      </p>
+                    </div>
                   </div>
-                  <div className="rounded-md border p-4">
-                    <p className="text-sm font-medium text-foreground">Logo</p>
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      {(values.logoUrl || values.logoDataUrl)
-                        ? "Custom logo stored"
-                        : "Club name fallback"}
-                    </p>
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-xs font-medium text-foreground">
-                    Generated CSS
-                  </p>
-                  <pre className="max-h-40 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-100">
-                    {cssPreview}
-                  </pre>
-                </div>
-                {rawCss && (
                   <div className="space-y-1">
                     <p className="text-xs font-medium text-foreground">
-                      Raw CSS
+                      Generated CSS
                     </p>
                     <pre className="max-h-40 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-100">
-                      {rawCss}
+                      {cssPreview}
                     </pre>
                   </div>
-                )}
-              </div>
-            )}
-          </section>
-
-          <aside className="space-y-4">
-            <div
-              className="website-theme overflow-hidden rounded-md border border-brand-ridge/25 bg-brand-snow text-brand-deep"
-              style={previewStyleValue}
-            >
-              <div className="bg-brand-charcoal px-5 py-4 text-brand-snow">
-                <div className="flex items-center gap-3">
-                  {(values.logoUrl || values.logoDataUrl) ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={values.logoUrl || values.logoDataUrl || ""}
-                      alt="Logo preview"
-                      className="h-10 max-w-36 object-contain"
-                    />
-                  ) : (
-                    <span className="font-heading text-lg font-bold">
-                      Club Name
-                    </span>
+                  {rawCss && (
+                    <div className="space-y-1">
+                      <p className="text-xs font-medium text-foreground">
+                        Raw CSS
+                      </p>
+                      <pre className="max-h-40 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-100">
+                        {rawCss}
+                      </pre>
+                    </div>
                   )}
                 </div>
+              )}
+            </section>
+
+            <aside className="space-y-4">
+              <div
+                className="website-theme overflow-hidden rounded-md border border-brand-ridge/25 bg-brand-snow text-brand-deep"
+                style={previewStyleValue}
+              >
+                <div className="bg-brand-charcoal px-5 py-4 text-brand-snow">
+                  <div className="flex items-center gap-3">
+                    {values.logoUrl || values.logoDataUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={values.logoUrl || values.logoDataUrl || ""}
+                        alt="Logo preview"
+                        className="h-10 max-w-36 object-contain"
+                      />
+                    ) : (
+                      <span className="font-heading text-lg font-bold">
+                        Club Name
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-4 p-5">
+                  <p className="website-eyebrow">Preview</p>
+                  <h3 className="font-heading text-2xl font-bold text-brand-charcoal">
+                    Public website heading
+                  </h3>
+                  <p className="text-sm leading-6 text-brand-deep/85">
+                    This sample uses the selected colours and font variables.
+                  </p>
+                  <button
+                    type="button"
+                    className="rounded-md bg-brand-gold px-4 py-2 text-sm font-semibold text-brand-charcoal"
+                  >
+                    Primary action
+                  </button>
+                </div>
               </div>
-              <div className="space-y-4 p-5">
-                <p className="website-eyebrow">Preview</p>
-                <h3 className="font-heading text-2xl font-bold text-brand-charcoal">
-                  Public website heading
-                </h3>
-                <p className="text-sm leading-6 text-brand-deep/85">
-                  This sample uses the selected colours and font variables.
-                </p>
+
+              <div
+                className="app-theme-scope space-y-4 overflow-hidden rounded-md border bg-background p-5 text-foreground"
+                style={previewStyleValue}
+              >
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Member + admin app preview
+                  </p>
+                  <h3 className="mt-1 text-2xl font-bold">
+                    Upcoming lodge stay
+                  </h3>
+                </div>
+                <OccupancyMeter filled={18} capacity={30} label="Occupancy" />
                 <button
                   type="button"
-                  className="rounded-md bg-brand-gold px-4 py-2 text-sm font-semibold text-brand-charcoal"
+                  className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground"
                 >
                   Primary action
                 </button>
-              </div>
-            </div>
-
-            <div
-              className="app-theme-scope space-y-4 overflow-hidden rounded-md border bg-background p-5 text-foreground"
-              style={previewStyleValue}
-            >
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Member + admin app preview
-                </p>
-                <h3 className="mt-1 text-2xl font-bold">Upcoming lodge stay</h3>
-              </div>
-              <OccupancyMeter filled={18} capacity={30} label="Occupancy" />
-              <button
-                type="button"
-                className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground"
-              >
-                Primary action
-              </button>
-              <div className="flex flex-wrap gap-2 text-xs font-medium">
-                <span className="rounded-md bg-success-muted px-2 py-1 text-success">Success</span>
-                <span className="rounded-md bg-warning-muted px-2 py-1 text-warning">Warning</span>
-                <span className="rounded-md bg-info-muted px-2 py-1 text-info">Information</span>
-                <span className="rounded-md bg-danger-muted px-2 py-1 text-danger">Danger</span>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Brand colours and fonts update this app preview. Status colours stay fixed.
-              </p>
-            </div>
-
-            {adjustments.length > 0 && (
-              <div className="rounded-md border border-info-6 bg-info-3 p-4 text-sm text-info-11">
-                <div className="mb-2 flex items-center gap-2 font-medium">
-                  <CheckCircle2 className="h-4 w-4" />
-                  Colours adjusted for accessibility
+                <div className="flex flex-wrap gap-2 text-xs font-medium">
+                  <span className="rounded-md bg-success-muted px-2 py-1 text-success">
+                    Success
+                  </span>
+                  <span className="rounded-md bg-warning-muted px-2 py-1 text-warning">
+                    Warning
+                  </span>
+                  <span className="rounded-md bg-info-muted px-2 py-1 text-info">
+                    Information
+                  </span>
+                  <span className="rounded-md bg-danger-muted px-2 py-1 text-danger">
+                    Danger
+                  </span>
                 </div>
-                <p className="mb-3">
-                  Your palette always saves. To keep text and controls readable,
-                  the generator nudged the colours below. This is what ships:
+                <p className="text-xs text-muted-foreground">
+                  Brand colours and fonts update this app preview. Status
+                  colours stay fixed.
                 </p>
-                <ul className="space-y-2">
-                  {adjustments.map((adjustment) => (
-                    <li
-                      key={adjustment.key}
-                      className="flex items-center gap-2"
-                    >
-                      <span className="min-w-32 font-medium">
-                        {adjustment.label}
-                      </span>
-                      <span
-                        className="inline-block h-4 w-4 shrink-0 rounded-sm border border-black/10"
-                        style={{ backgroundColor: adjustment.before }}
-                        aria-hidden
-                      />
-                      <span className="font-mono text-xs">
-                        {adjustment.before}
-                      </span>
-                      <span aria-hidden>→</span>
-                      <span
-                        className="inline-block h-4 w-4 shrink-0 rounded-sm border border-black/10"
-                        style={{ backgroundColor: adjustment.after }}
-                        aria-hidden
-                      />
-                      <span className="font-mono text-xs">
-                        {adjustment.after}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
               </div>
-            )}
 
-            {advisoryContrastWarnings.length > 0 && (
-              <div className="rounded-md border border-warning-6 bg-warning-3 p-4 text-sm text-warning-11">
-                <div className="mb-2 flex items-center gap-2 font-medium">
-                  <AlertTriangle className="h-4 w-4" />
-                  Contrast warnings
+              {adjustments.length > 0 && (
+                <div className="rounded-md border border-info-6 bg-info-3 p-4 text-sm text-info-11">
+                  <div className="mb-2 flex items-center gap-2 font-medium">
+                    <CheckCircle2 className="h-4 w-4" />
+                    Colours adjusted for accessibility
+                  </div>
+                  <p className="mb-3">
+                    Your palette always saves. To keep text and controls
+                    readable, the generator nudged the colours below. This is
+                    what ships:
+                  </p>
+                  <ul className="space-y-2">
+                    {adjustments.map((adjustment) => (
+                      <li
+                        key={adjustment.key}
+                        className="flex items-center gap-2"
+                      >
+                        <span className="min-w-32 font-medium">
+                          {adjustment.label}
+                        </span>
+                        <span
+                          className="inline-block h-4 w-4 shrink-0 rounded-sm border border-black/10"
+                          style={{ backgroundColor: adjustment.before }}
+                          aria-hidden
+                        />
+                        <span className="font-mono text-xs">
+                          {adjustment.before}
+                        </span>
+                        <span aria-hidden>→</span>
+                        <span
+                          className="inline-block h-4 w-4 shrink-0 rounded-sm border border-black/10"
+                          style={{ backgroundColor: adjustment.after }}
+                          aria-hidden
+                        />
+                        <span className="font-mono text-xs">
+                          {adjustment.after}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
-                <ul className="space-y-1">
-                  {advisoryContrastWarnings.map((warning) => (
-                    <li key={warning.id}>{warning.message}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
+              )}
 
-            {error && (
-              <div className="rounded-md border border-danger-6 bg-danger-3 p-4 text-sm text-danger-11">
-                {error}
-              </div>
-            )}
-            {savedMessage && (
-              <div className="rounded-md border border-success-6 bg-success-3 p-4 text-sm text-success-11">
-                {savedMessage}
-              </div>
-            )}
-          </aside>
-        </div>
+              {advisoryContrastWarnings.length > 0 && (
+                <div className="rounded-md border border-warning-6 bg-warning-3 p-4 text-sm text-warning-11">
+                  <div className="mb-2 flex items-center gap-2 font-medium">
+                    <AlertTriangle className="h-4 w-4" />
+                    Contrast warnings
+                  </div>
+                  <ul className="space-y-1">
+                    {advisoryContrastWarnings.map((warning) => (
+                      <li key={warning.id}>{warning.message}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
-        <div className="flex flex-wrap justify-between gap-3 border-t pt-5">
-          <ViewOnlyActionButton
-            canEdit={canEdit}
-            describeReason={false}
-            type="button"
-            variant="outline"
-            disabled={uploadingLogo}
-            onClick={resetNeutral}
-          >
-            <RotateCcw className="mr-2 h-4 w-4" />
-            Reset neutral
-          </ViewOnlyActionButton>
-          <div className="flex flex-wrap gap-3">
-            <Button
+              {error && (
+                <div className="rounded-md border border-danger-6 bg-danger-3 p-4 text-sm text-danger-11">
+                  {error}
+                </div>
+              )}
+              {savedMessage && (
+                <div className="rounded-md border border-success-6 bg-success-3 p-4 text-sm text-success-11">
+                  {savedMessage}
+                </div>
+              )}
+            </aside>
+          </div>
+
+          <div className="flex flex-wrap justify-between gap-3 border-t pt-5">
+            <ViewOnlyActionButton
+              canEdit={canEdit}
+              describeReason={false}
               type="button"
               variant="outline"
-              onClick={() => setStep(steps[Math.max(0, stepIndex - 1)].id)}
-              disabled={stepIndex === 0 || saving}
+              disabled={uploadingLogo}
+              onClick={resetNeutral}
             >
-              Back
-            </Button>
-            {stepIndex < steps.length - 1 ? (
-              <ViewOnlyActionButton
-                canEdit={canEdit}
-                describeReason={false}
+              <RotateCcw className="mr-2 h-4 w-4" />
+              Reset neutral
+            </ViewOnlyActionButton>
+            <div className="flex flex-wrap gap-3">
+              <Button
                 type="button"
-                onClick={goNext}
-                disabled={saving || saveBlocked || uploadingLogo}
+                variant="outline"
+                onClick={() => setStep(steps[Math.max(0, stepIndex - 1)].id)}
+                disabled={stepIndex === 0 || saving}
               >
-                {saving ? "Saving..." : "Save and next"}
-              </ViewOnlyActionButton>
-            ) : (
-              <ViewOnlyActionButton
-                canEdit={canEdit}
-                describeReason={false}
-                type="button"
-                onClick={finish}
-                disabled={saving || saveBlocked || uploadingLogo}
-              >
-                {saving ? "Saving..." : "Finish setup"}
-              </ViewOnlyActionButton>
-            )}
+                Back
+              </Button>
+              {stepIndex < steps.length - 1 ? (
+                <ViewOnlyActionButton
+                  canEdit={canEdit}
+                  describeReason={false}
+                  type="button"
+                  onClick={goNext}
+                  disabled={saving || saveBlocked || uploadingLogo}
+                >
+                  {saving ? "Saving..." : "Save and next"}
+                </ViewOnlyActionButton>
+              ) : (
+                <ViewOnlyActionButton
+                  canEdit={canEdit}
+                  describeReason={false}
+                  type="button"
+                  onClick={finish}
+                  disabled={saving || saveBlocked || uploadingLogo}
+                >
+                  {saving ? "Saving..." : "Finish setup"}
+                </ViewOnlyActionButton>
+              )}
+            </div>
           </div>
-        </div>
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
     </div>
   );
 }

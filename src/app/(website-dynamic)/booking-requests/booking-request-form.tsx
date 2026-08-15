@@ -234,7 +234,7 @@ export function BookingRequestForm({ club }: { club: ClubIdentity }) {
   const formTitle = showPricing ? "Request to Book" : "Request for Price";
 
   return (
-    <Card className="w-full max-w-2xl">
+    <Card id="bookingRequestForm" className="w-full max-w-2xl">
       <CardHeader>
         <CardTitle>{formTitle}</CardTitle>
         <CardDescription>
