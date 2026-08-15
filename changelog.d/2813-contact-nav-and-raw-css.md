@@ -1,10 +1,3 @@
-- **Your Contact page is now a normal menu page you control (#2818).** The site
-  no longer adds a Contact link automatically. Contact behaves like every other
-  page: to show it in your navigation, give your Contact page a menu title under
-  Site Appearance & Content → Page Content, then name it, reorder it, or move it
-  wherever you like. If your menu did not already carry a Contact entry, add one
-  there to keep the link visible.
-
 - **The Raw CSS box in Site Style is bigger and easier to work in (#2818).**
   The advanced custom-CSS editor is taller by default, can be dragged to
   whatever height you want, and shows how many characters you have used against
