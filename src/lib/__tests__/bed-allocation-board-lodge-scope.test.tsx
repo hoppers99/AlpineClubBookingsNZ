@@ -26,6 +26,30 @@
  * calls). That is what makes "the 409 cannot fire on normal navigation" a real
  * proof rather than a restatement: if the board ever sends a contradictory
  * `bookingId`/`lodgeId` pair, these tests see the refusal.
+ *
+ * MUTATION PROBES THIS FILE KILLS, each verified by making the change and
+ * watching it fail (PR #2885 review asked for the list to be nameable):
+ *
+ *   - `deferDefaultSelection={focusedBookingOwnsLodge}` reverted to the
+ *     narrower pre-review expression -> 5 failures here, including a measured
+ *     26-request storm against a budget of 3;
+ *   - reverted to the EXACT pre-review expression, error-clears clause and all
+ *     -> 8 failures, adding the transient-500 and deploy-drain cases;
+ *   - the `scopedLodgeId` adoption effect deleted -> the deep-link and
+ *     no-storm tests fail;
+ *   - `enabled: scopeCanLoadBoard` dropped from the dashboard hook -> the
+ *     direct-visit and lodge-list-failure tests fail;
+ *   - the route's 409 disabled -> `bed-allocation-get-lodge-validation.test.ts`
+ *     fails;
+ *   - the drain tolerance (`scopedLodgeId !== undefined`) weakened to
+ *     `payload !== null` -> the drain test fails.
+ *
+ * ORDERING IS PART OF SEVERAL OF THESE TESTS. The adoption effect only re-runs
+ * when the served lodge CHANGES, so when the lodge options land in the same
+ * commit as the first payload, adoption happens to overwrite the normaliser's
+ * write and the defect hides. `holdLodges` / `holdFirstBoard` pin the order
+ * that actually occurs in production, where the two endpoints are not a
+ * photo finish.
  */
 
 import "@testing-library/jest-dom/vitest";

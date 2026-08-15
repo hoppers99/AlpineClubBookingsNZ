@@ -77,6 +77,15 @@ year in one go).
    the lodge list itself cannot be loaded you get an error with a **Try again**
    button — never a club-wide board standing in for one (#2701).
 
+   **If your admin role cannot see lodges at all**, the board opens on every
+   lodge, read-only, and says so. That is the case for the Membership Admin and
+   Finance Admin roles, which can view bookings but have no lodge access: there
+   is no lodge for them to choose, so they are not asked to choose one. Ask for
+   lodge access if you need to allocate beds at a particular lodge.
+
+   **If the club has no active lodge**, the board says that instead of loading,
+   with a link to Lodge settings.
+
    ![Bed Allocation board: the date controls, allocation preferences, the "Bookings approved, awaiting allocation" pool with Run Auto Allocation, and the room-by-night Allocation Board](../images/admin/admin-bed-allocation.png)
 
 ### Set this lodge's allocation preferences
@@ -379,7 +388,7 @@ that booking, so the booking's own **Audit log** link finds it.
 | Refresh | Reload the board | — | Disabled until the board has settled on which lodge to show |
 | Bed allocation card (on a booking) | Assign, remove and confirm this booking's beds without leaving it | — | Admin-only; needs bookings edit access; long stays are paged 31 nights at a time |
 | Confirm draft beds (on a booking) | Approve every draft bed night on that booking | — | Never touches another booking's drafts; locks the member's room request |
-| Lodge selector | Which lodge's board is shown, or **All lodges** | the focused booking's lodge, otherwise the first/only lodge | Only shown with more than one active lodge. **All lodges** is a read-only club-wide overview — every allocation control is disabled with a reason on screen (#2701). While a booking is focused, changing the lodge **drops the focus** — the "Focused booking" badge disappears and you get the lodge you chose (#2678). If the lodge list fails to load you get an error and a retry, never a club-wide board (#2701) |
+| Lodge selector | Which lodge's board is shown, or **All lodges** | the focused booking's lodge, otherwise the first/only lodge | Only shown with more than one active lodge. **All lodges** is a read-only club-wide overview — every allocation control is disabled with a reason on screen (#2701). While a booking is focused, changing the lodge **drops the focus** — the "Focused booking" badge disappears and you get the lodge you chose (#2678). A role with no lodge access gets the same read-only club-wide board with its own note, since it has nothing to choose from. If the lodge list fails to load you get an error and a retry, never a club-wide board; if the club has no active lodge the board says so (#2701) |
 
 Notes: bed types (single, bunk top/bottom, double) are descriptive and do not
 change capacity; a double bed-night can hold two occupants (declared partners).

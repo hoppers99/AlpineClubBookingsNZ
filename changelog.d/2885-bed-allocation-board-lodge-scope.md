@@ -26,6 +26,13 @@
   which nothing in the app produces, but a hand-edited address can — is refused
   with an explanation rather than shown as a board that contradicts itself.
 
+  Two admin roles get a small improvement out of this too. **Membership Admin**
+  and **Finance Admin** can view bookings but have no lodge access, so the board
+  now opens for them on every lodge, read-only, and says why — rather than
+  asking them to choose a lodge they cannot see. And a club with no active lodge
+  is told so, with a link to Lodge settings, instead of the board waiting
+  indefinitely.
+
   Nothing about what may be saved has changed: putting a guest in another lodge's
   bed was already refused when saving and still is. This is about the board no
   longer offering choices it was always going to turn down.

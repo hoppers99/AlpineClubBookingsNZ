@@ -204,16 +204,32 @@ operational documents (which may carry door/emergency access details).
   Since #2701 the component **reports** which it was (`source: "user" | "auto"`)
   rather than leaving the page to infer it from the values, which could not tell
   a default apart from a deliberate pick landing on the same lodge.
-- **The board's lodge scope is four named states, and `null` means exactly one
-  thing** (#2701). It used to mean three: a deliberate club-wide view, a
-  selector that had not resolved, and a failed `/api/admin/lodges` — and the
-  board's four bed pickers were club-wide in all three, offering every lodge's
-  beds in the two nobody chose. The states are now `lodge`, `all`, `resolving`
-  and `unavailable`, and everything on the page derives from which is active:
-  - **`all` is chosen.** `LodgeSelect` gained an opt-in `ALL_LODGES` sentinel
+- **The board's lodge scope is five named states, the set is TOTAL, and `null`
+  means exactly one thing** (#2701). It used to mean three: a deliberate
+  club-wide view, a selector that had not resolved, and a failed
+  `/api/admin/lodges` — and the board's four bed pickers were club-wide in all
+  three, offering every lodge's beds in the two nobody chose. The states are
+  `lodge`, `all`, `empty`, `resolving` and `unavailable`, decided in one place
+  (`deriveBoardLodgeScope`), and everything on the page derives from which is
+  active:
+  - **`all` carries the reason it was reached** — `chosen`, or
+    `no-lodge-permission`. `LodgeSelect` gained an opt-in `ALL_LODGES` sentinel
     option (`allowAllLodges`, set only by this page) that its normalising effect
     leaves alone. A single-lodge club never reaches it: ADR-002 still normalises
     to the sole lodge, sentinel or not.
+  - **A 403 on the lodge list is not an outage.** `/admin/bed-allocation` is
+    gated on `bookings`; `GET /api/admin/lodges` needs `lodge:view`. The shipped
+    `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` presets hold `bookings: "view"` and
+    no `lodge` entry at all, so for them the refusal is the normal answer and
+    club-wide read-only is the only view they can have — the view they had
+    before #2701. `useLodgeOptions` therefore reports `forbidden` separately
+    from `failed`, and this board maps it to `all` / `no-lodge-permission` with
+    its own banner. Collapsing the two handed those roles a permanent error and
+    a retry that could only 403 again.
+  - **`empty` is a real state.** A successful lodge list with no ACTIVE lodge is
+    neither club-wide nor an outage nor a state that resolves; without it the
+    board sat on a "Choosing which lodge to show" spinner for ever with Refresh
+    disabled and no error.
   - **`resolving` fetches nothing.** The board asks for no dashboard at all
     until it holds a concrete lodge, a deliberate All lodges, or a focused
     booking that the server scopes for it — so the transient club-wide read on
@@ -232,12 +248,31 @@ operational documents (which may carry door/emergency access details).
 - **A booking deep link lands on that booking's own lodge, and the server is
   what says so** (#2701). `GET /api/admin/bed-allocation` echoes
   `scopedLodgeId` — the lodge it actually scoped to, null for a deliberate
-  club-wide read — and the board adopts it while a booking is focused. Until it
-  arrives, `LodgeSelect`'s first-lodge default is held off
-  (`deferDefaultSelection`), because that default is precisely how a lodge-B
-  booking used to land on lodge A's board. The field is read tolerantly: an
-  old-colour payload during a deploy drain carries none, which reads as "the
-  server did not say", never as a club-wide answer.
+  club-wide read — and the board adopts it while a booking is focused. The
+  field is read tolerantly: an old-colour payload during a deploy drain carries
+  none, which reads as "the server did not say", never as a club-wide answer.
+  **While a booking is focused, `LodgeSelect`'s default is held off entirely**
+  (`deferDefaultSelection`), not merely until the first payload arrives. This
+  is load-bearing and it is the single most important line in the whole change,
+  so it is worth stating why in full. The ADR-002 normaliser fires whenever
+  fewer than two ACTIVE lodges are offered, and that effect runs even though the
+  same condition makes the component render nothing. Left running it overwrites
+  the lodge the server just derived — which changes the scope key, refires the
+  request, re-adopts, and loops: a reviewer measured **62 dashboard reads in
+  about a second**, paced by round trips, so React never sees a synchronous
+  cycle, nothing crashes, and the only symptom is a flickering page hammering
+  the database for as long as the tab is open. Any club with fewer than two
+  active lodges reached it, including a **successful but empty** list, which
+  does not even raise the error banner.
+  The same overwrite is what fires the 409 below on honest navigation. A booking
+  at a **deactivated** lodge is filtered out of the options, so the normaliser
+  substitutes the surviving active lodge and pairs it with the booking — on the
+  exact URL `AdminBookingToolsCard` builds. And because the deferral used to
+  clear on any dashboard error, a single transient 500 was enough to convert a
+  recoverable blip into a permanent, wrong mismatch screen.
+  While a booking is focused there is nothing left to default: the server has
+  already answered from `Booking.lodgeId`. The deferral lifts when a deliberate
+  lodge change clears the focus.
 - **The board-level `LODGE_MISMATCH` backstop, and why this route diverges from
   ignoring a contradiction** (#2701). `requested-room/options` and the
   hut-leader bed picker IGNORE a `lodgeId` that contradicts their named row.
@@ -255,7 +290,11 @@ operational documents (which may carry door/emergency access details).
   error. The predicate lives in `src/lib/bed-allocation-board-scope.ts`, a
   client-safe module, so `bed-allocation-board-lodge-scope.test.tsx` can drive a
   fake server through the SAME function the route calls — which is what makes
-  "the 409 cannot fire on normal navigation" a proof rather than a restatement.
+  "the 409 cannot fire on normal navigation" a proof rather than a restatement,
+  and is how the deactivated-lodge case was found.
+  The board also offers a way OUT of the refusal — a control that drops the
+  link's lodge and lets the server scope from the booking — because a hand-made
+  URL should not be a dead end, and that is the only recovery that can succeed.
 - **The hut-leader bed picker obeys the same rule when an assignment is named**
   (#2678). `GET /api/admin/hut-leaders/available-beds` took `assignmentId` and
   `lodgeId` as unrelated parameters and never reconciled them, so a request
