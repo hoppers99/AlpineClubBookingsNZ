@@ -218,7 +218,7 @@ async function getStats() {
     countRosterDaysNeedingChores({ from: today, to: sevenDaysFromNow }),
     // Bed Allocation officer card (#2091, D-E2): guests in the next 7 days with a
     // bed-night still awaiting allocation. Window-scoped mirror of the bed
-    // board's own unallocatedGuestNights set (src/lib/admin-bed-allocation.ts):
+    // board's own unallocatedGuestNights set (src/lib/bed-allocation-board.ts):
     // per-guest-night diff with the board's guest-existence rule and whole-lodge
     // holds excluded (ADR-001), so a partially-allocated booking still counts its
     // pending guests exactly as the board's buckets do. Cheap: bounded 7-day

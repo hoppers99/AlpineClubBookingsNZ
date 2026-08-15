@@ -338,7 +338,7 @@ function withheldTriggerCount(violation: PolicyExceptionViolation) {
  * This helper originally read `memberGuestConsentStatus`, a name that exists
  * nowhere in the schema (the Prisma column is `BookingGuest.consentStatus`, and
  * every other consumer reads that — `adult-member-hosting-review.ts`,
- * `admin-bed-allocation.ts`, `double-bed-sharing.ts`). Because the constraint
+ * `bed-allocation-placement.ts`, `double-bed-sharing.ts`). Because the constraint
  * property was optional, `BookingGuest[]` still type-checked, every persisted row
  * read `undefined`, `isOperationallyPresentConsent(undefined)` returned true, and
  * the D-12 half of the paid-up-adult test never ran on a real party: a PENDING

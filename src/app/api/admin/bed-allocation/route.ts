@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
     // admin two clicks from a booking page landed on a CLUB-WIDE board focused
     // on that booking, whose bed pickers offered every lodge's beds for its
     // guests — the exact #2664 symptom, with the write then refused at
-    // `admin-bed-allocation.ts` ("Bed belongs to a different lodge than the
+    // `bed-allocation-placement.ts` ("Bed belongs to a different lodge than the
     // booking"). Deriving the scope here makes the offer match the write.
     //
     // A `lodgeId` on the query string is IGNORED rather than rejected when a

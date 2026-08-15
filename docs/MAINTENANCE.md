@@ -348,6 +348,41 @@ additional advisory "newly oversized" entries visible; keep those warnings
 visible unless a reviewer explicitly accepts them, and prefer follow-up
 extraction over expanding this table casually.
 
+#### The bed-allocation cluster (#2688)
+
+`src/lib/admin-bed-allocation.ts` was 4,484 lines, 55 exports and 80 functions
+covering room and bed inventory, board assembly, allocation writing, range
+assignment, audit recording and date arithmetic. It no longer exists. It is
+eighteen modules named for one responsibility each, every one under budget:
+
+| Module | LOC | Holds |
+| --- | ---: | --- |
+| `bed-allocation-admin-contract.ts` | 22 | the shared error type and db-client type |
+| `bed-allocation-display-names.ts` | 22 | how a member and a guest are named |
+| `bed-allocation-admin-settings.ts` | 76 | the settings read/write bound to `prisma` |
+| `bed-allocation-date-range.ts` | 77 | the board's lodge-night range and its parse |
+| `bed-allocation-range-report.ts` | 122 | the range endpoint's wire shapes (client-safe) |
+| `bed-allocation-bunk-pairing.ts` | 161 | the #1675 bunk rule and its room-row lock |
+| `bed-allocation-auto-allocate.ts` | 170 | "Run auto allocation" |
+| `bed-allocation-warnings.ts` | 182 | the board's warnings (pure) |
+| `bed-allocation-approval.ts` | 183 | approval and the #776 booking lock |
+| `bed-allocation-board-payload.ts` | 194 | the board's wire shapes (types only) |
+| `bed-allocation-range-audit.ts` | 224 | the range assignment's audit record |
+| `bed-allocation-placement.ts` | 397 | the shared write chokepoint |
+| `bed-allocation-beds.ts` | 400 | bed inventory and its retire/delete guards |
+| `bed-allocation-board.ts` | 433 | board payload assembly, officer-card counter |
+| `bed-allocation-board-records.ts` | 449 | the board's queries and DTO serialisers |
+| `bed-allocation-manual-writes.ts` | 517 | single, bulk, same-date move, delete |
+| `bed-allocation-rooms.ts` | 553 | room inventory, config import, delete guards |
+| `bed-allocation-range-assign.ts` | 646 | range assignment (#2251) |
+
+There is deliberately **no barrel**: every importer names the module it depends
+on. A re-export facade over these would have left the monolith in place under a
+new name and recreated the same dependency magnet, which is why the two barrel
+entries in the table below are precedents for a *published API*, not for hiding
+a split. `bed-allocation.ts` is the cohesive core and was deliberately left
+alone — its row is in the table.
+
 | File | Current LOC | Disposition |
 | --- | ---: | --- |
 | `src/lib/xero-inbound-reconciliation.ts` | 13 | Split (#1270, #1208 item 1) into a re-export barrel over cohesive `src/lib/xero-inbound/` modules (`types`, `constants`, `amounts`, `object-links`, `audit`, `incremental-reconciliation`, `contact`, `payment`, `invoice-paid-effects`, `invoice`, `credit-note-repairs`, `credit-note`, `event-processing`). Behavior-preserving verbatim motion with an acyclic import graph (`types`/`constants` are leaves; the `event-processing` worker sits on top); the barrel re-exports the unchanged public surface (3 functions + 5 result types + `XeroInboundReplayError`). |
@@ -355,6 +390,7 @@ extraction over expanding this table casually.
 | `src/lib/xero-operation-outbox.ts` | 1972 | Queued for future split when queue dispatch, release, or retry policy changes next land (PR-b of #1272 co-locates the replay stack). |
 | `src/lib/email-templates.ts` | 2006 | Accepted as-is for now: central template catalogue; split only with a template-registry change. |
 | `src/lib/email.ts` | 11 | Split (#1137) into a re-export facade over cohesive `src/lib/email/` modules (`core`, `admin-alerts`, `account`, `booking`, `membership`, `family`, `waitlist`, `groups`, `booking-requests`, `chores`, `ses-feedback`, plus non-re-exported `internal` plumbing). The `admin-alerts` surface was itself split (#1210) by **domain/source** — `admin-alerts.ts` is now a barrel re-exporting `admin-alerts-shared` (plumbing + `getAdminEmails`), `admin-alerts-booking`, `admin-alerts-membership`, `admin-alerts-finance`, and `admin-alerts-ops`. When an alerts/email module next exceeds the ~700 LOC soft cap, split it along the **domain axis** (booking/capacity, membership lifecycle, finance/Xero/payments, ops) — not by audience, which is fuzzy because most alerts fan out to all admins — and keep the facade barrel's exports byte-identical so `src/lib/email.ts` and every importer keep resolving. |
+| `src/lib/bed-allocation.ts` | 3678 | **Accepted, oversized, and deliberately not split** (owner decision, 9 Aug 2026, #2688). It is 13 exports across 69 functions: a small public surface around one first-fit allocation algorithm whose function bodies are long because the algorithm is. That is cohesion, not sprawl, and the budget is a signal about sprawl. Splitting it would produce files that must be read together to follow one algorithm, which makes capacity code — money code — harder to reason about, not easier. The sibling that WAS split, `admin-bed-allocation.ts`, was the opposite shape: 55 exports over 80 functions of unrelated responsibilities. Grow this file only with the algorithm; a genuinely independent concern with its own API and tests may still be extracted, and anything else is a reason to re-read this row rather than to add here. |
 | `src/lib/xero-hardening.ts` | 1606 | Accepted as-is for now: central Xero hardening policy and diagnostics boundary. The `xero-hardening-canonical-links.ts` ↔ `xero-hardening-report.ts` clone pair (112 duplicated lines / 2 clones, jscpd 2026-07-07) is recorded as accepted under this same disposition (#1524 C4, owner-ticked 2026-07; same subsystem call as #1208 items 5/6). |
 | `src/lib/finance-sync-xero-datasets.ts` | 47 | Split (#1531, #1524 C3) into a re-export barrel over cohesive `src/lib/finance-sync-xero-datasets/` modules (`constants`, `types`, `date-format`, `report-snapshot`, `invoice-helpers`, `open-invoices`, `aged-invoices-snapshot`, `open-invoices-snapshot`, `report-sync`, `monthly-facts`, `chart-of-accounts`, `invoice-sync`). Behavior-preserving verbatim motion with an acyclic import graph (`constants`/`types`/`date-format` are leaves; the sync orchestrators sit on top); the barrel re-exports the unchanged public surface (29 functions/consts + the `FinanceMonthlyFactsWindowInput` type). The self-duplicated clone regions were deduped: the accounts-receivable and accounts-payable invoice builders now share one generic `buildFinanceOpenInvoicesSnapshot` (each snapshot's persisted invoice shape is supplied verbatim by the caller, keeping `expectedPaymentDate`/`plannedPaymentDate` divergent), and the aged + open-invoice builders share `updateContactDueDateRange`/`compareOpenInvoicePayloadsByDueDate`/`deriveSnapshotCurrency`. jscpd (min-tokens 70) dropped from 186 duplicated lines / 7 clones to 38 / 3 (2026-07-08); the 3 residual clones are the intentionally-separate AR-vs-AP payload literals plus two short prefix regions whose further extraction would over-abstract. |
 | `src/app/(admin)/admin/members/[id]/page.tsx` | 1747 | Queued for future route-shell thinning as member-detail sections continue to move local state out. |

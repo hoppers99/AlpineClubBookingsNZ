@@ -35,6 +35,9 @@ export const KNOWN_OVERSIZED_PRODUCTION_FILES = new Set<string>([
   "src/lib/email-templates.ts",
   "src/lib/email.ts",
   "src/lib/xero-hardening.ts",
+  // #2688, owner decision 9 Aug 2026: a cohesive first-fit allocation algorithm
+  // that is deliberately NOT split. Reason and boundary in docs/MAINTENANCE.md.
+  "src/lib/bed-allocation.ts",
   "src/lib/finance-sync-xero-datasets.ts",
   "src/app/(admin)/admin/members/[id]/page.tsx",
   "src/app/(admin)/admin/family-groups/page.tsx",

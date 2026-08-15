@@ -98,7 +98,9 @@ member-visible, so **no row reached a member who could not read it before**.
 | `src/app/api/admin/bed-allocation/rooms/import-from-config/route.ts` | 1 |
 | `src/app/api/admin/bed-allocation/rooms/route.ts` | 1 |
 | `src/app/api/admin/bed-allocation/settings/route.ts` | 1 |
-| `src/lib/admin-bed-allocation.ts` | 5 |
+| `src/lib/bed-allocation-approval.ts` | 1 |
+| `src/lib/bed-allocation-manual-writes.ts` | 2 |
+| `src/lib/bed-allocation-range-audit.ts` | 2 |
 | `src/lib/bed-allocation-removal.ts` | 2 |
 
 **Why.** This was the clearest violation in the repository, and it was written

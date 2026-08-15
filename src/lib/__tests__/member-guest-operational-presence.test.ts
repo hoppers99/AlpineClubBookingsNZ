@@ -620,7 +620,14 @@ describe("no site uses the NULL-hostile `not: PENDING` form", () => {
       // empty. Both DB entry points in roster-status now carry the predicate.
       "src/lib/roster-status.ts",
       "src/lib/bed-allocation-lifecycle.ts",
-      "src/lib/admin-bed-allocation.ts",
+      // #2688 split the admin bed-allocation surface by responsibility. The
+      // D-12 filter was in three places in the old single file and is asserted
+      // in all three here, which is strictly narrower than the file-level entry
+      // it replaces: the board's booking/guest load, the officer card's
+      // window-scoped mirror of it, and the manual write chokepoint.
+      "src/lib/bed-allocation-board-records.ts",
+      "src/lib/bed-allocation-board.ts",
+      "src/lib/bed-allocation-placement.ts",
       "src/lib/cron-hut-leader-auto-assign.ts",
       "src/app/api/admin/hut-leaders/eligible-members/route.ts",
       "src/lib/cron-pre-arrival-reminders.ts",

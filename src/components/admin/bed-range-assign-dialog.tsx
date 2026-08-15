@@ -26,9 +26,10 @@ import {
 } from "@/components/ui/select";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
-// Type-only, so the whole server module is erased at compile time and nothing
-// from admin-bed-allocation.ts (prisma, logger, audit) can reach this client
-// bundle. See the note beside the re-export below.
+// `bed-allocation-range-report.ts` carries the range endpoint's wire shapes and
+// nothing else — no prisma, no logger, no audit writer — so this import cannot
+// pull the server into the client bundle even before type erasure (#2688). Kept
+// type-only regardless. See the note beside the re-export below.
 import type {
   BedRangeRefusal,
   BedRangeRefusalCategory,
@@ -144,7 +145,7 @@ interface BedRangeAssignDialogProps {
 }
 
 // Mirrors MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS in
-// src/lib/admin-bed-allocation.ts. The client refuses too, so a mistyped year
+// src/lib/bed-allocation-range-report.ts. The client refuses too, so a mistyped year
 // is caught before a pointless round trip — it never shortens the range.
 export const MAX_RANGE_ASSIGN_NIGHTS = 366;
 
