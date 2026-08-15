@@ -49,11 +49,17 @@
   and anything saved next went to whichever lodge the system treats as the
   default — a lodge nobody had been shown.
 
-  Ten screens could write to the wrong lodge that way, including rooms and beds,
-  the roster, seasons, chore templates, lockers, hut fee rates, hut leader
-  assignments, lodge capacity, work parties and promo codes. Each now explains
-  that the lodge list did not load, offers a **Try again**, and holds back the
-  controls that would otherwise save to a lodge it cannot name.
+  Fifteen edit surfaces could write under the wrong scope. Ten could fall into
+  the default lodge: rooms and beds, the roster, seasons, chore templates,
+  lockers, hut fee rates, hut leader assignments, lodge capacity, work parties
+  and promo codes. Five policy editors instead fell into the club-wide scope:
+  default cancellation, minimum stay, booking periods, adult-member hosting and
+  lodge instructions. Each now explains that the lodge list did not load and
+  holds back its downstream reads and every edit, save, create, remove, delete
+  or toggle action until a deliberate club-wide choice or a concrete lodge has
+  resolved. A transport error offers **Try again**; a role without lodge access
+  gets the corresponding access explanation rather than a retry that can only
+  fail again.
 
   **Booking is the part that mattered most.** A member could reach the end of
   the booking wizard during one of these failures and pay for a stay with
@@ -69,7 +75,10 @@
   The same rule now covers other existing booking-creation paths: copying a
   booking keeps its source lodge, and a member joining a group stays at the
   organiser's lodge instead of either path falling back to the club's default
-  lodge.
+  lodge. The internal create-service type now requires `lodgeId` too, and its
+  runtime boundary refuses missing or blank values before any default-lodge
+  resolver is reached, so aliases, wrappers and unchecked callers cannot bypass
+  the HTTP refusal.
 
   Three screens are deliberately unchanged: the reports page, the promo-code
   redemptions panel and the public booking-requests panel already show a genuine

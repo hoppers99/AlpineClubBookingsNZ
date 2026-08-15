@@ -6,13 +6,16 @@ import type { ReactElement } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const reload = vi.hoisted(() => vi.fn())
+const lodgeOptions = vi.hoisted(() => ({
+  loading: false,
+  failed: true,
+  forbidden: false,
+}))
 
 vi.mock("@/components/lodge-select", () => ({
   useLodgeOptions: () => ({
     lodges: [],
-    loading: false,
-    failed: true,
-    forbidden: false,
+    ...lodgeOptions,
     reload,
   }),
 }))
@@ -42,6 +45,9 @@ const POLICY_ACTION =
 describe("booking-policy scope resolution (#2701, #2887)", () => {
   beforeEach(() => {
     reload.mockReset()
+    lodgeOptions.loading = false
+    lodgeOptions.failed = true
+    lodgeOptions.forbidden = false
     vi.stubGlobal("fetch", vi.fn())
   })
 
@@ -59,6 +65,24 @@ describe("booking-policy scope resolution (#2701, #2887)", () => {
       expect(
         await screen.findByText("The lodge list could not be loaded"),
       ).toBeInTheDocument()
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(
+        screen.queryByRole("button", { name: POLICY_ACTION }),
+      ).not.toBeInTheDocument()
+    },
+  )
+
+  it.each(CASES)(
+    "%s sends no policy request while lodge options are still resolving",
+    (_name, element) => {
+      lodgeOptions.loading = true
+      lodgeOptions.failed = false
+      const fetchMock = vi.mocked(fetch)
+      render(element)
+
+      expect(
+        screen.queryByText("The lodge list could not be loaded"),
+      ).not.toBeInTheDocument()
       expect(fetchMock).not.toHaveBeenCalled()
       expect(
         screen.queryByRole("button", { name: POLICY_ACTION }),

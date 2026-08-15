@@ -1686,14 +1686,17 @@ move, never a capacity or double-booking violation.
     booking on someone's behalf may continue**, with the lodge named on screen
     before anything is written. An admin will notice a wrong lodge name and
     knows how to correct it; a member paying online will not.
-  - **Production service callers name the authoritative lodge even when they
-    bypass the HTTP route.** Copying a booking carries the source booking's
-    `lodgeId`; a member joining a group carries the organiser booking's resolved
-    lodge. The exact production call-site census in
-    `booking-create-requires-lodge.test.ts` fails on insertion/deletion drift and
-    on any create-service object that omits `lodgeId`. The shared service input
-    remains optional only for legacy internal/test compatibility; that is not
-    permission for a production writer to use its default-lodge fallback.
+  - **Every booking-create service requires the authoritative lodge, including
+    callers that bypass the HTTP route.** Copying a booking carries the source
+    booking's `lodgeId`; a member joining a group carries the organiser
+    booking's resolved lodge. The shared TypeScript input makes `lodgeId`
+    required, and every public create service runtime-refuses a missing, blank
+    or unchecked value before it can call the permissive read resolver. The
+    exact production call-site census in
+    `booking-create-requires-lodge.test.ts` fails on insertion/deletion drift,
+    indirect argument objects and an explicit `undefined`, `null` or `void`
+    value. Required types catch ordinary aliases/wrappers and the runtime guard
+    catches unchecked JavaScript or `any` callers.
 
 ### INV-LIFE-062
 

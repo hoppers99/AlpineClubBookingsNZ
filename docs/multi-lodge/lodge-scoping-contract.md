@@ -212,14 +212,27 @@ operational documents (which may carry door/emergency access details).
   no lodges. That was never cosmetic: the selection normalises to `null`, and a
   `null` lodge was resolved server-side to the club's DEFAULT lodge, so the next
   thing the operator saved landed somewhere they were never shown. Ten surfaces
-  wrote to the wrong lodge that way, two of them on money paths.
+  could write to the wrong lodge that way, two of them on money paths. Five more
+  policy editors — default cancellation, minimum stay, booking periods,
+  adult-member hosting and lodge instructions — treated the same unresolved
+  `null` as club-wide, leaving club-wide reads and writes reachable. All fifteen
+  edit surfaces now close their transport and action boundaries.
   The shared treatment is `LodgeOptionsUnavailableNotice` — one explanation and
   one working retry — plus, on each surface, suppression of the lodge-keyed
   fetch and of every write control while the scope is unknown. **The suppression
   is the half that matters**; a message alone leaves the wrong write reachable.
-  A 403 is deliberately NOT that state: `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN`
-  hold `bookings` and no `lodge` permission, so a refusal is their normal answer
-  and a retry could only refuse again.
+  A 403 is deliberately NOT described as an outage: `ADMIN_MEMBERSHIP` and
+  `FINANCE_ADMIN` hold `bookings` and no `lodge` permission, so a refusal is
+  their normal answer and a retry could only refuse again. A surface that must
+  know a concrete policy partition still suppresses its downstream request and
+  actions and explains that lodge access is needed; the bed board's separate
+  read-only all-lodges exception is documented below.
+  The five policy editors make a deliberate club-wide choice a settled
+  `club-wide` state, distinct by construction from `resolving` and
+  `unavailable`. They issue no policy GET until that settled state or a concrete
+  `lodge` exists, and show no Edit, Save, Create, Remove, Delete or toggle action
+  before then. Their shared behavioral test renders all five and proves that a
+  cosmetic notice without the transport/action gate fails.
   Three surfaces are deliberately left to degrade quietly, and that is a
   decision rather than an omission: `reports`, the promo-redemptions panel and
   the public booking-requests panel already default to a genuine, labelled
