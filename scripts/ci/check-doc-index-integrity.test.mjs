@@ -33,15 +33,17 @@ import {
  * it is testing stays green over it.
  *
  * Exempt from the scan is not exempt from the habit, though. Where a fixture
- * needs an id that resolves to NOTHING, it uses a real number under the
- * fixture's own prefix — `002`, which this repository defines — so a grep for
- * that prefix still lands on a real rule; the id is unresolved in the fixture
- * repository below, which defines only `001`, and that is what the assertion is
- * about. Where a fixture needs a number far out of range, it uses a prefix this
- * repository does not declare. Neither form writes an invented number under a
- * live prefix, which is the trap #2889 closed and the rule `SCHEME.md` §1.4 now
- * states: an illustrative id is a real defined id or a placeholder, never an
- * invented number under a real prefix.
+ * needs a well-formed id that resolves to NOTHING, it uses a real number under
+ * the fixture's own prefix — `002`, which this repository defines — so a grep
+ * for that prefix still lands on a real rule; the id is unresolved in the
+ * fixture repository below, which defines only `001`, and that is what the
+ * assertion is about. The fenced-width tests necessarily spell malformed
+ * two- and four-digit forms under a live prefix: they are isolated in this sole
+ * exempt fixture file and prove the production scanner rejects exactly those
+ * forms. Where a fixture needs a well-formed number far out of range, it uses a
+ * prefix this repository does not declare. No illustrative well-formed id
+ * invents a number under a live prefix, which is the trap #2889 closed and the
+ * rule `SCHEME.md` §1.4 states.
  */
 
 /** An em dash after one UTF-8 -> cp1252 -> UTF-8 round-trip. */
@@ -148,11 +150,47 @@ describe("auditDefinitionHeadingShapes", () => {
     expect(problems[0]).toContain("canonical");
   });
 
-  it("accepts canonical headings and ignores illustrative headings in fences", () => {
+  it("fails a decorated heading whose existing id would otherwise resolve as a citation", () => {
+    const problems = auditDefinitionHeadingShapes(
+      repo({
+        "docs/invariants/money.md": [
+          "# Money",
+          "",
+          "## INV-MONEY-001",
+          "",
+          "- A rule.",
+          "",
+          "## INV-MONEY-001 — another rule",
+          "",
+          "- This is not a second canonical definition.",
+          "",
+        ].join("\n"),
+      }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("docs/invariants/money.md:7");
+    expect(problems[0]).toContain("definition heading");
+  });
+
+  it("fails an invariant-shaped Setext heading rather than treating it as prose", () => {
     const problems = auditDefinitionHeadingShapes(
       repo({
         "docs/invariants/money.md":
-          "# Money\n\n## INV-MONEY-001\n\n- A rule.\n\n```md\n## inv-money-002\n```\n",
+          "# Money\n\n## INV-MONEY-001\n\n- A rule.\n\nINV-MONEY-001 — another rule\n---\n",
+      }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("docs/invariants/money.md:7");
+    expect(problems[0]).toContain("canonical");
+  });
+
+  it("accepts canonical definitions, narrative headings and illustrative fenced headings", () => {
+    const problems = auditDefinitionHeadingShapes(
+      repo({
+        "docs/invariants/money.md":
+          "# Money\n\n## INV-MONEY-001\n\n- A rule.\n\n## Money examples\n\n```md\n## inv-money-002\n```\n",
       }),
     );
 
@@ -163,6 +201,20 @@ describe("auditDefinitionHeadingShapes", () => {
 describe("auditDocs — the whole check", () => {
   it("passes a repository that satisfies every rule", () => {
     expect(auditDocs(repo())).toEqual([]);
+  });
+
+  it("fails a decorated heading even when its existing id resolves in the whole audit", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n## INV-MONEY-001 — another rule\n\n- Not a definition.\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("docs/invariants/money.md:9");
+    expect(problems[0]).toContain("canonical");
   });
 });
 
@@ -237,6 +289,21 @@ describe("auditInvariantIds", () => {
     expect(problems[0]).toContain("docs/example.md:4");
   });
 
+  it.each([
+    ["INV-MONEY-42", 2],
+    ["INV-MONEY-0042", 4],
+  ])("fails fenced live-prefix numeric near-miss %s", (id, digitCount) => {
+    const problems = auditInvariantIds(
+      repo({ "docs/example.md": `# Example\n\n\`\`\`\n${id}\n\`\`\`\n` }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain(id);
+    expect(problems[0]).toContain(`${digitCount} digit(s)`);
+    expect(problems[0]).toContain("fenced code block");
+    expect(problems[0]).toContain("docs/example.md:4");
+  });
+
   it("allows real ids, placeholders, reserved invoices and custom prefixes in fences", () => {
     const problems = auditInvariantIds(
       repo({
@@ -247,7 +314,9 @@ describe("auditInvariantIds", () => {
           "INV-MONEY-001",
           "INV-<PREFIX>-<NNN>",
           "INV-XERO-999",
+          "INV-XERO-42",
           "INV-DEMO-999",
+          "INV-DEMO-0042",
           "```",
           "",
         ].join("\n"),

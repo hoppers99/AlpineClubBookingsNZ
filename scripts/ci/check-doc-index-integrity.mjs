@@ -92,12 +92,21 @@ export const INVARIANT_DIR = "docs/invariants/";
 export const DEFINITION_PATTERN = /^#{2,4} (INV-[A-Z][A-Z0-9]*-\d{3})\s*$/;
 
 /**
- * An id-like heading under `docs/invariants/` that appears intended to define
- * one rule, including non-canonical case, heading level, digit width or
- * backticks. Every match must also satisfy {@link DEFINITION_PATTERN}.
+ * Any Markdown heading under `docs/invariants/` that contains a numeric
+ * invariant-shaped token. Numeric invariant tokens in headings are reserved
+ * for definitions; a narrative heading names the topic and cites the invariant
+ * in its body. Every match must therefore also satisfy
+ * {@link DEFINITION_PATTERN} exactly.
  */
 export const DEFINITION_LIKE_HEADING_PATTERN =
-  /^#{1,6}\s+`?(INV-[A-Z][A-Z0-9]*-\d+)`?\s*$/i;
+  /^ {0,3}#{1,6}[ \t]+.*\bINV-[A-Z][A-Z0-9]*-\d+\b.*$/i;
+
+/** A numeric invariant-shaped token, used to recognise Setext headings too. */
+export const INVARIANT_SHAPED_TOKEN_PATTERN =
+  /\bINV-[A-Z][A-Z0-9]*-\d+\b/i;
+
+/** The underline that turns the immediately preceding line into a Setext heading. */
+export const SETEXT_HEADING_UNDERLINE_PATTERN = /^ {0,3}(?:=+|-+)[ \t]*$/;
 
 /** A CITATION is the id anywhere in a line of any tracked text file. */
 export const CITATION_PATTERN = /\bINV-[A-Z][A-Z0-9]*-\d{3}\b/g;
@@ -414,25 +423,35 @@ export function collectDefinitions(files) {
 }
 
 /**
- * Fail id-only headings under the invariant directory that are not canonical
- * definitions. Without this, a lower-cased or backticked new heading is neither
- * a definition nor a citation and can make a whole rule invisible to the gate.
+ * Fail headings under the invariant directory that contain a numeric invariant
+ * token but are not canonical definitions. Without this, a lower-cased,
+ * backticked or decorated heading can be mistaken for a citation (or ignored
+ * entirely) while the rule it appears to define stays invisible to catalogue
+ * and sequence checks.
  */
 export function auditDefinitionHeadingShapes(files) {
   const problems = [];
   for (const [rel, text] of files) {
     if (!rel.startsWith(INVARIANT_DIR) || !rel.endsWith(".md")) continue;
-    for (const { number, text: line } of scannableLines(text)) {
+    const lines = scannableLines(text);
+    for (let index = 0; index < lines.length; index += 1) {
+      const { number, text: line } = lines[index];
+      const next = lines[index + 1];
+      const isSetextHeading =
+        INVARIANT_SHAPED_TOKEN_PATTERN.test(line) &&
+        next?.number === number + 1 &&
+        SETEXT_HEADING_UNDERLINE_PATTERN.test(next.text);
       if (
-        DEFINITION_LIKE_HEADING_PATTERN.test(line) &&
+        (DEFINITION_LIKE_HEADING_PATTERN.test(line) || isSetextHeading) &&
         !DEFINITION_PATTERN.test(line)
       ) {
         problems.push(
           `${rel}:${number} looks like an invariant definition heading but is not in ` +
             "the canonical `##`-to-`#### INV-<PREFIX>-<NNN>` shape with an uppercase " +
-            "prefix and exactly three digits. A malformed definition is invisible to " +
-            "the catalogue and sequence checks; make the heading canonical rather than " +
-            "leaving the rule untracked.",
+            "prefix, exactly three digits and no decoration. Only that canonical heading " +
+            "defines a rule, even when an embedded existing ID resolves as a citation. " +
+            "Make this heading canonical, or give a narrative heading ordinary topic text " +
+            "and put the invariant citation in its body.",
         );
       }
     }
@@ -504,22 +523,53 @@ export function auditInvariantIds(files) {
   }
 
   // Fences may carry placeholders, invoice-number fixtures and examples under
-  // custom prefixes. But a well-formed id under a prefix this repository really
-  // declares is a claim about a live invariant even inside a fence, and must
-  // resolve. Unknown/custom prefixes remain ignored here; the ordinary
-  // out-of-fence scan still fails them as typos.
+  // custom prefixes. But a numeric token under a prefix this repository really
+  // declares is a claim about a live invariant even inside a fence: malformed
+  // widths fail the shape rule and well-formed ids must resolve. Unknown/custom
+  // prefixes remain ignored here; the ordinary out-of-fence scan still fails
+  // them as typos.
   const unresolvedFenced = new Map();
-  for (const [rel, text] of files) {
-    if (CITATION_EXEMPT_FILES.has(rel)) continue;
-    for (const { number, text: line } of fencedLines(text)) {
-      for (const match of line.matchAll(CITATION_PATTERN)) {
-        const id = match[0];
-        if (declaredPrefixes.has(prefixOf(id)) && !definitions.has(id)) {
-          if (!unresolvedFenced.has(id)) unresolvedFenced.set(id, []);
-          unresolvedFenced.get(id).push(`${rel}:${number}`);
+  const malformedFenced = [];
+
+  // Built only from declared prefixes, so placeholders, reserved invoice
+  // numbers and custom fixture prefixes never enter this audit.
+  const livePrefixNumericPattern =
+    declaredPrefixes.size > 0
+      ? new RegExp(
+          `\\bINV-(?:${[...declaredPrefixes].sort().join("|")})-[0-9]+\\b`,
+          "g",
+        )
+      : null;
+
+  if (livePrefixNumericPattern) {
+    for (const [rel, text] of files) {
+      if (CITATION_EXEMPT_FILES.has(rel)) continue;
+      for (const { number, text: line } of fencedLines(text)) {
+        for (const match of line.matchAll(livePrefixNumericPattern)) {
+          const id = match[0];
+          const digits = id.slice(id.lastIndexOf("-") + 1);
+          if (digits.length !== 3) {
+            malformedFenced.push({
+              id,
+              digits: digits.length,
+              at: `${rel}:${number}`,
+            });
+          } else if (!definitions.has(id)) {
+            if (!unresolvedFenced.has(id)) unresolvedFenced.set(id, []);
+            unresolvedFenced.get(id).push(`${rel}:${number}`);
+          }
         }
       }
     }
+  }
+
+  for (const { id, digits, at } of malformedFenced) {
+    problems.push(
+      `${id} at ${at} uses ${digits} digit(s) inside a fenced code block. Invariant ` +
+        "numbers under a live prefix are exactly three, zero-padded, even in examples. " +
+        "Use a placeholder such as `INV-<PREFIX>-<NNN>` when the example must not " +
+        "claim a real invariant id.",
+    );
   }
 
   for (const [id, places] of unresolvedFenced) {
@@ -548,15 +598,11 @@ export function auditInvariantIds(files) {
   // resolves to nothing while being reported as nothing. Scoped to declared
   // prefixes rather than to `INV-` generally, because a generic shape guard
   // flags every Xero invoice fixture in the test suite.
-  if (declaredPrefixes.size > 0) {
-    const shapeGuard = new RegExp(
-      `\\bINV-(?:${[...declaredPrefixes].sort().join("|")})-[0-9]+\\b`,
-      "g",
-    );
+  if (livePrefixNumericPattern) {
     for (const [rel, text] of files) {
       if (SHAPE_GUARD_EXEMPT_FILES.has(rel) || CITATION_EXEMPT_FILES.has(rel)) continue;
       for (const { number, text: line } of scannableLines(text)) {
-        for (const match of line.matchAll(shapeGuard)) {
+        for (const match of line.matchAll(livePrefixNumericPattern)) {
           const digits = match[0].slice(match[0].lastIndexOf("-") + 1);
           if (digits.length !== 3) {
             problems.push(

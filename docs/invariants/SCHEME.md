@@ -41,7 +41,7 @@ Examples: `INV-DATE-001`, `INV-CAP-029`.
 **Three digits, not two.** The two-digit shape was considered and rejected:
 
 ```
-INV-MONEY-01   INV-CAP-07   INV-DATE-03      <- rejected, never used
+INV-<PREFIX>-01   INV-<PREFIX>-07   INV-<PREFIX>-03   <- rejected, never used
 ```
 
 Two digits caps a prefix at 99 rules for all time, and because IDs are never
@@ -571,13 +571,14 @@ by the `verify` job on every PR. It needs no network, no build and no Prisma
 client — it is a single `node` script over the tracked tree and its git base
 revision.
 
-Current-tree scans plus one revision comparison. Definitions, ordinary citations
-and malformed shapes are read **outside fenced code blocks**. A narrow second
-citation scan reads fences too: if a well-formed ID uses a prefix this repository
-really declares, it must resolve there. Placeholders (`INV-<PREFIX>-<NNN>`),
-reserved invoice numbers and custom fixture prefixes remain legal examples.
-This document, and any future one, can therefore teach the shape without being
-allowed to invent what looks like a live maximum.
+Current-tree scans plus one revision comparison. Definitions and ordinary
+citations are read **outside fenced code blocks**. The shape audit covers both
+sides of a fence: any numeric token under a prefix this repository really
+declares has exactly three digits, and a well-formed one must resolve even in a
+fenced example. Placeholders (`INV-<PREFIX>-<NNN>`), reserved invoice numbers and
+custom fixture prefixes remain legal examples. This document, and any future
+one, can therefore teach the shape without being allowed to invent what looks
+like a live maximum or a malformed live ID.
 
 **Definition** — collected only from `docs/invariants/**/*.md`:
 
@@ -591,10 +592,13 @@ level range `2–4` exists because an ID heading always sits exactly one level
 below its nearest structural heading, and a file with no subsections has one
 level less.
 
-An ID-like heading under `docs/invariants/` is also checked against that exact
-shape. This catches a lower-cased, backticked, wrongly levelled or wrongly padded
-heading that would otherwise be neither a definition nor a citation and would
-make a whole rule invisible.
+Every unfenced Markdown heading under `docs/invariants/` that contains a numeric
+invariant-shaped token is checked against that exact shape. Numeric tokens in
+headings are reserved for definitions: a legitimate narrative heading names the
+topic and puts any invariant citation in its body. This catches a lower-cased,
+backticked, wrongly levelled, wrongly padded, decorated or Setext heading that
+would otherwise be invisible as a definition or pass merely because its
+embedded ID resolved as a citation.
 
 **Citation** — collected from every tracked `*.md`, `*.ts`, `*.tsx`, `*.mjs`,
 `*.js`, `*.sql`, `*.yml` and `*.json` file:
@@ -618,21 +622,22 @@ every Xero invoice fixture in the test suite (§1.2.1).
 
 **The check asserts, in this order:**
 
-1. Every ID-like definition heading has the canonical case, level and digit
-   width.
+1. Every unfenced invariant-document heading containing a numeric invariant
+   token is exactly a canonical definition heading: correct case, level, digit
+   width and no decoration.
 2. No duplicate definition of any ID, across all files.
 3. Every ordinary citation whose prefix is a **declared invariant prefix**
    resolves to a definition.
-4. Every well-formed ID inside a fence whose prefix is declared also resolves;
-   placeholders, reserved invoice numbers and custom fixture prefixes are not
-   treated as live IDs there.
+4. Every numeric token inside a fence whose prefix is declared has exactly three
+   digits, and every such well-formed ID resolves; placeholders, reserved invoice
+   numbers and custom fixture prefixes are not treated as live IDs there.
 5. Every ordinary citation whose prefix is **not** declared is either on the
    reserved list — `IB`, `SETTLE`, `SUP`, `SUB`, `XERO`, `FAM`, `LEGACY`, `PM`,
    `JOR`, `REB`, documented in the script as Xero invoice-number fixtures — or
    the check fails with "unrecognised `INV-` prefix: add it to the invariant
    index or to the reserved list". This is what catches a typo'd prefix — a
    misspelling of a real prefix — which a whitelist alone would silently ignore.
-6. Every shape-guard match has exactly three digits.
+6. Every ordinary (unfenced) shape-guard match has exactly three digits.
 7. Every file under `docs/invariants/` is linked from
    `docs/DOMAIN_INVARIANTS.md`, and every file linked from it exists.
 8. Every defined ID appears exactly once in the index.
