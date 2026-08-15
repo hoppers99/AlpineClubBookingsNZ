@@ -142,6 +142,43 @@ against what PostgreSQL will actually hand the provisioned role. Two copies of t
 parser would let those halves drift apart while both stayed green. Import it
 directly rather than through the barrel, like `clock.ts`.
 
+## Shelling out to a bash gate script
+
+```ts
+import {
+  bashFixturePath,
+  bashGateArgs,
+} from "@/lib/__tests__/helpers/bash-fixture-path";
+
+const result = spawnSync(
+  "bash",
+  bashGateArgs("scripts/validate-blue-green-migrations.sh", [bashFixturePath(migrationPath)], {
+    MIGRATION_SAFETY_LEDGER: bashFixturePath(ledgerPath),
+  }),
+  { cwd: process.cwd(), env: process.env, encoding: "utf8" },
+);
+```
+
+**Use these for every new shell-out.** On Windows `bash` is
+`C:\Windows\System32\bash.exe` — WSL, not Git Bash — and it can read neither a
+drive-letter path nor a variable set on `spawnSync`'s `env`. Writing the
+invocation the obvious way therefore fails two ways: loudly (`Migration SQL file
+not found: C:/Users/…`) and, worse, silently, with the gate falling back to its
+production defaults and validating the repository's real files instead of the
+fixture (#2886).
+
+`bashFixturePath` returns a path relative to the spawn's `cwd`, which resolves
+under WSL and Git Bash alike; `bashGateArgs` inlines the variables into the `-c`
+string, which is the only form that crosses into WSL. Both are no-ops or
+equivalents on Linux and CI. The module comment carries the measurements and the
+equivalence check. Import it directly rather than through the barrel, like
+`clock.ts`.
+
+Note the limit: a test that spawns a POSIX tool **directly** rather than through
+`bash` still needs that tool on PATH, and Windows ships no `awk`. `spawnSync`
+then reports `status: null`, which quietly satisfies a `not.toBe(0)` assertion —
+so gate such a case on the binary being present rather than assuming it is.
+
 ## Conventions
 
 - Helpers must not import anything from `src/app/...` so they stay

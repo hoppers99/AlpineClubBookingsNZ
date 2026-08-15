@@ -423,18 +423,53 @@ Two traps make the restore less reliable than it looks:
   no-op against — a different checkout. Use absolute paths, and assert the
   mutated text actually differs before you run the suite.
 
-## A suite can time out on a tree that is fine
+## A shell-out suite fails on Windows for a reason that is not load
 
-`review-findings-contracts.test.ts` shells out over the whole migration tree, so
-it is load-sensitive: started while other lanes are installing or compiling, it
-times out on a branch with nothing wrong with it.
+Four suites prove a real `bash` gate by running it against a throwaway fixture:
+`review-findings-contracts.test.ts`, `blue-green-ledger-lint.test.ts`,
+`data-migration-verification-gate.test.ts` and
+`adult-member-hosting-coverage-migration.test.ts`.
 
-Raising the timeout from the command line does not help. Its per-test timeouts
-are written **inline in the file**, as the third argument to each `it(...)`, and
-an inline timeout wins over `--testTimeout`. Re-run the suite **alone** before
-believing a failure from it, and never report it as clean when it is not — say
-what failed and why it is not yours. `AGENTS.md` lists it alongside the other
-known-environmental suites.
+For a long time this section said the first of those was **load-sensitive** and
+told you to re-run it alone. That was wrong, and it is worth knowing why,
+because a wrong diagnosis that suggests an action is more expensive than no
+diagnosis at all: three separate lanes in one session each re-established that
+the red suite was not theirs, and each threw the reasoning away. Re-running can
+never help, because load was never involved.
+
+The measured cause (#2886) is that on Windows `bash` is
+`C:\Windows\System32\bash.exe` — **WSL**, not Git Bash — and two things then
+fail deterministically, on a clean tree, with the suite run alone:
+
+1. A drive-letter fixture path does not exist inside WSL's filesystem
+   namespace, so the gate reported `Migration SQL file not found: C:/Users/…`.
+   Flipping the separators does not help; only a path **relative to the `cwd`
+   the script is spawned with** resolves under both WSL and Git Bash.
+2. Variables put on `spawnSync`'s `env` option do not cross into WSL at all.
+   The gate saw them unset and fell back to its production defaults — so a test
+   pointing the validator at a fixture ledger was silently running it against
+   the repository's real `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`. That one failed
+   without any error message, which is the more dangerous of the two.
+
+Both are fixed centrally in `src/lib/__tests__/helpers/bash-fixture-path.ts`,
+which carries the measurements. **Use `bashFixturePath` and `bashGateArgs` for
+any new shell-out**; on Linux and CI they are equivalent to what these suites
+did before, which was checked by running both invocation shapes over the same
+fixtures inside `node:24-bookworm` and comparing status, stdout and stderr.
+
+Two things this does *not* cover, so that the list stays honest:
+
+- A test that spawns a POSIX tool **directly** rather than through `bash` still
+  needs that tool on PATH. The awk/TypeScript splitter-agreement case in
+  `data-migration-verification-gate.test.ts` spawns `awk`, Windows ships none,
+  and `spawnSync` reports `status: null` — which quietly satisfies a
+  `not.toBe(0)` assertion. That case now skips on Windows when `awk` is absent
+  and stays mandatory everywhere it can run, including CI.
+- These suites do carry generous **inline** per-test timeouts, written as the
+  third argument to each `it(...)`, and an inline timeout does win over
+  `--testTimeout`. That is a real fact about editing them
+  (`./helpers/migration-gate-timeouts.ts` holds the budgets and the reasoning) —
+  it was simply never the reason they were failing.
 
 ## Census tests and the merge hazard
 
