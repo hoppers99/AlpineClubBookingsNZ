@@ -253,8 +253,8 @@ export function main() {
       [
         ["Production files (src/)", String(productionStats.length)],
         ["Production LOC (src/)", String(totalProdLoc)],
-        ["Test files (src/)", String(testStats.length)],
-        ["Test LOC (src/)", String(totalTestLoc)],
+        ["Test files (src/ and scripts/)", String(testStats.length)],
+        ["Test LOC (src/ and scripts/)", String(totalTestLoc)],
         ["Route handlers", String(routeHandlerStats.length)],
         ["App Router pages", String(routePageStats.length)],
         ["Production `any` / type suppressions", String(allAny.length)],
