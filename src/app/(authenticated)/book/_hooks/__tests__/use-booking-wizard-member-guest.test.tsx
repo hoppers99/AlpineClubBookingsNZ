@@ -97,6 +97,11 @@ function stubFetch(options: {
 }) {
   const fetchMock = vi.fn(async (url: string) => {
     const u = String(url);
+    if (u.includes("/api/lodges")) {
+      return jsonResponse({
+        lodges: [{ id: "lodge-1", name: "Alpine Lodge", active: true }],
+      });
+    }
     if (u.includes("/api/members/family")) {
       return options.familyOk === false
         ? jsonResponse({}, false, 500)
@@ -156,6 +161,10 @@ async function mountedWizard(options: Parameters<typeof stubFetch>[0] = {}) {
   const { result } = renderHook(() => useBookingWizard());
   await waitFor(() => expect(result.current.guests).toHaveLength(1));
   await waitFor(() => expect(result.current.memberGuestConfig.enabled).toBe(true));
+  // `renderHook` does not mount LodgeSelect, whose normalising effect chooses
+  // the sole lodge in production. Drive that authoritative choice explicitly
+  // before exercising later booking steps.
+  act(() => result.current.handleLodgeChange("lodge-1"));
   // AWAITED, and the step asserted: `handleDateSelect` only reaches
   // `setStep("guests")` after two fetches, and the refusal branch under test
   // consults the current step to decide where the message renders.
