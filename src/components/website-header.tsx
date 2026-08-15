@@ -46,10 +46,9 @@ export async function WebsiteHeader({
     href: page.path,
     label: page.menuTitle.trim(),
   }));
-  // Home, the CMS-driven entries, then a Contact fallback appended only when no
-  // CMS entry already links there — deduped by href so a club that opts its
-  // Contact page into the menu shows it exactly once (#2818 decision 5). See
-  // `buildWebsiteNavLinks`.
+  // Home, then the CMS-driven entries. The code owns no fixtures beyond Home;
+  // Contact appears only when its page carries a menu title, like any other
+  // page. See `buildWebsiteNavLinks`.
   const navLinks: WebsiteNavLink[] = buildWebsiteNavLinks(dynamicNavLinks);
   // Configurable public Book Now (E3 #1929): hidden, custom page, or the default
   // booking flow (fail-open). The authenticated dashboard CTA is out of scope.

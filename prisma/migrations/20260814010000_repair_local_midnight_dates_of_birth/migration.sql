@@ -1,0 +1,154 @@
+-- #2859: move the dates of birth that were stored a day early back onto the day
+-- the member was actually born.
+--
+-- WHAT WENT WRONG. Four copies of the same "dd/mm/yyyy" parser had grown across
+-- the Xero surface. Two of them built a Date from "yyyy-mm-ddT00:00:00" with no
+-- "Z" and no offset, which JavaScript reads as SERVER-LOCAL midnight, and the
+-- Dockerfile pins TZ=Pacific/Auckland. The stored instant therefore landed on
+-- the PREVIOUS UTC day, every hour of every day, not only in a morning window.
+-- Those two parsers are the Xero member import (bulk, dependant and backfill
+-- paths) and the single-contact import route.
+--
+-- HOW MANY ROWS, AND WHY SO FEW. Ten, out of the 375 members who hold a date of
+-- birth on the one live site: six at 11:00 and four at 12:00. An earlier version
+-- of this comment argued the two defective copies "between them created
+-- essentially the whole membership at go-live", and that is measurably false —
+-- every one of those 375 members has a Xero contact, yet only ten carry the
+-- defective shape. The reason is the one already in #2859: the parser existed in
+-- FOUR copies and two of them were always correct (xero-inbound/contact.ts and
+-- xero-operation-retry.ts, both Date.UTC), so the bulk of the membership came in
+-- through a correct copy. A reader who trusted the old premise would see this
+-- statement touch ten rows and conclude it had under-run.
+--
+-- The model is corroborated rather than inferred from the hour. 296 of the 375
+-- have a date-shaped Xero companyNumber that can be asked what the day should
+-- be: 273 agree with the stored value exactly, and every one of the ten
+-- defective rows is exactly ONE DAY EARLY against it — which is precisely what
+-- this statement moves them by.
+--
+-- THE CENSUS THAT MAKES THIS SAFE. Every writer of "Member"."dateOfBirth" was
+-- enumerated before this statement was written, because a migration keyed on a
+-- shape must know that the shape means one thing. Result: the Xero import pair
+-- above are the ONLY writers that ever produced a local-midnight instant. Every
+-- other writer — self-service profile, admin create, admin member-detail edit,
+-- CSV import, all four family-group routes, membership application approval,
+-- nomination, and the inbound Xero contact reconciliation — produces UTC
+-- midnight, via parseDateOnly, an explicit T00:00:00.000Z, Date.UTC(...), or
+-- new Date("yyyy-mm-dd") (which ECMAScript defines as UTC for the date-only
+-- form). So a non-zero time-of-day means "written by the defect" and 00:00
+-- means "written correctly", with nothing writing either shape for another
+-- reason.
+--
+-- WHICH HOURS, AND WHY THREE RATHER THAN TWO. New Zealand keeps UTC+12 in
+-- standard time and UTC+13 in daylight time, and a local midnight is stored as
+-- (local 00:00 - offset). So the defect writes the PREVIOUS day at:
+--
+--     11:00 UTC  when the birthday falls in NZ DAYLIGHT time (+13)
+--     12:00 UTC  when it falls in NZ STANDARD time (+12)
+--
+-- which is exactly what issue #2859 states ("local midnight is 11:00 or 12:00
+-- UTC on the previous day"), exactly what its two worked examples show
+-- (15/06/1985 stored as 1985-06-14 12:00 and 01/01/2000 as 1999-12-31 11:00),
+-- and exactly what the live data holds: six rows at 11:00 and four at 12:00,
+-- and nothing anywhere else except correct rows at 00:00.
+--
+-- A 13:00 bucket was reported once and is retracted. It came from a query that
+-- applied AT TIME ZONE to this naive column and read the result back through the
+-- session zone, which rendered the CORRECT 00:00 rows as 12:00 and 13:00 and the
+-- genuinely wrong ones as 00:00 — the measurement was inverted, and the "offset
+-- reading" hypothesis built on it is disproved rather than merely unconfirmed.
+-- The 13 arm is KEPT anyway, as a known-inert safety margin: it matches nothing
+-- on the one site this repair is for, it costs a comparison, and if a future
+-- deployment somewhere further east ever produced that shape it would be
+-- repaired rather than silently left behind.
+--
+-- WHAT IT STILL WILL NOT TOUCH. The minute and second must both be exactly zero,
+-- because the claim being made about a matched row is that it is EXACTLY a local
+-- midnight. A stored value carrying minutes, seconds or milliseconds is not one,
+-- and nothing here could say what day it was meant to be. That also excludes
+-- 12:30, which WOULD be a genuine local midnight for a birthday under New
+-- Zealand Mean Time (+11:30, in force 1868-1941); no row was measured there, and
+-- repairing an unmeasured shape is a guess this refuses to make. If one ever
+-- turns up it needs a hand review, not this statement.
+--
+-- WHAT REMAINS FOR A HUMAN, and it is a finished list rather than an unbounded
+-- one. Three rows sit at 00:00 — the shape this predicate cannot see — and are
+-- exactly one day behind their Xero contact, which is the signature of a
+-- defective row an administrator opened and saved before the parser was fixed,
+-- re-persisting the wrong day at UTC midnight. A further 79 rows at 00:00 have
+-- no date-shaped witness in Xero at all, so no evidence exists either way. Both
+-- are named in the pull request's manual checks; neither can be repaired by
+-- shape, and inventing a rule for them here would be the guess above.
+--
+-- THE ARITHMETIC. date_trunc('day', t + INTERVAL 'N hours') on a row at hour H
+-- lands on day D + floor((H+N)/24). With N = 13 and H in (11, 12, 13):
+--
+--     11:00 + 13h = next day 00:00 -> truncates to next day 00:00
+--     12:00 + 13h = next day 01:00 -> truncates to next day 00:00
+--     13:00 + 13h = next day 02:00 -> truncates to next day 00:00
+--
+-- so every matched shape lands on UTC midnight of the intended day, and none
+-- can overshoot by two days (that needs H >= 35). Worked against the issue's
+-- own examples: 1985-06-14 12:00 -> 1985-06-15 (15/06/1985) and 1999-12-31
+-- 11:00 -> 2000-01-01 (01/01/2000), the second carrying the year across the
+-- boundary the defect had moved it over.
+--
+-- N MUST BE 13, NOT 12. At H = 11 an interval of 12 hours reaches only 23:00 on
+-- the SAME day, so the daylight-time rows would keep their wrong day and be
+-- rewritten to UTC midnight ON IT — a day-early value wearing the shape of a
+-- correct one, undetectable afterwards. The verification fixture carries that
+-- exact mutant.
+--
+-- Pure timestamp arithmetic, no AT TIME ZONE: the column is timestamp(3)
+-- without time zone holding a UTC instant, so a zone conversion here would
+-- depend on the database container's historical tzdata to state something the
+-- matched shape has already established.
+--
+-- THE PREDICATE IS NOT ZONE-NEUTRAL, AND SAYS SO. Reading hours 11-13 as "local
+-- midnight of the NEXT day" is sound only for a server 11 to 13 hours EAST of
+-- UTC; on a server west of UTC the defective parser would have written a
+-- LATER-day instant at, say, 06:00, which this matches nothing of and would not
+-- want to. `Dockerfile` pins TZ=Pacific/Auckland, so no such server exists
+-- today. But the ledger's "matches nothing on other deployments" is true because
+-- they never ran the defective parser, NOT because the predicate is zone-safe —
+-- do not reuse this shape on a deployment with a different server zone without
+-- re-deriving the hours.
+--
+-- SCOPE. Tokoroa is the only live site with a Xero connection (owner, this
+-- session). Every other deployment picks up the corrected parser before it ever
+-- imports a contact, so this statement simply matches no rows there — which is
+-- also what makes it safe to replay after a blue/green cutover: once a row is at
+-- 00:00 it can never match again.
+--
+-- WHAT DOES NOT CHANGE. Age tier — and this is the answer to #2859's fifth
+-- acceptance criterion, "age-tier reachability is established and stated".
+--
+-- The argument is at code level, and it is exhaustive rather than sampled.
+-- computeAge (src/lib/policies/age-tier.ts) reads a date of birth through
+-- host-LOCAL getters and member-age.ts reads it through the club zone. Under the
+-- Dockerfile's TZ=Pacific/Auckland pin — a zone EAST of UTC, which is what makes
+-- this work — both already recovered the intended calendar day from the
+-- defective instant, because (D-1)T11:00Z and (D-1)T12:00Z are both DT00:00 and
+-- DT01:00 local. They read that same day off the repaired value. So every tier
+-- decision either reader makes is unchanged by this statement, for every row it
+-- touches, on this deployment.
+--
+-- The one place the two encodings did NOT agree was the age-up cron's SQL
+-- prefilter, which compares the stored instant against a local-midnight cutoff
+-- and so dropped a member born on exactly the season-start anniversary. That
+-- comparison is widened to the whole cutoff calendar day in the same release
+-- (src/lib/cron-age-up.ts, #2859), and widening only ever adds candidates that
+-- computeAgeTierWithSettings then re-checks one by one.
+--
+-- The EMPIRICAL confirmation is a bounded query, listed in the pull request's
+-- manual checks: after this runs, ask for every member whose stored age tier
+-- differs from the tier their repaired date of birth computes. An empty result
+-- is the proof. It is deliberately stated as a check to run rather than as a
+-- result already obtained.
+
+UPDATE "Member"
+   SET "dateOfBirth" = date_trunc('day', "dateOfBirth" + INTERVAL '13 hours')
+ WHERE "dateOfBirth" IS NOT NULL
+   AND date_part('hour', "dateOfBirth") IN (11, 12, 13)
+   AND date_part('minute', "dateOfBirth") = 0
+   AND date_part('second', "dateOfBirth") = 0;

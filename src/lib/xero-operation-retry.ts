@@ -15,6 +15,7 @@ import { prisma } from "@/lib/prisma";
 import { asRecord, readNumber, readString } from "@/lib/xero-json";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
 import { shouldRepairXeroContactNameOrder } from "@/lib/xero-contact-sync";
+import { parseXeroContactDateOfBirth } from "@/lib/xero-contact-date-of-birth";
 import { buildXeroIdempotencyKey, completeXeroSyncOperation } from "@/lib/xero-sync";
 import { CLUB_NAME } from "@/config/club-identity";
 
@@ -136,20 +137,6 @@ function readPayloadContact(operation: Pick<RetryableOperation, "requestPayload"
   return asRecord(contact);
 }
 
-function parseXeroDateOfBirth(value: string | null): Date | null {
-  if (!value) {
-    return null;
-  }
-
-  const match = value.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-  if (!match) {
-    return null;
-  }
-
-  const date = new Date(Date.UTC(Number(match[3]), Number(match[2]) - 1, Number(match[1])));
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
 function parseContactUpdateRetryInput(
   operation: Pick<RetryableOperation, "requestPayload" | "xeroObjectId">
 ): { xeroContactId: string; data: XeroContactUpdateData; preserveXeroName: boolean } | null {
@@ -180,7 +167,13 @@ function parseContactUpdateRetryInput(
       ...(firstName ? { firstName } : {}),
       ...(lastName ? { lastName } : {}),
       email,
-      dateOfBirth: parseXeroDateOfBirth(readString(contact.companyNumber)),
+      // #2859: `companyNumber` is redacted out of the STORED payload, because
+      // it now carries a date of birth (INV-PRIV-011). A replay therefore
+      // reconstructs no date of birth and sends none, which leaves Xero's copy
+      // exactly as it is — the same "never assert an absence" rule the writer
+      // follows. A Member-scoped retry does not come through here at all: it
+      // rebuilds the authoritative payload from the Member row.
+      dateOfBirth: parseXeroContactDateOfBirth(readString(contact.companyNumber)),
       phoneCountryCode: readString(phone?.phoneCountryCode),
       phoneAreaCode: readString(phone?.phoneAreaCode),
       phoneNumber: readString(phone?.phoneNumber),

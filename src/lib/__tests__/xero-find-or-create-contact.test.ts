@@ -311,6 +311,61 @@ describe("findOrCreateXeroContact", () => {
     expect(createPayload.contacts[0].emailAddress).toBe("");
   });
 
+  // #2859. The create branch records `linkedVia: "created"` as a POSITIVE fact,
+  // and `updateXeroContact` reads it as the one case where it may write the
+  // member's date of birth into the NZBN field without first observing what
+  // that field holds. Without the marker, a default install (grouping mode
+  // NONE, the schema default, so nothing ever writes a contact-cache row) would
+  // send the date of birth at contact-create time and never again.
+  //
+  // It must be POSITIVE. The absence of `linkedVia` cannot stand in for it:
+  // `xero-member-import.ts` links members onto pre-existing Xero contacts by
+  // setting `xeroContactId` directly with no link metadata at all, which is how
+  // essentially the whole live membership got its contacts, and reading that as
+  // "we created it" would hand those contacts' real business numbers to the
+  // birthday writer.
+  it("records that THIS APP created a contact it created", async () => {
+    mocks.tx.member.findUnique.mockResolvedValue({
+      id: "mem_walkin",
+      firstName: "Walk",
+      lastName: "In",
+      email: "walk-in-abc123@no-email.invalid",
+      xeroContactId: null,
+      phoneNumber: null,
+    });
+    mocks.prisma.xeroToken.findFirst.mockResolvedValue({
+      id: "token_1",
+      accessToken: await encryptToken("access"),
+      refreshToken: await encryptToken("refresh"),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      tenantId: "tenant_1",
+    });
+    mocks.tx.member.update.mockResolvedValue({
+      id: "mem_walkin",
+      xeroContactId: "xero_walkin",
+    });
+    mocks.xeroClientInstance.accountingApi.createContacts.mockResolvedValue({
+      body: { contacts: [{ contactID: "xero_walkin" }] },
+    });
+
+    await expect(findOrCreateXeroContact("mem_walkin")).resolves.toBe(
+      "xero_walkin",
+    );
+
+    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
+      {
+        localModel: "Member",
+        localId: "mem_walkin",
+        xeroObjectType: "CONTACT",
+        xeroObjectId: "xero_walkin",
+        xeroObjectUrl: "https://go.xero.test/contact/xero_walkin",
+        role: "CONTACT",
+        metadata: { linkedVia: "created" },
+      },
+      { store: mocks.tx },
+    );
+  });
+
   // #2623 T2. A walk-in placeholder owner is the DETERMINISTIC case: the Xero
   // email search is skipped by design, so nothing can produce a matched-existing
   // resolution, and the repair therefore reaches the create reservation on every
@@ -527,7 +582,10 @@ describe("findOrCreateXeroContact", () => {
     );
     const createPayload =
       mocks.xeroClientInstance.accountingApi.createContacts.mock.calls[0][1];
-    expect(createPayload.contacts[0]).not.toHaveProperty("companyNumber");
+    // #2859: the create payload now carries the member's date of birth in the
+    // NZBN field. This line asserted its ABSENCE before #2859, which was the
+    // defect rather than the contract.
+    expect(createPayload.contacts[0].companyNumber).toBe("30/08/1987");
     expect(mocks.tx.member.update).toHaveBeenCalledWith({
       where: { id: "mem_1" },
       data: { xeroContactId: "xero_existing_by_name" },

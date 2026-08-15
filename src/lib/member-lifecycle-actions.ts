@@ -1225,7 +1225,10 @@ export async function reviewMemberDeleteRequest({
     // refuses this delete; delete-first keeps the row locked until hard-delete
     // commits, after which a waiting reservation observes a missing member and
     // performs no provider call.
-    await lockMemberForAccountDeletionXeroFence(tx, request.memberId);
+    const fencedMember = await lockMemberForAccountDeletionXeroFence(
+      tx,
+      request.memberId,
+    );
 
     const eligibility = await getMemberDeleteEligibility({
       memberId: request.memberId,
@@ -1281,6 +1284,23 @@ export async function reviewMemberDeleteRequest({
       data: { xeroContactId: null },
       select: { photoImageId: true },
     });
+
+    // #2859: the cached Xero contact goes with the member, exactly as it does
+    // on the anonymising deletion path (`deletion-requests/[id]/route.ts`).
+    // This is the STRONGER erasure of the two — the Member row itself is about
+    // to be removed — so leaving a `XeroContactCache` row holding the deleted
+    // member's date of birth, name, email, phone and address would be the
+    // plainer version of the same defect. Deleted, not nulled: a row that
+    // exists and holds `null` reads to `buildXeroContactCompanyNumberPatch` as
+    // "we looked, and Xero's NZBN field is empty", which is its permission to
+    // write — and Xero still holds the value (#2873), so manufacturing that
+    // permission would let a later namesake matched onto this same contact have
+    // a real business number overwritten by a birthday.
+    if (fencedMember.xeroContactId) {
+      await tx.xeroContactCache.deleteMany({
+        where: { contactId: fencedMember.xeroContactId },
+      });
+    }
 
     const reviewed = await tx.memberLifecycleActionRequest.findUniqueOrThrow({
       where: { id: request.id },

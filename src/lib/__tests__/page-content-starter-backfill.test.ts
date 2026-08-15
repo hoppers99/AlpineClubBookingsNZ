@@ -356,16 +356,16 @@ describe("starter page content backfill migration", () => {
   });
 });
 
-describe("the contact page keeps an empty seeded menu title (#2818 decision 5)", () => {
+describe("the contact page keeps an empty seeded menu title", () => {
   const contact = starterPageContent.find((page) => page.slug === "contact");
 
-  it("seeds no menu label — the header code fallback supplies the link instead", () => {
-    // #2813 first backfilled a "Contact" menu title so a fully CMS-driven nav
-    // still showed the link. The owner replaced that data migration with a code
-    // fallback in `buildWebsiteNavLinks` (src/lib/website-nav.ts), so the row
-    // must go back to seeding an EMPTY menu title. A re-added seed label would
-    // double the link the moment a club opts Contact into the CMS menu, and
-    // would need a migration this release deliberately does not ship.
+  it("seeds no menu label — Contact is opt-in from the CMS like any other page", () => {
+    // #2813 first backfilled a "Contact" menu title, then briefly used a code
+    // fallback in `buildWebsiteNavLinks`; both are gone. Contact is now a plain
+    // opt-in page, so the row seeds an EMPTY menu title — a club that wants
+    // Contact in its nav sets the menu title in the CMS. A re-added seed label
+    // would opt every club in at once and would need a migration this release
+    // deliberately does not ship.
     expect(contact).toBeDefined();
     expect(contact!.menuTitle).toBe("");
   });

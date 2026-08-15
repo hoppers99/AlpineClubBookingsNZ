@@ -7,13 +7,21 @@ import { describe, expect, it } from "vitest";
 // booking lifecycle and settlement/money transitions use the canonical global
 // pg_advisory_xact_lock(1). A writer that does both takes global first, then
 // per-lodge (#1881). This scan makes a disjoint-key regression a CI failure
-// instead of an upstream review comment:
+// instead of an upstream review comment.
 //
-// 1. The canonical global lock(1) is kept in a reviewed inventory. A new call
-//    site must classify the writer using docs/CONCURRENCY_AND_LOCKING.md: use
-//    lock(1) for booking-status/settlement money, the per-lodge helper for
-//    capacity, and both in that order when the writer composes them. Update the
-//    inventory only with that classification and PR lock-impact evidence.
+// The rule itself is written ONCE, as INV-LOCK-001 (which tier a writer takes),
+// INV-LOCK-002 (acquisition order, and the single mint of the per-lodge key) and
+// INV-LOCK-003 (every Tier-2 site is registered here) in
+// docs/invariants/operations.md. This file does not restate it; it enforces it,
+// and each registry entry below carries only what is specific to ONE site.
+//
+// 1. The canonical global lock(1) is kept in a reviewed PER-SITE registry
+//    (#2722). A new call site must classify the writer using
+//    docs/CONCURRENCY_AND_LOCKING.md: use lock(1) for booking-status/settlement
+//    money, the per-lodge helper for capacity, and both in that order when the
+//    writer composes them. Add the site with its own reason and PR lock-impact
+//    evidence; a bare count told a builder nothing ("expected 3, got 4") and
+//    coupled approval to which file happened to hold the call.
 //
 // 2. The per-lodge key is minted ONLY by acquireLodgeCapacityLock:
 //    hashtextextended must not appear outside src/lib/lodge-capacity-lock.ts,
@@ -25,193 +33,733 @@ import { describe, expect, it } from "vitest";
 
 const SRC_DIR = path.join(process.cwd(), "src");
 
-// Frozen per-file inventory of canonical global booking/money lock(1) call
-// sites (executeRaw occurrences, not comments). Shrinking a count is always
-// fine (delete the entry at zero); growing one needs a writer classification
-// and explicit justification in the PR that edits this file.
-const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
-  // #2586: approving a flagged live booking can make it roster-eligible, while
-  // rejecting one must remain ineligible until cancellation. Both review
-  // decisions share one helper that takes global -> immutable lodge before the
-  // authoritative re-read and guarded claim; provider work remains outside.
-  "src/app/api/admin/bookings/[id]/review/route.ts": 1,
-  // #1881 / #2593: the capacity-admission branches in confirm-pending-guests
-  // deliberately compose global lifecycle lock(1) first with the canonical
-  // per-lodge capacity lock. The global lock prevents cancellation/settlement
-  // resurrection while the lodge lock serialises both the capacity claim and
-  // the allocation reconciliation added by #2593.
-  "src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts": 3,
-  // #2593: these booking-confirmation / party-change routes can create or prune
-  // allocations as part of a booking lifecycle write. They therefore join the
-  // existing global cohort first and the immutable booking-lodge capacity key
-  // second, then re-read and reconcile through the lock-held lifecycle seam.
-  "src/app/api/admin/bookings/[id]/exclusive-hold/route.ts": 1,
-  "src/app/api/admin/bookings/[id]/force-confirm/route.ts": 1,
-  // #2649: the admin repair for a stranded zero-dollar waitlist confirm is a
-  // fourth PAYMENT_PENDING -> WAITLISTED writer. PAYMENT_PENDING is
-  // BED-ALLOCATABLE and WAITLISTED is not, so the release prunes real
-  // BedAllocation rows and genuinely needs the lodge tier — it is NOT
-  // capacity-holding by status (booking-status.ts holds it only while
-  // adminCapacityHoldAt is set, which this route releases with the transition).
-  // It joins the global lifecycle cohort first (mutual exclusion with cancel and
-  // settlement), then takes the immutable booking-lodge capacity key, re-reads
-  // under both, and status-guards its claim on BOTH status and price. Same
-  // topology as the two releases in waitlist-confirm/route.ts, which it exists
-  // to finish.
-  "src/app/api/admin/bookings/[id]/return-to-waitlist/route.ts": 1,
-  "src/app/api/bookings/[id]/confirm-draft/route.ts": 1,
-  "src/app/api/bookings/[id]/guests/route.ts": 1,
-  // #2597: phase-two participant contention compensates the already-committed
-  // zero-dollar offer claim under a fresh global -> lodge transaction.
-  "src/app/api/bookings/[id]/waitlist-confirm/route.ts": 2,
-  // #2586: departure cleanup shares the consent writer's global -> lodge ->
-  // roster -> BookingGuest order so it cannot deadlock by locking the guest
-  // tuple before consent decline/expiry reaches the same roster partition.
-  "src/app/api/lodge/guests/[date]/depart/route.ts": 1,
-  // #2265: the create-payment-intent pay transaction is a three-tier writer —
-  // it flips a booking's status, claims capacity, and moves account credit. It
-  // composes global lifecycle lock(1) FIRST, then the canonical per-lodge
-  // capacity lock, then the per-member credit-ledger lock, matching
-  // markBookingPaymentSucceeded. Before this it held no global lock at all, so
-  // its status writes did not exclude a concurrent cancel.
-  "src/app/api/payments/create-payment-intent/route.ts": 1,
-  "src/app/api/payments/switch-to-internet-banking/route.ts": 1,
-  // #2366 / #2593 / #2594: allocation moves, manual/range assignment,
-  // approval, room/bed inventory changes, explicit auto-allocation and
-  // reviewed removal all
-  // compose with lifecycle reconciliation because cancellation can prune the
-  // same rows. Every public wrapper takes global lock(1), then the immutable or
-  // explicitly selected lodge capacity lock, and delegates to a narrow
-  // lock-held implementation; auto-allocation also rebuilds its plan there.
-  "src/lib/admin-bed-allocation.ts": 11,
-  // #2595: reviewed night/person moves serialize with cancellation and every
-  // allocation counterpart before taking the complete sorted lodge union,
-  // member lifecycle/link families, and deterministic allocation row locks.
-  "src/lib/bed-allocation-move.ts": 1,
-  // #2594: removal applies a reviewed digest under global -> sorted immutable
-  // lodge -> sorted allocation-row locks. Requested-room editing shares the
-  // global cohort and locks/re-reads the booking before its guarded write so it
-  // cannot cross approval or removal's final-approved consequence.
-  "src/lib/bed-allocation-removal.ts": 1,
-  "src/lib/requested-room-write.ts": 1,
-  // #2593: the public reconciler owns global -> immutable booking lodge, while
-  // callers already holding either tier use the matching lock-held seam. The
-  // partner-shared cleanup site owns the same ordered topology for its sorted
-  // lodge set.
-  "src/lib/bed-allocation-lifecycle.ts": 2,
-  "src/lib/booking-batch-modification-service.ts": 1,
-  // #1881 residual: the fifth site protects the linked provisional-child
-  // PENDING -> CANCELLED claim. That path also takes the child's per-lodge lock
-  // so it excludes confirm-pending before deciding whether cancellation won.
-  "src/lib/booking-cancel.ts": 5,
-  "src/lib/booking-date-modification-service.ts": 2,
-  // #2525: the atomic approve-and-execute AND the terminal-release (reject /
-  // cancel / supersede) for booking-policy exception requests both mutate a
-  // provisional capacity reservation and (for a modification approval) compose
-  // the canonical modification's money/status transition, so they take the
-  // canonical global lock(1) FIRST, then the per-lodge capacity lock keyed on the
-  // frozen lodge, then let the tx-aware canonical service take the member-night /
-  // member-credit keys after that. One shared `acquireGlobalBookingLock` helper,
-  // so this file mints the global key exactly once. See
-  // docs/CONCURRENCY_AND_LOCKING.md -> "Provisional reservations for held
-  // policy-exception requests (#2365)".
-  "src/lib/booking-exception-execution.ts": 1,
-  // #2525 integration: the request-CREATION service now holds a provisional
-  // capacity reservation for a HELD modification request (and releases it on
-  // member cancel / supersede), so createModificationExceptionRequest and
-  // cancelModificationExceptionRequest are capacity changes. They compose the
-  // canonical global lock(1) FIRST, then the per-lodge capacity lock keyed on the
-  // frozen lodge, matching booking-exception-execution.ts's approve/terminal
-  // paths so the reservation write/delete serialises with every occupancy read.
-  // One shared `acquireGlobalBookingLock` helper mints the global key exactly
-  // once in this file. See docs/CONCURRENCY_AND_LOCKING.md -> "Provisional
-  // reservations for held policy-exception requests (#2365)".
-  "src/lib/booking-exception-request-service.ts": 1,
-  "src/lib/booking-guest-removal-service.ts": 1,
-  // #2593: creation/deletion/request-quote writers now reconcile allocation
-  // state in the same transaction as their booking-status mutation. These are
-  // lifecycle writers, not capacity-only admission checks, so they take the
-  // global cohort before the affected lodge key and re-read under both.
-  "src/lib/booking-create.ts": 2,
-  "src/lib/booking-delete.ts": 2,
-  "src/lib/booking-request-quotes.ts": 1,
-  "src/lib/booking-request.ts": 1,
-  // #2593: completion and pending/waitlist cron claims can prune or rebuild
-  // allocation state. Candidate reads stay outside; each candidate transaction
-  // takes global -> immutable lodge, re-reads, status-guards the claim, and only
-  // then calls the lock-held reconciler.
-  "src/lib/cron-complete-bookings.ts": 1,
-  "src/lib/cron-confirm-pending.ts": 3,
-  "src/lib/cron-group-settlement-reaper.ts": 2,
-  "src/lib/cron-quote-expiry-reminders.ts": 2,
-  "src/lib/cron-waitlist.ts": 1,
-  // #2700: raising the OPEN ManualRefundTask for a modification payment
-  // captured against an already-deleted booking. A SETTLEMENT-MONEY writer, so
-  // it joins the global cohort — and specifically the same cohort
-  // `booking-cancel.ts` is already in when IT creates a ManualRefundTask, which
-  // is why this reuses lock(1) rather than minting a keyspace. The key is
-  // needed because the write is a find-then-create (idempotent on the payment
-  // INTENT, not the booking), which is not atomic on its own: two simultaneous
-  // confirms of one capture would otherwise raise two OPEN tasks, and two
-  // operators would refund one payment twice. It takes lock(1) and NOTHING
-  // else, holds it across a duplicate-task check, a refund-fence read and the
-  // create, touches no capacity or member-credit
-  // tier, and every Stripe call is made by the caller outside this
-  // transaction — so it composes with nothing and reverses no order.
-  //
-  // #2760 adds the SECOND site in this file, in
-  // `recordAutomaticCancelledBookingRefundTask` — the Stripe webhook's writer,
-  // which now creates the already-DISMISSED record when its OPEN-fenced close
-  // claims nothing. Until #2760 that was a single status-fenced `updateMany`,
-  // atomic on its own and holding no lock at all ("needs no lock of its own" was
-  // an asserted property). It is now close-or-create, a find-then-write, and two
-  // Stripe deliveries of one capture — or a delivery racing the confirm route's
-  // raise above — would each find no row and each write one, putting a single
-  // refund on the finance card twice. Same key as the raise for the same reason:
-  // same cohort, same file, no new keyspace and no new ordering. Same shape too —
-  // it takes lock(1) and nothing else, holds it across an `updateMany`, a
-  // `findFirst` and at most one `create`, and every Stripe call belongs to the
-  // caller and has already returned before this transaction opens (the refund is
-  // what triggers it). Counterparts reconciled: this file's own raise (identical
-  // key, no other tier), `booking-cancel.ts`'s ManualRefundTask create, and the
-  // #1350 webhook path that calls it.
-  "src/lib/deleted-booking-modification-payment.ts": 2,
-  "src/lib/group-cancel.ts": 3,
-  "src/lib/group-settlement.ts": 6,
-  "src/lib/internet-banking-payment-cron.ts": 1,
-  // "+ Add Member Guest" (#2307, epic #2305). Two sites, both in the
-  // global-cohort class and both genuinely needing BOTH locks: a consent decline
-  // and a lapse each reprice the booking, can elect account credit to the owner
-  // (owner decision D-15), AND release a bed. Global `lock(1)` is taken FIRST and
-  // `acquireLodgeCapacityLock` second in both, matching the declared
-  // global-before-per-lodge order, and each then re-reads under the locks and
-  // makes a status-guarded claim before any side effect. See
-  // docs/CONCURRENCY_AND_LOCKING.md, "Global-cohort money / status transition".
-  "src/lib/member-guest-consent-service.ts": 2,
-  // #2262: site 1 is the ONE settlement body, shared byte-for-byte by the
-  // Stripe capture and the admin's manual cash settlement (the refactor that
-  // generalised it over a settlement source added NO lock site — the manual
-  // path composes global -> lodge -> MEMBER-CREDIT, and the third tier is a
-  // call to lockMemberCreditLedger, not a raw lock site). Site 2 is the manual
-  // mark-paid REVERSAL, a booking-status + money writer that also releases
-  // capacity when it restores a PAYMENT_PENDING booking, so it composes the
-  // same global-before-per-lodge pair in the same order.
-  "src/lib/payment-reconciliation.ts": 2,
-  // #2586: eligibility-validating roster generation/save/confirmation joins
-  // the global -> lodge booking-writer order before its roster-date key. This
-  // closes the initially-empty partition race without making every booking
-  // writer enumerate all possible roster dates.
-  "src/lib/roster-lock.ts": 1,
-  // #2593: school conversion and waitlist offer/expiry paths are lifecycle
-  // counterparts of allocation reconciliation. Single-lodge paths take global
-  // before that lodge; cross-lodge paths acquire the sorted lodge union before
-  // their fresh read and guarded transition, so no path reverses the topology.
-  "src/lib/school-booking-request.ts": 2,
-  "src/lib/waitlist-cross-lodge.ts": 6,
-  "src/lib/waitlist.ts": 4,
-  "src/lib/xero-group-settlement-invoices.ts": 3,
-  "src/lib/xero-inbound/invoice-paid-effects.ts": 1,
-};
+/**
+ * Which tier a raw advisory-lock statement takes, decided from the call itself.
+ *
+ * `GLOBAL` is the literal key `1` — the one Tier-2 key — in either the blocking
+ * or the fail-fast form. `SCOPED` is a `hashtext`/`hashtextextended` key:
+ * per-lodge, per-member, per-date, and the policy/singleton keyspaces.
+ * `UNCLASSIFIED` is anything this scan cannot read, and it FAILS the census
+ * rather than being counted as scoped — see `classifyLockArgument`.
+ *
+ * Deciding the tier from the CALL rather than from the registry is what makes
+ * "a registered site quietly changed tier" a failure rather than a silent
+ * re-approval.
+ */
+type LockTier = "GLOBAL" | "SCOPED" | "UNCLASSIFIED";
+
+interface AdvisoryLockSite {
+  /** Repository-relative path. Reported in failures; NOT part of the identity. */
+  readonly rel: string;
+  /** 1-based line. Reported in failures; NOT part of the identity. */
+  readonly line: number;
+  /** Nearest enclosing top-level declaration. */
+  readonly symbol: string;
+  /** 1-based index of this site among the advisory sites of that symbol. */
+  readonly ordinal: number;
+  readonly tier: LockTier;
+  /** Preferred identity — see SITE IDENTITY below. */
+  readonly key: string;
+  /** Always-unique fallback identity, used where `key` is ambiguous. */
+  readonly qualifiedKey: string;
+}
+
+/**
+ * SITE IDENTITY, and why it survives a file split (the property #2688 needs).
+ *
+ * A site is identified by the SYMBOL that contains it plus an ordinal, never by
+ * its file or its line:
+ *
+ *     performBookingCancellation#3
+ *
+ * A structural split moves a function to another module with its name and its
+ * body intact, so that identity — and the reason attached to it — moves with the
+ * code and needs no edit. A line number would not survive an inserted comment;
+ * a per-file count does not survive the split at all, which is the whole reason
+ * #2722 exists and why it lands before the bed-allocation split.
+ *
+ * Two shapes need more than the bare symbol, and both are handled by deriving a
+ * key the scanner computes rather than by anything the registry asserts:
+ *
+ * - **App Router handlers** are named by the framework, so `POST` is not an
+ *   identity at all — ten route files export one. Their key is the METHOD plus
+ *   the route path, `POST /api/admin/bookings/[id]/exclusive-hold#1`. That is not
+ *   a file-layout accident: the path IS the URL, so a handler cannot move file
+ *   without changing behaviour, and re-registering it is then correct.
+ * - **A colliding library symbol.** Two modules each keep a private
+ *   `acquireGlobalBookingLock`, so `acquireGlobalBookingLock#1` names two sites.
+ *   Those entries use the file-qualified form
+ *   `src/lib/booking-exception-execution.ts::acquireGlobalBookingLock#1`, and the
+ *   guard REFUSES an ambiguous entry rather than silently binding a reason to
+ *   whichever site it found first. The cost is honest and visible: exactly those
+ *   entries are the ones a split has to update.
+ *
+ * The ordinal counts every advisory site in the symbol, not only the Tier-2 ones,
+ * so a registered site that changes tier keeps its key and is reported as a tier
+ * change instead of dissolving into an unrelated stale/unregistered pair.
+ */
+interface RegisteredGlobalLockSite {
+  /** `symbol#n`, `METHOD /route#n`, or `path::symbol#n` where those collide. */
+  readonly site: string;
+  /** Declared tier. Compared against the tier the scanner reads at the site. */
+  readonly tier: "GLOBAL";
+  /** Why THIS site needs the global key: the counterpart or race it excludes. */
+  readonly reason: string;
+  /** The rule this registration is made under. */
+  readonly invariant: (typeof TWO_TIER_LOCK_INVARIANTS)[number];
+}
+
+/** The ids that state the two-tier protocol. See docs/invariants/operations.md. */
+const TWO_TIER_LOCK_INVARIANTS = ["INV-LOCK-001", "INV-LOCK-002", "INV-LOCK-003"] as const;
+
+/**
+ * Every deliberate Tier-2 (`pg_advisory_xact_lock(1)`) site in non-test `src/`,
+ * with the reason that site — not that file — holds the stronger key.
+ *
+ * `INV-LOCK-001` is cited by a site that takes the global key ALONE;
+ * `INV-LOCK-002` by one that composes it with a narrower tier, because for those
+ * the order is half of what makes the site correct.
+ */
+const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
+  // ── App Router handlers ───────────────────────────────────────────────────
+  {
+    site: "POST /api/admin/bookings/[id]/confirm-pending-guests#1",
+    tier: "GLOBAL",
+    reason:
+      "Zero-dollar admin confirm flips PENDING to a capacity-holding status, so it joins the cancel/settlement cohort before claiming the lodge tier; without it the flip could resurrect a booking a concurrent cancel had just terminated.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "POST /api/admin/bookings/[id]/confirm-pending-guests#2",
+    tier: "GLOBAL",
+    reason:
+      "Claim-first PENDING -> CONFIRMED before the Stripe charge (#1418). The claim must exclude the cron's bump and the settlement paths, which serialise on this key, so a successful charge can no longer race a cancel into markBookingPaymentSucceeded's not-payable throw.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "POST /api/admin/bookings/[id]/confirm-pending-guests#3",
+    tier: "GLOBAL",
+    reason:
+      "Releasing a charge claim that never captured hands the beds back, so the release has to serialise with the same cancel/settlement cohort the claim did before re-taking the lodge key for the guarded release.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "POST /api/admin/bookings/[id]/exclusive-hold#1",
+    tier: "GLOBAL",
+    reason:
+      "An exclusive whole-lodge hold blocks every bed on its nights, so it excludes cancel and settlement before taking the lodge key; the hold must not be written across a lifecycle transition of the same booking.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "POST /api/admin/bookings/[id]/force-confirm#1",
+    tier: "GLOBAL",
+    reason:
+      "Admin force-confirm is a lifecycle transition into a capacity-holding status, so an overbooking override cannot resurrect a booking a concurrent cancel terminated.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "POST /api/admin/bookings/[id]/return-to-waitlist#1",
+    tier: "GLOBAL",
+    reason:
+      "#2649 admin repair of a stranded zero-dollar waitlist confirm: PAYMENT_PENDING -> WAITLISTED leaves a bed-allocatable status and prunes real BedAllocation rows, so it excludes cancel and settlement before taking the immutable booking-lodge key.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "loadPendingReviewUnderEligibilityLocks#1",
+    tier: "GLOBAL",
+    reason:
+      "#2586: approving a flagged live booking can make it roster-eligible while rejecting one must stay ineligible until cancellation. Both decisions share this global -> immutable-lodge prefix before the authoritative re-read and guarded claim; provider work stays outside.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "POST /api/bookings/[id]/confirm-draft#1",
+    tier: "GLOBAL",
+    reason:
+      "Confirming a draft moves money and claims capacity in one transaction, so the global tier excludes cancel and settlement while the lodge tier serialises the bed claim.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "POST /api/bookings/[id]/guests#1",
+    tier: "GLOBAL",
+    reason:
+      "Adding guests reprices the booking and claims further beds, so it belongs in both cohorts; the subscription-lockout read is deliberately hoisted out so no provider call runs under the locks.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "POST /api/bookings/[id]/waitlist-confirm#1",
+    tier: "GLOBAL",
+    reason:
+      "The zero-dollar flip to a capacity-holding status ran wholly unserialised before — no lock, no re-check, a bare id-only update — so it now excludes cancel and settlement here and re-checks capacity under the lodge key.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "POST /api/bookings/[id]/waitlist-confirm#2",
+    tier: "GLOBAL",
+    reason:
+      "#2597 phase-two compensation releases an already-committed offer claim back to WAITLISTED; the release must exclude the same cohort the claim did, or a free booking is stranded with neither a payment path nor an offer.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "PUT /api/lodge/guests/[date]/depart#1",
+    tier: "GLOBAL",
+    reason:
+      "#2586: departure cleanup shares the consent writer's global -> lodge -> roster -> BookingGuest order, so it cannot deadlock by locking the guest tuple before consent decline/expiry reaches the same roster partition.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "POST /api/payments/create-payment-intent#1",
+    tier: "GLOBAL",
+    reason:
+      "#2265: the pay transaction is a three-tier writer — booking status, capacity claim and account credit — composing global, then the per-lodge key, then the member credit ledger, matching markBookingPaymentSucceeded. Before this it held no global key at all, so its status writes did not exclude a concurrent cancel.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "POST /api/payments/switch-to-internet-banking#1",
+    tier: "GLOBAL",
+    reason:
+      "Switching to Internet Banking with holdBedSlots flips the booking to CONFIRMED — a net-new capacity claim and a money side effect — and re-reads under the locks, because the pre-transaction snapshot was read with no lock at all.",
+    invariant: "INV-LOCK-002",
+  },
+
+  // ── Bed allocation: inventory, placement and reconciliation ───────────────
+  {
+    site: "updateBedAllocationRoom#1",
+    tier: "GLOBAL",
+    reason:
+      "#2366: a room edit can deactivate or rename rows that a cancellation's allocation prune is removing at the same moment, so inventory writers join the lifecycle cohort before the room's own lodge key.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "updateBedAllocationBed#1",
+    tier: "GLOBAL",
+    reason:
+      "A bed edit changes what an allocation points at; joining the lifecycle cohort keeps a retype or deactivate from landing between a cancellation's read and its prune.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "deleteBedAllocationBed#1",
+    tier: "GLOBAL",
+    reason:
+      "Deleting a bed destroys rows the lifecycle reconciler may be rebuilding, so global comes before the bed's immutable lodge key.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "deleteBedAllocationRoom#1",
+    tier: "GLOBAL",
+    reason:
+      "Deleting a room destroys every bed under it and the allocations on them, the same rows cancellation prunes, so it takes the lifecycle cohort before the room's lodge key.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "runAutoBedAllocation#1",
+    tier: "GLOBAL",
+    reason:
+      "#2593 explicit auto-allocation rebuilds its plan under the locks and writes only that plan, so the global tier keeps a cancellation prune out of the window between the authoritative read and createMany while the lodge tier keeps inventory and placement writers out.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "manuallyAllocateBed#1",
+    tier: "GLOBAL",
+    reason:
+      "Manual placement writes a bed-night cancellation can prune, so it takes global before the bed's immutable lodge key and then delegates to the narrow lock-held implementation.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "moveBedAllocationsSameDate#1",
+    tier: "GLOBAL",
+    reason:
+      "Only the destination bed's immutable lodge key is read before the transaction; every source row, date and bed state is re-read under both tiers, because cancellation owns the global key and prunes the same rows while custodian holds own the lodge key.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "manuallyAllocateBedForNights#1",
+    tier: "GLOBAL",
+    reason:
+      "One transaction per night, each taking global then the lodge key, so a multi-night placement cannot interleave with a lifecycle prune on any single night.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "assignBedRange#1",
+    tier: "GLOBAL",
+    reason:
+      "#2286: a range assignment writes all or nothing across its nights and takes global then the lodge key before the custodian scan, so a hold cannot race the scan and the write.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "deleteBedAllocation#1",
+    tier: "GLOBAL",
+    reason:
+      "Removing one allocation row races the lifecycle prune for the same row, so global comes before the allocation's own lodge key.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "approveBedAllocations#1",
+    tier: "GLOBAL",
+    reason:
+      "#2594 approval promotes the selected rows and takes the sorted lodge union after the global tier, because a cancellation of any covered booking prunes the very rows being approved.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "reconcileBedAllocationsForBooking#1",
+    tier: "GLOBAL",
+    reason:
+      "#2593: the public reconciler owns the global -> immutable-booking-lodge prefix for callers holding neither tier; every composed caller uses a lock-held seam instead, so the key is minted once for this family.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "acquireFuturePartnerSharedAllocationLocks#1",
+    tier: "GLOBAL",
+    reason:
+      "The partner-shared cleanup prefix takes the global cohort before its sorted lodge set, so a shared-double sweep can never invert the house order against a concurrent cancellation.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "applyBedAllocationMove#1",
+    tier: "GLOBAL",
+    reason:
+      "#2595: a reviewed night/person move serialises with cancellation and every allocation counterpart before taking the sorted lodge union, the member lifecycle/link families and the deterministic allocation row locks.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "applyBedAllocationRemoval#1",
+    tier: "GLOBAL",
+    reason:
+      "#2594: destructive removal applies a reviewed digest, so the global tier excludes cancellation's prune of the same rows before the sorted immutable lodge keys and the allocation row locks.",
+    invariant: "INV-LOCK-002",
+  },
+
+  // ── Booking lifecycle and modification ────────────────────────────────────
+  {
+    site: "modifyBookingBatch#1",
+    tier: "GLOBAL",
+    reason:
+      "A batch modification moves money and re-claims capacity. With the per-lodge key alone a concurrent cancel could interleave and both paths compute a refund against the same captured payment, or the modify's status commit could clobber a just-cancelled booking.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "cancelLinkedProvisionalChildBookings#1",
+    tier: "GLOBAL",
+    reason:
+      "#1881 residual: the linked provisional-child PENDING -> CANCELLED claim must exclude confirm-pending before deciding whether cancellation won, and it takes the child's own lodge key after that.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "performBookingCancellation#1",
+    tier: "GLOBAL",
+    reason:
+      "Cancel of an accepted-quote booking shares this key with the accept path, so exactly one wins: the loser observes a non-cancellable status at the under-lock re-read or a zero-count claim and runs no side effect.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "performBookingCancellation#2",
+    tier: "GLOBAL",
+    reason:
+      "#1547: the never-captured branch claims CANCELLED under the key capture and settlement also take, so a cancel can never interleave a capture of the same booking after the SetupIntent teardown.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "performBookingCancellation#3",
+    tier: "GLOBAL",
+    reason:
+      "This branch restores applied credit inside the claim, and restoreCreditFromBooking has no internal replay guard — the global key plus the atomic status flip is what makes the restore exactly-once against a concurrent capture or inbound Xero reconcile.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "performBookingCancellation#4",
+    tier: "GLOBAL",
+    reason:
+      "#1164/D7: the paid-tier cancellation claim sits in the same cohort as capture and the inbound Xero reconcile, and its status flip is this branch's exactly-once guarantee for the guardless credit restore.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "createDraftBooking#1",
+    tier: "GLOBAL",
+    reason:
+      "#2593: creation reconciles allocation state in the same transaction as its status write, so it is a lifecycle writer rather than a capacity-only admission and joins the cohort before the resolved lodge key.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "createConfirmedBooking#1",
+    tier: "GLOBAL",
+    reason:
+      "A self-contained confirmed create mints the global key itself; a caller that already holds both tiers passes its transaction in and this site is skipped, so the key is never taken twice or out of order.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "modifyBookingDates#1",
+    tier: "GLOBAL",
+    reason:
+      "A date change refunds or charges and claims capacity for the new range, so it takes the global tier first for mutual exclusion with cancel, settlement and hold-release.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "adminShiftBookingDates#1",
+    tier: "GLOBAL",
+    reason:
+      "The admin date move claims the new range and can reprice; even a frozen-cent shift takes the global key so its date and status commit cannot clobber a booking a concurrent cancel just terminated.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "hardDeleteDraftBooking#1",
+    tier: "GLOBAL",
+    reason:
+      "Hard delete destroys a draft and its dependents outright, so it joins the lifecycle cohort rather than running against a booking another lifecycle writer is mid-transition on. It takes no capacity tier: a DRAFT owns no allocation rows.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "softDeleteCancelledBookingInTransaction#1",
+    tier: "GLOBAL",
+    reason:
+      "#2593: soft delete reconciles allocations in the same transaction as its status write, so it takes the global cohort before the reconciler's lodge key.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "src/lib/booking-exception-execution.ts::acquireGlobalBookingLock#1",
+    tier: "GLOBAL",
+    reason:
+      "#2525: one helper mints the key for BOTH the atomic approve-and-execute and the terminal release (reject/cancel/supersede) of a policy-exception request. Each mutates a provisional capacity reservation and, for a modification approval, composes the canonical money/status transition, so global comes before the frozen lodge key and the tx-aware service takes the member keys after that.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "src/lib/booking-exception-request-service.ts::acquireGlobalBookingLock#1",
+    tier: "GLOBAL",
+    reason:
+      "#2525: a HELD modification request holds a provisional capacity reservation, so creating one and releasing it on member cancel or supersede are capacity changes. One helper mints the key for both, matching the approve/terminal paths so the reservation write and delete serialise with every occupancy read.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "removeBookingGuestInTransaction#1",
+    tier: "GLOBAL",
+    reason:
+      "A single-guest removal computes a reduction refund and re-checks capacity, so it excludes cancel, settlement and hold-release before taking the booking's lodge key; the caller opens the transaction, so this is its first lock.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "respondToBookingRequestQuote#1",
+    tier: "GLOBAL",
+    reason:
+      "A member's quote cancel must not overwrite an admin decline that already finalised the request and released its hold. The key orders it against the hold-release and cancel writers, the claim is status-guarded, and taking it before the quote row lock matches decline's order so the two cannot deadlock.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "approveBookingRequest#1",
+    tier: "GLOBAL",
+    reason:
+      "Accepting a request converts a held booking. Hold-release and cancel serialise on this key alone, so with only the per-lodge key a release could cancel the held booking out from under a converting accept.",
+    invariant: "INV-LOCK-002",
+  },
+
+  // ── Cron claims and releases ──────────────────────────────────────────────
+  {
+    site: "completeBookings#1",
+    tier: "GLOBAL",
+    reason:
+      "#2593: the completion claim can prune allocation rows, so each candidate transaction joins the cohort, re-reads, status-guards the claim and only then calls the lock-held reconciler. Candidate reads stay outside.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "resolveHoldWindowUnderLock#1",
+    tier: "GLOBAL",
+    reason:
+      "The hold-window resolution claims a PENDING booking for charge or releases it, so it must exclude cancel and settlement before taking the booking's lodge key; only the lock key is read before the lock.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "releaseChargeClaim#1",
+    tier: "GLOBAL",
+    reason:
+      "Releasing a claim taken for a charge that did not capture hands the beds back, so it serialises with the same cohort the claim did before re-taking the lodge key.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "confirmPendingBookings#1",
+    tier: "GLOBAL",
+    reason:
+      "The bump branch releases a PENDING booking that could not be charged; the global tier keeps that release out of a concurrent capture or cancel of the same booking.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "releaseSettlementChildren#1",
+    tier: "GLOBAL",
+    reason:
+      "Reverting settlement children races the settle path for the same settlement; both take this key, so the reaper either loses cleanly to a payment that already captured or wins and reverts under the sorted child-lodge keys.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "cancelReapedChildren#1",
+    tier: "GLOBAL",
+    reason:
+      "The second, terminal reap window cancels the reverted children once, on the same settlement key, so a late settle cannot promote a child the reaper is cancelling.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "releaseExpiredQuoteHolds#1",
+    tier: "GLOBAL",
+    reason:
+      "Releasing an expired quote's held booking is a lifecycle transition that prunes allocation rows; the accept path takes the same key, so exactly one of release and accept wins and the loser bails at the under-lock re-read.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "releaseStaleModificationHolds#1",
+    tier: "GLOBAL",
+    reason:
+      "The same fence for a stale modification hold: the release must exclude the accept and cancel writers on this key, and it re-reads under the lock so it only acts while the request still points at that exact hold.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "processWaitlistCronOnce#1",
+    tier: "GLOBAL",
+    reason:
+      "Cancelling a past waitlist entry is a lifecycle transition that can prune allocation state, so each candidate transaction joins the cohort before the entry's own lodge key.",
+    invariant: "INV-LOCK-002",
+  },
+
+  // ── Settlement, refunds and money side effects ────────────────────────────
+  {
+    site: "raiseDeletedBookingModificationRefundTask#1",
+    tier: "GLOBAL",
+    reason:
+      "#2700: raising the OPEN ManualRefundTask is a find-then-create idempotent on the payment INTENT, not atomic on its own — two simultaneous confirms of one capture would raise two tasks and two operators would refund one payment twice. This is the cohort booking-cancel.ts is already in when IT creates a ManualRefundTask, so it reuses lock(1) rather than minting a keyspace, and takes nothing else.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "recordAutomaticCancelledBookingRefundTask#1",
+    tier: "GLOBAL",
+    reason:
+      "#2760: the webhook's writer became close-or-create, so two Stripe deliveries of one capture — or a delivery racing the raise above — would each find no row and each write one, putting a single refund on the finance card twice. Same key and same cohort as the raise; every Stripe call belongs to the caller and has already returned.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "settleGroupBookingOnOrganiserCancel#1",
+    tier: "GLOBAL",
+    reason:
+      "The durable cancellation fence: settle, reaper and cancel all serialise here, so once CANCELLED commits a later settlement apply must refuse to promote children. No provider call happens while the transaction is open.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "settleGroupBookingOnOrganiserCancel#2",
+    tier: "GLOBAL",
+    reason:
+      "#1881: the FAILED claim on an open settlement used to be a bare update gated on a stale in-memory read, taking no lock at all. It now takes the key and status-guards the write, so a settle that captured the organiser's money is never clobbered back to FAILED.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "settleGroupBookingOnOrganiserCancel#3",
+    tier: "GLOBAL",
+    reason:
+      "Each child's cancel and its refund credit-note enqueue commit inside one transaction on the settlement cohort's key, and reconcile that child's allocations through the lock-held seam.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "createGroupSettlementIntent#1",
+    tier: "GLOBAL",
+    reason:
+      "Attaching a freshly minted PaymentIntent must not cross a reap, a failure mark or an organiser cancel of the same group; all of them serialise on this key and the attach re-reads the group status under it.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "createGroupSettlementInvoice#1",
+    tier: "GLOBAL",
+    reason:
+      "Minting the settlement invoice is fenced against the same cohort, so an invoice is never queued for a group another writer has already cancelled.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "commitChildrenToConfirmed#1",
+    tier: "GLOBAL",
+    reason:
+      "Promoting children to CONFIRMED is the settlement's capacity claim: the global tier orders it against reap, fail and refund, and the per-child lodge keys serialise the claim itself.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "settleConfirmedChildrenAndNotify#1",
+    tier: "GLOBAL",
+    reason:
+      "Settlement takes the same key as the reaper, the failed/refunded marks and the organiser-cancel claim, so it can never interleave a reap of the same settlement — the pre-#1881 default-lodge key did not exclude the reaper. Bed reconciliation then takes the complete sorted child-lodge union.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "markGroupSettlementIntentRefunded#1",
+    tier: "GLOBAL",
+    reason:
+      "The refunded mark is a terminal money transition on the settlement, taken on the cohort key so it cannot interleave with a settle or a reap; the intent id is kept so the next attempt mints a fresh key.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "markGroupSettlementIntentFailed#1",
+    tier: "GLOBAL",
+    reason:
+      "The failure mark records a non-success outcome only. The key adds atomicity against a concurrent settle rather than a new veto, and the guarded updateMany fuses the still-non-terminal check with the write.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "releaseOneHold#1",
+    tier: "GLOBAL",
+    reason:
+      "Releasing an expired Internet Banking hold returns beds and clears the invoice with a credit note in one transaction, so it joins the money/status cohort before the lodge and member-credit tiers.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "settleBookingPaymentInTransaction#1",
+    tier: "GLOBAL",
+    reason:
+      "#2262: the ONE settlement body, shared byte-for-byte by the Stripe capture and the admin's manual cash settlement. Without the global key the capture stopped excluding cancel, hold-release and settlement, and the PAID write could resurrect a just-cancelled booking.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "reverseManualBookingPayment#1",
+    tier: "GLOBAL",
+    reason:
+      "Reversing a manual mark-paid moves money and restores PAYMENT_PENDING, which RELEASES capacity, so it takes the same global-before-per-lodge pair as the settlement it undoes.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "syncInternetBankingPaymentsForPaidInvoice#1",
+    tier: "GLOBAL",
+    reason:
+      "Inbound Xero PAID mints local payment state per matched payment, and cancellation and capture take the same key, so a paid-invoice effect cannot land on a booking another writer has just terminated. It is a two-lock composition: the same closure then takes acquireLodgeCapacityLock on the booking's immutable lodge, because flipping an unheld PAYMENT_PENDING booking to PAID is a net-new capacity claim and the global key no longer excludes per-lodge creators. Each payment is fenced in its own short transaction; the provider work has already returned.",
+    invariant: "INV-LOCK-002",
+  },
+
+  // ── Capacity-adjacent writers with their own counterparts ─────────────────
+  {
+    site: "writeRequestedRoom#1",
+    tier: "GLOBAL",
+    reason:
+      "#2594: requested-room editing shares the global cohort with allocation approval and reviewed removal, whose final-approved consequence it must not cross, and locks and re-reads the booking row before its guarded write.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "lockRosterEligibilityMutation#1",
+    tier: "GLOBAL",
+    reason:
+      "#2586: eligibility-validating roster generation, save and confirmation join the booking-writer order before the roster-date key. That closes the initially-empty-partition race without making every booking writer enumerate all possible roster dates.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "respondToMemberGuestConsent#1",
+    tier: "GLOBAL",
+    reason:
+      "#2307: a consent decline reprices the booking, can elect account credit to the owner, AND releases a bed, so it belongs in both cohorts and takes global first; the booking is then re-read under the locks because a deletion can commit between the two.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "expireMemberGuestConsent#1",
+    tier: "GLOBAL",
+    reason:
+      "#2307: a lapse has the same three effects as a decline, and kiosk departure reaches the same guest rows under global -> lodge, so expiry follows the identical order rather than inventing one.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "approveSchoolBookingRequest#1",
+    tier: "GLOBAL",
+    reason:
+      "#2593: both fresh creation and held reuse reconcile bed allocations in this transaction, so the global tier fences cancellation and pruning while the concrete lodge tier serialises the capacity claim.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "approveMemberWholeLodgeRequest#1",
+    tier: "GLOBAL",
+    reason:
+      "Whole-lodge conversion composes a booking lifecycle transition with allocation pruning, so it joins the global cohort before the booking's lodge capacity key; the held reconcile reuses that prefix.",
+    invariant: "INV-LOCK-002",
+  },
+
+  // ── Waitlist ──────────────────────────────────────────────────────────────
+  {
+    site: "confirmCrossLodgeWaitlistOffer#1",
+    tier: "GLOBAL",
+    reason:
+      "The minimum-stay refusal returns the entry to WAITLISTED without consuming the offer, which is a lifecycle transition that must exclude cancel and expiry before taking the entry's lodge key.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "confirmCrossLodgeWaitlistOffer#2",
+    tier: "GLOBAL",
+    reason:
+      "#2543: the paid-up-adult refusal fails closed down the same release path, so it takes the same cohort — the member keeps their place instead of the offer being burnt by a racing writer.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "confirmCrossLodgeWaitlistOffer#3",
+    tier: "GLOBAL",
+    reason:
+      "Phase-one validation re-reads the offer under the locks before the cross-lodge claim, so an expiry or a cancel cannot move it between the read and the claim.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "confirmCrossLodgeWaitlistOffer#4",
+    tier: "GLOBAL",
+    reason:
+      "Capacity-exceeded compensation reverts the claim across two lodges, so it takes the global tier once and then both lodge keys in sorted order — a cross-lodge path may never reverse the topology.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "confirmCrossLodgeWaitlistOffer#5",
+    tier: "GLOBAL",
+    reason:
+      "A price mismatch against the quote cancels the fresh booking and refreshes the stored offer; that cancel is a lifecycle transition on the offered lodge and joins the cohort before it.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "confirmCrossLodgeWaitlistOffer#6",
+    tier: "GLOBAL",
+    reason:
+      "Phase three cancels the waitlist entry and links the two bookings, a lifecycle write on the entry's own lodge that must not cross a concurrent expiry.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "processWaitlistForDates#1",
+    tier: "GLOBAL",
+    reason:
+      "The offer sweep moves waitlisted bookings to WAITLIST_OFFERED across every candidate lodge, so it takes the global tier once and then each affected lodge key; the subscription-lockout read is resolved before the transaction so no provider call runs under them.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "revertSameLodgeOfferToWaitlisted#1",
+    tier: "GLOBAL",
+    reason:
+      "Reverting an offer must not undo an expiry or cancel that already moved the booking on, so it joins the cohort and its restore is status-guarded on WAITLIST_OFFERED.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "confirmWaitlistOffer#1",
+    tier: "GLOBAL",
+    reason:
+      "Confirming an offer claims beds and moves the booking into a payment path, so it excludes cancel and settlement before the lodge key it re-checks capacity under.",
+    invariant: "INV-LOCK-002",
+  },
+  {
+    site: "expireStaleOffers#1",
+    tier: "GLOBAL",
+    reason:
+      "Expiry releases offered beds and re-offers them to the next candidates, so it takes the global tier before the affected lodge keys and a concurrent confirm cannot be expired mid-claim.",
+    invariant: "INV-LOCK-002",
+  },
+
+  // ── Xero group-settlement invoicing ───────────────────────────────────────
+  {
+    site: "createXeroInvoiceForGroupSettlement#1",
+    tier: "GLOBAL",
+    reason:
+      "The initial fence stops a queued operation from starting provider work after organiser cancellation has already committed; cancellation owns the same key. The provider call itself stays outside the transaction.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "createXeroInvoiceForGroupSettlement#2",
+    tier: "GLOBAL",
+    reason:
+      "After the provider call returns, the create-versus-cancel race is decided under the same fence: a cancellation that acquired it first wins and the invoice is voided, otherwise issuance won the serialisation point.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "createXeroInvoiceForGroupSettlement#3",
+    tier: "GLOBAL",
+    reason:
+      "The email gate re-reads the settlement under the same fence, so an invoice for a group cancelled in the meantime is never emailed.",
+    invariant: "INV-LOCK-001",
+  },
+];
 
 const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // #1936: the join-request review and group-create approve transactions take
@@ -229,12 +777,15 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // adult-member-hosting-policy-set key before any read by an admin CRUD write
   // or a configuration import, and the migration's BEFORE STATEMENT trigger
   // takes the same key ahead of any tuple lock so operator DML joins the same
-  // order. The drain's fail-fast `pg_try_advisory_xact_lock` helper lives in this
-  // file too, but deliberately does not match the blocking-call inventory below.
+  // order. TWO since #2722: the drain's fail-fast `pg_try_advisory_xact_lock`
+  // helper lives in this file too, and used to be exempt because the census
+  // matched only the blocking spelling. That exemption was a detection hole, not
+  // a decision — the same blindness would have hidden a fail-fast acquisition of
+  // the GLOBAL key — so both spellings are now scanned and both are counted.
   // Config import, member merge and drain compose the key only in the documented
   // forward order; no counterpart reverses it. Counterpart analysis in
   // docs/CONCURRENCY_AND_LOCKING.md.
-  "src/lib/adult-member-hosting-policy-set.ts": 1,
+  "src/lib/adult-member-hosting-policy-set.ts": 2,
   // #2596: after the hosting policy-set key, the drain takes sorted
   // member-lifecycle keys for claimed owner + actor before Member rows and the
   // exact payload refresh. Merge takes those keys before relation moves. No
@@ -265,10 +816,12 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // one transaction costs nothing. Callers resolve the lodge policy first and skip the
   // lock entirely unless the lodge has the scope enabled, so no unrelated write is
   // serialised per member. ONE site: every acquisition in the tree goes through this
-  // helper.
+  // helper. TWO since #2722, for the reason given under the hosting policy set
+  // above: the fail-fast `tryLockHostingCoverageOwners` sibling is the second
+  // spelling of the same key and is now counted rather than invisible.
   // Counterpart analysis and compatibility evidence in
   // docs/CONCURRENCY_AND_LOCKING.md → "Same-owner coverage takes a per-owner key".
-  "src/lib/adult-member-hosting-coverage-lock.ts": 1,
+  "src/lib/adult-member-hosting-coverage-lock.ts": 2,
   // AI Diagnostics budget reserve (AID-2, #2371). Both writers take the SAME
   // per-month key `pg_advisory_xact_lock(hashtext('diagnostics-budget-reserve'),
   // hashtext(<month>))`: `reserveDiagnosticsBudget` (the guarded spend claim) and
@@ -329,7 +882,7 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // reconciliation, matches the reviewed move's member-lifecycle ->
   // member-partner-link order so no new wait-graph edge appears, and
   // excludes every delete/archive/merge touching either member. Merge is
-  // deliberately absent from GLOBAL_BOOKING_MONEY_LOCK_INVENTORY above:
+  // deliberately absent from GLOBAL_LOCK_SITE_REGISTRY above:
   // `member-merge-execute.test.ts` pins that it takes no `lock(1)` at all.
   "src/lib/member-merge.ts": 2,
   // #2595: the partner-link service and reviewed move service share this one
@@ -475,6 +1028,16 @@ function walk(dir: string, files: string[] = []): string[] {
   return files;
 }
 
+/**
+ * Test files are skipped by NAME, which is a stated limit of every census here.
+ * `.integration.` anywhere in a path drops the file, so a production module named
+ * `probe-fence.integration.ts` would take locks this scan never sees. Nothing in
+ * this repository is named that way today — the integration modules that exist
+ * spell it `integration-credentials.ts` — and the rule is kept because it is the
+ * one the sibling guards use. It sits alongside the other boundary worth knowing:
+ * only non-test `src/` is walked, so a lock taken in a migration's trigger or in
+ * `scripts/` is outside every census in this file.
+ */
 function isTestFile(relPath: string): boolean {
   return (
     relPath.includes("__tests__") ||
@@ -484,8 +1047,9 @@ function isTestFile(relPath: string): boolean {
 }
 
 /**
- * Count occurrences of `needle` in `source`, ignoring whole-line comments and
- * the contents of double-quoted string literals.
+ * The one masking rule, shared by the per-site scan and the count inventories.
+ * Returns `null` for a whole-line comment, and otherwise the line with
+ * double-quoted string literals blanked — except literals containing `SELECT`.
  *
  * DOUBLE-QUOTED LITERALS ARE NOT CODE for this purpose, and #2623 T9(d) is where
  * that started to matter: `adult-member-hosting-queue-participants.ts` names its
@@ -505,16 +1069,25 @@ function isTestFile(relPath: string): boolean {
  * does. The narrower rule keeps the false positive suppressed while refusing to
  * suppress a real statement.
  */
+function codeOnly(rawLine: string): string | null {
+  const trimmed = rawLine.trim();
+  if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) {
+    return null;
+  }
+  return rawLine.replace(/"(?:[^"\\]|\\.)*"/g, (literal) =>
+    /SELECT/i.test(literal) ? literal : '""',
+  );
+}
+
+/**
+ * Count occurrences of `needle` in `source`, ignoring whole-line comments and
+ * the contents of double-quoted string literals (see `codeOnly`).
+ */
 function countCodeOccurrences(source: string, needle: string | RegExp): number {
   let count = 0;
   for (const rawLine of source.split("\n")) {
-    const trimmed = rawLine.trim();
-    if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) {
-      continue;
-    }
-    const line = rawLine.replace(/"(?:[^"\\]|\\.)*"/g, (literal) =>
-      /SELECT/i.test(literal) ? literal : '""',
-    );
+    const line = codeOnly(rawLine);
+    if (line === null) continue;
     if (typeof needle !== "string") {
       count += (line.match(needle) ?? []).length;
       continue;
@@ -529,7 +1102,191 @@ function countCodeOccurrences(source: string, needle: string | RegExp): number {
 }
 
 /**
- * Every row-lock strength PostgreSQL offers, not just `FOR UPDATE` (#2623 T9(d)).
+ * The nearest enclosing top-level declaration is the site's symbol. Column 0 is
+ * deliberate: a raw lock statement always sits inside some top-level function, so
+ * the last column-0 declaration above it names the unit that a refactor moves.
+ */
+const TOP_LEVEL_DECLARATION =
+  /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+(\w+)|(?:const|let|var|class)\s+(\w+))/;
+
+/** Framework-mandated handler names, which are not identities on their own. */
+const ROUTE_HANDLER_SYMBOLS = new Set([
+  "GET",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+  "HEAD",
+  "OPTIONS",
+]);
+
+/** `src/app/api/x/[id]/route.ts` -> `/api/x/[id]`; anything else -> `null`. */
+function routePathOf(rel: string): string | null {
+  const match = /^src\/app\/(.*)\/route\.tsx?$/.exec(rel);
+  if (!match) return null;
+  const segments = (match[1] ?? "")
+    .split("/")
+    .filter((segment) => segment.length > 0 && !/^\(.*\)$/.test(segment));
+  return `/${segments.join("/")}`;
+}
+
+/** Any acquisition of a transaction-scoped advisory lock, blocking or fail-fast. */
+const ADVISORY_LOCK_CALL = /pg_(?:try_)?advisory_xact_lock\(/g;
+
+/**
+ * The first argument of a lock call, read across line breaks from the opening
+ * parenthesis. Returns `null` when the call cannot be parsed — an unbalanced or
+ * unterminated argument list — which the caller must treat as unclassifiable
+ * rather than as anything in particular.
+ *
+ * Reading ACROSS lines is load-bearing, not tidiness. Both `pg_try_` sites this
+ * repository already ships are written over three lines, so a line-local reader
+ * is not an edge case here: it is the shape the codebase actually uses, and it
+ * would score `SELECT pg_advisory_xact_lock(\n  1\n)` as a scoped key.
+ */
+function firstLockArgument(text: string, openParenIndex: number): string | null {
+  let depth = 0;
+  const limit = Math.min(text.length, openParenIndex + 2000);
+  for (let i = openParenIndex; i < limit; i += 1) {
+    const character = text[i];
+    if (character === "(") {
+      depth += 1;
+      continue;
+    }
+    if (character === ")") {
+      depth -= 1;
+      if (depth === 0) return text.slice(openParenIndex + 1, i);
+      continue;
+    }
+    if (character === "," && depth === 1) return text.slice(openParenIndex + 1, i);
+  }
+  return null;
+}
+
+/**
+ * FAIL CLOSED. An argument this scan cannot read is `UNCLASSIFIED`, which fails
+ * the census, and is never quietly `SCOPED`.
+ *
+ * The direction matters because the two failure modes are not symmetric. Calling
+ * a scoped key global costs a build failure and one line of registry. Calling a
+ * global key scoped costs nothing at all at the time — it lands in a per-file
+ * COUNT, which is the approval model #2722 exists to abolish, and the guard's own
+ * remediation message is what tells the author to bump it. Only two shapes are
+ * recognised, and everything else is handed to a human.
+ */
+function classifyLockArgument(argument: string | null): LockTier {
+  if (argument === null) return "UNCLASSIFIED";
+  const normalised = argument.replace(/\s+/g, "").replace(/::[A-Za-z0-9_]+$/, "");
+  if (normalised === "1") return "GLOBAL";
+  if (/^hashtext(?:extended)?\(/.test(normalised)) return "SCOPED";
+  return "UNCLASSIFIED";
+}
+
+/**
+ * Every raw advisory-lock acquisition in non-test `src/`, with its tier and its
+ * stable identity.
+ *
+ * `pg_try_advisory_xact_lock` is scanned by the SAME matcher and classified by
+ * the same argument reader as the blocking form, deliberately: a fail-fast
+ * acquisition of key `1` is a Tier-2 acquisition. Matching the blocking spelling
+ * alone left it in neither census — the tier test did not see it because the
+ * anchored pattern failed, and the scoped count did not see it because
+ * `pg_try_advisory_xact_lock(` does not contain the substring
+ * `pg_advisory_xact_lock(`. Both censuses now derive from this one function, so
+ * the two cannot disagree about what a site is again.
+ */
+function collectAdvisoryLockSites(
+  sources: ReadonlyArray<{ rel: string; text: string }>,
+): AdvisoryLockSite[] {
+  const sites: AdvisoryLockSite[] = [];
+  for (const { rel, text } of sources) {
+    const routePath = routePathOf(rel);
+    const ordinals = new Map<string, number>();
+
+    // One masked copy of the whole file, line boundaries preserved, so an offset
+    // in it still names a line while the argument reader can cross line breaks.
+    const rawLines = text.split("\n");
+    const maskedLines = rawLines.map((rawLine) => codeOnly(rawLine) ?? "");
+    const maskedText = maskedLines.join("\n");
+    const lineStarts: number[] = [];
+    let offset = 0;
+    for (const maskedLine of maskedLines) {
+      lineStarts.push(offset);
+      offset += maskedLine.length + 1;
+    }
+    const lineOf = (index: number): number => {
+      let low = 0;
+      let high = lineStarts.length - 1;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if ((lineStarts[middle] ?? 0) <= index) low = middle;
+        else high = middle - 1;
+      }
+      return low;
+    };
+
+    // The symbol is still read line by line, from the RAW lines: a declaration
+    // inside a block comment should not open a symbol.
+    const symbolByLine: string[] = [];
+    let symbol = "(module scope)";
+    rawLines.forEach((rawLine, index) => {
+      const declaration = TOP_LEVEL_DECLARATION.exec(rawLine);
+      if (declaration && codeOnly(rawLine) !== null) {
+        symbol = declaration[1] ?? declaration[2] ?? symbol;
+      }
+      symbolByLine[index] = symbol;
+    });
+
+    for (const match of maskedText.matchAll(ADVISORY_LOCK_CALL)) {
+      const index = match.index ?? 0;
+      const lineIndex = lineOf(index);
+      const siteSymbol = symbolByLine[lineIndex] ?? "(module scope)";
+      const tier = classifyLockArgument(
+        firstLockArgument(maskedText, index + match[0].length - 1),
+      );
+      const ordinal = (ordinals.get(siteSymbol) ?? 0) + 1;
+      ordinals.set(siteSymbol, ordinal);
+      const key =
+        routePath !== null && ROUTE_HANDLER_SYMBOLS.has(siteSymbol)
+          ? `${siteSymbol} ${routePath}#${ordinal}`
+          : `${siteSymbol}#${ordinal}`;
+      sites.push({
+        rel,
+        line: lineIndex + 1,
+        symbol: siteSymbol,
+        ordinal,
+        tier,
+        key,
+        qualifiedKey: `${rel}::${siteSymbol}#${ordinal}`,
+      });
+    }
+  }
+  return sites;
+}
+
+/** The symbol half of a site key or a registry entry — the key without `#n`. */
+function symbolOfKey(key: string): string {
+  return key.replace(/#\d+$/, "");
+}
+
+/** Both accepted spellings of every site, so an entry may use either form. */
+function indexSitesByKey(sites: readonly AdvisoryLockSite[]): Map<string, AdvisoryLockSite[]> {
+  const byKey = new Map<string, AdvisoryLockSite[]>();
+  const add = (key: string, site: AdvisoryLockSite) => {
+    const existing = byKey.get(key);
+    if (existing) existing.push(site);
+    else byKey.set(key, [site]);
+  };
+  for (const site of sites) {
+    add(site.key, site);
+    if (site.qualifiedKey !== site.key) add(site.qualifiedKey, site);
+  }
+  return byKey;
+}
+
+/**
+ * Every raw row-lock strength PostgreSQL offers, not just `FOR UPDATE` (#2623
+ * T9(d)).
  *
  * The inventory used to match the literal `FOR UPDATE`, so the six non-test
  * `FOR KEY SHARE` statements this repository ships — the hosting queue
@@ -555,31 +1312,156 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
     }))
     .filter(({ rel }) => !isTestFile(rel));
 
-  it("keeps canonical global pg_advisory_xact_lock(1) sites inside the reviewed inventory", () => {
-    const found: Record<string, number> = {};
-    for (const { rel, text } of sources) {
-      const count = countCodeOccurrences(text, "pg_advisory_xact_lock(1)");
-      if (count > 0) found[rel] = count;
+  it("keeps every canonical global pg_advisory_xact_lock(1) site in the reviewed per-site registry", () => {
+    const sites = collectAdvisoryLockSites(sources);
+    const byKey = indexSitesByKey(sites);
+    const problems: string[] = [];
+
+    // A registry that lists one site twice cannot be a census of anything.
+    const registrations = new Map<string, number>();
+    for (const entry of GLOBAL_LOCK_SITE_REGISTRY) {
+      registrations.set(entry.site, (registrations.get(entry.site) ?? 0) + 1);
+      if (!TWO_TIER_LOCK_INVARIANTS.includes(entry.invariant)) {
+        problems.push(
+          `BAD INVARIANT: "${entry.site}" cites ${entry.invariant}, which is not one of ${TWO_TIER_LOCK_INVARIANTS.join(", ")}.`,
+        );
+      }
+      if (entry.reason.trim().length < 40) {
+        problems.push(
+          `THIN REASON: "${entry.site}" has no usable reason. Name the counterpart writer or the race that makes the narrow tier insufficient.`,
+        );
+      }
+    }
+    for (const [site, count] of registrations) {
+      if (count > 1) {
+        problems.push(
+          `DUPLICATE ENTRY: "${site}" is registered ${count} times. One site, one entry — two reasons for one call site means neither can be trusted.`,
+        );
+      }
+    }
+
+    // Symbols whose site population is in question: an unregistered or
+    // unclassifiable site, or an entry that no longer resolves cleanly. Every one
+    // of them puts EVERY entry for that symbol in doubt — see the ordinal-shift
+    // note below.
+    const unsettledSymbols = new Set<string>();
+
+    // Resolve every entry to exactly one live site.
+    const claimedBy = new Map<string, string[]>();
+    for (const entry of GLOBAL_LOCK_SITE_REGISTRY) {
+      const matches = byKey.get(entry.site) ?? [];
+      if (matches.length === 0) {
+        unsettledSymbols.add(symbolOfKey(entry.site));
+        problems.push(
+          `STALE ENTRY: "${entry.site}" matches no advisory-lock site. The call was removed or renamed — delete the entry, or re-point it at the symbol that now holds the lock. A registry entry approving nothing is worse than no entry.`,
+        );
+        continue;
+      }
+      if (matches.length > 1) {
+        unsettledSymbols.add(symbolOfKey(entry.site));
+        problems.push(
+          `AMBIGUOUS ENTRY: "${entry.site}" matches ${matches.length} sites (${matches
+            .map((match) => `${match.rel}:${match.line}`)
+            .join(
+              ", ",
+            )}). Use the file-qualified form so one reason binds to one call: ${matches
+            .map((match) => `"${match.qualifiedKey}"`)
+            .join(" / ")}.`,
+        );
+        continue;
+      }
+      const site = matches[0];
+      if (!site) continue;
+      if (site.tier !== entry.tier) {
+        unsettledSymbols.add(symbolOfKey(entry.site));
+        problems.push(
+          `TIER CHANGED: "${entry.site}" is registered as ${entry.tier} but ${site.rel}:${site.line} now takes a ${site.tier} key. Re-classify the writer before updating the registry — a tier change is a lock-topology change, not an edit.`,
+        );
+      }
+      const claims = claimedBy.get(site.qualifiedKey);
+      if (claims) claims.push(entry.site);
+      else claimedBy.set(site.qualifiedKey, [entry.site]);
+    }
+    for (const [qualifiedKey, claims] of claimedBy) {
+      if (claims.length > 1) {
+        problems.push(
+          `DUPLICATE COVERAGE: ${qualifiedKey} is claimed by ${claims.length} entries (${claims
+            .map((claim) => `"${claim}"`)
+            .join(", ")}).`,
+        );
+      }
+    }
+
+    // Closed world: every Tier-2 acquisition must be one somebody approved, and
+    // an acquisition nobody can classify is held to the same standard.
+    for (const site of sites) {
+      if (site.tier === "SCOPED") continue;
+      if (site.tier === "UNCLASSIFIED") {
+        unsettledSymbols.add(symbolOfKey(site.key));
+        unsettledSymbols.add(symbolOfKey(site.qualifiedKey));
+        problems.push(
+          `UNCLASSIFIABLE lock argument: ${site.rel}:${site.line} in ${site.symbol} takes an advisory lock whose first argument this scan cannot read. It is treated as Tier 2 until a human says otherwise — write the key as the literal 1, or as hashtext(...)/hashtextextended(...), or classify it here explicitly. It is deliberately NOT counted as scoped.`,
+        );
+        continue;
+      }
+      if (claimedBy.has(site.qualifiedKey)) continue;
+      unsettledSymbols.add(symbolOfKey(site.key));
+      unsettledSymbols.add(symbolOfKey(site.qualifiedKey));
+      const suggested =
+        (byKey.get(site.key) ?? []).length === 1 ? site.key : site.qualifiedKey;
+      problems.push(
+        `UNREGISTERED Tier-2 site: ${site.rel}:${site.line} takes the global advisory key inside ${site.symbol}. Add { site: "${suggested}", tier: "GLOBAL", reason: "<which counterpart or race needs the global key>", invariant: "INV-LOCK-001" if this transaction takes the global key ALONE, or "INV-LOCK-002" if it also takes a scoped key such as acquireLodgeCapacityLock }.`,
+      );
+    }
+
+    // THE ORDINAL SHIFT (#2688's hazard), in both directions. An ordinal is
+    // stable only while the symbol's site population is. Insert a lock ahead of
+    // existing ones and the report names the LAST call as unregistered; delete an
+    // early one and it reports the TAIL as stale — and in both cases the entries
+    // in between now describe calls they no longer match, silently, so doing
+    // exactly what the message says re-approves them under the wrong reasons, or
+    // deletes the wrong reason. Whenever a symbol's population is in question —
+    // from either side, an unresolved site or an unresolved entry — every entry
+    // for that symbol is named and has to be re-read.
+    for (const unsettled of unsettledSymbols) {
+      const affected = GLOBAL_LOCK_SITE_REGISTRY.filter(
+        (entry) => symbolOfKey(entry.site) === unsettled,
+      );
+      if (affected.length === 0) continue;
+      const population = sites.filter(
+        (site) => symbolOfKey(site.key) === unsettled || symbolOfKey(site.qualifiedKey) === unsettled,
+      ).length;
+      problems.push(
+        `ORDINAL SHIFT — RE-VERIFY EVERY ENTRY FOR "${unsettled}": it now holds ${population} advisory site(s), so the ordinals may have moved under the ${affected.length} existing entr${affected.length === 1 ? "y" : "ies"} (${affected
+          .map((entry) => `"${entry.site}"`)
+          .join(
+            ", ",
+          )}). Re-read each against the call it now names before adding or deleting one — renumbering is silent, and a reason bound to the wrong call is worse than no reason.`,
+      );
     }
 
     expect(
-      found,
-        "New pg_advisory_xact_lock(1) call sites detected. Classify the writer " +
-        "using docs/CONCURRENCY_AND_LOCKING.md: global-cohort lifecycle and " +
-        "settlement money uses this canonical global key; capacity uses " +
+      problems,
+      "The canonical global pg_advisory_xact_lock(1) census failed (INV-LOCK-001, " +
+        "INV-LOCK-002, INV-LOCK-003). Classify the writer using " +
+        "docs/CONCURRENCY_AND_LOCKING.md: global-cohort lifecycle and settlement " +
+        "money uses this canonical global key; capacity uses " +
         "acquireLodgeCapacityLock(tx, lodgeId); a writer doing both takes global " +
-        "first, then per-lodge. Update this inventory only with PR lock-impact " +
-        "evidence."
-    ).toEqual(GLOBAL_BOOKING_MONEY_LOCK_INVENTORY);
+        "first, then per-lodge. Register the SITE with its own reason and PR " +
+        "lock-impact evidence — never a bare count.",
+    ).toEqual([]);
   });
 
   it("keeps every scoped advisory-lock family inside the reviewed inventory", () => {
+    // Derived from the SAME scan as the Tier-2 census, not from an independent
+    // substring count. The two disagreeing is what let a `pg_try_` acquisition of
+    // the global key fall between them: the tier test read it as scoped, and the
+    // substring count could not see it at all because
+    // `pg_try_advisory_xact_lock(` does not contain `pg_advisory_xact_lock(`.
     const found: Record<string, number> = {};
-    for (const { rel, text } of sources) {
-      const allLocks = countCodeOccurrences(text, "pg_advisory_xact_lock(");
-      const globalLocks = countCodeOccurrences(text, "pg_advisory_xact_lock(1)");
-      const scopedLocks = allLocks - globalLocks;
-      if (scopedLocks > 0) found[rel] = scopedLocks;
+    for (const site of collectAdvisoryLockSites(sources)) {
+      if (site.tier !== "SCOPED") continue;
+      found[site.rel] = (found[site.rel] ?? 0) + 1;
     }
 
     expect(
@@ -713,7 +1595,7 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
       "hashtextextended found outside src/lib/lodge-capacity-lock.ts. The per-lodge " +
         "capacity key must only be constructed by acquireLodgeCapacityLock so " +
         "every participant provably shares one key — call the helper instead " +
-        "of rebuilding the expression."
+        "of rebuilding the expression (INV-LOCK-002)."
     ).toEqual([]);
   });
 });

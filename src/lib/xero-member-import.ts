@@ -92,7 +92,7 @@ import {
   getXeroContactDisplayName,
   upsertXeroContactCacheEntry,
 } from "./xero-contact-cache";
-import { parseXeroCompanyNumberDate } from "./xero-contacts";
+import { parseXeroContactDateOfBirth } from "./xero-contact-date-of-birth";
 import {
   applyInboundMemberContactPatch,
   type InboundMemberContactPatch,
@@ -626,7 +626,7 @@ export async function importMembersFromXeroGroups(
             );
             const updates: InboundMemberContactPatch = {};
             if (!existingPrimary.dateOfBirth) {
-              const parsedDateOfBirth = parseXeroCompanyNumberDate(
+              const parsedDateOfBirth = parseXeroContactDateOfBirth(
                 contact.companyNumber
               );
               if (parsedDateOfBirth) {
@@ -729,7 +729,7 @@ export async function importMembersFromXeroGroups(
           if (!depFirstName) depFirstName = "Unknown";
           if (!depLastName) depLastName = "Unknown";
 
-          const depDob = parseXeroCompanyNumberDate(contact.companyNumber);
+          const depDob = parseXeroContactDateOfBirth(contact.companyNumber);
           const dependentAgeTier = await resolveNewMemberAgeTier({
             mappedTier: mapping.ageTier,
             typeExemption,
@@ -866,7 +866,7 @@ export async function importMembersFromXeroGroups(
         if (!firstName) firstName = "Unknown";
         if (!lastName) lastName = "Unknown";
 
-        const dateOfBirth = parseXeroCompanyNumberDate(contact.companyNumber);
+        const dateOfBirth = parseXeroContactDateOfBirth(contact.companyNumber);
         const importedAgeTier = await resolveNewMemberAgeTier({
           mappedTier: mapping.ageTier,
           typeExemption,

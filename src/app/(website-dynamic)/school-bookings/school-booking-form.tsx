@@ -241,7 +241,7 @@ export function SchoolBookingForm({ club }: { club: ClubIdentity }) {
   }
 
   return (
-    <Card className="w-full max-w-2xl">
+    <Card id="schoolBookingForm" className="w-full max-w-2xl">
       <CardHeader>
         <CardTitle>School Group Booking Request</CardTitle>
         <CardDescription>
