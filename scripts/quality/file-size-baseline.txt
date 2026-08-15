@@ -262,7 +262,7 @@ src/lib/member-family-tree.ts 1216 domain-module
 src/lib/member-guest-consent-service.ts 1141 domain-module
 src/lib/member-guest-email-notes.ts 793 domain-module
 src/lib/member-lifecycle-actions.ts 1717 domain-module
-src/lib/member-merge.ts 3640 domain-module
+src/lib/member-merge.ts 3708 domain-module
 src/lib/member-partner-link.ts 1397 domain-module
 src/lib/membership-cancellation-admin.ts 1143 domain-module
 src/lib/membership-cancellation-requests.ts 1316 domain-module
