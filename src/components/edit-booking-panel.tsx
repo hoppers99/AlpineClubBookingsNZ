@@ -72,15 +72,11 @@ import {
   useDebouncedModificationQuote,
   useModificationQuoteState,
 } from "@/components/edit-booking/hooks/use-modification-quote";
-import { usePromoSelection } from "@/components/edit-booking/hooks/use-promo-selection";
+import {
+  usePromoBeneficiaryReset,
+  usePromoSelectionState,
+} from "@/components/edit-booking/hooks/use-promo-selection";
 import { useReviewJustificationLatch } from "@/components/edit-booking/hooks/use-review-justification-latch";
-
-/**
- * Re-exported for `edit-booking-panel-exception-request.test.tsx`, which imports
- * it from this module. The narrowing itself lives in
- * `edit-booking/exception-request-payload.ts` (#2690).
- */
-export { exceptionRequestPayloadFromModification };
 
 // #2104: mirror of requiresAdultSupervisionReview (src/lib/booking-review.ts).
 // Inlined (not imported) to match the create wizard's client-side predicate
@@ -352,6 +348,8 @@ export function EditBookingPanel({
     canEditPerGuestDates,
   });
 
+  // State only. Its reset effect is armed further down, at the position that
+  // effect has always occupied — see `usePromoSelectionState`'s note.
   const {
     promoAction,
     setPromoAction,
@@ -359,11 +357,8 @@ export function EditBookingPanel({
     setAppliedNewPromo,
     prefillPromoCode,
     setPrefillPromoCode,
-  } = usePromoSelection({
-    guests: booking.guests,
-    removedGuestIds,
-    addedGuests,
-  });
+    retirePromoSelection,
+  } = usePromoSelectionState();
 
   const getExistingGuestRange = useCallback((guest: Guest) => {
     return (
@@ -810,6 +805,14 @@ export function EditBookingPanel({
     memberGuestTriggerRef,
     closeMemberGuestFinder,
   } = useMemberGuestFinder(memberGuestAddError);
+
+  usePromoBeneficiaryReset({
+    promoAction,
+    guests: booking.guests,
+    removedGuestIds,
+    addedGuests,
+    retirePromoSelection,
+  });
 
   function handleRemoveGuest(guestId: string) {
     setRemovedGuestIds((prev) => new Set([...prev, guestId]));

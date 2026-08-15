@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PromoResult } from "@/components/promo-code-input";
 import type { Guest, NewGuest } from "@/components/edit-booking/types";
 
@@ -14,26 +14,20 @@ export type PromoAction =
   | { type: "new"; code: string; guestIndexes?: number[] };
 
 /**
- * The promo choice, and dropping it when the party it was aimed at changes.
+ * The promo choice this edit is making.
  *
- * Extracted from `edit-booking-panel.tsx` (#2690) with the memo's dependency
- * array, the effect's dependency array, the ref latch and the three-branch guard
- * order all unchanged. The hook owns every slot the effect writes.
- *
- * #2266: a guest-targeted promo's beneficiary indexes are positional over
- * [remaining guests..., added guests...]; changing that list silently re-points
- * them at different people. Reset the applied code instead and let the member
- * re-apply it against the new guest list.
+ * SPLIT FROM ITS OWN EFFECT, for the reason `useModificationQuoteState` is split
+ * from `useDebouncedModificationQuote` and by the same technique (#2690 review).
+ * `buildModificationPayload` reads `promoAction`, and the debounced quote is
+ * keyed on that payload, so this state has to be declared BEFORE the quote hook.
+ * The reset effect below, however, sat AFTER the quote effect in the original
+ * component body. Keeping them in one hook would have moved the reset two
+ * positions earlier in the panel's effect order; declaring the state here and
+ * running the effect at its original position keeps all eight effects exactly
+ * where they were, so no argument about whether a reorder is inert has to be
+ * made or believed.
  */
-export function usePromoSelection({
-  guests,
-  removedGuestIds,
-  addedGuests,
-}: {
-  guests: Guest[];
-  removedGuestIds: Set<string>;
-  addedGuests: NewGuest[];
-}) {
+export function usePromoSelectionState() {
   const [promoAction, setPromoAction] = useState<PromoAction>({ type: "keep" });
   // #2266: the old blind promo text field is gone — the shared PromoCodeInput
   // owns entry + validation of a NEW code (guest selection included).
@@ -44,6 +38,60 @@ export function usePromoSelection({
     undefined,
   );
 
+  /**
+   * Drop the applied code and fall back to the stored promo.
+   *
+   * Handed to `usePromoBeneficiaryReset` as ONE stable callback rather than as
+   * two setters, so that hook's dependency array gains a single entry that
+   * `useCallback(..., [])` pins for the component's whole lifetime. Both setters
+   * it closes over are declared right here, which is what lets the array be
+   * empty and the identity be constant.
+   */
+  const retirePromoSelection = useCallback(() => {
+    setAppliedNewPromo(null);
+    setPromoAction({ type: "keep" });
+  }, []);
+
+  return {
+    promoAction,
+    setPromoAction,
+    appliedNewPromo,
+    setAppliedNewPromo,
+    prefillPromoCode,
+    setPrefillPromoCode,
+    retirePromoSelection,
+  };
+}
+
+/**
+ * Drop a guest-targeted promo when the party it was aimed at changes.
+ *
+ * Extracted from `edit-booking-panel.tsx` (#2690) with the memo's dependency
+ * array, the three-branch guard order and the ref latch unchanged, and called
+ * from the panel at the position the effect always occupied.
+ *
+ * #2266: a guest-targeted promo's beneficiary indexes are positional over
+ * [remaining guests..., added guests...]; changing that list silently re-points
+ * them at different people. Reset the applied code instead and let the member
+ * re-apply it against the new guest list.
+ *
+ * The effect's array gains exactly one entry over the original
+ * `[promoAction, promoGuestSetSignature]`: `retirePromoSelection`, which is
+ * `useCallback(..., [])` in the state hook above and therefore never changes.
+ */
+export function usePromoBeneficiaryReset({
+  promoAction,
+  guests,
+  removedGuestIds,
+  addedGuests,
+  retirePromoSelection,
+}: {
+  promoAction: PromoAction;
+  guests: Guest[];
+  removedGuestIds: Set<string>;
+  addedGuests: NewGuest[];
+  retirePromoSelection: () => void;
+}): void {
   const promoGuestSetSignature = useMemo(
     () =>
       JSON.stringify([
@@ -66,17 +114,7 @@ export function usePromoSelection({
     }
     if (appliedPromoGuestSignatureRef.current !== promoGuestSetSignature) {
       appliedPromoGuestSignatureRef.current = null;
-      setAppliedNewPromo(null);
-      setPromoAction({ type: "keep" });
+      retirePromoSelection();
     }
-  }, [promoAction, promoGuestSetSignature]);
-
-  return {
-    promoAction,
-    setPromoAction,
-    appliedNewPromo,
-    setAppliedNewPromo,
-    prefillPromoCode,
-    setPrefillPromoCode,
-  };
+  }, [promoAction, promoGuestSetSignature, retirePromoSelection]);
 }
