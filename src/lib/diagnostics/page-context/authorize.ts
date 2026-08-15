@@ -112,7 +112,7 @@ export type FreshAdminPermissionMatrixResult =
  * decides on SESSION facts (`twoFactorRequired` / `twoFactorVerified`) that no
  * member row carries, and this module takes a member id precisely so it cannot be
  * handed a session to trust. That check therefore stays where it can be made
- * honestly — `requireAdmin`, on the route AID-7 (#2378) builds.
+ * honestly — `requireAdmin`, on the shipped AID-7 route (#2378).
  */
 export async function readFreshAdminPermissionMatrix(
   memberId: string,

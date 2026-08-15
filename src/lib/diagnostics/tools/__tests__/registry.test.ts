@@ -1,7 +1,7 @@
 /**
  * The registry CONTRACT, enforced over every entry that will ever be added. These
  * assertions are the mechanical half of the "adding a tool" checklist in
- * `registry.ts`: a future tool pack (AID-6A/B/C) that ships an unbounded query, a
+ * `registry.ts`: any shipped or future tool pack that carries an unbounded query, a
  * multi-statement string, a missing permission requirement, or a schema that
  * silently ignores unknown arguments fails here rather than in production.
  */

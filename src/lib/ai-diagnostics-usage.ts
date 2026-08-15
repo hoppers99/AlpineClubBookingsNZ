@@ -79,9 +79,9 @@ export const DIAGNOSTICS_RESERVATION_TTL_MS = 5 * 60 * 1000;
  *   claude-sonnet-5: $3.00 / $15.00 / $3.75 / $0.30
  *   claude-haiku-4-5:$1.00 / $5.00  / $1.25 / $0.10
  *
- * The actual diagnostics model is finalised by the tool/UI issues (AID-6/AID-8);
- * an UNKNOWN model is priced at the highest known row (fail-expensive), so a model
- * swap never silently under-counts.
+ * AID-7 (#2378) finalised the diagnostics model as `claude-sonnet-5`. An UNKNOWN
+ * model is priced at the highest known row (fail-expensive), so a model swap never
+ * silently under-counts.
  */
 export const AI_DIAGNOSTICS_PRICE_TABLE_NZ_CENTS_PER_MTOK: Record<
   string,

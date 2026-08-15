@@ -199,16 +199,19 @@ preserved so code excerpts (generics, JSX) stay faithful. The Diagnostics route
 (#2378) is responsible for placing this evidence in the user turn, never the system
 role — mirroring the page-help assistant's grounding discipline.
 
-### Known limitation (owner decision, #2370)
+### Known limitation (owner-approved in PR #2531)
 
 The integrity digest and per-excerpt hashes defend against corruption and
 partial/naive tampering, and the commit-SHA gate rejects an unverified bundle.
 They do **not** defend against an attacker who can fully rewrite the file inside
-the running container and recompute every hash — that requires a build-time
-**cryptographic signature**, which needs key management the ADR has not yet
-decided. Signing is the intended next hardening step. Within the current threat
-model (an attacker who can rewrite files in the container has already
-compromised the host), the digest + hash + SHA gate is the appropriate bar.
+the running container and recompute every hash. The owner approved this as a
+non-blocking limitation on the exact PR #2531 head: within the current threat
+model, an attacker who can rewrite files in the container has already compromised
+the host, so the digest + hash + SHA gate is the appropriate bar. There is no
+unresolved signing task. Reconsider a build-time cryptographic signature only if
+the threat boundary expands to require detection after a hostile artifact or host
+rewrite; that design must first settle signing-key ownership, storage, and
+rotation.
 
 ## Regenerating locally
 
