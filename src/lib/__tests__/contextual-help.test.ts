@@ -180,6 +180,53 @@ describe("contextual help registry", () => {
   });
 
   /**
+   * #2689 review: `/admin/notifications` carried TWO entries with different
+   * copy. Resolution sorts by path length and takes the first, so the second
+   * was dead text that read as live — an earlier draft describing a page shape
+   * that no longer exists. It was deleted and its one accurate field (the
+   * delivery tri-state) folded into the surviving entry.
+   *
+   * The guard is the general one, not the instance: no admin path may be
+   * registered twice, because a second entry is unreachable by construction.
+   */
+  it("registers each admin help path exactly once", () => {
+    const paths = getContextualHelpPaths("admin");
+    const seen = new Set<string>();
+    const duplicated = paths.filter((path) => {
+      if (seen.has(path)) return true;
+      seen.add(path);
+      return false;
+    });
+    expect(
+      duplicated,
+      "These paths have more than one entry. Longest-prefix resolution takes " +
+        "the first, so every later entry is dead text that reads as live:\n" +
+        duplicated.join("\n"),
+    ).toEqual([]);
+  });
+
+  it("resolves /admin/notifications to the entry that matches the page", () => {
+    const help = getContextualHelp("/admin/notifications", "admin");
+
+    expect(help.title).toBe("Notifications & Email");
+    // The five cards the page actually renders.
+    const actions = help.actions.join(" ");
+    for (const card of [
+      "Delivery Rules",
+      "Recipients",
+      "Email Messages",
+      "Booking Messages",
+      "Membership Cancellation",
+    ]) {
+      expect(actions).toContain(card);
+    }
+    // The deleted draft's vocabulary, kept because the tri-state is real.
+    expect(help.fields?.map((field) => field.name)).toContain("Delivery mode");
+    // And the draft's own summary must not be what resolves.
+    expect(help.summary).not.toContain("delivery policies");
+  });
+
+  /**
    * #2689 split the corpus into one module per admin sidebar section. The
    * failure that split makes possible is a silent one: add a section module,
    * forget the line in `contextual-help/index.ts`, and every page in it drops

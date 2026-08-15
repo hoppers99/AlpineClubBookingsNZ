@@ -100,7 +100,10 @@ import {
 } from "@/lib/email-templates/admin-membership";
 import {
   adminDailyDigestTemplate,
+  adminEmailDeliveryFailedTemplate,
+  adminEmailWithheldTemplate,
   adminIssueReportTemplate,
+  websiteContactTemplate,
 } from "@/lib/email-templates/admin-ops";
 import {
   adminCreditSyncDriftTemplate,
@@ -968,9 +971,62 @@ const ESCAPING_CASES: EmailRenderCase[] = [
   },
 ];
 
+/**
+ * The three bodies #2689 moved out of their send sites. They are pinned for the
+ * reason the move was made: while the HTML lived in a route or a cron, nothing
+ * compared it to anything, so a refactor could change what an operator receives
+ * with nothing going red.
+ *
+ * The contact form carries all five escaped characters, because its three
+ * fields are the most attacker-reachable free text in the system — anyone on
+ * the public website can put anything in them.
+ */
+const MOVED_SEND_SITE_CASES: EmailRenderCase[] = [
+  {
+    id: "websiteContactTemplate:minimal",
+    fn: "websiteContactTemplate",
+    render: () =>
+      websiteContactTemplate({
+        name: "Ada Lovelace",
+        email: "ada@example.org",
+        message: "Hello, I have a question about the lodge.",
+      }),
+  },
+  {
+    id: "websiteContactTemplate:escaping",
+    fn: "websiteContactTemplate",
+    render: () =>
+      websiteContactTemplate({
+        name: `O'Brien & <b>Sons</b>`,
+        email: `a"b&c@example.org`,
+        message: `<script>alert(1)</script> R&D 'quoted' "double"`,
+      }),
+  },
+  {
+    id: "adminEmailDeliveryFailedTemplate:minimal",
+    fn: "adminEmailDeliveryFailedTemplate",
+    render: () =>
+      adminEmailDeliveryFailedTemplate({
+        recipient: "member@example.org",
+        templateName: "booking-confirmed",
+        attemptCount: 3,
+      }),
+  },
+  {
+    id: "adminEmailWithheldTemplate:minimal",
+    fn: "adminEmailWithheldTemplate",
+    render: () =>
+      adminEmailWithheldTemplate({
+        templateName: "booking-confirmed",
+        bookingId: "bkg_example",
+      }),
+  },
+];
+
 export const EMAIL_RENDER_CASES: EmailRenderCase[] = [
   ...GENERATED_CASES,
   ...PRIMITIVE_CASES,
   ...ESCAPING_CASES,
+  ...MOVED_SEND_SITE_CASES,
   ...MONEY_BRANCH_CASES,
 ];

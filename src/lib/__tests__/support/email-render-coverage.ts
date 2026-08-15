@@ -64,15 +64,24 @@ export async function readEmailTemplateModuleExports(): Promise<
  * changing where these two compose their bodies would change output.
  */
 export const REGISTRY_KEYS_WITHOUT_A_TEMPLATE_FUNCTION = new Set<string>([
-  // Built inline in src/app/api/contact/route.ts.
-  "website-contact",
-  // Built inline in src/lib/email/core.ts and src/lib/cron-email-retry.ts.
-  "admin-email-failure",
+  // EMPTY, and it should stay that way. Both former entries were registry keys
+  // whose HTML was built at the send site, which put them outside the render
+  // gate: a refactor could change what an operator receives with nothing going
+  // red. #2689 moved both into `email-templates/admin-ops.ts` verbatim.
+  //
+  // A key added here needs a stated reason, not just a line.
 ]);
 
 /**
  * Registry template key -> the exported function that renders it, grouped by
  * the sender module (`src/lib/email/<family>.ts`) the pair was read from.
+ *
+ * `admin-email-failure` maps to `adminEmailDeliveryFailedTemplate`, the retry
+ * cron's wording, because that is the shape the registry's default body
+ * describes. The same key also carries `adminEmailWithheldTemplate` on the
+ * fail-closed path — one key, two bodies, which predates #2689. This map holds
+ * one renderer per key, so the second is covered by the module-export sweep
+ * instead, which walks every exported function whether a key names it or not.
  *
  * `two-factor-code` is listed because a sender uses it as a `templateName`,
  * even though `email-message-audit-defaults.ts` carries no entry for it; the
@@ -80,10 +89,12 @@ export const REGISTRY_KEYS_WITHOUT_A_TEMPLATE_FUNCTION = new Set<string>([
  */
 export const REGISTRY_KEY_RENDERERS: Record<string, string> = {
   // (admin API routes and notices)
+  "admin-email-failure": "adminEmailDeliveryFailedTemplate",
   "bulk-communication": "bulkCommunicationTemplate",
   "notice-published": "noticePublishedTemplate",
   "refund-request-approved": "refundRequestApprovedTemplate",
   "refund-request-declined": "refundRequestDeclinedTemplate",
+  "website-contact": "websiteContactTemplate",
   // account
   "account-deletion-approved": "accountDeletionApprovedTemplate",
   "account-deletion-rejected": "accountDeletionRejectedTemplate",

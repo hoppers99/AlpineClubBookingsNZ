@@ -283,6 +283,11 @@ export const adminSetupAndConfigurationHelpEntries: HelpEntry[] = [
           description:
             "Email, booking, and cancellation text that members or admins see in workflow messages.",
         },
+        {
+          name: "Delivery mode",
+          description:
+            "Per template, whether it always sends, sends only when there is something to report, or is switched off.",
+        },
       ],
     ),
   ),
@@ -454,35 +459,6 @@ export const adminSetupAndConfigurationHelpEntries: HelpEntry[] = [
           name: "Field label",
           description:
             "The wording users see beside the field.",
-        },
-      ],
-    ),
-  ),
-  entry(
-    "/admin/notifications",
-    help(
-      "Notifications & Email",
-      "Notifications & Email configures notification recipients, rules, delivery policies, and email-related settings.",
-      [
-        "Choose the rule, recipient, or delivery policy area you need.",
-        "Review who receives each notification before saving.",
-        "Use previews or test paths where available before relying on new wording.",
-      ],
-      [
-        {
-          name: "Recipient",
-          description:
-            "The role, member, or address that receives a notification.",
-        },
-        {
-          name: "Rule",
-          description:
-            "The event and conditions that trigger a notification.",
-        },
-        {
-          name: "Delivery mode",
-          description:
-            "Controls whether a template sends always, only with content, or is disabled.",
         },
       ],
     ),
