@@ -15,6 +15,13 @@
   cannot quietly alter what a member receives; it was deliberately broken three
   times first to prove it can actually catch a change.
 
+  Two operator-visible fixes travelled with it. The help panel for
+  **Admin > Notifications** carried two versions of its text, and the one
+  nobody could ever see was an out-of-date description of an older page; that
+  has been removed, and the surviving panel now also explains the per-template
+  delivery setting (always, only when there is something to report, or off).
+  Nothing else an operator reads has changed.
+
   Two smaller things improved along the way. A member's booking page no longer
   has to load the entire administrator help corpus to show the eleven-line
   booking status glossary. And the one place the system relaxes its

@@ -95,7 +95,7 @@ docs/BLUE_GREEN_MIGRATION_SAFETY.tsv text eol=lf
 # The rendered-email pin file (#2689) is the sixth instance of the same class.
 # `email-render-equivalence.test.ts` splits it on `\n` and then on TAB, so a
 # CRLF checkout appends `\r` to every sha256 field and the gate goes red on all
-# 213 pinned bodies at once — on Windows only, green on Linux CI, which is
+# 217 pinned bodies at once — on Windows only, green on Linux CI, which is
 # exactly the shape that gets written off as an environment flake. The file it
 # guards is the whole safety argument for a 5,000-line content move, so it must
 # not be the thing that cries wolf. Zero churn: the stored blob is already LF.
