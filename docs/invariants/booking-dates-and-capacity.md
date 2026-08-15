@@ -415,17 +415,43 @@ derivation).
   by `src/app/(authenticated)/dashboard/__tests__/dashboard-club-day-boundaries.test.tsx`
   and `src/lib/__tests__/authenticated-layout-club-day-boundaries.test.tsx`.
 
-  **That is not the whole class, and this section does not claim it is.** #2684's
-  inventory named those three; `src/lib/xero-booking-repair-utils.ts:162-166`
-  exports a bare `setHours` wrapper as `startOfDay`, and
-  `xero-booking-repair-load.ts` applies it to `Booking.checkIn`, so an operator
-  asking the repair sweep for `[1 Jul, 31 Jul]` sweeps `[30 Jun, 30 Jul]`. That
-  is filed as **#2868**; it needs the same date-column/instant split rather than
-  a rename, which is why it is a separate issue and not a line in #2838. Census
-  the CALL GRAPH, not the spelling: `setHours` is not an ISO truncation so
-  #2684's lint rule cannot see it, and an exported wrapper puts it beyond a grep
-  for the pattern — the same way `formatDate` hid roughly eighteen Xero document
-  dates from #2682's census.
+  **Those three were not the whole class.** #2684's inventory named them;
+  `src/lib/xero-booking-repair-utils.ts` also exported a bare `setHours` wrapper
+  as `startOfDay`, and `xero-booking-repair-load.ts` built the operator repair
+  sweep's `[from, to]` window from it — so a sweep asked for `[1 Jul, 31 Jul]`
+  covered `[30 Jun, 30 Jul]`, and its own report header printed the shifted days
+  back. Fixed by **#2868**, which is where the fourth-consumer detail lives: that
+  one window fed `Booking.checkIn` (`@db.Date`) in the same `OR` as
+  `Booking.createdAt`, `Booking.updatedAt` and `BookingModification.createdAt`
+  (bare `DateTime`), so the repair was a SPLIT — a date-only bound for the
+  calendar day, a `startOfDateOnlyForTimeZone` bound for the three instants —
+  and never a rename. Pinned by
+  `src/lib/__tests__/xero-booking-repair-scope-window.test.ts`, which asserts the
+  values the adapter hands the driver under three host pins, because each pin can
+  only see one half of the defect.
+
+  **A spelling finds candidates; only the CALL GRAPH settles them.** `setHours`
+  is not an ISO truncation, so #2684's lint rule cannot see it, and an exported
+  wrapper puts it beyond a grep for the pattern — the same way `formatDate` hid
+  roughly eighteen Xero document dates from #2682's census. #2868's census was
+  therefore two steps, and it is worth being exact about which step is which,
+  because only the second one proves anything: every `setHours` in `src/`,
+  `scripts/`, `e2e/` and `prisma/` was enumerated (the seed), and each survivor
+  was then traced forward to the columns it actually binds (the census).
+
+  That leaves one site in application code: `monthGridRange`
+  (`src/lib/calendar-client.ts`), whose `setHours(0, 0, 0, 0)` and
+  `setHours(23, 59, 59, 999)` are the two ends of one browser-side month-grid
+  range. Traced through the calendar view, its query parameters and the events
+  route, both ends bind `CalendarEvent.startsAt`/`endsAt` — both bare `DateTime`
+  — so the pair is outside this class by column type, not by luck.
+
+  **Read that as "no site is currently known", never as "the class is closed",**
+  and note precisely where the residual sits: the trace is sound for everything
+  it reached, but the ENUMERATION that fed it is still a spelling, and a wrapper
+  named something else is exactly what it would miss. That is not a hypothetical
+  — it is how this very site outlived two earlier censuses. #2684's lint rule is
+  still what would close the class.
 
   A `DateTime` column in the same statement is NOT the same comparison and must
   not be given the date-only value: it holds a real instant, so it takes the
@@ -433,6 +459,50 @@ derivation).
   value would push it to club MIDDAY. The dashboard carries both encodings side
   by side (`Booking.draftExpiresAt` and `CalendarEvent.startsAt` against
   `Booking.checkIn`/`checkOut`) and names which is which.
+
+### INV-DATE-024
+
+- **`Member.dateOfBirth` is a CALENDAR DAY, stored at UTC midnight.** The column
+  is still `DateTime?` rather than `@db.Date`, so nothing in the schema enforces
+  this and every writer has to. Typing it is **#2872** — settled as a follow-up
+  by the owner on 14 August 2026, in the decision recorded on #2859: the column
+  stays `DateTime?` here, and #2872 carries the typing with its own migration
+  and a sweep of every reader.
+  Build it with `parseDateOnly(\`${yyyy}-${mm}-${dd}\`)`, an explicit
+  `T00:00:00.000Z`, or `Date.UTC(...)`. **Never**
+  `new Date(\`${yyyy}-${mm}-${dd}T00:00:00\`)`: with no `Z` and no offset that
+  is SERVER-LOCAL midnight, and under the `TZ=Pacific/Auckland` pin it stores
+  `(D-1)T12:00Z` or `(D-1)T11:00Z` — a day early, every hour of every day, not
+  only in a morning window. That is the F8/F32 hazard [INV-DATE-013] on a column
+  that is not a lodge date, and it reached 10 of the 375 stored dates of birth
+  before #2859 repaired them: six at `11:00`, four at `12:00`, each one exactly
+  a day behind what the member's own Xero contact holds.
+
+  **`new Date("yyyy-MM-dd")` is not on that list, deliberately.** ECMAScript
+  does define the date-only form as UTC, so the *zone* is right — but the
+  constructor does not validate the day, and rolls an impossible one over
+  silently: `new Date("1990-02-31")` is 3 March and `new Date("1990-04-31")` is
+  1 May. `parseDateOnly` round-trips the day and returns an invalid `Date`
+  instead, so a value nobody can read as a calendar day never becomes a
+  birthday. Prefer it everywhere.
+- **Compare a stored date of birth only against another date-only value.** A SQL
+  range filter compares instants, so a bound derived from `getSeasonStartDate` —
+  which is local midnight — must cover the whole cutoff calendar day rather than
+  compare instants (`src/lib/cron-age-up.ts`, #2859). Getting that wrong moves
+  an age tier, and an age tier moves a member's price and their hosting
+  eligibility.
+
+  The two in-process readers recover the calendar day **only east of UTC**, and
+  that is a property of the deployment rather than of the code. `computeAge`
+  (`src/lib/policies/age-tier.ts`) uses `getFullYear`/`getMonth`/`getDate`,
+  which are HOST-local: under the `TZ=Pacific/Auckland` pin every stored
+  UTC-midnight value reads back as the same calendar day, but on a server west
+  of UTC — this repository is a template with live forks — UTC midnight is the
+  *previous* evening locally and every member's birthday moves a day.
+  `member-age.ts` reads through the club zone, which has the same dependence.
+  The correct reading of a UTC-midnight column is UTC getters or
+  `formatDateOnly`; treat the local-getter readers as working by deployment
+  accident, not by construction.
 
 ### INV-DATE-019
 
@@ -493,13 +563,14 @@ derivation).
     #2684's lint rule is where the whole class gets caught; until then it is a
     known trap, not a permitted pattern.
 
-    The `setHours(0, 0, 0, 0)` "today" comparisons against `@db.Date` lodge
-    nights are a **different** class, and are tracked separately
-    under [INV-DATE-013]: #2838 closed the three member-facing ones, and #2868
-    has the Xero booking-repair wrapper that #2684's inventory missed. Neither
-    #2684's lint rule nor its guard test sees that class — `setHours` is not an
-    ISO truncation — which is why a clean report from either says nothing about
-    it.
+    The `setHours(0, 0, 0, 0)` comparisons against `@db.Date` lodge nights are a
+    **different** class, and are tracked separately under [INV-DATE-013]: #2838
+    closed the three member-facing ones and #2868 closed the Xero
+    booking-repair wrapper that #2684's inventory missed — leaving no site
+    currently known, which is not the same as the class being closed (see
+    [INV-DATE-013] for why the distinction matters here). Neither #2684's lint
+    rule nor its guard test sees that class — `setHours` is not an ISO
+    truncation — which is why a clean report from either says nothing about it.
 
     **A generic renderer cannot decide any of this from the runtime type**,
     because an instant and a calendar day are the same `Date` and the same ISO

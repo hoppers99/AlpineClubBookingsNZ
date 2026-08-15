@@ -137,13 +137,10 @@ export const starterPageContent: StarterPageContent[] = [
     slug: "contact",
     path: "/contact",
     caption: "Get in touch",
-    // EMPTY on purpose. The public header renders the Contact link itself, as a
-    // code fallback appended only when no CMS menu entry already points at
-    // `/contact` (`src/components/website-header.tsx`, #2818 decision 5). So the
-    // nav stays fully the club's to arrange — a club that gives this page a menu
-    // title takes over the link and the fallback steps aside, deduped by href —
-    // while a club that does nothing still shows Contact exactly once. There is
-    // no data migration: the fallback needs no seeded label.
+    // EMPTY like every other opt-in page: the nav is fully the club's to
+    // arrange, and Contact is no exception. There is no code fixture for it — a
+    // club that wants Contact in its menu gives this page a menu title in the
+    // CMS, and until it does, Contact stays out of the nav.
     menuTitle: "",
     title: "Contact Us",
     headerText:

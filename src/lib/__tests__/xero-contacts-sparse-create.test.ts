@@ -292,10 +292,13 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
     ]);
   });
 
-  it("never sends DOB or joined date, even when the member has both", async () => {
-    // A member with real dateOfBirth and joinedDate values must still produce a
-    // create payload that carries neither — joined date only ever round-trips
-    // through the import/backfill path's company-number field, never on create.
+  it("sends the date of birth as the NZBN company number, and still never sends joined date", async () => {
+    // #2859 REVERSES HALF OF THIS TEST. It used to assert that a create payload
+    // carried NO date at all, and that assertion was the defect: the owner's
+    // report was that a member's date of birth never appeared in Xero's NZBN
+    // field, and it never did, on any path. The date of birth now goes; the
+    // JOINED date still does not, because it only ever round-trips through the
+    // import/backfill direction.
     primeHappyPath({
       ...SPARSE_MEMBER,
       dateOfBirth: new Date("1990-01-15T00:00:00.000Z"),
@@ -305,8 +308,9 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
     await createXeroContactForMember("member-1");
 
     const contact = sentContact();
-    // None of the date-bearing Xero contact fields may appear.
-    expect(contact).not.toHaveProperty("companyNumber");
+    // `dd/mm/yyyy`, the exact shape the import side has always read back.
+    expect(contact.companyNumber).toBe("15/01/1990");
+    // The joined date has no Xero field on create and must not invent one.
     expect(contact).not.toHaveProperty("dateOfBirth");
     expect(contact).not.toHaveProperty("validationDate");
     // The rest of the payload is exactly the sparse name + email shape.
@@ -316,7 +320,30 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
     expect(contact.emailAddress).toBe("alice@example.org");
     expect(contact.phones).toEqual([]);
     expect(contact.addresses).toEqual([]);
-    // Exactly the six known keys — nothing date-related leaked in.
+    // Exactly the seven known keys — nothing else leaked in.
+    expect(Object.keys(contact).sort()).toEqual([
+      "addresses",
+      "companyNumber",
+      "emailAddress",
+      "firstName",
+      "lastName",
+      "name",
+      "phones",
+    ]);
+  });
+
+  it("omits the company number entirely for a member with no date of birth", async () => {
+    // #2859: absence is expressed by OMISSION, never by `""`. Xero's
+    // `CompanyNumber` is the NZBN field, and an organisation or school account
+    // may carry a real New Zealand Business Number there. Blanking it to say
+    // "this member has no date of birth" would destroy the club's own
+    // accounting data to state an absence nobody asked for.
+    primeHappyPath({ ...SPARSE_MEMBER, dateOfBirth: null });
+
+    await createXeroContactForMember("member-1");
+
+    const contact = sentContact();
+    expect(contact).not.toHaveProperty("companyNumber");
     expect(Object.keys(contact).sort()).toEqual([
       "addresses",
       "emailAddress",

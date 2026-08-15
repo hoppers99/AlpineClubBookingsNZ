@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => ({
   computeAgeTier: vi.fn(async () => "YOUTH"),
   buildStructuredAuditLogCreateArgs: vi.fn((event: unknown) => ({ data: event })),
   getXeroSyncCursor: vi.fn(async () => ({ lastSuccessfulSyncAt: new Date("2026-04-01T00:00:00Z") })),
-  parseXeroCompanyNumberDate: vi.fn((): Date | null => null),
+  parseXeroContactDateOfBirth: vi.fn((): Date | null => null),
   getSeasonalMembershipChangePreview: vi.fn(),
   saveSeasonalMembershipAssignment: vi.fn(),
   reconcileMembersXeroContactGroups: vi.fn(async () => ({
@@ -55,8 +55,8 @@ vi.mock("@/lib/xero-contact-cache", () => ({
   getXeroContactDisplayName: (c: { name?: string }) => c.name ?? "Unknown",
   upsertXeroContactCacheEntry: vi.fn(),
 }));
-vi.mock("@/lib/xero-contacts", () => ({
-  parseXeroCompanyNumberDate: mocks.parseXeroCompanyNumberDate,
+vi.mock("@/lib/xero-contact-date-of-birth", () => ({
+  parseXeroContactDateOfBirth: mocks.parseXeroContactDateOfBirth,
 }));
 vi.mock("@/lib/xero-sync-cursors", () => ({
   DEFAULT_XERO_SYNC_SCOPE: "default",
@@ -115,7 +115,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.getSeasonYear.mockReturnValue(2026);
   mocks.computeAgeTier.mockResolvedValue("YOUTH");
-  mocks.parseXeroCompanyNumberDate.mockReturnValue(null);
+  mocks.parseXeroContactDateOfBirth.mockReturnValue(null);
   mocks.getXeroSyncCursor.mockResolvedValue({
     lastSuccessfulSyncAt: new Date("2026-04-01T00:00:00Z"),
   });
@@ -152,7 +152,7 @@ describe("Xero member import — membership types (#2108)", () => {
   });
 
   it("type-only, non-forced type: derives DOB tier and writes an IMPORT-source assignment", async () => {
-    mocks.parseXeroCompanyNumberDate.mockReturnValue(new Date("2012-01-01"));
+    mocks.parseXeroContactDateOfBirth.mockReturnValue(new Date("2012-01-01"));
     mocks.computeAgeTier.mockResolvedValue("YOUTH");
     mocks.prisma.membershipType.findMany.mockResolvedValue([
       { id: "type_full", isActive: true, allowedAgeTiers: [{ ageTier: "ADULT" }, { ageTier: "YOUTH" }] },
@@ -179,7 +179,7 @@ describe("Xero member import — membership types (#2108)", () => {
   });
 
   it("type-only, FORCED type: new member gets N/A", async () => {
-    mocks.parseXeroCompanyNumberDate.mockReturnValue(new Date("1990-01-01"));
+    mocks.parseXeroContactDateOfBirth.mockReturnValue(new Date("1990-01-01"));
     mocks.prisma.membershipType.findMany.mockResolvedValue([
       { id: "type_org", isActive: true, allowedAgeTiers: [{ ageTier: "NOT_APPLICABLE" }] },
     ]);
@@ -195,7 +195,7 @@ describe("Xero member import — membership types (#2108)", () => {
   });
 
   it("type-only, non-forced, no DOB: falls back to ADULT", async () => {
-    mocks.parseXeroCompanyNumberDate.mockReturnValue(null);
+    mocks.parseXeroContactDateOfBirth.mockReturnValue(null);
     mocks.prisma.membershipType.findMany.mockResolvedValue([
       { id: "type_full", isActive: true, allowedAgeTiers: [{ ageTier: "ADULT" }] },
     ]);

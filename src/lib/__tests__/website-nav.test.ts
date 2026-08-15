@@ -2,45 +2,37 @@ import { describe, expect, it } from "vitest";
 import { buildWebsiteNavLinks } from "@/lib/website-nav";
 
 /**
- * The header nav builder's contract (#2818 decision 5): Home leads, the CMS
- * entries follow, and Contact is a code fallback that fires exactly when no CMS
- * entry already links to `/contact`.
+ * The header nav builder's contract: Home leads and the CMS entries follow,
+ * verbatim and in order. The code owns no fixtures beyond Home — Contact
+ * included, it appears only when the CMS provides it.
  */
 describe("buildWebsiteNavLinks", () => {
   it("always leads with Home", () => {
     expect(buildWebsiteNavLinks([])[0]).toEqual({ href: "/", label: "Home" });
   });
 
-  it("appends a Contact fallback when no entry links to /contact", () => {
-    const links = buildWebsiteNavLinks([{ href: "/about", label: "About" }]);
-
-    expect(links).toEqual([
-      { href: "/", label: "Home" },
-      { href: "/about", label: "About" },
-      { href: "/contact", label: "Contact" },
-    ]);
-  });
-
-  it("does not append the fallback when a CMS entry already links to /contact", () => {
+  it("appends the CMS entries after Home, in order", () => {
     const links = buildWebsiteNavLinks([
       { href: "/about", label: "About" },
       { href: "/contact", label: "Kōrero mai" },
     ]);
 
-    const contact = links.filter((link) => link.href === "/contact");
-    expect(contact).toHaveLength(1);
-    // The club's own entry is kept untouched; the fallback did not run.
-    expect(contact[0]).toEqual({ href: "/contact", label: "Kōrero mai" });
+    expect(links).toEqual([
+      { href: "/", label: "Home" },
+      { href: "/about", label: "About" },
+      { href: "/contact", label: "Kōrero mai" },
+    ]);
   });
 
-  it("keeps the club's Contact link in the position the club chose", () => {
-    // The dedupe must not move the entry to the end — a club that ordered its
-    // Contact link first keeps it first.
-    const links = buildWebsiteNavLinks([
-      { href: "/contact", label: "Contact" },
+  it("does not synthesise a Contact link when the CMS omits one", () => {
+    // Contact is no longer a code fallback: a club that has not given its
+    // /contact page a menu title gets no Contact entry in the nav.
+    const links = buildWebsiteNavLinks([{ href: "/about", label: "About" }]);
+
+    expect(links.some((link) => link.href === "/contact")).toBe(false);
+    expect(links).toEqual([
+      { href: "/", label: "Home" },
       { href: "/about", label: "About" },
     ]);
-
-    expect(links.map((link) => link.href)).toEqual(["/", "/contact", "/about"]);
   });
 });

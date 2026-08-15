@@ -34,7 +34,7 @@ description, so you can find the right file without opening more than one.
 | [`analytics-and-privacy.md`](invariants/analytics-and-privacy.md) | `INV-PRIV` | analytics loading, the consent banner, the public Analytics preferences control, the analytics route policy, what leaves this application for Google, what personal data may appear in a log, the audit `category` a writer records and who may therefore read the row |
 | [`membership-lifecycle.md`](invariants/membership-lifecycle.md) | `INV-LIFE` (except `INV-LIFE-062`) | applications and nomination, cancellation, archive and deletion, roles and the admin lock-out guards, seasonal membership type and age tier, family groups, partner and parent/dependant links, email inheritance, inductions, member merge |
 | [`integrations.md`](invariants/integrations.md) | `INV-INT` | webhooks, cron idempotency, provider callbacks, Xero member grouping |
-| [`operations.md`](invariants/operations.md) | `INV-OPS` | raw SQL, row locking, deployment, dropping a column, changing what a value already stored in a column means (an audit `category`, a status string) so the rows already written no longer match the code, what may be used as test input |
+| [`operations.md`](invariants/operations.md) | `INV-OPS`, `INV-LOCK` | raw SQL, advisory or row locking, which lock tier a writer takes, deployment, dropping a column, changing what a value already stored in a column means (an audit `category`, a status string) so the rows already written no longer match the code, what may be used as test input |
 
 Two supporting files sit beside them: the full id scheme in
 [`SCHEME.md`](invariants/SCHEME.md), and the imperfections found
@@ -138,6 +138,7 @@ number and prefix, and it is listed at the end of the table below.
 | `INV-DATE-011` | Lodge bookings use NZ date-only nights, not arbitrary timestamps |
 | `INV-DATE-012` | `BookingGuest.stayStart`/`stayEnd` are date-only occupancy in the envelope |
 | `INV-DATE-013` | Compare date columns only against date-only values, never a raw clock |
+| `INV-DATE-024` | `Member.dateOfBirth` is a calendar day at UTC midnight; never a local-midnight parse, never an instant comparison |
 | `INV-DATE-019` | Ask the club's calendar for "today", never the UTC clock |
 | `INV-DATE-014` | Client-side a lodge night is an NZ `yyyy-MM-dd` string, carried end to end |
 | `INV-DATE-015` | Rendering has one seam, `nzst-date.ts`; bare `toLocale*` is lint-blocked |
@@ -694,17 +695,23 @@ File: [`invariants/integrations.md`](invariants/integrations.md). Prefix
 | `INV-INT-014` | The per-member sync keeps Xero calls outside transactions, ledgers each op, and adds before removing |
 | `INV-INT-015` | The bulk re-sync is admin-triggered, dry-run-first, chunked, resumable, and never moves the watermark |
 | `INV-INT-016` | `GET /api/bookings/rooms` keeps its no-`lodgeId` mode for FORKED/EXTERNAL consumers, excluding archived lodges; no `src/` client may use it |
+| `INV-INT-017` | The Xero NZBN field carries the date of birth through ONE shared codec; never blank it, never overwrite what the decoder cannot read as a day, never write without an observed cache row, and the inbound direction only fills a gap |
 
 ## Operations
 
-Raw SQL and row locking, production deployment including the worked windowed
-column drop, changing what values already stored in a column mean, and what may
-be used as test input.
-File: [`invariants/operations.md`](invariants/operations.md). Prefix `INV-OPS`.
+Raw SQL, advisory and row locking, production deployment including the worked
+windowed column drop, changing what values already stored in a column mean, and
+what may be used as test input.
+File: [`invariants/operations.md`](invariants/operations.md). Prefixes `INV-OPS`
+and `INV-LOCK` — the latter is the two-tier advisory-lock protocol, kept beside
+the row-locking rules it is the sibling of.
 
 | ID | Covers |
 | --- | --- |
 | `INV-OPS-001` | Raw SQL never declares its own result shape: lock raw and read typed, or validate the rows |
+| `INV-LOCK-001` | The scoped tier is the default; the global key is deliberate |
+| `INV-LOCK-002` | Global before per-lodge; one helper mints the per-lodge capacity key |
+| `INV-LOCK-003` | Every global-lock call site is registered, by site, with its own reason |
 | `INV-OPS-014` | Never interpolate or concatenate into `$queryRawUnsafe` / `$executeRawUnsafe` |
 | `INV-OPS-013` | A `"use client"` module never imports server-only code at runtime |
 | `INV-OPS-002` | Production deployment must respect `docs/BLUE_GREEN_MIGRATION_POLICY.md` |

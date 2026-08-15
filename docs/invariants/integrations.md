@@ -132,6 +132,53 @@ only the ID heading lines were added.
   advances the CONTACT delta-sync watermark. Members without a Xero contact are
   reported as skipped, never silently omitted.
 
+### INV-INT-017
+
+- **A Xero contact's `CompanyNumber` (NZBN) field carries the member's date of
+  birth, in `dd/mm/yyyy`, and exactly one module encodes and decodes it**:
+  `src/lib/xero-contact-date-of-birth.ts`. Four divergent copies of that parser
+  had grown before #2859 — two of them local-midnight and wrong — so a new
+  reader or writer imports this module rather than matching the pattern again.
+  The stored value is a date-only `Date` at UTC midnight [INV-DATE-024], so the
+  parse is `parseDateOnly` and the render is `formatDateOnly`, both UTC.
+- **The sync is two-directional and neither direction erases the other.** The
+  app SENDS a date of birth it holds, on contact create and on contact update.
+  The Xero→app direction (`xero-inbound/contact.ts`, `xero-member-import.ts`)
+  only ever FILLS A GAP — it writes a date of birth onto a member who has none —
+  so the pair cannot loop.
+- **Three things the outbound write must never do**, all enforced in
+  `buildXeroContactCompanyNumberPatch`. That field is the NZBN, and an
+  organisation or school account may carry a real business number in it, so
+  every one of these is somebody else's data:
+  1. **Never send `""`.** A member with no date of birth contributes no
+     `companyNumber` key at all. Absence is expressed by omission, never by
+     blanking.
+  2. **Never overwrite a value the DECODER cannot read as a calendar day.** The
+     test is `parseXeroContactDateOfBirth`, not a `dd/mm/yyyy` shape match. The
+     two disagree — `12/34/5678`, `31/02/1990`, `00/00/0000`, `99/99/9999` and
+     the US-ordered `06/15/1985` all match the pattern and are all refused by
+     the decoder — and a value this app would not import is a value it must not
+     overwrite. A shape test here was a live defect (#2867 review).
+  3. **Never write when nothing is known about the field.** "Known" means an
+     observed `XeroContactCache` row for that contact. No row means no
+     observation, and no observation means no write — not "the field must be
+     empty". The app links contacts it did not create: `findOrCreateXeroContact`
+     resolves a member onto a PRE-EXISTING contact by email match and then by
+     exact-name match, writing no cache row, so a contact holding a genuine NZBN
+     presents to an update as "no row". A cache row that exists and holds `null`
+     is the opposite — a positive observation that Xero's field is empty — and
+     is writable. Nothing may manufacture that state: erasure DELETES the cache
+     row rather than nulling the field, precisely so it cannot be read as an
+     observation (`deletion-requests/[id]/route.ts`,
+     `member-lifecycle-actions.ts`).
+- **There is no backfill, and its absence is a decision rather than an
+  oversight.** The outbound write fires only when a contact is created or
+  updated, so members already on file populate the NZBN field the next time
+  something on their record changes; the owner chose that over a bulk push
+  (15 August 2026).
+- Because the outbound payload now carries a date of birth, `companyNumber` is
+  redacted out of anything stored or logged; see [INV-PRIV-011].
+
 ## Endpoint modes external consumers still call (#2678)
 
 ### INV-INT-016

@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { runBookingXeroRepair } from "@/lib/xero-booking-repair";
+import {
+  formatBookingXeroRepairHumanSummary,
+  runBookingXeroRepair,
+} from "@/lib/xero-booking-repair";
 import { PartialRefundError } from "@/lib/payment-transactions";
+import { withTimeZoneAsync } from "@/lib/__tests__/helpers/timezone";
 
 function makeBooking(overrides: Record<string, unknown> = {}) {
   return {
@@ -2676,5 +2680,30 @@ describe("runBookingXeroRepair", () => {
     // The remainder refund succeeded and the payment is fully refunded.
     expect(booking.payment.status).toBe("REFUNDED");
     expect(secondReport.summary.bookingsWithFindings).toBe(0);
+  });
+
+  // #2868. The report header is how an operator checks they swept what they
+  // meant to, so it has to echo their answer, not a re-derivation of it. It
+  // used to run the scope's local-midnight `Date` back through
+  // `formatDateOnly` — the canonical DATE-ONLY encoder, which its own docblock
+  // says is not for an instant — so under the `TZ=Pacific/Auckland` server pin
+  // a sweep asked for 1-31 July printed `from=2026-06-30, to=2026-07-30`,
+  // agreeing with the equally wrong window it was actually running.
+  it("echoes the operator's own --from/--to days in the report scope", async () => {
+    const deps = createDependencies({ bookings: [] });
+
+    const report = await withTimeZoneAsync("Pacific/Auckland", () =>
+      runBookingXeroRepair({
+        dependencies: deps,
+        scope: { from: "2026-07-01", to: "2026-07-31" },
+      })
+    );
+
+    expect(report.scope.from).toBe("2026-07-01");
+    expect(report.scope.to).toBe("2026-07-31");
+    expect(report.scope.all).toBe(false);
+    expect(formatBookingXeroRepairHumanSummary(report)).toContain(
+      "Scope: booking=all, from=2026-07-01, to=2026-07-31"
+    );
   });
 });

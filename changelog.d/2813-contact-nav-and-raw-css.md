@@ -1,11 +1,3 @@
-- **You can now put the Contact link wherever you like in your menu (#2818).**
-  Contact always appears in your navigation, exactly once, with no setup needed —
-  the site adds it for you whenever your own menu does not already include it. To
-  take it over, give your Contact page a menu title under Site Appearance &
-  Content → Page Content: your entry then replaces the automatic one (so it is
-  never shown twice) and you can name it, reorder it, or move it wherever you
-  want. Nothing about your existing menu changes on upgrade.
-
 - **The Raw CSS box in Site Style is bigger and easier to work in (#2818).**
   The advanced custom-CSS editor is taller by default, can be dragged to
   whatever height you want, and shows how many characters you have used against

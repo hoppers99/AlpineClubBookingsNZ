@@ -70,7 +70,7 @@ id and need the file it lives in.
 | Webhooks, cron idempotency, provider callbacks, Xero member grouping | `INV-INT` → [`integrations.md`](docs/invariants/integrations.md) | [`xero/ARCHITECTURE.md`](docs/xero/ARCHITECTURE.md) |
 | An email, a notification, a template, or who receives one | — | [`guides/email-messages.md`](docs/guides/email-messages.md), [`guides/notification-rules.md`](docs/guides/notification-rules.md), [`guides/notification-recipients.md`](docs/guides/notification-recipients.md), [`guides/communications.md`](docs/guides/communications.md), [`guides/email-deliverability.md`](docs/guides/email-deliverability.md), and "Email Retry Lifecycle" in [`STATE_MACHINES.md`](docs/STATE_MACHINES.md) |
 | Raw SQL, row locking, production deployment, what may be used as test input | `INV-OPS` → [`operations.md`](docs/invariants/operations.md) | [`CONCURRENCY_AND_LOCKING.md`](docs/CONCURRENCY_AND_LOCKING.md), [`BLUE_GREEN_MIGRATION_POLICY.md`](docs/BLUE_GREEN_MIGRATION_POLICY.md) |
-| A transaction, lock key, or anything two writers can race | `INV-OPS` → [`operations.md`](docs/invariants/operations.md) | [`CONCURRENCY_AND_LOCKING.md`](docs/CONCURRENCY_AND_LOCKING.md), plus "Concurrency and lock checklist" below |
+| A transaction, lock key, or anything two writers can race | `INV-LOCK` (which tier, in which order, and registering a global site) and `INV-OPS` → [`operations.md`](docs/invariants/operations.md) | [`CONCURRENCY_AND_LOCKING.md`](docs/CONCURRENCY_AND_LOCKING.md), plus "Concurrency and lock checklist" below |
 | `prisma/schema.prisma`, a migration, or what an existing column means | `INV-OPS` → [`operations.md`](docs/invariants/operations.md) | [`BLUE_GREEN_MIGRATION_POLICY.md`](docs/BLUE_GREEN_MIGRATION_POLICY.md) — it binds **every committed migration** to stay readable by the deployed old code, and CI only checks that the ledger row exists, not that the expand/runtime/contract sequencing is right; [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Which lodge a model, query, route or fixture belongs to | — | [`multi-lodge/lodge-scoping-contract.md`](docs/multi-lodge/lodge-scoping-contract.md) — update it **before** changing the scoping of any model, not after; [`multi-lodge/README.md`](docs/multi-lodge/README.md) |
 | A status transition — booking, payment, membership, waitlist, bed allocation, email retry, Xero outbox, cron recovery, sign-in, or any of the two dozen other lifecycles in that file | — | [`STATE_MACHINES.md`](docs/STATE_MACHINES.md) |
@@ -214,7 +214,10 @@ id and need the file it lives in.
 
 Before changing a transaction, booking lifecycle, capacity check, settlement,
 credit writer, webhook, or cron, read `docs/CONCURRENCY_AND_LOCKING.md` and
-classify every mutation it composes:
+classify every mutation it composes. The rules this list applies are
+`INV-LOCK-001` (which tier), `INV-LOCK-002` (the order, and the single mint of
+the per-lodge key) and `INV-LOCK-003` (register the site); cite those ids rather
+than this checklist, which is a working aid and not their home:
 
 - global-cohort lifecycle and settlement-money transitions that must exclude
   cancel/capture/refund/hold-release counterparts use global
