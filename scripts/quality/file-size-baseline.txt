@@ -239,7 +239,7 @@ src/lib/diagnostics/tools/packs/booking-search.ts 878 domain-module
 src/lib/diagnostics/tools/packs/finance-evidence.ts 849 domain-module
 src/lib/diagnostics/tools/packs/finance-records.ts 1196 domain-module
 src/lib/diagnostics/tools/packs/membership-records.ts 1157 domain-module
-src/lib/diagnostics/tools/provision-role.ts 1131 domain-module
+src/lib/diagnostics/tools/provision-role.ts 1132 domain-module
 src/lib/diagnostics/tools/types.ts 733 domain-module
 src/lib/email-message-registry.ts 2001 domain-module
 src/lib/email-message-renderer.ts 842 domain-module
