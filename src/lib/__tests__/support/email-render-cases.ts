@@ -26,6 +26,26 @@
  *
  * ADDING A TEMPLATE. Add its case here; the test fails if any exported render
  * function, or any registry template key, has no case.
+ *
+ * PLACEHOLDER VALUES AND THE SECRET SCANNER. Most values here are `<field>-<n>`,
+ * which reads well in a rendered body when a pin fails. `correlationKey` is the
+ * exception: it carries `"correlation-1"`, because spelling it the usual way —
+ * the field name in full, then the counter — was caught by gitleaks'
+ * `generic-api-key` rule at entropy 3.625 against a 3.5 floor. The identifier
+ * ends in "Key" and that particular letter distribution cleared the bar.
+ *
+ * Measured, this is NOT a class, so do not go renaming key-ish fields:
+ * `token-1`, `pin-4`, `apiKeyReference-1`, `webhookSecretLabel-1`,
+ * `authorisationToken-1`, `credentialName-1`, `privateNoteKey-1`,
+ * `passwordHintLabel-1` and `xeroObjectKey-1` were all scanned with this
+ * repository's own config and not one of them fires. The rule is simply "if the
+ * scanner flags a placeholder, shorten it", and the scanner is the check, on
+ * every pull request.
+ *
+ * Do not lengthen this one back, and do not reach for a `.gitleaks.toml`
+ * allowlist entry for a value that costs nothing to change — see that file's
+ * header for why its entries are exact literals only, and why a flagged value
+ * is not written down anywhere it can be found again.
  */
 import {
   accountDeletionApprovedTemplate,
