@@ -23,8 +23,10 @@ import {
  *   test project and excluded from the app project;
  * - JavaScript variants are loaded by the test project while `allowJs` remains
  *   enabled, but `checkJs` is explicitly false, so they are not presented as
- *   statically typechecked. #2693 owns converting those scripts and disabling
- *   `allowJs` alongside the deliberate Playwright project.
+ *   statically typechecked. The production-graph guard likewise enables JS
+ *   only to resolve imports from every file covered by the size ratchet. #2693
+ *   owns converting the test scripts and disabling the projects' `allowJs`
+ *   setting alongside the deliberate Playwright project.
  */
 
 const ROOT = process.cwd();
@@ -39,7 +41,6 @@ const PROJECT_SUPPORTED_VITEST_EXTENSIONS = new Set([
 type ProjectCoverage = {
   files: Set<string>;
   options: ts.CompilerOptions;
-  rootNames: string[];
   projectReferences: readonly ts.ProjectReference[] | undefined;
 };
 
@@ -66,7 +67,6 @@ function projectCoverage(configName: string): ProjectCoverage {
   return {
     files: new Set(parsed.fileNames.map(repoRelative)),
     options: parsed.options,
-    rootNames: parsed.fileNames,
     projectReferences: parsed.projectReferences,
   };
 }
@@ -160,14 +160,25 @@ describe("typecheck project coverage", () => {
   });
 
   it("keeps ratchet-excluded test paths out of the production source graph", () => {
-    const productionRoots = app.rootNames.filter((file) =>
-      isProductionFile(repoRelative(file)),
-    );
+    const productionRoots = tracked
+      .filter(isProductionFile)
+      .map((file) => path.join(ROOT, file));
     expect(productionRoots.length).toBeGreaterThan(1000);
+
+    // This Program is a module-reachability guard, not an additional
+    // typechecking claim. `allowJs` lets it follow every JS-family extension
+    // accepted by the ratchet; `checkJs: false` keeps the #2693 boundary honest.
+    const graphOptions: ts.CompilerOptions = {
+      ...app.options,
+      allowJs: true,
+      checkJs: false,
+    };
+    expect(graphOptions.allowJs).toBe(true);
+    expect(graphOptions.checkJs).toBe(false);
 
     const program = ts.createProgram({
       rootNames: productionRoots,
-      options: app.options,
+      options: graphOptions,
       projectReferences: app.projectReferences,
     });
     const importedTestPaths = program
