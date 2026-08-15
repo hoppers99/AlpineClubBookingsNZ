@@ -11,6 +11,11 @@ const h = vi.hoisted(() => {
     booking: { findMany: vi.fn(), findUnique: vi.fn() },
     xeroSyncOperation: { findFirst: vi.fn() },
     xeroObjectLink: { updateMany: vi.fn() },
+    // #2859: erasure DELETES the cached contact row. Nulling the one field
+    // would leave a row reading as "we looked, Xero holds nothing" — which is
+    // the outbound guard's permission to write — about a field Xero still
+    // holds.
+    xeroContactCache: { deleteMany: vi.fn() },
     // #2255: `findMany` reads who the anonymisation is about to detach and
     // `updateMany` sweeps their inheritance pointers, so club email stops being
     // aimed at the @deleted.invalid address the route has just written.
@@ -172,6 +177,7 @@ beforeEach(() => {
   h.prisma.familyGroupMember.deleteMany.mockResolvedValue({ count: 0 });
   h.prisma.bookingGuest.updateMany.mockResolvedValue({ count: 0 });
   h.prisma.xeroObjectLink.updateMany.mockResolvedValue({ count: 0 });
+  h.prisma.xeroContactCache.deleteMany.mockResolvedValue({ count: 0 });
   h.prisma.$transaction.mockImplementation(
     async (cb: (tx: typeof h.prisma) => Promise<unknown>) => cb(h.tx),
   );
@@ -1345,4 +1351,79 @@ describe("#2623 T1: the Xero fence is asked BEFORE anything irreversible", () =>
   // covered by "owns the approval durably before the first booking
   // cancellation commits" above, which runs the same path with the default
   // (empty) xeroSyncOperation stub.
+});
+
+/**
+ * #2859. Until this release the app never WROTE a date of birth to Xero, so the
+ * only local copy erasure had to reach was `Member.dateOfBirth`. Sending it to
+ * the contact's NZBN field creates a second one: the next inbound contact sync
+ * caches the value straight back into `XeroContactCache.companyNumber`, in
+ * plaintext, for essentially every member rather than the handful that had one
+ * before. Nulling the Member column while leaving that copy behind would mean an
+ * honoured erasure request still left the member's birthday on this server.
+ *
+ * Removing the value from XERO is deliberately NOT attempted here: it conflicts
+ * with the standing rule that this app never blanks that field (it cannot tell a
+ * birthday it wrote from a business number an administrator typed), and it is a
+ * genuine owner question tracked as #2873.
+ */
+describe("POST /api/admin/deletion-requests/[id] clears the cached date of birth (#2859)", () => {
+  beforeEach(() => {
+    // `vi.clearAllMocks()` does NOT drain a `mockResolvedValueOnce` queue, and
+    // the #2623 T1 suite above queues two `booking.findMany` results while its
+    // approval refuses at the Xero fence after consuming only the first. The
+    // leftover leaks into whichever later test is the next to reach the
+    // cancellation loop — which, before this suite existed, was none of them.
+    // Draining it here is what makes "this member has no bookings to cancel"
+    // true rather than merely intended.
+    h.prisma.booking.findMany.mockReset();
+    h.prisma.booking.findMany.mockResolvedValue([]);
+  });
+
+  it("DELETES the cached contact row in the anonymisation transaction, rather than nulling one field", async () => {
+    h.prisma.member.findUnique.mockResolvedValue({
+      id: member.id,
+      email: member.email,
+      passwordHash: null,
+      xeroContactId: "contact-1",
+    });
+
+    const response = await POST(req({ action: "approve" }), { params });
+
+    expect(response.status).toBe(200);
+    expect(h.prisma.xeroContactCache.deleteMany).toHaveBeenCalledWith({
+      where: { contactId: "contact-1" },
+    });
+    // Deleting, not nulling, and this is a correctness property rather than a
+    // tidiness one. `buildXeroContactCompanyNumberPatch` reads a cache row that
+    // EXISTS and holds `null` as "we looked, and Xero's NZBN field is empty" —
+    // its permission to write. A null-ing erasure would manufacture exactly
+    // that permission about a field Xero still holds (#2873), so a later
+    // namesake matched onto the same contact would have a real business number
+    // overwritten by a birthday. It also leaves the erased member's cached
+    // name, email, phone and address in the row.
+    expect(h.prisma.xeroContactCache).not.toHaveProperty("updateMany");
+    // In the SAME commit as the anonymisation, not after it: a clear that
+    // landed outside the transaction would survive a rollback that put the
+    // member's own row back.
+    const anonymiseOrder = h.prisma.member.update.mock.invocationCallOrder[0];
+    const cacheClearOrder =
+      h.prisma.xeroContactCache.deleteMany.mock.invocationCallOrder[0];
+    expect(anonymiseOrder).toBeLessThan(cacheClearOrder);
+    const linkDeactivateOrder =
+      h.prisma.xeroObjectLink.updateMany.mock.invocationCallOrder[0];
+    expect(cacheClearOrder).toBeLessThan(linkDeactivateOrder);
+  });
+
+  it("touches no cache row when the member has no Xero contact", async () => {
+    // The default stub already has `xeroContactId: null`. A blanket
+    // `deleteMany` with an undefined contactId would wipe EVERY cached contact
+    // in the organisation, so "no contact" must mean no write at all rather
+    // than an unscoped one.
+    const response = await POST(req({ action: "approve" }), { params });
+
+    expect(response.status).toBe(200);
+    expect(h.prisma.member.update).toHaveBeenCalled();
+    expect(h.prisma.xeroContactCache.deleteMany).not.toHaveBeenCalled();
+  });
 });

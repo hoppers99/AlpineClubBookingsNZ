@@ -60,6 +60,13 @@ const mockPrisma = vi.hoisted(() => {
       findMany: vi.fn().mockResolvedValue([]),
       updateMany: vi.fn(),
     },
+    // #2859: the hard delete removes the member's cached Xero contact in the
+    // same transaction. Deleted rather than nulled — a row that exists holding
+    // `null` reads to the outbound guard as "we looked, Xero's NZBN field is
+    // empty", which is its permission to write a birthday there.
+    xeroContactCache: {
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
     xeroSyncOperation: {
       findFirst: vi.fn().mockResolvedValue(null),
     },
@@ -663,6 +670,17 @@ describe("member delete lifecycle actions", () => {
       data: { xeroContactId: null },
       // Also selects photoImageId so the blob scrub can target the member's photo.
       select: { photoImageId: true },
+    });
+    // #2859: and the cached Xero contact goes with it. This is the STRONGER of
+    // the two erasure paths — the Member row itself is removed — so leaving a
+    // XeroContactCache row holding the deleted member's date of birth, name,
+    // email, phone and address would be the plainer version of the defect the
+    // anonymising path fixes. Deleted, not nulled: a row that exists holding
+    // `null` reads to `buildXeroContactCompanyNumberPatch` as "we looked, and
+    // Xero's NZBN field is empty", which is its permission to write a birthday
+    // into a field Xero still holds a business number in (#2873).
+    expect(mockPrisma.xeroContactCache.deleteMany).toHaveBeenCalledWith({
+      where: { contactId: "xero-contact-1" },
     });
     // #1886 F23: the approval is written through a status-guarded claim so a
     // concurrently-reviewed request can never be overwritten.

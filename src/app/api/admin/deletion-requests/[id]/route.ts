@@ -901,7 +901,7 @@ export async function POST(
       // Re-check the complete contact-create recovery set while that fence is
       // held so deletion cannot anonymise a member whose PII may already be in
       // flight to Xero or whose provider-created contact still needs linking.
-      await lockMemberForAccountDeletionXeroFence(tx, member.id);
+      const fencedMember = await lockMemberForAccountDeletionXeroFence(tx, member.id);
 
       // 3. Anonymise the member record
       await tx.member.update({
@@ -972,6 +972,48 @@ export async function POST(
           where: { memberId: member.id },
         }),
       ]);
+
+      // #2859: the cached copy of the member's date of birth goes too. Since
+      // this release the app WRITES the date of birth into the Xero contact's
+      // NZBN field, so the next inbound contact sync caches it straight back
+      // into `XeroContactCache.companyNumber` in plaintext — turning what used
+      // to be a handful of rows into a second local copy of essentially every
+      // member's birthday. Nulling `Member.dateOfBirth` above while leaving that
+      // copy behind would mean an honoured erasure request still left the value
+      // on this server, in a table nothing else in this transaction touches.
+      //
+      // DELETE THE ROW, do not null the one field. Two reasons, and the first
+      // is a correctness bug rather than a tidiness preference:
+      //
+      //  1. `XeroContactCache` is an OBSERVATION of Xero, and every reader
+      //     treats it as one. `buildXeroContactCompanyNumberPatch` reads a row
+      //     that exists and holds `null` as "we looked, and Xero's NZBN field
+      //     is empty" — which is its permission to write. Nulling here would
+      //     MANUFACTURE that permission about a field that, per #2873, still
+      //     holds the value in Xero, and nothing re-observes it: the contact
+      //     was not modified so an `ifModifiedSince` sync skips it, no member
+      //     links to it any more, and the group repair only fills in MISSING
+      //     rows. A later namesake or re-registration matched onto that same
+      //     contact would then have a real business number overwritten by a
+      //     birthday — the exact defect the guard exists to prevent, re-created
+      //     by the privacy fix. Deleting restores the honest "nothing is known"
+      //     state, which the guard refuses to write into.
+      //  2. The row also holds the member's cached name, email, phone and
+      //     address. Clearing one field would leave all of those in place,
+      //     which contradicts the privacy argument above.
+      //
+      // Removing the value from XERO is a separate question — it conflicts with
+      // the standing rule that this app never blanks that field, because it
+      // cannot tell a birthday it wrote from a business number somebody typed —
+      // and is tracked as #2873. Until that is answered the value survives in
+      // Xero, so a later full resync that observes this contact can cache it
+      // again: this clears what the server holds now, it does not make the
+      // provider forget. Precedent for the shape: `xero-mismatch-resync.ts`.
+      if (fencedMember.xeroContactId) {
+        await tx.xeroContactCache.deleteMany({
+          where: { contactId: fencedMember.xeroContactId },
+        });
+      }
 
       // The pointer and canonical ledger are one privacy boundary. A contact
       // update that completed before this transaction may have refreshed the

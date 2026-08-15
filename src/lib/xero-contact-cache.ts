@@ -212,6 +212,14 @@ function buildCachedXeroContact(
     firstName: contact.firstName ?? null,
     lastName: contact.lastName ?? null,
     emailAddress: contact.emailAddress ?? null,
+    // #2859: `?? null` collapses "Xero returned no value for this field" into
+    // "Xero's field is empty", and downstream that difference matters — a cache
+    // row holding `null` is what `buildXeroContactCompanyNumberPatch` reads as
+    // permission to write a date of birth into the NZBN field. Safe as written,
+    // because every endpoint feeding this builder returns FULL contacts: Xero
+    // omits `CompanyNumber` only in `summaryOnly` responses, and nothing in this
+    // repository sets that flag. Do not introduce a summary-mode caller without
+    // revisiting this line.
     companyNumber: contact.companyNumber ?? null,
     contactStatus: contact.contactStatus?.toString() || "ACTIVE",
     phoneCountryCode: phone?.phoneCountryCode ?? null,

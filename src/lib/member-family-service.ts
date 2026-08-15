@@ -185,17 +185,22 @@ function getDisplayName(member: { firstName?: string | null; lastName?: string |
  * birth (`requestedDateOfBirth`, `childDateOfBirth`).
  *
  * The two join-request columns really are — both are written from a validated
- * `yyyy-MM-dd` through `parseDateOnly`. **`Member.dateOfBirth` is not
- * guaranteed.** It is `DateTime?`, not `@db.Date`, so only writer convention
- * holds it at UTC midnight, and the Xero import breaks that convention: it
- * parses `dd/MM/yyyy` as SERVER-LOCAL midnight
- * (`parseXeroCompanyNumberDate` in `src/lib/xero-contacts.ts`, byte-identical
- * clone in `src/app/api/admin/xero/import-member-contact/route.ts`), which
- * under the container's `TZ=Pacific/Auckland` stores the previous UTC day, so
- * a Xero-imported date of birth reads a day early here. That is a stored-value
- * defect tracked as #2859 and fixed at the writer, not papered over in this
- * reader — do not "fix" it by switching this call to a zone-aware derivation,
- * which would only mis-date the dates of birth that ARE stored correctly.
+ * `yyyy-MM-dd` through `parseDateOnly`. **`Member.dateOfBirth` is held there by
+ * writer convention alone**: it is `DateTime?`, not `@db.Date` (typing it is
+ * #2872), so nothing in the schema enforces it.
+ *
+ * The Xero import used to break that convention. Two of the four copies of its
+ * `dd/MM/yyyy` parser built a `Date` from `"yyyy-MM-ddT00:00:00"` — no `Z`, so
+ * SERVER-LOCAL midnight — and under the container's `TZ=Pacific/Auckland` that
+ * stored the previous UTC day, so a Xero-imported date of birth read a day
+ * early *here*. **#2859 fixed it at the writer and repaired the stored rows**:
+ * all four copies were collapsed into one codec
+ * (`src/lib/xero-contact-date-of-birth.ts`, `INV-DATE-024`) which parses
+ * through `parseDateOnly`, and a data migration moved the ten affected rows
+ * onto the day the member was actually born. So this reader is now correct for
+ * every row — do not "fix" it by switching to a zone-aware derivation, which
+ * would mis-date every date of birth that is stored correctly, which is now all
+ * of them.
  *
  * **Never pass it a real instant.** A `DateTime` stamped with `now` truncates
  * to a UTC day that is still *yesterday* in New Zealand for roughly the first

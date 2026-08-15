@@ -4,6 +4,7 @@ import backfillBookingRequestGuestNights from "./20260810010000_backfill_booking
 import clearStarterFooterAffiliations from "./20260802140000_clear_starter_footer_affiliations";
 import clearWaldvogelLodgeAddress from "./20260802110000_clear_waldvogel_lodge_address";
 import contractSubscriptionLockoutDropEnabled from "./20260803010000_contract_subscription_lockout_drop_enabled";
+import repairLocalMidnightDatesOfBirth from "./20260814010000_repair_local_midnight_dates_of_birth";
 import updateStarterHomeGuestCopy from "./20260802150000_update_starter_home_guest_copy";
 import type { DataMigrationVerification } from "./types";
 
@@ -32,4 +33,5 @@ export const DATA_MIGRATION_VERIFICATIONS: DataMigrationVerification[] = [
   backfillBookingRequestGuestNights,
   backfillBedAllocationAuditCategory,
   addMemberEmailInheritanceChoice,
+  repairLocalMidnightDatesOfBirth,
 ];

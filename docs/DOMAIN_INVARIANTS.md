@@ -138,6 +138,7 @@ number and prefix, and it is listed at the end of the table below.
 | `INV-DATE-011` | Lodge bookings use NZ date-only nights, not arbitrary timestamps |
 | `INV-DATE-012` | `BookingGuest.stayStart`/`stayEnd` are date-only occupancy in the envelope |
 | `INV-DATE-013` | Compare date columns only against date-only values, never a raw clock |
+| `INV-DATE-024` | `Member.dateOfBirth` is a calendar day at UTC midnight; never a local-midnight parse, never an instant comparison |
 | `INV-DATE-019` | Ask the club's calendar for "today", never the UTC clock |
 | `INV-DATE-014` | Client-side a lodge night is an NZ `yyyy-MM-dd` string, carried end to end |
 | `INV-DATE-015` | Rendering has one seam, `nzst-date.ts`; bare `toLocale*` is lint-blocked |
@@ -694,6 +695,7 @@ File: [`invariants/integrations.md`](invariants/integrations.md). Prefix
 | `INV-INT-014` | The per-member sync keeps Xero calls outside transactions, ledgers each op, and adds before removing |
 | `INV-INT-015` | The bulk re-sync is admin-triggered, dry-run-first, chunked, resumable, and never moves the watermark |
 | `INV-INT-016` | `GET /api/bookings/rooms` keeps its no-`lodgeId` mode for FORKED/EXTERNAL consumers, excluding archived lodges; no `src/` client may use it |
+| `INV-INT-017` | The Xero NZBN field carries the date of birth through ONE shared codec; never blank it, never overwrite what the decoder cannot read as a day, never write without an observed cache row, and the inbound direction only fills a gap |
 
 ## Operations
 

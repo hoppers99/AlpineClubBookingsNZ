@@ -434,6 +434,50 @@ derivation).
   by side (`Booking.draftExpiresAt` and `CalendarEvent.startsAt` against
   `Booking.checkIn`/`checkOut`) and names which is which.
 
+### INV-DATE-024
+
+- **`Member.dateOfBirth` is a CALENDAR DAY, stored at UTC midnight.** The column
+  is still `DateTime?` rather than `@db.Date`, so nothing in the schema enforces
+  this and every writer has to. Typing it is **#2872** — settled as a follow-up
+  by the owner on 14 August 2026, in the decision recorded on #2859: the column
+  stays `DateTime?` here, and #2872 carries the typing with its own migration
+  and a sweep of every reader.
+  Build it with `parseDateOnly(\`${yyyy}-${mm}-${dd}\`)`, an explicit
+  `T00:00:00.000Z`, or `Date.UTC(...)`. **Never**
+  `new Date(\`${yyyy}-${mm}-${dd}T00:00:00\`)`: with no `Z` and no offset that
+  is SERVER-LOCAL midnight, and under the `TZ=Pacific/Auckland` pin it stores
+  `(D-1)T12:00Z` or `(D-1)T11:00Z` — a day early, every hour of every day, not
+  only in a morning window. That is the F8/F32 hazard [INV-DATE-013] on a column
+  that is not a lodge date, and it reached 10 of the 375 stored dates of birth
+  before #2859 repaired them: six at `11:00`, four at `12:00`, each one exactly
+  a day behind what the member's own Xero contact holds.
+
+  **`new Date("yyyy-MM-dd")` is not on that list, deliberately.** ECMAScript
+  does define the date-only form as UTC, so the *zone* is right — but the
+  constructor does not validate the day, and rolls an impossible one over
+  silently: `new Date("1990-02-31")` is 3 March and `new Date("1990-04-31")` is
+  1 May. `parseDateOnly` round-trips the day and returns an invalid `Date`
+  instead, so a value nobody can read as a calendar day never becomes a
+  birthday. Prefer it everywhere.
+- **Compare a stored date of birth only against another date-only value.** A SQL
+  range filter compares instants, so a bound derived from `getSeasonStartDate` —
+  which is local midnight — must cover the whole cutoff calendar day rather than
+  compare instants (`src/lib/cron-age-up.ts`, #2859). Getting that wrong moves
+  an age tier, and an age tier moves a member's price and their hosting
+  eligibility.
+
+  The two in-process readers recover the calendar day **only east of UTC**, and
+  that is a property of the deployment rather than of the code. `computeAge`
+  (`src/lib/policies/age-tier.ts`) uses `getFullYear`/`getMonth`/`getDate`,
+  which are HOST-local: under the `TZ=Pacific/Auckland` pin every stored
+  UTC-midnight value reads back as the same calendar day, but on a server west
+  of UTC — this repository is a template with live forks — UTC midnight is the
+  *previous* evening locally and every member's birthday moves a day.
+  `member-age.ts` reads through the club zone, which has the same dependence.
+  The correct reading of a UTC-midnight column is UTC getters or
+  `formatDateOnly`; treat the local-getter readers as working by deployment
+  accident, not by construction.
+
 ### INV-DATE-019
 
 - **When a server asks for "today", it asks the club's calendar.**

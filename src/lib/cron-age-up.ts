@@ -320,6 +320,31 @@ export async function checkAgeUpMembers(): Promise<{
   const cutoffDate = new Date(seasonStart);
   cutoffDate.setFullYear(cutoffDate.getFullYear() - targetAgeTierMinAge);
 
+  // #2859: this comparison is instant-against-instant, and the two sides are
+  // encoded differently. `cutoffDate` derives from `getSeasonStartDate`, which
+  // is `new Date(year, month, 1)` — LOCAL midnight, so `(D-1)T11:00Z` or
+  // `(D-1)T12:00Z` under the `TZ=Pacific/Auckland` pin. A stored date of birth
+  // is a date-only value at UTC MIDNIGHT (INV-DATE-024). A member born on
+  // exactly the season-start anniversary therefore sits a few hours AFTER the
+  // cutoff instant and was filtered out here, one season late for their own
+  // age-up — the same off-by-one INV-DATE-013 names, on the one boundary where
+  // it decides a tier.
+  //
+  // This is not a defect #2859 introduced, and it is not rare: it was already
+  // reachable for EVERY correctly stored date of birth, which on the live site
+  // is 365 of the 375 members who hold one. (An earlier census reported the
+  // reverse — 364 wrong, 10 right — from a query that applied `AT TIME ZONE` to
+  // this naive column and read it back through the session zone; it is
+  // retracted. The ten rows #2859's migration repairs are re-encoded into this
+  // same correct shape, so they join the exposure rather than create it.)
+  //
+  // So the prefilter is widened to the END of the cutoff calendar day. Widening
+  // is the safe direction: this query only proposes candidates, and
+  // `computeAgeTierWithSettings` below is the authority that promotes or skips
+  // each one.
+  const cutoffWindowEnd = new Date(cutoffDate);
+  cutoffWindowEnd.setDate(cutoffWindowEnd.getDate() + 1);
+
   const candidates = await prisma.member.findMany({
     where: {
       active: true,
@@ -330,7 +355,7 @@ export async function checkAgeUpMembers(): Promise<{
       ageTier: { notIn: ["ADULT", "NOT_APPLICABLE"] },
       dateOfBirth: {
         not: null,
-        lte: cutoffDate,
+        lt: cutoffWindowEnd,
       },
     },
     select: {

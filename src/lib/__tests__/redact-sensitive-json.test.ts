@@ -405,6 +405,37 @@ describe("redact-sensitive-json", () => {
       });
     });
 
+    // #2859 (INV-PRIV-011). Xero's `CompanyNumber` is the NZBN field, and this
+    // club uses it to carry a member's date of birth. Before #2859 the app only
+    // READ it, so it never reached a stored payload; the outbound contact
+    // writers now SEND it, which would otherwise have written a date of birth
+    // into `XeroSyncOperation.requestPayload` and left it there for good. No
+    // fragment reaches this spelling and `dd/mm/yyyy` has no value-shaped net,
+    // so the key is the only line of defence.
+    it("redacts the Xero company number, which carries a date of birth", () => {
+      expect(
+        redactSensitiveRecord({
+          contacts: [
+            {
+              contactID: "contact_1",
+              companyNumber: "15/06/1985",
+            },
+          ],
+        })
+      ).toEqual({
+        contacts: [
+          {
+            contactID: "contact_1",
+            companyNumber: "[REDACTED]",
+          },
+        ],
+      });
+      // Xero's own casing folds to the same key.
+      expect(redactSensitiveJson({ CompanyNumber: "15/06/1985" })).toEqual({
+        CompanyNumber: "[REDACTED]",
+      });
+    });
+
     it("catches person fields under a prefix and in Xero's own casing", () => {
       expect(
         redactSensitiveJson({

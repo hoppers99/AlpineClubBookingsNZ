@@ -40,6 +40,14 @@ const mocks = vi.hoisted(() => {
       xeroContactCache: {
         upsert: vi.fn(),
         findMany: vi.fn(),
+        // #2859: `updateXeroContact` reads what Xero is known to hold in the
+        // NZBN field before deciding whether it may write a date of birth there.
+        findUnique: vi.fn(),
+      },
+      // #2859: and it asks whether THIS APP created the contact, which is the
+      // one case where "never cached" is still safe to write into.
+      xeroObjectLink: {
+        findFirst: vi.fn(),
       },
       xeroContactGroupCache: {
         deleteMany: vi.fn(),
@@ -82,6 +90,10 @@ const mocks = vi.hoisted(() => {
       xeroSyncOperation: {
         findMany: vi.fn().mockResolvedValue([]),
         updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+        // #2859: a contact-link repair re-persists the operation's request
+        // payload against the repaired contact before retrying the write.
+        findFirst: vi.fn().mockResolvedValue(null),
+        update: vi.fn().mockResolvedValue({}),
       },
       $executeRaw: vi.fn(),
       $transaction: vi.fn(),
@@ -213,6 +225,11 @@ describe("Phase 4 contact sync and cached import", () => {
     mocks.prisma.xeroSyncCursor.upsert.mockResolvedValue({});
     mocks.prisma.xeroContactCache.upsert.mockResolvedValue({});
     mocks.prisma.xeroContactCache.findMany.mockResolvedValue([]);
+    mocks.prisma.xeroContactCache.findUnique.mockResolvedValue(null);
+    // Default: no link metadata, i.e. NOT a contact this app is known to have
+    // created. That is the conservative reading, and it is the one the live
+    // site's imported contacts present.
+    mocks.prisma.xeroObjectLink.findFirst.mockResolvedValue(null);
     mocks.prisma.xeroContactGroupCache.deleteMany.mockResolvedValue({ count: 0 });
     mocks.prisma.xeroContactGroupCache.findMany.mockResolvedValue([]);
     mocks.prisma.xeroContactGroupCache.upsert.mockResolvedValue({});
@@ -300,6 +317,9 @@ describe("Phase 4 contact sync and cached import", () => {
         ],
       })
     );
+    // #2859: this member's locked row has no date of birth, so no
+    // `companyNumber` key is emitted at all — never `""`, which would blank
+    // whatever the Xero contact holds in the NZBN field.
     expect(hashPayload.contacts[0]).not.toHaveProperty("companyNumber");
     expect(hashPayload.contacts[0]).not.toEqual(
       expect.objectContaining({ emailAddress: "stale@example.com" }),
@@ -310,6 +330,266 @@ describe("Phase 4 contact sync and cached import", () => {
       hashPayload,
       "contact:contact_1:update:payload-hash:v2"
     );
+  });
+
+  // #2859 defect A: the write did not exist. `buildContact` set contactID,
+  // emailAddress, phones, addresses and the name fields and NOTHING else, so a
+  // member's date of birth never reached Xero's NZBN field on any path — which
+  // is exactly what the club reported. These two tests are the write, and the
+  // guard that stops it destroying somebody's real business number.
+  it("sends the locked member's date of birth as the Xero company number", async () => {
+    // The cache row exists and says the NZBN field is empty, so this app's
+    // value wins. The absent-cache-row case is the test below, and it is the
+    // opposite outcome.
+    mocks.prisma.xeroContactCache.findUnique.mockResolvedValue({
+      companyNumber: null,
+    });
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      id: "member_1",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: "contact_1",
+      // A date-only value at UTC midnight — what every correct writer stores
+      // and what the #2859 migration re-encodes the imported rows to.
+      dateOfBirth: new Date("1985-06-15T00:00:00.000Z"),
+    });
+
+    await updateXeroContact(
+      "contact_1",
+      { firstName: "Jane", lastName: "Doe", email: "jane@example.com" },
+      { localModel: "Member", localId: "member_1", preserveXeroName: false },
+    );
+
+    const sent = (mocks.accountingApi.updateContact.mock.calls as unknown as Array<
+      [string, string, { contacts: Array<Record<string, unknown>> }, string]
+    >)[0][2];
+    // `dd/mm/yyyy`, the exact shape the import side has always read back — and
+    // the day the member was actually born, not the evening before it.
+    expect(sent.contacts[0].companyNumber).toBe("15/06/1985");
+    // The date of birth is taken from the LOCKED row, not from the caller's
+    // snapshot, like every other field on this payload.
+    expect(mocks.prisma.xeroContactCache.findUnique).toHaveBeenCalledWith({
+      where: { contactId: "contact_1" },
+      select: { companyNumber: true },
+    });
+  });
+
+  it("sends nothing at all when no cached contact says what the NZBN field holds", async () => {
+    // The blocker a review found here. `findOrCreateXeroContact` links a member
+    // onto a PRE-EXISTING Xero contact by email match (and failing that by
+    // exact-name match), and nothing on that path writes a contact-cache row —
+    // `syncContactGroupsBestEffort` returns before it fetches the contact when
+    // grouping is off. So "no cache row" is not "a contact this app created and
+    // therefore an empty field": it is routinely a contact somebody else made,
+    // possibly carrying a real New Zealand Business Number. Writing a birthday
+    // over it would destroy a value this system cannot recover. The date of
+    // birth goes out on the next update, once the contact has been cached.
+    mocks.prisma.xeroContactCache.findUnique.mockResolvedValue(null);
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      id: "member_1",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: "contact_1",
+      dateOfBirth: new Date("1985-06-15T00:00:00.000Z"),
+    });
+
+    await updateXeroContact(
+      "contact_1",
+      { firstName: "Jane", lastName: "Doe", email: "jane@example.com" },
+      { localModel: "Member", localId: "member_1", preserveXeroName: false },
+    );
+
+    const sent = (mocks.accountingApi.updateContact.mock.calls as unknown as Array<
+      [string, string, { contacts: Array<Record<string, unknown>> }, string]
+    >)[0][2];
+    expect(sent.contacts[0]).not.toHaveProperty("companyNumber");
+    // The rest of the update still goes as normal — this drops one field, not
+    // the write.
+    expect(sent.contacts[0].emailAddress).toBe("jane@example.com");
+  });
+
+  it("still sends it to a contact THIS APP created, even with no cache row", async () => {
+    // The narrowing the cache rule would otherwise cause, and it is the common
+    // case rather than an edge one. `syncManagedXeroContactGroupForMember` is
+    // the only create-time cache writer, and it short-circuits before any Xero
+    // call when the grouping mode is `NONE` — the schema default. So on a
+    // default install with no inbound cron, no cache row is ever written, and a
+    // cache-only rule would send the date of birth at contact-create time and
+    // then never again, silently, however many times an administrator corrected
+    // it.
+    //
+    // A contact this app created is the one case where "never observed" is
+    // still safe: it held nothing when it was made, and nothing but this app's
+    // own writes has reached that field since.
+    mocks.prisma.xeroContactCache.findUnique.mockResolvedValue(null);
+    mocks.prisma.xeroObjectLink.findFirst.mockResolvedValue({
+      metadata: { linkedVia: "created" },
+    });
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      id: "member_1",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: "contact_1",
+      dateOfBirth: new Date("1985-06-15T00:00:00.000Z"),
+    });
+
+    await updateXeroContact(
+      "contact_1",
+      { firstName: "Jane", lastName: "Doe", email: "jane@example.com" },
+      { localModel: "Member", localId: "member_1", preserveXeroName: false },
+    );
+
+    const sent = (mocks.accountingApi.updateContact.mock.calls as unknown as Array<
+      [string, string, { contacts: Array<Record<string, unknown>> }, string]
+    >)[0][2];
+    expect(sent.contacts[0].companyNumber).toBe("15/06/1985");
+  });
+
+  it("does NOT treat a matched contact as one this app created", async () => {
+    // The symmetric half, and why the marker has to be POSITIVE. A contact the
+    // app merely linked carries `linkedVia: "email_match"` (or `name_match`),
+    // and `xero-member-import.ts` links pre-existing contacts with NO link
+    // metadata at all — which is how essentially the whole live membership got
+    // its contacts. Neither may be read as "we created it", because both may
+    // hold a real New Zealand Business Number nobody has looked at.
+    mocks.prisma.xeroContactCache.findUnique.mockResolvedValue(null);
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      id: "member_1",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: "contact_1",
+      dateOfBirth: new Date("1985-06-15T00:00:00.000Z"),
+    });
+
+    for (const metadata of [
+      { linkedVia: "email_match" },
+      { linkedVia: "name_match" },
+      { linkedVia: "email_match_repair" },
+      // The imported-contact shape: a link row with nothing on it.
+      null,
+      {},
+    ]) {
+      mocks.accountingApi.updateContact.mockClear();
+      mocks.prisma.xeroObjectLink.findFirst.mockResolvedValue(
+        metadata === null ? null : { metadata },
+      );
+
+      await updateXeroContact(
+        "contact_1",
+        { firstName: "Jane", lastName: "Doe", email: "jane@example.com" },
+        { localModel: "Member", localId: "member_1", preserveXeroName: false },
+      );
+
+      const sent = (mocks.accountingApi.updateContact.mock.calls as unknown as Array<
+        [string, string, { contacts: Array<Record<string, unknown>> }, string]
+      >)[0][2];
+      expect(
+        sent.contacts[0],
+        `${JSON.stringify(metadata)} must not be read as "this app created it"`,
+      ).not.toHaveProperty("companyNumber");
+    }
+  });
+
+  it("refuses to overwrite a real NZBN with a date of birth", async () => {
+    // The NZBN field is not this club's private property: an administrator may
+    // have typed a genuine New Zealand Business Number into it. A date of birth
+    // does not get to destroy the club's accounting data, so the write is
+    // dropped and the rest of the update goes as normal.
+    mocks.prisma.xeroContactCache.findUnique.mockResolvedValue({
+      companyNumber: "9429041234567",
+    });
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      id: "member_1",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: "contact_1",
+      dateOfBirth: new Date("1985-06-15T00:00:00.000Z"),
+    });
+
+    await updateXeroContact(
+      "contact_1",
+      { firstName: "Jane", lastName: "Doe", email: "jane@example.com" },
+      { localModel: "Member", localId: "member_1", preserveXeroName: false },
+    );
+
+    const sent = (mocks.accountingApi.updateContact.mock.calls as unknown as Array<
+      [string, string, { contacts: Array<Record<string, unknown>> }, string]
+    >)[0][2];
+    expect(sent.contacts[0]).not.toHaveProperty("companyNumber");
+    expect(sent.contacts[0].emailAddress).toBe("jane@example.com");
+  });
+
+  it("does not carry one contact's NZBN judgement onto a repaired contact", async () => {
+    // #2859. `retryXeroWriteWithContactRepair` rebuilds this payload against a
+    // DIFFERENT contact when it repairs a stale link, and the cache reading was
+    // taken for the ORIGINAL one. Sending the date of birth anyway would judge
+    // the repaired contact's NZBN field by another contact's contents, and could
+    // overwrite a real business number nobody has looked at. The date of birth
+    // is simply not sent to a contact this call did not read.
+    mocks.prisma.xeroContactCache.findUnique.mockResolvedValue({
+      companyNumber: null,
+    });
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      id: "member_1",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: "contact_1",
+      dateOfBirth: new Date("1985-06-15T00:00:00.000Z"),
+    });
+    mocks.prisma.member.findFirst.mockResolvedValue(null);
+    // Xero rejects the stale contact reference once, then accepts the repaired
+    // one. The message is the shape `isRetryableXeroContactReferenceError` reads.
+    mocks.accountingApi.updateContact
+      .mockRejectedValueOnce(
+        Object.assign(new Error("Contact not found"), {
+          response: {
+            statusCode: 404,
+            body: {
+              Elements: [
+                {
+                  ValidationErrors: [
+                    { Message: "Contact not found for ContactID contact_1" },
+                  ],
+                },
+              ],
+            },
+          },
+        }),
+      )
+      .mockResolvedValue({ body: { contacts: [{ contactID: "contact_2" }] } });
+    // The repair re-resolves the member's contact by email onto a different id.
+    mocks.accountingApi.getContacts.mockResolvedValue({
+      body: { contacts: [{ contactID: "contact_2", name: "Jane Doe" }] },
+    });
+
+    await updateXeroContact(
+      "contact_1",
+      { firstName: "Jane", lastName: "Doe", email: "jane@example.com" },
+      { localModel: "Member", localId: "member_1", preserveXeroName: false },
+    );
+
+    const calls = mocks.accountingApi.updateContact.mock.calls as unknown as Array<
+      [string, string, { contacts: Array<Record<string, unknown>> }, string]
+    >;
+    expect(calls).toHaveLength(2);
+    // The first attempt, against the contact whose NZBN field WAS read, carries it.
+    expect(calls[0][1]).toBe("contact_1");
+    expect(calls[0][2].contacts[0].companyNumber).toBe("15/06/1985");
+    // The retry, against a contact nobody has read, does not.
+    expect(calls[1][1]).toBe("contact_2");
+    expect(calls[1][2].contacts[0]).not.toHaveProperty("companyNumber");
   });
 
   // INV-PRIV-011 (#2683 review finding 2). Xero's API REQUIRES `Name` on a
