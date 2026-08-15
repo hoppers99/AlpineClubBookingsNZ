@@ -381,7 +381,12 @@ export default function RosterPage() {
           <p className="mt-1 text-muted-foreground">Review and manage daily chore assignments</p>
         </div>
         <div className="flex items-center space-x-3">
-          <LodgeSelect lodges={lodges} value={lodgeId} onChange={changeLodge} loading={lodgesLoading} />
+          <LodgeSelect lodges={lodges} value={lodgeId} onChange={changeLodge} loading={lodgesLoading}
+            // #2701: an empty list from a FAILED request is not evidence the
+            // caller's lodge is gone, so the ADR-002 normaliser must not wipe a
+            // ?lodgeId= hub link (ADR-003) while the outage lasts.
+            deferDefaultSelection={lodgesFailed}
+          />
           {/* #2701: the print sheet is lodge-scoped too — with no lodgeId in the
               link it prints the default lodge's roster, which is the one thing
               worse than not printing at all, because it leaves the building. */}
