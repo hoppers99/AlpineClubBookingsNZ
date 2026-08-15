@@ -29,10 +29,10 @@ vi.mock("@/lib/session-guards", () => ({
 vi.mock("@/lib/admin-modules", () => ({
   isEffectiveModuleEnabled: () => mockModuleEnabled(),
 }));
-vi.mock("@/lib/admin-bed-allocation", async () => {
+vi.mock("@/lib/bed-allocation-approval", async () => {
   const actual = await vi.importActual<
-    typeof import("@/lib/admin-bed-allocation")
-  >("@/lib/admin-bed-allocation");
+    typeof import("@/lib/bed-allocation-approval")
+  >("@/lib/bed-allocation-approval");
   return {
     ...actual,
     approveBedAllocations: (...args: unknown[]) =>
@@ -136,7 +136,7 @@ describe("POST /api/admin/bed-allocation/approve", () => {
 
   it("passes the lib's no-selector refusal back as a 400 and audits nothing", async () => {
     const { BedAllocationAdminError } = await import(
-      "@/lib/admin-bed-allocation"
+      "@/lib/bed-allocation-admin-contract"
     );
     mockApproveBedAllocations.mockRejectedValue(
       new BedAllocationAdminError(

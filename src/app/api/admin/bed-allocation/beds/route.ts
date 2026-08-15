@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { BedType } from "@prisma/client";
 import { z } from "zod";
-import { createBedAllocationBed } from "@/lib/admin-bed-allocation";
+import {
+  createBedAllocationBed,
+} from "@/lib/bed-allocation-beds";
 import {
   bedAllocationErrorResponse,
   requireBedInventoryWrite,

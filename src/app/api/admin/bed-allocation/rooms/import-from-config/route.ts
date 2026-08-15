@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
-import { importRoomsAndBedsFromClubConfig } from "@/lib/admin-bed-allocation";
+import {
+  importRoomsAndBedsFromClubConfig,
+} from "@/lib/bed-allocation-rooms";
 import {
   bedAllocationErrorResponse,
   requireBedInventoryWrite,

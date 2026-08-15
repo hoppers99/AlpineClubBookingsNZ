@@ -37,30 +37,44 @@ vi.mock("@/lib/lodge-capacity", () => ({
 
 import {
   BedAllocationAdminError,
-  MAX_BED_ALLOCATION_RANGE_NIGHTS,
-  buildBedAllocationWarnings,
-  countGuestsAwaitingBed,
-  createBedAllocationBed,
-  createBedAllocationRoom,
-  createBedAllocationRoomsBulk,
-  deleteBedAllocation as deleteBedAllocationPublic,
-  deleteBedAllocationRoom as deleteBedAllocationRoomPublic,
+} from "@/lib/bed-allocation-admin-contract";
+import {
   approveBedAllocationsWithLocksHeld as approveBedAllocations,
   isBookingBedAllocationLocked,
+} from "@/lib/bed-allocation-approval";
+import {
+  createBedAllocationBed,
+  updateBedAllocationBed as updateBedAllocationBedPublic,
+  updateBedAllocationBedWithLocksHeld as updateBedAllocationBed,
+  deleteBedAllocationBedWithLocksHeld,
+} from "@/lib/bed-allocation-beds";
+import {
+  countGuestsAwaitingBed,
   getBedAllocationDashboard,
-  getRoomsAndBedsConfiguration,
-  listBedAllocationRooms,
+} from "@/lib/bed-allocation-board";
+import {
+  MAX_BED_ALLOCATION_RANGE_NIGHTS,
+  parseBedAllocationDateRange,
+} from "@/lib/bed-allocation-date-range";
+import {
+  deleteBedAllocation as deleteBedAllocationPublic,
   manuallyAllocateBed,
   manuallyAllocateBedForNights as manuallyAllocateBedForNightsPublic,
   manuallyAllocateBedForNightsWithLocksHeld as manuallyAllocateBedForNights,
   moveBedAllocationsSameDate,
-  parseBedAllocationDateRange,
-  updateBedAllocationBed as updateBedAllocationBedPublic,
-  updateBedAllocationBedWithLocksHeld as updateBedAllocationBed,
   deleteBedAllocationWithLocksHeld as deleteBedAllocation,
+} from "@/lib/bed-allocation-manual-writes";
+import {
+  createBedAllocationRoom,
+  createBedAllocationRoomsBulk,
+  deleteBedAllocationRoom as deleteBedAllocationRoomPublic,
+  getRoomsAndBedsConfiguration,
+  listBedAllocationRooms,
   deleteBedAllocationRoomWithLocksHeld as deleteBedAllocationRoom,
-  deleteBedAllocationBedWithLocksHeld,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-rooms";
+import {
+  buildBedAllocationWarnings,
+} from "@/lib/bed-allocation-warnings";
 import { getLodgePartnerSharedCapacityStatus } from "@/lib/lodge-capacity";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { parseDateOnly } from "@/lib/date-only";

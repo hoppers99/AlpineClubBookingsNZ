@@ -3,7 +3,7 @@ import { z } from "zod";
 import {
   createBedAllocationRoom,
   getRoomsAndBedsConfiguration,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-rooms";
 import {
   bedAllocationErrorResponse,
   requireBedInventoryRead,

@@ -44,13 +44,17 @@ vi.mock("@/lib/admin-bed-allocation-routes", () => ({
   bedAllocationErrorResponse: vi.fn(),
 }));
 
-vi.mock("@/lib/admin-bed-allocation", () => ({
+vi.mock("@/lib/bed-allocation-date-range", () => ({
   parseBedAllocationDateRange: () => ({
     from: new Date("2026-04-01T00:00:00Z"),
     to: new Date("2026-04-14T00:00:00Z"),
   }),
+}));
+vi.mock("@/lib/bed-allocation-board", () => ({
   getBedAllocationDashboard: (...args: unknown[]) =>
     mockGetBedAllocationDashboard(...args),
+}));
+vi.mock("@/lib/bed-allocation-rooms", () => ({
   getRoomsAndBedsConfiguration: (...args: unknown[]) =>
     mockGetRoomsAndBedsConfiguration(...args),
   createBedAllocationRoom: vi.fn(),

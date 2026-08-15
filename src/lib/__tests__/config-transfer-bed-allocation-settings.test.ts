@@ -16,7 +16,9 @@ import {
 } from "@/lib/config-transfer/categories/lodge-config";
 import { CATEGORY_EXPORTERS } from "@/lib/config-transfer/export";
 import { CATEGORY_IMPORTERS } from "@/lib/config-transfer/import";
-import { updateBedAllocationSettings } from "@/lib/admin-bed-allocation";
+import {
+  updateBedAllocationSettings,
+} from "@/lib/bed-allocation-admin-settings";
 import type {
   ApplyContext,
   PlanContext,

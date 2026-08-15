@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   getBedAllocationDashboard,
+} from "@/lib/bed-allocation-board";
+import {
   parseBedAllocationDateRange,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-date-range";
 import {
   bedAllocationErrorResponse,
   requireBedAllocationRead,

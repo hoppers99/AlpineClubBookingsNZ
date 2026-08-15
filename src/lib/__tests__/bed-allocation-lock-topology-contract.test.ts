@@ -72,7 +72,7 @@ function expectInOrder(text: string, tokens: readonly string[]): void {
 
 describe("bed allocation lock topology", () => {
   it("uses immutable sorted lodge keys and one lodge-narrowed selector for approval row locks and update", () => {
-    const text = source("src/lib/admin-bed-allocation.ts");
+    const text = source("src/lib/bed-allocation-approval.ts");
     const selector = between(
       text,
       "function buildApproveBedAllocationsWhere",
@@ -198,11 +198,15 @@ describe("bed allocation lock topology", () => {
   });
 
   it("rebuilds the board auto-allocation plan only after global then lodge", () => {
-    const autoRun = between(
-      source("src/lib/admin-bed-allocation.ts"),
+    // #2688: `runAutoBedAllocation` is now the whole of its own module, so the
+    // slice runs to the end of the file rather than to the next symbol — the
+    // same function text, with nothing outside it able to satisfy the order.
+    const source_ = source("src/lib/bed-allocation-auto-allocate.ts");
+    const autoRunAt = source_.indexOf(
       "export async function runAutoBedAllocation(",
-      "async function assertGuestAndBedForAllocation(",
     );
+    expect(autoRunAt).toBeGreaterThanOrEqual(0);
+    const autoRun = source_.slice(autoRunAt);
     expectInOrder(autoRun, [
       "pg_advisory_xact_lock(1)",
       "acquireLodgeCapacityLock(tx, lodgeId)",

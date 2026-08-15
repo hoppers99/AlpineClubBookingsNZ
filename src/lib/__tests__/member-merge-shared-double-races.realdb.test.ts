@@ -174,8 +174,8 @@ const SHARE_SWEPT_AUDIT_ACTION = "BED_ALLOCATION_PARTNER_SHARE_SWEPT";
 let prisma: typeof import("@/lib/prisma")["prisma"];
 let buildMemberMergePreview: typeof import("@/lib/member-merge")["buildMemberMergePreview"];
 let executeMemberMerge: typeof import("@/lib/member-merge")["executeMemberMerge"];
-let runAutoBedAllocation: typeof import("@/lib/admin-bed-allocation")["runAutoBedAllocation"];
-let manuallyAllocateBed: typeof import("@/lib/admin-bed-allocation")["manuallyAllocateBed"];
+let runAutoBedAllocation: typeof import("@/lib/bed-allocation-auto-allocate")["runAutoBedAllocation"];
+let manuallyAllocateBed: typeof import("@/lib/bed-allocation-manual-writes")["manuallyAllocateBed"];
 let adminShiftBookingDates: typeof import("@/lib/booking-date-modification-service")["adminShiftBookingDates"];
 let reconcileBedAllocationsForBooking: typeof import("@/lib/bed-allocation-lifecycle")["reconcileBedAllocationsForBooking"];
 let acquireMemberMergePartnerSharedLodgeLocks: typeof import("@/lib/bed-allocation-lifecycle")["acquireMemberMergePartnerSharedLodgeLocks"];
@@ -1075,8 +1075,11 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
       ({ buildMemberMergePreview, executeMemberMerge } = await import(
         "@/lib/member-merge"
       ));
-      ({ runAutoBedAllocation, manuallyAllocateBed } = await import(
-        "@/lib/admin-bed-allocation"
+      ({ runAutoBedAllocation } = await import(
+        "@/lib/bed-allocation-auto-allocate"
+      ));
+      ({ manuallyAllocateBed } = await import(
+        "@/lib/bed-allocation-manual-writes"
       ));
       ({ adminShiftBookingDates } = await import(
         "@/lib/booking-date-modification-service"
@@ -1562,7 +1565,7 @@ describe("member-merge shared-double race DB safety guard (#2595)", () => {
      * sequential round-trips (docs/CONCURRENCY_AND_LOCKING.md → "Member merge").
      * The ordinary bed-allocation writers raced here open their own interactive
      * transaction and then block on that lodge key on Prisma's default 5-second
-     * budget (`writeUnderLocks` in `admin-bed-allocation.ts`,
+     * budget (`writeUnderLocks` in `bed-allocation-auto-allocate.ts`,
      * `reconcileBedAllocationsForBookingWithGlobalLockHeld`). So a same-lodge
      * writer that arrives while a merge is running either gets the key in time,
      * or its own budget expires first and Prisma rejects it with `P2028`.

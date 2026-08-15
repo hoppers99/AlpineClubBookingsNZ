@@ -4,7 +4,7 @@ import { z } from "zod";
 import {
   deleteBedAllocationBed,
   updateBedAllocationBed,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-beds";
 import {
   bedAllocationErrorResponse,
   requireBedInventoryWrite,

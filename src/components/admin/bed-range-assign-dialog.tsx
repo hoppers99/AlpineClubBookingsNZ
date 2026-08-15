@@ -32,7 +32,7 @@ import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-acces
 import type {
   BedRangeRefusal,
   BedRangeRefusalCategory,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-range-report";
 import {
   countNightsDateOnly,
   eachDateOnlyInRange,

@@ -78,25 +78,55 @@ const GUARDED_WRITE_SITES: Array<{
   evidence: string;
 }> = [
   {
-    file: "src/lib/admin-bed-allocation.ts",
+    file: "src/lib/bed-allocation-placement.ts",
     statement: "bedAllocation.upsert",
     mechanism:
       "allocateBedNight calls assertBedNightsFreeOfCustodianHold before the upsert; every manual placement (single night, bulk drop, board move) funnels through it.",
     evidence: "await assertBedNightsFreeOfCustodianHold({",
   },
   {
-    file: "src/lib/admin-bed-allocation.ts",
+    file: "src/lib/bed-allocation-auto-allocate.ts",
     statement: "bedAllocation.createMany",
     mechanism:
-      "runAutoBedAllocation re-filters its suggestions against custodianHeldBedNightKeys inside its locked transaction; runAssignBedRangeAttempt classifies held nights as the CUSTODIAN_HOLD refusal category before writing anything.",
+      "runAutoBedAllocation re-filters its suggestions against custodianHeldBedNightKeys inside its locked transaction.",
     evidence: "custodianHeldBedNightKeys(",
   },
   {
-    file: "src/lib/admin-bed-allocation.ts",
+    file: "src/lib/bed-allocation-range-assign.ts",
+    statement: "bedAllocation.createMany",
+    mechanism:
+      "runAssignBedRangeAttempt classifies held nights as the CUSTODIAN_HOLD refusal category before writing anything.",
+    evidence: 'category: "CUSTODIAN_HOLD"',
+  },
+  {
+    file: "src/lib/bed-allocation-range-assign.ts",
     statement: "bedAllocation.updateMany",
     mechanism:
       "The range path's batched updateMany only ever runs for targetNights with no refusal, and CUSTODIAN_HOLD is one of the refusal categories.",
     evidence: 'category: "CUSTODIAN_HOLD"',
+  },
+  {
+    // NOT A PLACEMENT, and listed for that reason. The bed retype writer syncs
+    // the denormalized `BedAllocation.bedType` (read only by the non-double
+    // partial unique index) on rows that are ALREADY on that bed; `bedId`
+    // appears in its WHERE, never in its `data`, so it can neither introduce an
+    // occupant nor move one onto a held bed-night. The bed it acts on is being
+    // retyped, which the custodian guards on deactivate/delete do not cover
+    // because retyping takes nothing out of the pool.
+    //
+    // It is declared rather than excluded because the detector matches `bedId:`
+    // anywhere in the statement, so an undeclared site here fails the census —
+    // and because #2688 is how it surfaced at all: while every one of these
+    // writers lived in `admin-bed-allocation.ts`, the RANGE path's
+    // `updateMany` declaration covered this second, unrelated `updateMany` in
+    // the same file. A file-and-statement-keyed census can absorb a second site
+    // in an already-declared file, which is the lesson
+    // `guest-stay-expansion-census.test.ts` records for its own table.
+    file: "src/lib/bed-allocation-beds.ts",
+    statement: "bedAllocation.updateMany",
+    mechanism:
+      "updateBedAllocationBedWithLocksHeld rewrites only the denormalized bedType on rows already sitting on that bed; bedId is a selector here, never written, so no occupant is introduced or moved.",
+    evidence: "data: { bedType: input.bedType },",
   },
   {
     file: "src/lib/bed-allocation-lifecycle.ts",
@@ -146,7 +176,7 @@ const WHOLE_LODGE_GUARDED_WRITE_SITES: Array<{
   evidence: string;
 }> = [
   {
-    file: "src/lib/admin-bed-allocation.ts",
+    file: "src/lib/bed-allocation-auto-allocate.ts",
     statement: "bedAllocation.createMany",
     mechanism:
       "runAutoBedAllocation feeds the blocking holds to the planner as #1768 unknown-occupant rows AND re-reads them on the transaction client inside its locked transaction, dropping any suggestion landing on a held lodge-night.",
@@ -253,10 +283,13 @@ describe("custodian write-path contract (#2286)", () => {
   });
 
   it("keeps the manual funnel guarded BEFORE it resolves sharing or upserts", () => {
-    const source = readRepoFile("src/lib/admin-bed-allocation.ts");
+    // #2688: the funnel and its single-night caller now live in different
+    // modules. The slice still covers exactly `allocateBedNight`'s body — the
+    // next symbol in the placement module is `resolveBedLodgeIdForLock`.
+    const source = readRepoFile("src/lib/bed-allocation-placement.ts");
     const funnel = source.slice(
-      source.indexOf("async function allocateBedNight("),
-      source.indexOf("export async function manuallyAllocateBed("),
+      source.indexOf("export async function allocateBedNight("),
+      source.indexOf("async function resolveBedLodgeIdForLock("),
     );
     const guardAt = funnel.indexOf("assertBedNightsFreeOfCustodianHold");
     const upsertAt = funnel.indexOf("bedAllocation.upsert");
@@ -289,22 +322,31 @@ describe("custodian write-path contract (#2286)", () => {
   });
 
   it("takes the per-lodge advisory lock in every self-wrapped placement transaction", () => {
-    const source = readRepoFile("src/lib/admin-bed-allocation.ts");
-    // The guard's read and the write must sit inside the SAME lock the
-    // custodian-hold writer takes, or the exclusion is racy by construction.
-    expect(source).toContain("acquireLodgeCapacityLock");
-    expect(source).toContain("resolveBedLodgeIdForLock");
-    // runAutoBedAllocation was transaction-free and lock-free before #2286.
+    // #2688: the self-wrapped placement writers are `bed-allocation-manual-writes.ts`
+    // and `bed-allocation-range-assign.ts`; both derive the key with the shared
+    // `resolveBedLodgeIdForLock` from `bed-allocation-placement.ts`.
+    for (const writer of [
+      "src/lib/bed-allocation-manual-writes.ts",
+      "src/lib/bed-allocation-range-assign.ts",
+    ]) {
+      // The guard's read and the write must sit inside the SAME lock the
+      // custodian-hold writer takes, or the exclusion is racy by construction.
+      const writerSource = readRepoFile(writer);
+      expect(writerSource).toContain("acquireLodgeCapacityLock");
+      expect(writerSource).toContain("resolveBedLodgeIdForLock");
+    }
+    // runAutoBedAllocation was transaction-free and lock-free before #2286. It
+    // is now the whole of its own module, so the slice runs to end of file.
+    const source = readRepoFile("src/lib/bed-allocation-auto-allocate.ts");
     const autoRun = source.slice(
       source.indexOf("export async function runAutoBedAllocation("),
-      source.indexOf("async function assertGuestAndBedForAllocation("),
     );
     expect(autoRun).toContain("acquireLodgeCapacityLock(tx, lodgeId)");
     expect(autoRun).toContain("prisma.$transaction");
   });
 
   it("keeps existing-allocation moves global-then-destination locked, date-preserving and on the guarded manual funnel", () => {
-    const source = readRepoFile("src/lib/admin-bed-allocation.ts");
+    const source = readRepoFile("src/lib/bed-allocation-manual-writes.ts");
     const lockHeldMove = source.slice(
       source.indexOf(
         "export async function moveBedAllocationsSameDateWithLocksHeld(",

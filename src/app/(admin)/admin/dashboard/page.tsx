@@ -51,7 +51,9 @@ import {
   startOfDateOnlyForTimeZone,
 } from "@/lib/date-only";
 import { countRosterDaysNeedingChores } from "@/lib/roster-status";
-import { countGuestsAwaitingBed } from "@/lib/admin-bed-allocation";
+import {
+  countGuestsAwaitingBed,
+} from "@/lib/bed-allocation-board";
 import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
 import { OPEN_DELETION_REQUEST_STATUSES } from "@/lib/deletion-request-decision";
 import {
