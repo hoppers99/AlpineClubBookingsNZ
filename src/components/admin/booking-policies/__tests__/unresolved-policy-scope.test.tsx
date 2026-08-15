@@ -31,12 +31,12 @@ import { BookingPeriodsSection } from "../booking-periods-section"
 import { DefaultCancellationPolicySection } from "../default-cancellation-policy-section"
 import { MinimumNightStaySection } from "../minimum-night-stay-section"
 
-const CASES: Array<[string, ReactElement]> = [
-  ["default cancellation", <DefaultCancellationPolicySection />],
-  ["minimum stay", <MinimumNightStaySection />],
-  ["booking periods", <BookingPeriodsSection />],
-  ["adult member hosting", <AdultMemberHostingSection />],
-  ["lodge instructions", <LodgeInstructionsPanel />],
+const CASES: Array<[string, () => ReactElement]> = [
+  ["default cancellation", () => <DefaultCancellationPolicySection />],
+  ["minimum stay", () => <MinimumNightStaySection />],
+  ["booking periods", () => <BookingPeriodsSection />],
+  ["adult member hosting", () => <AdultMemberHostingSection />],
+  ["lodge instructions", () => <LodgeInstructionsPanel />],
 ]
 
 const POLICY_ACTION =
@@ -58,9 +58,9 @@ describe("booking-policy scope resolution (#2701, #2887)", () => {
 
   it.each(CASES)(
     "%s makes lodge-list failure a transport and action boundary",
-    async (_name, element) => {
+    async (_name, createElement) => {
       const fetchMock = vi.mocked(fetch)
-      render(element)
+      render(createElement())
 
       expect(
         await screen.findByText("The lodge list could not be loaded"),
@@ -74,11 +74,11 @@ describe("booking-policy scope resolution (#2701, #2887)", () => {
 
   it.each(CASES)(
     "%s sends no policy request while lodge options are still resolving",
-    (_name, element) => {
+    (_name, createElement) => {
       lodgeOptions.loading = true
       lodgeOptions.failed = false
       const fetchMock = vi.mocked(fetch)
-      render(element)
+      render(createElement())
 
       expect(
         screen.queryByText("The lodge list could not be loaded"),
