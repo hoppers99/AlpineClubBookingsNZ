@@ -2,11 +2,11 @@
   (#2687).** The repository has documented size budgets for route handlers,
   page shells and domain modules, but nothing checked them — the report that
   was supposed to flag oversized files compared against a hand-maintained list
-  of nine, while 281 of the 1,903 production files were actually over budget.
-  Together those files carried 131,709 lines of size debt. Three of the nine
-  recorded line counts were wrong by two orders of magnitude,
-  so the one artefact that looked like enforcement was the least accurate thing
-  in the repository.
+  of nine. At the initial baseline after `main` commit `aafbd08f3`, 281 of the
+  1,903 production files were over budget and carried 131,709 lines of size
+  debt. Three of the nine recorded line counts were wrong by two orders of
+  magnitude, so the one artefact that looked like enforcement was the least
+  accurate thing in the repository.
 
   Every over-budget file and its current line count is now recorded in
   `scripts/quality/file-size-baseline.txt`, and a check in the blocking CI job

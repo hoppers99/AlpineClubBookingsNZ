@@ -3,6 +3,10 @@ import path from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { configDefaults } from "vitest/config";
+import {
+  isProductionFile,
+  isTestFile,
+} from "../../../scripts/lib/file-size-budget";
 
 /**
  * `npm run typecheck` runs two projects: `tsconfig.json` (the app) and
@@ -35,7 +39,13 @@ const PROJECT_SUPPORTED_VITEST_EXTENSIONS = new Set([
 type ProjectCoverage = {
   files: Set<string>;
   options: ts.CompilerOptions;
+  rootNames: string[];
+  projectReferences: readonly ts.ProjectReference[] | undefined;
 };
+
+function repoRelative(file: string): string {
+  return path.relative(ROOT, file).split(path.sep).join("/");
+}
 
 /** Repo-relative paths TypeScript resolves for a project, exactly as tsc would. */
 function projectCoverage(configName: string): ProjectCoverage {
@@ -49,14 +59,15 @@ function projectCoverage(configName: string): ProjectCoverage {
     undefined,
     configPath,
   );
-  expect(parsed.errors, `${configName} should resolve without config errors`).toEqual([]);
+  expect(
+    parsed.errors,
+    `${configName} should resolve without config errors`,
+  ).toEqual([]);
   return {
-    files: new Set(
-      parsed.fileNames.map((file) =>
-        path.relative(ROOT, file).split(path.sep).join("/"),
-      ),
-    ),
+    files: new Set(parsed.fileNames.map(repoRelative)),
     options: parsed.options,
+    rootNames: parsed.fileNames,
+    projectReferences: parsed.projectReferences,
   };
 }
 
@@ -88,7 +99,9 @@ describe("typecheck project coverage", () => {
   const app = projectCoverage("tsconfig.json");
   const test = projectCoverage("tsconfig.test.json");
   const tracked = trackedFiles();
-  const trackedTypeScript = tracked.filter((file) => /\.(ts|tsx|mts|cts)$/.test(file));
+  const trackedTypeScript = tracked.filter((file) =>
+    /\.(ts|tsx|mts|cts)$/.test(file),
+  );
   const vitestTests = tracked.filter(
     (file) =>
       isVitestTestFile(file) &&
@@ -120,7 +133,8 @@ describe("typecheck project coverage", () => {
 
   it("reads every tracked TypeScript file in one project or the other", () => {
     const uncovered = trackedTypeScript.filter(
-      (file) => !EXEMPT.has(file) && !app.files.has(file) && !test.files.has(file),
+      (file) =>
+        !EXEMPT.has(file) && !app.files.has(file) && !test.files.has(file),
     );
     expect(
       uncovered,
@@ -134,10 +148,39 @@ describe("typecheck project coverage", () => {
     );
     expect(testFiles.length).toBeGreaterThan(1000);
     for (const file of testFiles) {
-      expect(test.files.has(file), `${file} should be in tsconfig.test.json`).toBe(true);
-      expect(app.files.has(file), `${file} should stay out of tsconfig.json`).toBe(false);
+      expect(
+        test.files.has(file),
+        `${file} should be in tsconfig.test.json`,
+      ).toBe(true);
+      expect(
+        app.files.has(file),
+        `${file} should stay out of tsconfig.json`,
+      ).toBe(false);
     }
   });
+
+  it("keeps ratchet-excluded test paths out of the production source graph", () => {
+    const productionRoots = app.rootNames.filter((file) =>
+      isProductionFile(repoRelative(file)),
+    );
+    expect(productionRoots.length).toBeGreaterThan(1000);
+
+    const program = ts.createProgram({
+      rootNames: productionRoots,
+      options: app.options,
+      projectReferences: app.projectReferences,
+    });
+    const importedTestPaths = program
+      .getSourceFiles()
+      .map((sourceFile) => repoRelative(sourceFile.fileName))
+      .filter(isTestFile)
+      .sort();
+
+    expect(
+      importedTestPaths,
+      "production app roots import these test-path modules, but the file-size ratchet excludes them from production debt",
+    ).toEqual([]);
+  }, 30_000);
 
   it("loads JavaScript Vitest files without claiming checkJs coverage", () => {
     const javaScriptTests = vitestTests.filter((file) =>
@@ -147,8 +190,14 @@ describe("typecheck project coverage", () => {
     expect(test.options.allowJs).toBe(true);
     expect(test.options.checkJs ?? false).toBe(false);
     for (const file of javaScriptTests) {
-      expect(test.files.has(file), `${file} should be loaded by tsconfig.test.json`).toBe(true);
-      expect(app.files.has(file), `${file} should stay out of tsconfig.json`).toBe(false);
+      expect(
+        test.files.has(file),
+        `${file} should be loaded by tsconfig.test.json`,
+      ).toBe(true);
+      expect(
+        app.files.has(file),
+        `${file} should stay out of tsconfig.json`,
+      ).toBe(false);
     }
   });
 
@@ -166,7 +215,10 @@ describe("typecheck project coverage", () => {
     const e2e = trackedTypeScript.filter((file) => file.startsWith("e2e/"));
     expect(e2e.length).toBeGreaterThan(0);
     for (const file of e2e) {
-      expect(app.files.has(file), `${file} is currently reached by tsconfig.json`).toBe(true);
+      expect(
+        app.files.has(file),
+        `${file} is currently reached by tsconfig.json`,
+      ).toBe(true);
       expect(test.files.has(file), `${file} is not a Vitest test`).toBe(false);
     }
   });
