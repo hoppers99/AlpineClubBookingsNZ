@@ -2,9 +2,8 @@
 
 ## Status
 
-Proposed — foundation decision for epic #2369 (AI Diagnostics), pending owner
-approval on issue #2370. To be marked Accepted when this ADR's pull request
-merges.
+Accepted — the owner-ratified AID-1 foundation merged through PR #2529 on
+2 August 2026.
 
 **Governance:** no implementation child (#2371–#2379) may weaken the contract in
 this ADR without an owner decision recorded on-repo.

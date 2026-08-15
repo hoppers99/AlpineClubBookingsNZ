@@ -35,7 +35,7 @@ only**.
 
 It is deliberately **not** required for ordinary domain diagnostics. A Booking
 Officer investigating a booking does not need a support permission to do their own
-job, so the booking tools in AID-6B (#2376) will require `bookings:view` and not
+job, so the shipped booking tools in AID-6B (#2376) require `bookings:view` and not
 `support:view`. The same holds for membership (#2376) and finance (#2377).
 
 Correlation is the case that needs both, because it reads the platform's audit
@@ -60,7 +60,7 @@ says domain diagnostics must use their domain permission "without also requiring
 This pack follows the **stricter** reading: `support` **and** the domain, for
 correlation only. The reasoning is above — correlation reads the audit trail, and the
 audit trail is a `support` surface. Acceptance criterion 4 is honoured where it plainly
-applies: the domain tools AID-6B and AID-6C add will require their domain area alone.
+applies: the domain tools AID-6B and AID-6C added require their domain area alone.
 
 What the strict reading costs, stated plainly. A club-defined access role granting only
 `bookings:view` — which the access-roles UI permits — gets **no** booking correlation,
@@ -68,10 +68,10 @@ and the operator is told they need Support & System. The built-in bundles hide t
 because `ADMIN_BOOKINGS` and `ADMIN_MEMBERSHIP` both already include `support: "view"`,
 so it can only appear on a hand-built custom role. The failure is closed and legible (a
 named missing area, not a silent empty result), which is why it ships this way rather
-than being loosened on the spot. If the owner prefers the literal AC4 reading, the
-change is one line per entry in `support-correlation.ts` plus its permission contract
-test, and it widens who can read the audit trail — which is why it is the owner's call
-and not a reviewer's.
+than being loosened on the spot. The owner approved this stricter reading with the
+delivering PR #2582. Changing it now would be a new decision: the code change is one
+line per entry in `support-correlation.ts` plus its permission contract test, and it
+would widen who can read the audit trail.
 
 ### What a missing permission looks like
 
@@ -143,9 +143,9 @@ between categories, out of `admin` and into `lodge`:
   still saying `admin` while its ten siblings said `lodge` — and the most lodge-scoped of
   them, since it names the Lodge itself as its entity.
 
-**Both are narrowings, and somebody loses something.** A support-only operator can
-correlate those 22 sites' rows today and will need `lodge:view` as well after this — and
-so will a **Booking Officer holding `support` + `bookings` but not `lodge`**, who is the
+**Both were narrowings, and somebody lost something.** Before #2730, a support-only
+operator could correlate those 22 sites' rows; they now need `lodge:view` as well — as
+does a **Booking Officer holding `support` + `bookings` but not `lodge`**, who is the
 person actually performing these allocations, since the routes are gated `bookings:edit`
 rather than `lodge:edit`. They are all still readable in **Admin → Audit Log** with
 Support access, exactly as before — the change is to AI Diagnostics only. Nothing became
@@ -591,7 +591,7 @@ Zealand time by the surface that shows it.
 
 ## The shared diagnostic-case contract
 
-`src/lib/diagnostics/case/` holds the structure the later packs contribute to, so one
+`src/lib/diagnostics/case/` holds the structure every shipped pack contributes to, so one
 Diagnostics conversation can combine booking, membership and finance evidence for a
 single question under whichever areas the administrator holds. It carries the primary
 record, the authoritative current state, blockers, warnings, current facts, history
