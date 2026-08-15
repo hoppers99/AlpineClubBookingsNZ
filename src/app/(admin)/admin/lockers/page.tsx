@@ -36,6 +36,7 @@ import {
   initialLodgeIdFromLocation,
   useLodgeOptions,
 } from "@/components/lodge-select";
+import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
@@ -97,15 +98,45 @@ export default function LockersPage() {
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   // Lodge context for the page; LodgeSelect renders nothing (and reports the
   // sole lodge) while fewer than two lodges exist (ADR-002).
-  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
+  const {
+    lodges,
+    loading: lodgesLoading,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+    reload: reloadLodgeOptions,
+  } = useLodgeOptions("admin");
   // Hub links (ADR-003) land pre-filtered; read synchronously so the first
   // fetch is already lodge-filtered.
   const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation);
   const [bulkCount, setBulkCount] = useState("");
   const [bulkNamePrefix, setBulkNamePrefix] = useState("Locker");
   const [bulkSaving, setBulkSaving] = useState(false);
+  /*
+    #2701: a FAILED lodge list is not "a club with no lodges", but until now the
+    two were the same empty array here. LodgeSelect renders nothing below two
+    options (ADR-002) and normalises the selection to null, and an omitted
+    lodgeId is resolved server-side to the club's DEFAULT lodge — so a lodge
+    nobody chose would get its lockers listed, renamed, bulk-created and
+    allocated to members, with no lodge named anywhere on screen. While that is
+    true this page does no lodge-scoped work at all.
+
+    A `?lodgeId=` hub link still counts as resolved: that lodge came from the
+    link, not from the list, so a deep link keeps working through the outage.
+    A 403 (`forbidden`) is NOT this state — `ADMIN_MEMBERSHIP` holds membership
+    but not `lodge:view`, so a refusal is that role's normal answer and it keeps
+    the club-wide view it has always had, explained by the notice below.
+  */
+  const lodgeScopeUnresolved = lodgeOptionsFailed && !lodgeId;
 
   const loadData = useCallback(async (signal?: AbortSignal) => {
+    // #2701: no lodge, no read. Clear what the pre-failure unscoped request
+    // put on screen too — those are some other lodge's lockers.
+    if (lodgeScopeUnresolved) {
+      setMembers([]);
+      setLockers([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
@@ -136,7 +167,7 @@ export default function LockersPage() {
     } finally {
       setLoading(false);
     }
-  }, [lodgeId]);
+  }, [lodgeId, lodgeScopeUnresolved]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -373,6 +404,15 @@ export default function LockersPage() {
         description="Create lockers and optionally allocate them to members."
       />
 
+      {/* #2701: say the lodge list failed, above the lodge-scoped content it
+          silently replaced with the default lodge's. */}
+      <LodgeOptionsUnavailableNotice
+        failed={lodgeOptionsFailed}
+        forbidden={lodgeOptionsForbidden}
+        onRetry={reloadLodgeOptions}
+        what="lockers and their allocations"
+      />
+
       <div className="max-w-xs">
         <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} loading={lodgesLoading} />
       </div>
@@ -398,7 +438,9 @@ export default function LockersPage() {
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 required
-                disabled={!canEdit}
+                // #2701: nothing here is safe to fill in while the lodge the
+                // locker would be created against is unknown.
+                disabled={!canEdit || lodgeScopeUnresolved}
                 {...lockerNameHint.fieldProps}
               />
               <FieldHint {...lockerNameHint.hintProps}>
@@ -409,7 +451,7 @@ export default function LockersPage() {
               <Label htmlFor="locker-allocated">Allocated To</Label>
               <Select
                 value={allocatedToMemberId}
-                disabled={!canEdit}
+                disabled={!canEdit || lodgeScopeUnresolved}
                 onValueChange={(value) => {
                   setAllocatedToMemberId(value);
                   setAllocatedToSearch("");
@@ -449,7 +491,7 @@ export default function LockersPage() {
                 canEdit={canEdit}
                 describeReason={false}
                 type="submit"
-                disabled={saving}
+                disabled={saving || lodgeScopeUnresolved}
                 className="w-full sm:w-auto"
               >
                 {saving
@@ -496,7 +538,9 @@ export default function LockersPage() {
                 max={100}
                 value={bulkCount}
                 onChange={(event) => setBulkCount(event.target.value)}
-                disabled={!canEdit}
+                // #2701: a bulk create with no lodgeId seeds the DEFAULT
+                // lodge — up to 100 lockers on the wrong property.
+                disabled={!canEdit || lodgeScopeUnresolved}
                 {...bulkCountHint.fieldProps}
               />
               <FieldHint {...bulkCountHint.hintProps}>
@@ -509,7 +553,7 @@ export default function LockersPage() {
                 id="bulk-locker-prefix"
                 value={bulkNamePrefix}
                 onChange={(event) => setBulkNamePrefix(event.target.value)}
-                disabled={!canEdit}
+                disabled={!canEdit || lodgeScopeUnresolved}
                 {...bulkPrefixHint.fieldProps}
               />
               <FieldHint {...bulkPrefixHint.hintProps}>
@@ -523,7 +567,12 @@ export default function LockersPage() {
                 describeReason={false}
                 type="button"
                 onClick={() => void bulkCreateLockers()}
-                disabled={bulkSaving || !bulkCount || Number(bulkCount) < 1}
+                disabled={
+                  bulkSaving ||
+                  !bulkCount ||
+                  Number(bulkCount) < 1 ||
+                  lodgeScopeUnresolved
+                }
                 className="w-full sm:w-auto"
               >
                 {bulkSaving ? "Creating..." : "Create Lockers"}

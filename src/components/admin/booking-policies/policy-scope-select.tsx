@@ -8,6 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status"
 import { useLodgeOptions } from "@/components/lodge-select"
 
 const CLUB_WIDE = "__club_wide__"
@@ -27,9 +28,37 @@ export function PolicyScopeSelect({
   onChange: (lodgeId: string | null) => void
   id?: string
 }) {
-  const { lodges, loading } = useLodgeOptions("admin")
+  const { lodges, loading, failed, forbidden, reload } = useLodgeOptions("admin")
 
-  if (loading || lodges.length < 2) {
+  if (loading) {
+    return null
+  }
+
+  /*
+    #2701: this control had no error surface at all — a failed lodge list gave
+    an empty `lodges`, which is the same shape as a single-lodge club, so it
+    returned null and the section silently became "club-wide rules" with no way
+    to reach a lodge's overrides. Club-wide rules are not a harmless default
+    here: they apply to every lodge that has no override of its own, so an admin
+    who meant to change one lodge changes all of them, and the control that
+    would have said so is not on the page.
+
+    Rendered INSTEAD of null, never alongside the select, so a section that has
+    a scope control always has either the control or the reason it is missing.
+  */
+  if (failed || forbidden) {
+    return (
+      <LodgeOptionsUnavailableNotice
+        failed={failed}
+        forbidden={forbidden}
+        onRetry={reload}
+        what="per-lodge rule overrides"
+        className="max-w-xl"
+      />
+    )
+  }
+
+  if (lodges.length < 2) {
     return null
   }
 

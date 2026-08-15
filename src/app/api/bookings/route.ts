@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { auth } from "@/lib/auth";
+import { BOOKING_LODGE_REQUIRED_CODE } from "@/lib/booking-lodge-scope";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { getNonMemberHoldPolicy } from "@/lib/cancellation";
@@ -637,6 +638,42 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  /*
+   * A BOOKING MUST NAME ITS LODGE. THE SERVER NO LONGER FILLS THE BLANK (#2701).
+   *
+   * `resolveOptionalActiveLodgeId` answers a missing id with the club's DEFAULT
+   * lodge. On a read that is a reasonable convenience; on a CREATE it is how a
+   * guest ends up booked — and paid up — at a lodge nobody ever showed them.
+   * The reachable path was not a hand-made request: when `/api/admin/lodges` or
+   * `/api/lodges` fails, `useLodgeOptions` returns an empty list, `LodgeSelect`
+   * normalises the selection to `null` and renders nothing at all (ADR-002),
+   * and both booking wizards then posted `lodgeId: undefined`. In a multi-lodge
+   * club that silently stamped the default lodge on a real booking, and the
+   * member's own review step suppressed its "Lodge:" line in exactly that
+   * state, so nothing on screen contradicted it.
+   *
+   * Ten client surfaces are fixed alongside this, but the refusal is what closes
+   * the class: one gate instead of ten, so the eleventh screen somebody writes
+   * next year fails loudly here rather than writing quietly to the wrong lodge.
+   *
+   * Deliberately NOT done by making the shared helper strict. That helper also
+   * serves reads where an omitted lodge legitimately means "the whole club", and
+   * `INV-INT-016` retains exactly such a mode on `GET /api/bookings/rooms` for
+   * consumers outside this repository. The two are consistent rather than in
+   * tension: an unscoped DISCOVERY read is a real question ("where could I
+   * book?"), an unscoped CREATE is not — you cannot book "somewhere". So the
+   * strictness lives here, on the write, and the read contract is untouched.
+   */
+  if (!parsed.data.lodgeId) {
+    return NextResponse.json(
+      {
+        error:
+          "This booking did not say which lodge it is for. Choose a lodge and try again.",
+        code: BOOKING_LODGE_REQUIRED_CODE,
+      },
+      { status: 400 },
+    );
+  }
   const bookingLodgeId = await resolveOptionalActiveLodgeId(
     prisma,
     parsed.data.lodgeId,

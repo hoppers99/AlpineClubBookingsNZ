@@ -27,6 +27,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { useLodgeOptions } from "@/components/lodge-select";
+import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
@@ -117,7 +118,29 @@ export default function AdminWorkPartiesPage() {
   const [details, setDetails] = useState<Record<string, EventDetail>>({});
   // Lodge options for the form's lodge field and per-event lodge labels; the
   // field and labels only render once a second lodge exists (ADR-002).
-  const { lodges } = useLodgeOptions("admin");
+  const {
+    lodges,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+    reload: reloadLodgeOptions,
+  } = useLodgeOptions("admin");
+  /*
+    #2701: a FAILED lodge list is not "a club with no lodges", but until now the
+    two were the same empty array here, and this page keys BOTH its lodge field
+    and its per-event lodge labels on `lodges.length > 1`. So a multi-lodge club
+    whose list failed read exactly like a single-lodge one: no "Lodge" field, no
+    lodge named on any event, and `form.lodgeId` stuck at "" — which the POST
+    route stores as a CLUB-WIDE event, a discount applied at every lodge that
+    nobody chose. (Unlike the other lodge-scoped pages, a work party is not
+    silently pushed onto the default lodge; it is silently pushed onto all of
+    them.)
+
+    The events list itself is a club-wide read that carries no lodgeId, so there
+    is no lodge-scoped fetch to hold back — only the writes, below. There is no
+    page-level lodge state either, so nothing can resolve a lodge here and a
+    failed list alone is the whole condition.
+  */
+  const lodgeScopeUnresolved = lodgeOptionsFailed;
 
   const fetchEvents = useCallback(async () => {
     try {
@@ -306,12 +329,20 @@ export default function AdminWorkPartiesPage() {
         title="Work Parties"
         description="Working bee events with an automatic discount for attending bookings"
         actions={
-          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={startCreate}>
+          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} disabled={lodgeScopeUnresolved} onClick={startCreate}>
             New Event
           </ViewOnlyActionButton>
         }
       />
 
+      {/* #2701: say the lodge list failed, above the form whose "Lodge" field
+          it silently removed. */}
+      <LodgeOptionsUnavailableNotice
+        failed={lodgeOptionsFailed}
+        forbidden={lodgeOptionsForbidden}
+        onRetry={reloadLodgeOptions}
+        what="work parties for a particular lodge"
+      />
 
       {error && (
         <div className="rounded-md border border-danger/20 bg-danger-muted p-3 text-sm text-danger">{error}</div>
@@ -409,7 +440,11 @@ export default function AdminWorkPartiesPage() {
               Active (members can select this event when booking)
             </label>
             <div className="flex gap-2">
-              <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={handleSave} disabled={saving}>
+              {/* #2701: an edit would PUT back the lodge the event already has,
+                  but the admin cannot SEE which lodge that is while the list is
+                  down — and a create would silently go club-wide. Both save
+                  through this one button, so it stays shut for both. */}
+              <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={handleSave} disabled={saving || lodgeScopeUnresolved}>
                 {saving ? "Saving..." : editingId ? "Save Changes" : "Create Event"}
               </ViewOnlyActionButton>
               <Button

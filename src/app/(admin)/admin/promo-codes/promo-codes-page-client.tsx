@@ -26,6 +26,7 @@ import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 import { formatNZDate } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/pricing";
 import { useLodgeOptions } from "@/components/lodge-select";
+import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
   AdminViewOnlySectionBanner,
@@ -221,7 +222,20 @@ export function PromoCodesPageClient({
   // Optional per-lodge restriction (no selection = redeemable at every
   // lodge). The whole control is hidden while fewer than two lodges exist
   // (ADR-002 presentation rule).
-  const { lodges } = useLodgeOptions("admin");
+  //
+  // #2701: "no selection" is a real product difference, not a blank field — the
+  // code becomes redeemable at EVERY lodge, including lodges added later. A
+  // failed lodge list left `lodges` empty, which reads here as a single-lodge
+  // club: the restriction control vanished and the next code created was
+  // club-wide, silently. Creating and editing codes stops until the list
+  // returns; a 403 is a permissions fact rather than an outage and changes
+  // nothing.
+  const {
+    lodges,
+    failed: lodgesFailed,
+    forbidden: lodgesForbidden,
+    reload: reloadLodges,
+  } = useLodgeOptions("admin");
   const multiLodge = lodges.length > 1;
   const [restrictedLodgeIds, setRestrictedLodgeIds] = useState<string[]>([]);
 
@@ -481,6 +495,18 @@ export function PromoCodesPageClient({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    /*
+      #2701 backstop for the disabled Save button — pressing Enter in any text
+      field still submits a form. Without the lodge list the payload below omits
+      `lodgeIds` entirely, which on a NEW code means "redeemable at every lodge",
+      the widest setting there is, chosen by nobody.
+    */
+    if (lodgesFailed) {
+      raiseError(
+        "The lodge list could not be loaded, so this code cannot be saved yet — its lodge restriction is part of what is being saved. Retry the lodge list above, then save.",
+      );
+      return;
+    }
     setSaving(true);
     setError("");
 
@@ -786,6 +812,12 @@ export function PromoCodesPageClient({
                     variant="outline"
                     size="sm"
                     onClick={() => startEdit(promo)}
+                    // #2701: editing a code whose lodge restriction cannot be
+                    // rendered is how a restriction becomes unrevocable — the
+                    // form would show no lodge boxes and the save would leave
+                    // whatever is stored untouched, with nothing on screen
+                    // saying so.
+                    disabled={lodgesFailed}
                   >
                     Edit
                   </ViewOnlyActionButton>
@@ -884,7 +916,11 @@ export function PromoCodesPageClient({
             {promo.memberGuestsOnly && (
               <Badge variant="outline">Member guests only</Badge>
             )}
-            {multiLodge && (promo.lodgeIds?.length ?? 0) > 0 && (
+            {/* #2701: still shown when the lodge list FAILED, with the ids
+                standing in for the names it could not load. A code that is
+                restricted must never look unrestricted — that is the reading
+                an admin would act on. */}
+            {(multiLodge || lodgesFailed) && (promo.lodgeIds?.length ?? 0) > 0 && (
               <Badge variant="outline">
                 Lodges:{" "}
                 {promo.lodgeIds
@@ -969,11 +1005,26 @@ export function PromoCodesPageClient({
           </p>
         </div>
         {!showForm && (
-          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={() => setShowForm(true)}>
+          <ViewOnlyActionButton
+            canEdit={canEdit}
+            describeReason={false}
+            onClick={() => setShowForm(true)}
+            // #2701: `canEdit` keeps carrying the ROLE reason; a missing lodge
+            // list disables creating a code separately, explained by the notice
+            // below.
+            disabled={lodgesFailed}
+          >
             Add Promo Code
           </ViewOnlyActionButton>
         )}
       </div>
+
+      <LodgeOptionsUnavailableNotice
+        failed={lodgesFailed}
+        forbidden={lodgesForbidden}
+        onRetry={reloadLodges}
+        what="lodge-restricted promo codes"
+      />
 
       <FocusedActionError
         id="promo-codes-error"
@@ -1607,7 +1658,7 @@ export function PromoCodesPageClient({
               </div>
 
               <div className="flex space-x-3">
-                <ViewOnlyActionButton canEdit={canEdit} describeReason={false} type="submit" disabled={saving}>
+                <ViewOnlyActionButton canEdit={canEdit} describeReason={false} type="submit" disabled={saving || lodgesFailed}>
                   {saving
                     ? "Saving..."
                     : editingId

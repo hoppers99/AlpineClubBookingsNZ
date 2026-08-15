@@ -288,13 +288,59 @@ type BookingCreatePostOptions = NonNullable<
  * merged so an existing scenario header is preserved; only `x-forwarded-for`
  * is deliberately replaced by the registered isolation identity.
  */
-export function postBookingCreate(
+/**
+ * Resolve the lodge this session may book, for a create that did not name one.
+ *
+ * #2701: `POST /api/bookings` no longer fills a missing `lodgeId` with the
+ * club's default lodge, because on a CREATE that is how somebody ends up paid
+ * up at a lodge they were never shown. Every real client now names its lodge,
+ * so these direct creates do too — otherwise the census helper would be the one
+ * caller in the world still exercising a signature the product no longer emits.
+ *
+ * The member-visible endpoint is used deliberately: it returns exactly the
+ * lodges THIS session may book, so a multi-lodge fixture resolves to the
+ * booker's own eligible lodge rather than to whichever row happens to be
+ * marked default.
+ */
+async function resolveBookableLodgeId(
+  request: APIRequestContext,
+): Promise<string> {
+  const response = await request.get("/api/lodges");
+  if (!response.ok()) {
+    throw new Error(
+      `resolve bookable lodge for a booking create (${response.status()})`,
+    );
+  }
+  const body = (await response.json()) as { lodges?: Array<{ id: string }> };
+  const lodgeId = body.lodges?.[0]?.id;
+  if (!lodgeId) {
+    throw new Error(
+      "resolve bookable lodge for a booking create: this session may book no lodge",
+    );
+  }
+  return lodgeId;
+}
+
+export async function postBookingCreate(
   request: APIRequestContext,
   isolation: BookingCreateIsolation,
   options: BookingCreatePostOptions,
 ): Promise<APIResponse> {
+  // A create that already names its lodge is passed through untouched; only the
+  // blank is filled, and it is filled HERE rather than by the server (#2701).
+  const data = options.data as Record<string, unknown> | undefined;
+  const needsLodge =
+    data !== undefined &&
+    typeof data === "object" &&
+    !Array.isArray(data) &&
+    data.lodgeId === undefined;
+  const resolvedData = needsLodge
+    ? { ...data, lodgeId: await resolveBookableLodgeId(request) }
+    : options.data;
+
   return request.post("/api/bookings", {
     ...options,
+    ...(needsLodge ? { data: resolvedData } : {}),
     headers: {
       ...options.headers,
       ...isolation.headers,

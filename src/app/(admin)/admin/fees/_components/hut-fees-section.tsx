@@ -25,6 +25,7 @@ import {
   initialLodgeIdFromLocation,
   useLodgeOptions,
 } from "@/components/lodge-select";
+import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status";
 import { dateOnlyFromIsoString } from "@/lib/date-only";
 
 // The Hut Fees section of the consolidated /admin/fees console (#1933, E7):
@@ -176,8 +177,29 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
   const [forbidden, setForbidden] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
+  const {
+    lodges,
+    loading: lodgesLoading,
+    // Named apart from this section's own `forbidden` above, which is about the
+    // bookings-gated seasons READ. These two are different refusals.
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+    reload: reloadLodgeOptions,
+  } = useLodgeOptions("admin");
   const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation);
+  /*
+    #2701: a FAILED lodge list is not "a club with no lodges", but until now the
+    two were the same empty array here. LodgeSelect renders nothing below two
+    options (ADR-002) and normalises the selection to null, and a season created
+    with no lodgeId is resolved server-side to the club's DEFAULT lodge — which
+    on this section means a whole grid of nightly rates, and a flat whole-lodge
+    night rate, priced onto a property nobody chose. While that is true this
+    section does no lodge-scoped work at all.
+
+    A `?lodgeId=` hub link still counts as resolved: that lodge came from the
+    link, not from the list, so a deep link keeps working through the outage.
+  */
+  const lodgeScopeUnresolved = lodgeOptionsFailed && !lodgeId;
 
   const [name, setName] = useState("");
   // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
@@ -244,6 +266,13 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
   }, []);
 
   const fetchSeasons = useCallback(async (signal?: AbortSignal) => {
+    // #2701: no lodge, no read. Clear what the pre-failure unscoped request
+    // put on screen too — those are some other lodge's rates.
+    if (lodgeScopeUnresolved) {
+      setSeasons([]);
+      setLoading(false);
+      return;
+    }
     try {
       const res = await fetch(
         lodgeId
@@ -266,7 +295,7 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
     } finally {
       setLoading(false);
     }
-  }, [lodgeId]);
+  }, [lodgeId, lodgeScopeUnresolved]);
 
   useEffect(() => {
     fetchAgeTiers();
@@ -501,7 +530,13 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
             (dates/active) are also editable on <Link href="/admin/seasons" className="underline">Seasons</Link>.
           </CardDescription>
         </div>
-        {!forbidden && !showForm && canEdit && <Button onClick={startCreate}>Add season</Button>}
+        {/* #2701: a season created with no lodge resolved is priced onto the
+            club's default lodge, so the create is shut while that is true. */}
+        {!forbidden && !showForm && canEdit && (
+          <Button onClick={startCreate} disabled={lodgeScopeUnresolved}>
+            Add season
+          </Button>
+        )}
       </CardHeader>
       <CardContent>
         {!forbidden && viewOnlyBanner}
@@ -511,6 +546,19 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
             You don&apos;t have permission to view this section. Hut fees are managed by
             bookings admins; ask a bookings admin if you need to see nightly rates.
           </AdminViewOnlyNotice>
+        )}
+
+        {/* #2701: say the lodge list failed, above the lodge-scoped rates it
+            silently replaced with the default lodge's. Skipped in the
+            `forbidden` branch, which renders no rates and no controls at all —
+            two "you cannot see this" statements would contradict each other. */}
+        {!forbidden && (
+          <LodgeOptionsUnavailableNotice
+            failed={lodgeOptionsFailed}
+            forbidden={lodgeOptionsForbidden}
+            onRetry={reloadLodgeOptions}
+            what="hut fee rates"
+          />
         )}
 
         {!forbidden && (
@@ -732,7 +780,10 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                     </div>
 
                     <div className="flex space-x-3">
-                      <Button type="submit" disabled={saving}>
+                      {/* #2701: an edit is safe (the route ignores lodgeId on
+                          update), but a create with no lodge lands on the
+                          default lodge — so the shared button stays shut. */}
+                      <Button type="submit" disabled={saving || lodgeScopeUnresolved}>
                         {saving ? "Saving..." : editingId ? "Update Season" : "Create Season"}
                       </Button>
                       <Button type="button" variant="outline" onClick={resetForm}>Cancel</Button>

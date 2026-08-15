@@ -18,6 +18,7 @@ import {
   initialLodgeIdFromLocation,
   useLodgeOptions,
 } from "@/components/lodge-select"
+import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status"
 import { dateOnlyFromIsoString } from "@/lib/date-only";
 
 // Season WINDOWS only (#1933, E7): name, type, dates, and active state per
@@ -41,8 +42,27 @@ export default function SeasonsPage() {
   const [error, setError] = useState("")
   const [editingId, setEditingId] = useState<string | null>(null)
   const canEdit = useAdminAreaEditAccess("bookings")
-  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin")
+  const {
+    lodges,
+    loading: lodgesLoading,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+    reload: reloadLodgeOptions,
+  } = useLodgeOptions("admin")
   const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation)
+  /*
+    #2701: a FAILED lodge list is not "a club with no lodges", but until now the
+    two were the same empty array here. LodgeSelect renders nothing below two
+    options (ADR-002) and normalises the selection to null, and an unscoped
+    seasons read is not this lodge's — so the windows listed below, and the
+    dates an admin would then edit on them, could belong to a lodge nobody chose
+    and nothing on screen names. While that is true this page does no
+    lodge-scoped work at all.
+
+    A `?lodgeId=` hub link still counts as resolved: that lodge came from the
+    link, not from the list, so a deep link keeps working through the outage.
+  */
+  const lodgeScopeUnresolved = lodgeOptionsFailed && !lodgeId
 
   // Form state (window fields only)
   const [name, setName] = useState("")
@@ -55,6 +75,15 @@ export default function SeasonsPage() {
   const [saving, setSaving] = useState(false)
 
   const fetchSeasons = useCallback(async (signal?: AbortSignal) => {
+    // #2701: no lodge, no read. Clear what the pre-failure unscoped request
+    // put on screen too, and drop any half-open edit: a window opened from a
+    // row we can no longer vouch for must not stay editable.
+    if (lodgeScopeUnresolved) {
+      setSeasons([])
+      setEditingId(null)
+      setLoading(false)
+      return
+    }
     try {
       const res = await fetch(
         lodgeId
@@ -71,7 +100,7 @@ export default function SeasonsPage() {
     } finally {
       setLoading(false)
     }
-  }, [lodgeId])
+  }, [lodgeId, lodgeScopeUnresolved])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -192,6 +221,15 @@ export default function SeasonsPage() {
         </span>
       </Alert>
 
+      {/* #2701: say the lodge list failed, above the lodge-scoped windows it
+          silently replaced with another lodge's. */}
+      <LodgeOptionsUnavailableNotice
+        failed={lodgeOptionsFailed}
+        forbidden={lodgeOptionsForbidden}
+        onRetry={reloadLodgeOptions}
+        what="season windows"
+      />
+
       <div className="max-w-xs">
         <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} loading={lodgesLoading} />
       </div>
@@ -244,7 +282,10 @@ export default function SeasonsPage() {
               </div>
 
               <div className="flex space-x-3">
-                <Button type="submit" disabled={saving}>
+                {/* #2701: belt and braces — clearing `editingId` already closes
+                    this card when the lodge list fails, so this only covers a
+                    failure that lands mid-edit. */}
+                <Button type="submit" disabled={saving || lodgeScopeUnresolved}>
                   {saving ? "Saving..." : "Update Season"}
                 </Button>
                 <Button type="button" variant="outline" onClick={resetForm}>Cancel</Button>

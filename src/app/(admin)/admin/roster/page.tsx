@@ -24,6 +24,7 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
+import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status"
 import { isRosterData, RosterEditor, type RosterData } from "@/components/admin/roster-editor"
 import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only"
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational"
@@ -108,7 +109,23 @@ export default function RosterPage() {
   const [lastEmailSuppressed, setLastEmailSuppressed] = useState(false)
   const [editorDirty, setEditorDirty] = useState(false)
   const [editorActive, setEditorActive] = useState(false)
-  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin")
+  /*
+    #2701: this page keeps TWO lodge-scoped things on screen — the day's roster
+    editor and the month calendar's status overlay — and both key off `lodgeId`.
+    A failed lodge list used to leave `lodgeId` null, which the roster routes
+    resolve to the club's DEFAULT lodge; the page then regenerated and emailed a
+    roster for a lodge it never named. Worse, the two halves could disagree,
+    because they are separate requests over the same unstated scope. So a failed
+    list stops BOTH, rather than either one.
+    A 403 is a permissions fact, not an outage, and changes nothing here.
+  */
+  const {
+    lodges,
+    loading: lodgesLoading,
+    failed: lodgesFailed,
+    forbidden: lodgesForbidden,
+    reload: reloadLodges,
+  } = useLodgeOptions("admin")
   const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation)
   const [overlayByDate, setOverlayByDate] = useState<Record<string, { tone: CalendarTone; label: string }>>({})
   const lodgeIdRef = useRef(lodgeId)
@@ -126,6 +143,11 @@ export default function RosterPage() {
   }, [error])
 
   const loadMonthStatus = useCallback(async (month: string) => {
+    // #2701: the overlay is the calendar's half of the scope. Leaving it to load
+    // unscoped while the editor is stopped is exactly the disagreement to avoid
+    // — the month would be coloured for the default lodge under a page that has
+    // told the admin it does not know which lodge it is on.
+    if (lodgesFailed) return
     try {
       const query = new URLSearchParams({ month })
       if (lodgeId) query.set("lodgeId", lodgeId)
@@ -144,7 +166,7 @@ export default function RosterPage() {
     } catch {
       // Calendar status is non-essential; the date controls remain usable.
     }
-  }, [lodgeId])
+  }, [lodgeId, lodgesFailed])
 
   const rosterUrl = useCallback((date: string, params: Record<string, string> = {}) => {
     const query = new URLSearchParams(params)
@@ -158,6 +180,15 @@ export default function RosterPage() {
     // Invalidate the previous date/lodge partition before this request can
     // yield. A stale roster must never render beneath a newly-selected key.
     setRoster(null)
+    // #2701: no lodge list, no lodge partition. The roster routes resolve a
+    // missing lodgeId to the club's default lodge, so loading (and then
+    // confirming or emailing) a roster here would act on a lodge nobody chose.
+    // Clearing the roster above is the point: the editor goes with it.
+    if (lodgesFailed) {
+      setLoading(false)
+      setError("")
+      return
+    }
     setLoading(true)
     setError("")
     try {
@@ -201,7 +232,7 @@ export default function RosterPage() {
     } finally {
       if (requestId === rosterRequestRef.current) setLoading(false)
     }
-  }, [loadMonthStatus, rosterUrl])
+  }, [loadMonthStatus, rosterUrl, lodgesFailed])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -209,7 +240,10 @@ export default function RosterPage() {
     return () => controller.abort()
   }, [fetchRoster, selectedDate])
 
-  useEffect(() => setOverlayByDate({}), [lodgeId])
+  // #2701: a lodge list that fails after a month has already been coloured
+  // clears the overlay too, so the calendar cannot keep showing the old scope's
+  // colours next to a stopped editor.
+  useEffect(() => setOverlayByDate({}), [lodgeId, lodgesFailed])
 
   function confirmDiscardDraft() {
     return !editorDirty || window.confirm("Discard your unsaved roster changes? This cannot be undone.")
@@ -234,6 +268,10 @@ export default function RosterPage() {
     failureLabel: string,
     failureKind: ActionFailureKind = "roster",
   ) {
+    // #2701 backstop for the disabled action buttons: every roster action PUTs
+    // to a URL whose lodgeId is omitted while the list is down, which the route
+    // resolves to the club's default lodge.
+    if (lodgesFailed) return null
     setSavingAction(true)
     setError("")
     try {
@@ -344,13 +382,28 @@ export default function RosterPage() {
         </div>
         <div className="flex items-center space-x-3">
           <LodgeSelect lodges={lodges} value={lodgeId} onChange={changeLodge} loading={lodgesLoading} />
-          <a
-            href={`/admin/roster/${selectedDatePathSegment}/print${lodgeId ? `?lodgeId=${encodeURIComponent(lodgeId)}` : ""}`}
-            target="_blank"
-            rel="noopener noreferrer"
-          ><Button variant="outline">Print Roster</Button></a>
+          {/* #2701: the print sheet is lodge-scoped too — with no lodgeId in the
+              link it prints the default lodge's roster, which is the one thing
+              worse than not printing at all, because it leaves the building. */}
+          {lodgesFailed ? (
+            <Button variant="outline" disabled>Print Roster</Button>
+          ) : (
+            <a
+              href={`/admin/roster/${selectedDatePathSegment}/print${lodgeId ? `?lodgeId=${encodeURIComponent(lodgeId)}` : ""}`}
+              target="_blank"
+              rel="noopener noreferrer"
+            ><Button variant="outline">Print Roster</Button></a>
+          )}
         </div>
       </div>
+
+      <LodgeOptionsUnavailableNotice
+        failed={lodgesFailed}
+        forbidden={lodgesForbidden}
+        onRetry={reloadLodges}
+        what="the roster and its chore assignments"
+        className="mb-6"
+      />
 
       <AdminViewOnlySectionBanner canEdit={canEdit} className="mb-6">
         Your admin role can view the chore roster but cannot change it. Lodge edit access is required.
@@ -388,7 +441,10 @@ export default function RosterPage() {
                 describeReason={false}
                 variant="outline"
                 onClick={() => void handleRegenerate()}
-                disabled={loading || savingAction}
+                // #2701: `canEdit` keeps carrying the ROLE reason; a missing
+                // lodge list disables the action separately, explained by the
+                // notice above.
+                disabled={loading || savingAction || lodgesFailed}
               >Regenerate Roster</ViewOnlyActionButton>
             </div>
             <div className="mt-4">
@@ -411,7 +467,11 @@ export default function RosterPage() {
         </Card>
 
         {loading && <div className="py-8 text-center">Loading roster…</div>}
-        {!loading && !roster && (
+        {/* #2701: while the lodge list is down the roster was never requested,
+            so "unavailable — try again" would be both wrong and a retry that
+            can only no-op. The notice above owns that explanation and its
+            retry. */}
+        {!loading && !roster && !lodgesFailed && (
           <Card><CardContent className="py-8 text-center">
             <p className="mb-3 text-muted-foreground">The roster for this lodge night is unavailable.</p>
             <Button variant="outline" onClick={() => void fetchRoster(selectedDate)}>Try again</Button>

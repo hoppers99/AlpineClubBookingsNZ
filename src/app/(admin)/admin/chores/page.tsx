@@ -14,6 +14,7 @@ import {
   initialLodgeIdFromLocation,
   useLodgeOptions,
 } from "@/components/lodge-select"
+import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
@@ -72,10 +73,29 @@ export default function ChoresPage() {
   const [saving, setSaving] = useState(false)
   // Lodge context for the page; LodgeSelect renders nothing (and reports the
   // sole lodge) while fewer than two lodges exist (ADR-002).
-  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin")
+  const {
+    lodges,
+    loading: lodgesLoading,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+    reload: reloadLodgeOptions,
+  } = useLodgeOptions("admin")
   // Hub links (ADR-003) land pre-filtered; read synchronously so the first
   // fetch is already lodge-filtered.
   const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation)
+  /*
+    #2701: a FAILED lodge list is not "a club with no lodges", but until now the
+    two were the same empty array here. LodgeSelect renders nothing below two
+    options (ADR-002) and normalises the selection to null, and an omitted
+    lodgeId is resolved server-side to the club's DEFAULT lodge — so carrying on
+    would read and (worse) write chore templates against a lodge nobody chose
+    and nothing on screen names. While that is true this page does no
+    lodge-scoped work at all.
+
+    A `?lodgeId=` hub link still counts as resolved: that lodge came from the
+    link, not from the list, so a deep link keeps working through the outage.
+  */
+  const lodgeScopeUnresolved = lodgeOptionsFailed && !lodgeId
 
   // Form state
   const [name, setName] = useState("")
@@ -98,6 +118,15 @@ export default function ChoresPage() {
   const conditionalNoteHint = useFieldHint()
 
   const fetchChores = useCallback(async (signal?: AbortSignal) => {
+    // #2701: no lodge, no read. Whatever is already on screen came from the
+    // unscoped request this effect fired before the lodge list failed, so drop
+    // it too rather than leave another lodge's templates sitting under a
+    // heading that claims to be this lodge's.
+    if (lodgeScopeUnresolved) {
+      setChores([])
+      setLoading(false)
+      return
+    }
     try {
       const res = await fetch(
         lodgeId
@@ -116,7 +145,7 @@ export default function ChoresPage() {
     } finally {
       setLoading(false)
     }
-  }, [lodgeId])
+  }, [lodgeId, lodgeScopeUnresolved])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -289,11 +318,22 @@ export default function ChoresPage() {
           </p>
         </div>
         {!showForm && (
-          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={() => { setSortOrder(chores.length + 1); setShowForm(true) }}>
+          // #2701: creating a template with no lodge resolved would file it
+          // against the club's default lodge.
+          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} disabled={lodgeScopeUnresolved} onClick={() => { setSortOrder(chores.length + 1); setShowForm(true) }}>
             Add Chore
           </ViewOnlyActionButton>
         )}
       </div>
+
+      {/* #2701: say the lodge list failed, above the lodge-scoped content it
+          silently replaced with the default lodge's. */}
+      <LodgeOptionsUnavailableNotice
+        failed={lodgeOptionsFailed}
+        forbidden={lodgeOptionsForbidden}
+        onRetry={reloadLodgeOptions}
+        what="chore templates"
+      />
 
       <div className="max-w-xs">
         <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} loading={lodgesLoading} />
@@ -505,7 +545,10 @@ export default function ChoresPage() {
               </div>
 
               <div className="flex space-x-3">
-                <ViewOnlyActionButton canEdit={canEdit} describeReason={false} type="submit" disabled={saving}>
+                {/* #2701: an edit is safe (the route ignores lodgeId on
+                    update), but a create with no lodge lands on the default
+                    lodge — so the one button both use stays shut. */}
+                <ViewOnlyActionButton canEdit={canEdit} describeReason={false} type="submit" disabled={saving || lodgeScopeUnresolved}>
                   {saving ? "Saving..." : editingId ? "Update Chore" : "Create Chore"}
                 </ViewOnlyActionButton>
                 <Button type="button" variant="outline" onClick={resetForm}>

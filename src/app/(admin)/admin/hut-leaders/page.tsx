@@ -29,6 +29,7 @@ import {
 } from "@/lib/date-only";
 import { calculateOverlapDays } from "@/lib/hut-leader-overlap";
 import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
+import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
@@ -159,9 +160,31 @@ export default function HutLeadersPage() {
   const [error, setError] = useState<{ message: string; memberId: string | null } | null>(null);
   // Lodge context for new assignments; LodgeSelect renders nothing (and
   // reports the sole lodge) while fewer than two lodges exist (ADR-002).
-  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
+  const {
+    lodges,
+    loading: lodgesLoading,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+    reload: reloadLodgeOptions,
+  } = useLodgeOptions("admin");
   const [lodgeId, setLodgeId] = useState<string | null>(null);
   const showLodgeColumn = lodges.length > 1;
+  /*
+    #2701: a FAILED lodge list is not "a club with no lodges", but until now the
+    two were the same empty array here. LodgeSelect renders nothing below two
+    options (ADR-002) and normalises the selection to null, and an omitted
+    lodgeId is resolved server-side to the club's DEFAULT lodge.
+
+    On this page that lands in two places, and both are writes: the POST files
+    the assignment (and the club's kiosk PIN with it) against the default lodge,
+    and the bed picker offers the DEFAULT lodge's beds — so "hold a bed" would
+    take a real bed out of the bookable pool at a property nobody chose. Neither
+    is offered while the list has failed.
+
+    The assignments TABLE and the coverage calendar are club-wide reads that
+    carry no lodgeId at all, so they are untouched by this and stay on screen.
+  */
+  const lodgeScopeUnresolved = lodgeOptionsFailed && !lodgeId;
 
   // The over-capacity question appears below the form after a declined save, so
   // it takes focus when it arrives (#2286 review M6) — otherwise a keyboard or
@@ -323,6 +346,10 @@ export default function HutLeadersPage() {
 
   async function handleConfirm(confirmOverCapacity = false) {
     if (!target || !selection.startDate || !selection.endDate) return;
+    // #2701: the Confirm button is already disabled in this state; this is the
+    // defence behind it, because a pending over-capacity card re-invokes this
+    // through a captured closure rather than through the button.
+    if (lodgeScopeUnresolved) return;
     setError(null);
     setCreating(true);
     try {
@@ -621,6 +648,15 @@ export default function HutLeadersPage() {
         description={`Paint the calendar: assign a member as ${hutLeaderLabel.toLowerCase()} for the nights that need cover.`}
       />
 
+      {/* #2701: say the lodge list failed, above the form whose lodge picker it
+          silently removed. */}
+      <LodgeOptionsUnavailableNotice
+        failed={lodgeOptionsFailed}
+        forbidden={lodgeOptionsForbidden}
+        onRetry={reloadLodgeOptions}
+        what={`${hutLeaderLabel.toLowerCase()} assignments for a particular lodge`}
+      />
+
       {/*
         Page-level (more prominent than a form-scoped banner): reset-PIN errors
         originate in the assignments table, so a form banner would never show
@@ -692,7 +728,14 @@ export default function HutLeadersPage() {
         creating={creating}
         error={error}
         onConfirm={() => void handleConfirm()}
-        canEdit={canEdit}
+        /*
+          #2701: this prop is the form's "may the Confirm write proceed" gate
+          (its only other use, the form's own banner, is suppressed just below),
+          so an unresolved lodge closes it exactly as a lodge:view role does.
+          The table's own row controls below keep the plain `canEdit` — deleting
+          an assignment or resetting a kiosk PIN needs no lodge.
+        */
+        canEdit={canEdit && !lodgeScopeUnresolved}
         // #2160: the page banner above already states view-only access for this
         // whole surface, including the assignments table below, so the form must
         // not repeat it — both are unconditional, so every view-only lodge admin
@@ -706,19 +749,27 @@ export default function HutLeadersPage() {
             loading={lodgesLoading}
           />
         }
+        /*
+          #2701: not rendered at all while the lodge is unresolved, because the
+          picker's `available-beds` lookup is the lodge-keyed fetch on this page
+          — with no lodgeId the route answers with the DEFAULT lodge's beds, and
+          a picker offering another property's beds is worse than none.
+        */
         bedPicker={
-          <CustodianBedPicker
-            lodgeId={lodgeId}
-            startDate={selection.startDate}
-            endDate={selection.endDate}
-            value={selectedBedId}
-            onChange={(bedId) => {
-              setSelectedBedId(bedId);
-              // A changed bed invalidates any pending over-capacity answer.
-              setOverCapacity(null);
-            }}
-            canEdit={canEdit}
-          />
+          lodgeScopeUnresolved ? null : (
+            <CustodianBedPicker
+              lodgeId={lodgeId}
+              startDate={selection.startDate}
+              endDate={selection.endDate}
+              value={selectedBedId}
+              onChange={(bedId) => {
+                setSelectedBedId(bedId);
+                // A changed bed invalidates any pending over-capacity answer.
+                setOverCapacity(null);
+              }}
+              canEdit={canEdit}
+            />
+          )
         }
       />
 

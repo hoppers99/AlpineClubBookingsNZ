@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { type GuestData } from "@/components/guest-form";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { useLodgeOptions } from "@/components/lodge-select";
+import { BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE } from "@/lib/booking-lodge-scope";
 import { type PromoResult } from "@/components/promo-code-input";
 import {
   getBookingErrorPaymentTargets,
@@ -213,7 +214,12 @@ export function useBookingWizard() {
   // lodges this member may book; LodgeSelect renders nothing (and reports
   // the sole lodge) while fewer than two come back (ADR-002), so
   // single-lodge clubs see no change.
-  const { lodges, loading: lodgesLoading } = useLodgeOptions("member");
+  const {
+    lodges,
+    loading: lodgesLoading,
+    failed: lodgesFailed,
+    reload: reloadLodges,
+  } = useLodgeOptions("member");
   const [lodgeId, setLodgeId] = useState<string | null>(null);
   // Set when the booking is created on the card-payment path; drives step 4.
   const [createdBooking, setCreatedBooking] = useState<CreatedBooking | null>(
@@ -228,6 +234,18 @@ export function useBookingWizard() {
   const [priceQuote, setPriceQuote] = useState<PriceQuote | null>(null);
   const [priceLoading, setPriceLoading] = useState(false);
   const [error, setError] = useState("");
+  /**
+   * #2701: the member tried to book and no lodge could be determined. Drives
+   * the retry affordance beside the refusal — without it the member is told to
+   * "try again in a moment" with nothing to try again WITH, since the lodge
+   * selector is not rendered in this state.
+   */
+  const [lodgeUnresolved, setLodgeUnresolved] = useState(false);
+  const retryLodgeOptions = useCallback(() => {
+    setLodgeUnresolved(false);
+    setError("");
+    reloadLodges();
+  }, [reloadLodges]);
   const [errorPaymentTargets, setErrorPaymentTargets] = useState<
     BookingErrorPaymentTarget[]
   >([]);
@@ -1145,6 +1163,33 @@ export function useBookingWizard() {
   }
 
   async function handleSubmit() {
+    /*
+     * #2701, owner decision 1: A MEMBER CANNOT COMPLETE A BOOKING WHOSE LODGE
+     * IS UNKNOWN. Nobody pays for a stay at a lodge they were never shown.
+     *
+     * This is the member half of a defect that reached money. `/api/lodges`
+     * failing leaves `useLodgeOptions` with an empty list; `LodgeSelect`
+     * normalises the selection to `null` and renders nothing at all (ADR-002),
+     * so there is no selector on screen to look wrong; the review step's
+     * "Lodge:" line was suppressed by the very same emptiness; and this
+     * function then posted `lodgeId: undefined`, which the server resolved to
+     * the club's default lodge. A member of a three-lodge club could confirm
+     * and pay with nothing anywhere naming a lodge.
+     *
+     * The server now refuses that post outright, so this guard is not what
+     * makes it safe — it is what makes it EXPLAINED. Reaching the server's
+     * refusal would show a member a validation error about a field they were
+     * never offered.
+     *
+     * Deliberately checked at submit rather than by disabling the button: the
+     * member should be told what is wrong and given something to do about it,
+     * not handed a dead control with no reason attached.
+     */
+    if (!lodgeId) {
+      setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
+      setLodgeUnresolved(true);
+      return;
+    }
     if (requiresAdminReviewLocal && !memberReviewJustification.trim()) {
       setError("Please add a reason for booking without an adult guest. This goes to an admin for review.");
       return;
@@ -1708,6 +1753,10 @@ export function useBookingWizard() {
     lodges,
     lodgeId,
     lodgesLoading,
+    // #2701: the member half of the unnamed-lodge refusal.
+    lodgesFailed,
+    lodgeUnresolved,
+    retryLodgeOptions,
     handleLodgeChange,
     selectedLodge,
     lodgeLabel,

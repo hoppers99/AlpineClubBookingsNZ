@@ -21,6 +21,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
+import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status";
 import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { TimePicker } from "@/components/time-picker";
 import { MemberPicker } from "@/components/admin/member-picker";
@@ -91,8 +92,19 @@ export default function AdminBookPage() {
   // Lodge being booked (multi-lodge phase 8). Admin scope lists every active
   // lodge — booking on behalf is the audited path that bypasses member
   // booking restrictions. Hidden with fewer than two lodges (ADR-002).
-  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
+  const {
+    lodges,
+    loading: lodgesLoading,
+    failed: lodgesFailed,
+    forbidden: lodgesForbidden,
+    reload: reloadLodges,
+  } = useLodgeOptions("admin");
   const [lodgeId, setLodgeId] = useState<string | null>(null);
+  // #2701: the lodge this booking will be written against, named on screen
+  // before anything is written. Null means the page cannot say — and the create
+  // is refused server-side rather than defaulted, so it is never a silent
+  // choice.
+  const selectedLodge = lodges.find((lodge) => lodge.id === lodgeId) ?? null;
   // Lodge nights are NZ date-only `yyyy-MM-dd` strings end-to-end (#2474).
   const [checkIn, setCheckIn] = useState<string | null>(null);
   const [checkOut, setCheckOut] = useState<string | null>(null);
@@ -684,6 +696,21 @@ export default function AdminBookPage() {
             <CardTitle>Select Dates</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {/*
+              #2701, owner decision 1: an admin booking on someone's behalf may
+              CONTINUE when the lodge list has failed — they will notice a wrong
+              lodge name and know how to fix it, where a member paying online
+              will not — but the lodge is named on screen before anything is
+              written, and the create is refused server-side rather than
+              defaulted if it still cannot be determined.
+            */}
+            <LodgeOptionsUnavailableNotice
+              failed={lodgesFailed}
+              forbidden={lodgesForbidden}
+              onRetry={reloadLodges}
+              what="the lodge this booking is for"
+              className="mb-4"
+            />
             <div className="max-w-xs">
               <LodgeSelect
                 lodges={lodges}
@@ -692,6 +719,18 @@ export default function AdminBookPage() {
                 loading={lodgesLoading}
               />
             </div>
+            {/*
+              Always shown, never only in a multi-lodge club: an admin creating a
+              booking for somebody else must be able to read back which lodge it
+              lands at, and the state where that is unknown is exactly the state
+              where the screen used to look normal (#2701).
+            */}
+            <p className="text-sm" data-testid="admin-book-lodge">
+              <span className="text-muted-foreground">Booking at:</span>{" "}
+              <span className="font-medium">
+                {selectedLodge?.name ?? "not yet known — choose a lodge before booking"}
+              </span>
+            </p>
             <div className="rounded-md border border-border bg-muted p-3">
               <label className="flex items-start gap-2 text-sm text-foreground cursor-pointer">
                 <input
