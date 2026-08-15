@@ -1,5 +1,6 @@
 - **The two biggest content files in the system are now organised by subject,
-  with no change to a single email or help page (#2689).** The club's email
+  with every email preserved byte-for-byte and one stale help entry reconciled
+  (#2689).** The club's email
   templates lived in one 5,000-line file and its admin help content in one
   2,695-line file. Both have been broken up: emails now sit in one module per
   kind of message — bookings, membership, waitlist, family groups, the finance
@@ -8,14 +9,15 @@
   per section of the admin menu, so the help for a page lives under the same
   heading an operator found the page under.
 
-  Nothing an operator or a member sees has changed. Every one of the 193
+  Every one of the 217
   rendered email bodies was compared byte for byte before and after the move
-  and came out identical, and the whole help corpus was compared the same way.
+  and came out identical. The structural help move was also compared before and
+  after for every resolved path before the Notifications correction below.
   That email comparison is now a permanent check, so a future reorganisation
-  cannot quietly alter what a member receives; it was deliberately broken three
-  times first to prove it can actually catch a change.
+  cannot quietly alter what a member receives; deliberate mutations proved it
+  can catch body drift, an unregistered module, and duplicate case or pin IDs.
 
-  Two operator-visible fixes travelled with it. The help panel for
+  One operator-visible help correction travelled with it. The help panel for
   **Admin > Notifications** carried two versions of its text, and the one
   nobody could ever see was an out-of-date description of an older page; that
   has been removed, and the surviving panel now also explains the per-template

@@ -41,10 +41,10 @@ import type { ContextualHelpContent, HelpEntry, HelpScope } from "./types";
  * Every admin page's help, in one list for lookup.
  *
  * ORDER. `getContextualHelp` picks the LONGEST matching path, so the order of
- * this array decides nothing except among entries whose paths are the same
- * length — and the modules preserve the original relative order within a
- * section, which is what keeps the one duplicated path resolving to the same
- * entry it always did.
+ * this array decides nothing when paths are unique. Equal paths would make the
+ * later entry unreachable; the registry test therefore rejects duplicates
+ * rather than relying on array order (the old `/admin/notifications` duplicate
+ * was reconciled in #2689).
  */
 const adminHelpEntries: HelpEntry[] = [
   ...adminDashboardHelpEntries,
