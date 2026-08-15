@@ -1,0 +1,491 @@
+import fs from "node:fs";
+import path from "node:path";
+
+import { beforeEach, describe, expect, it } from "vitest";
+
+import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
+import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
+import { DATE_ONLY_IN_DATETIME_COLUMN } from "@/lib/__tests__/support/date-only-reviewed-fields";
+import {
+  formatMergeFieldValue,
+  mergeFieldValueKind,
+  MERGE_FIELD_VALUE_KINDS,
+  type MergeFieldValueKind,
+} from "@/lib/member-merge-field-kinds";
+import {
+  mergeMemberFields,
+  UNCONDITIONALLY_MERGED_FIELDS,
+} from "@/lib/member-merge";
+
+/**
+ * The member-merge comparison screen dates each value by what the field MEANS,
+ * not by what its runtime type is (#2860, INV-DATE-019 / INV-DATE-010).
+ *
+ * The screen is the last thing a Full Admin reads before an IRREVERSIBLE merge,
+ * and it exists so a human can judge which of two records should survive. It
+ * used to truncate every date-shaped value to its UTC day, so `photoUpdatedAt`
+ * and `hutLeaderEligibleAt` — real instants — read as the PREVIOUS day for
+ * roughly the first half of every New Zealand day. `photoUpdatedAt` is a recency
+ * signal by construction, so the wrong day landed exactly where the decision is
+ * made.
+ *
+ * The fix is not "swap the helper". The two kinds need OPPOSITE operations:
+ *
+ * - an instant must be read on the club's calendar (`formatDateOnlyForTimeZone`);
+ * - a calendar day is already pinned at UTC midnight and must be TRUNCATED
+ *   (`formatDateOnly`) — routing it through the club-zone formatter agrees in
+ *   New Zealand, which is why an NZ-only assertion cannot catch it, and is a day
+ *   wrong for a club sitting behind UTC.
+ *
+ * Both halves are proved below, and the discrimination is verified by calling
+ * the formatters with EXPLICIT zones rather than by setting `TZ`: `TZ` also
+ * moves `APP_TIME_ZONE` (docs/TESTING.md rule 6), so a suite that sets it goes
+ * red on the premise guard and proves nothing about the instants themselves.
+ *
+ * The instants are chosen so a wrong zone FAILS them. A comfortable mid-morning
+ * instant passes under any zone from roughly UTC+10 up and pins nothing, so each
+ * case is either the first instant of a club day or 00:30 NZDT, and each carries
+ * a companion one millisecond EARLIER whose club day is the previous one. The
+ * pair brackets the offset from both sides: a shallower zone gets the first
+ * instant wrong, a deeper zone gets the companion wrong.
+ */
+
+const CLUB_DAY_CASES = [
+  {
+    label: "NZST (UTC+12), the first instant of a club day",
+    instant: new Date("2026-06-14T12:00:00.000Z"),
+    utcDay: "2026-06-14",
+    clubDay: "2026-06-15",
+    // One millisecond before the club day starts.
+    justBefore: new Date("2026-06-14T11:59:59.999Z"),
+    justBeforeClubDay: "2026-06-14",
+    // Shallower than UTC+12, no daylight saving: reads the boundary instant as
+    // the UTC day.
+    shallowZone: "Australia/Brisbane",
+    // Deeper than UTC+13, no daylight saving: has already rolled over at the
+    // companion instant.
+    deeperZone: "Pacific/Kiritimati",
+  },
+  {
+    label: "NZDT (UTC+13), 00:30 on a club day",
+    instant: new Date("2026-01-14T11:30:00.000Z"),
+    utcDay: "2026-01-14",
+    clubDay: "2026-01-15",
+    justBefore: new Date("2026-01-14T10:59:59.999Z"),
+    justBeforeClubDay: "2026-01-14",
+    // A FIXED UTC+12 with no daylight saving is 30 minutes short of the club
+    // day here, which is what makes this case catch a zone that ignores NZDT.
+    // (POSIX sign convention: `Etc/GMT-12` is UTC+12.)
+    shallowZone: "Etc/GMT-12",
+    deeperZone: "Pacific/Kiritimati",
+  },
+] as const;
+
+// A calendar day as its writers store it: `yyyy-MM-dd` pinned to UTC midnight
+// (`parseDateOnly` / `new Date("yyyy-MM-dd")`).
+const CALENDAR_DAY = new Date("1985-06-15T00:00:00.000Z");
+const CALENDAR_DAY_STRING = "1985-06-15";
+// A zone BEHIND UTC. Nothing about the club is American; this is simply where
+// the two operations stop agreeing, and the only place the calendar-day
+// assertions become decidable.
+const ZONE_BEHIND_UTC = "America/New_York";
+
+describe("#2860 the premise: the club zone is New Zealand and each instant really is divergent", () => {
+  it("runs with the club time zone actually set to New Zealand", () => {
+    expectClubTimeZonePremise();
+  });
+
+  it.each(CLUB_DAY_CASES)(
+    "$label: the UTC day is the day before the club day",
+    ({ instant, utcDay, clubDay }) => {
+      // The first reading IS the pre-#2860 renderer's operation, spelled out:
+      // `value.toISOString().slice(0, 10)`. Both readings are executed rather
+      // than asserted against each other as literals, so a fixture that drifted
+      // out of the divergence window fails here instead of quietly passing.
+      expect(instant.toISOString().slice(0, 10)).toBe(utcDay);
+      expect(formatDateOnlyForTimeZone(instant)).toBe(clubDay);
+    },
+  );
+
+  it.each(CLUB_DAY_CASES)(
+    "$label: a SHALLOWER zone reads the same instant as the UTC day, so a wrong zone fails these tests",
+    ({ instant, utcDay, shallowZone }) => {
+      expect(formatDateOnlyForTimeZone(instant, shallowZone)).toBe(utcDay);
+    },
+  );
+
+  it.each(CLUB_DAY_CASES)(
+    "$label: one millisecond earlier is still the previous club day, and a DEEPER zone gets that wrong",
+    ({ justBefore, justBeforeClubDay, clubDay, deeperZone }) => {
+      expect(formatDateOnlyForTimeZone(justBefore)).toBe(justBeforeClubDay);
+      // UTC+14 has already rolled over, so the pair brackets the club offset
+      // from both sides rather than only proving "deep enough".
+      expect(formatDateOnlyForTimeZone(justBefore, deeperZone)).toBe(clubDay);
+    },
+  );
+});
+
+describe("#2860 the other half of the premise: a calendar day is read by TRUNCATION, which is a DIFFERENT operation", () => {
+  it("agrees with the club-zone formatter in New Zealand, which is exactly why an NZ-only assertion cannot decide it", () => {
+    expect(formatDateOnly(CALENDAR_DAY)).toBe(CALENDAR_DAY_STRING);
+    expect(formatDateOnlyForTimeZone(CALENDAR_DAY)).toBe(CALENDAR_DAY_STRING);
+  });
+
+  it("disagrees in a zone BEHIND UTC — the club-zone formatter would move a stored calendar day a day early", () => {
+    // Verified by passing the zone explicitly, not by setting `TZ`. This is the
+    // reason `dateOfBirth`, `lifeMemberDate` and `joinedDate` are deliberately
+    // NOT routed through `formatDateOnlyForTimeZone` (INV-DATE-010).
+    expect(formatDateOnly(CALENDAR_DAY)).toBe(CALENDAR_DAY_STRING);
+    expect(formatDateOnlyForTimeZone(CALENDAR_DAY, ZONE_BEHIND_UTC)).toBe(
+      "1985-06-14",
+    );
+  });
+});
+
+describe("#2860 every merged field is classified, and only merged fields are", () => {
+  // The classification is only as good as its coverage: a merged field with no
+  // declared kind would fall back to the raw value, and a stray declaration
+  // would be classification nobody reads. Both directions are pinned against
+  // what `mergeMemberFields` actually emits.
+  const emittedFields = () => {
+    // Populate BOTH sides of every merged field so no conditional row is
+    // skipped: the photo group needs the master blank and the loser populated,
+    // `hutLeaderEligibleAt` needs eligibility, and `joinedDate` is always
+    // emitted.
+    const master: Record<string, unknown> = {
+      hutLeaderEligible: true,
+      hutLeaderEligibleAt: new Date("2026-06-14T12:00:00.000Z"),
+      joinedDate: new Date("2020-01-01T00:00:00.000Z"),
+    };
+    const loser: Record<string, unknown> = {
+      photoImageId: "img_loser",
+      photoUpdatedAt: new Date("2026-01-14T11:30:00.000Z"),
+      photoUpdatedByMemberId: "member_loser",
+      hutLeaderEligible: true,
+      hutLeaderEligibleAt: new Date("2019-06-14T12:00:00.000Z"),
+      joinedDate: new Date("2019-01-01T00:00:00.000Z"),
+    };
+    return mergeMemberFields(master, loser).diff.map((row) => row.field);
+  };
+
+  it("declares a kind for every field the merge emits", () => {
+    const undeclared = emittedFields().filter(
+      (field) => !(field in MERGE_FIELD_VALUE_KINDS),
+    );
+    expect(undeclared).toEqual([]);
+  });
+
+  it("declares no kind for a field the merge no longer emits", () => {
+    const emitted = new Set(emittedFields());
+    const strays = Object.keys(MERGE_FIELD_VALUE_KINDS).filter(
+      (field) => !emitted.has(field),
+    );
+    expect(strays).toEqual([]);
+  });
+
+  /*
+    THE TWO ASSERTIONS ABOVE ARE ONLY AS EXHAUSTIVE AS THE FIXTURE.
+
+    `emittedFields()` is a hand-built pair of member records. It is honest about
+    the rows it triggers, but a NEW conditional row — another
+    `hutLeaderEligibleAt`, pushed only when some flag is set — would simply not
+    be emitted by it. "Declares a kind for every field the merge emits" would
+    then pass over a field it never saw, and that field would reach
+    `mergeFieldValueKind`'s `plain` fallback in production.
+
+    So the two tests below take the field names from the merge module itself
+    rather than from the fixture, and between them they cover every way a row
+    can be built: the loops (via the exported list) and the hand-written pushes
+    (via the single constructor's literal arguments).
+  */
+
+  it("declares a kind for every field the merge's own lists loop over", () => {
+    const undeclared = UNCONDITIONALLY_MERGED_FIELDS.filter(
+      (field) => !(field in MERGE_FIELD_VALUE_KINDS),
+    );
+    expect(
+      undeclared,
+      "A field was added to FILL_IF_BLANK_FIELDS, a GROUP_FILL_SPECS group or " +
+        "the OR booleans without a declared value kind (#2860). It would render " +
+        "through the `plain` fallback — raw, and for a date, wrong.",
+    ).toEqual([]);
+
+    // Vacuity guard: an export that became empty would pass the filter above
+    // perfectly while asserting nothing.
+    expect(UNCONDITIONALLY_MERGED_FIELDS.length).toBeGreaterThan(20);
+  });
+
+  it("declares a kind for every field pushed as a one-off derived row", () => {
+    // `fieldMergeRow` is the SINGLE constructor for a diff row (#2860), so every
+    // hand-written push names its field as a string literal in a call to it.
+    // Reading them out of the source is what makes this exhaustive for rows no
+    // fixture is guaranteed to trigger — the same "read the tree, not a
+    // remembered list" method as #2684's encoding guard.
+    const source = fs.readFileSync(
+      path.join(process.cwd(), "src/lib/member-merge.ts"),
+      "utf8",
+    );
+    const derived = [
+      ...source.matchAll(/fieldMergeRow\(\s*"([A-Za-z0-9_]+)"/g),
+    ].map((match) => match[1]!);
+
+    expect(
+      derived.length,
+      "Found NO literal fieldMergeRow(\"...\") call. Either the derived rows are " +
+        "gone, or they are built some other way and this test now asserts nothing.",
+    ).toBeGreaterThan(0);
+
+    const undeclared = derived.filter(
+      (field) => !(field in MERGE_FIELD_VALUE_KINDS),
+    );
+    expect(
+      undeclared,
+      "A derived diff row is emitted for a field with no declared value kind " +
+        "(#2860). Conditional rows are exactly the ones a fixture can miss.",
+    ).toEqual([]);
+  });
+
+  it("classifies the two instants and the three calendar days as such", () => {
+    // The classification is proved from the schema and the write paths in
+    // `member-merge-field-kinds.ts`; this pins the conclusions so a later edit
+    // cannot flip one silently. `lifeMemberDate` is a calendar day: every writer
+    // validates `^\d{4}-\d{2}-\d{2}$` or calls `parseDateOnly`, and none stamps
+    // a clock.
+    expect(mergeFieldValueKind("photoUpdatedAt")).toBe("instant");
+    expect(mergeFieldValueKind("hutLeaderEligibleAt")).toBe("instant");
+    expect(mergeFieldValueKind("dateOfBirth")).toBe("calendarDay");
+    expect(mergeFieldValueKind("lifeMemberDate")).toBe("calendarDay");
+    expect(mergeFieldValueKind("joinedDate")).toBe("calendarDay");
+    expect(mergeFieldValueKind("occupation")).toBe("plain");
+  });
+
+  it("falls back to the raw value for an unknown field, which can be odd but never a day wrong", () => {
+    expect(mergeFieldValueKind("someFutureField")).toBe("plain");
+  });
+});
+
+describe("#2860 the classification agrees with #2684's reviewed record of the same columns", () => {
+  /*
+    TWO DECLARATIONS, ONE SUBJECT. #2684's guard keeps
+    `DATE_ONLY_IN_DATETIME_COLUMN`: the reviewed record of which bare-`DateTime`
+    columns actually hold a calendar day. `MERGE_FIELD_VALUE_KINDS` decides the
+    same question for the merge screen.
+
+    They are not redundant — the guard classifies a call site by the field name
+    written in the ARGUMENT, and the merge screen renders `unknown` values whose
+    field is a runtime string, so the guard passes over it in silence (it does
+    today: the whole suite is green against this branch). But two records of the
+    same fact drift, and a drift here is a date silently a day wrong on the
+    screen before an irreversible merge. So they are bound: a calendar day here
+    must be a reviewed calendar day there, and an instant here must NOT be.
+  */
+
+  const dateKinds = Object.entries(MERGE_FIELD_VALUE_KINDS).filter(
+    ([, kind]) => kind !== "plain",
+  );
+
+  it("has some date-kinded fields to check", () => {
+    // Vacuity guard: if every field became `plain`, both assertions below would
+    // pass over an empty list.
+    expect(dateKinds.length).toBeGreaterThan(0);
+  });
+
+  it("records every calendar day it declares on #2684's reviewed list", () => {
+    const missing = dateKinds
+      .filter(([, kind]) => kind === "calendarDay")
+      .map(([field]) => field)
+      .filter((field) => !(field in DATE_ONLY_IN_DATETIME_COLUMN));
+
+    expect(
+      missing,
+      "This field is rendered by TRUNCATION on the merge screen, which is only " +
+        "correct for a column that holds a calendar day — but it is not on " +
+        "#2684's reviewed list in src/lib/__tests__/support/" +
+        "date-only-reviewed-fields.ts. Add it there WITH THE WRITE THAT PROVES " +
+        "IT, or classify it as an instant here (INV-DATE-019).",
+    ).toEqual([]);
+  });
+
+  it("declares no instant that #2684 reviewed as a calendar day", () => {
+    const contradictory = dateKinds
+      .filter(([, kind]) => kind === "instant")
+      .map(([field]) => field)
+      .filter((field) => field in DATE_ONLY_IN_DATETIME_COLUMN);
+
+    expect(
+      contradictory,
+      "Two guards now disagree about what this column means: it is an instant " +
+        "here and a reviewed calendar day on #2684's list. One of them is wrong, " +
+        "and whichever it is, some surface is showing a date a day early.",
+    ).toEqual([]);
+  });
+});
+
+describe.each(CLUB_DAY_CASES)(
+  "#2860 the merge comparison table — $label",
+  ({ instant, utcDay, clubDay }) => {
+    // Every case in this block pins a DIVERGENT instant — its club day is not
+    // its UTC day — so each one is only meaningful while the club zone really is
+    // New Zealand. `expectClubTimeZonePremise`'s own docblock asks to be called
+    // from the `beforeEach` of exactly such a block: without it a mis-set zone
+    // reports as a bare date mismatch here, and the reader debugs the renderer
+    // instead of the environment.
+    beforeEach(() => {
+      expectClubTimeZonePremise();
+    });
+
+    // One table, both receiver kinds: the photo group's `photoUpdatedAt` and the
+    // hut-leader `hutLeaderEligibleAt` are instants; `dateOfBirth`,
+    // `lifeMemberDate` and `joinedDate` are calendar days. They are asserted
+    // together because the defect was a single generic formatter applied to all
+    // of them, and the fix has to move one set without moving the other.
+    const master: Record<string, unknown> = {
+      photoImageId: null,
+      photoUpdatedAt: null,
+      photoUpdatedByMemberId: null,
+      dateOfBirth: null,
+      lifeMemberDate: null,
+      hutLeaderEligible: false,
+      hutLeaderEligibleAt: null,
+      joinedDate: new Date("2021-03-08T00:00:00.000Z"),
+    };
+    const loser: Record<string, unknown> = {
+      photoImageId: "img_loser",
+      photoUpdatedAt: instant,
+      photoUpdatedByMemberId: "member_loser",
+      dateOfBirth: CALENDAR_DAY,
+      lifeMemberDate: new Date("2018-11-02T00:00:00.000Z"),
+      hutLeaderEligible: true,
+      hutLeaderEligibleAt: instant,
+      joinedDate: new Date("2019-07-01T00:00:00.000Z"),
+    };
+
+    const rowsByField = () => {
+      const byField = new Map<
+        string,
+        { result: unknown; kind: MergeFieldValueKind }
+      >();
+      for (const row of mergeMemberFields(master, loser).diff) {
+        byField.set(row.field, { result: row.result, kind: row.kind });
+      }
+      return byField;
+    };
+
+    const rendered = (field: string) => {
+      const row = rowsByField().get(field);
+      if (!row) throw new Error(`the merge emitted no ${field} row`);
+      return formatMergeFieldValue(row.result, row.kind);
+    };
+
+    it("dates the duplicate's photo on the club's calendar day, not the UTC day", () => {
+      expect(rendered("photoUpdatedAt")).toBe(clubDay);
+      expect(rendered("photoUpdatedAt")).not.toBe(utcDay);
+    });
+
+    it("dates hut-leader eligibility on the club's calendar day, not the UTC day", () => {
+      expect(rendered("hutLeaderEligibleAt")).toBe(clubDay);
+      expect(rendered("hutLeaderEligibleAt")).not.toBe(utcDay);
+    });
+
+    it("leaves the stored calendar days exactly as stored", () => {
+      expect(rendered("dateOfBirth")).toBe(CALENDAR_DAY_STRING);
+      expect(rendered("lifeMemberDate")).toBe("2018-11-02");
+      expect(rendered("joinedDate")).toBe("2019-07-01");
+    });
+
+    it("renders the same days from the ISO strings the browser actually receives", () => {
+      // The page is a client component fed by `/merge/preview`, so every value
+      // arrives as a JSON string, never a `Date`. That was the live arm of the
+      // old formatter, so it is the arm that most needs pinning.
+      const overTheWire = JSON.parse(
+        JSON.stringify(mergeMemberFields(master, loser).diff),
+      ) as { field: string; result: unknown; kind: MergeFieldValueKind }[];
+      const display = (field: string) => {
+        const row = overTheWire.find((r) => r.field === field);
+        if (!row) throw new Error(`the merge emitted no ${field} row`);
+        expect(typeof row.result).toBe("string");
+        return formatMergeFieldValue(row.result, row.kind);
+      };
+
+      expect(display("photoUpdatedAt")).toBe(clubDay);
+      expect(display("hutLeaderEligibleAt")).toBe(clubDay);
+      expect(display("dateOfBirth")).toBe(CALENDAR_DAY_STRING);
+      expect(display("lifeMemberDate")).toBe("2018-11-02");
+      expect(display("joinedDate")).toBe("2019-07-01");
+    });
+
+    it("would move the calendar days too if they were routed through the club-zone formatter — proved from a club BEHIND UTC", () => {
+      // The load-bearing test for the OTHER half of the fix, and the only one
+      // that can fail the mutation "render calendar days with
+      // formatDateOnlyForTimeZone as well". In New Zealand that mutation is
+      // invisible: UTC midnight is midday NZ, the same calendar day. Rendering
+      // the same table for a club sitting behind UTC separates them — the
+      // instants follow that club's day, and the stored calendar days do not
+      // move at all.
+      const byField = rowsByField();
+      const behind = (field: string) => {
+        const row = byField.get(field);
+        if (!row) throw new Error(`the merge emitted no ${field} row`);
+        return formatMergeFieldValue(row.result, row.kind, ZONE_BEHIND_UTC);
+      };
+
+      expect(behind("dateOfBirth")).toBe(CALENDAR_DAY_STRING);
+      expect(behind("lifeMemberDate")).toBe("2018-11-02");
+      expect(behind("joinedDate")).toBe("2019-07-01");
+      // And the instants DO follow the club they are read in, which is what
+      // makes the line above a real distinction rather than a no-op.
+      expect(behind("photoUpdatedAt")).toBe(
+        formatDateOnlyForTimeZone(instant, ZONE_BEHIND_UTC),
+      );
+      expect(behind("photoUpdatedAt")).not.toBe(clubDay);
+    });
+
+    it("carries the kind on the row, so the browser cannot classify a value differently from the server", () => {
+      const byField = rowsByField();
+      expect(byField.get("photoUpdatedAt")?.kind).toBe("instant");
+      expect(byField.get("hutLeaderEligibleAt")?.kind).toBe("instant");
+      expect(byField.get("dateOfBirth")?.kind).toBe("calendarDay");
+      expect(byField.get("lifeMemberDate")?.kind).toBe("calendarDay");
+      expect(byField.get("joinedDate")?.kind).toBe("calendarDay");
+      expect(byField.get("occupation")?.kind).toBe("plain");
+    });
+  },
+);
+
+describe("#2860 the non-date cells are untouched", () => {
+  it("renders blanks, booleans and plain values as before", () => {
+    expect(formatMergeFieldValue(null, "plain")).toBe("—");
+    expect(formatMergeFieldValue(undefined, "calendarDay")).toBe("—");
+    expect(formatMergeFieldValue("", "instant")).toBe("—");
+    expect(formatMergeFieldValue(true, "plain")).toBe("Yes");
+    expect(formatMergeFieldValue(false, "plain")).toBe("No");
+    expect(formatMergeFieldValue("Engineer", "plain")).toBe("Engineer");
+    expect(formatMergeFieldValue("MR", "plain")).toBe("MR");
+  });
+
+  it("shows an unparsable date-kinded value rather than a made-up day", () => {
+    expect(formatMergeFieldValue("not a date", "instant")).toBe("not a date");
+    expect(formatMergeFieldValue(new Date(NaN), "calendarDay")).toBe(
+      "Invalid Date",
+    );
+  });
+
+  it("shows the raw value for a kind it does not recognise, rather than truncating it", () => {
+    // The rolling-deploy case, and the reason the renderer has no trailing
+    // `else`. A NEW server can stamp a kind an OLD bundle has never heard of;
+    // the browser must not guess, because the only guess available is exactly
+    // the truncation #2860 removed. TypeScript cannot express this call — `kind`
+    // is a closed union at compile time and an arbitrary string at runtime — so
+    // the cast is the point of the test, not a shortcut around it.
+    const futureKind = "zonedDay" as unknown as MergeFieldValueKind;
+    const value = new Date("2026-06-14T12:00:00.000Z");
+
+    const rendered = formatMergeFieldValue(value, futureKind);
+    expect(rendered).toBe(String(value));
+    // Specifically NOT the UTC truncation, which is the silent-day-early defect.
+    expect(rendered).not.toBe("2026-06-14");
+    // And not the club-zone reading either — an unknown kind is not a date at
+    // all as far as this renderer is concerned.
+    expect(rendered).not.toBe("2026-06-15");
+  });
+});
