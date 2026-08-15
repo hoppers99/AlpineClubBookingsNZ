@@ -434,6 +434,8 @@ describe("the visible baseline-update escape", () => {
       expect(accepted.code).toBe(0);
       expect(accepted.stdout).toContain("Intentional baseline update");
       expect(accepted.stdout).toContain("(unchanged)");
+      expect(accepted.stdout).toContain("PRE-UPDATE REGRESSIONS ACCEPTED (1)");
+      expect(accepted.stdout).toContain("src/lib/renamed.ts");
 
       const ledger = readFileSync(path.join(root, BASELINE_PATH), "utf8");
       expect(ledger).not.toContain("src/lib/original.ts 800 domain-module");
@@ -463,11 +465,57 @@ describe("the visible baseline-update escape", () => {
       expect(accepted.code).toBe(0);
       expect(accepted.stdout).toContain("Intentional baseline update");
       expect(accepted.stdout).toContain("+50 vs the previous baseline");
-      expect(accepted.stdout).toContain("This PR ACCEPTS more size debt");
+      expect(accepted.stdout).toContain("PRE-UPDATE REGRESSIONS ACCEPTED (1)");
+      expect(accepted.stdout).toContain("src/lib/renamed.ts");
+      expect(accepted.stdout).toContain("The aggregate accepted debt also increased");
 
       const ledgerDiff = git(root, ["diff", "--", BASELINE_PATH]);
       expect(ledgerDiff).toContain("-src/lib/original.ts 800 domain-module");
       expect(ledgerDiff).toContain("+src/lib/renamed.ts 850 domain-module");
+      expect(captureRun(root, []).code).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still names rename-and-grow when a larger unrelated shrink makes aggregate debt fall", () => {
+    const root = createTrackedRepo("src/lib/original.ts", 800);
+    try {
+      writeLines(root, "src/lib/shrinking.ts", 900);
+      const initialBaseline = serializeBaseline(
+        baselineEntriesFor([
+          { file: "src/lib/original.ts", lines: 800 },
+          { file: "src/lib/shrinking.ts", lines: 900 },
+        ]),
+      );
+      writeFileSync(path.join(root, BASELINE_PATH), initialBaseline, "utf8");
+      git(root, ["add", "--", "src/lib/shrinking.ts", BASELINE_PATH]);
+
+      git(root, ["mv", "src/lib/original.ts", "src/lib/renamed.ts"]);
+      writeLines(root, "src/lib/renamed.ts", 850);
+      writeLines(root, "src/lib/shrinking.ts", 800);
+
+      const refused = captureRun(root, []);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("src/lib/renamed.ts");
+      expect(refused.stderr).toContain("src/lib/shrinking.ts");
+
+      const accepted = captureRun(root, ["--update"]);
+      expect(accepted.code).toBe(0);
+      expect(accepted.stdout).toContain("-50 vs the previous baseline");
+      expect(accepted.stdout).toContain("PRE-UPDATE REGRESSIONS ACCEPTED (1)");
+      expect(accepted.stdout).toContain("src/lib/renamed.ts");
+      expect(accepted.stdout).toContain("850 LOC, over by 150");
+      expect(accepted.stdout).toContain(
+        "An aggregate debt decrease does not cancel a regression above",
+      );
+      expect(accepted.stdout).not.toContain("The aggregate accepted debt also increased");
+
+      const ledgerDiff = git(root, ["diff", "--", BASELINE_PATH]);
+      expect(ledgerDiff).toContain("-src/lib/original.ts 800 domain-module");
+      expect(ledgerDiff).toContain("+src/lib/renamed.ts 850 domain-module");
+      expect(ledgerDiff).toContain("-src/lib/shrinking.ts 900 domain-module");
+      expect(ledgerDiff).toContain("+src/lib/shrinking.ts 800 domain-module");
       expect(captureRun(root, []).code).toBe(0);
     } finally {
       rmSync(root, { recursive: true, force: true });

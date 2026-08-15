@@ -27,6 +27,8 @@
 # allowed but must land as an added, removed or changed record here, with
 # the reason in the PR body. Update is the reviewed escape, not a verification
 # pass, and there is no exceptions list that bypasses this file.
+# Update reports every pre-update regression separately. The aggregate debt
+# delta never lets an unrelated shrink conceal a grown record.
 #
 # Format: one record per line, sorted by path.
 #   <path> <loc> <budget-category>

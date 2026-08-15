@@ -385,15 +385,18 @@ runs only `npm run quality:budget`, never the update command.
   record for a file that is still over budget, or retyping a route handler as a
   domain module all fail as a malformed or stale baseline.
 
-`npm run quality:budget:update` prints how much accepted debt the change adds
-or removes, so the number that needs justifying is in front of you before you
-write the PR body. A pure rename of an oversized file fails verification before
-that update as one new-debt record plus one stale old-path record; regeneration
-moves the ledger entry and reports an unchanged debt total. A rename that also
-grows fails the same pre-update check, then regeneration exposes both the path
-change in the ledger diff and the positive debt delta in command output. That
-visible, reviewed acceptance is the intended contract — neither case is a
-silent bypass.
+`npm run quality:budget:update` lists every pre-update regression separately,
+including its path, budget, old ceiling and current size, then prints the
+aggregate debt change as context. Review the per-record list first: a reduction
+in one file must not cancel the warning for growth in another. A pure rename of
+an oversized file fails verification before update as one new-debt record plus
+one stale old-path record; regeneration moves the ledger entry and reports an
+unchanged aggregate. A rename that also grows remains in the per-record warning
+even when a larger unrelated split makes aggregate debt fall. The ledger diff
+shows both path records and the command names the accepted regression, so the
+PR body must justify the growth rather than pointing only to the favourable net
+total. That visible, reviewed acceptance is the intended contract — neither
+case is a silent bypass.
 
 ### Quality report
 

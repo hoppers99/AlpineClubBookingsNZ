@@ -22,8 +22,10 @@
  * Update mode is the owner-approved escape, not another verification mode. It
  * deliberately writes the tree even when verification found new or growing
  * debt, because an exceptional increase has to be possible. The resulting
- * added/removed/changed ledger records, plus the debt delta printed below, are
- * the evidence a reviewer accepts. CI never runs update mode.
+ * added/removed/changed ledger records, every pre-update regression listed
+ * separately, and the aggregate debt delta printed below are the evidence a
+ * reviewer accepts. A shrink elsewhere never cancels a grown record's warning.
+ * CI never runs update mode.
  */
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -87,6 +89,26 @@ function writeBaseline(root: string, content: string): void {
   writeFileSync(target, content, "utf8");
 }
 
+function renderAcceptedRegressions(findings: readonly RatchetFinding[]): string[] {
+  const regressions = findings.filter((finding) => finding.severity === "regression");
+  if (regressions.length === 0) return [];
+
+  const lines = [
+    `  PRE-UPDATE REGRESSIONS ACCEPTED (${regressions.length}) — review each record independently:`,
+  ];
+  for (const finding of regressions) {
+    lines.push(`    ${finding.file ?? BASELINE_PATH}`);
+    lines.push(`      problem:  ${finding.problem}`);
+    if (finding.budget) lines.push(`      budget:   ${finding.budget}`);
+    if (finding.baseline) lines.push(`      baseline: ${finding.baseline}`);
+    if (finding.current) lines.push(`      current:  ${finding.current}`);
+  }
+  lines.push(
+    "  An aggregate debt decrease does not cancel a regression above. Explain every accepted increase in the PR body.",
+  );
+  return lines;
+}
+
 export function run(root: string, argv: readonly string[]): number {
   const update = argv.includes("--update");
   const scan = scanRepository(root);
@@ -131,6 +153,7 @@ export function run(root: string, argv: readonly string[]): number {
       result.baselineOverage === null
         ? null
         : result.currentOverage - result.baselineOverage;
+    const acceptedRegressions = renderAcceptedRegressions(result.findings);
     process.stdout.write(
       [
         `File-size budget: wrote ${BASELINE_PATH}`,
@@ -142,8 +165,9 @@ export function run(root: string, argv: readonly string[]): number {
               ? " (unchanged)"
               : ` (${delta > 0 ? "+" : ""}${delta} vs the previous baseline)`),
         "  Intentional baseline update: review the ledger diff; this is not a verification pass.",
-        delta !== null && delta > 0
-          ? "  This PR ACCEPTS more size debt. Say in the PR body why splitting is worse here."
+        ...acceptedRegressions,
+        acceptedRegressions.length > 0 && delta !== null && delta > 0
+          ? "  The aggregate accepted debt also increased; the net total is context, not a substitute for the per-record review above."
           : "",
         "",
       ]

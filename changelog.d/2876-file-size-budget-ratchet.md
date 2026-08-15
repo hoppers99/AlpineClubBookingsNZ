@@ -22,6 +22,8 @@
   command — `npm run quality:budget:update` — when a change legitimately moves
   a large file's size. That command is an intentional, review-visible escape,
   not a verification pass: a rename appears as removed and added ledger
-  records, a rename that also grows prints its positive debt delta, and the
-  pull request must explain any increase. The gate's own tests under
+  records, every pre-update regression is listed separately, and the net debt
+  change is reported only as context. A larger shrink elsewhere therefore
+  cannot hide the warning for a file that grew, and the pull request must
+  explain every accepted increase. The gate's own tests under
   `scripts/__tests__/` are now also covered by `npm run typecheck` (#2875).
