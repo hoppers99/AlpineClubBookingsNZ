@@ -149,8 +149,9 @@ const createBookingSchema = z.object({
     .regex(ARRIVAL_TIME_PATTERN, ARRIVAL_TIME_ERROR_MESSAGE)
     .optional(),
   requestedRoomId: z.string().min(1).optional(),
-  // Lodge the booking is for (multi-lodge phase 8). Optional so existing
-  // single-lodge clients keep working; omitted resolves to the default lodge.
+  // Lodge the booking is for (multi-lodge phase 8). Optional at schema-parse
+  // time only, so the route can return its own BOOKING_LODGE_REQUIRED 400;
+  // every create must name a lodge and omission never defaults one.
   lodgeId: z.string().min(1).optional(),
   // Cross-lodge waitlist opt-in (ADR-004): other lodges the member would
   // also accept. Only meaningful with waitlist: true; ignored otherwise.

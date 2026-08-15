@@ -1671,7 +1671,7 @@ move, never a capacity or double-booking violation.
   multi-lodge club that stamped a real, paid booking with a lodge nobody had
   shown the member, and the member's review step suppressed its own "Lodge:"
   line in exactly that state.
-  Three consequences are load-bearing:
+  Four consequences are load-bearing:
   - **The shared resolver stays permissive.** `resolveOptionalActiveLodgeId`
     still defaults for READS, where an omitted lodge legitimately means the
     whole club — the mode `INV-INT-016` retains for consumers outside this
@@ -1686,6 +1686,14 @@ move, never a capacity or double-booking violation.
     booking on someone's behalf may continue**, with the lodge named on screen
     before anything is written. An admin will notice a wrong lodge name and
     knows how to correct it; a member paying online will not.
+  - **Production service callers name the authoritative lodge even when they
+    bypass the HTTP route.** Copying a booking carries the source booking's
+    `lodgeId`; a member joining a group carries the organiser booking's resolved
+    lodge. The exact production call-site census in
+    `booking-create-requires-lodge.test.ts` fails on insertion/deletion drift and
+    on any create-service object that omits `lodgeId`. The shared service input
+    remains optional only for legacy internal/test compatibility; that is not
+    permission for a production writer to use its default-lodge fallback.
 
 ### INV-LIFE-062
 

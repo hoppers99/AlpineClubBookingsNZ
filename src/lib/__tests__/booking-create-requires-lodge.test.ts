@@ -13,6 +13,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import ts from "typescript";
 import {
   BOOKING_LODGE_REQUIRED_CODE,
   BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE,
@@ -25,13 +26,136 @@ import {
  * by `POST /api/bookings` returning 400 in the route suite and by the E2E
  * booking-create census, which now names a lodge on every direct create.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 
 const ROUTE = readFileSync(
   join(process.cwd(), "src/app/api/bookings/route.ts"),
   "utf8",
 );
+
+const CREATE_SERVICE_NAMES = new Set([
+  "createDraftBooking",
+  "createConfirmedBooking",
+  "createWaitlistedBooking",
+]);
+
+type ProductionCreateCall = {
+  file: string;
+  service: string;
+  hasLodgeId: boolean;
+};
+
+function listProductionTypeScriptFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const absolute = join(directory, entry.name);
+    if (entry.isDirectory()) return listProductionTypeScriptFiles(absolute);
+    if (!entry.isFile() || !/\.tsx?$/.test(entry.name)) return [];
+    const repoPath = relative(process.cwd(), absolute).replaceAll("\\", "/");
+    if (
+      repoPath.includes("/__tests__/") ||
+      /\.(?:test|spec)\.tsx?$/.test(repoPath)
+    ) {
+      return [];
+    }
+    return [absolute];
+  });
+}
+
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isSatisfiesExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function objectLiteralHasLodgeId(
+  expression: ts.Expression | undefined,
+): boolean {
+  if (!expression) return false;
+  const value = unwrapExpression(expression);
+  if (!ts.isObjectLiteralExpression(value)) return false;
+  return value.properties.some((property) => {
+    const name = property.name;
+    return (
+      name !== undefined &&
+      ((ts.isIdentifier(name) && name.text === "lodgeId") ||
+        (ts.isStringLiteral(name) && name.text === "lodgeId"))
+    );
+  });
+}
+
+function collectProductionCreateCalls(): ProductionCreateCall[] {
+  const calls: ProductionCreateCall[] = [];
+  for (const absolute of listProductionTypeScriptFiles(
+    join(process.cwd(), "src"),
+  )) {
+    const file = relative(process.cwd(), absolute).replaceAll("\\", "/");
+    const source = ts.createSourceFile(
+      file,
+      readFileSync(absolute, "utf8"),
+      ts.ScriptTarget.Latest,
+      true,
+      absolute.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    );
+    const importedServices = new Map<string, string>();
+    const importedNamespaces = new Set<string>();
+
+    source.statements.forEach((statement) => {
+      if (
+        !ts.isImportDeclaration(statement) ||
+        !ts.isStringLiteral(statement.moduleSpecifier) ||
+        statement.moduleSpecifier.text !== "@/lib/booking-create"
+      ) {
+        return;
+      }
+      const bindings = statement.importClause?.namedBindings;
+      if (bindings && ts.isNamespaceImport(bindings)) {
+        importedNamespaces.add(bindings.name.text);
+      } else if (bindings && ts.isNamedImports(bindings)) {
+        bindings.elements.forEach((element) => {
+          const exported = element.propertyName?.text ?? element.name.text;
+          if (CREATE_SERVICE_NAMES.has(exported)) {
+            importedServices.set(element.name.text, exported);
+          }
+        });
+      }
+    });
+
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node)) {
+        let service: string | undefined;
+        if (ts.isIdentifier(node.expression)) {
+          service = importedServices.get(node.expression.text);
+        } else if (
+          ts.isPropertyAccessExpression(node.expression) &&
+          ts.isIdentifier(node.expression.expression) &&
+          importedNamespaces.has(node.expression.expression.text) &&
+          CREATE_SERVICE_NAMES.has(node.expression.name.text)
+        ) {
+          service = node.expression.name.text;
+        }
+        if (service) {
+          calls.push({
+            file,
+            service,
+            hasLodgeId: objectLiteralHasLodgeId(node.arguments[0]),
+          });
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  return calls;
+}
 
 describe("POST /api/bookings — the lodge is required (#2701)", () => {
   it("refuses before resolving, so the default lodge is never reached", () => {
@@ -82,5 +206,38 @@ describe("POST /api/bookings — the lodge is required (#2701)", () => {
       /nothing has been booked or charged/i,
     );
     expect(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE).toMatch(/try again/i);
+  });
+
+  it("keeps an insertion/deletion census of every production service create", () => {
+    // The HTTP refusal is not the only door into these services. Admin copy and
+    // group join both bypass the route, and each once omitted its authoritative
+    // lodge. An exact census makes a newly-added internal door a deliberate
+    // contract change rather than another silent default-lodge write.
+    expect(
+      collectProductionCreateCalls()
+        .map(({ file, service }) => `${file}:${service}`)
+        .sort(),
+    ).toEqual(
+      [
+        "src/app/api/bookings/route.ts:createConfirmedBooking",
+        "src/app/api/bookings/route.ts:createDraftBooking",
+        "src/app/api/bookings/route.ts:createWaitlistedBooking",
+        "src/lib/admin-booking-copy.ts:createDraftBooking",
+        "src/lib/booking-exception-approval.ts:createConfirmedBooking",
+        "src/lib/group-booking.ts:createConfirmedBooking",
+        "src/lib/waitlist-cross-lodge.ts:createConfirmedBooking",
+      ].sort(),
+    );
+  });
+
+  it("requires every production service create to name its lodge", () => {
+    // MUTATION PROBE: remove `lodgeId` from either admin-booking-copy.ts or
+    // group-booking.ts and this reports the exact internal writer that would
+    // fall through the service's legacy default-lodge compatibility path.
+    expect(
+      collectProductionCreateCalls()
+        .filter((call) => !call.hasLodgeId)
+        .map(({ file, service }) => `${file}:${service}`),
+    ).toEqual([]);
   });
 });

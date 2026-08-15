@@ -66,6 +66,11 @@
   be hidden for single-lodge clubs, which is exactly why an outage was
   impossible to spot.
 
+  The same rule now covers other existing booking-creation paths: copying a
+  booking keeps its source lodge, and a member joining a group stays at the
+  organiser's lodge instead of either path falling back to the club's default
+  lodge.
+
   Three screens are deliberately unchanged: the reports page, the promo-code
   redemptions panel and the public booking-requests panel already show a genuine
   "All lodges" view where every figure is correct, so losing the filter costs
