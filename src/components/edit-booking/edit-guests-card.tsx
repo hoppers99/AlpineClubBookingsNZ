@@ -353,7 +353,7 @@ export function EditGuestsCard({
                     onClick={() => quickAdd.onAddPartnerCandidate(candidate)}
                   >
                     {alreadyAdded ? "\u2713 " : "+ "}
-                    {candidate.firstName} {candidate.lastName} \u2014 partner of {candidate.partnerOfName}
+                    {candidate.firstName} {candidate.lastName} — partner of {candidate.partnerOfName}
                   </Button>
                 );
               })}
