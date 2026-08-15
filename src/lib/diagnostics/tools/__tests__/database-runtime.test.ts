@@ -12,10 +12,9 @@
  * database cannot demonstrate their effect:
  *
  *  - the `LIMIT` wrapper and its parameter numbering, which is the reason a tool
- *    cannot ship an unbounded scan by omission. Every shipped entry binds zero
- *    parameters today, so the non-empty-parameter path first runs in production when
- *    a tool pack (AID-6A/B/C) lands — hard-coding `$1` or prepending the limit
- *    instead of appending it would pass every other test in the tree.
+ *    cannot ship an unbounded scan by omission. Shipped pack entries bind `$1..$N`,
+ *    so hard-coding `$1` for the limit or prepending it instead of appending it would
+ *    collide with production parameters; this exact-string test pins the offset.
  *  - the four `SET LOCAL` statements and `BEGIN READ ONLY`, in order.
  *
  * The real PostgreSQL suite then proves the database AGREES with all of it.
@@ -697,9 +696,8 @@ describe("runDiagnosticsReadOnlyQuery — the bounded read-only read (#2374)", (
   it("wraps the entry's SQL and appends the limit AFTER the entry's own parameters", async () => {
     // The numbering is the whole reason this is asserted as an exact string. A
     // registry entry's own `$1`/`$2` must still line up, so the limit has to be the
-    // LAST parameter — `$3` here. Every shipped entry binds zero parameters today,
-    // so a hard-coded `$1` would pass every other test in the tree and break the
-    // first tool pack that takes an argument.
+    // LAST parameter — `$3` here. Shipped pack entries already take arguments, so a
+    // hard-coded `$1` would collide with their production parameter bindings.
     fixture.readRows = [];
     const { client } = await run({
       sql: 'SELECT id FROM public."Booking" WHERE id = $1 AND status = $2',

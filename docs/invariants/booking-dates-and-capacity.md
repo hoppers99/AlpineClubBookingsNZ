@@ -415,17 +415,43 @@ derivation).
   by `src/app/(authenticated)/dashboard/__tests__/dashboard-club-day-boundaries.test.tsx`
   and `src/lib/__tests__/authenticated-layout-club-day-boundaries.test.tsx`.
 
-  **That is not the whole class, and this section does not claim it is.** #2684's
-  inventory named those three; `src/lib/xero-booking-repair-utils.ts:162-166`
-  exports a bare `setHours` wrapper as `startOfDay`, and
-  `xero-booking-repair-load.ts` applies it to `Booking.checkIn`, so an operator
-  asking the repair sweep for `[1 Jul, 31 Jul]` sweeps `[30 Jun, 30 Jul]`. That
-  is filed as **#2868**; it needs the same date-column/instant split rather than
-  a rename, which is why it is a separate issue and not a line in #2838. Census
-  the CALL GRAPH, not the spelling: `setHours` is not an ISO truncation so
-  #2684's lint rule cannot see it, and an exported wrapper puts it beyond a grep
-  for the pattern — the same way `formatDate` hid roughly eighteen Xero document
-  dates from #2682's census.
+  **Those three were not the whole class.** #2684's inventory named them;
+  `src/lib/xero-booking-repair-utils.ts` also exported a bare `setHours` wrapper
+  as `startOfDay`, and `xero-booking-repair-load.ts` built the operator repair
+  sweep's `[from, to]` window from it — so a sweep asked for `[1 Jul, 31 Jul]`
+  covered `[30 Jun, 30 Jul]`, and its own report header printed the shifted days
+  back. Fixed by **#2868**, which is where the fourth-consumer detail lives: that
+  one window fed `Booking.checkIn` (`@db.Date`) in the same `OR` as
+  `Booking.createdAt`, `Booking.updatedAt` and `BookingModification.createdAt`
+  (bare `DateTime`), so the repair was a SPLIT — a date-only bound for the
+  calendar day, a `startOfDateOnlyForTimeZone` bound for the three instants —
+  and never a rename. Pinned by
+  `src/lib/__tests__/xero-booking-repair-scope-window.test.ts`, which asserts the
+  values the adapter hands the driver under three host pins, because each pin can
+  only see one half of the defect.
+
+  **A spelling finds candidates; only the CALL GRAPH settles them.** `setHours`
+  is not an ISO truncation, so #2684's lint rule cannot see it, and an exported
+  wrapper puts it beyond a grep for the pattern — the same way `formatDate` hid
+  roughly eighteen Xero document dates from #2682's census. #2868's census was
+  therefore two steps, and it is worth being exact about which step is which,
+  because only the second one proves anything: every `setHours` in `src/`,
+  `scripts/`, `e2e/` and `prisma/` was enumerated (the seed), and each survivor
+  was then traced forward to the columns it actually binds (the census).
+
+  That leaves one site in application code: `monthGridRange`
+  (`src/lib/calendar-client.ts`), whose `setHours(0, 0, 0, 0)` and
+  `setHours(23, 59, 59, 999)` are the two ends of one browser-side month-grid
+  range. Traced through the calendar view, its query parameters and the events
+  route, both ends bind `CalendarEvent.startsAt`/`endsAt` — both bare `DateTime`
+  — so the pair is outside this class by column type, not by luck.
+
+  **Read that as "no site is currently known", never as "the class is closed",**
+  and note precisely where the residual sits: the trace is sound for everything
+  it reached, but the ENUMERATION that fed it is still a spelling, and a wrapper
+  named something else is exactly what it would miss. That is not a hypothetical
+  — it is how this very site outlived two earlier censuses. #2684's lint rule is
+  still what would close the class.
 
   A `DateTime` column in the same statement is NOT the same comparison and must
   not be given the date-only value: it holds a real instant, so it takes the
@@ -537,13 +563,14 @@ derivation).
     #2684's lint rule is where the whole class gets caught; until then it is a
     known trap, not a permitted pattern.
 
-    The `setHours(0, 0, 0, 0)` "today" comparisons against `@db.Date` lodge
-    nights are a **different** class, and are tracked separately
-    under [INV-DATE-013]: #2838 closed the three member-facing ones, and #2868
-    has the Xero booking-repair wrapper that #2684's inventory missed. Neither
-    #2684's lint rule nor its guard test sees that class — `setHours` is not an
-    ISO truncation — which is why a clean report from either says nothing about
-    it.
+    The `setHours(0, 0, 0, 0)` comparisons against `@db.Date` lodge nights are a
+    **different** class, and are tracked separately under [INV-DATE-013]: #2838
+    closed the three member-facing ones and #2868 closed the Xero
+    booking-repair wrapper that #2684's inventory missed — leaving no site
+    currently known, which is not the same as the class being closed (see
+    [INV-DATE-013] for why the distinction matters here). Neither #2684's lint
+    rule nor its guard test sees that class — `setHours` is not an ISO
+    truncation — which is why a clean report from either says nothing about it.
 
     **A generic renderer cannot decide any of this from the runtime type**,
     because an instant and a calendar day are the same `Date` and the same ISO
