@@ -68,7 +68,7 @@ src/app/(admin)/admin/promo-codes/promo-codes-page-client.tsx 1662 domain-module
 src/app/(admin)/admin/promo-codes/promo-redemptions-panel.tsx 770 domain-module
 src/app/(admin)/admin/refund-requests/page.tsx 872 route-page-shell
 src/app/(admin)/admin/reports/page.tsx 677 route-page-shell
-src/app/(admin)/admin/site-style/site-style-wizard.tsx 986 domain-module
+src/app/(admin)/admin/site-style/site-style-wizard.tsx 1015 domain-module
 src/app/(admin)/admin/subscriptions/page.tsx 805 route-page-shell
 src/app/(admin)/admin/waitlist/page.tsx 1006 route-page-shell
 src/app/(admin)/admin/work-parties/page.tsx 540 route-page-shell
@@ -98,7 +98,7 @@ src/app/api/admin/bookings/[id]/return-to-waitlist/route.ts 410 route-handler
 src/app/api/admin/bookings/[id]/review/route.ts 330 route-handler
 src/app/api/admin/bookings/search/route.ts 258 route-handler
 src/app/api/admin/committee/assignments/[id]/route.ts 255 route-handler
-src/app/api/admin/deletion-requests/[id]/route.ts 1233 route-handler
+src/app/api/admin/deletion-requests/[id]/route.ts 1275 route-handler
 src/app/api/admin/email-templates/route.ts 578 route-handler
 src/app/api/admin/family-groups/[id]/login-holder/route.ts 442 route-handler
 src/app/api/admin/family-groups/[id]/route.ts 294 route-handler
@@ -129,7 +129,7 @@ src/app/api/admin/reports/route.ts 340 route-handler
 src/app/api/admin/subscription-billing/route.ts 318 route-handler
 src/app/api/admin/subscriptions/route.ts 409 route-handler
 src/app/api/admin/xero/force-sync/route.ts 325 route-handler
-src/app/api/admin/xero/import-member-contact/route.ts 351 route-handler
+src/app/api/admin/xero/import-member-contact/route.ts 337 route-handler
 src/app/api/admin/xero/item-code-mappings/route.ts 384 route-handler
 src/app/api/admin/xero/member-grouping/route.ts 382 route-handler
 src/app/api/bookings/[id]/arrival-time/route.ts 355 route-handler
@@ -261,7 +261,7 @@ src/lib/member-exception-requests.ts 724 domain-module
 src/lib/member-family-tree.ts 1216 domain-module
 src/lib/member-guest-consent-service.ts 1141 domain-module
 src/lib/member-guest-email-notes.ts 793 domain-module
-src/lib/member-lifecycle-actions.ts 1717 domain-module
+src/lib/member-lifecycle-actions.ts 1737 domain-module
 src/lib/member-merge.ts 3708 domain-module
 src/lib/member-partner-link.ts 1397 domain-module
 src/lib/membership-cancellation-admin.ts 1143 domain-module
@@ -279,7 +279,7 @@ src/lib/policies/adult-member-hosting.ts 880 domain-module
 src/lib/policies/pricing.ts 805 domain-module
 src/lib/promo.ts 2052 domain-module
 src/lib/public-page-content-tokens.ts 746 domain-module
-src/lib/redact-sensitive-json.ts 818 domain-module
+src/lib/redact-sensitive-json.ts 828 domain-module
 src/lib/school-booking-request.ts 2497 domain-module
 src/lib/seasonal-membership-assignments.ts 1655 domain-module
 src/lib/setup-readiness.ts 1557 domain-module
@@ -295,7 +295,7 @@ src/lib/xero-booking-repair-classify.ts 1394 domain-module
 src/lib/xero-bulk-contact-sync.ts 705 domain-module
 src/lib/xero-contact-create-recovery.ts 830 domain-module
 src/lib/xero-contact-groups.ts 853 domain-module
-src/lib/xero-contacts.ts 1607 domain-module
+src/lib/xero-contacts.ts 1700 domain-module
 src/lib/xero-credit-notes.ts 932 domain-module
 src/lib/xero-hardening-report.ts 959 domain-module
 src/lib/xero-inbound/credit-note-repairs.ts 979 domain-module
@@ -305,7 +305,7 @@ src/lib/xero-member-grouping-resync.ts 794 domain-module
 src/lib/xero-member-import.ts 1209 domain-module
 src/lib/xero-membership-sync.ts 1594 domain-module
 src/lib/xero-operation-outbox.ts 2422 domain-module
-src/lib/xero-operation-retry.ts 1318 domain-module
+src/lib/xero-operation-retry.ts 1311 domain-module
 src/lib/xero-organisation.ts 983 domain-module
 src/lib/xero-record-activity.ts 726 domain-module
 src/lib/xero-sync.ts 833 domain-module
