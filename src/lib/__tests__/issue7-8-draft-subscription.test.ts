@@ -120,10 +120,12 @@ vi.mock("@/lib/prisma", () => ({
     internetBankingPaymentSettings: {
       findUnique: vi.fn().mockResolvedValue(null),
     },
-    // Multi-lodge phase 8: the booking route resolves the (default) lodge
-    // before the per-lodge capacity check.
+    // Multi-lodge phase 8: the booking route resolves the lodge before the
+    // per-lodge capacity check. #2701: it resolves the one the request NAMED
+    // (`findUnique`) and no longer falls back to the club default.
     lodge: {
       findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
+      findUnique: vi.fn().mockResolvedValue({ id: "lodge-1", active: true }),
     },
     lodgeSettings: { findUnique: async () => ({ capacity: 100 }) },
     $transaction: vi.fn(),
@@ -287,6 +289,9 @@ function makeBookingBody(extra: Record<string, unknown> = {}) {
       checkIn: checkInDate,
       checkOut: checkOutDate,
       guests: [{ firstName: "Alice", lastName: "Smith", ageTier: "ADULT", isMember: true }],
+      // #2701: a create must NAME its lodge — the route refuses one that does
+      // not rather than resolving the blank to the club's default lodge.
+      lodgeId: "lodge-1",
       ...extra,
     }),
     headers: { "Content-Type": "application/json" },

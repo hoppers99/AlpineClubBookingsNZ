@@ -35,9 +35,33 @@ vi.mock("@/components/club-identity-provider", () => ({
   useClubIdentity: () => ({ lodgeCapacity: 20 }),
 }));
 
-vi.mock("@/components/lodge-select", () => ({
-  useLodgeOptions: () => ({ lodges: [], loading: false }),
-}));
+/*
+  #2701: `useLodgeOptions` now reports `failed`, `forbidden` and `reload`
+  alongside `lodges`/`loading`, and the wizard destructures three of the five —
+  so a factory that returns only the old two hands its consumer `undefined`
+  where it expects a function. Mocked PARTIALLY over the real module so the next
+  export the wizard reaches for is already present, and the object is built once
+  so `reload` keeps a stable identity across renders.
+
+  The list is no longer empty either. #2701 refuses a submit whose lodge is
+  unknown, so an empty list would put every case below into that refusal instead
+  of the offer rules it means to exercise.
+*/
+vi.mock("@/components/lodge-select", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/components/lodge-select")>();
+  const options = {
+    lodges: [
+      { id: "lodge-1", name: "Alpine Lodge" },
+      { id: "lodge-2", name: "Bush Lodge" },
+    ],
+    loading: false,
+    failed: false,
+    forbidden: false,
+    reload: vi.fn(),
+  };
+  return { ...actual, useLodgeOptions: () => options };
+});
 
 vi.mock("sonner", () => ({ toast: { info: vi.fn(), success: vi.fn() } }));
 

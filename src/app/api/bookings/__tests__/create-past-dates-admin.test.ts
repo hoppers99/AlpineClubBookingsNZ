@@ -197,7 +197,10 @@ import { POST } from "@/app/api/bookings/route";
 function makeRequest(body: Record<string, unknown>) {
   return new NextRequest("http://localhost/api/bookings", {
     method: "POST",
-    body: JSON.stringify(body),
+    // #2701: a create must NAME its lodge — the route refuses one that does not
+    // rather than resolving the blank to the club's default lodge. Named here,
+    // once, because every real client now names it; a case may still override.
+    body: JSON.stringify({ lodgeId: "lodge-1", ...body }),
     headers: { "Content-Type": "application/json" },
   });
 }

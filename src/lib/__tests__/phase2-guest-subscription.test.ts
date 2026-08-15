@@ -33,6 +33,9 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     lodge: {
       findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
+      // #2701: the create resolves the lodge the request NAMED, so the route
+      // reads it back by id instead of falling through to the default lodge.
+      findUnique: vi.fn().mockResolvedValue({ id: "lodge-1", active: true }),
     },
     // #1982: default lodge capacity is a self-healed DB override.
     lodgeSettings: { findUnique: async () => ({ capacity: 100 }) },
@@ -210,6 +213,9 @@ function makeRequest(guests: Array<Record<string, unknown>>, extra: Record<strin
       checkIn: checkInDate,
       checkOut: checkOutDate,
       guests,
+      // #2701: a create must NAME its lodge — the route refuses one that does
+      // not rather than resolving the blank to the club's default lodge.
+      lodgeId: "lodge-1",
       ...extra,
     }),
     headers: { "Content-Type": "application/json" },
