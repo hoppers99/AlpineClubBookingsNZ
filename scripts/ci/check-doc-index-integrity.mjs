@@ -1147,51 +1147,90 @@ function tryResolveCommit(repoRoot, ref) {
   }
 }
 
+/** Resolve a required baseline ref, failing instead of silently weakening scope. */
+function resolveRequiredCommit(repoRoot, ref, source) {
+  const resolved = tryResolveCommit(repoRoot, ref);
+  if (!resolved) {
+    throw new Error(`${source} ${ref} does not resolve to a commit`);
+  }
+  return resolved;
+}
+
+/** Find the immutable branch point for a local feature branch. */
+function tryMergeBase(repoRoot, left, right) {
+  try {
+    return execFileSync("git", ["merge-base", left, right], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Pick the revision whose already-merged ids the current tree must retain.
  *
- * Pull requests compare with their base branch; local feature branches compare
- * with `origin/main`; an exact checkout of main compares with its first parent.
- * `DOC_INDEX_BASE_REF` is the explicit diagnostic/mutation-test override and
- * fails closed when it cannot be resolved.
+ * Pull requests compare with the immutable base SHA from their event. Main
+ * pushes compare with the event's immutable pre-push SHA. Local feature
+ * branches compare with their merge-base against `origin/main` (or `main`).
+ * Every event/explicit ref fails closed when missing; `HEAD^1` is not a safe
+ * feature-branch fallback because it may be a feature commit made after a
+ * forbidden deletion.
  */
 export function resolveInvariantBaselineRef(repoRoot, env = process.env) {
   const explicit = env.DOC_INDEX_BASE_REF?.trim();
   if (explicit) {
-    const resolved = tryResolveCommit(repoRoot, explicit);
-    if (!resolved) {
-      throw new Error(`DOC_INDEX_BASE_REF ${explicit} does not resolve to a commit`);
-    }
-    return resolved;
+    return resolveRequiredCommit(repoRoot, explicit, "DOC_INDEX_BASE_REF");
   }
 
   const head = tryResolveCommit(repoRoot, "HEAD");
   if (!head) throw new Error("HEAD does not resolve to a commit");
 
-  const candidates = [];
-  if (env.PR_BASE_SHA?.trim()) candidates.push(env.PR_BASE_SHA.trim());
-  if (env.GITHUB_BASE_REF?.trim()) {
-    candidates.push(`origin/${env.GITHUB_BASE_REF.trim()}`, env.GITHUB_BASE_REF.trim());
+  const prBase = env.PR_BASE_SHA?.trim();
+  if (prBase) {
+    return resolveRequiredCommit(repoRoot, prBase, "PR_BASE_SHA");
   }
-  candidates.push("origin/main", "main");
-
-  for (const candidate of candidates) {
-    const resolved = tryResolveCommit(repoRoot, candidate);
-    if (resolved && resolved !== head) return resolved;
+  if (env.GITHUB_EVENT_NAME === "pull_request" || env.GITHUB_BASE_REF?.trim()) {
+    throw new Error(
+      "PR_BASE_SHA is required for a pull-request invariant baseline; a branch name " +
+        "can drift after the event and is not an exact substitute",
+    );
   }
 
-  const parent = tryResolveCommit(repoRoot, "HEAD^1");
-  if (parent) return parent;
+  const pushBase = env.PUSH_BASE_SHA?.trim();
+  if (pushBase) {
+    return resolveRequiredCommit(repoRoot, pushBase, "PUSH_BASE_SHA");
+  }
+  const isMainPush =
+    env.GITHUB_EVENT_NAME === "push" &&
+    (env.GITHUB_REF === "refs/heads/main" || env.GITHUB_REF_NAME === "main");
+  if (isMainPush) {
+    throw new Error(
+      "PUSH_BASE_SHA is required for a main-push invariant baseline; HEAD^1 can " +
+        "postdate a deletion when one push contains several commits",
+    );
+  }
+
+  for (const candidate of ["origin/main", "main"]) {
+    if (!tryResolveCommit(repoRoot, candidate)) continue;
+    const mergeBase = tryMergeBase(repoRoot, head, candidate);
+    if (mergeBase) return mergeBase;
+  }
+
   throw new Error(
-    "Cannot resolve an invariant-id baseline. Fetch origin/main or set DOC_INDEX_BASE_REF.",
+    "Cannot resolve an invariant-id baseline. Fetch origin/main or set " +
+      "DOC_INDEX_BASE_REF; HEAD^1 is deliberately not a feature-branch fallback.",
   );
 }
 
 /** Read invariant Markdown exactly as stored at a git revision. */
 export function loadInvariantFilesAtRef(repoRoot, ref) {
+  const resolved = resolveRequiredCommit(repoRoot, ref, "Invariant baseline ref");
   const listed = execFileSync(
     "git",
-    ["ls-tree", "-r", "-z", "--name-only", ref, "--", INVARIANT_DIR],
+    ["ls-tree", "-r", "-z", "--name-only", resolved, "--", INVARIANT_DIR],
     {
       cwd: repoRoot,
       encoding: "utf8",
@@ -1205,7 +1244,7 @@ export function loadInvariantFilesAtRef(repoRoot, ref) {
   for (const rel of listed) {
     files.set(
       rel,
-      execFileSync("git", ["show", `${ref}:${rel}`], {
+      execFileSync("git", ["show", `${resolved}:${rel}`], {
         cwd: repoRoot,
         encoding: "utf8",
         maxBuffer: 1 << 24,

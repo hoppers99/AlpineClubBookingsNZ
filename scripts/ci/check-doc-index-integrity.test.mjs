@@ -1,4 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   BYTE_ORDER_MARK,
@@ -14,9 +26,64 @@ import {
   auditPermanentInvariantIds,
   auditRoutingTable,
   fencedLines,
+  loadInvariantFilesAtRef,
+  resolveInvariantBaselineRef,
   routingTableRows,
   scannableLines,
 } from "./check-doc-index-integrity.mjs";
+
+const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
+const CHECKER_PATH = path.join(REPO_ROOT, "scripts", "ci", "check-doc-index-integrity.mjs");
+const TEMP_ROOTS = new Set();
+
+afterEach(() => {
+  for (const root of TEMP_ROOTS) rmSync(root, { force: true, recursive: true });
+  TEMP_ROOTS.clear();
+});
+
+function git(repoRoot, ...args) {
+  return execFileSync("git", args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+}
+
+function initGitRepo(initialBranch = "main") {
+  const repoRoot = mkdtempSync(path.join(tmpdir(), "doc-index-integrity-"));
+  TEMP_ROOTS.add(repoRoot);
+  git(repoRoot, "init", `--initial-branch=${initialBranch}`);
+  git(repoRoot, "config", "user.name", "Doc index tests");
+  git(repoRoot, "config", "user.email", "doc-index@example.invalid");
+  git(repoRoot, "config", "commit.gpgsign", "false");
+  git(repoRoot, "config", "core.autocrlf", "false");
+  return repoRoot;
+}
+
+function commitFiles(repoRoot, message, files) {
+  for (const [relative, text] of Object.entries(files)) {
+    const absolute = path.join(repoRoot, relative);
+    mkdirSync(path.dirname(absolute), { recursive: true });
+    writeFileSync(absolute, text, "utf8");
+  }
+  git(repoRoot, "add", ".");
+  git(repoRoot, "commit", "-m", message);
+  return git(repoRoot, "rev-parse", "HEAD");
+}
+
+function checkerEnv(overrides = {}) {
+  return {
+    ...process.env,
+    DOC_INDEX_BASE_REF: "",
+    GITHUB_BASE_REF: "",
+    GITHUB_EVENT_NAME: "",
+    GITHUB_REF: "",
+    GITHUB_REF_NAME: "",
+    PR_BASE_SHA: "",
+    PUSH_BASE_SHA: "",
+    ...overrides,
+  };
+}
 
 /**
  * Unit coverage for the pure half of the doc-index gate (#2691 phase 4).
@@ -513,6 +580,199 @@ describe("auditPermanentInvariantIds", () => {
     expect(problems.some((problem) => problem.includes("INV-MONEY-002 disappeared"))).toBe(
       true,
     );
+  });
+});
+
+describe("invariant baseline resolution and loading", () => {
+  it("uses the exact pull-request event base SHA instead of a moving main ref", () => {
+    const repoRoot = initGitRepo();
+    const base = commitFiles(repoRoot, "base", {
+      "docs/invariants/money.md": "# Money\n\n## INV-MONEY-001\n",
+    });
+    git(repoRoot, "checkout", "-b", "feature");
+    commitFiles(repoRoot, "feature", { "feature.txt": "feature\n" });
+    git(repoRoot, "checkout", "main");
+    const movedMain = commitFiles(repoRoot, "main moved", { "main.txt": "later\n" });
+    git(repoRoot, "checkout", "feature");
+
+    const resolved = resolveInvariantBaselineRef(
+      repoRoot,
+      checkerEnv({
+        GITHUB_BASE_REF: "main",
+        GITHUB_EVENT_NAME: "pull_request",
+        PR_BASE_SHA: base,
+      }),
+    );
+
+    expect(resolved).toBe(base);
+    expect(resolved).not.toBe(movedMain);
+  });
+
+  it("fails closed when a pull-request event omits or names a missing base SHA", () => {
+    const repoRoot = initGitRepo();
+    commitFiles(repoRoot, "base", { "README.md": "# Repo\n" });
+
+    expect(() =>
+      resolveInvariantBaselineRef(
+        repoRoot,
+        checkerEnv({ GITHUB_BASE_REF: "main", GITHUB_EVENT_NAME: "pull_request" }),
+      ),
+    ).toThrow("PR_BASE_SHA is required");
+    expect(() =>
+      resolveInvariantBaselineRef(
+        repoRoot,
+        checkerEnv({
+          GITHUB_BASE_REF: "main",
+          GITHUB_EVENT_NAME: "pull_request",
+          PR_BASE_SHA: "refs/heads/not-fetched",
+        }),
+      ),
+    ).toThrow("PR_BASE_SHA refs/heads/not-fetched does not resolve to a commit");
+  });
+
+  it("fails an invalid explicit diagnostic baseline instead of falling back", () => {
+    const repoRoot = initGitRepo();
+    commitFiles(repoRoot, "base", { "README.md": "# Repo\n" });
+
+    expect(() =>
+      resolveInvariantBaselineRef(
+        repoRoot,
+        checkerEnv({ DOC_INDEX_BASE_REF: "refs/heads/not-fetched" }),
+      ),
+    ).toThrow("DOC_INDEX_BASE_REF refs/heads/not-fetched does not resolve to a commit");
+  });
+
+  it("fails when an exact event SHA is absent from a shallow checkout", () => {
+    const source = initGitRepo();
+    const base = commitFiles(source, "base", { "README.md": "base\n" });
+    commitFiles(source, "tip", { "README.md": "tip\n" });
+    const cloneParent = mkdtempSync(path.join(tmpdir(), "doc-index-shallow-"));
+    TEMP_ROOTS.add(cloneParent);
+    const shallow = path.join(cloneParent, "repo");
+    execFileSync(
+      "git",
+      ["clone", "--depth", "1", pathToFileURL(source).href, shallow],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+
+    expect(() =>
+      resolveInvariantBaselineRef(
+        shallow,
+        checkerEnv({ GITHUB_EVENT_NAME: "pull_request", PR_BASE_SHA: base }),
+      ),
+    ).toThrow(`PR_BASE_SHA ${base} does not resolve to a commit`);
+  });
+
+  it("uses a local feature branch's merge-base, never its first parent", () => {
+    const repoRoot = initGitRepo();
+    const base = commitFiles(repoRoot, "base", { "README.md": "base\n" });
+    git(repoRoot, "checkout", "-b", "feature");
+    const featureParent = commitFiles(repoRoot, "feature one", {
+      "feature.txt": "one\n",
+    });
+    commitFiles(repoRoot, "feature two", { "feature.txt": "two\n" });
+    git(repoRoot, "checkout", "main");
+    commitFiles(repoRoot, "main moved", { "main.txt": "later\n" });
+    git(repoRoot, "checkout", "feature");
+
+    const resolved = resolveInvariantBaselineRef(repoRoot, checkerEnv());
+
+    expect(resolved).toBe(base);
+    expect(resolved).not.toBe(featureParent);
+  });
+
+  it("does not use HEAD^1 when no main ref exists on a feature branch", () => {
+    const repoRoot = initGitRepo("feature");
+    commitFiles(repoRoot, "one", { "README.md": "one\n" });
+    commitFiles(repoRoot, "two", { "README.md": "two\n" });
+
+    expect(() => resolveInvariantBaselineRef(repoRoot, checkerEnv())).toThrow(
+      "HEAD^1 is deliberately not a feature-branch fallback",
+    );
+  });
+
+  it("uses the exact main-push before SHA and fails when that event SHA is absent", () => {
+    const repoRoot = initGitRepo();
+    const before = commitFiles(repoRoot, "before", { "README.md": "before\n" });
+    commitFiles(repoRoot, "after", { "README.md": "after\n" });
+    const pushEnv = {
+      GITHUB_EVENT_NAME: "push",
+      GITHUB_REF: "refs/heads/main",
+    };
+
+    expect(
+      resolveInvariantBaselineRef(
+        repoRoot,
+        checkerEnv({ ...pushEnv, PUSH_BASE_SHA: before }),
+      ),
+    ).toBe(before);
+    expect(() =>
+      resolveInvariantBaselineRef(repoRoot, checkerEnv(pushEnv)),
+    ).toThrow("PUSH_BASE_SHA is required");
+  });
+
+  it("loads invariant files from the resolved revision and rejects a missing ref", () => {
+    const repoRoot = initGitRepo();
+    const base = commitFiles(repoRoot, "base", {
+      "docs/invariants/money.md": "# Money\n\nbase text\n",
+    });
+    commitFiles(repoRoot, "head", {
+      "docs/invariants/money.md": "# Money\n\nhead text\n",
+    });
+
+    const loaded = loadInvariantFilesAtRef(repoRoot, base);
+
+    expect(loaded.get("docs/invariants/money.md")).toContain("base text");
+    expect(loaded.get("docs/invariants/money.md")).not.toContain("head text");
+    expect(() => loadInvariantFilesAtRef(repoRoot, "refs/heads/not-fetched")).toThrow(
+      "Invariant baseline ref refs/heads/not-fetched does not resolve to a commit",
+    );
+  });
+});
+
+describe("doc-index CLI baseline wiring", () => {
+  it("fails closed at the CLI when an event base SHA is missing", () => {
+    const result = spawnSync(process.execPath, [CHECKER_PATH], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      env: checkerEnv({
+        GITHUB_BASE_REF: "main",
+        GITHUB_EVENT_NAME: "pull_request",
+        PR_BASE_SHA: "refs/heads/not-fetched",
+      }),
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "PR_BASE_SHA refs/heads/not-fetched does not resolve to a commit",
+    );
+  });
+
+  it("passes through the CLI with a valid explicit exact baseline", () => {
+    const result = spawnSync(process.execPath, [CHECKER_PATH], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      env: checkerEnv({ DOC_INDEX_BASE_REF: "HEAD" }),
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("every id present at base");
+  });
+
+  it("wires both immutable event SHAs into the CI doc-index step", () => {
+    const workflow = readFileSync(path.join(REPO_ROOT, ".github", "workflows", "ci.yml"), "utf8");
+    const start = workflow.indexOf(
+      "- name: Check doc index integrity (reachability + invariant ids)",
+    );
+    const end = workflow.indexOf("- name: Install dependencies", start);
+    const step = workflow.slice(start, end);
+
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(step).toContain(
+      "PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}",
+    );
+    expect(step).toContain("PUSH_BASE_SHA: ${{ github.event.before }}");
   });
 });
 

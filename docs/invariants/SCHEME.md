@@ -571,7 +571,12 @@ by the `verify` job on every PR. It needs no network, no build and no Prisma
 client — it is a single `node` script over the tracked tree and its git base
 revision.
 
-Current-tree scans plus one revision comparison. Definitions and ordinary
+Current-tree scans plus one fail-closed revision comparison. Pull-request CI
+uses the event's exact base SHA, main-push CI uses the event's exact pre-push
+SHA, and local feature work uses its merge-base with `origin/main` (or `main`).
+An explicit or event ref that is absent from the checkout fails the gate; it
+never drifts to the current branch tip or falls back to `HEAD^1`, which may be a
+feature commit made after an ID was deleted. Definitions and ordinary
 citations are read **outside fenced code blocks**. The shape audit covers both
 sides of a fence: any numeric token under a prefix this repository really
 declares has exactly three digits, and a well-formed one must resolve even in a
