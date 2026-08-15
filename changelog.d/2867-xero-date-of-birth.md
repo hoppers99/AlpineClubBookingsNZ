@@ -6,6 +6,19 @@
   here stayed here. It is now sent whenever a member's Xero contact is created
   or updated, in the same `dd/mm/yyyy` form the import already understands.
 
+  **This fills in gradually, and an empty NZBN field today is expected rather
+  than a fault.** The date of birth is sent when a member's Xero contact is next
+  created or updated. For a new member that is straight away. For the members
+  already on file it happens the next time something on their record changes —
+  an address, a phone number, an email, or the date of birth itself — so the
+  field will populate over the following weeks as records are touched in the
+  normal course of things, not all at once on the day this is installed. There
+  is deliberately no bulk push: sending every member's date of birth to Xero in
+  one go is a large unattended write to the club's accounting system, and the
+  club chose to let it fill in naturally instead. If you want a particular
+  member's date of birth in Xero now, open their record and save any change to
+  one of those fields; that sends it immediately.
+
   Three things it deliberately will not do, because that field is a real
   business-number field and the club's own accounting data lives in it. If a
   member has no date of birth, the field is left exactly as it is rather than

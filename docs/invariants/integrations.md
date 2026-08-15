@@ -171,6 +171,11 @@ only the ID heading lines were added.
      row rather than nulling the field, precisely so it cannot be read as an
      observation (`deletion-requests/[id]/route.ts`,
      `member-lifecycle-actions.ts`).
+- **There is no backfill, and its absence is a decision rather than an
+  oversight.** The outbound write fires only when a contact is created or
+  updated, so members already on file populate the NZBN field the next time
+  something on their record changes; the owner chose that over a bulk push
+  (15 August 2026).
 - Because the outbound payload now carries a date of birth, `companyNumber` is
   redacted out of anything stored or logged; see [INV-PRIV-011].
 
