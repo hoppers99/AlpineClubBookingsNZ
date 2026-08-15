@@ -275,7 +275,9 @@ describe("legacy install: lodge hub renders single-lodge presentation", () => {
     );
 
     expect(container).toBeEmptyDOMElement();
-    expect(onChange).toHaveBeenCalledWith(DEFAULT_LODGE_ID);
+    // #2701: the selector now reports WHO asked for the change. The sole-lodge
+    // rule is the component's own normalisation, never the admin's choice.
+    expect(onChange).toHaveBeenCalledWith(DEFAULT_LODGE_ID, "auto");
   });
 });
 

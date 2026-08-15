@@ -67,26 +67,43 @@ vi.mock("@/components/club-identity-provider", () => ({
  * A LodgeSelect that fires nothing by itself. The real one normalises through
  * `onChange` in an effect, which is exactly the call this test has to be able to
  * tell apart from an admin's, so the two are driven explicitly here instead.
+ *
+ * Partially mocked (#2701): the board now reads the module's own `ALL_LODGES`
+ * constant, so a factory that replaced the whole module would break at import
+ * rather than at an assertion. The two buttons deliberately pass NO source, the
+ * way a caller written before the source argument would, which pins that an
+ * absent source still reads as the admin's own change.
  */
-vi.mock("@/components/lodge-select", () => ({
-  LodgeSelect: ({ onChange }: { onChange: (value: string | null) => void }) => (
-    <div>
-      <button type="button" onClick={() => onChange("lodge-2")}>
-        Pick lodge two
-      </button>
-      <button type="button" onClick={() => onChange(null)}>
-        Report no lodge
-      </button>
-    </div>
-  ),
-  useLodgeOptions: () => ({
-    lodges: [
-      { id: "lodge-1", name: "Test Lodge" },
-      { id: "lodge-2", name: "Other Lodge" },
-    ],
-    loading: false,
-  }),
-}));
+vi.mock("@/components/lodge-select", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/components/lodge-select")>();
+  return {
+    ...actual,
+    LodgeSelect: ({
+      onChange,
+    }: {
+      onChange: (value: string | null) => void;
+    }) => (
+      <div>
+        <button type="button" onClick={() => onChange("lodge-2")}>
+          Pick lodge two
+        </button>
+        <button type="button" onClick={() => onChange(null)}>
+          Report no lodge
+        </button>
+      </div>
+    ),
+    useLodgeOptions: () => ({
+      lodges: [
+        { id: "lodge-1", name: "Test Lodge" },
+        { id: "lodge-2", name: "Other Lodge" },
+      ],
+      loading: false,
+      failed: false,
+      reload: vi.fn(),
+    }),
+  };
+});
 
 vi.mock("@/components/admin/bed-allocation-removal-dialog", () => ({
   bedAllocationRemovalCategoryForAnchor: () => "MANUAL_DRAFT",
@@ -156,6 +173,11 @@ function buildPayload(): DashboardPayload {
     suggestedUnallocatedGuestNights: [],
     warnings: [],
     focusedBooking: null,
+    // #2701: the board adopts the lodge the server says it scoped to. This
+    // fixture is served for every request, including the ones made after a
+    // deliberate lodge change, so it must agree with the deep link's own lodge
+    // or the adoption would fight the assertions below.
+    scopedLodgeId: "lodge-1",
   } as unknown as DashboardPayload;
 }
 
