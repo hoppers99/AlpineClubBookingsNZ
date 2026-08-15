@@ -14,8 +14,68 @@ import {
 } from "./xero-booking-repair-types";
 import { buildBookingCancellationRefundIdempotencyKey } from "./payment-recovery-keys";
 import type { RepairDependencies } from "./xero-booking-repair-deps";
-import { addDays, makeLocalKey, startOfDay } from "./xero-booking-repair-utils";
+import { makeLocalKey, parseRepairScopeDay } from "./xero-booking-repair-utils";
+import {
+  addDaysDateOnly,
+  formatDateOnly,
+  isDateOnlyString,
+  parseDateOnly,
+  startOfDateOnlyForTimeZone,
+} from "@/lib/date-only";
 
+/**
+ * The club calendar day after `day`, as `yyyy-MM-dd`.
+ *
+ * The result is re-validated because the last representable day does not have
+ * one: `9999-12-31` — which the day validator accepts, since it is a real date
+ * — steps to the expanded-year form `"+010000-01"`, and that reaches Prisma as
+ * a nonsense bound and fails there with an error naming neither the flag nor
+ * the day. Refusing it here fails just as closed, one layer earlier, and says
+ * which day it was.
+ */
+function nextDateOnly(day: string): string {
+  const next = formatDateOnly(addDaysDateOnly(parseDateOnly(day), 1));
+  if (!isDateOnlyString(next)) {
+    throw new Error(
+      `The repair scope's end day ${JSON.stringify(day)} has no representable next day, so its exclusive upper bound cannot be built.`
+    );
+  }
+  return next;
+}
+
+/**
+ * The `[from, to]` scope window, as the four different comparisons it really is
+ * (#2868, INV-DATE-013).
+ *
+ * The operator names two club calendar days and the sweep matches a booking
+ * whose check-in, creation, last update, or any modification falls inside them.
+ * Those four columns are not the same kind of thing, so one bound value cannot
+ * be right for all of them:
+ *
+ * - `Booking.checkIn` is `DateTime @db.Date` in `prisma/schema.prisma` — a
+ *   lodge night, a calendar day with no time in it. `@prisma/adapter-pg`
+ *   narrows whatever `Date` is bound against such a column to its UTC calendar
+ *   date and throws the time away, so this arm takes the date-only value
+ *   `parseDateOnly` produces (UTC midnight, which reads as the same calendar
+ *   day everywhere).
+ * - `Booking.createdAt`, `Booking.updatedAt` and `BookingModification.createdAt`
+ *   are bare `DateTime` in `prisma/schema.prisma` — real instants, kept whole
+ *   by the adapter. These arms take the instant the club day STARTS at,
+ *   `startOfDateOnlyForTimeZone`.
+ *
+ * The two differ by the club's UTC offset — twelve hours in NZST — and each is
+ * wrong in the other's place. Handing the instants a date-only value would put
+ * their boundary at club MIDDAY (the hazard #2838 recorded when it kept
+ * `startOfDateOnlyForTimeZone` for `draftExpiresAt`); handing `checkIn` a
+ * club-midnight instant is the defect this fixes, because club midnight is the
+ * previous UTC day and therefore the previous DATE, all day, every day.
+ *
+ * The upper bound is exclusive in both cases and is built from the day AFTER
+ * `to`, which is what makes `to` itself an included day. Either end may be
+ * omitted, giving a half-open sweep; a day that is PRESENT but not a real
+ * calendar day is refused rather than dropped, because "not supplied" and
+ * "supplied wrongly" must not mean the same thing on a tool that can `--apply`.
+ */
 function buildScopeWhere(scope: BookingXeroRepairScope): Prisma.BookingWhereInput {
   const and: Prisma.BookingWhereInput[] = [];
 
@@ -23,23 +83,35 @@ function buildScopeWhere(scope: BookingXeroRepairScope): Prisma.BookingWhereInpu
     and.push({ id: scope.bookingId });
   }
 
-  if (scope.from || scope.to) {
-    const from = scope.from ? startOfDay(scope.from) : undefined;
-    const toExclusive = scope.to ? addDays(startOfDay(scope.to), 1) : undefined;
-    const range = {
-      ...(from ? { gte: from } : {}),
-      ...(toExclusive ? { lt: toExclusive } : {}),
+  // Validate before the emptiness test, not with it. Reading these through
+  // truthiness — as this did — silently treats `""` as "no lower bound" and
+  // widens the sweep to all of history.
+  const fromDay =
+    scope.from === undefined ? undefined : parseRepairScopeDay(scope.from, "The repair scope's start day");
+  const toDay =
+    scope.to === undefined ? undefined : parseRepairScopeDay(scope.to, "The repair scope's end day");
+
+  if (fromDay || toDay) {
+    const dayAfterTo = toDay ? nextDateOnly(toDay) : undefined;
+
+    const checkInRange = {
+      ...(fromDay ? { gte: parseDateOnly(fromDay) } : {}),
+      ...(dayAfterTo ? { lt: parseDateOnly(dayAfterTo) } : {}),
+    };
+    const instantRange = {
+      ...(fromDay ? { gte: startOfDateOnlyForTimeZone(fromDay) } : {}),
+      ...(dayAfterTo ? { lt: startOfDateOnlyForTimeZone(dayAfterTo) } : {}),
     };
 
     and.push({
       OR: [
-        { createdAt: range },
-        { updatedAt: range },
-        { checkIn: range },
+        { createdAt: instantRange },
+        { updatedAt: instantRange },
+        { checkIn: checkInRange },
         {
           modifications: {
             some: {
-              createdAt: range,
+              createdAt: instantRange,
             },
           },
         },
