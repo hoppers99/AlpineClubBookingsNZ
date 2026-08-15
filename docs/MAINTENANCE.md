@@ -500,6 +500,17 @@ npx tsx scripts/xero-booking-repair.ts --booking <bookingId> --dry-run
 npx tsx scripts/xero-booking-repair.ts --from <YYYY-MM-DD> --to <YYYY-MM-DD> --dry-run
 ```
 
+`--from`/`--to` are **inclusive club calendar days**, and a booking is swept if
+its check-in night, its creation, its last update, or any of its modifications
+falls inside them. The report header echoes back the two days you asked for, so
+check it against what you typed before reading the findings. Before #2868 those
+two things could disagree: the window was built as midnight in the server's own
+time zone and bound unchanged against both the date-only `checkIn` column and
+the three timestamp columns beside it, so under the `TZ=Pacific/Auckland` pin a
+sweep asked for 1-31 July actually ran 30 June - 30 July and said so in a header
+nobody had reason to distrust. If you are reading an archived report from before
+that fix, its window is one day earlier at both ends than the operator intended.
+
 Only use `--apply` after the dry-run report has been reviewed. Do not run it
 with live Xero, Stripe, SES, Sentry, or production database credentials during
 exploratory work; use a staging database and Xero demo tenant where possible.

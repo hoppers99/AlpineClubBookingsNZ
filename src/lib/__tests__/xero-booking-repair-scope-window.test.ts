@@ -54,22 +54,28 @@
  * The fixed code has NO host-zone input left — `parseDateOnly` builds an
  * explicit `Z` instant and `startOfDateOnlyForTimeZone` takes the club zone
  * explicitly — so every pin below must produce the identical binding. That
- * invariance is the assertion. Measured by restoring the defect (one shared
- * local-midnight range across all four arms) and re-running this file:
+ * invariance is the assertion. MEASURED, by restoring the defect (one shared
+ * local-midnight range across all four arms) and re-running this file: 4 of its
+ * 7 tests go red, and which ones depends entirely on the pin.
  *
- * | host zone pinned              | assertions red with the defect restored |
- * | ----------------------------- | --------------------------------------- |
- * | `Pacific/Auckland` (UTC+12, the production pin) | the `checkIn` half |
- * | `America/New_York` (UTC-4)    | the three instant arms |
- * | `UTC` (the CI runner)         | the three instant arms |
+ * | host zone pinned  | red | what it binds for a `[1 Jul, 31 Jul]` request |
+ * | ----------------- | --- | --------------------------------------------- |
+ * | `Pacific/Auckland` (UTC+12, the production pin) | the `checkIn` test | `checkIn` in `['2026-06-30', '2026-07-31')` — the wrong DAYS. The instants land on `2026-06-30 12:00:00`, which is right, because the host zone IS the club zone. |
+ * | `America/New_York` (UTC-4) | the instants test | the instants start at `2026-07-01 04:00:00` where the club day starts at `2026-06-30 12:00:00`. `checkIn` comes out `['2026-07-01', '2026-08-01')` — correct, by accident. |
+ * | `UTC` (the CI runner) | the instants test | the instants start at `2026-07-01 00:00:00`. `checkIn` again correct by accident. |
  *
- * Read that table carefully, because it is the whole reason there are two
- * zones. East of UTC, local midnight is the previous UTC day, so the DATE
+ * The fourth red is the zone-independence test at the bottom, which is the only
+ * one no single pin can talk its way past.
+ *
+ * Read that table carefully, because it is the whole reason there is more than
+ * one pin. East of UTC, local midnight is the previous UTC day, so the DATE
  * narrowing is wrong and the instants coincidentally agree with the club's.
  * West of UTC — and at UTC — local midnight is the same UTC day, so the DATE
- * comes out right by accident and only the instants move. **Either zone alone
- * passes a half-fixed implementation.** New York is not a claim about how this
- * is deployed; it is the pin that can see the half Auckland cannot.
+ * comes out right by accident and only the instants move. **Either pin alone
+ * passes a half-fixed implementation**, and the rows above are the measurement
+ * that says so rather than an argument that it should be. New York is not a
+ * claim about how this is deployed; it is the pin that sees the half Auckland
+ * cannot.
  */
 import pg from "pg";
 import { PrismaClient } from "@prisma/client";
