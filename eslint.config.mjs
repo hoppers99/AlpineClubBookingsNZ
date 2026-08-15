@@ -791,6 +791,52 @@ const eslintConfig = defineConfig([
     },
   },
   {
+    /*
+      #2690, owner decision 15 Aug 2026 — ONE of the two rules above is switched
+      back on, for ONE folder.
+
+      `react-hooks/static-components` is measured at zero errors across
+      `src/components/edit-booking/**`, both before and after the edit-panel
+      split, so turning it on changes nothing today and costs nothing. Its value
+      is forward-looking: it stops a component being defined inside another
+      component from being reintroduced into the folder the split just cleaned.
+      That mistake gives the inner component a new identity on every render, so
+      React discards and rebuilds that part of the tree instead of updating it —
+      which reaches a user as typed text being wiped, focus jumping out of a
+      field, or a panel flickering.
+
+      `react-hooks/set-state-in-effect` is deliberately NOT enabled here. Two
+      sites in this folder still trip it: the per-guest-dates auto-disable in
+      `hooks/use-guest-date-modes.ts` and the hosting-override retirement in
+      `hooks/use-hosting-coverage-override.ts`. Both are reset flows, and
+      rewriting either to derive during render changes WHEN the reset fires on
+      the admin booking screen. That is a real behaviour change, and #2690's
+      whole claim is that it changes none, so it is not being smuggled in behind
+      a lint switch.
+
+      THE BLIND SPOT, and it matters more than the count. Measured on this
+      refactor: `set-state-in-effect` reported THREE errors in the monolithic
+      panel and TWO after the split. Nothing was fixed. The one that disappeared
+      is the debounced quote effect's `setQuote(null)`, and it disappeared only
+      because `setQuote` became a hook PARAMETER — the rule can no longer prove
+      a value it received as an argument is a state setter, so it stops looking.
+      The code is identical; the checker went blind to it.
+
+      So "two remaining" flatters this folder, and the same discount applies to
+      any future effect extracted into a hook that takes its setters as
+      arguments — which is exactly the shape this refactor introduced. Do not
+      read a falling number here as the folder getting cleaner.
+
+      Scope is deliberately this folder and nothing else. The repository-wide
+      `off` above is untouched; widening either rule is a separate decision with
+      its own measurement.
+    */
+    files: ["src/components/edit-booking/**/*.{ts,tsx}"],
+    rules: {
+      "react-hooks/static-components": "error",
+    },
+  },
+  {
     files: ["**/__tests__/**/*.{ts,tsx}", "**/*.test.{ts,tsx}"],
     rules: {
       "@typescript-eslint/no-explicit-any": "off",
