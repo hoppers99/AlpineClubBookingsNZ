@@ -9,6 +9,7 @@ import {
   auditInvariantFilesLinkedFromIndex,
   auditInvariantIds,
   auditLineNumberCitations,
+  auditNumberSequences,
   auditRoutingTable,
   routingTableRows,
   scannableLines,
@@ -185,6 +186,116 @@ describe("auditInvariantIds", () => {
     // citation — which is the loud outcome, not a silent second definition.
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("no file under docs/invariants/ defines it");
+  });
+});
+
+describe("auditNumberSequences", () => {
+  /** A domain file defining every id given, in order, under one prefix. */
+  function family(prefix, numbers) {
+    return [
+      `# ${prefix}`,
+      "",
+      ...numbers.flatMap((n) => [`## INV-${prefix}-${n}`, "", "- A rule.", ""]),
+    ].join("\n");
+  }
+
+  it("passes the clean fixture repository", () => {
+    expect(auditNumberSequences(repo())).toEqual([]);
+  });
+
+  it("passes a prefix whose numbers run 001 upwards with no gaps", () => {
+    const problems = auditNumberSequences(
+      repo({ "docs/invariants/money.md": family("MONEY", ["001", "002", "003"]) }),
+    );
+
+    expect(problems).toEqual([]);
+  });
+
+  it("fails the #2889 case: a new id that skipped to the number a grep suggested", () => {
+    // The incident, to scale: a family ran 001-032 and a branch took 042,
+    // because the only place 041 appeared in the repository was a fenced example
+    // in SCHEME.md and the maximum was read off a repo-wide grep rather than off
+    // the index.
+    //
+    // The fixture uses a prefix this repository does not declare, deliberately.
+    // Writing the real one here would put an invented number under a live prefix
+    // back into the tree, where the next grep would find it and read it as the
+    // maximum — which is the whole mistake. SCHEME.md §1.4 states the rule.
+    const numbers = Array.from({ length: 32 }, (_, i) => String(i + 1).padStart(3, "0"));
+    const problems = auditNumberSequences(
+      repo({ "docs/invariants/demo.md": family("DEMO", [...numbers, "042"]) }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("INV-DEMO is missing 033-041");
+    expect(problems[0]).toContain("its highest is INV-DEMO-042 (docs/invariants/demo.md:");
+    expect(problems[0]).toContain("renumber it to INV-DEMO-033");
+    // The diagnosis, not just the verdict: this is the mistake that made it.
+    expect(problems[0]).toContain("grep");
+  });
+
+  it("reports several gaps as compressed runs rather than a wall of numbers", () => {
+    const problems = auditNumberSequences(
+      repo({
+        "docs/invariants/money.md": family("MONEY", ["001", "005", "006", "009"]),
+      }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("missing 002-004, 007-008");
+  });
+
+  it("fails a prefix that does not start at 001", () => {
+    const problems = auditNumberSequences(
+      repo({ "docs/invariants/money.md": family("MONEY", ["003", "004"]) }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("INV-MONEY starts at INV-MONEY-003");
+    expect(problems[0]).toContain("not 001");
+  });
+
+  it("reports a bad start and an interior hole separately, so both get fixed", () => {
+    const problems = auditNumberSequences(
+      repo({ "docs/invariants/money.md": family("MONEY", ["002", "004"]) }),
+    );
+
+    expect(problems).toHaveLength(2);
+    expect(problems[0]).toContain("starts at INV-MONEY-002");
+    expect(problems[1]).toContain("missing 003");
+  });
+
+  it("checks each prefix on its own, not the numbers across all of them", () => {
+    // A prefix is a namespace: INV-CAP-001 existing says nothing about INV-MONEY.
+    const problems = auditNumberSequences(
+      repo({ "docs/invariants/beds.md": family("CAP", ["001", "002"]) }),
+    );
+
+    expect(problems).toEqual([]);
+  });
+
+  it("ignores an id in a fenced example, which is what a document shows one in", () => {
+    const problems = auditNumberSequences(
+      repo({
+        "docs/invariants/money.md": `${family("MONEY", ["001"])}\n\`\`\`\n## INV-MONEY-742\n\`\`\`\n`,
+      }),
+    );
+
+    expect(problems).toEqual([]);
+  });
+
+  it("fails the whole check, not just this assertion in isolation", () => {
+    const files = repo({
+      "docs/invariants/money.md": family("MONEY", ["001", "004"]),
+    });
+    files.set(
+      "docs/DOMAIN_INVARIANTS.md",
+      `${files.get("docs/DOMAIN_INVARIANTS.md")}| \`INV-MONEY-004\` | A rule |\n`,
+    );
+
+    expect(auditDocs(files).some((p) => p.includes("INV-MONEY is missing 002-003"))).toBe(
+      true,
+    );
   });
 });
 

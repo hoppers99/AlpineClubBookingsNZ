@@ -11,6 +11,10 @@
  * small always-read core plus a routing table. Both halves of that only work
  * while these properties hold, and none of them is self-maintaining:
  *
+ *  - **A prefix's numbers are dense.** They run from `001` to that prefix's
+ *    highest with no holes, which is the whole reason "take the next number" is
+ *    mechanical rather than a matter of looking carefully. See
+ *    {@link auditNumberSequences}.
  *  - **Every cited id resolves.** An id is cited from places this repository
  *    cannot rewrite — merged commits, closed issues, lint strings shipped in a
  *    release, test names in a fork. A citation that resolves to nothing is the
@@ -298,6 +302,29 @@ export function scannableLines(text) {
 /** The prefix half of an id: `INV-CAP-021` -> `CAP`. */
 export function prefixOf(id) {
   return id.split("-")[1];
+}
+
+/** The number half of an id, as a number: `INV-CAP-021` -> `21`. */
+export function numberOf(id) {
+  return Number(id.slice(id.lastIndexOf("-") + 1));
+}
+
+/**
+ * A sorted ascending list of numbers as zero-padded runs: `033-041, 050`.
+ *
+ * Runs rather than a bare list because a mis-numbered id usually skips a block
+ * of numbers at once, and "missing 033-041" is a sentence a reader acts on where
+ * nine comma-separated numbers is a wall.
+ */
+function formatNumberRuns(numbers) {
+  const pad = (n) => String(n).padStart(3, "0");
+  const runs = [];
+  for (const n of numbers) {
+    const last = runs.at(-1);
+    if (last && n === last[1] + 1) last[1] = n;
+    else runs.push([n, n]);
+  }
+  return runs.map(([from, to]) => (from === to ? pad(from) : `${pad(from)}-${pad(to)}`)).join(", ");
 }
 
 /** Relative Markdown links a file makes, resolved to repo-relative paths. */
@@ -775,6 +802,95 @@ export function auditDocReachability(files) {
 }
 
 /**
+ * Assertion 10: every prefix's numbers run from `001` to its highest with no
+ * gaps (issue #2889).
+ *
+ * ## Why contiguity is the property, and why it is enough
+ *
+ * `SCHEME.md` §1.3 allocates a new invariant `max + 1`. Nothing used to check
+ * the arithmetic, and a wrong number is irreversible: §1.4 makes an id permanent
+ * the moment it merges, so a skipped block of numbers is a hole this repository
+ * keeps forever.
+ *
+ * Density is what makes `max + 1` *forced* rather than merely instructed. Every
+ * number below the maximum is taken, and no id may be defined twice (assertion
+ * 1), so the only number a new invariant can have is one more than the highest.
+ * Any other choice is either a duplicate — caught there — or a hole, caught
+ * here. Between the two, the allocation rule is mechanical.
+ *
+ * It also catches the deletion §1.4 forbids. A rule removed outright, index row
+ * and all, is invisible to every other assertion here unless something still
+ * cites it; the hole it leaves behind is not.
+ *
+ * ## Why there is no allowlist
+ *
+ * `main` needed none. All 16 prefixes were already dense from `001` when this
+ * was turned on (495 ids), so nothing had to be closed or excused first.
+ *
+ * Nor is there a legitimate gap to allow. An id is never deleted — a superseded
+ * rule keeps its heading and gains a status line, a retired one keeps its
+ * heading and gains a reason — so a hole has exactly two causes, a wrong number
+ * and a forbidden deletion, and both are things to fix rather than to register.
+ * A register would only ever be the mechanism by which a wrong number becomes
+ * permanent, which is the failure this assertion exists to prevent.
+ *
+ * If a prefix ever genuinely wants a reserved range, the answer is a new prefix.
+ * Reserving numbers inside an existing one gives away the density that makes
+ * `max + 1` forced, and buys nothing an id's location-independence (§1.4) does
+ * not already give for free.
+ */
+export function auditNumberSequences(files) {
+  const byPrefix = new Map();
+  for (const [id, places] of collectDefinitions(files)) {
+    const prefix = prefixOf(id);
+    if (!byPrefix.has(prefix)) byPrefix.set(prefix, []);
+    byPrefix.get(prefix).push({ id, number: numberOf(id), at: places[0] });
+  }
+
+  const problems = [];
+  for (const prefix of [...byPrefix.keys()].sort()) {
+    const ids = byPrefix.get(prefix).sort((a, b) => a.number - b.number);
+    const lowest = ids[0];
+    const highest = ids.at(-1);
+
+    if (lowest.number !== 1) {
+      problems.push(
+        `INV-${prefix} starts at ${lowest.id} (${lowest.at}), not 001. A prefix numbers ` +
+          "from 001 — the first rule of a new family is 001, not whatever number was next " +
+          "in the file it was copied from. Renumber it down, which is free until the id " +
+          `merges (${INVARIANT_DIR}SCHEME.md §1.3), and fix its row in ${INVARIANT_INDEX}.`,
+      );
+    }
+
+    const taken = new Set(ids.map((entry) => entry.number));
+    const missing = [];
+    for (let n = lowest.number + 1; n < highest.number; n += 1) {
+      if (!taken.has(n)) missing.push(n);
+    }
+
+    if (missing.length > 0) {
+      problems.push(
+        `INV-${prefix} is missing ${formatNumberRuns(missing)}. It defines ${ids.length} ` +
+          `id(s) but its highest is ${highest.id} (${highest.at}), so the numbering has a ` +
+          "hole. A prefix's numbers are dense from 001, and that is what makes the next " +
+          "number mechanical: every number below the maximum is taken and no id may be " +
+          "defined twice, so max + 1 is the only number a new invariant can have. Two " +
+          "causes, both worth a look. Either a new id took the wrong number, in which case " +
+          `renumber it to INV-${prefix}-${formatNumberRuns([missing[0]])} and fix its row ` +
+          `in ${INVARIANT_INDEX} — free until it merges, never afterwards. The usual reason ` +
+          "is reading the maximum off a repo-wide grep, which returns illustrative ids from " +
+          "prose, from fenced examples and from this check's own test fixtures alongside the " +
+          `real definitions; read it off the prefix's tables in ${INVARIANT_INDEX} instead. ` +
+          "Or a rule was deleted, which the scheme forbids: a superseded or retired rule " +
+          "keeps its heading so an old citation still lands on an explanation. Restore it.",
+      );
+    }
+  }
+
+  return problems;
+}
+
+/**
  * The whole check, over an in-memory map of repo-relative path -> file text.
  *
  * Pure, so the rules are testable without a repository. Returns a list of
@@ -789,6 +905,7 @@ export function auditDocs(files) {
     ...auditLineNumberCitations(files),
     ...auditDocReachability(files),
     ...auditEncoding(files),
+    ...auditNumberSequences(files),
   ];
 }
 
@@ -834,7 +951,8 @@ if (invokedPath === import.meta.url) {
       const routedRows = routingTableRows(files.get(ROUTING_TABLE_FILE) ?? "").length;
       console.log(
         `Doc index check passed: ${definitions.size} invariant id(s) across ` +
-          `${prefixes.size} prefix(es), every citation resolves, every id is indexed, ` +
+          `${prefixes.size} prefix(es), each numbering densely from 001 so the next id in ` +
+          "a prefix can only be max + 1, every citation resolves, every id is indexed, " +
           `every docs/ page is reachable, ${routedRows} routing row(s) resolve, no line ` +
           "number is cited into the invariants, and no file is BOM'd or double-encoded. " +
           `Scanned ${files.size} tracked file(s).`,
