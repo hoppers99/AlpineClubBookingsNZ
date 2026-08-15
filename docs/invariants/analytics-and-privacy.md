@@ -432,3 +432,48 @@ costed options live on those issues, not here.
   that drops one fails by name. The population here is three string literals in
   one file, which is why this half is pinned rather than reviewer-enforced like
   the 307 unpinned write sites in `INV-OPS-012`.
+
+## INV-PRIV-014
+
+What an AI Diagnostics question sends to the third-party AI model provider from
+the operator's own screen, and which controls do — and do not — govern it. Owner
+decision of 13 August 2026 (#2816). The two per-question consent ticks are NOT
+the gate on the page's view state: a Diagnostics operator's **applied page
+filters and typed free-text search travel to the provider on every Diagnostics
+question, ungated by either tick**.
+
+- **What leaves, and when.** The page's *applied* view state — its allowlisted
+  `tab`/`step`/`status`/`errorCode` tokens and its allowlisted filter values,
+  **including anything typed into a search box** — is re-emitted to the provider
+  as the "operator selection" span of the page-context evidence block on **every**
+  question the operator sends. It is not the address bar but the values that
+  actually reached the page's own query (post-parse, defaults included); the
+  mechanism is the page-context plumbing documented in
+  [`docs/ai-diagnostics/page-context.md`](../ai-diagnostics/page-context.md#where-the-view-state-comes-from)
+  and [`docs/ai-diagnostics/ux.md`](../ai-diagnostics/ux.md). The chokepoint is
+  the ask route (`src/app/api/admin/ai-diagnostics/ask/route.ts`): it narrows the
+  client's raw view to the matched registry row's allowlists and builds the
+  selector's five view fields **without reference to either tick**, the resolver's
+  `buildSelection` (`src/lib/diagnostics/page-context/resolve.ts`) echoes that view
+  independent of `includeSensitiveRecord`, and the rendered block is pushed into
+  the first user turn sent to the provider by the answer loop
+  (`src/lib/diagnostics/answer/loop.ts`).
+
+- **The two ticks govern a different boundary.** The **record-details tick**
+  (`allowRecordPersonalDetails` → the selector's `includeSensitiveRecord`) governs
+  whether the identifying fields of the one selected record are re-read and
+  disclosed; the **people-search tick** (`allowPeopleSearch`) governs whether the
+  answer loop's tools may search for people and records. Neither governs the
+  page-filter/search view context. A control sitting directly above something it
+  does not govern would be read as governing it, so the operator disclosure beside
+  the question box states plainly that the filters and typed search travel with the
+  question and "the boxes above do not affect that".
+
+- **Pinned, not left to a reviewer.**
+  `src/app/api/admin/ai-diagnostics/ask/__tests__/view-context-ungated-by-consent.test.ts`
+  drives the real page-context pipeline (route → resolve → render → the block
+  handed to the answer loop) across the full tick matrix and fails, naming this
+  id, if a typed search value or an applied status stops reaching the provider
+  when a tick is off — or if either tick starts gating it. The same guard pins the
+  governed boundary in contrast: the record's personal-detail disclosure line
+  flips with the record tick while the view lines do not.

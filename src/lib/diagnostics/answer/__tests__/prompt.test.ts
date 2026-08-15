@@ -36,11 +36,16 @@ describe("the frozen system prompt (#2378)", () => {
   });
 
   it("names every untrusted wrapper it will be shown", () => {
+    // The source wrapper is `deployed_source_evidence`, the token the knowledge
+    // renderer actually emits — NOT the `diagnostics_source` this list named until
+    // #2379 (AID-8 §3), which no renderer has ever emitted. The mechanical guard
+    // that this list can never drift from the renderers again lives in
+    // `../../__tests__/untrusted-wrapper-census.test.ts`.
     for (const tag of [
       "diagnostics_conversation",
       "diagnostics_question",
       "diagnostics_page_context",
-      "diagnostics_source",
+      "deployed_source_evidence",
       "diagnostics_tool_result",
     ]) {
       expect(DIAGNOSTICS_SYSTEM_PROMPT).toContain(tag);

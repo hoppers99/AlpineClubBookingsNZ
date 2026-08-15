@@ -130,9 +130,12 @@ or bulk access".
 **Record search is a separate, explicitly granted capability.** The four search
 entries return bounded LISTS of people, bookings or payments, which is how a model
 would otherwise choose a subject for itself. They are declared `operatorOnly` and run
-only as the operator's own record-picker action, or — on the owner's decision of
+only as an `operator_action` invocation, or — on the owner's decision of
 11 Aug 2026 (#2378 Q2) — as a model tool call on a request where the operator ticked
-an explicit people-search box, off by default and never persisted. The gate is a
+an explicit people-search box, off by default and never persisted. (The
+`operator_action` channel is test-only today — AID-8 F5, see `tools.md` — with no
+production caller; a future operator-action invoker must re-verify its authorization
+and consent on that path.) The gate is a
 typed, server-owned invocation channel on the executor's input, not the free-form
 `surface` label.
 

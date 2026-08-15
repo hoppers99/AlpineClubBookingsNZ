@@ -568,6 +568,7 @@ Prefix `INV-PRIV`.
 | `INV-PRIV-011` | Which person fields the log/Sentry redactor strips by key, that key coverage is not exhaustive, and that audit rows deliberately keep name and street address |
 | `INV-PRIV-012` | Audit category follows the affected domain; member visibility declared separately; rows already written are `INV-OPS-012` |
 | `INV-PRIV-013` | `admin` writers move only to close a split; fifteen keeps, `lockers` settled (#2777) |
+| `INV-PRIV-014` | Diagnostics page filters and typed search reach the provider, ungated by either tick |
 
 ## Membership Lifecycle
 

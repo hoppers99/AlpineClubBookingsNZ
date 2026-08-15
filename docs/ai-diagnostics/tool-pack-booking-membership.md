@@ -1611,10 +1611,12 @@ AID-7a (#2785) closed it. Each entry now also declares what consent is **about**
   of it;
 - `booking_search` and `member_search` are declared `operatorOnly` instead. They
   return bounded LISTS of bookings and people, which is how a model would otherwise
-  choose a subject for itself, so they run as the operator's own record-picker
-  action or — per the owner's 11 Aug 2026 decision on #2378 — as a model tool call
+  choose a subject for itself, so they run as an `operator_action` invocation
+  or — per the owner's 11 Aug 2026 decision on #2378 — as a model tool call
   on a request where the operator ticked people-search. Unticked, they refuse with
-  `operator_action_required`;
+  `operator_action_required`. (The `operator_action` channel is test-only today —
+  AID-8 F5, see `tools.md` — so in practice these are reached only via a model tool
+  call with the box ticked.)
 - eight entries in this pack declare `relatedRecordRefs`, the projected fields an
   investigation may follow (ten registry-wide, the other two being
   `payment_summary` and `booking_finance_state` in the finance pack). Five are on

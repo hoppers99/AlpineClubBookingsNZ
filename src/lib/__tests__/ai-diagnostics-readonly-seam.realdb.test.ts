@@ -45,8 +45,14 @@
  *     requires a loopback host, port 55442+, and the dedicated
  *     `concurrency_race_1881` database marker;
  *   - hosted CI reaches it because `concurrency-lock-races.realdb.test.ts` imports
- *     this file, and that suite's CI step is pinned by
- *     `review-findings-contracts.test.ts` so it cannot be silently unplugged.
+ *     this file. TWO SEPARATE PINS hold that chain, and it is worth being exact
+ *     about which covers what: `review-findings-contracts.test.ts` pins the
+ *     WORKFLOW STEP that runs the concurrency harness (so the harness always runs
+ *     in CI), and `ai-diagnostics-usage.test.ts` pins the IMPORT EDGE — that the
+ *     harness still contains `import "./ai-diagnostics-readonly-seam.realdb.test";`
+ *     (so deleting that line, which would silently unplug THIS proof while every
+ *     suite stayed green, fails a test). The import-edge pin is the AID-8 F2
+ *     addition; before it, only the step was pinned and the edge was not.
  *
  * It writes nothing that survives: the only write it attempts is the one it expects
  * PostgreSQL to REFUSE, and the probe table is created and dropped by this file.

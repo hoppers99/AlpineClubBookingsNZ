@@ -330,12 +330,16 @@ export type DiagnosticsToolFailureReason =
    * list of people or bookings — and this invocation is not one the operator
    * authorised for the model (AID-7a, #2785).
    *
-   * Two invocations are allowed and everything else refuses here: the operator's own
-   * record-picker action (`invocationChannel: "operator_action"`, which renders to
-   * the browser and sends nothing to the provider), and a model tool call on a
-   * request where the operator ticked the per-request people-search box (owner
-   * decision, #2378, 11 Aug 2026). The tick is per request, defaults off and is
-   * never persisted, so an otherwise identical later request refuses again.
+   * Two invocations are allowed and everything else refuses here: an
+   * `invocationChannel: "operator_action"` call (which would render to the operator's
+   * browser and send nothing to the provider), and a model tool call on a request
+   * where the operator ticked the per-request people-search box (owner decision,
+   * #2378, 11 Aug 2026). The tick is per request, defaults off and is never
+   * persisted, so an otherwise identical later request refuses again.
+   *
+   * The `operator_action` channel is TEST-ONLY today (AID-8 F5): no production caller
+   * passes it, so in practice this state is reached whenever the model asks for a
+   * search the operator did not tick.
    */
   | "operator_action_required"
   /** `AI_DIAGNOSTICS_DATABASE_URL` is absent, malformed, or reuses the app role. */
@@ -422,7 +426,12 @@ export const DIAGNOSTICS_ARGS_HASH_REDACTED = "low_entropy_args_redacted";
  *
  *  - `operator_action` — the operator themselves, through a server route that
  *    renders the result to their own browser and sends nothing to the model
- *    provider. The record picker is the only such caller.
+ *    provider. RESERVED AND TEST-ONLY TODAY (AID-8 F5): the record picker this
+ *    describes is not built, and no production code path passes this value — the
+ *    only invoker, `answer/loop.ts`, always passes `model_tool_use`. The channel
+ *    and its gate-4a bypass exist and are exercised by tests, so when an
+ *    operator-action invoker is finally wired its authorization and consent must be
+ *    re-verified on that path rather than assumed from these tests.
  *  - `model_tool_use` — the bounded provider loop, executing a `tool_use` block the
  *    MODEL chose. Everything an attacker can write into evidence text reaches tool
  *    arguments through this channel, so it is the one the gates are written for.
@@ -500,9 +509,10 @@ export interface DiagnosticsToolAudit {
    *  - `granted` — the inclusion was authorised. For a per-record entry that means
    *    the operator ticked personal details AND this investigation covers the record;
    *    for a SEARCH it means the operator ticked people-search, or ran the search
-   *    themselves through the record picker (`invocationChannel: "operator_action"`),
-   *    which is their own inclusion act and is why such a row can honestly read
-   *    `granted` beside `peopleSearchTick: "withheld"`;
+   *    themselves via an `invocationChannel: "operator_action"` call (a test-only
+   *    channel today — AID-8 F5 — with no production caller), which is their own
+   *    inclusion act and is why such a row can honestly read `granted` beside
+   *    `peopleSearchTick: "withheld"`;
    *  - `refused` — the inclusion was not authorised and the invocation was refused
    *    for that reason: `sensitive_consent_required` for a per-record entry,
    *    `operator_action_required` for a search the operator did not allow the model

@@ -102,6 +102,13 @@
  * at commit instead of leaking onto the pooled application connection. A mock cannot
  * distinguish a working `set_config` from a no-op; that suite can.
  *
+ * That proof is opt-in (`RUN_CONCURRENCY_RACE_TESTS=1`) and reaches CI only because
+ * `concurrency-lock-races.realdb.test.ts` imports it. TWO pins keep that from being
+ * silently undone: `review-findings-contracts.test.ts` pins the workflow STEP that
+ * runs the concurrency harness, and `ai-diagnostics-usage.test.ts` pins the IMPORT
+ * EDGE (that the harness still names this file) — the latter added by AID-8 F2, once
+ * a review found the step was pinned but the import was not.
+ *
  * WHAT THE SEAM CANNOT COVER IS DECLARED, NEVER ASSUMED. Some evidence a
  * `server_owned` entry needs cannot be read through a transaction on this
  * connection at all — a readiness verdict that must stay answerable when this

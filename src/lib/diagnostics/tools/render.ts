@@ -41,7 +41,13 @@ import {
   type DiagnosticsToolRow,
 } from "./types";
 
-const EVIDENCE_TAG = "diagnostics_tool_result";
+/**
+ * The evidence wrapper this renderer emits. Exported so the system-prompt census
+ * (`__tests__/untrusted-wrapper-census.test.ts`) can assert the frozen prompt names
+ * it in its untrusted-data list (#2379, AID-8 §3).
+ */
+export const TOOL_RESULT_EVIDENCE_TAG = "diagnostics_tool_result";
+const EVIDENCE_TAG = TOOL_RESULT_EVIDENCE_TAG;
 
 /** Defused form of the wrapper token (one-dot leader for the underscores). */
 const NEUTRALIZED_TAG = EVIDENCE_TAG.replace(/_/g, "․");

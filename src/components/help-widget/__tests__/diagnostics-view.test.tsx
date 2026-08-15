@@ -348,6 +348,96 @@ describe("the conversation stays with the operator (#2378, D8)", () => {
   });
 });
 
+describe("an arriving answer is announced and focus is not stranded (WCAG 4.1.3)", () => {
+  it("renders the thread as a polite log region, separate from the pending status", async () => {
+    let resolve: ((value: unknown) => void) | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockReturnValue(
+        new Promise((r) => {
+          resolve = r;
+        }),
+      ),
+    );
+    renderWidget();
+    openDiagnostics();
+
+    const thread = screen.getByTestId("diagnostics-thread");
+    // The transcript is a live region in its own right, so an answer that arrives
+    // while focus is elsewhere is still announced.
+    expect(thread.getAttribute("role")).toBe("log");
+    expect(thread.getAttribute("aria-live")).toBe("polite");
+
+    fireEvent.change(screen.getByTestId("diagnostics-input"), {
+      target: { value: "why is this stuck?" },
+    });
+    fireEvent.click(screen.getByTestId("diagnostics-send"));
+
+    // The pending status is a SEPARATE region, not nested inside the log — otherwise
+    // "Looking into that…" would be read by both regions (the double-announcement the
+    // component is careful to avoid).
+    const pending = await screen.findByTestId("diagnostics-pending");
+    expect(thread.contains(pending)).toBe(false);
+
+    resolve?.({ ok: true, status: 200, json: async () => answered() });
+    await waitFor(() =>
+      expect(screen.queryByTestId("diagnostics-pending")).toBeNull(),
+    );
+    // The answer lands INSIDE the log, so it is the log's own addition that is
+    // announced.
+    const answer = screen.getByTestId("diagnostics-message-assistant");
+    expect(thread.contains(answer)).toBe(true);
+    expect(answer.textContent).toContain("The deposit is unpaid.");
+  });
+
+  it("returns focus to the question box after an answer, off the disabled Ask button", async () => {
+    renderWidget();
+    openDiagnostics();
+    fireEvent.change(screen.getByTestId("diagnostics-input"), {
+      target: { value: "why is this stuck?" },
+    });
+    fireEvent.click(screen.getByTestId("diagnostics-send"));
+
+    // The Ask button self-disables when the draft clears, dropping browser focus to
+    // <body>; the settle handler must put it back on the still-usable question box.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByTestId("diagnostics-input")),
+    );
+  });
+
+  it("moves focus to Start again when a budget refusal disables the box", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: "blocked",
+          reason: "budget_exhausted",
+          message: "Diagnostics has reached this month's spending limit.",
+        }),
+      }),
+    );
+    renderWidget();
+    openDiagnostics();
+    fireEvent.change(screen.getByTestId("diagnostics-input"), {
+      target: { value: "why is this stuck?" },
+    });
+    fireEvent.click(screen.getByTestId("diagnostics-send"));
+
+    // The question box is now disabled, so focus cannot go there; it must land on a
+    // real control rather than be lost to <body>.
+    await waitFor(() =>
+      expect(
+        (screen.getByTestId("diagnostics-input") as HTMLTextAreaElement).disabled,
+      ).toBe(true),
+    );
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Start again" }),
+    );
+  });
+});
+
 /** Stands in for a wired admin list: publishes, then unmounts on "navigation". */
 function ViewPublisher({ view }: { view: DiagnosticsViewState | undefined }) {
   usePublishDiagnosticsViewState(view);

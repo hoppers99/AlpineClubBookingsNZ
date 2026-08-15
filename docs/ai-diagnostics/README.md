@@ -15,11 +15,15 @@ read-only, budgeted, and audited. Keeping the two products' security models
 separate is the reason this subsystem exists — see
 [ADR-001](decisions/ADR-001-separate-admin-only-diagnostics-product.md).
 
-**Status:** design/foundation. This hub, the ADRs, and the
-[threat model](threat-model.md) are the security/privacy/authority/evidence
-contracts, written under issue #2370 (AID-1) **before** the nine implementation
-children of epic #2369 are built. The subsystem is **off by default** and
-deployment-local. **AID-2 (#2371) is the first implementation child to land** —
+**Status:** delivered, in release hardening. Eight of the nine implementation
+children of epic #2369 have landed — AID-2, AID-3, AID-4, AID-5, AID-6A/6B/6C and
+AID-7 (the live question-and-answer product) — and AID-8 (#2379) is the release
+hardening pass in progress. The subsystem remains **off by default** and
+deployment-local: nothing changes for a deployment that does not enable it. This
+hub, the ADRs, and the [threat model](threat-model.md) remain the
+security/privacy/authority/evidence contracts, written under issue #2370 (AID-1)
+**before** those children were built. **AID-2 (#2371) was the first implementation
+child to land** —
 the capability, configuration, metering, and rate-limit foundation described in
 [the delivered-capability section](#delivered-capability-budget-metering-rate-limits-and-configuration-aid-2-2371)
 below. **AID-4 (#2373) has since landed the
@@ -135,19 +139,19 @@ control matrix. Each mitigation is fixed by one of the ADRs above.
 
 The subsystem's documentation is delivered with its implementation children. This
 hub is the index; each child adds or extends the documents below and links them
-here as it lands, so this hub stays the single reachable entry point. Planned
-subsystem documents (not yet written) are named in `code font` with their owning
-child; the existing repository-wide documents they extend are linked.
+here as it lands, so this hub stays the single reachable entry point. With AID-8
+(#2379) all planned subsystem documents are now written and linked; the existing
+repository-wide documents each one extends are linked in the right-hand column.
 
 | Area | Planned subsystem doc (owner) | Existing docs it extends |
 | --- | --- | --- |
-| **Architecture** | `docs/ai-diagnostics/architecture.md` — runtime shape, the deployed-knowledge bundle, and end-to-end data flows (AID-2 #2371). The tool substrate's own shape is now documented in [`tools.md`](tools.md) | [`ARCHITECTURE.md`](../ARCHITECTURE.md), [`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) |
+| **Architecture** | [`architecture.md`](architecture.md) — the end-to-end shell/route/loop/provider path, the tool substrate and its two read-only seams, the knowledge bundle, the consent ledger and permission model, the untrusted-text defusal boundary across all five evidence channels, and budget/rate/recovery (AID-8 #2379, **delivered**) | [`ARCHITECTURE.md`](../ARCHITECTURE.md), [`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) |
 | **Tool substrate** | [`tools.md`](tools.md) — the server-owned typed registry, the twelve fail-closed gates, per-invocation authorization, bounds, untrusted-evidence render, approved audit metadata, and the rules for adding a tool (AID-5 #2374, **delivered**) | [ADR-001](decisions/ADR-001-separate-admin-only-diagnostics-product.md), [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md), [ADR-007](decisions/ADR-007-least-privilege-select-only-database-credential.md) |
 | **Page context** | [`page-context.md`](page-context.md) — the typed selector, the route registry, the permission-checked server re-fetch, the personal-detail opt-in, and the evidence block (AID-4 #2373, **delivered**) | [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-003](decisions/ADR-003-untrusted-evidence-classes.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md) |
 | **Security / privacy** | This hub's [threat model](threat-model.md) and [ADRs](decisions/) (AID-1, this issue); release hardening notes (AID-8 #2379) | [`SECURITY.md`](../SECURITY.md), [`SECURITY-ATTACK-SURFACE.md`](../SECURITY-ATTACK-SURFACE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](../agents/PROMPT_INJECTION_GUIDE.md) |
-| **Deployment / operator** | [`deployment.md`](deployment.md) — setup order, provisioning and rotating the SELECT-only DB role, the credential, budget/limits, and reading readiness (AID-2 #2371 / AID-5 #2374, **delivered**); provider disclosure, zero-retention, and the private overlay still to come (AID-8 #2379) | [`../../DEPLOYMENT.md`](../../DEPLOYMENT.md), [`ONGOING_DEVELOPMENT_WORKFLOW.md`](../ONGOING_DEVELOPMENT_WORKFLOW.md) |
+| **Deployment / operator** | [`deployment.md`](deployment.md) — setup order, provisioning and rotating the SELECT-only DB role, the credential, budget/limits, and reading readiness (AID-2 #2371 / AID-5 #2374, **delivered**); provider disclosure, zero-retention, and the private overlay are documented as **deferred, not implemented this release** (AID-8 #2379) | [`../../DEPLOYMENT.md`](../../DEPLOYMENT.md), [`ONGOING_DEVELOPMENT_WORKFLOW.md`](../ONGOING_DEVELOPMENT_WORKFLOW.md) |
 | **UX** | [`ux.md`](ux.md) — the two surfaces, the Diagnostics tab, the per-question consent ticks, choosing the record under investigation, the nineteen failure states, and keyboard/screen-reader/narrow-viewport behaviour (AID-7 #2378, **delivered**) | [`UX_FLOW_MAP.md`](../UX_FLOW_MAP.md) |
-| **E2E test matrix** | `docs/ai-diagnostics/e2e-matrix.md` — admission, per-tool auth, injection inertness, output-channel egress (inert render + CSP, ADR-008), budget/limit fail-closed, redaction (AID-8 #2379) | [`END_TO_END_TEST_MATRIX.md`](../END_TO_END_TEST_MATRIX.md) |
+| **E2E test matrix** | [`e2e-matrix.md`](e2e-matrix.md) — the security verification matrix: admission, per-tool auth, fresh revocation, consent, injection inertness across every channel, SELECT-only reads and the server_owned seam, no-mutation, secret/PII leakage, budget/rate/recovery, and the deployment artifact — each with its test files and proof tier, and the live browser/model gaps stated plainly (AID-8 #2379, **delivered**) | [`END_TO_END_TEST_MATRIX.md`](../END_TO_END_TEST_MATRIX.md) |
 | **Operator help** | Operator guidance for the Diagnostics surface (AID-7 #2378 / AID-8 #2379) | [`guides/ai-help.md`](../guides/ai-help.md) |
 
 ## Delivered capability: budget, metering, rate limits, and configuration (AID-2, #2371)

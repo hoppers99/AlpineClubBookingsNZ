@@ -589,3 +589,50 @@ describe("real-Postgres over-budget race proof stays wired into CI (#2532)", () 
     expect(raceTest).toContain("{ timeout: RACE_TEST_TIMEOUT_MS },");
   });
 });
+
+describe("real-Postgres read-only SEAM proof stays wired into CI (AID-8 F2)", () => {
+  // Exactly the #2532 budget-race guard shape, for the AID-7b seam proof
+  // (`ai-diagnostics-readonly-seam.realdb.test.ts`). That suite is `describe.skip`
+  // unless RUN_CONCURRENCY_RACE_TESTS=1, and it reaches CI ONLY because
+  // `concurrency-lock-races.realdb.test.ts` imports it. `review-findings-contracts`
+  // pins the WORKFLOW STEP that runs the concurrency harness, but nothing pinned the
+  // IMPORT EDGE: delete that one `import` line and the server-level proof (25006
+  // write-refusal, repeatable-read, statement_timeout) silently stops running while
+  // every suite still reports green. This is that missing pin.
+  function repoFile(relativePath: string) {
+    // Test helper: reads a fixed repo file under process.cwd(); the path is
+    // test-controlled, not user input.
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+    return readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
+  }
+
+  it("is imported by the guarded hosted-PostgreSQL harness the CI step runs", () => {
+    const harness = repoFile("src/lib/__tests__/concurrency-lock-races.realdb.test.ts");
+    expect(harness).toContain(
+      'import "./ai-diagnostics-readonly-seam.realdb.test";',
+    );
+
+    // And the harness itself is what the CI step runs, pinned alongside the
+    // budget-race guard above so both edges of the chain are covered.
+    const workflow = repoFile(".github/workflows/ci.yml");
+    expect(workflow).toContain(
+      "npx vitest run src/lib/__tests__/concurrency-lock-races.realdb.test.ts",
+    );
+    expect(workflow).toContain('RUN_CONCURRENCY_RACE_TESTS: "1"');
+  });
+
+  it("keeps its opt-in + dedicated-loopback-database guards", () => {
+    const seamTest = repoFile(
+      "src/lib/__tests__/ai-diagnostics-readonly-seam.realdb.test.ts",
+    );
+    // Opt-in only, dedicated database only — ordinary `npm test` must never need a
+    // live PostgreSQL to keep this proof honest.
+    expect(seamTest).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    expect(seamTest).toContain("CONCURRENCY_RACE_DATABASE_URL");
+    expect(seamTest).toContain("concurrency_race_1881");
+    // The proof's teeth: a real INSERT refused with 25006 on a connection whose
+    // privileges would otherwise permit it. A rewrite that dropped this would make
+    // the suite pass without proving the READ ONLY fence takes at the server.
+    expect(seamTest).toContain("25006");
+  });
+});
