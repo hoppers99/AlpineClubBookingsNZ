@@ -14,17 +14,33 @@ import {
 } from "./xero-booking-repair-types";
 import { buildBookingCancellationRefundIdempotencyKey } from "./payment-recovery-keys";
 import type { RepairDependencies } from "./xero-booking-repair-deps";
-import { makeLocalKey } from "./xero-booking-repair-utils";
+import { makeLocalKey, parseRepairScopeDay } from "./xero-booking-repair-utils";
 import {
   addDaysDateOnly,
   formatDateOnly,
+  isDateOnlyString,
   parseDateOnly,
   startOfDateOnlyForTimeZone,
 } from "@/lib/date-only";
 
-/** The club calendar day after `day`, as `yyyy-MM-dd`. */
+/**
+ * The club calendar day after `day`, as `yyyy-MM-dd`.
+ *
+ * The result is re-validated because the last representable day does not have
+ * one: `9999-12-31` — which the day validator accepts, since it is a real date
+ * — steps to the expanded-year form `"+010000-01"`, and that reaches Prisma as
+ * a nonsense bound and fails there with an error naming neither the flag nor
+ * the day. Refusing it here fails just as closed, one layer earlier, and says
+ * which day it was.
+ */
 function nextDateOnly(day: string): string {
-  return formatDateOnly(addDaysDateOnly(parseDateOnly(day), 1));
+  const next = formatDateOnly(addDaysDateOnly(parseDateOnly(day), 1));
+  if (!isDateOnlyString(next)) {
+    throw new Error(
+      `The repair scope's end day ${JSON.stringify(day)} has no representable next day, so its exclusive upper bound cannot be built.`
+    );
+  }
+  return next;
 }
 
 /**
@@ -55,7 +71,10 @@ function nextDateOnly(day: string): string {
  * previous UTC day and therefore the previous DATE, all day, every day.
  *
  * The upper bound is exclusive in both cases and is built from the day AFTER
- * `to`, which is what makes `to` itself an included day.
+ * `to`, which is what makes `to` itself an included day. Either end may be
+ * omitted, giving a half-open sweep; a day that is PRESENT but not a real
+ * calendar day is refused rather than dropped, because "not supplied" and
+ * "supplied wrongly" must not mean the same thing on a tool that can `--apply`.
  */
 function buildScopeWhere(scope: BookingXeroRepairScope): Prisma.BookingWhereInput {
   const and: Prisma.BookingWhereInput[] = [];
@@ -64,15 +83,23 @@ function buildScopeWhere(scope: BookingXeroRepairScope): Prisma.BookingWhereInpu
     and.push({ id: scope.bookingId });
   }
 
-  if (scope.from || scope.to) {
-    const dayAfterTo = scope.to ? nextDateOnly(scope.to) : undefined;
+  // Validate before the emptiness test, not with it. Reading these through
+  // truthiness — as this did — silently treats `""` as "no lower bound" and
+  // widens the sweep to all of history.
+  const fromDay =
+    scope.from === undefined ? undefined : parseRepairScopeDay(scope.from, "The repair scope's start day");
+  const toDay =
+    scope.to === undefined ? undefined : parseRepairScopeDay(scope.to, "The repair scope's end day");
+
+  if (fromDay || toDay) {
+    const dayAfterTo = toDay ? nextDateOnly(toDay) : undefined;
 
     const checkInRange = {
-      ...(scope.from ? { gte: parseDateOnly(scope.from) } : {}),
+      ...(fromDay ? { gte: parseDateOnly(fromDay) } : {}),
       ...(dayAfterTo ? { lt: parseDateOnly(dayAfterTo) } : {}),
     };
     const instantRange = {
-      ...(scope.from ? { gte: startOfDateOnlyForTimeZone(scope.from) } : {}),
+      ...(fromDay ? { gte: startOfDateOnlyForTimeZone(fromDay) } : {}),
       ...(dayAfterTo ? { lt: startOfDateOnlyForTimeZone(dayAfterTo) } : {}),
     };
 

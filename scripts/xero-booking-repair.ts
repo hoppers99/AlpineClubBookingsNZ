@@ -2,7 +2,7 @@
 import "dotenv/config";
 import { formatBookingXeroRepairHumanSummary, runBookingXeroRepair } from "../src/lib/xero-booking-repair";
 import { prisma } from "../src/lib/prisma";
-import { isDateOnlyString } from "../src/lib/date-only";
+import { parseRepairScopeDay } from "../src/lib/xero-booking-repair-utils";
 
 function printUsage() {
   console.log(`Usage:
@@ -27,21 +27,16 @@ a prior dry-run report (repeatable; exact action key match; requires --apply).
  * where the column is known (`buildScopeWhere` in
  * `src/lib/xero-booking-repair-load.ts`).
  *
- * `isDateOnlyString` is the canonical validator and rejects a well-formed
- * impossibility such as `2026-02-30`, which is what the old `Number.isNaN`
- * check on the parsed instant was doing.
+ * `parseRepairScopeDay` is shared with `buildScopeWhere`, so the sweep cannot be
+ * handed a day this would have rejected. **It is STRICTER than what this
+ * validated before, which is a real change to what the CLI accepts** — see its
+ * docblock for the measured table. Briefly: `--from 2026-04-01 --to 2026-04-31`
+ * used to be accepted and swept silently through 1 May, because a `Date` built
+ * from out-of-range parts rolls over instead of failing; it now exits 1 with a
+ * message naming the flag and the value.
  */
 function parseDateInput(value: string, name: string) {
-  const trimmed = value.trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-    throw new Error(`${name} must use YYYY-MM-DD format.`);
-  }
-
-  if (!isDateOnlyString(trimmed)) {
-    throw new Error(`${name} is not a valid date.`);
-  }
-
-  return trimmed;
+  return parseRepairScopeDay(value, name);
 }
 
 function parseArgs(argv: string[]) {

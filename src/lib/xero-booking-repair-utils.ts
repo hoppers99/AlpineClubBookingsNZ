@@ -8,9 +8,39 @@ import {
   readQueueType,
 } from "@/lib/xero-operation-outbox-payload";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
+import { isDateOnlyString } from "@/lib/date-only";
 
 export function makeLocalKey(localModel: string, localId: string) {
   return `${localModel}:${localId}`;
+}
+
+/**
+ * A club calendar day for the repair scope, or a refusal (#2868).
+ *
+ * Shared by the CLI's `--from`/`--to` and by `buildScopeWhere`, so the sweep
+ * cannot be handed a day the CLI would have rejected. Both callers fail CLOSED:
+ * the alternative for a tool that can `--apply` is a window quietly wider than
+ * the operator asked for, and `scope.from` was previously only kept out of that
+ * state by a truthiness check — `""` read as "not supplied" and produced an
+ * unbounded-below sweep.
+ *
+ * `isDateOnlyString` is the canonical validator, and it is STRICTER than the
+ * `new Date(`${day}T00:00:00`)` + `Number.isNaN` pair the CLI used to run.
+ * Measured on Node 24: that pair ACCEPTED `2026-02-30` (rolling it to 2 March),
+ * `2026-04-31` (to 1 May) and `2026-02-29` (to 1 March), because a `Date` built
+ * from out-of-range parts rolls over rather than failing. `isDateOnlyString`
+ * round-trips the value through `toISOString()` and compares, so a day that
+ * rolled is a day that changed and is refused. `2024-02-29`, a real leap day,
+ * is accepted by both.
+ */
+export function parseRepairScopeDay(value: string, label: string): string {
+  const trimmed = value.trim();
+  if (!isDateOnlyString(trimmed)) {
+    throw new Error(
+      `${label} must be a real calendar day in YYYY-MM-DD format (received ${JSON.stringify(value)}).`
+    );
+  }
+  return trimmed;
 }
 
 // #1427: which outbox queue type did this operation belong to? The immutable

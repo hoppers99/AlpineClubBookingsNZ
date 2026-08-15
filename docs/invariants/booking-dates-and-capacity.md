@@ -430,18 +430,28 @@ derivation).
   values the adapter hands the driver under three host pins, because each pin can
   only see one half of the defect.
 
-  **Census the CALL GRAPH, not the spelling.** `setHours` is not an ISO
-  truncation, so #2684's lint rule cannot see it, and an exported wrapper puts it
-  beyond a grep for the pattern — the same way `formatDate` hid roughly eighteen
-  Xero document dates from #2682's census. As of #2868 the only surviving
-  `setHours(0, 0, 0, 0)` in application code is `monthGridRange`
-  (`src/lib/calendar-client.ts`), which is browser-side and bounds
-  `CalendarEvent.startsAt`/`endsAt` — both bare `DateTime` — so it is outside
-  this class by column type, not by luck. **Read that as "no site is currently
-  known", never as "the class is closed":** the reason this one outlived two
-  censuses is that the truncation lived behind a wrapper, and nothing rules out
-  another wrapper nobody has named. #2684's lint rule is still what would close
-  it.
+  **A spelling finds candidates; only the CALL GRAPH settles them.** `setHours`
+  is not an ISO truncation, so #2684's lint rule cannot see it, and an exported
+  wrapper puts it beyond a grep for the pattern — the same way `formatDate` hid
+  roughly eighteen Xero document dates from #2682's census. #2868's census was
+  therefore two steps, and it is worth being exact about which step is which,
+  because only the second one proves anything: every `setHours` in `src/`,
+  `scripts/`, `e2e/` and `prisma/` was enumerated (the seed), and each survivor
+  was then traced forward to the columns it actually binds (the census).
+
+  That leaves one site in application code: `monthGridRange`
+  (`src/lib/calendar-client.ts`), whose `setHours(0, 0, 0, 0)` and
+  `setHours(23, 59, 59, 999)` are the two ends of one browser-side month-grid
+  range. Traced through the calendar view, its query parameters and the events
+  route, both ends bind `CalendarEvent.startsAt`/`endsAt` — both bare `DateTime`
+  — so the pair is outside this class by column type, not by luck.
+
+  **Read that as "no site is currently known", never as "the class is closed",**
+  and note precisely where the residual sits: the trace is sound for everything
+  it reached, but the ENUMERATION that fed it is still a spelling, and a wrapper
+  named something else is exactly what it would miss. That is not a hypothetical
+  — it is how this very site outlived two earlier censuses. #2684's lint rule is
+  still what would close the class.
 
   A `DateTime` column in the same statement is NOT the same comparison and must
   not be given the date-only value: it holds a real instant, so it takes the

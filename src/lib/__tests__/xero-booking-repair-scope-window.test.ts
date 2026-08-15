@@ -85,6 +85,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { RepairDependencies } from "@/lib/xero-booking-repair-deps";
 import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
 import { loadAuditData } from "@/lib/xero-booking-repair-load";
+import { parseRepairScopeDay } from "@/lib/xero-booking-repair-utils";
 import { withTimeZoneAsync } from "@/lib/__tests__/helpers/timezone";
 
 type CapturedQuery = { text: string; values: unknown[] };
@@ -120,12 +121,7 @@ const LAST_REQUESTED_DAY = "2026-07-31";
  * SQL text is asserted alongside so "the leading eight" is anchored to the
  * right operands rather than to an ordering that could silently change meaning.
  */
-function windowParameters(): {
-  createdAt: [unknown, unknown];
-  updatedAt: [unknown, unknown];
-  checkIn: [unknown, unknown];
-  modificationCreatedAt: [unknown, unknown];
-} {
+function scopeStatement(): CapturedQuery {
   const scopeQueries = captured.filter((query) =>
     query.text.includes('FROM "public"."Booking" WHERE'),
   );
@@ -135,8 +131,28 @@ function windowParameters(): {
       "now emits more, select the one carrying the window rather than " +
       "relaxing this.",
   ).toBe(1);
+  return scopeQueries[0];
+}
 
-  const { text, values } = scopeQueries[0];
+/** Run one scope through the client under a pinned host zone and record it. */
+async function bindScope(
+  scope: Parameters<typeof loadAuditData>[0],
+  hostTimeZone = "Pacific/Auckland",
+): Promise<CapturedQuery> {
+  captured.length = 0;
+  await withTimeZoneAsync(hostTimeZone, async () => {
+    await loadAuditData(scope, { prisma } as unknown as RepairDependencies);
+  });
+  return scopeStatement();
+}
+
+function windowParameters(): {
+  createdAt: [unknown, unknown];
+  updatedAt: [unknown, unknown];
+  checkIn: [unknown, unknown];
+  modificationCreatedAt: [unknown, unknown];
+} {
+  const { text, values } = scopeStatement();
   // Anchor each parameter index to the operand it belongs to. Without this the
   // tuple assertions below would pass just as happily if the compiler reordered
   // the OR arms and every arm silently swapped windows.
@@ -159,13 +175,7 @@ function windowParameters(): {
 }
 
 async function bindScopeWindow(hostTimeZone: string) {
-  captured.length = 0;
-  await withTimeZoneAsync(hostTimeZone, async () => {
-    await loadAuditData(
-      { from: FIRST_REQUESTED_DAY, to: LAST_REQUESTED_DAY },
-      { prisma } as unknown as RepairDependencies,
-    );
-  });
+  await bindScope({ from: FIRST_REQUESTED_DAY, to: LAST_REQUESTED_DAY }, hostTimeZone);
   return windowParameters();
 }
 
@@ -278,6 +288,158 @@ describe.each([
       admitsInstant(bound.createdAt, "2026-07-31 12:30:00"),
       "a booking created at 00:30 NZ on the day AFTER must not be swept",
     ).toBe(false);
+  });
+});
+
+/**
+ * The one-sided and single-day windows (#2868).
+ *
+ * The two-sided case above is the one an operator runs, so it is where the
+ * defect lived — but the day-AFTER upper bound is the mechanism this fix
+ * introduces, and nothing above holds it when only `--to` is given. An edit
+ * that dropped `nextDateOnly` from the `to`-only path would leave every
+ * assertion above green while silently making `--to` an excluded day.
+ */
+describe("a half-open window binds only the end it was given (#2868)", () => {
+  it("--from alone binds lower bounds and no upper bound at all", async () => {
+    const { text, values } = await bindScope({ from: FIRST_REQUESTED_DAY });
+
+    expect(text).toContain('"public"."Booking"."checkIn" >= $3');
+    expect(
+      text,
+      "a `--from`-only sweep must not acquire an end date from anywhere",
+    ).not.toContain('"checkIn" <');
+    expect(text).not.toContain('"createdAt" <');
+    // createdAt, updatedAt, checkIn, modification.createdAt — one bound each.
+    expect(values.slice(0, 4)).toEqual([
+      "2026-06-30 12:00:00",
+      "2026-06-30 12:00:00",
+      "2026-07-01",
+      "2026-06-30 12:00:00",
+    ]);
+  });
+
+  it("--to alone binds the DAY AFTER as an exclusive upper bound, keeping --to itself included", async () => {
+    const { text, values } = await bindScope({ to: LAST_REQUESTED_DAY });
+
+    expect(text).toContain('"public"."Booking"."checkIn" < $3');
+    expect(text).not.toContain('"checkIn" >=');
+    expect(text).not.toContain('"createdAt" >=');
+    expect(
+      values.slice(0, 4),
+      "#2868: the upper bound is the start of the day AFTER `--to`. If this " +
+        "reads `2026-07-31` / `2026-07-30 12:00:00`, the exclusive bound has " +
+        "been built from `--to` itself and the last requested day is no longer " +
+        "swept — which is the defect, re-entering by a path the two-sided " +
+        "tests above cannot see.",
+    ).toEqual([
+      "2026-07-31 12:00:00",
+      "2026-07-31 12:00:00",
+      "2026-08-01",
+      "2026-07-31 12:00:00",
+    ]);
+  });
+
+  it("--from X --to X sweeps exactly the one club day X", async () => {
+    const { values } = await bindScope({ from: "2026-07-15", to: "2026-07-15" });
+
+    expect(values.slice(0, 8)).toEqual([
+      "2026-07-14 12:00:00",
+      "2026-07-15 12:00:00",
+      "2026-07-14 12:00:00",
+      "2026-07-15 12:00:00",
+      "2026-07-15",
+      "2026-07-16",
+      "2026-07-14 12:00:00",
+      "2026-07-15 12:00:00",
+    ]);
+  });
+});
+
+/**
+ * The day validator the CLI's `--from`/`--to` share with the loader (#2868).
+ *
+ * This is a REAL change to what the CLI accepts, so it is tested directly
+ * rather than only through the sweep. The CLI used to validate with the regex
+ * plus `Number.isNaN(new Date(`${day}T00:00:00`).getTime())`, and a `Date`
+ * built from out-of-range parts ROLLS OVER instead of failing — so three
+ * impossible days were accepted and silently became different, later days. The
+ * rows below are measured against Node 24, not reasoned from the spec.
+ *
+ * `parseArgs`'s flag-to-validator wiring in `scripts/xero-booking-repair.ts` is
+ * still untested — the script runs `main()` at import, so it cannot be loaded
+ * from a test — but that wiring is untouched by this change, and `parseDateInput`
+ * is now a one-line delegation to the function tested here.
+ */
+describe("parseRepairScopeDay rejects days the old CLI check let through (#2868)", () => {
+  it.each([
+    { day: "2026-02-30", oldResult: "accepted, rolled to 2 March" },
+    { day: "2026-04-31", oldResult: "accepted, rolled to 1 May" },
+    { day: "2026-02-29", oldResult: "accepted, rolled to 1 March (2026 is not a leap year)" },
+  ])("refuses $day, which the old check $oldResult", ({ day }) => {
+    expect(() => parseRepairScopeDay(day, "--from")).toThrow(
+      /--from must be a real calendar day/,
+    );
+  });
+
+  it.each(["2026-13-01", "2026-07-32", "2026-7-1", "", "  ", "yesterday"])(
+    "refuses %j, as the old check also did",
+    (day) => {
+      expect(() => parseRepairScopeDay(day, "--to")).toThrow(/--to must be a real calendar day/);
+    },
+  );
+
+  it.each(["2026-07-01", "2024-02-29", "2026-12-31"])("accepts the real day %j", (day) => {
+    expect(parseRepairScopeDay(day, "--from")).toBe(day);
+  });
+
+  it("names the flag and the value it refused, so the operator can see the typo", () => {
+    expect(() => parseRepairScopeDay("2026-04-31", "--to")).toThrow(
+      '--to must be a real calendar day in YYYY-MM-DD format (received "2026-04-31").',
+    );
+  });
+
+  it("trims surrounding whitespace rather than refusing it", () => {
+    expect(parseRepairScopeDay("  2026-07-01  ", "--from")).toBe("2026-07-01");
+  });
+});
+
+/**
+ * A day that is PRESENT but not a real calendar day (#2868).
+ *
+ * `from`/`to` are strings, so they admit shapes a `Date` could not carry, and
+ * the loader used to read them through truthiness — under which `""` means "no
+ * lower bound" and an `--apply`-capable sweep silently widens to all of
+ * history. Neither shape is reachable from the CLI, which validates first;
+ * these pin the LOADER's own behaviour, because the scope type is exported and
+ * the CLI is not guaranteed to stay its only constructor.
+ */
+describe("the loader refuses a malformed scope day rather than widening (#2868)", () => {
+  it.each([
+    { label: "an empty string", day: "" },
+    { label: "a rolled-over impossible day", day: "2026-02-30" },
+    { label: "a non-leap 29 February", day: "2026-02-29" },
+    { label: "an unpadded day", day: "2026-7-1" },
+    { label: "a whole ISO instant", day: "2026-07-01T00:00:00.000Z" },
+  ])("refuses $label as the start day instead of sweeping unbounded", async ({ day }) => {
+    await expect(
+      loadAuditData({ from: day }, { prisma } as unknown as RepairDependencies),
+    ).rejects.toThrow(/start day must be a real calendar day/);
+  });
+
+  it("accepts a real leap day", async () => {
+    const { values } = await bindScope({ from: "2024-02-29", to: "2024-02-29" });
+    expect(values.slice(4, 6)).toEqual(["2024-02-29", "2024-03-01"]);
+  });
+
+  it("refuses an end day whose next day is not representable", async () => {
+    // `9999-12-31` IS a real calendar day, so the day validator accepts it; it
+    // is the exclusive upper bound that has nowhere to go. Left unguarded it
+    // becomes the expanded-year string "+010000-01" and fails at Prisma with an
+    // error naming neither the flag nor the day.
+    await expect(
+      loadAuditData({ to: "9999-12-31" }, { prisma } as unknown as RepairDependencies),
+    ).rejects.toThrow(/has no representable next day/);
   });
 });
 
