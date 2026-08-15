@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditBookingPanel } from "@/components/edit-booking-panel";
 
@@ -35,8 +35,17 @@ vi.mock("next/navigation", () => ({
 
 const BOOKING_ID = "bk-2690";
 
-/** Every modify-quote request body this render has sent, oldest first. */
-let quoteRequestBodies: string[] = [];
+/**
+ * Every modify-quote request body ONE test has sent, oldest first.
+ *
+ * Deliberately created per test and captured by the fetch mock closure, rather
+ * than living in a module-level slot the mock resolves at call time. With a
+ * shared slot, a request issued by an EARLIER test — a 500ms timer or an
+ * in-flight promise that outlived it — pushes into whichever array is current,
+ * so a later test can be handed a body it never asked for. Each test now owns an
+ * array nothing else can reach, and unmounts its panel before finishing.
+ */
+type QuoteRecorder = { bodies: string[] };
 
 function jsonResponse(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -63,8 +72,8 @@ function quotePayload() {
   };
 }
 
-function installFetch() {
-  quoteRequestBodies = [];
+function installFetch(): QuoteRecorder {
+  const recorder: QuoteRecorder = { bodies: [] };
   global.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("/api/members/family")) {
@@ -77,11 +86,12 @@ function installFetch() {
       return jsonResponse({ settings: [] });
     }
     if (url.includes("/modify-quote")) {
-      quoteRequestBodies.push(String(init?.body ?? ""));
+      recorder.bodies.push(String(init?.body ?? ""));
       return jsonResponse(quotePayload());
     }
     return jsonResponse({});
   }) as unknown as typeof fetch;
+  return recorder;
 }
 
 function makeBooking() {
@@ -136,22 +146,47 @@ function setCheckOut(value: string) {
  * observation rather than a race the test happened to win.
  */
 const THREE_DEBOUNCE_WINDOWS_MS = 1_700;
+const ONE_DEBOUNCE_WINDOW_MS = 700;
 
 function settle(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 beforeEach(() => {
-  installFetch();
   routerRefresh.mockClear();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  /*
+    THE BARRIER BETWEEN CASES, and why it is explicit.
+
+    Each case leaves a mounted panel that may be holding a 500ms debounce timer
+    and may have a fetch already in flight. Unmounting runs the debounce effect's
+    cleanup, which clears the timer; draining past one window then lets anything
+    already issued settle. Without both, a straggler from one case can still be
+    running while the next case makes its assertions.
+
+    That is the only mechanism anyone has proposed for the one failure this suite
+    has ever shown — a second modify-quote carrying an empty body, seen once by a
+    reviewer and never reproduced since, including in 39 clean runs of an
+    instrumented copy that would have dumped the sender. Combined with the
+    per-test recorder above, a straggler now writes into an array nobody reads,
+    so the mechanism is gone whether or not it was ever the cause.
+
+    cleanup() is called here rather than left to Testing Library's automatic
+    afterEach because vitest.config.ts pins sequence.hooks to "stack", which runs
+    after-hooks in REVERSE registration order — the automatic one would run after
+    this drain rather than before it. Calling it explicitly is idempotent and
+    removes the ordering question entirely.
+  */
+  cleanup();
+  await settle(ONE_DEBOUNCE_WINDOW_MS);
   vi.restoreAllMocks();
 });
 
 describe("EditBookingPanel — the debounced modify-quote arm (#2690)", () => {
   it("prices a settled edit exactly once and does not re-arm on its own response", async () => {
+    const quoteRequestBodies = installFetch().bodies;
     render(
       <EditBookingPanel booking={makeBooking()} onDone={() => {}} />,
     );
@@ -175,6 +210,7 @@ describe("EditBookingPanel — the debounced modify-quote arm (#2690)", () => {
   });
 
   it("coalesces a burst of edits into one request carrying the last payload", async () => {
+    const quoteRequestBodies = installFetch().bodies;
     render(
       <EditBookingPanel booking={makeBooking()} onDone={() => {}} />,
     );
@@ -196,6 +232,7 @@ describe("EditBookingPanel — the debounced modify-quote arm (#2690)", () => {
   });
 
   it("clears the quote without asking the server to price an edit that no longer exists", async () => {
+    const quoteRequestBodies = installFetch().bodies;
     render(
       <EditBookingPanel booking={makeBooking()} onDone={() => {}} />,
     );
@@ -223,6 +260,9 @@ describe("EditBookingPanel — the debounced modify-quote arm (#2690)", () => {
   });
 
   it("asks the family route once per mount, not once per edit", async () => {
+    // This case counts family calls off the mock itself, so it needs the fetch
+    // installed but not the quote recorder.
+    installFetch();
     render(
       <EditBookingPanel booking={makeBooking()} onDone={() => {}} />,
     );
