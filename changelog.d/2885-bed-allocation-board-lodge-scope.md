@@ -39,3 +39,34 @@
 
   Single-lodge clubs see no change at all — there is no lodge selector and no
   club-wide view to choose.
+
+- **When the club's lodge list cannot be loaded, the admin pages now say so
+  instead of looking like a club with no lodges — and a booking can no longer be
+  created against a lodge nobody chose (#2701).** This was the more serious half
+  of the same problem. Every lodge selector in the admin area draws on one
+  request, and when that request failed it produced an empty list, which looked
+  exactly like a club that has only one lodge. The selector then disappeared,
+  and anything saved next went to whichever lodge the system treats as the
+  default — a lodge nobody had been shown.
+
+  Ten screens could write to the wrong lodge that way, including rooms and beds,
+  the roster, seasons, chore templates, lockers, hut fee rates, hut leader
+  assignments, lodge capacity, work parties and promo codes. Each now explains
+  that the lodge list did not load, offers a **Try again**, and holds back the
+  controls that would otherwise save to a lodge it cannot name.
+
+  **Booking is the part that mattered most.** A member could reach the end of
+  the booking wizard during one of these failures and pay for a stay with
+  nothing on screen naming a lodge. From now on: a booking must say which lodge
+  it is for, and the system refuses rather than guessing; a member is blocked
+  with a plain explanation and a retry instead of being charged; an admin
+  booking on someone's behalf can carry on, with the lodge shown before anything
+  is saved; and **every member now sees the lodge they are booking on the
+  summary screen, including at clubs with only one lodge** — that line used to
+  be hidden for single-lodge clubs, which is exactly why an outage was
+  impossible to spot.
+
+  Three screens are deliberately unchanged: the reports page, the promo-code
+  redemptions panel and the public booking-requests panel already show a genuine
+  "All lodges" view where every figure is correct, so losing the filter costs
+  nothing and an error there would be worse than the gap it closed.

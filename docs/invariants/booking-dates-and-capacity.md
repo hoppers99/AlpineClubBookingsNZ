@@ -1654,6 +1654,39 @@ move, never a capacity or double-booking violation.
   default would substitute the surviving one and refuse a link the product
   itself built.
 
+### INV-CAP-034
+
+- **A booking names its lodge, and the server never fills the blank (#2701):**
+  `POST /api/bookings` refuses a create carrying no `lodgeId` with a 400 and
+  `code: "BOOKING_LODGE_REQUIRED"`, checked BEFORE any lodge resolution so the
+  club's default lodge is not merely unused but unreached. It is not enough to
+  fix the screens: this is one gate instead of one guard per surface, so the
+  next booking screen somebody writes fails loudly here rather than writing
+  quietly to the wrong lodge.
+  The path that made it worth doing was not a hand-crafted request. When the
+  lodge list fails, `useLodgeOptions` returns an empty list, `LodgeSelect`
+  renders nothing at all below two lodges (ADR-002) and normalises the selection
+  to `null`, and both booking wizards then posted no lodge — which
+  `resolveOptionalActiveLodgeId` answered with the default lodge. In a
+  multi-lodge club that stamped a real, paid booking with a lodge nobody had
+  shown the member, and the member's review step suppressed its own "Lodge:"
+  line in exactly that state.
+  Three consequences are load-bearing:
+  - **The shared resolver stays permissive.** `resolveOptionalActiveLodgeId`
+    still defaults for READS, where an omitted lodge legitimately means the
+    whole club — the mode `INV-INT-016` retains for consumers outside this
+    repository. The strictness belongs on the write, not in the helper, because
+    an unscoped create is not a question anybody can answer.
+  - **A member is always shown the lodge they are booking**, on every booking
+    including in a single-lodge club. The line used to be conditional on there
+    being more than one lodge, which is precisely why an outage was
+    indistinguishable from a one-lodge club, and why the screen looked normal in
+    the one state where it was lying.
+  - **A member cannot complete a booking whose lodge is unknown; an admin
+    booking on someone's behalf may continue**, with the lodge named on screen
+    before anything is written. An admin will notice a wrong lodge name and
+    knows how to correct it; a member paying online will not.
+
 ### INV-LIFE-062
 
 A `HutLeaderAssignment` may additionally hold ONE bed (`bedId`), which makes it

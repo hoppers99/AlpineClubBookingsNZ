@@ -204,6 +204,28 @@ operational documents (which may carry door/emergency access details).
   Since #2701 the component **reports** which it was (`source: "user" | "auto"`)
   rather than leaving the page to infer it from the values, which could not tell
   a default apart from a deliberate pick landing on the same lodge.
+- **A failed lodge list is a state every lodge-scoped surface must be able to
+  express, not just the bed board** (#2701). `useLodgeOptions` reports `failed`
+  and `forbidden` beside its list, because an empty list used to mean three
+  different things and `LodgeSelect` renders nothing below two lodges (ADR-002)
+  — so on twenty admin surfaces a failed request looked exactly like a club with
+  no lodges. That was never cosmetic: the selection normalises to `null`, and a
+  `null` lodge was resolved server-side to the club's DEFAULT lodge, so the next
+  thing the operator saved landed somewhere they were never shown. Ten surfaces
+  wrote to the wrong lodge that way, two of them on money paths.
+  The shared treatment is `LodgeOptionsUnavailableNotice` — one explanation and
+  one working retry — plus, on each surface, suppression of the lodge-keyed
+  fetch and of every write control while the scope is unknown. **The suppression
+  is the half that matters**; a message alone leaves the wrong write reachable.
+  A 403 is deliberately NOT that state: `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN`
+  hold `bookings` and no `lodge` permission, so a refusal is their normal answer
+  and a retry could only refuse again.
+  Three surfaces are deliberately left to degrade quietly, and that is a
+  decision rather than an omission: `reports`, the promo-redemptions panel and
+  the public booking-requests panel already default to a genuine, labelled
+  all-lodges read where every figure stays correct, so the lodge is a filter
+  over content that stands alone. Forcing an error there would be worse than
+  the ambiguity it removed.
 - **The board's lodge scope is five named states, the set is TOTAL, and `null`
   means exactly one thing** (#2701). It used to mean three: a deliberate
   club-wide view, a selector that had not resolved, and a failed
