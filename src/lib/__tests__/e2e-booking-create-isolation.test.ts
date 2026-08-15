@@ -1504,7 +1504,12 @@ describe("E2E booking-create retry isolation (#2599)", () => {
 
   it("merges direct-request headers through the one typed POST helper", async () => {
     const response = { ok: () => true };
+    const lodgeResponse = {
+      ok: () => true,
+      json: async () => ({ lodges: [{ id: "lodge-e2e" }] }),
+    };
     const request = {
+      get: vi.fn(async () => lodgeResponse),
       post: vi.fn(async () => response),
     } as unknown as APIRequestContext;
     const isolation = bookingCreateIsolation("waitlist-placement", 1);
@@ -1518,12 +1523,13 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         data: { checkIn: "2026-08-01" },
       }),
     ).resolves.toBe(response);
+    expect(request.get).toHaveBeenCalledWith("/api/lodges");
     expect(request.post).toHaveBeenCalledWith("/api/bookings", {
       headers: {
         authorization: "Bearer ***",
         "x-forwarded-for": isolation.clientIp,
       },
-      data: { checkIn: "2026-08-01" },
+      data: { checkIn: "2026-08-01", lodgeId: "lodge-e2e" },
     });
   });
 
