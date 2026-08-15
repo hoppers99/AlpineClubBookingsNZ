@@ -163,18 +163,28 @@ interface FakeServer {
   refusals: URLSearchParams[];
   /** Resolve the pending `/api/admin/lodges` response. */
   releaseLodges: () => void;
+  /** Resolve the pending FIRST `/api/admin/bed-allocation` response. */
+  releaseFirstBoard: () => void;
   /** Make the next `/api/admin/lodges` attempt fail (or succeed again). */
   setLodgesFailing: (failing: boolean) => void;
 }
 
 function installFakeServer(options?: {
   holdLodges?: boolean;
+  /**
+   * Hold the FIRST board response open. Without this the two endpoints race,
+   * and the order that matters — options land while the deep link's board read
+   * is still in flight — is the one that happens to lose. It is also the
+   * realistic order: `/api/admin/lodges` is the smaller query.
+   */
+  holdFirstBoard?: boolean;
   lodgesFailing?: boolean;
 }): FakeServer {
   const state: FakeServer = {
     boardRequests: [],
     refusals: [],
     releaseLodges: () => {},
+    releaseFirstBoard: () => {},
     setLodgesFailing: (failing) => {
       lodgesFailing = failing;
     },
@@ -187,6 +197,14 @@ function installFakeServer(options?: {
       })
     : Promise.resolve();
   state.releaseLodges = () => release();
+
+  let releaseBoard = () => {};
+  let boardGate: Promise<void> | null = options?.holdFirstBoard
+    ? new Promise<void>((resolve) => {
+        releaseBoard = resolve;
+      })
+    : null;
+  state.releaseFirstBoard = () => releaseBoard();
 
   vi.stubGlobal(
     "fetch",
@@ -208,6 +226,11 @@ function installFakeServer(options?: {
       if (url.startsWith("/api/admin/bed-allocation?")) {
         const params = new URLSearchParams(url.split("?")[1]);
         state.boardRequests.push(params);
+        if (boardGate) {
+          const pending = boardGate;
+          boardGate = null;
+          await pending;
+        }
         const bookingId = params.get("bookingId");
         const requestedLodgeId = params.get("lodgeId");
         const bookingLodgeId = bookingId
@@ -332,9 +355,24 @@ describe("bed-allocation board — a failed lodge list is not a club-wide view (
 describe("bed-allocation board — a deep-linked booking brings its own lodge (#2701)", () => {
   it("lands a second-lodge booking on the SECOND lodge's board when the link names no lodge", async () => {
     search.current = "from=2026-07-01&to=2026-07-08&bookingId=booking-b";
-    const server = installFakeServer();
+    // The order that matters: the lodge options arrive while the board read is
+    // still in flight, so the selector is holding two lodges and no selection
+    // at the exact moment it would otherwise default to the first one.
+    const server = installFakeServer({ holdFirstBoard: true });
 
     render(<AdminBedAllocationPage />);
+    // The selector renders as soon as two lodges are known (ADR-002).
+    await screen.findByRole("combobox");
+
+    // MUTATION PROBE for the deferral: drop `deferDefaultSelection` from the
+    // board's `LodgeSelect` and this is where it breaks — the selector fires
+    // `lodges[0]`, the board asks again pairing booking-b with lodge-1, and
+    // the server refuses it. That is the defence firing on ordinary
+    // navigation, which is the one thing it must never do.
+    expect(server.boardRequests).toHaveLength(1);
+    expect(server.boardRequests[0]?.has("lodgeId")).toBe(false);
+
+    server.releaseFirstBoard();
     await screen.findByTestId("room-table");
 
     // The selector, the board and the focus all agree on lodge two — the
@@ -346,10 +384,9 @@ describe("bed-allocation board — a deep-linked booking brings its own lodge (#
     expect(screen.getByText("River Lodge")).toBeInTheDocument();
     expect(screen.getByText("Focused booking")).toBeInTheDocument();
     expect(server.boardRequests.at(-1)?.get("bookingId")).toBe("booking-b");
-
-    // MUTATION PROBE for the deferral: without `deferDefaultSelection` the
-    // selector fires `lodges[0]` the moment the options land, and this request
-    // pairs booking-b with lodge-1 — which the server refuses.
+    expect(server.refusals).toEqual([]);
+    // MUTATION PROBE for the adoption effect: delete it and the selection never
+    // becomes lodge-2, so no request ever carries it.
     expect(
       server.boardRequests.some(
         (request) => request.get("lodgeId") === "lodge-1",
@@ -381,9 +418,11 @@ describe("bed-allocation board — the LODGE_MISMATCH backstop (#2701)", () => {
     // — on the first load, on the adoption reload, or after the admin changes
     // lodge — is recorded here and fails the assertion.
     search.current = "from=2026-07-01&to=2026-07-08&bookingId=booking-b";
-    const server = installFakeServer();
+    const server = installFakeServer({ holdFirstBoard: true });
 
     render(<AdminBedAllocationPage />);
+    await screen.findByRole("combobox");
+    server.releaseFirstBoard();
     await screen.findByTestId("room-table");
     await waitFor(() =>
       expect(server.boardRequests.at(-1)?.get("lodgeId")).toBe("lodge-2"),
