@@ -36,7 +36,8 @@ export const BASELINE_PATH = "scripts/quality/file-size-baseline.txt";
 export const CHECK_COMMAND = "npm run quality:budget";
 export const UPDATE_COMMAND = "npm run quality:budget:update";
 
-export type BudgetCategory = "domain module" | "route handler" | "route page shell";
+export type BudgetCategory =
+  "domain module" | "route handler" | "route page shell";
 export type BudgetSlug = "domain-module" | "route-handler" | "route-page-shell";
 
 export type Budget = {
@@ -140,7 +141,9 @@ const TEST_FILE_PATTERN = new RegExp(`\\.(test|spec)\\.(${EXT})$`);
 // `(.*\/)?` rather than `.*\/`: the latter required at least one directory
 // after `src/app/`, so a root-level `src/app/route.ts` silently inherited the
 // 700-LOC domain-module budget instead of 250.
-const ROUTE_HANDLER_PATTERN = new RegExp(`^src\\/app\\/(.*\\/)?route\\.(${EXT})$`);
+const ROUTE_HANDLER_PATTERN = new RegExp(
+  `^src\\/app\\/(.*\\/)?route\\.(${EXT})$`,
+);
 const ROUTE_PAGE_PATTERN = new RegExp(`^src\\/app\\/(.*\\/)?page\\.(${EXT})$`);
 
 function extensionOf(file: string): string | null {
@@ -153,13 +156,13 @@ function extensionOf(file: string): string | null {
 export function isProductionFile(file: string): boolean {
   if (!file.startsWith("src/")) return false;
   if (!SOURCE_FILE_PATTERN.test(file)) return false;
-  if (file.includes("/__tests__/")) return false;
-  if (TEST_FILE_PATTERN.test(file)) return false;
+  if (isRatchetExcludedTestFile(file)) return false;
   return true;
 }
 
-export function isTestFile(file: string): boolean {
-  if (!file.startsWith("src/")) return false;
+/** Test-path source files excluded from production debt and importable by app roots. */
+export function isRatchetExcludedTestFile(file: string): boolean {
+  if (!file.startsWith("src/") && !file.startsWith("scripts/")) return false;
   if (!SOURCE_FILE_PATTERN.test(file)) return false;
   return file.includes("/__tests__/") || TEST_FILE_PATTERN.test(file);
 }
@@ -213,7 +216,8 @@ export function findUnclassifiedFiles(
     if (extension === null) {
       out.push({
         file,
-        reason: "no file extension, so the classifier cannot tell source from asset",
+        reason:
+          "no file extension, so the classifier cannot tell source from asset",
       });
       continue;
     }
@@ -328,14 +332,19 @@ export function scanRepository(root: string): RepositoryScan {
   };
 }
 
-export function findOversizedProductionFiles(stats: FileStat[]): OversizedFileStat[] {
+export function findOversizedProductionFiles(
+  stats: FileStat[],
+): OversizedFileStat[] {
   return stats
     .map((stat) => {
       const budget = budgetForFile(stat.file);
       return { ...stat, ...budget, overBy: stat.lines - budget.limit };
     })
     .filter((stat) => stat.overBy > 0)
-    .sort((a, b) => b.overBy - a.overBy || b.lines - a.lines || compare(a.file, b.file));
+    .sort(
+      (a, b) =>
+        b.overBy - a.overBy || b.lines - a.lines || compare(a.file, b.file),
+    );
 }
 
 function compare(a: string, b: string): number {
@@ -404,7 +413,9 @@ const BASELINE_HEADER = [
 
 export function serializeBaseline(entries: readonly BaselineEntry[]): string {
   const sorted = [...entries].sort(byPath);
-  const lines = sorted.map((entry) => `${entry.file} ${entry.lines} ${entry.slug}`);
+  const lines = sorted.map(
+    (entry) => `${entry.file} ${entry.lines} ${entry.slug}`,
+  );
   return [...BASELINE_HEADER, ...lines].join("\n") + "\n";
 }
 
@@ -443,7 +454,8 @@ export function parseBaseline(text: string): ParsedBaseline {
   const rawLines = text.split("\n");
   // A trailing newline yields one empty final element; that is the expected
   // shape, so drop exactly one.
-  if (rawLines.length > 0 && rawLines[rawLines.length - 1] === "") rawLines.pop();
+  if (rawLines.length > 0 && rawLines[rawLines.length - 1] === "")
+    rawLines.pop();
 
   rawLines.forEach((raw, index) => {
     const lineNumber = index + 1;
@@ -469,11 +481,17 @@ export function parseBaseline(text: string): ParsedBaseline {
       problems.push({
         line: lineNumber,
         text: raw,
-        message: "expected `<path> <loc> <budget-category>` separated by single spaces",
+        message:
+          "expected `<path> <loc> <budget-category>` separated by single spaces",
       });
       return;
     }
-    const [, file, loc, slug] = match as unknown as [string, string, string, string];
+    const [, file, loc, slug] = match as unknown as [
+      string,
+      string,
+      string,
+      string,
+    ];
     const problem = pathProblem(file);
     if (problem) {
       problems.push({ line: lineNumber, text: raw, message: problem });
@@ -649,8 +667,7 @@ export function evaluateRatchet(
           baseline: "absent",
           current: `${oversized.length} file(s) currently over budget`,
           problem: `the committed baseline \`${BASELINE_PATH}\` is missing, so there is nothing to compare against`,
-          action:
-            `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\` against that trusted comparison`,
+          action: `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\` against that trusted comparison`,
         },
       ],
     };
@@ -665,8 +682,7 @@ export function evaluateRatchet(
     baseline: `line ${problem.line}: ${JSON.stringify(problem.text)}`,
     current: null,
     problem: problem.message,
-    action:
-      `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\``,
+    action: `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\``,
   }));
 
   // Tree-aware validation of each recorded entry.
@@ -681,8 +697,7 @@ export function evaluateRatchet(
         baseline: `${entry.lines} LOC recorded as ${entry.slug}`,
         current: null,
         problem: `the recorded budget category does not match the one this path implies (${budget.slug})`,
-        action:
-          `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\``,
+        action: `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\``,
       });
       continue;
     }
@@ -696,8 +711,7 @@ export function evaluateRatchet(
         current: null,
         problem:
           "the baseline lists a file that is not over its budget; only over-budget files belong here",
-        action:
-          `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\``,
+        action: `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\``,
       });
     }
   }
@@ -708,18 +722,21 @@ export function evaluateRatchet(
   // reason and a corrupted header can hide behind the regression. Rebuilding
   // from the ledger's own parsed records isolates header/spacing corruption,
   // so update mode can refuse an unusable comparison before accepting growth.
-  if (findings.length === 0 && baselineText !== serializeBaseline(parsed.entries)) {
+  if (
+    findings.length === 0 &&
+    baselineText !== serializeBaseline(parsed.entries)
+  ) {
     findings.push({
       severity: "unusable",
       kind: "malformed-baseline",
       file: BASELINE_PATH,
       budget: null,
-      baseline: "differs from the generated form outside the records themselves",
+      baseline:
+        "differs from the generated form outside the records themselves",
       current: null,
       problem:
         "the records parse, but the file is not byte-identical to the generated ledger (header text, spacing, or trailing lines differ)",
-      action:
-        `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\``,
+      action: `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\``,
     });
   }
 
@@ -727,7 +744,9 @@ export function evaluateRatchet(
     return { ...base, findings };
   }
 
-  const baselineByFile = new Map(parsed.entries.map((entry) => [entry.file, entry]));
+  const baselineByFile = new Map(
+    parsed.entries.map((entry) => [entry.file, entry]),
+  );
   const baselineOverage = parsed.entries.reduce(
     (sum, entry) => sum + (entry.lines - budgetForFile(entry.file).limit),
     0,
@@ -743,7 +762,8 @@ export function evaluateRatchet(
         budget: describeBudget(stat),
         baseline: "not listed (this file was within budget, or is new)",
         current: `${stat.lines} LOC, over by ${stat.overBy}`,
-        problem: "a file that was not carrying size debt now exceeds its budget",
+        problem:
+          "a file that was not carrying size debt now exceeds its budget",
         action: SPLIT_ACTION,
       });
       continue;
@@ -790,7 +810,8 @@ export function evaluateRatchet(
       current: stillTracked
         ? "now within budget"
         : "no longer a tracked production file (deleted, renamed, or moved out of src/)",
-      problem: "the baseline carries a ceiling for a file that no longer needs one",
+      problem:
+        "the baseline carries a ceiling for a file that no longer needs one",
       action: REGENERATE_ACTION,
     });
   }

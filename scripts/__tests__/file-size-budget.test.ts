@@ -23,6 +23,7 @@ import {
   findOversizedProductionFiles,
   findUnclassifiedFiles,
   isProductionFile,
+  isRatchetExcludedTestFile,
   parseBaseline,
   scanRepository,
   serializeBaseline,
@@ -33,7 +34,9 @@ import {
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 
-function kinds(findings: readonly { kind: RatchetFindingKind }[]): RatchetFindingKind[] {
+function kinds(
+  findings: readonly { kind: RatchetFindingKind }[],
+): RatchetFindingKind[] {
   return findings.map((finding) => finding.kind);
 }
 
@@ -71,9 +74,7 @@ function createTrackedRepo(file: string, lines: number): string {
     "utf8",
   );
   writeLines(root, file, lines);
-  const baseline = serializeBaseline(
-    baselineEntriesFor([{ file, lines }]),
-  );
+  const baseline = serializeBaseline(baselineEntriesFor([{ file, lines }]));
   const baselineTarget = path.join(root, BASELINE_PATH);
   mkdirSync(path.dirname(baselineTarget), { recursive: true });
   writeFileSync(baselineTarget, baseline, "utf8");
@@ -81,7 +82,10 @@ function createTrackedRepo(file: string, lines: number): string {
   return root;
 }
 
-function captureRun(root: string, argv: readonly string[]): {
+function captureRun(
+  root: string,
+  argv: readonly string[],
+): {
   code: number;
   stdout: string;
   stderr: string;
@@ -91,17 +95,25 @@ function captureRun(root: string, argv: readonly string[]): {
   const stdoutSpy = vi
     .spyOn(process.stdout, "write")
     .mockImplementation((chunk: string | Uint8Array) => {
-      stdout.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      stdout.push(
+        typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"),
+      );
       return true;
     });
   const stderrSpy = vi
     .spyOn(process.stderr, "write")
     .mockImplementation((chunk: string | Uint8Array) => {
-      stderr.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      stderr.push(
+        typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"),
+      );
       return true;
     });
   try {
-    return { code: run(root, argv), stdout: stdout.join(""), stderr: stderr.join("") };
+    return {
+      code: run(root, argv),
+      stdout: stdout.join(""),
+      stderr: stderr.join(""),
+    };
   } finally {
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
@@ -136,7 +148,9 @@ describe("blocking CI wiring", () => {
     );
     const verify = verifyJobSource(workflow);
     expect(verify, "ci.yml must contain a top-level verify job").not.toBe("");
-    expect(verify.match(/^        run: npm run quality:budget\s*$/gm) ?? []).toHaveLength(1);
+    expect(
+      verify.match(/^        run: npm run quality:budget\s*$/gm) ?? [],
+    ).toHaveLength(1);
   });
 });
 
@@ -146,7 +160,9 @@ describe("budget classification", () => {
       slug: "route-handler",
       limit: ROUTE_HANDLER_LIMIT,
     });
-    expect(budgetForFile("src/app/(admin)/admin/members/page.tsx")).toMatchObject({
+    expect(
+      budgetForFile("src/app/(admin)/admin/members/page.tsx"),
+    ).toMatchObject({
       slug: "route-page-shell",
       limit: ROUTE_PAGE_LIMIT,
     });
@@ -155,7 +171,9 @@ describe("budget classification", () => {
       limit: PRODUCTION_LIMIT,
     });
     // A co-located client component under app/ is a domain module, not a shell.
-    expect(budgetForFile("src/app/(admin)/admin/members/members-client.tsx")).toMatchObject({
+    expect(
+      budgetForFile("src/app/(admin)/admin/members/members-client.tsx"),
+    ).toMatchObject({
       slug: "domain-module",
       limit: PRODUCTION_LIMIT,
     });
@@ -177,6 +195,20 @@ describe("budget classification", () => {
     expect(isProductionFile("src/styles/app.css")).toBe(false);
   });
 
+  it("shares one excluded test-path classifier across app and script roots", () => {
+    for (const file of [
+      "src/lib/thing.spec.mjs",
+      "src/lib/__tests__/helper.cjs",
+      "scripts/thing.test.ts",
+      "scripts/__tests__/helper.js",
+    ]) {
+      expect(isRatchetExcludedTestFile(file), file).toBe(true);
+    }
+    expect(isRatchetExcludedTestFile("scripts/runtime.ts")).toBe(false);
+    expect(isRatchetExcludedTestFile("e2e/example.spec.ts")).toBe(false);
+    expect(isRatchetExcludedTestFile("scripts/example.test.md")).toBe(false);
+  });
+
   it("gives root-level App Router files their real budget", () => {
     expect(budgetForFile("src/app/route.ts")).toMatchObject({
       slug: "route-handler",
@@ -191,7 +223,9 @@ describe("budget classification", () => {
   it("treats the budget as exclusive: exactly at the limit is not over", () => {
     expect(findOversizedProductionFiles(CLEAN_TREE)).toEqual([]);
     expect(
-      findOversizedProductionFiles([{ file: "src/lib/x.ts", lines: PRODUCTION_LIMIT + 1 }]),
+      findOversizedProductionFiles([
+        { file: "src/lib/x.ts", lines: PRODUCTION_LIMIT + 1 },
+      ]),
     ).toHaveLength(1);
   });
 });
@@ -213,13 +247,18 @@ describe("baseline serialisation", () => {
   });
 
   it("carries no timestamp, count or other regenerating noise in its header", () => {
-    const a = serializeBaseline([{ file: "src/lib/a.ts", lines: 800, slug: "domain-module" }]);
+    const a = serializeBaseline([
+      { file: "src/lib/a.ts", lines: 800, slug: "domain-module" },
+    ]);
     const b = serializeBaseline([
       { file: "src/lib/a.ts", lines: 800, slug: "domain-module" },
       { file: "src/lib/b.ts", lines: 900, slug: "domain-module" },
     ]);
     const headerOf = (text: string) =>
-      text.split("\n").filter((line) => line.startsWith("#")).join("\n");
+      text
+        .split("\n")
+        .filter((line) => line.startsWith("#"))
+        .join("\n");
     expect(headerOf(a)).toBe(headerOf(b));
     expect(headerOf(a)).not.toMatch(/\d{4}-\d{2}-\d{2}|generated at|total/i);
   });
@@ -238,7 +277,8 @@ describe("baseline serialisation", () => {
     expect(parsed.problems).toEqual([]);
     expect(parsed.entries).toEqual([entry]);
     expect(
-      evaluateRatchet([{ file: "src/lib/zz probe.ts", lines: 800 }], text).findings,
+      evaluateRatchet([{ file: "src/lib/zz probe.ts", lines: 800 }], text)
+        .findings,
     ).toEqual([]);
   });
 
@@ -257,7 +297,9 @@ describe("baseline serialisation", () => {
     ];
     for (const [line, expected] of cases) {
       const parsed = parseBaseline(`# header\n${line}\n`);
-      expect(parsed.problems.map((problem) => problem.message).join(" | ")).toMatch(expected);
+      expect(
+        parsed.problems.map((problem) => problem.message).join(" | "),
+      ).toMatch(expected);
     }
   });
 
@@ -284,12 +326,17 @@ describe("the ratchet", () => {
     const result = evaluateRatchet(tree, baselineFor(tree));
     expect(result.findings).toEqual([]);
     expect(result.oversizedFiles).toBe(2);
-    expect(result.currentOverage).toBe(1200 - PRODUCTION_LIMIT + (400 - ROUTE_HANDLER_LIMIT));
+    expect(result.currentOverage).toBe(
+      1200 - PRODUCTION_LIMIT + (400 - ROUTE_HANDLER_LIMIT),
+    );
   });
 
   it("fails on a NEW over-budget file", () => {
     const before: FileStat[] = [...CLEAN_TREE];
-    const after: FileStat[] = [...CLEAN_TREE, { file: "src/lib/brand-new.ts", lines: 900 }];
+    const after: FileStat[] = [
+      ...CLEAN_TREE,
+      { file: "src/lib/brand-new.ts", lines: 900 },
+    ];
     const result = evaluateRatchet(after, baselineFor(before));
     expect(kinds(result.findings)).toEqual(["new-over-budget"]);
     const [finding] = result.findings;
@@ -338,13 +385,21 @@ describe("the ratchet", () => {
     expect(kinds(withinBudget.findings)).toEqual(["no-longer-over-budget"]);
     expect(withinBudget.findings[0].current).toMatch(/now within budget/);
 
-    const deleted = evaluateRatchet([{ file: "src/lib/other.ts", lines: 10 }], baselineFor(before));
+    const deleted = evaluateRatchet(
+      [{ file: "src/lib/other.ts", lines: 10 }],
+      baselineFor(before),
+    );
     expect(kinds(deleted.findings)).toEqual(["no-longer-over-budget"]);
-    expect(deleted.findings[0].current).toMatch(/deleted, renamed, or moved out of src\//);
+    expect(deleted.findings[0].current).toMatch(
+      /deleted, renamed, or moved out of src\//,
+    );
   });
 
   it("fails clearly when the baseline is missing rather than skipping enforcement", () => {
-    const result = evaluateRatchet([{ file: "src/lib/big.ts", lines: 1200 }], null);
+    const result = evaluateRatchet(
+      [{ file: "src/lib/big.ts", lines: 1200 }],
+      null,
+    );
     expect(kinds(result.findings)).toEqual(["missing-baseline"]);
     expect(result.findings[0].severity).toBe("unusable");
     expect(result.findings[0].problem).toContain(BASELINE_PATH);
@@ -381,7 +436,10 @@ describe("the ratchet", () => {
 
   it("fails on a malformed baseline instead of comparing against a partial one", () => {
     const tree: FileStat[] = [{ file: "src/lib/big.ts", lines: 1200 }];
-    const result = evaluateRatchet(tree, "# header\nsrc/lib/big.ts twelve-hundred domain-module\n");
+    const result = evaluateRatchet(
+      tree,
+      "# header\nsrc/lib/big.ts twelve-hundred domain-module\n",
+    );
     expect(kinds(result.findings)).toEqual(["malformed-baseline"]);
     expect(result.findings[0].severity).toBe("unusable");
   });
@@ -390,14 +448,22 @@ describe("the ratchet", () => {
     const tree: FileStat[] = [{ file: "src/app/api/big/route.ts", lines: 400 }];
     // Hand-edited from route-handler (250) to domain-module (700) so the file
     // would look within budget. Rejected, not obeyed.
-    const result = evaluateRatchet(tree, "# header\nsrc/app/api/big/route.ts 400 domain-module\n");
+    const result = evaluateRatchet(
+      tree,
+      "# header\nsrc/app/api/big/route.ts 400 domain-module\n",
+    );
     expect(kinds(result.findings)).toEqual(["malformed-baseline"]);
-    expect(result.findings[0].problem).toMatch(/does not match the one this path implies/);
+    expect(result.findings[0].problem).toMatch(
+      /does not match the one this path implies/,
+    );
   });
 
   it("refuses a baseline entry that is not over its budget", () => {
     const tree: FileStat[] = [{ file: "src/lib/small.ts", lines: 100 }];
-    const result = evaluateRatchet(tree, "# header\nsrc/lib/small.ts 100 domain-module\n");
+    const result = evaluateRatchet(
+      tree,
+      "# header\nsrc/lib/small.ts 100 domain-module\n",
+    );
     expect(kinds(result.findings)).toEqual(["malformed-baseline"]);
     expect(result.findings[0].problem).toMatch(/not over its budget/);
   });
@@ -420,7 +486,9 @@ describe("the ratchet", () => {
     const inflated = serializeBaseline([
       { file: "src/lib/big.ts", lines: 5000, slug: "domain-module" },
     ]);
-    expect(kinds(evaluateRatchet(tree, inflated).findings)).toEqual(["shrunk-below-baseline"]);
+    expect(kinds(evaluateRatchet(tree, inflated).findings)).toEqual([
+      "shrunk-below-baseline",
+    ]);
   });
 
   it("rejects a baseline whose records match but whose bytes do not", () => {
@@ -461,7 +529,9 @@ describe("the visible baseline-update escape", () => {
       expect(refused.stderr).toContain("UNUSABLE");
       expect(refused.stderr).toContain("missing");
       expect(refused.stderr).toContain("No baseline bytes were written");
-      expect(() => readFileSync(path.join(root, BASELINE_PATH), "utf8")).toThrow();
+      expect(() =>
+        readFileSync(path.join(root, BASELINE_PATH), "utf8"),
+      ).toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -477,7 +547,9 @@ describe("the visible baseline-update escape", () => {
       expect(refused.code).toBe(1);
       expect(refused.stderr).toContain("not tracked by git");
       expect(refused.stderr).toContain("No baseline bytes were written");
-      expect(readFileSync(path.join(root, BASELINE_PATH), "utf8")).toBe(original);
+      expect(readFileSync(path.join(root, BASELINE_PATH), "utf8")).toBe(
+        original,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -488,7 +560,10 @@ describe("the visible baseline-update escape", () => {
     try {
       writeLines(root, "src/lib/unrelated-growth.ts", 850);
       git(root, ["add", "--", "src/lib/unrelated-growth.ts"]);
-      const malformed = readFileSync(path.join(root, BASELINE_PATH), "utf8").replace(
+      const malformed = readFileSync(
+        path.join(root, BASELINE_PATH),
+        "utf8",
+      ).replace(
         /^# File-size budget baseline.*$/m,
         "# corrupted header that is not the reviewed contract",
       );
@@ -500,7 +575,9 @@ describe("the visible baseline-update escape", () => {
       expect(refused.stderr).toContain("not byte-identical");
       expect(refused.stderr).toContain("No baseline bytes were written");
       expect(refused.stdout).not.toContain("Intentional baseline update");
-      expect(readFileSync(path.join(root, BASELINE_PATH), "utf8")).toBe(malformed);
+      expect(readFileSync(path.join(root, BASELINE_PATH), "utf8")).toBe(
+        malformed,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -555,7 +632,9 @@ describe("the visible baseline-update escape", () => {
       expect(accepted.stdout).toContain("+50 vs the previous baseline");
       expect(accepted.stdout).toContain("PRE-UPDATE REGRESSIONS ACCEPTED (1)");
       expect(accepted.stdout).toContain("src/lib/renamed.ts");
-      expect(accepted.stdout).toContain("The aggregate accepted debt also increased");
+      expect(accepted.stdout).toContain(
+        "The aggregate accepted debt also increased",
+      );
 
       const ledgerDiff = git(root, ["diff", "--", BASELINE_PATH]);
       expect(ledgerDiff).toContain("-src/lib/original.ts 800 domain-module");
@@ -597,7 +676,9 @@ describe("the visible baseline-update escape", () => {
       expect(accepted.stdout).toContain(
         "An aggregate debt decrease does not cancel a regression above",
       );
-      expect(accepted.stdout).not.toContain("The aggregate accepted debt also increased");
+      expect(accepted.stdout).not.toContain(
+        "The aggregate accepted debt also increased",
+      );
 
       const ledgerDiff = git(root, ["diff", "--", BASELINE_PATH]);
       expect(ledgerDiff).toContain("-src/lib/original.ts 800 domain-module");
@@ -614,13 +695,20 @@ describe("the visible baseline-update escape", () => {
 describe("the committed baseline in this repository", () => {
   it("describes the current tree exactly", () => {
     const scan = scanRepository(REPO_ROOT);
-    const committed = readFileSync(path.join(REPO_ROOT, BASELINE_PATH), "utf8").replace(
-      /\r\n/g,
-      "\n",
+    const committed = readFileSync(
+      path.join(REPO_ROOT, BASELINE_PATH),
+      "utf8",
+    ).replace(/\r\n/g, "\n");
+    const result = evaluateRatchet(
+      scan.productionStats,
+      committed,
+      scan.unclassified,
     );
-    const result = evaluateRatchet(scan.productionStats, committed, scan.unclassified);
     const summary = result.findings
-      .map((finding) => `${finding.severity} ${finding.kind} ${finding.file}: ${finding.problem}`)
+      .map(
+        (finding) =>
+          `${finding.severity} ${finding.kind} ${finding.file}: ${finding.problem}`,
+      )
       .join("\n");
     expect(summary).toBe("");
     expect(result.scannedFiles).toBeGreaterThan(1000);
@@ -628,26 +716,36 @@ describe("the committed baseline in this repository", () => {
   });
 
   it("is tracked by git and is the only place the accepted debt is recorded", () => {
-    const tracked = execFileSync("git", ["ls-files", "--error-unmatch", BASELINE_PATH], {
-      cwd: REPO_ROOT,
-      encoding: "utf8",
-    });
+    const tracked = execFileSync(
+      "git",
+      ["ls-files", "--error-unmatch", BASELINE_PATH],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+      },
+    );
     expect(tracked.trim()).toBe(BASELINE_PATH);
   });
 
   it("covers files in every budget category, so no category is silently unenforced", () => {
     const scan = scanRepository(REPO_ROOT);
-    const slugs = new Set(baselineEntriesFor(scan.productionStats).map((entry) => entry.slug));
-    expect([...slugs].sort()).toEqual(["domain-module", "route-handler", "route-page-shell"]);
+    const slugs = new Set(
+      baselineEntriesFor(scan.productionStats).map((entry) => entry.slug),
+    );
+    expect([...slugs].sort()).toEqual([
+      "domain-module",
+      "route-handler",
+      "route-page-shell",
+    ]);
   });
 
   it("classifies every tracked file under src/, leaving no scope hole", () => {
     const scan = scanRepository(REPO_ROOT);
     expect(scan.gitError).toBeNull();
     expect(scan.unclassified).toEqual([]);
-    expect(scan.trackedFiles.filter((file) => file.startsWith("src/")).length).toBeGreaterThan(
-      3000,
-    );
+    expect(
+      scan.trackedFiles.filter((file) => file.startsWith("src/")).length,
+    ).toBeGreaterThan(3000);
   });
 
   it("reports a git failure instead of throwing out of the scan", () => {

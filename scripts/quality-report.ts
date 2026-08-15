@@ -27,9 +27,9 @@ import {
   budgetForFile,
   evaluateRatchet,
   isProductionFile,
+  isRatchetExcludedTestFile,
   isRouteHandler,
   isRoutePage,
-  isTestFile,
   countLines,
   scanRepository,
   type FileStat,
@@ -78,7 +78,12 @@ function scanSuppressions(file: string): {
     const line = lines[i];
     for (const { kind, pattern } of ANY_PATTERNS) {
       if (pattern.test(line)) {
-        any.push({ file, line: i + 1, snippet: line.trim().slice(0, 160), kind });
+        any.push({
+          file,
+          line: i + 1,
+          snippet: line.trim().slice(0, 160),
+          kind,
+        });
       }
     }
     if (/eslint-disable\b/.test(line)) {
@@ -173,7 +178,10 @@ function renderRatchetTable(findings: readonly RatchetFinding[]): string {
 
 function readBaseline(): string | null {
   try {
-    return readFileSync(path.join(ROOT, BASELINE_PATH), "utf8").replace(/\r\n/g, "\n");
+    return readFileSync(path.join(ROOT, BASELINE_PATH), "utf8").replace(
+      /\r\n/g,
+      "\n",
+    );
   } catch {
     return null;
   }
@@ -184,7 +192,7 @@ export function main() {
   const files = scan.trackedFiles;
   const productionStats = scan.productionStats;
   const testStats: FileStat[] = files
-    .filter(isTestFile)
+    .filter(isRatchetExcludedTestFile)
     .map((file) => ({ file, lines: countLines(ROOT, file) }));
   const routeHandlerStats: FileStat[] = productionStats.filter((s) =>
     isRouteHandler(s.file),
@@ -198,7 +206,7 @@ export function main() {
   let testAnyCount = 0;
 
   for (const file of files) {
-    if (!isProductionFile(file) && !isTestFile(file)) continue;
+    if (!isProductionFile(file) && !isRatchetExcludedTestFile(file)) continue;
     const { any, eslintDisable } = scanSuppressions(file);
     if (isProductionFile(file)) {
       allAny.push(...any);
@@ -211,7 +219,10 @@ export function main() {
   const totalProdLoc = productionStats.reduce((sum, s) => sum + s.lines, 0);
   const totalTestLoc = testStats.reduce((sum, s) => sum + s.lines, 0);
   const overBudgetModules = productionStats.filter(
-    (s) => s.lines > PRODUCTION_LIMIT && !isRouteHandler(s.file) && !isRoutePage(s.file),
+    (s) =>
+      s.lines > PRODUCTION_LIMIT &&
+      !isRouteHandler(s.file) &&
+      !isRoutePage(s.file),
   );
   const overBudgetHandlers = routeHandlerStats.filter(
     (s) => s.lines > ROUTE_HANDLER_LIMIT,
@@ -219,7 +230,11 @@ export function main() {
   const overBudgetPages = routePageStats.filter(
     (s) => s.lines > ROUTE_PAGE_LIMIT,
   );
-  const ratchet = evaluateRatchet(productionStats, readBaseline(), scan.unclassified);
+  const ratchet = evaluateRatchet(
+    productionStats,
+    readBaseline(),
+    scan.unclassified,
+  );
   const regressions = ratchet.findings.filter(
     (finding) => finding.severity === "regression",
   );
@@ -245,11 +260,23 @@ export function main() {
         ["Production `any` / type suppressions", String(allAny.length)],
         ["Production `eslint-disable` lines", String(allEslintDisable.length)],
         ["Test `as any` occurrences", String(testAnyCount)],
-        [`Modules over ${PRODUCTION_LIMIT} LOC budget`, String(overBudgetModules.length)],
-        [`Route handlers over ${ROUTE_HANDLER_LIMIT} LOC budget`, String(overBudgetHandlers.length)],
-        [`Pages over ${ROUTE_PAGE_LIMIT} LOC budget`, String(overBudgetPages.length)],
+        [
+          `Modules over ${PRODUCTION_LIMIT} LOC budget`,
+          String(overBudgetModules.length),
+        ],
+        [
+          `Route handlers over ${ROUTE_HANDLER_LIMIT} LOC budget`,
+          String(overBudgetHandlers.length),
+        ],
+        [
+          `Pages over ${ROUTE_PAGE_LIMIT} LOC budget`,
+          String(overBudgetPages.length),
+        ],
         ["Files over budget (all categories)", String(ratchet.oversizedFiles)],
-        ["Accepted size debt (LOC over budget)", String(ratchet.currentOverage)],
+        [
+          "Accepted size debt (LOC over budget)",
+          String(ratchet.currentOverage),
+        ],
         ["Ratchet findings", String(ratchet.findings.length)],
         ["…of which regressions", String(regressions.length)],
       ],
@@ -271,7 +298,9 @@ export function main() {
   lines.push("## Largest production files");
   lines.push("");
   lines.push(
-    renderBudgetedProductionTable(topBy(productionStats, (s) => s.lines, TOP_N)),
+    renderBudgetedProductionTable(
+      topBy(productionStats, (s) => s.lines, TOP_N),
+    ),
   );
   lines.push("");
 
@@ -319,7 +348,10 @@ export function main() {
   lines.push("");
   lines.push(
     renderTable(
-      topBy(testStats, (s) => s.lines, TOP_N).map((s) => [s.file, String(s.lines)]),
+      topBy(testStats, (s) => s.lines, TOP_N).map((s) => [
+        s.file,
+        String(s.lines),
+      ]),
       ["File", "LOC"],
     ),
   );

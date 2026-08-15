@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { configDefaults } from "vitest/config";
 import {
   isProductionFile,
-  isTestFile,
+  isRatchetExcludedTestFile,
 } from "../../../scripts/lib/file-size-budget";
 
 /**
@@ -184,7 +184,7 @@ describe("typecheck project coverage", () => {
     const importedTestPaths = program
       .getSourceFiles()
       .map((sourceFile) => repoRelative(sourceFile.fileName))
-      .filter(isTestFile)
+      .filter(isRatchetExcludedTestFile)
       .sort();
 
     expect(
