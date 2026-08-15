@@ -78,13 +78,13 @@ src/app/(authenticated)/book/_components/review-step.tsx 957 domain-module
 src/app/(authenticated)/book/_hooks/use-booking-wizard.ts 1717 domain-module
 src/app/(authenticated)/book/page.tsx 663 route-page-shell
 src/app/(authenticated)/bookings/[id]/page.tsx 2495 route-page-shell
-src/app/(authenticated)/dashboard/page.tsx 792 route-page-shell
+src/app/(authenticated)/dashboard/page.tsx 864 route-page-shell
 src/app/(authenticated)/profile/family-group-section.tsx 1142 domain-module
 src/app/(authenticated)/profile/page.tsx 667 route-page-shell
 src/app/(lodge)/lodge/kiosk/page.tsx 1151 route-page-shell
 src/app/(lodge)/lodge/roster/[date]/setup/page.tsx 822 route-page-shell
 src/app/(website)/join/apply/join-apply-page-client.tsx 797 domain-module
-src/app/api/admin/age-tier-settings/route.ts 269 route-handler
+src/app/api/admin/age-tier-settings/route.ts 278 route-handler
 src/app/api/admin/ai-diagnostics/ask/route.ts 592 route-handler
 src/app/api/admin/booking-exception-requests/[id]/route.ts 745 route-handler
 src/app/api/admin/booking-policies/adult-member-hosting/route.ts 432 route-handler
@@ -228,8 +228,8 @@ src/lib/cron-group-settlement-reaper.ts 740 domain-module
 src/lib/deleted-booking-modification-payment.ts 838 domain-module
 src/lib/deploy/warmup-run.ts 885 domain-module
 src/lib/diagnostics/tools/database.ts 1200 domain-module
-src/lib/diagnostics/tools/define.ts 978 domain-module
-src/lib/diagnostics/tools/invoke.ts 1058 domain-module
+src/lib/diagnostics/tools/define.ts 981 domain-module
+src/lib/diagnostics/tools/invoke.ts 1122 domain-module
 src/lib/diagnostics/tools/packs/booking-evidence.ts 2052 domain-module
 src/lib/diagnostics/tools/packs/booking-records.ts 1429 domain-module
 src/lib/diagnostics/tools/packs/booking-search.ts 878 domain-module
@@ -237,7 +237,7 @@ src/lib/diagnostics/tools/packs/finance-evidence.ts 849 domain-module
 src/lib/diagnostics/tools/packs/finance-records.ts 1196 domain-module
 src/lib/diagnostics/tools/packs/membership-records.ts 1157 domain-module
 src/lib/diagnostics/tools/provision-role.ts 1131 domain-module
-src/lib/diagnostics/tools/types.ts 723 domain-module
+src/lib/diagnostics/tools/types.ts 733 domain-module
 src/lib/email-message-registry.ts 2001 domain-module
 src/lib/email-message-renderer.ts 842 domain-module
 src/lib/email-message-token-contract.ts 715 domain-module
