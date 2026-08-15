@@ -4,7 +4,11 @@
  *
  * #2689 split a 2,695-line file into one module per admin section, using the
  * sections the product already shows operators (`navSections` in
- * `admin-sidebar.tsx`). This module is NOT a compatibility barrel over that
+ * `admin-sidebar.tsx`) — with ONE addition: `admin/appearance-and-website.ts`.
+ * `/admin/appearance` is an item inside Setup & Configuration, not a section of
+ * its own, but folding its seven website pages back in would take
+ * `setup-and-configuration.ts` to roughly 810 lines, over the 700-line budget.
+ * That module says so in its own header. This module is NOT a barrel over that
  * split — it is the registry itself: it owns the path matching, the
  * longest-prefix resolution, the fallbacks, and the question attachment. The
  * three functions it exports are the same three that were public before.

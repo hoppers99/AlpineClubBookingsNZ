@@ -872,7 +872,7 @@ const eslintConfig = defineConfig([
     //     (#2256): the chore-roster long-weekday subject line and body must stay
     //     byte-identical, and the helper is shared with `src/lib/email/chores.ts`.
     //     Flat config cannot scope a rule to one function, so the exemption is
-    //     still file-wide — but the file is now the 91-line chore-template
+    //     still file-wide — but the file is now the 88-line chore-template
     //     module rather than the 5,000-line template monolith (#2689), which is
     //     as narrow as flat config allows. New date rendering in it must still
     //     use the helpers.

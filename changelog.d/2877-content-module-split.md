@@ -19,4 +19,4 @@
   has to load the entire administrator help corpus to show the eleven-line
   booking status glossary. And the one place the system relaxes its
   date-formatting rule — for the chore roster's long weekday date — is now
-  scoped to a 91-line file instead of a 5,000-line one.
+  scoped to an 88-line file instead of a 5,000-line one.

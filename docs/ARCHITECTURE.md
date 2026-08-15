@@ -2166,7 +2166,9 @@ help), while member and public use the hand-distilled corpora in that folder.
 That registry is `index.ts` — the path matching, longest-prefix resolution,
 fallbacks and question attachment — over one entry module per **admin sidebar
 section** (`src/lib/contextual-help/admin/*.ts`, the same sections
-`navSections` shows operators), plus `types.ts` and
+`navSections` shows operators, plus one `appearance-and-website` module split
+off Setup & Configuration for size — `/admin/appearance` is an item in that
+section, not a section of its own), plus `types.ts` and
 `booking-status-glossary.ts` as leaves so a client component can take the shape
 or the eleven status strings without pulling the corpus in (#2689). A
 page can inject extra sections/questions and a chip-ordering hint through
