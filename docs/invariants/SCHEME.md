@@ -129,16 +129,22 @@ The `INV-` namespace is kept anyway, with three load-bearing consequences:
    the PR on the duplicate definition, and whichever PR lands second simply
    renumbers — it is renumbering an ID nothing has cited yet, which is free.
    After merge, never.
-4. **A prefix's numbers are dense, and CI enforces it** (§8, assertion 10). They
+4. **A prefix's numbers are dense, and CI enforces it** (§8). They
    run from `001` to that prefix's highest with no holes, which is what makes
    "take the next number" mechanical rather than a matter of looking carefully:
    every number below the maximum is taken, and no ID may be defined twice
-   (assertion 1), so `max + 1` is the only number a new invariant *can* have.
+   so `max + 1` is the only number a new invariant *can* have.
    Anything else is either a duplicate or a hole, and both fail the PR — the hole
    naming the prefix and the numbers it skipped. A gap is never allowlisted: an
    ID is never deleted (§1.4), so the only two ways to make one are a wrong
    number and a forbidden deletion, and each is a thing to fix. If a prefix ever
    wants a reserved range, that is a new prefix (§1.2), not a hole in this one.
+
+   Density is a current-tree property, so it cannot see the highest number being
+   deleted or a whole prefix disappearing. CI therefore also compares the
+   current definitions with the base revision and requires every already-merged
+   ID to remain. The two checks are complementary: density makes allocation
+   mechanical; the revision comparison makes permanence append-only.
 
 ### 1.4 The no-renumber rule
 
@@ -163,13 +169,15 @@ The `INV-` namespace is kept anyway, with three load-bearing consequences:
   ```
 
   That example carries placeholders rather than two real numbers, and the reason
-  is worth knowing. It used to name `INV-CAP` numbers, and a fenced example is
-  invisible to the enforcement check (§8) while staying perfectly visible to
-  `grep` — so its higher number read as that prefix's maximum, and the next
-  branch to allocate one skipped nine (#2889). **An illustrative ID in this file
-  is therefore either a real, defined ID — so that a `grep` which finds it lands
-  on a real rule — or a placeholder in this bracketed form. Never an invented
-  number under a real prefix.**
+  is worth knowing. It used to name `INV-CAP` numbers, and the old enforcement
+  check ignored every fence while `grep` still saw it — so its higher number
+  read as that prefix's maximum, and the next branch to allocate one skipped
+  nine (#2889). The check now rejects an unresolved ID under a live prefix even
+  inside a fence, while leaving placeholders, reserved invoice numbers and
+  custom fixture prefixes alone. **An illustrative ID in this file is therefore
+  either a real, defined ID — so that a `grep` which finds it lands on a real
+  rule — or a placeholder in this bracketed form. Never an invented number under
+  a real prefix.**
 
   A rule that is genuinely obsolete keeps its heading and gains
   `**Retired (PR #NNNN): <one-line reason>.**` in place of its body. Either way
@@ -560,12 +568,16 @@ under a fresh ID heading, add the index row, and discard the conflict on
 
 `scripts/ci/check-doc-index-integrity.mjs`, run by `npm run docs:indexcheck` and
 by the `verify` job on every PR. It needs no network, no build and no Prisma
-client — it is a single `node` script over `git ls-files`.
+client — it is a single `node` script over the tracked tree and its git base
+revision.
 
-Two regexes, plus one shape guard. All three are applied line by line **outside
-fenced code blocks** — this document, and any future one, must be able to show
-an example ID without the checker treating it as real. That is a hard
-requirement, not a nicety.
+Current-tree scans plus one revision comparison. Definitions, ordinary citations
+and malformed shapes are read **outside fenced code blocks**. A narrow second
+citation scan reads fences too: if a well-formed ID uses a prefix this repository
+really declares, it must resolve there. Placeholders (`INV-<PREFIX>-<NNN>`),
+reserved invoice numbers and custom fixture prefixes remain legal examples.
+This document, and any future one, can therefore teach the shape without being
+allowed to invent what looks like a live maximum.
 
 **Definition** — collected only from `docs/invariants/**/*.md`:
 
@@ -578,6 +590,11 @@ whole heading line, so there are no false positives in either direction. The
 level range `2–4` exists because an ID heading always sits exactly one level
 below its nearest structural heading, and a file with no subsections has one
 level less.
+
+An ID-like heading under `docs/invariants/` is also checked against that exact
+shape. This catches a lower-cased, backticked, wrongly levelled or wrongly padded
+heading that would otherwise be neither a definition nor a citation and would
+make a whole rule invisible.
 
 **Citation** — collected from every tracked `*.md`, `*.ts`, `*.tsx`, `*.mjs`,
 `*.js`, `*.sql`, `*.yml` and `*.json` file:
@@ -601,40 +618,49 @@ every Xero invoice fixture in the test suite (§1.2.1).
 
 **The check asserts, in this order:**
 
-1. No duplicate definition of any ID, across all files.
-2. Every citation whose prefix is a **declared invariant prefix** resolves to a
-   definition.
-3. Every citation whose prefix is **not** declared is either on the reserved
-   list — `IB`, `SETTLE`, `SUP`, `SUB`, `XERO`, `FAM`, `LEGACY`, `PM`, `JOR`,
-   `REB`, documented in the script as Xero invoice-number fixtures — or the
-   check fails with "unrecognised `INV-` prefix: add it to the invariant index
-   or to the reserved list". This is what catches a typo'd prefix — a
+1. Every ID-like definition heading has the canonical case, level and digit
+   width.
+2. No duplicate definition of any ID, across all files.
+3. Every ordinary citation whose prefix is a **declared invariant prefix**
+   resolves to a definition.
+4. Every well-formed ID inside a fence whose prefix is declared also resolves;
+   placeholders, reserved invoice numbers and custom fixture prefixes are not
+   treated as live IDs there.
+5. Every ordinary citation whose prefix is **not** declared is either on the
+   reserved list — `IB`, `SETTLE`, `SUP`, `SUB`, `XERO`, `FAM`, `LEGACY`, `PM`,
+   `JOR`, `REB`, documented in the script as Xero invoice-number fixtures — or
+   the check fails with "unrecognised `INV-` prefix: add it to the invariant
+   index or to the reserved list". This is what catches a typo'd prefix — a
    misspelling of a real prefix — which a whitelist alone would silently ignore.
-4. Every shape-guard match has exactly three digits.
-5. Every file under `docs/invariants/` is linked from
+6. Every shape-guard match has exactly three digits.
+7. Every file under `docs/invariants/` is linked from
    `docs/DOMAIN_INVARIANTS.md`, and every file linked from it exists.
-6. Every defined ID appears exactly once in the index.
-7. The `AGENTS.md` routing table resolves in both directions: every family it
+8. Every defined ID appears exactly once in the index.
+9. The `AGENTS.md` routing table resolves in both directions: every family it
    routes is declared, every declared family has a row, and every document it
    links to is a tracked file.
-8. Nothing cites an invariants document by **line number**. No allowlist and no
+10. Nothing cites an invariants document by **line number**. No allowlist and no
    grandfather register: that pointer goes stale silently, which is the habit the
    IDs exist to replace.
-9. No tracked text file carries a byte-order mark or double-encoded text.
-10. Every prefix's numbers are **dense from `001`** — no gap between its lowest
+11. Every page under `docs/` is reachable from a documentation front door.
+12. No tracked text file carries a byte-order mark or double-encoded text.
+13. Every prefix's numbers are **dense from `001`** — no gap between its lowest
     and its highest (§1.3.4).
+14. Every ID defined in the base revision is still defined in the current tree.
+    This catches deletion of a prefix's highest ID and deletion of a whole
+    prefix, which no snapshot-only density check can observe.
 
-Assertion 6 is what stops the index rotting, which is the thing most likely to
-rot. Assertion 10 is what makes §1.3's allocation rule mechanical rather than
-advisory, and it catches the deletion §1.4 forbids as a side effect: a rule
-removed outright, index row and all, is invisible to every other assertion here
-unless something still cites it, but the hole it leaves is not.
+The catalogue assertion is what stops the index rotting, which is the thing most
+likely to rot. Density makes §1.3's allocation rule mechanical rather than
+advisory; base-revision retention separately enforces §1.4's append-only rule.
+Neither is a substitute for the other.
 
-Inline code spans are **not** skipped, only fenced blocks. Most real citations in
-prose are written as `` `INV-CAP-021` ``, and skipping backticks would make the
-check blind to them. This file is exempt from the shape guard alone — never from
-citation resolution — because it quotes malformed forms on purpose, in prose, to
-explain what the guard catches.
+Inline code spans are **not** skipped. Most real citations in prose are written
+as `` `INV-CAP-021` ``, and skipping backticks would make the check blind to
+them. Fences are skipped by the broad scans and inspected by the narrow
+live-prefix resolution pass described above. This file is exempt from the shape
+guard alone — never from citation resolution — because it quotes malformed forms
+on purpose, in prose, to explain what the guard catches.
 
 Anchor-style citations (`…#inv-cap-021`) are deliberately **not** handled here —
 `npm run docs:linkcheck` already validates fragments against real headings, so

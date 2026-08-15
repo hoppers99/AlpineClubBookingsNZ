@@ -15,6 +15,10 @@
  *    highest with no holes, which is the whole reason "take the next number" is
  *    mechanical rather than a matter of looking carefully. See
  *    {@link auditNumberSequences}.
+ *  - **Merged ids are append-only.** Density alone cannot see the highest id
+ *    being deleted, or a whole prefix disappearing. The current definitions are
+ *    therefore also compared with the base revision. See
+ *    {@link auditPermanentInvariantIds}.
  *  - **Every cited id resolves.** An id is cited from places this repository
  *    cannot rewrite — merged commits, closed issues, lint strings shipped in a
  *    release, test names in a fork. A citation that resolves to nothing is the
@@ -53,10 +57,15 @@
  *
  * ## Scanning rules
  *
- * Fenced code blocks are skipped for every pattern, so a document may show an
- * example id without the checker treating it as real. Inline backticks are
- * **not** skipped — most real citations in prose are written `` `INV-CAP-021` ``
- * and skipping them would make the check blind to the common case.
+ * Definitions, ordinary citations and malformed shapes skip fenced code blocks,
+ * so a document may show placeholders and fixture ids without treating them as
+ * definitions. A second, narrower pass does inspect fences: a well-formed id
+ * under a prefix the repository really declares must resolve there too. That
+ * catches an invented live-prefix example while leaving `INV-<PREFIX>-<NNN>`
+ * placeholders, reserved invoice numbers and custom fixture prefixes alone.
+ * Inline backticks are **not** skipped — most real citations in prose are
+ * written `` `INV-CAP-021` `` and skipping them would make the check blind to
+ * the common case.
  *
  * Anchor-style citations (`…#inv-cap-021`) are deliberately not handled here.
  * `npm run docs:linkcheck` already validates fragments against real headings, and
@@ -81,6 +90,14 @@ export const INVARIANT_DIR = "docs/invariants/";
  * nearest structural heading, and a file with no subsections has one level less.
  */
 export const DEFINITION_PATTERN = /^#{2,4} (INV-[A-Z][A-Z0-9]*-\d{3})\s*$/;
+
+/**
+ * An id-like heading under `docs/invariants/` that appears intended to define
+ * one rule, including non-canonical case, heading level, digit width or
+ * backticks. Every match must also satisfy {@link DEFINITION_PATTERN}.
+ */
+export const DEFINITION_LIKE_HEADING_PATTERN =
+  /^#{1,6}\s+`?(INV-[A-Z][A-Z0-9]*-\d+)`?\s*$/i;
 
 /** A CITATION is the id anywhere in a line of any tracked text file. */
 export const CITATION_PATTERN = /\bINV-[A-Z][A-Z0-9]*-\d{3}\b/g;
@@ -299,6 +316,26 @@ export function scannableLines(text) {
   return out;
 }
 
+/**
+ * Lines inside fenced code blocks, with their original line numbers.
+ *
+ * This is deliberately separate from {@link scannableLines}: most audits must
+ * ignore examples, while the narrow live-prefix citation audit below must see
+ * enough of them to reject an invented id under a real prefix.
+ */
+export function fencedLines(text) {
+  const out = [];
+  let inFence = false;
+  text.split(/\r?\n/).forEach((line, index) => {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      return;
+    }
+    if (inFence) out.push({ number: index + 1, text: line });
+  });
+  return out;
+}
+
 /** The prefix half of an id: `INV-CAP-021` -> `CAP`. */
 export function prefixOf(id) {
   return id.split("-")[1];
@@ -376,6 +413,33 @@ export function collectDefinitions(files) {
   return definitions;
 }
 
+/**
+ * Fail id-only headings under the invariant directory that are not canonical
+ * definitions. Without this, a lower-cased or backticked new heading is neither
+ * a definition nor a citation and can make a whole rule invisible to the gate.
+ */
+export function auditDefinitionHeadingShapes(files) {
+  const problems = [];
+  for (const [rel, text] of files) {
+    if (!rel.startsWith(INVARIANT_DIR) || !rel.endsWith(".md")) continue;
+    for (const { number, text: line } of scannableLines(text)) {
+      if (
+        DEFINITION_LIKE_HEADING_PATTERN.test(line) &&
+        !DEFINITION_PATTERN.test(line)
+      ) {
+        problems.push(
+          `${rel}:${number} looks like an invariant definition heading but is not in ` +
+            "the canonical `##`-to-`#### INV-<PREFIX>-<NNN>` shape with an uppercase " +
+            "prefix and exactly three digits. A malformed definition is invisible to " +
+            "the catalogue and sequence checks; make the heading canonical rather than " +
+            "leaving the rule untracked.",
+        );
+      }
+    }
+  }
+  return problems;
+}
+
 /** Every citation in every scanned file, with where it was written. */
 export function collectCitations(files) {
   const citations = [];
@@ -391,9 +455,10 @@ export function collectCitations(files) {
 }
 
 /**
- * Assertions 1–4 of the scheme: no duplicate definition, every citation under a
- * declared prefix resolves, every unrecognised prefix is either reserved or a
- * failure, and every near-miss under a declared prefix has exactly three digits.
+ * Invariant citation assertions: no duplicate definition, every citation under
+ * a declared prefix resolves (including the narrow fenced pass), every
+ * unrecognised ordinary prefix is either reserved or a failure, and every
+ * near-miss under a declared prefix has exactly three digits.
  */
 export function auditInvariantIds(files) {
   const problems = [];
@@ -435,6 +500,35 @@ export function auditInvariantIds(files) {
         "which the scheme forbids: a superseded rule keeps its heading and gains a " +
         "`Superseded by` line, a retired one keeps its heading and gains a reason, so " +
         "an old citation always lands on an explanation rather than on nothing.",
+    );
+  }
+
+  // Fences may carry placeholders, invoice-number fixtures and examples under
+  // custom prefixes. But a well-formed id under a prefix this repository really
+  // declares is a claim about a live invariant even inside a fence, and must
+  // resolve. Unknown/custom prefixes remain ignored here; the ordinary
+  // out-of-fence scan still fails them as typos.
+  const unresolvedFenced = new Map();
+  for (const [rel, text] of files) {
+    if (CITATION_EXEMPT_FILES.has(rel)) continue;
+    for (const { number, text: line } of fencedLines(text)) {
+      for (const match of line.matchAll(CITATION_PATTERN)) {
+        const id = match[0];
+        if (declaredPrefixes.has(prefixOf(id)) && !definitions.has(id)) {
+          if (!unresolvedFenced.has(id)) unresolvedFenced.set(id, []);
+          unresolvedFenced.get(id).push(`${rel}:${number}`);
+        }
+      }
+    }
+  }
+
+  for (const [id, places] of unresolvedFenced) {
+    problems.push(
+      `${id} appears inside a fenced code block at ${places.join(", ")} but no ` +
+        `file under ${INVARIANT_DIR} defines it. A fence may use ` +
+        "`INV-<PREFIX>-<NNN>`, a reserved invoice number, a custom fixture prefix, " +
+        "or a real defined id; it may not invent a number under a live invariant " +
+        "prefix, because that reads as a real maximum to repository searches.",
     );
   }
 
@@ -818,14 +912,15 @@ export function auditDocReachability(files) {
  * Any other choice is either a duplicate — caught there — or a hole, caught
  * here. Between the two, the allocation rule is mechanical.
  *
- * It also catches the deletion §1.4 forbids. A rule removed outright, index row
- * and all, is invisible to every other assertion here unless something still
- * cites it; the hole it leaves behind is not.
+ * It also catches an interior deletion. Deleting the highest id or every id in
+ * a prefix leaves no hole; {@link auditPermanentInvariantIds} closes those two
+ * revision-shaped gaps instead.
  *
  * ## Why there is no allowlist
  *
- * `main` needed none. All 16 prefixes were already dense from `001` when this
- * was turned on (495 ids), so nothing had to be closed or excused first.
+ * `main` needed none when this was turned on, so nothing had to be closed or
+ * excused first. The live totals are printed by the check rather than repeated
+ * here, where concurrent invariant additions would make them stale.
  *
  * Nor is there a legitimate gap to allow. An id is never deleted — a superseded
  * rule keeps its heading and gains a status line, a retired one keeps its
@@ -891,13 +986,71 @@ export function auditNumberSequences(files) {
 }
 
 /**
+ * Merged invariant ids are append-only: every definition present in the base
+ * revision must still be defined in the current tree.
+ *
+ * The density audit cannot prove this on its own. Removing the highest number
+ * leaves the remaining sequence dense, and removing every id in a prefix makes
+ * the prefix disappear from the census altogether. Comparing revisions closes
+ * both holes without trying to infer history from the current snapshot.
+ */
+export function auditPermanentInvariantIds(
+  files,
+  baselineFiles,
+  baselineLabel = "the base revision",
+) {
+  const current = collectDefinitions(files);
+  const baseline = collectDefinitions(baselineFiles);
+  const missingByPrefix = new Map();
+
+  for (const [id, places] of baseline) {
+    if (current.has(id)) continue;
+    const prefix = prefixOf(id);
+    if (!missingByPrefix.has(prefix)) missingByPrefix.set(prefix, []);
+    missingByPrefix.get(prefix).push({ id, number: numberOf(id), at: places[0] });
+  }
+
+  const currentPrefixes = new Set([...current.keys()].map(prefixOf));
+  const problems = [];
+  for (const prefix of [...missingByPrefix.keys()].sort()) {
+    const missing = missingByPrefix.get(prefix).sort((a, b) => a.number - b.number);
+    const ids = missing.map((entry) => entry.id).join(", ");
+    const places = missing.map((entry) => entry.at).join(", ");
+    if (!currentPrefixes.has(prefix)) {
+      problems.push(
+        `The entire INV-${prefix} prefix disappeared relative to ${baselineLabel}: ` +
+          `${ids} were defined at ${places}. Merged invariant ids are permanent and ` +
+          "append-only. Restore every heading; a superseded rule keeps its heading and " +
+          "gains a `Superseded by` line, and a retired rule keeps its heading and gains " +
+          "a reason.",
+      );
+      continue;
+    }
+
+    problems.push(
+      `${ids} disappeared relative to ${baselineLabel} (previously ${places}). Merged ` +
+        "invariant ids are permanent and append-only. Density cannot detect removal of " +
+        "the highest number in a prefix, so the base revision is the authority here. " +
+        "Restore each heading and supersede or retire the rule in place instead of " +
+        "deleting it.",
+    );
+  }
+
+  return problems;
+}
+
+/**
  * The whole check, over an in-memory map of repo-relative path -> file text.
  *
  * Pure, so the rules are testable without a repository. Returns a list of
  * plain-English problems; an empty list is a pass.
  */
-export function auditDocs(files) {
+export function auditDocs(
+  files,
+  { baselineFiles = null, baselineLabel = "the base revision" } = {},
+) {
   return [
+    ...auditDefinitionHeadingShapes(files),
     ...auditInvariantIds(files),
     ...auditInvariantFilesLinkedFromIndex(files),
     ...auditIndexRows(files),
@@ -906,6 +1059,9 @@ export function auditDocs(files) {
     ...auditDocReachability(files),
     ...auditEncoding(files),
     ...auditNumberSequences(files),
+    ...(baselineFiles
+      ? auditPermanentInvariantIds(files, baselineFiles, baselineLabel)
+      : []),
   ];
 }
 
@@ -932,13 +1088,99 @@ export function loadTrackedFiles(repoRoot) {
   return files;
 }
 
+/** Resolve a git ref to a commit, returning null when it does not exist. */
+function tryResolveCommit(repoRoot, ref) {
+  try {
+    return execFileSync("git", ["rev-parse", "--verify", `${ref}^{commit}`], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pick the revision whose already-merged ids the current tree must retain.
+ *
+ * Pull requests compare with their base branch; local feature branches compare
+ * with `origin/main`; an exact checkout of main compares with its first parent.
+ * `DOC_INDEX_BASE_REF` is the explicit diagnostic/mutation-test override and
+ * fails closed when it cannot be resolved.
+ */
+export function resolveInvariantBaselineRef(repoRoot, env = process.env) {
+  const explicit = env.DOC_INDEX_BASE_REF?.trim();
+  if (explicit) {
+    const resolved = tryResolveCommit(repoRoot, explicit);
+    if (!resolved) {
+      throw new Error(`DOC_INDEX_BASE_REF ${explicit} does not resolve to a commit`);
+    }
+    return resolved;
+  }
+
+  const head = tryResolveCommit(repoRoot, "HEAD");
+  if (!head) throw new Error("HEAD does not resolve to a commit");
+
+  const candidates = [];
+  if (env.PR_BASE_SHA?.trim()) candidates.push(env.PR_BASE_SHA.trim());
+  if (env.GITHUB_BASE_REF?.trim()) {
+    candidates.push(`origin/${env.GITHUB_BASE_REF.trim()}`, env.GITHUB_BASE_REF.trim());
+  }
+  candidates.push("origin/main", "main");
+
+  for (const candidate of candidates) {
+    const resolved = tryResolveCommit(repoRoot, candidate);
+    if (resolved && resolved !== head) return resolved;
+  }
+
+  const parent = tryResolveCommit(repoRoot, "HEAD^1");
+  if (parent) return parent;
+  throw new Error(
+    "Cannot resolve an invariant-id baseline. Fetch origin/main or set DOC_INDEX_BASE_REF.",
+  );
+}
+
+/** Read invariant Markdown exactly as stored at a git revision. */
+export function loadInvariantFilesAtRef(repoRoot, ref) {
+  const listed = execFileSync(
+    "git",
+    ["ls-tree", "-r", "-z", "--name-only", ref, "--", INVARIANT_DIR],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      maxBuffer: 1 << 24,
+    },
+  )
+    .split("\0")
+    .filter((entry) => entry.endsWith(".md"));
+
+  const files = new Map();
+  for (const rel of listed) {
+    files.set(
+      rel,
+      execFileSync("git", ["show", `${ref}:${rel}`], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        maxBuffer: 1 << 24,
+      }),
+    );
+  }
+  return files;
+}
+
 const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
 if (invokedPath === import.meta.url) {
   const repoRoot = path.resolve(path.join(import.meta.dirname, "..", ".."));
   try {
     const files = loadTrackedFiles(repoRoot);
+    const baselineRef = resolveInvariantBaselineRef(repoRoot);
+    const baselineFiles = loadInvariantFilesAtRef(repoRoot, baselineRef);
     const definitions = collectDefinitions(files);
-    const problems = auditDocs(files);
+    const problems = auditDocs(files, {
+      baselineFiles,
+      baselineLabel: baselineRef.slice(0, 12),
+    });
 
     if (problems.length > 0) {
       console.error(
@@ -953,6 +1195,7 @@ if (invokedPath === import.meta.url) {
         `Doc index check passed: ${definitions.size} invariant id(s) across ` +
           `${prefixes.size} prefix(es), each numbering densely from 001 so the next id in ` +
           "a prefix can only be max + 1, every citation resolves, every id is indexed, " +
+          `every id present at base ${baselineRef.slice(0, 12)} is still defined, ` +
           `every docs/ page is reachable, ${routedRows} routing row(s) resolve, no line ` +
           "number is cited into the invariants, and no file is BOM'd or double-encoded. " +
           `Scanned ${files.size} tracked file(s).`,

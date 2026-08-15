@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   BYTE_ORDER_MARK,
+  auditDefinitionHeadingShapes,
   auditDocReachability,
   auditDocs,
   auditEncoding,
@@ -10,7 +11,9 @@ import {
   auditInvariantIds,
   auditLineNumberCitations,
   auditNumberSequences,
+  auditPermanentInvariantIds,
   auditRoutingTable,
+  fencedLines,
   routingTableRows,
   scannableLines,
 } from "./check-doc-index-integrity.mjs";
@@ -92,6 +95,15 @@ function repo(overrides = {}) {
   );
 }
 
+/** A domain file defining every id given, in order, under one prefix. */
+function family(prefix, numbers) {
+  return [
+    `# ${prefix}`,
+    "",
+    ...numbers.flatMap((n) => [`## INV-${prefix}-${n}`, "", "- A rule.", ""]),
+  ].join("\n");
+}
+
 describe("scannableLines", () => {
   it("drops fenced blocks so a document can show an example id", () => {
     const lines = scannableLines("real\n```\nfenced\n```\nreal again\n");
@@ -101,6 +113,50 @@ describe("scannableLines", () => {
   it("keeps inline backticks, because that is how citations are written", () => {
     const lines = scannableLines("see `INV-MONEY-001` for the rule\n");
     expect(lines[0].text).toContain("INV-MONEY-001");
+  });
+
+  it("has a separate view of fenced lines for the narrow live-prefix audit", () => {
+    const lines = fencedLines("real\n```ts\nfenced\n```\nreal again\n");
+    expect(lines).toEqual([{ number: 3, text: "fenced" }]);
+  });
+});
+
+describe("auditDefinitionHeadingShapes", () => {
+  it("fails an id-only invariant heading whose case is non-canonical", () => {
+    const problems = auditDefinitionHeadingShapes(
+      repo({
+        "docs/invariants/money.md":
+          "# Money\n\n## INV-MONEY-001\n\n- A rule.\n\n## inv-money-002\n\n- Invisible.\n",
+      }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("docs/invariants/money.md:7");
+    expect(problems[0]).toContain("definition heading");
+    expect(problems[0]).toContain("exactly three digits");
+  });
+
+  it("fails a backticked id-only heading rather than silently ignoring it", () => {
+    const problems = auditDefinitionHeadingShapes(
+      repo({
+        "docs/invariants/money.md":
+          "# Money\n\n## INV-MONEY-001\n\n- A rule.\n\n## `INV-MONEY-002`\n\n- Invisible.\n",
+      }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("canonical");
+  });
+
+  it("accepts canonical headings and ignores illustrative headings in fences", () => {
+    const problems = auditDefinitionHeadingShapes(
+      repo({
+        "docs/invariants/money.md":
+          "# Money\n\n## INV-MONEY-001\n\n- A rule.\n\n```md\n## inv-money-002\n```\n",
+      }),
+    );
+
+    expect(problems).toEqual([]);
   });
 });
 
@@ -158,10 +214,43 @@ describe("auditInvariantIds", () => {
     expect(problems).toEqual([]);
   });
 
-  it("ignores an id inside a fenced code block", () => {
+  it("ignores a custom-prefix fixture inside a fenced code block", () => {
     const problems = auditInvariantIds(
       repo({
-        "docs/example.md": "# Example\n\n```\nINV-MONEY-002\nINV-NOPE-001\n```\n",
+        "docs/example.md": "# Example\n\n```\nINV-NOPE-001\n```\n",
+      }),
+    );
+
+    expect(problems).toEqual([]);
+  });
+
+  it("fails an unresolved id under a live prefix inside a fence", () => {
+    const problems = auditInvariantIds(
+      repo({
+        "docs/example.md": "# Example\n\n```\nINV-MONEY-002\n```\n",
+      }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("INV-MONEY-002");
+    expect(problems[0]).toContain("fenced code block");
+    expect(problems[0]).toContain("docs/example.md:4");
+  });
+
+  it("allows real ids, placeholders, reserved invoices and custom prefixes in fences", () => {
+    const problems = auditInvariantIds(
+      repo({
+        "docs/example.md": [
+          "# Example",
+          "",
+          "```",
+          "INV-MONEY-001",
+          "INV-<PREFIX>-<NNN>",
+          "INV-XERO-999",
+          "INV-DEMO-999",
+          "```",
+          "",
+        ].join("\n"),
       }),
     );
 
@@ -201,15 +290,6 @@ describe("auditInvariantIds", () => {
 });
 
 describe("auditNumberSequences", () => {
-  /** A domain file defining every id given, in order, under one prefix. */
-  function family(prefix, numbers) {
-    return [
-      `# ${prefix}`,
-      "",
-      ...numbers.flatMap((n) => [`## INV-${prefix}-${n}`, "", "- A rule.", ""]),
-    ].join("\n");
-  }
-
   it("passes the clean fixture repository", () => {
     expect(auditNumberSequences(repo())).toEqual([]);
   });
@@ -309,6 +389,59 @@ describe("auditNumberSequences", () => {
     );
 
     expect(auditDocs(files).some((p) => p.includes("INV-MONEY is missing 002-003"))).toBe(
+      true,
+    );
+  });
+});
+
+describe("auditPermanentInvariantIds", () => {
+  it("fails deletion of the highest id even though the current sequence stays dense", () => {
+    const baseline = repo({
+      "docs/invariants/money.md": family("MONEY", ["001", "002", "003"]),
+    });
+    const current = repo({
+      "docs/invariants/money.md": family("MONEY", ["001", "002"]),
+    });
+
+    expect(auditNumberSequences(current)).toEqual([]);
+    const problems = auditPermanentInvariantIds(current, baseline, "base123");
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("INV-MONEY-003 disappeared relative to base123");
+    expect(problems[0]).toContain("highest number");
+  });
+
+  it("fails deletion of a whole prefix, which a current-tree census cannot see", () => {
+    const baseline = repo({
+      "docs/invariants/beds.md": family("CAP", ["001", "002"]),
+    });
+    const current = repo();
+
+    const problems = auditPermanentInvariantIds(current, baseline, "base123");
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("entire INV-CAP prefix disappeared");
+    expect(problems[0]).toContain("INV-CAP-001, INV-CAP-002");
+  });
+
+  it("accepts a retained heading whose rule is retired in place", () => {
+    const baseline = repo({
+      "docs/invariants/money.md": family("MONEY", ["001", "002"]),
+    });
+    const current = repo({
+      "docs/invariants/money.md":
+        `${family("MONEY", ["001"])}\n## INV-MONEY-002\n\n**Retired: no longer applies.**\n`,
+    });
+
+    expect(auditPermanentInvariantIds(current, baseline)).toEqual([]);
+  });
+
+  it("is wired into the whole audit", () => {
+    const baseline = repo({
+      "docs/invariants/money.md": family("MONEY", ["001", "002"]),
+    });
+    const current = repo();
+
+    const problems = auditDocs(current, { baselineFiles: baseline, baselineLabel: "base123" });
+    expect(problems.some((problem) => problem.includes("INV-MONEY-002 disappeared"))).toBe(
       true,
     );
   });
