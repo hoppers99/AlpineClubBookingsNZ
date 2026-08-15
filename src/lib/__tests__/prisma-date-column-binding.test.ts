@@ -158,6 +158,30 @@ describe("a plain DateTime column keeps the whole instant (#2838, INV-DATE-013)"
     ).toEqual(["2026-07-01 12:00:00"]);
   });
 
+  it("THE SAME INSTANT, one statement, two columns, two different values", async () => {
+    // The cleanest statement of the whole rule, and the reason #2868 could not
+    // be fixed by choosing a better single value: ONE `Date` is bound to a
+    // `@db.Date` column and a `DateTime` column in a SINGLE query, and the
+    // adapter sends two different things for it. The narrowing is driven by the
+    // COLUMN, not by the value — so a window shared across both kinds of column
+    // is wrong for one of them no matter which instant it holds.
+    const clubMidnightUnderNzPin = new Date("2026-06-30T12:00:00.000Z");
+
+    await prisma.booking.findMany({
+      where: {
+        checkIn: { gte: clubMidnightUnderNzPin },
+        draftExpiresAt: { gte: clubMidnightUnderNzPin },
+      },
+    });
+
+    expect(
+      whereValues(2, '"checkIn" >= $1'),
+      "INV-DATE-013: one bound value, two columns, two encodings. If these ever " +
+        "agree, the distinction every date-boundary suite in this repository " +
+        "rests on has stopped existing.",
+    ).toEqual(["2026-06-30", "2026-06-30 12:00:00"]);
+  });
+
   it("would sit at club MIDDAY if given a date-only value", async () => {
     // The mistake in the other direction, made executable rather than described.
     await prisma.booking.findMany({

@@ -501,6 +501,34 @@ npx tsx scripts/xero-booking-repair.ts --booking <bookingId> --dry-run
 npx tsx scripts/xero-booking-repair.ts --from <YYYY-MM-DD> --to <YYYY-MM-DD> --dry-run
 ```
 
+`--from`/`--to` are **inclusive club calendar days**, and a booking is swept if
+its check-in night, its creation, its last update, or any of its modifications
+falls inside them. The report header echoes back the two days you asked for, so
+check it against what you typed before reading the findings. Both dates must be
+real calendar days: `--to 2026-04-31` is refused rather than quietly read as
+1 May, which is what it used to do.
+
+**Reading an archived report from before #2868.** Only the CHECK-IN half of the
+window was wrong, and this matters because the error does not go the way the
+header suggests. The window was built as midnight in the server's own time zone
+and bound unchanged against both the date-only `checkIn` column and the three
+timestamp columns beside it. Under the `TZ=Pacific/Auckland` pin, that instant
+is the previous UTC day, so for a sweep asked to run 1-31 July the report
+actually covered:
+
+- `checkIn` between **30 June and 30 July** inclusive — one day early at both
+  ends, so it both missed 31 July check-ins and pulled in 30 June ones; and
+- created, last updated, or modified between **1 July 00:00 and 1 August 00:00
+  NZ** — that is, exactly the club days that were asked for. **This half was
+  correct**, because the server's local midnight IS the start of the club day
+  whenever the server is pinned to the club's zone.
+
+The header printed the shifted dates for both, so it understated the coverage of
+the second half. Do not read "the window started 30 June" as meaning a booking
+CREATED on 30 June was covered — it was not. Re-run any sweep whose check-in
+dates mattered; the created/updated/modified findings in an archived report can
+be taken at face value.
+
 Only use `--apply` after the dry-run report has been reviewed. Do not run it
 with live Xero, Stripe, SES, Sentry, or production database credentials during
 exploratory work; use a staging database and Xero demo tenant where possible.
