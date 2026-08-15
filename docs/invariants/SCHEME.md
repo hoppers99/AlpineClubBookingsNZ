@@ -106,6 +106,21 @@ The `INV-` namespace is kept anyway, with three load-bearing consequences:
    Number order and file order diverged the moment the first invariant was added
    after the restructure, and they diverge further with every one since. That is
    intended, not a defect to be tidied.
+
+   **A repo-wide `grep` for the prefix is not how to find that maximum**, which
+   this rule now says out loud because saying only what to do left the thing
+   people actually do unwarned. A `grep` returns more than definitions: it
+   returns illustrative IDs from prose and from fenced examples — including this
+   file's own — and the deliberately unresolvable fixtures in the enforcement
+   check's tests. It also orders as text rather than as numbers, so `INV-CAP-07`
+   sorts *after* `INV-CAP-032`. That is not hypothetical: in #2889 a fenced
+   example in §1.4 read as the maximum and a branch took `042` for an `INV-CAP`
+   rule when the next free number was `033`. The index's tables contain
+   definitions and nothing else, which is exactly why they are what you read.
+
+   Those two numbers are written bare rather than as IDs on purpose: an invented
+   ID outside a fence is caught already, as a citation that resolves to nothing,
+   so a fence is the only place one can hide.
 2. Numbers were assigned once, at the restructure, in source-document order
    within each prefix, starting at `001` with no gaps. That was the only moment
    at which number order and document order agreed, and it will not recur.
@@ -114,6 +129,16 @@ The `INV-` namespace is kept anyway, with three load-bearing consequences:
    the PR on the duplicate definition, and whichever PR lands second simply
    renumbers — it is renumbering an ID nothing has cited yet, which is free.
    After merge, never.
+4. **A prefix's numbers are dense, and CI enforces it** (§8, assertion 10). They
+   run from `001` to that prefix's highest with no holes, which is what makes
+   "take the next number" mechanical rather than a matter of looking carefully:
+   every number below the maximum is taken, and no ID may be defined twice
+   (assertion 1), so `max + 1` is the only number a new invariant *can* have.
+   Anything else is either a duplicate or a hole, and both fail the PR — the hole
+   naming the prefix and the numbers it skipped. A gap is never allowlisted: an
+   ID is never deleted (§1.4), so the only two ways to make one are a wrong
+   number and a forbidden deletion, and each is a thing to fix. If a prefix ever
+   wants a reserved range, that is a new prefix (§1.2), not a hole in this one.
 
 ### 1.4 The no-renumber rule
 
@@ -132,10 +157,19 @@ The `INV-` namespace is kept anyway, with three load-bearing consequences:
   status line directly beneath it:
 
   ```
-  ### INV-CAP-013
+  ### INV-<PREFIX>-<NNN>
 
-  **Superseded by INV-CAP-041 (PR #NNNN).** <original text kept below, verbatim>
+  **Superseded by INV-<PREFIX>-<MMM> (PR #NNNN).** <original text kept below, verbatim>
   ```
+
+  That example carries placeholders rather than two real numbers, and the reason
+  is worth knowing. It used to name `INV-CAP` numbers, and a fenced example is
+  invisible to the enforcement check (§8) while staying perfectly visible to
+  `grep` — so its higher number read as that prefix's maximum, and the next
+  branch to allocate one skipped nine (#2889). **An illustrative ID in this file
+  is therefore either a real, defined ID — so that a `grep` which finds it lands
+  on a real rule — or a placeholder in this bracketed form. Never an invented
+  number under a real prefix.**
 
   A rule that is genuinely obsolete keeps its heading and gains
   `**Retired (PR #NNNN): <one-line reason>.**` in place of its body. Either way
@@ -373,11 +407,11 @@ deliberately left unpointered, so a later reader does not repeat the sweep.
 
 ## 5. The files
 
-15 files in this directory, 17 prefixes, 497 IDs, plus this scheme and
-[`_FOLLOW_UPS.md`](_FOLLOW_UPS.md). (`INV-LOCK` is the seventeenth, added by
-#2722; the figures are what `npm run docs:indexcheck` reports, and the count in
-this sentence was 29 IDs stale before it was corrected — which is the rot the
-paragraph below is about.)
+15 files in this directory, plus this scheme and
+[`_FOLLOW_UPS.md`](_FOLLOW_UPS.md). Prefix and ID counts are deliberately not
+written here: an exact figure written by hand is wrong within the week — this
+sentence once carried a count 29 IDs stale — and `npm run docs:indexcheck`
+prints the live figures on every run.
 
 **The index is authoritative for prefix → file and ID → file**, and it is the
 only place that mapping is written down. It is deliberately not repeated here: a
@@ -578,9 +612,21 @@ every Xero invoice fixture in the test suite (§1.2.1).
 5. Every file under `docs/invariants/` is linked from
    `docs/DOMAIN_INVARIANTS.md`, and every file linked from it exists.
 6. Every defined ID appears exactly once in the index.
+7. The `AGENTS.md` routing table resolves in both directions: every family it
+   routes is declared, every declared family has a row, and every document it
+   links to is a tracked file.
+8. Nothing cites an invariants document by **line number**. No allowlist and no
+   grandfather register: that pointer goes stale silently, which is the habit the
+   IDs exist to replace.
+9. No tracked text file carries a byte-order mark or double-encoded text.
+10. Every prefix's numbers are **dense from `001`** — no gap between its lowest
+    and its highest (§1.3.4).
 
 Assertion 6 is what stops the index rotting, which is the thing most likely to
-rot.
+rot. Assertion 10 is what makes §1.3's allocation rule mechanical rather than
+advisory, and it catches the deletion §1.4 forbids as a side effect: a rule
+removed outright, index row and all, is invisible to every other assertion here
+unless something still cites it, but the hole it leaves is not.
 
 Inline code spans are **not** skipped, only fenced blocks. Most real citations in
 prose are written as `` `INV-CAP-021` ``, and skipping backticks would make the
