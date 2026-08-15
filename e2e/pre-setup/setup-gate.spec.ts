@@ -61,6 +61,20 @@ test("every public address answers 503 with the holding screen", async ({
     })
     .toBe(503);
 
+  // And the catch-all separately, because it is a different code path that
+  // observes the same database write on its own schedule. Polling only `/` and
+  // then asserting the rest in one pass is a race: it happens to hold here
+  // because the loop below runs after the home page has already settled, but
+  // the same shape in the completing direction below did NOT hold, and read a
+  // stale 200 for a miss. Waiting for both paths costs nothing and removes the
+  // question.
+  await expect
+    .poll(async () => (await request.get("/definitely-missing")).status(), {
+      timeout: SETTLE_MS,
+      message: "a miss must answer 503 once setup is un-completed",
+    })
+    .toBe(503);
+
   for (const url of ["/", "/about", "/contact", "/definitely-missing"]) {
     const response = await request.get(url);
 
@@ -127,5 +141,20 @@ test("completing setup opens the site again", async ({ request }) => {
     .toBe(200);
 
   // The gate is inert again: a miss goes back to being a real 404, not a 503.
-  expect((await request.get("/definitely-missing")).status()).toBe(404);
+  //
+  // Polled, not asserted once, and for the same reason the assertion above is:
+  // completing setup is a database write, and the two paths do not observe it
+  // at the same instant. `/` turning 200 says the home route has caught up; it
+  // says nothing about the catch-all that answers an unknown path, which is
+  // served by its own code and settles on its own schedule. Asserting this one
+  // synchronously the moment the first poll returned made it a race that lost
+  // whenever the home route happened to settle first — reading 200, the gate
+  // still serving the wizard for every path, rather than the 404 a miss earns
+  // once the gate is genuinely inert.
+  await expect
+    .poll(async () => (await request.get("/definitely-missing")).status(), {
+      timeout: SETTLE_MS,
+      message: "a miss must go back to being a real 404 once setup is complete",
+    })
+    .toBe(404);
 });
