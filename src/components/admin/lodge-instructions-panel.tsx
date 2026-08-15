@@ -16,8 +16,9 @@ import {
   type WysiwygEditorHandle,
 } from "@/components/admin/page-content-panel";
 import {
+  isPolicyScopeReady,
   PolicyScopeSelect,
-  usePolicyScopeLodgeName,
+  usePolicyScopeOptions,
 } from "@/components/admin/booking-policies/policy-scope-select";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
@@ -83,7 +84,10 @@ export function LodgeInstructionsPanel() {
   // replaces the club-wide document of that key at that lodge. The scope
   // control renders nothing while fewer than two lodges exist.
   const [scopeLodgeId, setScopeLodgeId] = useState<string | null>(null);
-  const scopeLodgeName = usePolicyScopeLodgeName(scopeLodgeId);
+  const policyScope = usePolicyScopeOptions(scopeLodgeId);
+  const policyScopeReady = isPolicyScopeReady(policyScope);
+  const scopeLodgeName =
+    policyScope.state.kind === "lodge" ? policyScope.state.lodgeName : null;
   // Lodge instructions gate on the LODGE area, not content (#1927).
   const canEdit = useAdminAreaEditAccess("lodge");
   const [loading, setLoading] = useState(true);
@@ -108,6 +112,10 @@ export function LodgeInstructionsPanel() {
 
   // Load all three documents of the selected partition for editing.
   const loadDocuments = useCallback(async () => {
+    if (!policyScopeReady) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setLoadError(null);
     try {
@@ -135,7 +143,7 @@ export function LodgeInstructionsPanel() {
     } finally {
       setLoading(false);
     }
-  }, [scopeLodgeId]);
+  }, [policyScopeReady, scopeLodgeId]);
 
   useEffect(() => {
     loadDocuments();
@@ -144,6 +152,7 @@ export function LodgeInstructionsPanel() {
   // Save a single document into the selected partition; content is
   // sanitised again server-side.
   async function saveDocument(key: DocumentKey, title: string) {
+    if (!policyScopeReady) return;
     const contentHtml = editorRefs.current[key]?.getHtml() ?? drafts[key];
     setSavingKey(key);
     setForbidden(false);
@@ -188,6 +197,7 @@ export function LodgeInstructionsPanel() {
   // Start a lodge override as a copy of the club-wide document, so the
   // admin adjusts existing content rather than writing from a blank slate.
   async function createOverride(key: DocumentKey, title: string) {
+    if (!policyScopeReady) return;
     try {
       const res = await fetch(partitionUrl(null), {
         credentials: "same-origin",
@@ -207,6 +217,7 @@ export function LodgeInstructionsPanel() {
   // Remove a lodge's override row so the lodge reverts to the club-wide
   // document (explicit remove flag; see the admin route).
   async function removeOverride(key: DocumentKey, title: string) {
+    if (!policyScopeReady) return;
     if (
       !window.confirm(
         `Remove ${scopeLodgeName ?? "this lodge"}'s ${title.toLowerCase()} override? Hut leaders there will see the club-wide document again.`,
@@ -263,16 +274,30 @@ export function LodgeInstructionsPanel() {
     </AdminViewOnlySectionBanner>
   );
 
+  const scopeControl = (
+    <PolicyScopeSelect
+      options={policyScope}
+      value={scopeLodgeId}
+      onChange={setScopeLodgeId}
+      id="lodge-instructions-scope"
+    />
+  );
+
+  if (!policyScopeReady) {
+    return (
+      <div>
+        {viewOnlyBanner}
+        <div className="space-y-6">{scopeControl}</div>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div>
         {viewOnlyBanner}
         <div className="space-y-6">
-        <PolicyScopeSelect
-          value={scopeLodgeId}
-          onChange={setScopeLodgeId}
-          id="lodge-instructions-scope"
-        />
+        {scopeControl}
         <p className="text-sm text-muted-foreground">Loading lodge instructions...</p>
         </div>
       </div>
@@ -284,11 +309,7 @@ export function LodgeInstructionsPanel() {
       <div>
         {viewOnlyBanner}
         <div className="space-y-3">
-        <PolicyScopeSelect
-          value={scopeLodgeId}
-          onChange={setScopeLodgeId}
-          id="lodge-instructions-scope"
-        />
+        {scopeControl}
         <p className="text-sm text-danger-11">{loadError}</p>
         <Button type="button" variant="outline" onClick={loadDocuments}>
           Retry
@@ -302,11 +323,7 @@ export function LodgeInstructionsPanel() {
     <div>
       {viewOnlyBanner}
       <div className="space-y-6">
-      <PolicyScopeSelect
-        value={scopeLodgeId}
-        onChange={setScopeLodgeId}
-        id="lodge-instructions-scope"
-      />
+      {scopeControl}
 
       {forbidden ? <AdminForbiddenSaveNotice /> : null}
 

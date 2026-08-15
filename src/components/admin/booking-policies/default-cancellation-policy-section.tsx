@@ -13,8 +13,11 @@ import { Label } from "@/components/ui/label"
 import { CancellationRulesEditor } from "./cancellation-rules-editor"
 import { PolicyPreview } from "./policy-preview"
 import { PolicyFeedback } from "./policy-feedback"
-import { PolicyScopeSelect, usePolicyScopeLodgeName } from "./policy-scope-select"
-import { useLodgeOptions } from "@/components/lodge-select"
+import {
+  isPolicyScopeReady,
+  PolicyScopeSelect,
+  usePolicyScopeOptions,
+} from "./policy-scope-select"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
 import {
   ForbiddenSaveError,
@@ -148,12 +151,15 @@ export function DefaultCancellationPolicySection() {
   // the club-wide set entirely at runtime. The scope control renders nothing
   // while fewer than two lodges exist.
   const [scopeLodgeId, setScopeLodgeId] = useState<string | null>(null)
-  const scopeLodgeName = usePolicyScopeLodgeName(scopeLodgeId)
+  const policyScope = usePolicyScopeOptions(scopeLodgeId)
+  const policyScopeReady = isPolicyScopeReady(policyScope)
+  const scopeLodgeName =
+    policyScope.state.kind === "lodge" ? policyScope.state.lodgeName : null
   // Optimistic "an override is being created" flag: the editor opens seeded
   // from the club-wide rules before anything is persisted for this lodge.
   const [creatingOverride, setCreatingOverride] = useState(false)
   const [removingOverride, setRemovingOverride] = useState(false)
-  const { lodges } = useLodgeOptions("admin")
+  const { lodges } = policyScope
   // Booking-policy config gates on the bookings area (its write route enforces
   // bookings:edit); a bookings:view admin sees it read-only (#1940).
   const canEdit = useAdminAreaEditAccess("bookings")
@@ -174,6 +180,9 @@ export function DefaultCancellationPolicySection() {
     // alongside the error, as it always has.
     initial: CANCELLATION_DEFAULTS,
     load: async (signal) => {
+      if (!policyScopeReady) {
+        throw new DOMException("Policy scope is unresolved", "AbortError")
+      }
       // `useSectionEditState` reads its callbacks from a latest-ref refreshed on
       // every commit, so this closure always carries the CURRENT scope.
       const scope = scopeLodgeId
@@ -190,6 +199,9 @@ export function DefaultCancellationPolicySection() {
       return toDraft(data, scope)
     },
     save: async (draft) => {
+      if (!policyScopeReady) {
+        throw new Error("Choose an available policy scope before saving")
+      }
       const lodgeId = scopeLodgeId
       // Captured at SUBMIT time — see `savedScopeNameRef`.
       savedScopeNameRef.current = scopeLodgeName
@@ -260,15 +272,17 @@ export function DefaultCancellationPolicySection() {
   // Re-fetch when the scope changes. The hook's own load is mount-only, so a
   // scope switch drives `reload`; the first run is the mount load itself.
   const scopeSettled = useRef(false)
+  const policyScopeReadyOnFirstRender = useRef(policyScopeReady)
   useEffect(() => {
     scopeRef.current = scopeLodgeId
+    if (!policyScopeReady) return
     if (!scopeSettled.current) {
       scopeSettled.current = true
-      return
+      if (policyScopeReadyOnFirstRender.current) return
     }
     setCreatingOverride(false)
     void reload()
-  }, [scopeLodgeId, reload])
+  }, [scopeLodgeId, policyScopeReady, reload])
 
   function handleCancelDefaults() {
     section.cancelEditing()
@@ -281,6 +295,7 @@ export function DefaultCancellationPolicySection() {
   }
 
   async function handleCreateOverride() {
+    if (!policyScopeReady) return
     // The scope this click was made ON. The seed fetch below is async and the
     // scope select stays live throughout, so everything after the `await` is
     // guarded on it — the same guard `load` uses (#2142 review). Without it:
@@ -318,6 +333,7 @@ export function DefaultCancellationPolicySection() {
    * deliberately bypasses `section.save()` (and its dirty gate) and reloads.
    */
   async function handleRemoveOverride() {
+    if (!policyScopeReady) return
     if (
       !window.confirm(
         `Remove ${scopeLodgeName ?? "this lodge"}'s cancellation rules? Bookings there will use the club-wide rules again.`,
@@ -412,11 +428,17 @@ export function DefaultCancellationPolicySection() {
         onClearSuccess={() => section.setSuccess("")}
       />
       <div className="space-y-6">
-        <PolicyScopeSelect value={scopeLodgeId} onChange={setScopeLodgeId} />
+        <PolicyScopeSelect
+          options={policyScope}
+          value={scopeLodgeId}
+          onChange={setScopeLodgeId}
+        />
 
-        {loading ? <div className="text-center py-8">Loading...</div> : null}
+        {policyScopeReady && loading ? (
+          <div className="text-center py-8">Loading...</div>
+        ) : null}
 
-        {!loading && !scopeKnown ? (
+        {policyScopeReady && !loading && !scopeKnown ? (
           <Card>
             <CardHeader>
               <CardTitle>
@@ -439,7 +461,7 @@ export function DefaultCancellationPolicySection() {
           </Card>
         ) : null}
 
-        {!loading && scopeIsLodge && scopeKnown && !hasOverride ? (
+        {policyScopeReady && !loading && scopeIsLodge && scopeKnown && !hasOverride ? (
           <Card>
             <CardHeader>
               <CardTitle>{scopeLodgeName ?? "Lodge"} uses the club-wide rules</CardTitle>
@@ -460,7 +482,7 @@ export function DefaultCancellationPolicySection() {
         {/* `&& draft` only re-states what `showEditor` already implies (it is
             derived from `draft !== null`); it is what narrows the type now that
             the loading early return no longer does. */}
-        {showEditor && draft ? (
+        {policyScopeReady && showEditor && draft ? (
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <div>

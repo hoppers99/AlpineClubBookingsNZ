@@ -9,9 +9,57 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status"
-import { useLodgeOptions } from "@/components/lodge-select"
+import {
+  type LodgeOption,
+  useLodgeOptions,
+} from "@/components/lodge-select"
 
 const CLUB_WIDE = "__club_wide__"
+
+export type PolicyScopeState =
+  | { kind: "resolving" }
+  | { kind: "unavailable"; failed: boolean; forbidden: boolean }
+  | { kind: "club-wide" }
+  | { kind: "lodge"; lodgeId: string; lodgeName: string | null }
+
+export type PolicyScopeOptions = {
+  state: PolicyScopeState
+  lodges: LodgeOption[]
+  reload: () => void
+}
+
+/**
+ * Resolve the policy partition before any policy endpoint may be read or
+ * written. In particular, `club-wide` is a settled, deliberate state; it is
+ * never represented by the same value as a still-loading or failed lodge list.
+ */
+export function usePolicyScopeOptions(
+  lodgeId: string | null,
+): PolicyScopeOptions {
+  const { lodges, loading, failed, forbidden, reload } =
+    useLodgeOptions("admin")
+
+  let state: PolicyScopeState
+  if (loading) {
+    state = { kind: "resolving" }
+  } else if (failed || forbidden) {
+    state = { kind: "unavailable", failed, forbidden }
+  } else if (lodgeId) {
+    state = {
+      kind: "lodge",
+      lodgeId,
+      lodgeName: lodges.find((lodge) => lodge.id === lodgeId)?.name ?? null,
+    }
+  } else {
+    state = { kind: "club-wide" }
+  }
+
+  return { state, lodges, reload }
+}
+
+export function isPolicyScopeReady(options: PolicyScopeOptions): boolean {
+  return options.state.kind === "club-wide" || options.state.kind === "lodge"
+}
 
 // Scope selector for the booking-policy editors (ADR-001 resolved question
 // 3): policies are club-wide by default with per-lodge override sets that
@@ -20,17 +68,19 @@ const CLUB_WIDE = "__club_wide__"
 // nothing while fewer than two lodges exist (ADR-002 presentation rule), so
 // single-lodge clubs only ever edit the club-wide rules.
 export function PolicyScopeSelect({
+  options,
   value,
   onChange,
   id = "policy-scope-select",
 }: {
+  options: PolicyScopeOptions
   value: string | null
   onChange: (lodgeId: string | null) => void
   id?: string
 }) {
-  const { lodges, loading, failed, forbidden, reload } = useLodgeOptions("admin")
+  const { lodges, state, reload } = options
 
-  if (loading) {
+  if (state.kind === "resolving") {
     return null
   }
 
@@ -46,11 +96,11 @@ export function PolicyScopeSelect({
     Rendered INSTEAD of null, never alongside the select, so a section that has
     a scope control always has either the control or the reason it is missing.
   */
-  if (failed || forbidden) {
+  if (state.kind === "unavailable") {
     return (
       <LodgeOptionsUnavailableNotice
-        failed={failed}
-        forbidden={forbidden}
+        failed={state.failed}
+        forbidden={state.forbidden}
         onRetry={reload}
         what="per-lodge rule overrides"
         className="max-w-xl"
@@ -83,10 +133,4 @@ export function PolicyScopeSelect({
       </Select>
     </div>
   )
-}
-
-export function usePolicyScopeLodgeName(lodgeId: string | null): string | null {
-  const { lodges } = useLodgeOptions("admin")
-  if (!lodgeId) return null
-  return lodges.find((lodge) => lodge.id === lodgeId)?.name ?? null
 }

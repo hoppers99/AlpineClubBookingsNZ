@@ -15,7 +15,11 @@ import { Badge } from "@/components/ui/badge"
 import { CancellationRulesEditor } from "./cancellation-rules-editor"
 import { PolicyPreview } from "./policy-preview"
 import { PolicyFeedback } from "./policy-feedback"
-import { PolicyScopeSelect, usePolicyScopeLodgeName } from "./policy-scope-select"
+import {
+  isPolicyScopeReady,
+  PolicyScopeSelect,
+  usePolicyScopeOptions,
+} from "./policy-scope-select"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
 import {
   ForbiddenSaveError,
@@ -260,7 +264,10 @@ export function BookingPeriodsSection() {
   // club-wide periods; a lodge lists its override set, which replaces the
   // club-wide set entirely at runtime. Hidden with fewer than two lodges.
   const [scopeLodgeId, setScopeLodgeId] = useState<string | null>(null)
-  const scopeLodgeName = usePolicyScopeLodgeName(scopeLodgeId)
+  const policyScope = usePolicyScopeOptions(scopeLodgeId)
+  const policyScopeReady = isPolicyScopeReady(policyScope)
+  const scopeLodgeName =
+    policyScope.state.kind === "lodge" ? policyScope.state.lodgeName : null
   const [periods, setPeriods] = useState<BookingPeriod[]>([])
   /**
    * The scope `periods` was actually loaded FOR (#2142 review).
@@ -310,6 +317,10 @@ export function BookingPeriodsSection() {
     async (options: { signal?: AbortSignal; scopeLoad?: boolean } = {}) => {
       const { signal, scopeLoad = false } = options
       const scope = scopeLodgeId
+      if (!policyScopeReady) {
+        if (scopeLoad) setLoadingPeriods(false)
+        return
+      }
       if (scopeLoad) setLoadingPeriods(true)
       try {
         const res = await fetch(
@@ -336,7 +347,7 @@ export function BookingPeriodsSection() {
         if (scopeLoad && scopeRef.current === scope) setLoadingPeriods(false)
       }
     },
-    [scopeLodgeId],
+    [policyScopeReady, scopeLodgeId],
   )
 
   useEffect(() => {
@@ -364,6 +375,7 @@ export function BookingPeriodsSection() {
   }
 
   function startAddPeriod() {
+    if (!policyScopeReady) return
     setEditingPeriodId(null)
     setEditingDraft(NEW_PERIOD_DRAFT)
     setEditorInstance((n) => n + 1)
@@ -371,6 +383,7 @@ export function BookingPeriodsSection() {
   }
 
   function startEditPeriod(period: BookingPeriod) {
+    if (!policyScopeReady) return
     setEditingPeriodId(period.id)
     setEditingDraft(toDraft(period))
     setEditorInstance((n) => n + 1)
@@ -384,6 +397,9 @@ export function BookingPeriodsSection() {
    */
   const submitPeriod = useCallback(
     async (draft: PeriodDraft): Promise<PeriodDraft> => {
+      if (!policyScopeReady) {
+        throw new Error("Choose an available policy scope before saving")
+      }
       setError("")
       setSuccess("")
       const url = editingPeriodId
@@ -443,10 +459,11 @@ export function BookingPeriodsSection() {
       setSuccess(wasEditing ? "Period updated" : "Period created")
       return reseeded
     },
-    [editingPeriodId, scopeLodgeId, fetchPeriods],
+    [editingPeriodId, scopeLodgeId, fetchPeriods, policyScopeReady],
   )
 
   async function handleDeletePeriod(id: string) {
+    if (!policyScopeReady) return
     if (!confirm("Delete this booking period?")) return
     try {
       const res = await fetch(`/api/admin/booking-policies/periods/${id}`, { method: "DELETE" })
@@ -477,7 +494,7 @@ export function BookingPeriodsSection() {
   const [togglingId, setTogglingId] = useState<string | null>(null)
 
   async function handleTogglePeriod(period: BookingPeriod) {
-    if (togglingRef.current) return
+    if (!policyScopeReady || togglingRef.current) return
     togglingRef.current = true
     setTogglingId(period.id)
     try {
@@ -498,6 +515,7 @@ export function BookingPeriodsSection() {
 
   /** Re-run the current scope's load in place, without leaving the section. */
   function retryLoad() {
+    if (!policyScopeReady) return
     setError("")
     void fetchPeriods({ scopeLoad: true })
   }
@@ -552,16 +570,17 @@ export function BookingPeriodsSection() {
       />
       <div className="space-y-6">
         <PolicyScopeSelect
+          options={policyScope}
           value={scopeLodgeId}
           onChange={setScopeLodgeId}
           id="periods-scope"
         />
 
-        {loadingPeriods ? (
+        {policyScopeReady && loadingPeriods ? (
           <div className="text-center py-8">Loading...</div>
         ) : null}
 
-        {!loadingPeriods && !scopeKnown ? (
+        {policyScopeReady && !loadingPeriods && !scopeKnown ? (
           <Card>
             <CardHeader>
               <CardTitle>
@@ -584,7 +603,7 @@ export function BookingPeriodsSection() {
           </Card>
         ) : null}
 
-        {!loadingPeriods && scopeKnown ? (
+        {policyScopeReady && !loadingPeriods && scopeKnown ? (
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">
