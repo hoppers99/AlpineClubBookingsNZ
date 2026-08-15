@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditBookingPanel } from "@/components/edit-booking-panel";
 
@@ -139,48 +139,58 @@ function setCheckOut(value: string) {
   fireEvent.change(screen.getByLabelText(/Check-out/i), { target: { value } });
 }
 
-/**
- * The debounce window is a real 500ms timer: the frozen test clock fakes `Date`
- * only (`toFake: ["Date"]`), so `setTimeout` is genuinely asynchronous here.
- * Waiting longer than several windows is what makes "it did not loop" a real
- * observation rather than a race the test happened to win.
- */
-const THREE_DEBOUNCE_WINDOWS_MS = 1_700;
-const ONE_DEBOUNCE_WINDOW_MS = 700;
+/*
+  TIME IS FAKE IN THIS SUITE, AND THAT IS THE POINT.
 
-function settle(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  The debounce is a 500ms `setTimeout`. Driven by the real clock, every case here
+  depended on wall-clock behaviour it does not actually care about: whether the
+  machine got round to firing a timer, whether three `fireEvent`s landed inside
+  one window, whether a straggler from the previous case was still running. This
+  suite flaked twice on exactly that — once for a reviewer, once in a
+  `test:related` run under load — and a guard that goes red for reasons nobody
+  can reproduce gets re-run rather than believed, which is the worst possible
+  property for the ONE guard covering this PR's only behavioural change.
+
+  With the timer faked, nothing fires unless a case says so. That makes the
+  central observation STRONGER rather than weaker: instead of waiting 1.7s of
+  real time and hoping, a case advances twenty debounce windows instantly and
+  asserts that no further request appeared. A re-arming effect cannot hide in
+  that, and neither can a slow machine.
+
+  `Date` is faked alongside the timers and re-pinned to the repository's frozen
+  instant. `docs/TESTING.md` documents the contract: the root re-freeze leaves a
+  suite that deliberately pins its own instant completely alone, so this must pin
+  the SAME one rather than drifting to the default.
+*/
+const FROZEN_NOW = new Date("2026-07-01T00:00:00.000Z");
+const DEBOUNCE_MS = 500;
+/** Twenty windows. A loop re-arms every 500ms, so it cannot survive this. */
+const TWENTY_DEBOUNCE_WINDOWS_MS = DEBOUNCE_MS * 20;
+
+/** Fire everything due within `ms`, flushing promises between timers. */
+async function advance(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
 }
 
+/** Let the debounce fire and its response land. */
+const settleQuote = () => advance(DEBOUNCE_MS);
+
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  vi.setSystemTime(FROZEN_NOW);
   routerRefresh.mockClear();
 });
 
-afterEach(async () => {
-  /*
-    THE BARRIER BETWEEN CASES, and why it is explicit.
-
-    Each case leaves a mounted panel that may be holding a 500ms debounce timer
-    and may have a fetch already in flight. Unmounting runs the debounce effect's
-    cleanup, which clears the timer; draining past one window then lets anything
-    already issued settle. Without both, a straggler from one case can still be
-    running while the next case makes its assertions.
-
-    That is the only mechanism anyone has proposed for the one failure this suite
-    has ever shown — a second modify-quote carrying an empty body, seen once by a
-    reviewer and never reproduced since, including in 39 clean runs of an
-    instrumented copy that would have dumped the sender. Combined with the
-    per-test recorder above, a straggler now writes into an array nobody reads,
-    so the mechanism is gone whether or not it was ever the cause.
-
-    cleanup() is called here rather than left to Testing Library's automatic
-    afterEach because vitest.config.ts pins sequence.hooks to "stack", which runs
-    after-hooks in REVERSE registration order — the automatic one would run after
-    this drain rather than before it. Calling it explicitly is idempotent and
-    removes the ordering question entirely.
-  */
+afterEach(() => {
+  // Unmount first: the debounce effect's cleanup clears any armed timer, so
+  // nothing can be pending when the fake clock is discarded. cleanup() is called
+  // explicitly because vitest.config.ts pins sequence.hooks to "stack", which
+  // runs after-hooks in REVERSE registration order — Testing Library's automatic
+  // unmount would otherwise run after this, not before.
   cleanup();
-  await settle(ONE_DEBOUNCE_WINDOW_MS);
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -192,16 +202,14 @@ describe("EditBookingPanel — the debounced modify-quote arm (#2690)", () => {
     );
 
     setCheckOut("2026-09-08");
-    await waitFor(
-      () => expect(screen.getByRole("button", { name: "Save Changes" })).not.toBeDisabled(),
-      { timeout: 2500 },
-    );
+    await settleQuote();
     expect(quoteRequestBodies).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Save Changes" })).not.toBeDisabled();
 
     // The whole point. A dependency that is rebuilt every render makes the
     // effect re-arm on the render its own response causes, so the count climbs
-    // by roughly one per 500ms while the screen stays perfectly correct.
-    await settle(THREE_DEBOUNCE_WINDOWS_MS);
+    // by one per 500ms while the screen stays perfectly correct.
+    await advance(TWENTY_DEBOUNCE_WINDOWS_MS);
     expect(
       quoteRequestBodies,
       "the quote effect re-armed itself: it is keyed on something rebuilt every " +
@@ -215,15 +223,15 @@ describe("EditBookingPanel — the debounced modify-quote arm (#2690)", () => {
       <EditBookingPanel booking={makeBooking()} onDone={() => {}} />,
     );
 
+    // Three edits inside one window. With a real clock this depended on the
+    // machine getting through all three in under 500ms; now the window simply
+    // does not advance until the test says so.
     setCheckOut("2026-09-07");
     setCheckOut("2026-09-08");
     setCheckOut("2026-09-09");
 
-    await waitFor(
-      () => expect(screen.getByRole("button", { name: "Save Changes" })).not.toBeDisabled(),
-      { timeout: 2500 },
-    );
-    await settle(THREE_DEBOUNCE_WINDOWS_MS);
+    await settleQuote();
+    await advance(TWENTY_DEBOUNCE_WINDOWS_MS);
 
     expect(quoteRequestBodies).toHaveLength(1);
     expect(JSON.parse(quoteRequestBodies[0])).toMatchObject({
@@ -238,20 +246,14 @@ describe("EditBookingPanel — the debounced modify-quote arm (#2690)", () => {
     );
 
     setCheckOut("2026-09-08");
-    await waitFor(
-      () => expect(screen.getByRole("button", { name: "Save Changes" })).not.toBeDisabled(),
-      { timeout: 2500 },
-    );
+    await settleQuote();
     expect(quoteRequestBodies).toHaveLength(1);
 
     // Back to the stored dates: `hasChanges` goes false, the payload goes null,
     // and that arm of the effect returns WITHOUT arming a timer.
     setCheckOut("2026-09-06");
-    await waitFor(
-      () => expect(screen.getByRole("button", { name: "Save Changes" })).toBeDisabled(),
-      { timeout: 2500 },
-    );
-    await settle(THREE_DEBOUNCE_WINDOWS_MS);
+    await advance(TWENTY_DEBOUNCE_WINDOWS_MS);
+    expect(screen.getByRole("button", { name: "Save Changes" })).toBeDisabled();
 
     expect(quoteRequestBodies).toHaveLength(1);
     // The Price Summary is gated on `hasChanges`, so a cleared edit takes the
@@ -268,11 +270,8 @@ describe("EditBookingPanel — the debounced modify-quote arm (#2690)", () => {
     );
 
     setCheckOut("2026-09-08");
-    await waitFor(
-      () => expect(screen.getByRole("button", { name: "Save Changes" })).not.toBeDisabled(),
-      { timeout: 2500 },
-    );
-    await settle(THREE_DEBOUNCE_WINDOWS_MS);
+    await settleQuote();
+    await advance(TWENTY_DEBOUNCE_WINDOWS_MS);
 
     // The loader is keyed on [bookingId, viewerRole]. Widening that array to
     // anything the panel recomputes turns a one-shot mount fetch into a fetch

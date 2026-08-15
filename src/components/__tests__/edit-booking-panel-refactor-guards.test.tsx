@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditBookingPanel } from "@/components/edit-booking-panel";
 import { formatCents } from "@/lib/utils";
@@ -153,13 +153,34 @@ function setCheckOut(value: string) {
   fireEvent.change(screen.getByLabelText(/Check-out/i), { target: { value } });
 }
 
-function settle(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/*
+  TIME IS FAKE HERE, for the reason recorded in
+  edit-booking-panel-quote-debounce.test.tsx.
+
+  Measured, not guessed: driven by the real clock these cases waited out a 500ms
+  debounce plus a 700ms drain inside `waitFor`, which put them within a few
+  hundred milliseconds of vitest's 5s default test timeout. Under load — a
+  `test:related` run with 23 files in flight — they tipped over it, and every
+  case in the file failed at almost exactly 5,000ms. That is a property of the
+  machine, not of the code under test, and it is the wrong thing for a guard to
+  be sensitive to.
+*/
+const FROZEN_NOW = new Date("2026-07-01T00:00:00.000Z");
+const DEBOUNCE_MS = 500;
+
+/** Fire everything due within `ms`, flushing promises between timers. */
+async function advance(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
 }
 
-const PAST_THE_DEBOUNCE_MS = 700;
+/** Flush pending promise callbacks without moving the clock. */
+const flush = () => advance(0);
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  vi.setSystemTime(FROZEN_NOW);
   holdQuotes = false;
   holdSave = false;
   installFetch();
@@ -167,6 +188,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -179,21 +202,19 @@ describe("a superseded quote can never overwrite the current one (#2690)", () =>
 
     // First edit — its request goes out and is held unanswered.
     setCheckOut("2026-09-08");
-    await waitFor(() => expect(pendingQuotes).toHaveLength(1), { timeout: 2500 });
+    await advance(DEBOUNCE_MS);
+    expect(pendingQuotes).toHaveLength(1);
 
     // Second edit — a second request goes out, also held.
     setCheckOut("2026-09-10");
-    await waitFor(() => expect(pendingQuotes).toHaveLength(2), { timeout: 2500 });
+    await advance(DEBOUNCE_MS);
+    expect(pendingQuotes).toHaveLength(2);
 
     // Answer the NEWER request first, then let the stale one land on top.
-    await act(async () => {
-      pendingQuotes[1].resolve(jsonResponse(quotePayload(22200)));
-      await settle(50);
-    });
-    await act(async () => {
-      pendingQuotes[0].resolve(jsonResponse(quotePayload(11100)));
-      await settle(50);
-    });
+    pendingQuotes[1].resolve(jsonResponse(quotePayload(22200)));
+    await flush();
+    pendingQuotes[0].resolve(jsonResponse(quotePayload(11100)));
+    await flush();
 
     // `quoteRequestSeqRef` is the only thing standing between the member and a
     // price from an edit they have already moved on from. Delete it and the
@@ -216,8 +237,9 @@ describe("the save is single-flighted (#2690)", () => {
     );
 
     setCheckOut("2026-09-08");
-    const save = await screen.findByRole("button", { name: "Save Changes" });
-    await waitFor(() => expect(save).not.toBeDisabled(), { timeout: 2500 });
+    await advance(DEBOUNCE_MS);
+    const save = screen.getByRole("button", { name: "Save Changes" });
+    expect(save).not.toBeDisabled();
 
     /*
       Both clicks inside ONE act batch, which is the case the ref exists for.
@@ -231,7 +253,7 @@ describe("the save is single-flighted (#2690)", () => {
     await act(async () => {
       save.click();
       save.click();
-      await settle(50);
+      await vi.advanceTimersByTimeAsync(0);
     });
 
     expect(
@@ -240,10 +262,8 @@ describe("the save is single-flighted (#2690)", () => {
         "gone and the booking is modified twice",
     ).toHaveLength(1);
 
-    await act(async () => {
-      pendingSave?.resolve(jsonResponse({}));
-      await settle(50);
-    });
+    pendingSave?.resolve(jsonResponse({}));
+    await flush();
     unmount();
   });
 });
@@ -294,7 +314,7 @@ describe("an admin override edit is date-only on screen as well as in the payloa
         "!overrideEnabled fence is gone",
     ).not.toBeInTheDocument();
 
-    await settle(PAST_THE_DEBOUNCE_MS);
+    await advance(DEBOUNCE_MS * 2);
     unmount();
   });
 });
