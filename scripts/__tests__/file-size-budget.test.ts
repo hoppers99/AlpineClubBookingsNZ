@@ -108,6 +108,38 @@ function captureRun(root: string, argv: readonly string[]): {
   }
 }
 
+function verifyJobSource(workflow: string): string {
+  const start = workflow.search(/^  verify:\s*$/m);
+  if (start === -1) return "";
+  const afterStart = workflow.slice(start + "  verify:".length);
+  const nextJob = afterStart.search(/^  [A-Za-z0-9_-]+:\s*$/m);
+  return nextJob === -1 ? afterStart : afterStart.slice(0, nextJob);
+}
+
+describe("blocking CI wiring", () => {
+  it("maps the public check command to the file-size ratchet entry point exactly", () => {
+    const packageJson = JSON.parse(
+      readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"),
+    ) as { scripts?: Record<string, string> };
+    expect(packageJson.scripts?.["quality:budget"]).toBe(
+      "tsx scripts/ci/check-file-size-budget.ts",
+    );
+    expect(packageJson.scripts?.["quality:budget:update"]).toBe(
+      "tsx scripts/ci/check-file-size-budget.ts --update",
+    );
+  });
+
+  it("runs the public check command exactly once in the blocking verify job", () => {
+    const workflow = readFileSync(
+      path.join(REPO_ROOT, ".github/workflows/ci.yml"),
+      "utf8",
+    );
+    const verify = verifyJobSource(workflow);
+    expect(verify, "ci.yml must contain a top-level verify job").not.toBe("");
+    expect(verify.match(/^        run: npm run quality:budget\s*$/gm) ?? []).toHaveLength(1);
+  });
+});
+
 describe("budget classification", () => {
   it("applies the documented budget for each kind of production file", () => {
     expect(budgetForFile("src/app/api/bookings/route.ts")).toMatchObject({
@@ -418,6 +450,62 @@ describe("the ratchet", () => {
 });
 
 describe("the visible baseline-update escape", () => {
+  it("refuses update when the reviewed baseline is missing and does not recreate it", () => {
+    const root = createTrackedRepo("src/lib/original.ts", 800);
+    try {
+      rmSync(path.join(root, BASELINE_PATH));
+
+      const refused = captureRun(root, ["--update"]);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("refusing baseline update");
+      expect(refused.stderr).toContain("UNUSABLE");
+      expect(refused.stderr).toContain("missing");
+      expect(refused.stderr).toContain("No baseline bytes were written");
+      expect(() => readFileSync(path.join(root, BASELINE_PATH), "utf8")).toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an untracked baseline instead of promoting it to reviewed truth", () => {
+    const root = createTrackedRepo("src/lib/original.ts", 800);
+    try {
+      const original = readFileSync(path.join(root, BASELINE_PATH), "utf8");
+      git(root, ["rm", "--cached", "--", BASELINE_PATH]);
+
+      const refused = captureRun(root, ["--update"]);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("not tracked by git");
+      expect(refused.stderr).toContain("No baseline bytes were written");
+      expect(readFileSync(path.join(root, BASELINE_PATH), "utf8")).toBe(original);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not rewrite a malformed baseline while unrelated source debt grows", () => {
+    const root = createTrackedRepo("src/lib/original.ts", 800);
+    try {
+      writeLines(root, "src/lib/unrelated-growth.ts", 850);
+      git(root, ["add", "--", "src/lib/unrelated-growth.ts"]);
+      const malformed = readFileSync(path.join(root, BASELINE_PATH), "utf8").replace(
+        /^# File-size budget baseline.*$/m,
+        "# corrupted header that is not the reviewed contract",
+      );
+      writeFileSync(path.join(root, BASELINE_PATH), malformed, "utf8");
+
+      const refused = captureRun(root, ["--update"]);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("refusing baseline update");
+      expect(refused.stderr).toContain("not byte-identical");
+      expect(refused.stderr).toContain("No baseline bytes were written");
+      expect(refused.stdout).not.toContain("Intentional baseline update");
+      expect(readFileSync(path.join(root, BASELINE_PATH), "utf8")).toBe(malformed);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a pure rename before update, then moves the ledger record with unchanged debt", () => {
     const root = createTrackedRepo("src/lib/original.ts", 800);
     try {

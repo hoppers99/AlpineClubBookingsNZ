@@ -649,7 +649,8 @@ export function evaluateRatchet(
           baseline: "absent",
           current: `${oversized.length} file(s) currently over budget`,
           problem: `the committed baseline \`${BASELINE_PATH}\` is missing, so there is nothing to compare against`,
-          action: `restore it from \`main\`, or run \`${UPDATE_COMMAND}\` and have the whole ledger reviewed`,
+          action:
+            `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\` against that trusted comparison`,
         },
       ],
     };
@@ -664,7 +665,8 @@ export function evaluateRatchet(
     baseline: `line ${problem.line}: ${JSON.stringify(problem.text)}`,
     current: null,
     problem: problem.message,
-    action: `do not hand-edit the baseline; run \`${UPDATE_COMMAND}\``,
+    action:
+      `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\``,
   }));
 
   // Tree-aware validation of each recorded entry.
@@ -679,7 +681,8 @@ export function evaluateRatchet(
         baseline: `${entry.lines} LOC recorded as ${entry.slug}`,
         current: null,
         problem: `the recorded budget category does not match the one this path implies (${budget.slug})`,
-        action: `do not hand-edit the baseline; run \`${UPDATE_COMMAND}\``,
+        action:
+          `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\``,
       });
       continue;
     }
@@ -693,9 +696,31 @@ export function evaluateRatchet(
         current: null,
         problem:
           "the baseline lists a file that is not over its budget; only over-budget files belong here",
-        action: `do not hand-edit the baseline; run \`${UPDATE_COMMAND}\``,
+        action:
+          `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\``,
       });
     }
+  }
+
+  // Validate the ledger's fixed bytes independently of tree drift. Comparing
+  // straight to `regenerated` only works when the tree is unchanged: as soon
+  // as a source file grows, that comparison differs for a legitimate record
+  // reason and a corrupted header can hide behind the regression. Rebuilding
+  // from the ledger's own parsed records isolates header/spacing corruption,
+  // so update mode can refuse an unusable comparison before accepting growth.
+  if (findings.length === 0 && baselineText !== serializeBaseline(parsed.entries)) {
+    findings.push({
+      severity: "unusable",
+      kind: "malformed-baseline",
+      file: BASELINE_PATH,
+      budget: null,
+      baseline: "differs from the generated form outside the records themselves",
+      current: null,
+      problem:
+        "the records parse, but the file is not byte-identical to the generated ledger (header text, spacing, or trailing lines differ)",
+      action:
+        `restore the last reviewed ${BASELINE_PATH} from git, then run \`${UPDATE_COMMAND}\``,
+    });
   }
 
   if (findings.length > 0) {
@@ -767,25 +792,6 @@ export function evaluateRatchet(
         : "no longer a tracked production file (deleted, renamed, or moved out of src/)",
       problem: "the baseline carries a ceiling for a file that no longer needs one",
       action: REGENERATE_ACTION,
-    });
-  }
-
-  // Everything above compares *records*. This compares bytes, and it is what
-  // makes "exact equality" true rather than approximately true: the header is
-  // fixed text that nothing regenerates from the tree, so without this a hand-
-  // rewritten header (or a stray trailing blank line) would survive a clean
-  // check and the file would stop saying what it says it says.
-  if (findings.length === 0 && baselineText !== regenerated) {
-    findings.push({
-      severity: "unusable",
-      kind: "malformed-baseline",
-      file: BASELINE_PATH,
-      budget: null,
-      baseline: "differs from the generated form outside the records themselves",
-      current: null,
-      problem:
-        "every record matches, but the file is not byte-identical to the generated baseline (header text, spacing, or trailing lines differ)",
-      action: `do not hand-edit the baseline; run \`${UPDATE_COMMAND}\``,
     });
   }
 

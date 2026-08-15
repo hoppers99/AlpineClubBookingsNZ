@@ -25,5 +25,10 @@
   records, every pre-update regression is listed separately, and the net debt
   change is reported only as context. A larger shrink elsewhere therefore
   cannot hide the warning for a file that grew, and the pull request must
-  explain every accepted increase. The gate's own tests under
-  `scripts/__tests__/` are now also covered by `npm run typecheck` (#2875).
+  explain every accepted increase. Update mode refuses a missing, malformed or
+  untracked starting ledger, so it cannot rewrite away the comparison needed to
+  produce those warnings. A contract also pins the public package command to
+  the blocking `verify` job. The gate's TypeScript tests under
+  `scripts/__tests__/` are now covered by `npm run typecheck` (#2875); existing
+  JavaScript/MJS Vitest files are loaded by the test project but remain outside
+  static `checkJs` analysis until #2693 converts that boundary.

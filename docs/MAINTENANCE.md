@@ -6,21 +6,26 @@ This document describes the public maintenance baseline for AlpineClubBookingsNZ
 
 ## Required Gates
 
-Run lightweight local gates before opening or merging application changes:
+Run the fast local gates before pushing application changes. `test:related` is
+mandatory because it follows the module graph to adjacent suites that a
+filename-only selection misses; add focused tests for the contracts you changed.
 
 ```bash
-npm audit --audit-level=high
-npm run lint
-DATABASE_URL=postgresql://user:pass@localhost:5432/tacbookings npx prisma validate
 npm run db:generate
+npm run lint
 DATABASE_URL=postgresql://user:pass@localhost:5432/tacbookings npm run typecheck
-npm test
+npm run test:related -- $(git diff --name-only main...HEAD)
+npm test -- path/to/focused.test.ts
+npm run knip                 # when files or exports change
+npm run docs:linkcheck       # when docs change
+npm run docs:indexcheck      # when docs change or INV-* ids are cited
 npm run quality:budget
-npm run quality:report
 git diff --check
 ```
 
-`npm test` includes property-based tests (fast-check) for the pure money math —
+The blocking `verify` job owns the full `npm test`, production build and audit;
+do not duplicate the full suite locally unless diagnosing CI or CI is
+unavailable. `npm test` includes property-based tests (fast-check) for the pure money math —
 pricing, promo discounts, refund tiers, change fees, member credit, and the
 Xero booking-edit settlement classifier — in
 `src/lib/policies/__tests__/*.property.test.ts` and
@@ -367,7 +372,12 @@ read as a split going well.
 The baseline is generated, never hand-edited. Regenerate it whenever the tree
 legitimately changes and commit the result in the same PR. Update mode is an
 intentional, reviewed escape from the old ceiling, not a verification pass: CI
-runs only `npm run quality:budget`, never the update command.
+runs only `npm run quality:budget`, never the update command. It may accept
+regression and stale-record findings from a valid committed ledger, but it
+refuses to write from a missing, malformed or untracked ledger, an empty scan,
+or an unclassified source file. Restore the last reviewed baseline first; an
+update without a trusted comparison could erase the very per-record warnings a
+reviewer needs.
 
 - **A split or a thinning** lowers a number, or removes a line entirely. This is
   the expected direction. Never edit a reduced file back upward to avoid a
@@ -386,13 +396,15 @@ runs only `npm run quality:budget`, never the update command.
   domain module all fail as a malformed or stale baseline.
 
 `npm run quality:budget:update` lists every pre-update regression separately,
-including its path, budget, old ceiling and current size, then prints the
+including its path, budget, baseline status and current size, then prints the
 aggregate debt change as context. Review the per-record list first: a reduction
 in one file must not cancel the warning for growth in another. A pure rename of
 an oversized file fails verification before update as one new-debt record plus
 one stale old-path record; regeneration moves the ledger entry and reports an
 unchanged aggregate. A rename that also grows remains in the per-record warning
-even when a larger unrelated split makes aggregate debt fall. The ledger diff
+even when a larger unrelated split makes aggregate debt fall. Because a rename
+appears as a new path, the command cannot claim which deleted path was its old
+identity or ceiling; the ledger diff supplies that old-path evidence. The diff
 shows both path records and the command names the accepted regression, so the
 PR body must justify the growth rather than pointing only to the favourable net
 total. That visible, reviewed acceptance is the intended contract — neither

@@ -2,33 +2,43 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import { configDefaults } from "vitest/config";
 
 /**
- * `npm run typecheck` runs two projects — `tsconfig.json` (the app) and
- * `tsconfig.test.json` (the Vitest tests). Between them they are supposed to
- * read every TypeScript file in the repository. Nothing checked that they did.
+ * `npm run typecheck` runs two projects: `tsconfig.json` (the app) and
+ * `tsconfig.test.json` (Vitest tests). Between them they must read every
+ * tracked TypeScript file. That was false before #2875: tests under
+ * `scripts/__tests__/` sat in neither project, including the tests for the
+ * blocking file-size gate.
  *
- * They did not (#2875). `tsconfig.json` excludes `**` + `/*.test.ts` and
- * `__tests__/`, and `tsconfig.test.json` re-included only the `src/` half of
- * what that removed, so the tests under `scripts/__tests__/` sat in neither
- * project. Three deliberate `const x: number = "string"` errors planted in
- * those files produced a green `npm run typecheck`. Among them were the tests
- * for the file-size gate this repository now blocks on — a gate whose own tests
- * the typechecker never read.
+ * Vitest's extension surface is wider than `.test.ts(x)`. This contract pins
+ * the runner's actual default, asks TypeScript which files each project
+ * resolves, and distinguishes two promises deliberately:
  *
- * This is the guard for the general property rather than for those three files,
- * because the specific hole is the cheap part to fix and the easy part to
- * reopen: any future `exclude`, or any test placed in a new directory, silently
- * removes files from the typechecker with no other symptom.
- *
- * It asks TypeScript itself which files each project resolves to, rather than
- * reimplementing tsconfig's include/exclude glob semantics.
+ * - `.ts`, `.tsx`, `.mts` and `.cts` tests are statically typechecked in the
+ *   test project and excluded from the app project;
+ * - JavaScript variants are loaded by the test project while `allowJs` remains
+ *   enabled, but `checkJs` is explicitly false, so they are not presented as
+ *   statically typechecked. #2693 owns converting those scripts and disabling
+ *   `allowJs` alongside the deliberate Playwright project.
  */
 
 const ROOT = process.cwd();
+const VITEST_DEFAULT_INCLUDE = "**/*.{test,spec}.?(c|m)[jt]s?(x)";
+const TYPESCRIPT_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts"]);
+const JAVASCRIPT_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs"]);
+const PROJECT_SUPPORTED_VITEST_EXTENSIONS = new Set([
+  ...TYPESCRIPT_EXTENSIONS,
+  ...JAVASCRIPT_EXTENSIONS,
+]);
+
+type ProjectCoverage = {
+  files: Set<string>;
+  options: ts.CompilerOptions;
+};
 
 /** Repo-relative paths TypeScript resolves for a project, exactly as tsc would. */
-function projectFiles(configName: string): Set<string> {
+function projectCoverage(configName: string): ProjectCoverage {
   const configPath = path.join(ROOT, configName);
   const read = ts.readConfigFile(configPath, ts.sys.readFile);
   expect(read.error, `${configName} should parse`).toBeUndefined();
@@ -39,31 +49,35 @@ function projectFiles(configName: string): Set<string> {
     undefined,
     configPath,
   );
-  return new Set(
-    parsed.fileNames.map((file) =>
-      path.relative(ROOT, file).split(path.sep).join("/"),
+  expect(parsed.errors, `${configName} should resolve without config errors`).toEqual([]);
+  return {
+    files: new Set(
+      parsed.fileNames.map((file) =>
+        path.relative(ROOT, file).split(path.sep).join("/"),
+      ),
     ),
-  );
+    options: parsed.options,
+  };
 }
 
-function trackedTypeScriptFiles(): string[] {
+function trackedFiles(): string[] {
   return execFileSync("git", ["ls-files", "-z"], {
     cwd: ROOT,
     encoding: "utf8",
     maxBuffer: 128 * 1024 * 1024,
   })
     .split("\0")
-    .filter(Boolean)
-    .filter((file) => /\.(ts|tsx|mts|cts)$/.test(file));
+    .filter(Boolean);
+}
+
+function isVitestTestFile(file: string): boolean {
+  return /\.(?:test|spec)\.(?:[cm]?[jt]sx?)$/.test(file);
 }
 
 /**
- * The only files allowed to sit outside both projects, each with the reason.
- * `.semgrep/tests/` fixtures are deliberately-broken sample code whose only
- * reader is Semgrep's own `--test` runner; they import modules that do not
- * resolve from that directory and they exist in order to be reported, so
- * type-checking them would fail and fixing them would stop them being fixtures
- * (#2686, and `tsconfig.json` says the same at its `exclude`).
+ * The only TypeScript files allowed outside both projects. Semgrep fixtures
+ * are deliberately broken sample code whose only reader is Semgrep's `--test`
+ * runner; making them typecheck would stop them being useful fixtures (#2686).
  */
 const EXEMPT = new Set([
   ".semgrep/tests/acb-client-server-boundary.tsx",
@@ -71,53 +85,103 @@ const EXEMPT = new Set([
 ]);
 
 describe("typecheck project coverage", () => {
-  const app = projectFiles("tsconfig.json");
-  const test = projectFiles("tsconfig.test.json");
-  const tracked = trackedTypeScriptFiles();
+  const app = projectCoverage("tsconfig.json");
+  const test = projectCoverage("tsconfig.test.json");
+  const tracked = trackedFiles();
+  const trackedTypeScript = tracked.filter((file) => /\.(ts|tsx|mts|cts)$/.test(file));
+  const vitestTests = tracked.filter(
+    (file) =>
+      isVitestTestFile(file) &&
+      !file.startsWith("e2e/") &&
+      !file.includes("/.claude/"),
+  );
 
-  it("reads every tracked TypeScript file in one project or the other", () => {
-    const uncovered = tracked.filter(
-      (file) => !EXEMPT.has(file) && !app.has(file) && !test.has(file),
-    );
-    expect(
-      uncovered,
-      "these tracked TypeScript files are in neither tsconfig project, so `npm run typecheck` " +
-        "never reads them. Add them to tsconfig.test.json (Vitest tests) or tsconfig.json " +
-        "(everything else), or exempt them here with the reason.",
-    ).toEqual([]);
-  });
-
-  it("puts every Vitest test in the test project, which is the one with the globals", () => {
-    const testFiles = tracked.filter(
-      (file) => /\.(test|spec)\.(ts|tsx)$/.test(file) || file.includes("/__tests__/"),
-    );
-    // `e2e/` is Playwright, not Vitest: its specs import `test`/`expect` from
-    // `@playwright/test` rather than relying on Vitest globals, and they are
-    // read by the app project today because `tsconfig.json` excludes only
-    // `*.test.*` and `__tests__/`, not `*.spec.*`. So they are typechecked —
-    // incidentally rather than deliberately. Giving them a project chosen on
-    // purpose is MEP-E1 (#2693) and is not in scope here; this only asserts
-    // they are not in the gap.
-    const misfiled = testFiles.filter(
-      (file) => !EXEMPT.has(file) && !test.has(file) && !file.startsWith("e2e/"),
-    );
-    expect(misfiled).toEqual([]);
-    for (const file of tracked.filter((f) => f.startsWith("e2e/"))) {
-      expect(app.has(file) || test.has(file)).toBe(true);
+  it("pins the Vitest default test/spec extension contract", () => {
+    expect(configDefaults.include).toEqual([VITEST_DEFAULT_INCLUDE]);
+    const extensionsMatchedByThatGlob = [
+      ".js",
+      ".jsx",
+      ".cjs",
+      ".cjsx",
+      ".mjs",
+      ".mjsx",
+      ".ts",
+      ".tsx",
+      ".cts",
+      ".ctsx",
+      ".mts",
+      ".mtsx",
+    ];
+    for (const extension of extensionsMatchedByThatGlob) {
+      expect(isVitestTestFile(`scripts/example.test${extension}`)).toBe(true);
+      expect(isVitestTestFile(`src/example.spec${extension}`)).toBe(true);
     }
   });
 
-  it("covers the scripts/ tests specifically, which is the hole this closes", () => {
-    const scriptTests = tracked.filter(
+  it("reads every tracked TypeScript file in one project or the other", () => {
+    const uncovered = trackedTypeScript.filter(
+      (file) => !EXEMPT.has(file) && !app.files.has(file) && !test.files.has(file),
+    );
+    expect(
+      uncovered,
+      "these tracked TypeScript files are in neither tsconfig project, so `npm run typecheck` never reads them",
+    ).toEqual([]);
+  });
+
+  it("puts every supported TypeScript Vitest extension in the test project only", () => {
+    const testFiles = vitestTests.filter((file) =>
+      TYPESCRIPT_EXTENSIONS.has(path.extname(file)),
+    );
+    expect(testFiles.length).toBeGreaterThan(1000);
+    for (const file of testFiles) {
+      expect(test.files.has(file), `${file} should be in tsconfig.test.json`).toBe(true);
+      expect(app.files.has(file), `${file} should stay out of tsconfig.json`).toBe(false);
+    }
+  });
+
+  it("loads JavaScript Vitest files without claiming checkJs coverage", () => {
+    const javaScriptTests = vitestTests.filter((file) =>
+      JAVASCRIPT_EXTENSIONS.has(path.extname(file)),
+    );
+    expect(javaScriptTests.length).toBeGreaterThan(0);
+    expect(test.options.allowJs).toBe(true);
+    expect(test.options.checkJs ?? false).toBe(false);
+    for (const file of javaScriptTests) {
+      expect(test.files.has(file), `${file} should be loaded by tsconfig.test.json`).toBe(true);
+      expect(app.files.has(file), `${file} should stay out of tsconfig.json`).toBe(false);
+    }
+  });
+
+  it("refuses a Vitest-collected extension that TypeScript cannot load", () => {
+    const unsupported = vitestTests.filter(
+      (file) => !PROJECT_SUPPORTED_VITEST_EXTENSIONS.has(path.extname(file)),
+    );
+    expect(
+      unsupported,
+      "Vitest collects these files, but neither TypeScript project can load their compound JSX extension. Rename them to .tsx/.jsx or another supported extension.",
+    ).toEqual([]);
+  });
+
+  it("keeps Playwright specs at the measured #2693 boundary", () => {
+    const e2e = trackedTypeScript.filter((file) => file.startsWith("e2e/"));
+    expect(e2e.length).toBeGreaterThan(0);
+    for (const file of e2e) {
+      expect(app.files.has(file), `${file} is currently reached by tsconfig.json`).toBe(true);
+      expect(test.files.has(file), `${file} is not a Vitest test`).toBe(false);
+    }
+  });
+
+  it("covers scripts/__tests__ specifically, which is the #2875 hole", () => {
+    const scriptTests = trackedTypeScript.filter(
       (file) => file.startsWith("scripts/") && file.includes("/__tests__/"),
     );
     expect(scriptTests.length).toBeGreaterThan(0);
-    for (const file of scriptTests) expect(test.has(file)).toBe(true);
+    for (const file of scriptTests) expect(test.files.has(file)).toBe(true);
   });
 
   it("is not vacuous: both projects resolve a substantial file set", () => {
-    expect(tracked.length).toBeGreaterThan(3000);
-    expect(app.size).toBeGreaterThan(1000);
-    expect(test.size).toBeGreaterThan(1000);
+    expect(trackedTypeScript.length).toBeGreaterThan(3000);
+    expect(app.files.size).toBeGreaterThan(1000);
+    expect(test.files.size).toBeGreaterThan(1000);
   });
 });

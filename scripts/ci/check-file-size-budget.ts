@@ -21,7 +21,10 @@
  *
  * Update mode is the owner-approved escape, not another verification mode. It
  * deliberately writes the tree even when verification found new or growing
- * debt, because an exceptional increase has to be possible. The resulting
+ * debt, because an exceptional increase has to be possible. It refuses an
+ * unusable starting comparison (missing, malformed or untracked baseline,
+ * empty scan, or unclassified source), because rewriting that state would
+ * erase the findings the update is meant to expose. The resulting
  * added/removed/changed ledger records, every pre-update regression listed
  * separately, and the aggregate debt delta printed below are the evidence a
  * reviewer accepts. A shrink elsewhere never cancels a grown record's warning.
@@ -128,23 +131,36 @@ export function run(root: string, argv: readonly string[]): number {
   const before = readBaseline(root);
   const result = evaluateRatchet(scan.productionStats, before, scan.unclassified);
 
+  // A working-tree-only ledger is no comparison at all in CI. Treat tracking
+  // as part of baseline usability in both modes; otherwise `--update` can turn
+  // an unreviewed local file into the source of truth without ever comparing
+  // against the committed ledger.
+  const findings =
+    before !== null && !scan.trackedFiles.includes(BASELINE_PATH)
+      ? [
+          ...result.findings,
+          {
+            severity: "unusable" as const,
+            kind: "missing-baseline" as const,
+            file: BASELINE_PATH,
+            budget: null,
+            baseline: "present in the working tree but not tracked by git",
+            current: null,
+            problem:
+              "CI checks out tracked files only, so this baseline cannot be the trusted comparison",
+            action: `restore the tracked ${BASELINE_PATH} from git before updating it`,
+          },
+        ]
+      : result.findings;
+
   if (update) {
-    if (result.scannedFiles === 0) {
+    const unusable = findings.filter((finding) => finding.severity === "unusable");
+    if (unusable.length > 0) {
       process.stderr.write(
-        "File-size budget: refusing to write a baseline from an empty scan.\n" +
-          "Run this from the repository root inside a git checkout.\n",
-      );
-      return 1;
-    }
-    // Regenerating cannot paper over a scope hole: a file the classifier does
-    // not recognise would simply be absent from the file it writes.
-    if (scan.unclassified.length > 0) {
-      process.stderr.write(
-        `File-size budget: refusing to write a baseline while ${scan.unclassified.length} tracked src/ file(s) are unclassified.\n` +
-          scan.unclassified
-            .map((entry) => `  ${entry.file} — ${entry.reason}\n`)
-            .join("") +
-          "  Classify them in scripts/lib/file-size-budget.ts first.\n",
+        `File-size budget: refusing baseline update because the previous baseline or scan is unusable (${unusable.length} finding(s)).\n` +
+          "An intentional update may accept visible regressions or stale records only after a trusted comparison.\n" +
+          renderReport(unusable) +
+          "\nNo baseline bytes were written.\n",
       );
       return 1;
     }
@@ -176,26 +192,6 @@ export function run(root: string, argv: readonly string[]): number {
     );
     return 0;
   }
-
-  // A baseline that exists locally but is not staged reads as a clean run here
-  // and as a missing baseline in CI. Say it locally, where it is cheap to fix.
-  const findings =
-    before !== null && !scan.trackedFiles.includes(BASELINE_PATH)
-      ? [
-          ...result.findings,
-          {
-            severity: "unusable" as const,
-            kind: "missing-baseline" as const,
-            file: BASELINE_PATH,
-            budget: null,
-            baseline: "present in the working tree but not tracked by git",
-            current: null,
-            problem:
-              "CI checks out tracked files only, so it would see no baseline at all and this local pass would not reproduce",
-            action: `\`git add ${BASELINE_PATH}\``,
-          },
-        ]
-      : result.findings;
 
   if (findings.length === 0) {
     process.stdout.write(
