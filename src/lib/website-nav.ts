@@ -1,21 +1,16 @@
 import type { WebsiteNavLink } from "@/components/website-mobile-menu";
 
 /**
- * The public header's navigation, built from the CMS-driven menu entries plus the
- * two links the code owns (#2818 decision 5).
+ * The public header's navigation: `Home` always leads, and the CMS-driven menu
+ * entries follow.
  *
- * `Home` always leads. `Contact` is a FALLBACK, not a fixture: `/contact` is a
- * page every club has and expects in its menu, but the navigation is otherwise
- * entirely the club's to arrange, so the code appends a Contact link only when no
- * CMS entry already points at `/contact`. Deduping by href is the whole safety
- * property — a club that opts its Contact page into the menu (by giving the row a
- * menu title) shows the link exactly once, from its own entry, and this fallback
- * steps aside. It also fixes a latent duplicate on `main`, where a club that had
- * set the Contact page's menu title got the CMS link AND a then-unconditional
- * hard-coded one.
+ * The navigation is otherwise entirely the club's to arrange from the CMS — the
+ * code owns no fixtures beyond Home. `Contact` is no exception: it appears only
+ * when the `/contact` page carries a menu title, exactly like any other page.
+ * (This removed the earlier code fallback that appended Contact unconditionally;
+ * a club that wants Contact in its menu sets the page's menu title in the CMS.)
  *
- * There is no seeded label and no data migration behind Contact: this function is
- * the entire mechanism, which is why it is pure and unit-tested
+ * The function is pure and unit-tested
  * (`src/lib/__tests__/website-nav.test.ts`) rather than reasoned about inside the
  * async header component.
  *
@@ -25,14 +20,5 @@ import type { WebsiteNavLink } from "@/components/website-mobile-menu";
 export function buildWebsiteNavLinks(
   dynamicNavLinks: ReadonlyArray<WebsiteNavLink>,
 ): WebsiteNavLink[] {
-  const navLinks: WebsiteNavLink[] = [
-    { href: "/", label: "Home" },
-    ...dynamicNavLinks,
-  ];
-
-  if (!navLinks.some((link) => link.href === "/contact")) {
-    navLinks.push({ href: "/contact", label: "Contact" });
-  }
-
-  return navLinks;
+  return [{ href: "/", label: "Home" }, ...dynamicNavLinks];
 }
