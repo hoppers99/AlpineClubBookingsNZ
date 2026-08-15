@@ -1210,36 +1210,60 @@ function tryMergeBase(repoRoot, left, right) {
  */
 export function resolveInvariantBaselineRef(repoRoot, env = process.env) {
   const explicit = env.DOC_INDEX_BASE_REF?.trim();
-  if (explicit) {
-    return resolveRequiredCommit(repoRoot, explicit, "DOC_INDEX_BASE_REF");
-  }
-
   const head = tryResolveCommit(repoRoot, "HEAD");
   if (!head) throw new Error("HEAD does not resolve to a commit");
 
   const prBase = env.PR_BASE_SHA?.trim();
-  if (prBase) {
-    return resolveRequiredCommit(repoRoot, prBase, "PR_BASE_SHA");
-  }
-  if (env.GITHUB_EVENT_NAME === "pull_request" || env.GITHUB_BASE_REF?.trim()) {
+  const pushBase = env.PUSH_BASE_SHA?.trim();
+  const isPullRequest =
+    env.GITHUB_EVENT_NAME === "pull_request" ||
+    Boolean(env.GITHUB_BASE_REF?.trim()) ||
+    Boolean(prBase);
+  const isMainPush =
+    Boolean(pushBase) ||
+    (env.GITHUB_EVENT_NAME === "push" &&
+      (env.GITHUB_REF === "refs/heads/main" || env.GITHUB_REF_NAME === "main"));
+
+  if (isPullRequest && isMainPush) {
     throw new Error(
-      "PR_BASE_SHA is required for a pull-request invariant baseline; a branch name " +
-        "can drift after the event and is not an exact substitute",
+      "Conflicting pull-request and push baseline identity; refusing to choose one",
     );
   }
 
-  const pushBase = env.PUSH_BASE_SHA?.trim();
-  if (pushBase) {
+  if (isPullRequest) {
+    if (explicit) {
+      throw new Error(
+        "DOC_INDEX_BASE_REF cannot be set for a pull-request event; PR_BASE_SHA is " +
+          "authoritative and an inherited diagnostic override must not replace it",
+      );
+    }
+    if (!prBase) {
+      throw new Error(
+        "PR_BASE_SHA is required for a pull-request invariant baseline; a branch name " +
+          "can drift after the event and is not an exact substitute",
+      );
+    }
+    return resolveRequiredCommit(repoRoot, prBase, "PR_BASE_SHA");
+  }
+
+  if (isMainPush) {
+    if (explicit) {
+      throw new Error(
+        "DOC_INDEX_BASE_REF cannot be set for a main-push event; PUSH_BASE_SHA is " +
+          "authoritative and an inherited diagnostic override must not replace it",
+      );
+    }
+    if (!pushBase) {
+      throw new Error(
+        "PUSH_BASE_SHA is required for a main-push invariant baseline; HEAD^1 can " +
+          "postdate a deletion when one push contains several commits",
+      );
+    }
     return resolveRequiredCommit(repoRoot, pushBase, "PUSH_BASE_SHA");
   }
-  const isMainPush =
-    env.GITHUB_EVENT_NAME === "push" &&
-    (env.GITHUB_REF === "refs/heads/main" || env.GITHUB_REF_NAME === "main");
-  if (isMainPush) {
-    throw new Error(
-      "PUSH_BASE_SHA is required for a main-push invariant baseline; HEAD^1 can " +
-        "postdate a deletion when one push contains several commits",
-    );
+
+  if (explicit) {
+    return resolveRequiredCommit(repoRoot, explicit, "DOC_INDEX_BASE_REF");
   }
 
   for (const candidate of ["origin/main", "main"]) {

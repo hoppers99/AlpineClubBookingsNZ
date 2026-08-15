@@ -576,7 +576,10 @@ uses the event's exact base SHA, main-push CI uses the event's exact pre-push
 SHA, and local feature work uses its merge-base with `origin/main` (or `main`).
 An explicit or event ref that is absent from the checkout fails the gate; it
 never drifts to the current branch tip or falls back to `HEAD^1`, which may be a
-feature commit made after an ID was deleted. Definitions and ordinary
+feature commit made after an ID was deleted. Event identity is authoritative:
+an inherited `DOC_INDEX_BASE_REF` at process, workflow, job or step scope makes
+an event run fail rather than overriding `PR_BASE_SHA` or `PUSH_BASE_SHA`. The
+diagnostic override is local-only. Definitions and ordinary
 citations are read **outside fenced code blocks**. The shape audit covers both
 sides of a fence: any numeric token under a prefix this repository really
 declares has exactly three digits, and a well-formed one must resolve even in a

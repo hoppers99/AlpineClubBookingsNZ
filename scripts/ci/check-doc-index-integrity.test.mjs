@@ -719,6 +719,35 @@ describe("invariant baseline resolution and loading", () => {
     ).toThrow("DOC_INDEX_BASE_REF refs/heads/not-fetched does not resolve to a commit");
   });
 
+  it("fails closed rather than letting a diagnostic override replace an event base", () => {
+    const repoRoot = initGitRepo();
+    const base = commitFiles(repoRoot, "base", { "README.md": "base\n" });
+    commitFiles(repoRoot, "head", { "README.md": "head\n" });
+
+    expect(() =>
+      resolveInvariantBaselineRef(
+        repoRoot,
+        checkerEnv({
+          DOC_INDEX_BASE_REF: "HEAD",
+          GITHUB_BASE_REF: "main",
+          GITHUB_EVENT_NAME: "pull_request",
+          PR_BASE_SHA: base,
+        }),
+      ),
+    ).toThrow("DOC_INDEX_BASE_REF cannot be set for a pull-request event");
+    expect(() =>
+      resolveInvariantBaselineRef(
+        repoRoot,
+        checkerEnv({
+          DOC_INDEX_BASE_REF: "HEAD",
+          GITHUB_EVENT_NAME: "push",
+          GITHUB_REF: "refs/heads/main",
+          PUSH_BASE_SHA: base,
+        }),
+      ),
+    ).toThrow("DOC_INDEX_BASE_REF cannot be set for a main-push event");
+  });
+
   it("fails when an exact event SHA is absent from a shallow checkout", () => {
     const source = initGitRepo();
     const base = commitFiles(source, "base", { "README.md": "base\n" });
@@ -836,6 +865,24 @@ describe("doc-index CLI baseline wiring", () => {
     expect(result.stdout).toContain("every id present at base");
   });
 
+  it("fails closed at the CLI when a process override collides with PR identity", () => {
+    const result = spawnSync(process.execPath, [CHECKER_PATH], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      env: checkerEnv({
+        DOC_INDEX_BASE_REF: "HEAD",
+        GITHUB_BASE_REF: "main",
+        GITHUB_EVENT_NAME: "pull_request",
+        PR_BASE_SHA: git(REPO_ROOT, "rev-parse", "origin/main"),
+      }),
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "DOC_INDEX_BASE_REF cannot be set for a pull-request event",
+    );
+  });
+
   it("wires both immutable event SHAs into the CI doc-index step", () => {
     const workflow = readFileSync(path.join(REPO_ROOT, ".github", "workflows", "ci.yml"), "utf8");
     const start = workflow.indexOf(
@@ -846,10 +893,14 @@ describe("doc-index CLI baseline wiring", () => {
 
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
-    expect(step).toContain(
-      "PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}",
-    );
-    expect(step).toContain("PUSH_BASE_SHA: ${{ github.event.before }}");
+    expect(step.match(/^ {10}PR_BASE_SHA:.*$/gm)).toEqual([
+      "          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}",
+    ]);
+    expect(step.match(/^ {10}PUSH_BASE_SHA:.*$/gm)).toEqual([
+      "          PUSH_BASE_SHA: ${{ github.event.before }}",
+    ]);
+    expect(step.match(/^ {8}env:\s*$/gm)).toHaveLength(1);
+    expect(workflow).not.toContain("DOC_INDEX_BASE_REF");
   });
 });
 
