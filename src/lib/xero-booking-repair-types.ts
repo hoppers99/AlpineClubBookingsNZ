@@ -68,8 +68,27 @@ export type XeroBookingRepairActionStatus =
 
 export interface BookingXeroRepairScope {
   bookingId?: string;
-  from?: Date;
-  to?: Date;
+  /**
+   * The first and last club calendar days to sweep, INCLUSIVE, as `yyyy-MM-dd`
+   * (#2868, INV-DATE-013).
+   *
+   * Deliberately NOT `Date`. What the operator types on `--from`/`--to` is a
+   * calendar day, and a calendar day is not an instant: turning one into a
+   * `Date` requires a zone, and the zone is exactly what nobody supplied. The
+   * previous shape held `new Date("2026-07-01T00:00:00")` — midnight in
+   * whatever zone the process happened to be pinned to — and
+   * `buildScopeWhere` then bound that single value against both a `@db.Date`
+   * column and three real instants. Under the deployment's
+   * `TZ=Pacific/Auckland` pin that instant is the PREVIOUS UTC day, so the
+   * `Booking.checkIn` arm swept `[30 Jun, 30 Jul]` for a requested
+   * `[1 Jul, 31 Jul]`.
+   *
+   * Carrying the day as a string keeps the operator's answer intact all the
+   * way to `buildScopeWhere`, which is the only place that knows which column
+   * each bound is for and can therefore derive the right value for each.
+   */
+  from?: string;
+  to?: string;
   all?: boolean;
 }
 

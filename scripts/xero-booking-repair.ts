@@ -2,6 +2,7 @@
 import "dotenv/config";
 import { formatBookingXeroRepairHumanSummary, runBookingXeroRepair } from "../src/lib/xero-booking-repair";
 import { prisma } from "../src/lib/prisma";
+import { isDateOnlyString } from "../src/lib/date-only";
 
 function printUsage() {
   console.log(`Usage:
@@ -16,26 +17,40 @@ a prior dry-run report (repeatable; exact action key match; requires --apply).
 `);
 }
 
+/**
+ * The club calendar day an operator typed, kept as `yyyy-MM-dd` (#2868).
+ *
+ * It used to return `new Date(`${trimmed}T00:00:00`)` — midnight in whatever
+ * zone the process is pinned to — and the sweep then bound that one instant
+ * against both a `@db.Date` column and three `DateTime` ones. A calendar day
+ * has no zone, so it is carried as the day it is and each bound is derived
+ * where the column is known (`buildScopeWhere` in
+ * `src/lib/xero-booking-repair-load.ts`).
+ *
+ * `isDateOnlyString` is the canonical validator and rejects a well-formed
+ * impossibility such as `2026-02-30`, which is what the old `Number.isNaN`
+ * check on the parsed instant was doing.
+ */
 function parseDateInput(value: string, name: string) {
   const trimmed = value.trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
     throw new Error(`${name} must use YYYY-MM-DD format.`);
   }
 
-  const parsed = new Date(`${trimmed}T00:00:00`);
-  if (Number.isNaN(parsed.getTime())) {
+  if (!isDateOnlyString(trimmed)) {
     throw new Error(`${name} is not a valid date.`);
   }
 
-  return parsed;
+  return trimmed;
 }
 
 function parseArgs(argv: string[]) {
   const options: {
     apply: boolean;
     bookingId?: string;
-    from?: Date;
-    to?: Date;
+    /** Inclusive club calendar days, `yyyy-MM-dd` (#2868). */
+    from?: string;
+    to?: string;
     all: boolean;
     applyActionKeys: string[];
   } = {
@@ -110,6 +125,8 @@ function parseArgs(argv: string[]) {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
+  // Both are validated `yyyy-MM-dd`, whose lexicographic order IS its calendar
+  // order (fixed-width, most significant field first).
   if (options.from && options.to && options.from > options.to) {
     throw new Error("--from must be on or before --to.");
   }

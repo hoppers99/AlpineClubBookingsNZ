@@ -38,7 +38,6 @@ import {
   buildPassReport,
 } from "./xero-booking-repair-passes";
 import { createCountMap } from "./xero-booking-repair-utils";
-import { formatDateOnly } from "@/lib/date-only";
 
 const MAX_APPLY_PASSES = 3;
 
@@ -136,8 +135,14 @@ export async function runBookingXeroRepair(options?: {
     mode: apply ? "apply" : "dry-run",
     scope: {
       bookingId: scope.bookingId ?? null,
-      from: scope.from ? formatDateOnly(scope.from) : null,
-      to: scope.to ? formatDateOnly(scope.to) : null,
+      // #2868: the scope now CARRIES the operator's `yyyy-MM-dd` days, so the
+      // echo is the answer they gave rather than a re-derivation of it. It used
+      // to run the scope's local-midnight `Date` back through `formatDateOnly`
+      // — the canonical DATE-ONLY encoder, explicitly not for an instant — so a
+      // sweep asked for `[1 Jul, 31 Jul]` under the `TZ=Pacific/Auckland` pin
+      // printed `from=2026-06-30, to=2026-07-30` in its own header.
+      from: scope.from ?? null,
+      to: scope.to ?? null,
       all: Boolean(scope.all || (!scope.bookingId && !scope.from && !scope.to)),
     },
     startedAt: startedAt.toISOString(),
