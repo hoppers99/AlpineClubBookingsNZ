@@ -4,11 +4,29 @@
     "types": ["vitest/globals", "node"],
     "noEmit": true
   },
+  // Every Vitest test in the repository, wherever it lives.
+  //
+  // `tsconfig.json` excludes `**/*.test.ts` and `**/__tests__/**` to keep test
+  // code out of the app project, and this file used to re-include only the
+  // `src/` half of what that exclusion removed. The other half — the tests under
+  // `scripts/__tests__/` — was therefore in neither project, so `npm run
+  // typecheck` walked straight past it. That included the tests for the
+  // file-size gate this PR adds: a gate whose own tests were outside the
+  // typechecker (#2875).
+  //
+  // These patterns are deliberately `scripts/**` rather than the three files
+  // that exist today, so a test added under `scripts/` later is covered without
+  // anybody remembering to edit this list. `typecheck-project-coverage.test.ts`
+  // is what proves the pair of projects still covers every tracked test file.
   "include": [
     "src/**/*.test.ts",
     "src/**/*.test.tsx",
     "src/**/__tests__/**/*.ts",
     "src/**/__tests__/**/*.tsx",
+    "scripts/**/*.test.ts",
+    "scripts/**/*.test.tsx",
+    "scripts/**/__tests__/**/*.ts",
+    "scripts/**/__tests__/**/*.tsx",
     "vitest.config.ts"
   ],
   "exclude": ["node_modules"]

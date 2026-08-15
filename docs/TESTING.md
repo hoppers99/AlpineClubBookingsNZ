@@ -26,6 +26,35 @@ the full local gate.
   `src/lib/email-delivery.ts` refuses to build a transport without them
   (nodemailer is mocked, so nothing is ever sent).
 
+## Which project typechecks a test
+
+`npm run typecheck` runs two TypeScript projects, and between them they must
+read every tracked `.ts`/`.tsx` file in the repository:
+
+- **`tsconfig.json`** — the app. It excludes `*.test.ts`, `*.test.tsx` and
+  everything under `__tests__/`, so test code stays out of the app's type
+  surface.
+- **`tsconfig.test.json`** — every Vitest test, under `src/` *and* under
+  `scripts/`. It is the project that supplies `vitest/globals`, so a test
+  belongs here.
+
+Put a new Vitest test under `src/` or `scripts/` and it is covered by the
+existing patterns; put one somewhere else and you must add the pattern.
+`src/lib/__tests__/typecheck-project-coverage.test.ts` fails if any tracked
+TypeScript file ends up in neither project, and it asks TypeScript itself which
+files each project resolves rather than reimplementing tsconfig's glob rules.
+
+That guard exists because the gap was real and silent (#2875): `tsconfig.json`
+excluded the test files and `tsconfig.test.json` re-included only the `src/`
+half, so everything under `scripts/__tests__/` was typechecked by neither
+project. Three deliberate `const x: number = "string"` errors planted in those
+files produced a completely green `npm run typecheck`.
+
+Playwright specs under `e2e/` are not Vitest and are not in that project. They
+are read by the app project today only because its exclusions cover `*.test.*`
+and not `*.spec.*` — incidental rather than deliberate. Giving them a chosen
+home is MEP-E1 (#2693).
+
 ## The frozen test clock
 
 Plain English: tests are not allowed to know what today's real date is. Every
