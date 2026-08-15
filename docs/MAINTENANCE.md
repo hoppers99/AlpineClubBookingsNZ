@@ -338,12 +338,23 @@ npm run quality:budget:update    # regenerate against the working tree
 Both read `git ls-files` and the working tree only: no network, no database,
 no build. A full run is well under a second.
 
-**Scope.** Tracked TypeScript under `src/` only, tests excluded. Everything
-outside `src/` — `scripts/`, `prisma/`, `e2e/`, `load/`, and a temporary
-`measurement/` tree — is outside the file-size policy by definition and never
-appears in the baseline. That scope is stated once, in the tool, rather than as
-a per-issue exemption; adding or deleting a measurement tree is a non-event for
-this gate.
+**Scope.** Tracked source under `src/` only, tests excluded, in any of
+`.ts .tsx .mts .cts .js .jsx .mjs .cjs`. Everything outside `src/` —
+`scripts/`, `prisma/`, `e2e/`, `load/`, and a temporary `measurement/` tree —
+is outside the file-size policy by definition and never appears in the
+baseline. That scope is stated once, in the tool, rather than as a per-issue
+exemption; adding or deleting a measurement tree is a non-event for this gate.
+
+The extension list is checked rather than trusted. A tracked file under `src/`
+whose extension is in neither the source set nor the tool's short list of
+declared non-source kinds (`.css`, `.md`, `.json`, images, fonts) **fails the
+check**, naming the file and asking for it to be classified. Without that, the
+scope silently narrows the first time a new file kind lands, and a narrowing
+scope in a ratchet looks exactly like progress: renaming a baselined
+`src/lib/audit.ts` to `audit.js` used to remove it from the gate entirely and
+report the removal as a 45-line *reduction* in accepted debt, in a diff showing
+one deleted baseline line. That is the shape this section teaches reviewers to
+read as a split going well.
 
 #### Changing the baseline
 

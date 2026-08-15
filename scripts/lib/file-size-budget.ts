@@ -8,7 +8,10 @@
  * report prints and the number the gate enforces cannot drift apart.
  *
  * Scope, stated once so nothing ever needs a per-issue exemption: the policy
- * covers tracked TypeScript under `src/` only, excluding tests. Everything
+ * covers tracked source under `src/` only, excluding tests, in any of the
+ * extensions in `SOURCE_EXTENSIONS`, and a tracked `src/` file carrying an
+ * extension the classifier does not recognise fails the check rather than
+ * dropping quietly out of scope. Everything
  * outside `src/` — `scripts/`, `prisma/`, `e2e/`, `load/`, `measurement/` — is
  * outside the file-size policy by definition. That is what makes a temporary
  * measurement tree (#2663) a non-event for this gate: it is not in scope when
@@ -65,33 +68,167 @@ const BUDGET_SLUGS = Object.keys(BUDGETS) as BudgetSlug[];
 export type FileStat = { file: string; lines: number };
 export type OversizedFileStat = FileStat & Budget & { overBy: number };
 
+/**
+ * Every executable-source extension the budgets apply to.
+ *
+ * Keyed on `ts|tsx` alone, this classifier had a hole wide enough to drive the
+ * whole gate through: `git mv src/lib/audit.ts src/lib/audit.js` took a
+ * baselined 745-line file out of scope entirely, and the tool then reported the
+ * disappearance as a 45-line *reduction* in accepted debt — one deleted
+ * baseline line, which is exactly what `docs/MAINTENANCE.md` teaches reviewers
+ * to read as progress. The file could then grow 500 lines with the gate green.
+ * It was reachable, not theoretical: Next's default `pageExtensions` is
+ * `['tsx','ts','jsx','js']` and `next.config.ts` overrides nothing, so
+ * `route.js` and `page.jsx` are served normally; `tsconfig.json` sets
+ * `allowJs: true` and its `include` names `.mts` explicitly; and every custom
+ * lint rule block is scoped to `.ts`/`.tsx` under `src`, so a `.js` file there
+ * was policed by nothing at all — not the ratchet, not the lint rules, not tsc.
+ *
+ * Widening this set is zero churn today — tracked `src/` is 2500 `.ts`, 874
+ * `.tsx`, 2 `.css`, 1 `.md`, 1 `.json` — but the set is still a list, and a
+ * list rots. `findUnclassifiedFiles` is what stops it rotting: any tracked
+ * `src/` file whose extension appears in neither this set nor
+ * `NON_SOURCE_EXTENSIONS` fails the gate rather than slipping silently out of
+ * scope.
+ */
+const SOURCE_EXTENSIONS = [
+  "ts",
+  "tsx",
+  "mts",
+  "cts",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+] as const;
+
+/**
+ * Non-source file kinds that legitimately live under `src/`. Deliberately
+ * short: anything not listed here and not a source extension fails the scope
+ * audit, which forces a decision instead of a silent exemption. `.mdx` is
+ * absent on purpose — it can carry components, so it should be classified
+ * consciously if one ever lands.
+ */
+const NON_SOURCE_EXTENSIONS = new Set([
+  "avif",
+  "css",
+  "csv",
+  "gif",
+  "html",
+  "ico",
+  "jpeg",
+  "jpg",
+  "json",
+  "md",
+  "otf",
+  "png",
+  "scss",
+  "sql",
+  "svg",
+  "ttf",
+  "txt",
+  "webp",
+  "woff",
+  "woff2",
+  "yaml",
+  "yml",
+]);
+
+const EXT = SOURCE_EXTENSIONS.join("|");
+const SOURCE_FILE_PATTERN = new RegExp(`\\.(${EXT})$`);
+const TEST_FILE_PATTERN = new RegExp(`\\.(test|spec)\\.(${EXT})$`);
+// `(.*\/)?` rather than `.*\/`: the latter required at least one directory
+// after `src/app/`, so a root-level `src/app/route.ts` silently inherited the
+// 700-LOC domain-module budget instead of 250.
+const ROUTE_HANDLER_PATTERN = new RegExp(`^src\\/app\\/(.*\\/)?route\\.(${EXT})$`);
+const ROUTE_PAGE_PATTERN = new RegExp(`^src\\/app\\/(.*\\/)?page\\.(${EXT})$`);
+
+function extensionOf(file: string): string | null {
+  const base = file.slice(file.lastIndexOf("/") + 1);
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return null;
+  return base.slice(dot + 1).toLowerCase();
+}
+
 export function isProductionFile(file: string): boolean {
   if (!file.startsWith("src/")) return false;
-  if (!/\.(ts|tsx)$/.test(file)) return false;
+  if (!SOURCE_FILE_PATTERN.test(file)) return false;
   if (file.includes("/__tests__/")) return false;
-  if (file.endsWith(".test.ts") || file.endsWith(".test.tsx")) return false;
-  if (file.endsWith(".spec.ts") || file.endsWith(".spec.tsx")) return false;
+  if (TEST_FILE_PATTERN.test(file)) return false;
   return true;
 }
 
 export function isTestFile(file: string): boolean {
   if (!file.startsWith("src/")) return false;
-  if (!/\.(ts|tsx)$/.test(file)) return false;
-  return (
-    file.includes("/__tests__/") ||
-    file.endsWith(".test.ts") ||
-    file.endsWith(".test.tsx") ||
-    file.endsWith(".spec.ts") ||
-    file.endsWith(".spec.tsx")
-  );
+  if (!SOURCE_FILE_PATTERN.test(file)) return false;
+  return file.includes("/__tests__/") || TEST_FILE_PATTERN.test(file);
 }
 
 export function isRouteHandler(file: string): boolean {
-  return /^src\/app\/.*\/route\.(ts|tsx)$/.test(file);
+  return ROUTE_HANDLER_PATTERN.test(file);
 }
 
 export function isRoutePage(file: string): boolean {
-  return /^src\/app\/.*\/page\.tsx$/.test(file);
+  return ROUTE_PAGE_PATTERN.test(file);
+}
+
+/**
+ * Why the baseline format cannot hold this path, or null when it can.
+ *
+ * Shared by the parser and the scope audit so the read side and the write side
+ * agree. Spaces are fine — `parseBaseline` takes the path greedily — but a tab
+ * or a newline cannot round-trip through a line-based format at all, so such a
+ * path is reported rather than written out as a record nothing can read back.
+ */
+export function pathProblem(file: string): string | null {
+  // Backslash first: a Windows-style path should be told to use forward
+  // slashes, not that it is outside src/ — which it also is, less usefully.
+  if (file.includes("\\")) return "path must use forward slashes";
+  if (!file.startsWith("src/")) {
+    return "path must be a repo-relative path under src/";
+  }
+  if (/[\t\r\n]/.test(file)) {
+    return "path contains a tab or newline, which a line-based baseline cannot represent";
+  }
+  if (file.endsWith("/")) return "path must name a file, not a directory";
+  if (file.includes("//") || file.split("/").includes("..")) {
+    return "path must be normalised";
+  }
+  return null;
+}
+
+/**
+ * Tracked `src/` files the classifier does not recognise — neither source it
+ * budgets nor a declared non-source kind — plus any whose path the baseline
+ * format cannot represent. Both are scope holes, and a scope hole in a gate
+ * reads exactly like a clean pass.
+ */
+export function findUnclassifiedFiles(
+  trackedFiles: readonly string[],
+): Array<{ file: string; reason: string }> {
+  const out: Array<{ file: string; reason: string }> = [];
+  for (const file of trackedFiles) {
+    if (!file.startsWith("src/")) continue;
+    const extension = extensionOf(file);
+    if (extension === null) {
+      out.push({
+        file,
+        reason: "no file extension, so the classifier cannot tell source from asset",
+      });
+      continue;
+    }
+    if (SOURCE_FILE_PATTERN.test(file)) {
+      const problem = pathProblem(file);
+      if (problem) out.push({ file, reason: problem });
+      continue;
+    }
+    if (NON_SOURCE_EXTENSIONS.has(extension)) continue;
+    out.push({
+      file,
+      reason: `unrecognised extension .${extension} — it is in no budget, so nothing measures it`,
+    });
+  }
+  return out.sort((a, b) => compare(a.file, b.file));
 }
 
 /**
@@ -132,7 +269,7 @@ export function countLines(root: string, file: string): number {
 }
 
 /** Tracked files, NUL-separated so a path needing quoting cannot be misread. */
-export function listTrackedFiles(root: string): string[] {
+function listTrackedFiles(root: string): string[] {
   const out = execFileSync("git", ["ls-files", "-z"], {
     encoding: "utf8",
     cwd: root,
@@ -150,13 +287,45 @@ function existsInTree(root: string, file: string): boolean {
   }
 }
 
-/** Every tracked, on-disk production file with its current line count. */
-export function collectProductionStats(root: string): FileStat[] {
-  return listTrackedFiles(root)
+export type RepositoryScan = {
+  trackedFiles: string[];
+  productionStats: FileStat[];
+  unclassified: Array<{ file: string; reason: string }>;
+  /** Why `git ls-files` could not be run, or null when it ran. */
+  gitError: string | null;
+};
+
+/**
+ * One `git ls-files` call, everything derived from it.
+ *
+ * A failed git invocation is caught rather than thrown: run outside a checkout,
+ * this used to die with an unhandled `fatal: not a git repository` stack trace.
+ * That was still fail-closed, but "gate crashed" and "gate found a problem"
+ * should not look different to whoever reads the log.
+ */
+export function scanRepository(root: string): RepositoryScan {
+  let trackedFiles: string[];
+  try {
+    trackedFiles = listTrackedFiles(root);
+  } catch (error) {
+    return {
+      trackedFiles: [],
+      productionStats: [],
+      unclassified: [],
+      gitError: error instanceof Error ? error.message.trim() : String(error),
+    };
+  }
+  const productionStats = trackedFiles
     .filter(isProductionFile)
     .filter((file) => existsInTree(root, file))
     .map((file) => ({ file, lines: countLines(root, file) }))
     .sort(byPath);
+  return {
+    trackedFiles,
+    productionStats,
+    unclassified: findUnclassifiedFiles(trackedFiles),
+    gitError: null,
+  };
 }
 
 export function findOversizedProductionFiles(stats: FileStat[]): OversizedFileStat[] {
@@ -208,9 +377,11 @@ const BASELINE_HEADER = [
   "#   route-page-shell  src/app/**/page.tsx        <= 500 LOC",
   "#   domain-module     every other src/**/*.ts(x) <= 700 LOC",
   "#",
-  "# Scope is tracked TypeScript under src/ only, tests excluded. Everything",
-  "# outside src/ - scripts/, prisma/, e2e/, load/, measurement/ - is outside",
-  "# this policy by definition and never appears here.",
+  "# Scope is tracked source under src/ only, tests excluded, in any of",
+  "# .ts .tsx .mts .cts .js .jsx .mjs .cjs. Everything outside src/ - scripts/,",
+  "# prisma/, e2e/, load/, measurement/ - is outside this policy by definition",
+  "# and never appears here. A tracked src/ file carrying any other extension",
+  "# fails the check rather than dropping quietly out of scope.",
   "#",
   "# The ratchet: a file that is not listed may not go over budget, and a file",
   "# that is listed may not exceed the number recorded below. Shrinking is",
@@ -240,7 +411,17 @@ export function baselineEntriesFor(stats: FileStat[]): BaselineEntry[] {
     .sort(byPath);
 }
 
-const PATH_PATTERN = /^src\/[^\s\\]*[^\s\\/]$/;
+/**
+ * `<path> <loc> <category>` with the path taken greedily.
+ *
+ * A plain `split(" ")` demanding exactly three fields could not read back a
+ * record the generator itself had written: `src/lib/zz probe.ts` serialises to
+ * four fields, so the file went permanently red with "expected 3 fields" and an
+ * action — regenerate — that reproduces the identical line, blaming the author
+ * for something they did not do. No tracked path has a space today; that made
+ * it a latent trap rather than a safe assumption.
+ */
+const RECORD_PATTERN = /^(.+) (\S+) (\S+)$/;
 const LOC_PATTERN = /^[1-9][0-9]*$/;
 
 /**
@@ -280,22 +461,19 @@ export function parseBaseline(text: string): ParsedBaseline {
       });
       return;
     }
-    const fields = raw.split(" ");
-    if (fields.length !== 3) {
+    const match = RECORD_PATTERN.exec(raw);
+    if (!match) {
       problems.push({
         line: lineNumber,
         text: raw,
-        message: `expected 3 space-separated fields (<path> <loc> <budget-category>), found ${fields.length}`,
+        message: "expected `<path> <loc> <budget-category>` separated by single spaces",
       });
       return;
     }
-    const [file, loc, slug] = fields as [string, string, string];
-    if (!PATH_PATTERN.test(file)) {
-      problems.push({
-        line: lineNumber,
-        text: raw,
-        message: "path must be a repo-relative src/ path using forward slashes",
-      });
+    const [, file, loc, slug] = match as unknown as [string, string, string, string];
+    const problem = pathProblem(file);
+    if (problem) {
+      problems.push({ line: lineNumber, text: raw, message: problem });
       return;
     }
     if (!LOC_PATTERN.test(loc)) {
@@ -352,7 +530,8 @@ export type RatchetFindingKind =
   | "new-over-budget"
   | "grown-beyond-baseline"
   | "shrunk-below-baseline"
-  | "no-longer-over-budget";
+  | "no-longer-over-budget"
+  | "unclassified-source-file";
 
 export type RatchetFinding = {
   severity: RatchetSeverity;
@@ -399,6 +578,7 @@ const REGENERATE_ACTION = `run \`${UPDATE_COMMAND}\` and commit the changed base
 export function evaluateRatchet(
   productionStats: FileStat[],
   baselineText: string | null,
+  unclassified: ReadonlyArray<{ file: string; reason: string }> = [],
 ): RatchetResult {
   const oversized = findOversizedProductionFiles(productionStats);
   const regenerated = serializeBaseline(baselineEntriesFor(productionStats));
@@ -413,11 +593,27 @@ export function evaluateRatchet(
     oversizedFiles: oversized.length,
   };
 
+  // Scope holes come first: if a tracked source file is in no budget at all,
+  // every count below it is measuring a subset of the repository while
+  // presenting itself as measuring the repository.
+  const scopeFindings: RatchetFinding[] = unclassified.map((entry) => ({
+    severity: "unusable" as const,
+    kind: "unclassified-source-file" as const,
+    file: entry.file,
+    budget: null,
+    baseline: null,
+    current: null,
+    problem: `${entry.reason}; a tracked file under src/ that no budget covers is invisible to this gate`,
+    action:
+      "classify it in `scripts/lib/file-size-budget.ts` — add the extension to SOURCE_EXTENSIONS if it is executable source, or to NON_SOURCE_EXTENSIONS if it is not — and regenerate the baseline",
+  }));
+
   // A gate that scans nothing reports clean. Say so instead.
   if (productionStats.length === 0) {
     return {
       ...base,
       findings: [
+        ...scopeFindings,
         {
           severity: "unusable",
           kind: "empty-scan",
@@ -432,6 +628,10 @@ export function evaluateRatchet(
         },
       ],
     };
+  }
+
+  if (scopeFindings.length > 0) {
+    return { ...base, findings: scopeFindings };
   }
 
   if (baselineText === null) {

@@ -25,15 +25,14 @@ import {
   BASELINE_PATH,
   CHECK_COMMAND,
   UPDATE_COMMAND,
-  collectProductionStats,
   evaluateRatchet,
-  listTrackedFiles,
+  scanRepository,
   type RatchetFinding,
   type RatchetSeverity,
 } from "../lib/file-size-budget";
 
 const SEVERITY_HEADINGS: Record<RatchetSeverity, string> = {
-  unusable: "UNUSABLE BASELINE — the comparison cannot be trusted",
+  unusable: "UNUSABLE — the comparison cannot be trusted",
   regression: "REGRESSION — new or growing size debt",
   stale: "STALE BASELINE — the tree improved and the ledger did not follow",
 };
@@ -82,15 +81,40 @@ function writeBaseline(root: string, content: string): void {
 
 export function run(root: string, argv: readonly string[]): number {
   const update = argv.includes("--update");
-  const stats = collectProductionStats(root);
+  const scan = scanRepository(root);
+
+  // Run outside a checkout this used to die with an unhandled `fatal: not a git
+  // repository` stack trace. Fail-closed either way, but a crash and a finding
+  // should not be told apart only by whoever is reading the log carefully.
+  if (scan.gitError !== null) {
+    process.stderr.write(
+      "File-size budget: could not list tracked files, so nothing was checked.\n" +
+        `  ${scan.gitError.split("\n")[0]}\n` +
+        "  Run this from the repository root inside a git checkout.\n",
+    );
+    return 1;
+  }
+
   const before = readBaseline(root);
-  const result = evaluateRatchet(stats, before);
+  const result = evaluateRatchet(scan.productionStats, before, scan.unclassified);
 
   if (update) {
     if (result.scannedFiles === 0) {
       process.stderr.write(
         "File-size budget: refusing to write a baseline from an empty scan.\n" +
           "Run this from the repository root inside a git checkout.\n",
+      );
+      return 1;
+    }
+    // Regenerating cannot paper over a scope hole: a file the classifier does
+    // not recognise would simply be absent from the file it writes.
+    if (scan.unclassified.length > 0) {
+      process.stderr.write(
+        `File-size budget: refusing to write a baseline while ${scan.unclassified.length} tracked src/ file(s) are unclassified.\n` +
+          scan.unclassified
+            .map((entry) => `  ${entry.file} — ${entry.reason}\n`)
+            .join("") +
+          "  Classify them in scripts/lib/file-size-budget.ts first.\n",
       );
       return 1;
     }
@@ -123,7 +147,7 @@ export function run(root: string, argv: readonly string[]): number {
   // A baseline that exists locally but is not staged reads as a clean run here
   // and as a missing baseline in CI. Say it locally, where it is cheap to fix.
   const findings =
-    before !== null && !listTrackedFiles(root).includes(BASELINE_PATH)
+    before !== null && !scan.trackedFiles.includes(BASELINE_PATH)
       ? [
           ...result.findings,
           {

@@ -9,9 +9,11 @@
 #   route-page-shell  src/app/**/page.tsx        <= 500 LOC
 #   domain-module     every other src/**/*.ts(x) <= 700 LOC
 #
-# Scope is tracked TypeScript under src/ only, tests excluded. Everything
-# outside src/ - scripts/, prisma/, e2e/, load/, measurement/ - is outside
-# this policy by definition and never appears here.
+# Scope is tracked source under src/ only, tests excluded, in any of
+# .ts .tsx .mts .cts .js .jsx .mjs .cjs. Everything outside src/ - scripts/,
+# prisma/, e2e/, load/, measurement/ - is outside this policy by definition
+# and never appears here. A tracked src/ file carrying any other extension
+# fails the check rather than dropping quietly out of scope.
 #
 # The ratchet: a file that is not listed may not go over budget, and a file
 # that is listed may not exceed the number recorded below. Shrinking is

@@ -47,8 +47,16 @@ prisma/schema.prisma text eol=lf
 src/lib/config-transfer/import-types.ts text eol=lf diff
 *.tsx text eol=lf
 *.js text eol=lf
+*.jsx text eol=lf
 *.mjs text eol=lf
 *.cjs text eol=lf
+# #2687: `.mts`/`.cts`/`.jsx` were the source extensions with no pin. They are
+# all in scope for the file-size ratchet (and `tsconfig.json` already lists
+# `**/*.mts`), and git warned "LF will be replaced by CRLF" on the probe files
+# used to prove the classifier hole — the same Windows-only split that took days
+# to diagnose for the migration SQL and the shell scripts above.
+*.mts text eol=lf
+*.cts text eol=lf
 *.json text eol=lf
 *.css text eol=lf
 *.yml text eol=lf

@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { main } from "../quality-report";
 import {
   BASELINE_PATH,
-  collectProductionStats,
   evaluateRatchet,
+  scanRepository,
 } from "../lib/file-size-budget";
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
@@ -38,7 +38,8 @@ describe("quality report", () => {
       /\r\n/g,
       "\n",
     );
-    const expected = evaluateRatchet(collectProductionStats(REPO_ROOT), committed);
+    const scan = scanRepository(REPO_ROOT);
+    const expected = evaluateRatchet(scan.productionStats, committed, scan.unclassified);
 
     // The report and `npm run quality:budget` share one classifier and one
     // baseline reader on purpose (#2687): an advisory report that disagreed

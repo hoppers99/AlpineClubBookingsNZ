@@ -10,10 +10,12 @@ import {
   ROUTE_PAGE_LIMIT,
   baselineEntriesFor,
   budgetForFile,
-  collectProductionStats,
   evaluateRatchet,
   findOversizedProductionFiles,
+  findUnclassifiedFiles,
+  isProductionFile,
   parseBaseline,
+  scanRepository,
   serializeBaseline,
   type BaselineEntry,
   type FileStat,
@@ -58,6 +60,33 @@ describe("budget classification", () => {
     });
   });
 
+  it("covers every executable source extension, not just .ts/.tsx", () => {
+    // The hole this closes: `git mv audit.ts audit.js` took a baselined file
+    // out of scope entirely, and the tool reported it as a debt REDUCTION.
+    for (const ext of ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"]) {
+      expect(isProductionFile(`src/lib/audit.${ext}`)).toBe(true);
+    }
+    expect(budgetForFile("src/app/api/x/route.js")).toMatchObject({
+      slug: "route-handler",
+    });
+    expect(budgetForFile("src/app/admin/x/page.jsx")).toMatchObject({
+      slug: "route-page-shell",
+    });
+    expect(isProductionFile("src/lib/thing.test.js")).toBe(false);
+    expect(isProductionFile("src/styles/app.css")).toBe(false);
+  });
+
+  it("gives root-level App Router files their real budget", () => {
+    expect(budgetForFile("src/app/route.ts")).toMatchObject({
+      slug: "route-handler",
+      limit: ROUTE_HANDLER_LIMIT,
+    });
+    expect(budgetForFile("src/app/page.tsx")).toMatchObject({
+      slug: "route-page-shell",
+      limit: ROUTE_PAGE_LIMIT,
+    });
+  });
+
   it("treats the budget as exclusive: exactly at the limit is not over", () => {
     expect(findOversizedProductionFiles(CLEAN_TREE)).toEqual([]);
     expect(
@@ -94,16 +123,34 @@ describe("baseline serialisation", () => {
     expect(headerOf(a)).not.toMatch(/\d{4}-\d{2}-\d{2}|generated at|total/i);
   });
 
+  it("round-trips a path containing a space rather than going permanently red", () => {
+    // The generator writes `<path> <loc> <slug>`; a strict three-field split
+    // could not read back what it had just written, and the advertised fix
+    // (regenerate) reproduced the identical line.
+    const entry: BaselineEntry = {
+      file: "src/lib/zz probe.ts",
+      lines: 800,
+      slug: "domain-module",
+    };
+    const text = serializeBaseline([entry]);
+    const parsed = parseBaseline(text);
+    expect(parsed.problems).toEqual([]);
+    expect(parsed.entries).toEqual([entry]);
+    expect(
+      evaluateRatchet([{ file: "src/lib/zz probe.ts", lines: 800 }], text).findings,
+    ).toEqual([]);
+  });
+
   it("rejects every hand-edit shape that would make the file unreliable", () => {
     const cases: Array<[string, RegExp]> = [
-      ["src/lib/a.ts 800", /expected 3 space-separated fields/],
-      ["src/lib/a.ts 800 domain-module extra", /expected 3 space-separated fields/],
+      ["src/lib/a.ts 800", /expected `<path> <loc> <budget-category>`/],
       ["src/lib/a.ts eight-hundred domain-module", /positive integer/],
       ["src/lib/a.ts 0 domain-module", /positive integer/],
       ["src/lib/a.ts -5 domain-module", /positive integer/],
       ["src/lib/a.ts 800 tiny-module", /unknown budget category/],
-      ["scripts/a.ts 800 domain-module", /repo-relative src\/ path/],
-      ["src\\lib\\a.ts 800 domain-module", /repo-relative src\/ path/],
+      ["scripts/a.ts 800 domain-module", /under src\//],
+      ["src\\lib\\a.ts 800 domain-module", /forward slashes/],
+      ["src/lib/../etc.ts 800 domain-module", /normalised/],
       ["  src/lib/a.ts 800 domain-module", /whitespace/],
       ["", /blank line/],
     ];
@@ -202,6 +249,29 @@ describe("the ratchet", () => {
     expect(result.findings[0].problem).toContain(BASELINE_PATH);
   });
 
+  it("fails on a tracked src/ file the classifier does not recognise", () => {
+    const unclassified = findUnclassifiedFiles([
+      "src/lib/big.ts",
+      "src/styles/app.css",
+      "src/lib/mystery.rs",
+      "src/lib/no-extension",
+      "scripts/outside-scope.rs",
+    ]);
+    expect(unclassified.map((entry) => entry.file)).toEqual([
+      "src/lib/mystery.rs",
+      "src/lib/no-extension",
+    ]);
+
+    const tree: FileStat[] = [{ file: "src/lib/big.ts", lines: 1200 }];
+    const result = evaluateRatchet(tree, baselineFor(tree), unclassified);
+    expect(kinds(result.findings)).toEqual([
+      "unclassified-source-file",
+      "unclassified-source-file",
+    ]);
+    expect(result.findings[0].severity).toBe("unusable");
+    expect(result.findings[0].action).toMatch(/SOURCE_EXTENSIONS/);
+  });
+
   it("fails clearly when the scan finds no production files at all", () => {
     const result = evaluateRatchet([], "");
     expect(kinds(result.findings)).toEqual(["empty-scan"]);
@@ -280,12 +350,12 @@ describe("the ratchet", () => {
 
 describe("the committed baseline in this repository", () => {
   it("describes the current tree exactly", () => {
-    const stats = collectProductionStats(REPO_ROOT);
+    const scan = scanRepository(REPO_ROOT);
     const committed = readFileSync(path.join(REPO_ROOT, BASELINE_PATH), "utf8").replace(
       /\r\n/g,
       "\n",
     );
-    const result = evaluateRatchet(stats, committed);
+    const result = evaluateRatchet(scan.productionStats, committed, scan.unclassified);
     const summary = result.findings
       .map((finding) => `${finding.severity} ${finding.kind} ${finding.file}: ${finding.problem}`)
       .join("\n");
@@ -303,8 +373,23 @@ describe("the committed baseline in this repository", () => {
   });
 
   it("covers files in every budget category, so no category is silently unenforced", () => {
-    const stats = collectProductionStats(REPO_ROOT);
-    const slugs = new Set(baselineEntriesFor(stats).map((entry) => entry.slug));
+    const scan = scanRepository(REPO_ROOT);
+    const slugs = new Set(baselineEntriesFor(scan.productionStats).map((entry) => entry.slug));
     expect([...slugs].sort()).toEqual(["domain-module", "route-handler", "route-page-shell"]);
+  });
+
+  it("classifies every tracked file under src/, leaving no scope hole", () => {
+    const scan = scanRepository(REPO_ROOT);
+    expect(scan.gitError).toBeNull();
+    expect(scan.unclassified).toEqual([]);
+    expect(scan.trackedFiles.filter((file) => file.startsWith("src/")).length).toBeGreaterThan(
+      3000,
+    );
+  });
+
+  it("reports a git failure instead of throwing out of the scan", () => {
+    const scan = scanRepository(path.join(REPO_ROOT, "no-such-directory-2687"));
+    expect(scan.gitError).not.toBeNull();
+    expect(scan.productionStats).toEqual([]);
   });
 });

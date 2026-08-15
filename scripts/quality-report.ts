@@ -25,14 +25,13 @@ import {
   ROUTE_HANDLER_LIMIT,
   ROUTE_PAGE_LIMIT,
   budgetForFile,
-  collectProductionStats,
   evaluateRatchet,
   isProductionFile,
   isRouteHandler,
   isRoutePage,
   isTestFile,
   countLines,
-  listTrackedFiles,
+  scanRepository,
   type FileStat,
   type OversizedFileStat,
   type RatchetFinding,
@@ -181,9 +180,9 @@ function readBaseline(): string | null {
 }
 
 export function main() {
-  const files = listTrackedFiles(ROOT);
-
-  const productionStats = collectProductionStats(ROOT);
+  const scan = scanRepository(ROOT);
+  const files = scan.trackedFiles;
+  const productionStats = scan.productionStats;
   const testStats: FileStat[] = files
     .filter(isTestFile)
     .map((file) => ({ file, lines: countLines(ROOT, file) }));
@@ -220,7 +219,7 @@ export function main() {
   const overBudgetPages = routePageStats.filter(
     (s) => s.lines > ROUTE_PAGE_LIMIT,
   );
-  const ratchet = evaluateRatchet(productionStats, readBaseline());
+  const ratchet = evaluateRatchet(productionStats, readBaseline(), scan.unclassified);
   const regressions = ratchet.findings.filter(
     (finding) => finding.severity === "regression",
   );
