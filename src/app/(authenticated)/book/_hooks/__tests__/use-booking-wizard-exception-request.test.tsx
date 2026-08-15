@@ -200,6 +200,10 @@ async function seatedWizard(stubs: Stubs) {
   const fetchMock = stubFetch(stubs);
   const { result } = renderHook(() => useBookingWizard());
   await waitFor(() => expect(result.current.guests).toHaveLength(1));
+  // The hook owns lodge selection state; mocking useLodgeOptions supplies the
+  // choices but does not run LodgeSelect's defaulting effect. Name the lodge
+  // these proposal tests mean before exercising any create path (#2701).
+  act(() => result.current.handleLodgeChange("lodge-1"));
   await act(async () => {
     await result.current.handleDateSelect("2026-06-11", "2026-06-12");
   });
@@ -573,12 +577,10 @@ describe("booking wizard — an offer belongs to the proposal it was refused for
     expect(result.current.exceptionOffer).toBeNull();
   });
 
-  it("retires the offer when the LODGE changes under unchanged nights", async () => {
-    // The lodge is part of the proposal's identity, and this is the one path that
-    // moves it on its own: `handleLodgeChange` wipes the dates when a lodge was
-    // already chosen, so only the first seating leaves the nights standing. Without
-    // the lodge in the signature the offer would survive a change of building —
-    // and the rule it names belongs to the lodge that refused it.
+  it("retires the offer when the member changes lodge", async () => {
+    // The lodge is part of the proposal's identity. Since #2701 the member must
+    // already hold one before submitting, so switching buildings also restarts
+    // date selection; either way the old lodge's refusal cannot survive.
     const { result } = await seatedWizard({
       create: () => jsonResponse(MIN_STAY_REFUSAL, false, 400),
       request: REQUEST_CREATED,
@@ -588,10 +590,10 @@ describe("booking wizard — an offer belongs to the proposal it was refused for
     });
     expect(result.current.exceptionOffer).not.toBeNull();
 
-    act(() => {
+    await act(async () => {
       result.current.handleLodgeChange("lodge-2");
     });
-    expect(result.current.checkIn).toBe("2026-06-11");
+    expect(result.current.checkIn).toBeNull();
     expect(result.current.exceptionOffer).toBeNull();
   });
 

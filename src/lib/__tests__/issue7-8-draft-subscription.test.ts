@@ -34,7 +34,12 @@ const mockTx = {
   promoCodeAssignment: { findMany: vi.fn() },
   member: { findUnique: vi.fn(), findMany: vi.fn() },
   memberSubscription: { findFirst: vi.fn() },
-  lodge: { findFirst: vi.fn() },
+  lodge: {
+    findFirst: vi.fn(),
+    // #2701: the create service validates the lodge named by the route again
+    // on the transaction client before writing.
+    findUnique: vi.fn().mockResolvedValue({ id: "lodge-1", active: true }),
+  },
   // #1982: default lodge capacity is a self-healed DB override, not a club.json
   // runtime fallback.
   lodgeSettings: { findUnique: async () => ({ capacity: 100 }) },

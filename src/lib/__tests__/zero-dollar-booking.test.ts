@@ -373,6 +373,7 @@ describe("Booking Creation Route: zero-dollar handling", () => {
 
     const res = await POST(
       makeRequest({
+        lodgeId: "lodge-b",
         checkIn: tomorrow,
         checkOut: dayAfterTomorrow,
         guests: [
