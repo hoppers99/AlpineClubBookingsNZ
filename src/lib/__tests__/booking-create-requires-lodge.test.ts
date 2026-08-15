@@ -43,7 +43,7 @@ const CREATE_SERVICE_NAMES = new Set([
 type ProductionCreateCall = {
   file: string;
   service: string;
-  hasLodgeId: boolean;
+  hasDefinedLodgeId: boolean;
 };
 
 function listProductionTypeScriptFiles(directory: string): string[] {
@@ -76,20 +76,41 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
   return current;
 }
 
-function objectLiteralHasLodgeId(
+function objectLiteralHasDefinedLodgeId(
   expression: ts.Expression | undefined,
 ): boolean {
   if (!expression) return false;
   const value = unwrapExpression(expression);
   if (!ts.isObjectLiteralExpression(value)) return false;
   return value.properties.some((property) => {
+    if (!ts.isPropertyAssignment(property)) return false;
     const name = property.name;
-    return (
+    const isLodgeId =
       name !== undefined &&
       ((ts.isIdentifier(name) && name.text === "lodgeId") ||
-        (ts.isStringLiteral(name) && name.text === "lodgeId"))
+        (ts.isStringLiteral(name) && name.text === "lodgeId"));
+    if (!isLodgeId) return false;
+    const initializer = unwrapExpression(property.initializer);
+    return !(
+      (ts.isIdentifier(initializer) && initializer.text === "undefined") ||
+      initializer.kind === ts.SyntaxKind.NullKeyword ||
+      ts.isVoidExpression(initializer)
     );
   });
+}
+
+function expressionFrom(sourceText: string): ts.Expression | undefined {
+  const source = ts.createSourceFile(
+    "fixture.ts",
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const statement = source.statements[0];
+  return statement && ts.isExpressionStatement(statement)
+    ? statement.expression
+    : undefined;
 }
 
 function collectProductionCreateCalls(): ProductionCreateCall[] {
@@ -146,7 +167,7 @@ function collectProductionCreateCalls(): ProductionCreateCall[] {
           calls.push({
             file,
             service,
-            hasLodgeId: objectLiteralHasLodgeId(node.arguments[0]),
+            hasDefinedLodgeId: objectLiteralHasDefinedLodgeId(node.arguments[0]),
           });
         }
       }
@@ -241,8 +262,37 @@ describe("POST /api/bookings — the lodge is required (#2701)", () => {
     // fall through the service's legacy default-lodge compatibility path.
     expect(
       PRODUCTION_CREATE_CALLS
-        .filter((call) => !call.hasLodgeId)
+        .filter((call) => !call.hasDefinedLodgeId)
         .map(({ file, service }) => `${file}:${service}`),
     ).toEqual([]);
+  });
+
+  it("does not launder indirection or an explicitly undefined lodge green", () => {
+    // The service's required type checks typed aliases/wrappers, and its runtime
+    // guard catches unchecked ones. This syntax census independently refuses
+    // the two shapes that previously made a production call look compliant
+    // without presenting a definite field at the call itself.
+    expect(
+      objectLiteralHasDefinedLodgeId(expressionFrom("input")),
+    ).toBe(false);
+    expect(
+      objectLiteralHasDefinedLodgeId(expressionFrom("({ ...input })")),
+    ).toBe(false);
+    expect(
+      objectLiteralHasDefinedLodgeId(
+        expressionFrom("({ lodgeId: undefined })"),
+      ),
+    ).toBe(false);
+    expect(
+      objectLiteralHasDefinedLodgeId(expressionFrom("({ lodgeId: void 0 })")),
+    ).toBe(false);
+    expect(
+      objectLiteralHasDefinedLodgeId(expressionFrom("({ lodgeId: null })")),
+    ).toBe(false);
+    expect(
+      objectLiteralHasDefinedLodgeId(
+        expressionFrom("({ lodgeId: booking.lodgeId })"),
+      ),
+    ).toBe(true);
   });
 });

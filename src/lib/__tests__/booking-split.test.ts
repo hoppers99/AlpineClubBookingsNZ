@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   paymentCreate: vi.fn(),
   memberFindUnique: vi.fn(),
   lodgeFindFirst: vi.fn(),
+  lodgeFindUnique: vi.fn().mockResolvedValue({ id: "lodge-1", active: true }),
   memberLodgeAccessFindMany: vi.fn(),
   checkCapacityForGuestRanges: vi.fn(),
   reconcileBedAllocationsForBooking: vi.fn(),
@@ -172,7 +173,10 @@ const tx = {
     findMany: vi.fn().mockResolvedValue([]),
   },
   payment: { create: (...a: unknown[]) => h.paymentCreate(...a) },
-  lodge: { findFirst: (...a: unknown[]) => h.lodgeFindFirst(...a) },
+  lodge: {
+    findFirst: (...a: unknown[]) => h.lodgeFindFirst(...a),
+    findUnique: (...a: unknown[]) => h.lodgeFindUnique(...a),
+  },
   bookingGuest: { findMany: (...a: unknown[]) => h.bookingGuestFindMany(...a) },
   memberLodgeAccess: {
     findMany: (...a: unknown[]) => h.memberLodgeAccessFindMany(...a),
@@ -197,7 +201,9 @@ function guest(isMember: boolean, firstName: string): BookingGuestInput {
 
 function baseInput(
   guests: BookingGuestInput[],
-  overrides: Partial<Parameters<typeof createConfirmedBooking>[0]> = {}
+  overrides: Partial<
+    Omit<Parameters<typeof createConfirmedBooking>[0], "lodgeId">
+  > = {}
 ) {
   const hasNonMembers = guests.some((g) => !g.isMember);
   return {
@@ -210,6 +216,7 @@ function baseInput(
     status: hasNonMembers ? BookingStatus.PENDING : BookingStatus.PAYMENT_PENDING,
     shouldBePending: hasNonMembers,
     holdDays: 7,
+    lodgeId: "lodge-1",
     ...overrides,
   };
 }

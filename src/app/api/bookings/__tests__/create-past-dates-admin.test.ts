@@ -30,6 +30,7 @@ const h = vi.hoisted(() => ({
   getEffectiveXeroLockDate: vi.fn(),
   memberFindUnique: vi.fn(),
   groupDiscountFindUnique: vi.fn(),
+  resolveOptionalActiveLodgeId: vi.fn().mockResolvedValue("lodge-1"),
   // #2284 (S2): the route's family-add FYI dispatcher, spied so the wiring on
   // the confirmed and waitlisted create paths can be asserted here — the unit
   // suite in family-booking-add-notifications.test.ts exercises only the
@@ -115,7 +116,7 @@ vi.mock("@/lib/booking-member-night-conflicts", () => ({
   getBookingMemberNightConflictResponse: () => ({ error: "conflict" }),
 }));
 vi.mock("@/lib/lodges", () => ({
-  resolveOptionalActiveLodgeId: vi.fn().mockResolvedValue("lodge-1"),
+  resolveOptionalActiveLodgeId: h.resolveOptionalActiveLodgeId,
   // The member self-book minimum-stay check filters policy rows per lodge.
   resolvePolicyRowsForLodge: () => [],
 }));
@@ -266,6 +267,21 @@ afterEach(() => {
 });
 
 describe("POST /api/bookings retroactive create gating (#1695)", () => {
+  it("refuses a missing lodge before resolution or any create service (#2701)", async () => {
+    const res = await POST(
+      makeRequest(futurePayload({ lodgeId: undefined })),
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: "BOOKING_LODGE_REQUIRED",
+    });
+    expect(h.resolveOptionalActiveLodgeId).not.toHaveBeenCalled();
+    expect(h.createDraftBooking).not.toHaveBeenCalled();
+    expect(h.createConfirmedBooking).not.toHaveBeenCalled();
+    expect(h.createWaitlistedBooking).not.toHaveBeenCalled();
+  });
+
   it("rejects override flags when the management role is not ADMIN (403), service not called", async () => {
     h.managementRole.mockReturnValue("USER");
     h.hasAdminAccess.mockReturnValue(false);

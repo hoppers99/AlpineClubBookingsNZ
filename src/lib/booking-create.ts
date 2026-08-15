@@ -145,6 +145,22 @@ type LodgeResolutionDb = Parameters<typeof resolveOptionalActiveLodgeId>[0] & {
 };
 
 /**
+ * Refuse unchecked JavaScript/`any` callers at the public service boundary.
+ * The type contract makes omissions a compile error; this runtime half keeps
+ * an alias, wrapper, or stale compiled caller from reaching the read-oriented
+ * resolver, where `undefined` deliberately means "use the default lodge".
+ */
+function requireBookingLodgeId(requestedLodgeId: unknown): string {
+  if (
+    typeof requestedLodgeId !== "string" ||
+    requestedLodgeId.trim().length === 0
+  ) {
+    throw new BookingLodgeError("lodgeId is required");
+  }
+  return requestedLodgeId;
+}
+
+/**
  * Resolve the lodge a new booking belongs to and enforce the lodge-scoping
  * contract: an explicit lodgeId must name an active lodge, and a requested
  * room must belong to that lodge (rooms without a lodgeId — expand-release
@@ -152,7 +168,7 @@ type LodgeResolutionDb = Parameters<typeof resolveOptionalActiveLodgeId>[0] & {
  */
 async function resolveBookingLodgeId(
   db: LodgeResolutionDb,
-  requestedLodgeId: string | undefined,
+  requestedLodgeId: string,
   requestedRoomId: string | undefined,
 ): Promise<string> {
   const lodgeId = await resolveOptionalActiveLodgeId(db, requestedLodgeId);
@@ -217,6 +233,7 @@ export async function resolveWaitlistAlternateLodgeIds(
  * validation.
  */
 export async function createDraftBooking(input: DraftBookingInput): Promise<BookingWithGuests> {
+  const lodgeId = requireBookingLodgeId(input.lodgeId);
   const {
     effectiveMemberId,
     isOnBehalf,
@@ -235,7 +252,6 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
     groupDiscount,
     memberReviewJustification,
     adultMemberHostingReason,
-    lodgeId,
   } = input;
   // #2364: null for every member-created booking, so their hazard opens PENDING.
   const adultMemberHostingDecision = resolveAdultMemberHostingDecision({
@@ -524,6 +540,7 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
  * the 409 capacity-exceeded response and can offer the waitlist option.
  */
 export async function createConfirmedBooking(input: ConfirmedBookingInput): Promise<ConfirmedBookingOutcome> {
+  const lodgeId = requireBookingLodgeId(input.lodgeId);
   const {
     effectiveMemberId,
     isOnBehalf,
@@ -550,7 +567,6 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
     reviewedMemberProposal,
     parentBookingId,
     organiserSettled,
-    lodgeId,
     groupJoin,
     duplicateStayGuard,
   } = input;
@@ -1528,6 +1544,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
  * promoted off the waitlist.
  */
 export async function createWaitlistedBooking(input: WaitlistedBookingInput): Promise<WaitlistedBookingResult> {
+  const lodgeId = requireBookingLodgeId(input.lodgeId);
   const {
     effectiveMemberId,
     isOnBehalf,
@@ -1545,7 +1562,6 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
     groupDiscount,
     memberReviewJustification,
     adultMemberHostingReason,
-    lodgeId,
   } = input;
   // #2364: null for every member-created booking, so their hazard opens PENDING.
   const adultMemberHostingDecision = resolveAdultMemberHostingDecision({
