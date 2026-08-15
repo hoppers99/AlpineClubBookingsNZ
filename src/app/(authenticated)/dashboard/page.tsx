@@ -31,6 +31,12 @@ import { formatCents } from "@/lib/utils";
 import { CLUB_HUT_LEADER_LABEL, CLUB_NAME } from "@/config/club-identity";
 import { bookingStatusClass, bookingStatusLabel } from "@/lib/status-colors";
 import { isHutLeader } from "@/lib/hut-leader";
+import {
+  addDaysDateOnly,
+  formatDateOnly,
+  getTodayDateOnly,
+  startOfDateOnlyForTimeZone,
+} from "@/lib/date-only";
 import { getMemberCreditBalance } from "@/lib/member-credit";
 import {
   isDashboardPaymentOwed,
@@ -135,12 +141,52 @@ export default async function DashboardPage() {
 
   const firstName = session.user.name?.split(" ")[0] ?? "Member";
   const memberId = session.user.id;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  // "Today" has TWO encodings on this page and they are NOT interchangeable
+  // (#2838; INV-DATE-013, INV-DATE-019).
+  //
+  // `today` / `tomorrow` are date-only values — the club's calendar day pinned
+  // to UTC midnight — and they are the only thing a `@db.Date` column may be
+  // compared against. `Booking.checkIn`, `Booking.checkOut` and the hut-leader
+  // assignment dates are all `@db.Date`, and the pg driver adapter narrows a
+  // bound `Date` for such a column to its UTC calendar date, discarding the
+  // time (`formatDate` in `@prisma/adapter-pg`). The old
+  // `new Date()` + `setHours(0, 0, 0, 0)` was NZ-LOCAL midnight — the PREVIOUS
+  // UTC day under the `TZ=Pacific/Auckland` server pin — which narrowed to D-1,
+  // so every window below ran a full day behind.
+  //
+  // WHAT THAT COST WAS VISIBILITY, NOT PERMISSION. `getKioskAccessTier`
+  // (`src/lib/kiosk-access.ts:31-81`) is the authority on lodge access, derives
+  // its day from `getTodayDateOnly()`, and already implemented
+  // `[checkIn-1, checkOut]` and `[startDate-1, endDate]`; every `/api/lodge/*`
+  // route enforces it, and both buttons below just link to `/lodge/kiosk`. So on
+  // the day BEFORE check-in the member's access already worked and only the
+  // button was missing, and on the day AFTER check-out the button that survived
+  // pointed at a kiosk answering `tier: "none"` — a dead link, and (for a PAID
+  // booking) only until the 01:00 NZ completion cron flipped the status. Nothing
+  // here grants or revokes access; it decides which links a member is offered.
+  //
+  // `startOfTodayNZ` is the INSTANT that same club day begins. It belongs to the
+  // real `DateTime` columns further down (`Booking.draftExpiresAt` and
+  // `CalendarEvent.startsAt`), which hold moments rather than calendar days and
+  // would be pushed to club MIDDAY by a date-only value. Under the server's NZ
+  // pin this is the identical instant `setHours(0, 0, 0, 0)` produced, so those
+  // two reads are unchanged; deriving it from the club's calendar rather than
+  // the process's own zone keeps it right if the process is ever not pinned.
+  const today = getTodayDateOnly();
+  const tomorrow = addDaysDateOnly(today, 1);
+  const startOfTodayNZ = startOfDateOnlyForTimeZone(formatDateOnly(today));
 
   // Check if member is a staying guest (PAID booking where checkIn-1 <= today <= checkOut)
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  //
+  // NOT the same subject set as the nav bar's copy of this rule in
+  // `src/app/(authenticated)/layout.tsx`, and the difference is worth recording
+  // rather than assuming away: this one admits the booking OWNER **or** a linked
+  // member guest, while the layout's asks about `memberId` alone. A member
+  // linked as somebody else's guest therefore gets this card but not the nav
+  // link — and `getKioskAccessTier` (`src/lib/kiosk-access.ts:55-77`), which is
+  // the gate that actually decides, carries the guest branch too, so it is the
+  // layout that under-offers against the authority. Pre-existing on both sides
+  // and untouched by #2838, which changed only the DAY each window asks about.
   const stayingGuestBooking = await prisma.booking.findFirst({
     where: {
       deletedAt: null,
@@ -174,6 +220,17 @@ export default async function DashboardPage() {
       where: {
         deletedAt: null,
         status: { in: [...ACTIVE_BOOKING_STATUSES] },
+        // "Upcoming" means checking in today or later. Against the old
+        // local-midnight instant this narrowed to D-1, so a stay that began
+        // YESTERDAY was still listed as upcoming for one extra day (#2838).
+        //
+        // This list is not only the Upcoming Bookings count: `upcomingBookings[0]`
+        // is `nextStay`, which draws the Next Stay card, its occupancy bar and
+        // its call to action. So a member whose stay started yesterday now sees
+        // "No upcoming stays" and a link to /book a day earlier than before,
+        // possibly while standing in the lodge. That is the right reading for a
+        // card named "Next Stay" — the stay in progress is reached from Recent
+        // Bookings — but it is a visible change, not only an arithmetic one.
         checkIn: { gte: today },
         OR: [{ memberId }, { guests: { some: { memberId } } }],
       },
@@ -214,7 +271,10 @@ export default async function DashboardPage() {
         memberId,
         deletedAt: null,
         status: "DRAFT",
-        draftExpiresAt: { gt: today },
+        // `draftExpiresAt` is a plain `DateTime` — a real instant, not a lodge
+        // night — so it takes the start-of-club-day INSTANT, not the date-only
+        // value the `@db.Date` filters above use.
+        draftExpiresAt: { gt: startOfTodayNZ },
       },
       orderBy: { createdAt: "desc" },
       select: {
@@ -355,11 +415,23 @@ export default async function DashboardPage() {
   // moment it was clicked.
   const showEventsCard =
     modules.eventsCalendar && canViewCalendarEvents(session.user);
-  const twoWeeksOut = new Date(today);
-  twoWeeksOut.setDate(twoWeeksOut.getDate() + 14);
+  // `CalendarEvent.startsAt` is a plain `DateTime`, so this window is a pair of
+  // INSTANTS: the start of today in club time to the start of the fourteenth day
+  // after it.
+  //
+  // The VALUE is unchanged by #2838, and no daylight-saving bug is being fixed
+  // here. The old form was `new Date(today); setDate(getDate() + 14)`, which is
+  // local-calendar arithmetic and produces the same instant on every day of
+  // 2026, both DST transitions included. What changed is where the day comes
+  // from: it is stepped in whole CALENDAR days over the CLUB's date-only value
+  // and only then turned back into an instant, rather than being derived from
+  // the process's own zone (INV-DATE-019).
+  const twoWeeksOut = startOfDateOnlyForTimeZone(
+    formatDateOnly(addDaysDateOnly(today, 14)),
+  );
   const upcomingEvents = showEventsCard
     ? await prisma.calendarEvent.findMany({
-        where: { startsAt: { gte: today, lte: twoWeeksOut } },
+        where: { startsAt: { gte: startOfTodayNZ, lte: twoWeeksOut } },
         orderBy: { startsAt: "asc" },
         take: 6,
         select: {

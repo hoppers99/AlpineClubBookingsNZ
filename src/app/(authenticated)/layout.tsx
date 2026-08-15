@@ -19,6 +19,7 @@ import {
   hasFinanceViewerAccess,
 } from "@/lib/admin-permissions";
 import { hasAccessRole } from "@/lib/access-roles";
+import { addDaysDateOnly, getTodayDateOnly } from "@/lib/date-only";
 import { recordAuthBounce } from "@/lib/auth-diagnostics";
 import { buildLoginPath } from "@/lib/auth-redirect";
 import { REQUEST_PATH_HEADER } from "@/lib/internal-return-path";
@@ -105,10 +106,30 @@ export default async function AuthenticatedLayout({
       : false;
 
   // Check if the member is a staying guest (PAID booking where checkIn-1 <= today <= checkOut)
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  //
+  // `Booking.checkIn` and `Booking.checkOut` are `@db.Date`: an NZ calendar day
+  // encoded at UTC midnight, and the pg driver adapter narrows whatever `Date`
+  // is bound against them to its UTC calendar date. So both ends must be
+  // date-only values from the club's own calendar (#2838; INV-DATE-013).
+  // `new Date()` + `setHours(0, 0, 0, 0)` was NZ-LOCAL midnight — the PREVIOUS
+  // UTC day under the `TZ=Pacific/Auckland` server pin — which narrowed to D-1
+  // and ran this whole window a day behind.
+  //
+  // That decided which LINKS the nav bar offered, never what the member could
+  // do: `getKioskAccessTier` (`src/lib/kiosk-access.ts:31-81`) is the gate on
+  // `/lodge/kiosk` and already asked the club's calendar for the same
+  // `[checkIn-1, checkOut]`. So the day-before nav link was missing while the
+  // access behind it worked, and the day-after link was dead.
+  //
+  // NARROWER THAN THE DASHBOARD'S COPY OF THE SAME RULE, deliberately recorded
+  // rather than assumed: this asks about `memberId` alone — the booking OWNER —
+  // while `src/app/(authenticated)/dashboard/page.tsx` also admits a linked
+  // member guest, and so does `getKioskAccessTier`. A member linked as somebody
+  // else's guest therefore reaches the kiosk and sees the dashboard card, but
+  // gets no nav link. Pre-existing and untouched by #2838, which changed only
+  // the DAY this window asks about.
+  const today = getTodayDateOnly();
+  const tomorrow = addDaysDateOnly(today, 1);
 
   let isStayingGuest = false;
   if (

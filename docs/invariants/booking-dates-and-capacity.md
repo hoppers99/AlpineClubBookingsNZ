@@ -360,9 +360,79 @@ derivation).
   in the invariant above). Compare them only against date-only values
   (`getTodayDateOnly()` / `normalizeDateOnlyForTimeZone()` from
   `src/lib/date-only.ts`), never a raw `new Date()` or a local-midnight
-  (`setHours(0,0,0,0)`) instant: under the `TZ=Pacific/Auckland` server pin the
-  latter resolves to `(D-1)T12:00Z` and shifts the boundary by a day for the
-  first ~13h of each NZ day (F8/F32, #1888).
+  (`setHours(0,0,0,0)`) instant (F8/F32, #1888).
+
+  **The two mistakes fail differently, and the local-midnight one is the worse
+  of them (#2838).** A bound value is narrowed to a `DATE` parameter by its UTC
+  calendar date, with the time thrown away — `mapArg`'s `case "DATE"` in
+  `@prisma/adapter-pg`, which is the adapter `src/lib/prisma.ts` uses. So a raw
+  `new Date()` lands on the previous NZ day only for the first ~12-13h of each
+  NZ day, whereas `setHours(0,0,0,0)` under the `TZ=Pacific/Auckland` server pin
+  is the PREVIOUS UTC day and therefore narrows to `D-1` **all day, every day**.
+  There is no window in which it is right, which is why it reads as a stable
+  product rule ("access starts on the check-in day") rather than as an
+  intermittent bug. **The shorthand `(D-1)T12:00Z` for that value is the NZST
+  half of the year only** — under NZ daylight saving (UTC+13) club midnight is
+  `(D-1)T11:00Z` — and both narrow to `D-1` identically, which is why the
+  shorthand is harmless as long as nobody reads an hour out of it. Wherever it
+  appears unqualified in the tree, read it as "the previous UTC day".
+
+  Being one day early on the value means being one day LATE on the window: a
+  `checkIn <= tomorrow` / `checkOut >= today` pair evaluated at `D-1` admits
+  `[checkIn, checkOut+1]` instead of the intended `[checkIn-1, checkOut]`.
+
+  **What #2838 changed on those surfaces is which LINKS a member is shown, not
+  what they are allowed to do**, and that distinction is the whole risk
+  assessment. Lodge access itself is decided by `getKioskAccessTier`
+  (`src/lib/kiosk-access.ts:31-81`), which derives the day from
+  `getTodayDateOnly()` and already implemented `[checkIn-1, checkOut]` for a stay
+  (`:71-73`) and `[startDate-1, endDate]` for a hut-leader assignment (`:46-47`);
+  every `/api/lodge/*` route enforces it, `src/lib/lodge-auth.ts` re-derives the
+  same pair, and both dashboard buttons and the nav link point at
+  `/lodge/kiosk`. That gate is also the best independent evidence that
+  `[checkIn-1, checkOut]` is the INTENDED rule rather than something #2838 chose.
+  So the defect was **one-directional**:
+  - On the day BEFORE check-in the member's lodge access already worked; they
+    simply had no button and no nav link offering it. A lockout by missing
+    affordance, which is what #2838 removes.
+  - On the day AFTER check-out the surviving link was DEAD — the kiosk behind it
+    answered `tier: "none"`. Nobody ever held access they should not have held,
+    and nothing here takes access away.
+
+  That dead day-after link was also far shorter than a day on the staying-guest
+  side: both of those reads filter `status: "PAID"`, and `completeBookings`
+  (`src/lib/cron-complete-bookings.ts:24-30`, scheduled daily at 01:00 NZ) flips
+  PAID → COMPLETED as soon as `checkOut < today` [INV-DATE-017], so it survived
+  roughly 00:00-01:00 NZ. The hut-leader half has no completion sweep and so
+  lasted the whole day — still a dead link, not access.
+
+  #2838 fixed **three** such constructions feeding **five** `@db.Date` reads: the
+  dashboard (`src/app/(authenticated)/dashboard/page.tsx` — the staying-guest
+  read, the hut-leader read, and the Upcoming Bookings list), the authenticated
+  layout's staying-guest read (`src/app/(authenticated)/layout.tsx`), and the
+  age-tier removal guard's live-guest count
+  (`src/app/api/admin/age-tier-settings/route.ts`). Their boundaries are pinned
+  by `src/app/(authenticated)/dashboard/__tests__/dashboard-club-day-boundaries.test.tsx`
+  and `src/lib/__tests__/authenticated-layout-club-day-boundaries.test.tsx`.
+
+  **That is not the whole class, and this section does not claim it is.** #2684's
+  inventory named those three; `src/lib/xero-booking-repair-utils.ts:162-166`
+  exports a bare `setHours` wrapper as `startOfDay`, and
+  `xero-booking-repair-load.ts` applies it to `Booking.checkIn`, so an operator
+  asking the repair sweep for `[1 Jul, 31 Jul]` sweeps `[30 Jun, 30 Jul]`. That
+  is filed as **#2868**; it needs the same date-column/instant split rather than
+  a rename, which is why it is a separate issue and not a line in #2838. Census
+  the CALL GRAPH, not the spelling: `setHours` is not an ISO truncation so
+  #2684's lint rule cannot see it, and an exported wrapper puts it beyond a grep
+  for the pattern — the same way `formatDate` hid roughly eighteen Xero document
+  dates from #2682's census.
+
+  A `DateTime` column in the same statement is NOT the same comparison and must
+  not be given the date-only value: it holds a real instant, so it takes the
+  start-of-club-day instant from `startOfDateOnlyForTimeZone()`. A date-only
+  value would push it to club MIDDAY. The dashboard carries both encodings side
+  by side (`Booking.draftExpiresAt` and `CalendarEvent.startsAt` against
+  `Booking.checkIn`/`checkOut`) and names which is which.
 
 ### INV-DATE-019
 
@@ -420,6 +490,14 @@ derivation).
     that ships an empty known-defects list (#2855), as not yet meeting the bar.
     #2684's lint rule is where the whole class gets caught; until then it is a
     known trap, not a permitted pattern.
+
+    The `setHours(0, 0, 0, 0)` "today" comparisons against `@db.Date` lodge
+    nights are a **different** class, and are tracked separately
+    under [INV-DATE-013]: #2838 closed the three member-facing ones, and #2868
+    has the Xero booking-repair wrapper that #2684's inventory missed. Neither
+    #2684's lint rule nor its guard test sees that class — `setHours` is not an
+    ISO truncation — which is why a clean report from either says nothing about
+    it.
   - *A number of days added to a document date is added in CALENDAR days*, with
     `addDaysDateOnly` over the date-only value — never by adding `days x 24h` to
     an instant and then reading the result on the club's calendar. The Xero

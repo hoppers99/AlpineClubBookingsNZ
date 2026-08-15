@@ -5,6 +5,7 @@ import type { AgeTier } from "@prisma/client";
 import { z } from "zod";
 import { ageTierEnum } from "@/lib/age-tier-schema";
 import { logAudit } from "@/lib/audit";
+import { getTodayDateOnly } from "@/lib/date-only";
 import { revalidatePublicPageContent } from "@/lib/public-content-revalidation";
 import {
   invalidateAgeTierCache,
@@ -155,8 +156,16 @@ export async function PUT(request: NextRequest) {
   try {
     await prisma.$transaction(async (tx) => {
       if (removedTiers.length > 0) {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        // `BookingGuest.stayEnd` is `@db.Date`, so the cut-off has to be a
+        // date-only value from the club's calendar (#2838; INV-DATE-013). The
+        // old `new Date()` + `setHours(0, 0, 0, 0)` was NZ-LOCAL midnight — the
+        // PREVIOUS UTC day under the `TZ=Pacific/Auckland` server pin — which the
+        // pg adapter narrows to D-1, so a guest whose stay ended YESTERDAY was
+        // still counted as live and could block a tier removal for an extra
+        // day. That erred towards refusing, never towards deleting a tier
+        // someone still classifies into, so it was a spurious block rather than
+        // an unsafe allow — but the cut-off is now the day it says it is.
+        const today = getTodayDateOnly();
         const [activeMembers, archivedMembers, liveGuests] = await Promise.all([
           tx.member.count({
             where: { ageTier: { in: removedTiers }, archivedAt: null },
