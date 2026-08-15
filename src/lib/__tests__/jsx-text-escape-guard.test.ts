@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import ts from "typescript";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 /*
   A backslash escape sequence in JSX TEXT is not an escape. It is text.
@@ -57,6 +57,19 @@ function tsxFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
+/*
+  ONE PASS OVER THE TREE, memoised.
+
+  The first cut of this guard parsed all 890 `.tsx` files twice — once to count
+  JSX text nodes for the vacuity check and once to look for escapes — and timed
+  out at vitest's 5s default under a loaded `test:related` run. Parsing is the
+  whole cost here, so it happens once and both assertions read the result. The
+  explicit timeouts below are then headroom rather than the thing keeping it
+  green, matching how `date-only-encoding-guard.test.ts` handles a whole-tree
+  scan.
+*/
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
+
 interface Finding {
   where: string;
   match: string;
@@ -100,27 +113,47 @@ function scan(file: string, source: string): Finding[] {
 describe("no backslash escape sequence is left sitting in JSX text", () => {
   const files = ROOTS.flatMap((root) => tsxFiles(root));
 
+  // The single pass. Both assertions below read this; nothing re-parses.
+  const swept = files.map((file) => {
+    const source = readFileSync(file, "utf8");
+    const sourceFile = ts.createSourceFile(
+      file,
+      source,
+      ts.ScriptTarget.Latest,
+      /* setParentNodes */ true,
+      ts.ScriptKind.TSX,
+    );
+    const lines = source.split("\n");
+    let jsxTextNodes = 0;
+    const findings: Finding[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isJsxText(node)) {
+        jsxTextNodes += 1;
+        const text = node.getFullText(sourceFile);
+        ESCAPE_IN_TEXT.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = ESCAPE_IN_TEXT.exec(text))) {
+          const { line } = sourceFile.getLineAndCharacterOfPosition(
+            node.getFullStart() + match.index,
+          );
+          findings.push({
+            where: `${file.split(sep).join("/")}:${line + 1}`,
+            match: match[0],
+            line: (lines[line] ?? "").trim().slice(0, 120),
+          });
+        }
+      }
+      node.forEachChild(visit);
+    };
+    visit(sourceFile);
+    return { jsxTextNodes, findings };
+  });
+
   it("scans a tree that actually contains JSX, so it cannot pass vacuously", () => {
     expect(files.length, "no .tsx files found; the scan is checking nothing").toBeGreaterThan(
       200,
     );
-    const jsxTextNodes = files.reduce((total, file) => {
-      const source = readFileSync(file, "utf8");
-      const sourceFile = ts.createSourceFile(
-        file,
-        source,
-        ts.ScriptTarget.Latest,
-        true,
-        ts.ScriptKind.TSX,
-      );
-      let count = 0;
-      const visit = (node: ts.Node): void => {
-        if (ts.isJsxText(node)) count += 1;
-        node.forEachChild(visit);
-      };
-      visit(sourceFile);
-      return total + count;
-    }, 0);
+    const jsxTextNodes = swept.reduce((total, f) => total + f.jsxTextNodes, 0);
     expect(jsxTextNodes).toBeGreaterThan(10_000);
   });
 
@@ -143,7 +176,7 @@ describe("no backslash escape sequence is left sitting in JSX text", () => {
   });
 
   it("finds none anywhere under src/ or e2e/", () => {
-    const findings = files.flatMap((file) => scan(file, readFileSync(file, "utf8")));
+    const findings = swept.flatMap((f) => f.findings);
 
     expect(
       findings.map((f) => `${f.where}  ${f.match}  |  ${f.line}`),
