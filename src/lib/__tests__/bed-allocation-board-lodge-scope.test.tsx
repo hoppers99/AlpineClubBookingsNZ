@@ -172,6 +172,11 @@ interface FakeServer {
 function installFakeServer(options?: {
   holdLodges?: boolean;
   /**
+   * Serve payloads with NO `scopedLodgeId` field at all — an old-colour server
+   * during a deploy drain, which cannot answer the lodge question.
+   */
+  omitScopeEcho?: boolean;
+  /**
    * Hold the FIRST board response open. Without this the two endpoints race,
    * and the order that matters — options land while the deep link's board read
    * is still in flight — is the one that happens to lose. It is also the
@@ -248,11 +253,11 @@ function installFakeServer(options?: {
             }),
           };
         }
-        return {
-          ok: true,
-          status: 200,
-          json: async () => buildPayload(bookingLodgeId ?? requestedLodgeId),
-        };
+        const payload = buildPayload(bookingLodgeId ?? requestedLodgeId);
+        if (options?.omitScopeEcho) {
+          delete (payload as { scopedLodgeId?: string | null }).scopedLodgeId;
+        }
+        return { ok: true, status: 200, json: async () => payload };
       }
 
       throw new Error(`unexpected fetch: ${url}`);
@@ -447,6 +452,32 @@ describe("bed-allocation board — the LODGE_MISMATCH backstop (#2701)", () => {
     expect(
       screen.queryByText("This link points at two different lodges"),
     ).not.toBeInTheDocument();
+  });
+
+  it("does not fire during a deploy drain, when the server cannot say which lodge it used", async () => {
+    // An old-colour payload carries no `scopedLodgeId`, so the board is never
+    // told the booking's lodge. Letting the selector fall back to `lodges[0]`
+    // there would pair booking-b with lodge-1 and earn a 409 on a link that is
+    // perfectly legitimate. It stays deferred instead: the board still shows
+    // the booking's own server-scoped data, read-only, and recovers by itself
+    // once the drain ends.
+    search.current = "from=2026-07-01&to=2026-07-08&bookingId=booking-b";
+    const server = installFakeServer({ omitScopeEcho: true });
+
+    render(<AdminBedAllocationPage />);
+    await screen.findByTestId("room-table");
+    await screen.findByRole("combobox");
+
+    expect(server.refusals).toEqual([]);
+    expect(
+      server.boardRequests.some((request) => request.has("lodgeId")),
+    ).toBe(false);
+    expect(screen.getByText("Focused booking")).toBeInTheDocument();
+    // Read-only rather than wrong: no lodge is known, so nothing that needs one
+    // is offered.
+    expect(
+      screen.getByRole("button", { name: /Reset allocations/ }),
+    ).toBeDisabled();
   });
 
   it("explains itself when a hand-made link names a booking at one lodge and a board at another", async () => {

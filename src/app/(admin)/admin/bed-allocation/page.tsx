@@ -558,11 +558,22 @@ export default function AdminBedAllocationPage() {
    * It clears as soon as the first load settles either way, so an unresolvable
    * `bookingId` (a stale link, whose lodge the server cannot report) still
    * lands on a real lodge rather than deferring for ever.
+   *
+   * "Settled" means the server ANSWERED the lodge question — `scopedLodgeId`
+   * present, whether a lodge id or an explicit null for a club-wide read. A
+   * payload with no such field at all is the deploy-drain case: an old-colour
+   * server that cannot answer it. Letting the default fire there would pair a
+   * focused booking with `lodges[0]` and earn a 409 on a legitimate link, so the
+   * board stays deferred instead — read-only under the unscoped reason, showing
+   * the booking's own server-scoped board, and self-healing once the drain ends.
+   * A load ERROR clears the deferral either way; a wedged selector helps nobody.
    */
+  const servedScopeAnswered =
+    payload !== null && payload.scopedLodgeId !== undefined;
   const awaitingFocusedBookingLodge =
     highlightedBookingId !== "" &&
     lodgeSelection === null &&
-    payload === null &&
+    !servedScopeAnswered &&
     dashboardError === "";
 
   // A refused window has NO columns. Enumerating it anyway would build a column
