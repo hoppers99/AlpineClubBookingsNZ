@@ -28,6 +28,17 @@ import {
  * It is NOT exempt from the encoding audit, so the mojibake fixtures are built
  * from code points rather than written out: this file stays ASCII and the check
  * it is testing stays green over it.
+ *
+ * Exempt from the scan is not exempt from the habit, though. Where a fixture
+ * needs an id that resolves to NOTHING, it uses a real number under the
+ * fixture's own prefix — `002`, which this repository defines — so a grep for
+ * that prefix still lands on a real rule; the id is unresolved in the fixture
+ * repository below, which defines only `001`, and that is what the assertion is
+ * about. Where a fixture needs a number far out of range, it uses a prefix this
+ * repository does not declare. Neither form writes an invented number under a
+ * live prefix, which is the trap #2889 closed and the rule `SCHEME.md` §1.4 now
+ * states: an illustrative id is a real defined id or a placeholder, never an
+ * invented number under a real prefix.
  */
 
 /** An em dash after one UTF-8 -> cp1252 -> UTF-8 round-trip. */
@@ -115,12 +126,12 @@ describe("auditInvariantIds", () => {
   it("fails a citation under a declared prefix that resolves to nothing", () => {
     const problems = auditInvariantIds(
       repo({
-        "src/lib/money.ts": "// Enforces INV-MONEY-742.\n",
+        "src/lib/money.ts": "// Enforces INV-MONEY-002.\n",
       }),
     );
 
     expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain("INV-MONEY-742");
+    expect(problems[0]).toContain("INV-MONEY-002");
     expect(problems[0]).toContain("src/lib/money.ts:1");
   });
 
@@ -150,7 +161,7 @@ describe("auditInvariantIds", () => {
   it("ignores an id inside a fenced code block", () => {
     const problems = auditInvariantIds(
       repo({
-        "docs/example.md": "# Example\n\n```\nINV-MONEY-742\nINV-NOPE-001\n```\n",
+        "docs/example.md": "# Example\n\n```\nINV-MONEY-002\nINV-NOPE-001\n```\n",
       }),
     );
 
@@ -179,7 +190,7 @@ describe("auditInvariantIds", () => {
 
   it("only takes definitions from docs/invariants", () => {
     const problems = auditInvariantIds(
-      repo({ "docs/elsewhere.md": "# Elsewhere\n\n## INV-MONEY-742\n" }),
+      repo({ "docs/elsewhere.md": "# Elsewhere\n\n## INV-MONEY-002\n" }),
     );
 
     // The heading did not define anything, so the id in it is an unresolved
@@ -275,9 +286,13 @@ describe("auditNumberSequences", () => {
   });
 
   it("ignores an id in a fenced example, which is what a document shows one in", () => {
+    // Far out of range on purpose: were the fence scanned, the family would run
+    // 001 then 742 and this would report a 740-number hole. The prefix is one
+    // this repository does not declare, so the fixture cannot itself become the
+    // bait — which is the whole subject of #2889.
     const problems = auditNumberSequences(
       repo({
-        "docs/invariants/money.md": `${family("MONEY", ["001"])}\n\`\`\`\n## INV-MONEY-742\n\`\`\`\n`,
+        "docs/invariants/demo.md": `${family("DEMO", ["001"])}\n\`\`\`\n## INV-DEMO-742\n\`\`\`\n`,
       }),
     );
 
