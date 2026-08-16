@@ -584,6 +584,19 @@ describe("auditDocs — the whole check", () => {
     expect(problems[0]).toContain("looks like an invariant definition heading");
   });
 
+  it("retains the original blockquote through a markerless lazy continuation", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n> paragraph\nlazy continuation\n> <fixture>\n> ## INV-MONEY-001 — duplicate rule\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("looks like an invariant definition heading");
+  });
+
   it("does not treat an indented lazy blockquote paragraph continuation as code", () => {
     const files = repo();
     files.set(
@@ -608,6 +621,16 @@ describe("auditDocs — the whole check", () => {
     files.set(
       "docs/invariants/money.md",
       `${files.get("docs/invariants/money.md")}\n${fixture}`,
+    );
+
+    expect(auditDocs(files)).toEqual([]);
+  });
+
+  it("recognises five spaces after a list marker as list-owned indented code", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n-     INV-DEMO-999\n`,
     );
 
     expect(auditDocs(files)).toEqual([]);

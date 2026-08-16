@@ -309,6 +309,8 @@ const FENCE_CLOSER_PATTERN = /^ {0,3}(`+|~+)[ \t]*$/;
 const BLOCKQUOTE_PREFIX_PATTERN = /^ {0,3}>[ \t]?/;
 const LIST_PREFIX_PATTERN =
   /^( {0,3})([*+-]|([0-9]{1,9})[.)])([ \t]{1,4})(?=\S|$)/;
+const LIST_INDENTED_CODE_PREFIX_PATTERN =
+  /^( {0,3})([*+-]|([0-9]{1,9})[.)])( )(?= {4})/;
 const HTML_BLOCK_TAGS =
   "address|article|aside|base|basefont|blockquote|body|caption|center|col|" +
   "colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|" +
@@ -343,7 +345,8 @@ function stripOpeningContainers(line, { interruptingParagraph = false } = {}) {
       continue;
     }
 
-    const list = text.match(LIST_PREFIX_PATTERN);
+    const list =
+      text.match(LIST_PREFIX_PATTERN) ?? text.match(LIST_INDENTED_CODE_PREFIX_PATTERN);
     if (list) {
       const itemText = text.slice(list[0].length);
       const orderedStart = list[3] === undefined ? null : Number(list[3]);
@@ -468,6 +471,8 @@ function structuralLine(line, paragraph) {
   });
   return {
     ...fresh,
+    lazyContinuation:
+      paragraph?.containers.length > 0 && fresh.containers.length === 0,
     opensContainer: fresh.containers.length > 0,
   };
 }
@@ -548,7 +553,9 @@ function scanMarkdownBlocks(text) {
 
       const outside = structuralLine(line, paragraph);
       const continuesParagraph =
-        paragraph !== null && sameContainers(outside.containers, paragraph.containers);
+        paragraph !== null &&
+        (sameContainers(outside.containers, paragraph.containers) ||
+          outside.lazyContinuation);
 
       if (outside.text.trim() === "") {
         scannable.push(numberedLine);

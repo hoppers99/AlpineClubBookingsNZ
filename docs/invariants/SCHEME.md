@@ -172,12 +172,12 @@ The `INV-` namespace is kept anyway, with three load-bearing consequences:
   is worth knowing. It used to name `INV-CAP` numbers, and the old enforcement
   check ignored every fence while `grep` still saw it — so its higher number
   read as that prefix's maximum, and the next branch to allocate one skipped
-  nine (#2889). The check now rejects an unresolved ID under a live prefix even
-  inside a fence, while leaving placeholders, reserved invoice numbers and
-  custom fixture prefixes alone. **An illustrative ID in this file is therefore
-  either a real, defined ID — so that a `grep` which finds it lands on a real
-  rule — or a placeholder in this bracketed form. Never an invented number under
-  a real prefix.**
+  nine (#2889). The check now rejects every numeric token under a live prefix in
+  this file's literal blocks, whether or not that ID resolves, while leaving
+  placeholders, reserved invoice numbers and custom fixture prefixes alone.
+  **An illustrative invariant ID in this file therefore uses either the
+  bracketed placeholder form or a custom non-live prefix. It never spells a
+  live prefix/number pair.**
 
   A rule that is genuinely obsolete keeps its heading and gains
   `**Retired (PR #NNNN): <one-line reason>.**` in place of its body. Either way
@@ -614,7 +614,10 @@ type-7 tag starts that form only when no paragraph is active, including a
 container paragraph continuing lazily without its quote/list marker. A newly
 opened blockquote or list interrupts the prior paragraph, so type-7 HTML and
 indented code may start inside that fresh container. An ordered list can
-interrupt an active paragraph only when it starts at one.
+interrupt an active paragraph only when it starts at one. A markerless lazy
+line retains its original container for the next marked continuation; five
+spaces after a list marker are one padding space plus four-space indented code,
+not ordinary prose.
 
 **Definition** — collected only from `docs/invariants/**/*.md`:
 
