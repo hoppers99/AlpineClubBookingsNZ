@@ -308,9 +308,9 @@ const REF_DEF = /^\s*\[[^\]]+\]:\s*(\S+)/;
 
 const FENCE_OPENER_PATTERN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const FENCE_CLOSER_PATTERN = /^ {0,3}(`+|~+)[ \t]*$/;
-const BLOCKQUOTE_PREFIX_PATTERN = /^ {0,3}>[ \t]?/;
+const BLOCKQUOTE_PREFIX_PATTERN = /^ {0,3}> ?/;
 const LIST_MARKER_PATTERN =
-  /^( {0,3})([*+-]|([0-9]{1,9})[.)])([ \t]+)(?=\S|$)/;
+  /^( {0,3})([*+-]|([0-9]{1,9})[.)])(?:( +)(?=\S|$)|$)/;
 const HTML_BLOCK_TAGS =
   "address|article|aside|base|basefont|blockquote|body|caption|center|col|" +
   "colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|" +
@@ -332,6 +332,23 @@ function indentationColumns(text, initialColumn = 0) {
   return column;
 }
 
+/** Expand tabs into the virtual columns CommonMark slices for block structure. */
+function expandMarkdownTabs(text) {
+  let column = 0;
+  let expanded = "";
+  for (const character of text) {
+    if (character === "\t") {
+      const width = 4 - (column % 4);
+      expanded += " ".repeat(width);
+      column += width;
+    } else {
+      expanded += character;
+      column += 1;
+    }
+  }
+  return expanded;
+}
+
 /** Resolve CommonMark list padding while retaining any four-column code indent. */
 function listPrefix(line) {
   const match = line.match(LIST_MARKER_PATTERN);
@@ -339,14 +356,25 @@ function listPrefix(line) {
 
   const marker = `${match[1]}${match[2]}`;
   const markerColumn = indentationColumns(marker);
-  const whitespace = match[4];
+  const whitespace = match[4] ?? "";
+  const hasContent = marker.length + whitespace.length < line.length;
+  if (!hasContent) {
+    return {
+      consumedLength: marker.length + whitespace.length,
+      orderedDigits: match[3],
+      width: markerColumn + 1,
+    };
+  }
+
   const paddingColumns =
     indentationColumns(whitespace, markerColumn) - markerColumn;
-  const consumedWhitespace = paddingColumns <= 4 ? whitespace : whitespace[0];
+  const consumedWhitespace =
+    paddingColumns <= 4 ? whitespace : whitespace.slice(0, 1);
 
   return {
+    consumedLength: marker.length + consumedWhitespace.length,
     orderedDigits: match[3],
-    prefix: `${marker}${consumedWhitespace}`,
+    width: markerColumn + consumedWhitespace.length,
   };
 }
 
@@ -365,7 +393,7 @@ function stripOpeningContainers(line, { interruptingParagraph = false } = {}) {
 
     const list = listPrefix(text);
     if (list) {
-      const itemText = text.slice(list.prefix.length);
+      const itemText = text.slice(list.consumedLength);
       const orderedStart =
         list.orderedDigits === undefined ? null : Number(list.orderedDigits);
       if (
@@ -376,7 +404,7 @@ function stripOpeningContainers(line, { interruptingParagraph = false } = {}) {
       }
       containers.push({
         type: "list",
-        width: indentationColumns(list.prefix),
+        width: list.width,
       });
       text = itemText;
       interruptingParagraph = false;
@@ -519,12 +547,13 @@ function scanMarkdownBlocks(text) {
 
   for (const [index, line] of text.split(/\r?\n/).entries()) {
     const numberedLine = { number: index + 1, text: line };
+    const structuralText = expandMarkdownTabs(line);
     let reprocess = true;
     while (reprocess) {
       reprocess = false;
 
       if (literal) {
-        const content = stripExpectedContainers(line, literal.containers);
+        const content = stripExpectedContainers(structuralText, literal.containers);
         if (content === null) {
           literal = null;
           reprocess = true;
@@ -571,7 +600,7 @@ function scanMarkdownBlocks(text) {
         continue;
       }
 
-      const outside = structuralLine(line, paragraph);
+      const outside = structuralLine(structuralText, paragraph);
       const continuesParagraph =
         paragraph !== null &&
         (sameContainers(outside.containers, paragraph.containers) ||
@@ -585,6 +614,7 @@ function scanMarkdownBlocks(text) {
 
       if (
         continuesParagraph &&
+        !outside.lazyContinuation &&
         SETEXT_HEADING_UNDERLINE_PATTERN.test(outside.text)
       ) {
         headings.push({

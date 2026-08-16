@@ -620,6 +620,29 @@ describe("auditDocs — the whole check", () => {
     expect(problems[0]).toContain("looks like an invariant definition heading");
   });
 
+  it("keeps a markerless equals underline as lazy blockquote paragraph text", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n> INV-MONEY-001 narrative\n===\n`,
+    );
+
+    expect(auditDocs(files)).toEqual([]);
+  });
+
+  it("recognises a marked equals underline as a blockquote Setext heading", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n> INV-MONEY-001 narrative\n> ===\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("looks like an invariant definition heading");
+  });
+
   it("resets container paragraph state at an asterisk thematic break", () => {
     const files = repo();
     files.set(
@@ -674,6 +697,33 @@ describe("auditDocs — the whole check", () => {
     files.set(
       "docs/invariants/money.md",
       `${files.get("docs/invariants/money.md")}\n-\t\tINV-DEMO-999\n`,
+    );
+
+    expect(auditDocs(files)).toEqual([]);
+  });
+
+  it.each([
+    ["list", "-\t  INV-DEMO-999"],
+    ["blockquote", ">\t  INV-DEMO-999"],
+    ["ordered list", "1.\t   INV-DEMO-999"],
+  ])(
+    "slices a partially consumed tab by expanded columns in a %s container",
+    (_container, source) => {
+      const files = repo();
+      files.set(
+        "docs/invariants/money.md",
+        `${files.get("docs/invariants/money.md")}\n${source}\n`,
+      );
+
+      expect(auditDocs(files)).toEqual([]);
+    },
+  );
+
+  it("keeps indented code inside an empty list item", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n-\n      INV-DEMO-999\n`,
     );
 
     expect(auditDocs(files)).toEqual([]);

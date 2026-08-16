@@ -618,10 +618,14 @@ interrupt an active paragraph only when it starts at one. A markerless lazy
 line retains its original container for the next marked continuation; five
 spaces after a list marker are one padding space plus four-space indented code,
 not ordinary prose. Tabs are expanded at four-column stops for the same choice,
-so two tabs after a bullet retain the second tab as code indentation. An
-unmarked thematic break ends the container paragraph;
-within the same marked container, a dash underline still keeps Setext-heading
-precedence over a thematic break.
+then container prefixes consume virtual-column slices rather than whole tab
+characters. Thus two tabs after a bullet, or a tab plus two spaces after either
+a bullet or blockquote marker, retain at least four code-indentation columns.
+An empty list marker also establishes the default one-column padding used to
+classify its following indented code. An unmarked thematic break ends the
+container paragraph; within the same marked container, a dash or equals
+underline keeps Setext-heading precedence. A markerless equals underline stays
+lazy paragraph text rather than becoming a Setext heading.
 
 **Definition** — collected only from `docs/invariants/**/*.md`:
 
