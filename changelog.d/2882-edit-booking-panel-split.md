@@ -1,9 +1,9 @@
 - **Two garbled labels now read properly, and the booking edit screen was
   reorganised internally behind them (#2690).** Two places on screen showed the
-  raw characters `—` where an em dash was meant. On the booking edit screen
-  the partner quick-add button read "Jane Smith — partner of Bob"; on the
+  raw characters `\u2014` where an em dash was meant. On the booking edit screen
+  the partner quick-add button read "Jane Smith \u2014 partner of Bob"; on the
   admin new-booking screen the over-capacity warning read "You can still create
-  it — you will confirm the override at the final step." Both now show a
+  it \u2014 you will confirm the override at the final step." Both now show a
   normal dash. A repository-wide check found only those two and now runs on every
   change, so the same thing cannot come back anywhere.
 
@@ -26,3 +26,6 @@
   recalculation still runs exactly once per edit, that a slow answer for an edit
   you have moved on from cannot overwrite the current price, and that pressing
   Save twice cannot save twice.
+
+  The repository's file-size ledger records the new size too, so the two
+  thousand lines this removed cannot quietly come back.
