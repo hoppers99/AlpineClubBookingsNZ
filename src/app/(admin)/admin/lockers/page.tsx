@@ -430,19 +430,13 @@ export default function LockersPage() {
   );
 
   /*
-    #2701: the lodge selector, the scope notice and the page heading are the
-    only things that make sense with no lodge resolved, so they are hoisted and
-    both returns render them.
+    #2701: heading, scope notice and selector are the only things that mean
+    anything with no lodge resolved, so both returns render them.
 
-    This is an EARLY RETURN rather than a `{lodgeScopeReady ? … : null}` wrapper
-    around the cards, and that is deliberate. The locker list carries the shared
-    dataset Reset control, and `dataset-reset-contract` requires that control to
-    be unconditional within the view that shows the dataset — a Reset that
-    appears and disappears moves every other control under it. Wrapping the
-    cards in a ternary put Reset inside a conditional and broke that rule for a
-    reason the rule was not about. An early return says the true thing instead:
-    there are two pages here, and the one with the locker table always has its
-    Reset.
+    An EARLY RETURN, not a ternary around the cards: the locker list carries the
+    shared dataset Reset, and `dataset-reset-contract` requires that control to
+    be unconditional within the view showing the dataset. Two pages, and the one
+    with the table always has its Reset.
   */
   const scopeChrome = (
     <>

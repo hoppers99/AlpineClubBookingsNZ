@@ -52,7 +52,7 @@ src/app/(admin)/admin/family-groups/page.tsx 863 route-page-shell
 src/app/(admin)/admin/fees/_components/hut-fees-section.tsx 947 domain-module
 src/app/(admin)/admin/hut-leaders/page.tsx 1161 route-page-shell
 src/app/(admin)/admin/image-manager/image-manager-client.tsx 727 domain-module
-src/app/(admin)/admin/lockers/page.tsx 725 route-page-shell
+src/app/(admin)/admin/lockers/page.tsx 744 route-page-shell
 src/app/(admin)/admin/lodge/page.tsx 559 route-page-shell
 src/app/(admin)/admin/lodges/[id]/page.tsx 602 route-page-shell
 src/app/(admin)/admin/lodges/[id]/setup/page.tsx 913 route-page-shell
@@ -114,7 +114,6 @@ src/app/api/admin/induction-templates/[id]/route.ts 253 route-handler
 src/app/api/admin/integrations/credentials/route.ts 279 route-handler
 src/app/api/admin/issue-reports/[id]/route.ts 259 route-handler
 src/app/api/admin/lodge/route.ts 454 route-handler
-src/app/api/admin/lodges/[id]/route.ts 324 route-handler
 src/app/api/admin/member-guest-settings/route.ts 262 route-handler
 src/app/api/admin/members/[id]/dependents/link/route.ts 440 route-handler
 src/app/api/admin/members/[id]/xero-link/route.ts 256 route-handler
@@ -169,7 +168,6 @@ src/app/display/display-screen.tsx 832 domain-module
 src/components/admin-sidebar.tsx 1041 domain-module
 src/components/admin/analytics-integration-card.tsx 716 domain-module
 src/components/admin/booking-bed-allocation-panel.tsx 1113 domain-module
-src/components/admin/booking-policies/booking-periods-section.tsx 710 domain-module
 src/components/admin/booking-policies/minimum-night-stay-section.tsx 863 domain-module
 src/components/admin/booking-policies/public-booking-requests-section.tsx 836 domain-module
 src/components/admin/booking-requests/policy-exception-requests-panel.tsx 1015 domain-module
