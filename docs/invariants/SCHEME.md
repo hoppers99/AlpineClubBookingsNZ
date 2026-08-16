@@ -610,8 +610,10 @@ inside a backtick fence, stays content and cannot invert which audits see the
 following lines. Four-space indented code is literal when it begins outside a
 paragraph. Any type-1 closing tag ends a type-1 raw HTML block; standard block
 tags stay literal until the terminating blank line, while a syntactically valid
-type-7 tag starts that form only when no paragraph is active. An ordered list
-can interrupt an active paragraph only when it starts at one.
+type-7 tag starts that form only when no paragraph is active, including a
+container paragraph continuing lazily without its quote/list marker. Indented
+code obeys the same paragraph-interruption rule. An ordered list can interrupt
+an active paragraph only when it starts at one.
 
 **Definition** — collected only from `docs/invariants/**/*.md`:
 
@@ -639,7 +641,9 @@ being truncated to the valid-looking numeric prefix.
 
 **Citation** — collected from every tracked `*.md`, `*.ts`, `*.tsx`, `*.mjs`,
 `*.js`, `*.jsx`, `*.cjs`, `*.prisma`, `*.sql`, `*.yml`, `*.yaml` and `*.json`
-file:
+file. CommonMark block classification applies only to `*.md`; every other
+format is scanned linewise so indentation or JSX/HTML syntax cannot disguise a
+citation as a Markdown code or raw-HTML block:
 
 ```js
 /\bINV-[A-Z][A-Z0-9]*-\d{3}\b/g
@@ -649,14 +653,16 @@ file:
 a near-miss under a real prefix is reported rather than being invisible:
 
 ```js
-new RegExp(`\\bINV-(?:${[...prefixes].join("|")})-[0-9]+\\b`, "g")
+new RegExp(`\\bINV-(?:${[...prefixes].join("|")})-[0-9]+\\b(?!-[A-Za-z0-9_])`, "g")
 ```
 
 Every match of it must have exactly three digits. Without this,
 `INV-CAP-1` and `INV-CAP-0011` slip past the strict citation regex and resolve
-to nothing while being reported as nothing. It is scoped to declared prefixes
-rather than to `INV-[A-Za-z]…` generally, because a generic shape guard flags
-every Xero invoice fixture in the test suite (§1.2.1).
+to nothing while being reported as nothing. A separate identifier-continuation
+audit owns letter, underscore and hyphen suffixes, so the numeric matcher does
+not also report the numeric prefix of a hyphenated malformed ID. It is scoped to
+declared prefixes rather than to `INV-[A-Za-z]…` generally, because a generic
+shape guard flags every Xero invoice fixture in the test suite (§1.2.1).
 
 **The check asserts, in this order:**
 

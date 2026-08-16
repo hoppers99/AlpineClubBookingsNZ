@@ -573,7 +573,7 @@ function scanMarkdownBlocks(text) {
       const htmlTerminator = rawHtmlBlockTerminator(outside.text);
       if (
         htmlTerminator &&
-        (htmlTerminator.canInterruptParagraph || !continuesParagraph)
+        (htmlTerminator.canInterruptParagraph || paragraph === null)
       ) {
         fenced.push(numberedLine);
         paragraph = null;
@@ -607,7 +607,7 @@ function scanMarkdownBlocks(text) {
         continue;
       }
 
-      if (!continuesParagraph && leadingIndentColumns(outside.text) >= 4) {
+      if (paragraph === null && leadingIndentColumns(outside.text) >= 4) {
         paragraph = null;
         fenced.push(numberedLine);
         literal = { containers: outside.containers, type: "indented" };
@@ -684,6 +684,16 @@ export function fencedLines(text) {
 /** Literal lines inspected by the narrow live-prefix audit, including fence openers. */
 export function literalAuditLines(text) {
   return scanMarkdownBlocks(text).literalAudit;
+}
+
+/** Every physical line in a non-Markdown source file, with its original number. */
+function sourceLines(text) {
+  return text.split(/\r?\n/).map((line, index) => ({ number: index + 1, text: line }));
+}
+
+/** Markdown hides examples structurally; every other scanned format is linewise source. */
+function ordinaryAuditLines(rel, text) {
+  return rel.endsWith(".md") ? scannableLines(text) : sourceLines(text);
 }
 
 /** The prefix half of an id: `INV-CAP-021` -> `CAP`. */
@@ -801,7 +811,7 @@ export function collectCitations(files) {
   const citations = [];
   for (const [rel, text] of files) {
     if (CITATION_EXEMPT_FILES.has(rel)) continue;
-    for (const { number, text: line } of scannableLines(text)) {
+    for (const { number, text: line } of ordinaryAuditLines(rel, text)) {
       for (const match of line.matchAll(CITATION_PATTERN)) {
         citations.push({ id: match[0], at: `${rel}:${number}` });
       }
@@ -880,7 +890,7 @@ export function auditInvariantIds(files) {
 
   if (livePrefixNumericPattern) {
     for (const [rel, text] of files) {
-      if (CITATION_EXEMPT_FILES.has(rel)) continue;
+      if (CITATION_EXEMPT_FILES.has(rel) || !rel.endsWith(".md")) continue;
       for (const { number, text: line } of literalAuditLines(text)) {
         for (const match of line.matchAll(livePrefixNumericPattern)) {
           const id = match[0];
@@ -950,7 +960,7 @@ export function auditInvariantIds(files) {
   if (livePrefixNumericPattern) {
     for (const [rel, text] of files) {
       if (SHAPE_GUARD_EXEMPT_FILES.has(rel) || CITATION_EXEMPT_FILES.has(rel)) continue;
-      for (const { number, text: line } of scannableLines(text)) {
+      for (const { number, text: line } of ordinaryAuditLines(rel, text)) {
         for (const match of line.matchAll(livePrefixNumericPattern)) {
           const digits = match[0].slice(match[0].lastIndexOf("-") + 1);
           if (digits.length !== 3) {
@@ -978,16 +988,18 @@ export function auditInvariantIds(files) {
   if (livePrefixIdentifierContinuationPattern) {
     for (const [rel, text] of files) {
       if (CITATION_EXEMPT_FILES.has(rel)) continue;
-      const markdown = scanMarkdownBlocks(text);
+      const markdown = rel.endsWith(".md") ? scanMarkdownBlocks(text) : null;
       const headingLines = new Set(
-        markdown.headings.flatMap((heading) => heading.lineNumbers),
+        markdown?.headings.flatMap((heading) => heading.lineNumbers) ?? [],
       );
       const ordinaryLines = SHAPE_GUARD_EXEMPT_FILES.has(rel)
         ? []
-        : markdown.scannable.filter(({ number }) => !headingLines.has(number));
-      const identifierAuditLines = [...ordinaryLines, ...markdown.literalAudit].sort(
-        (left, right) => left.number - right.number,
-      );
+        : ordinaryAuditLines(rel, text).filter(({ number }) => !headingLines.has(number));
+      const identifierAuditLines = markdown
+        ? [...ordinaryLines, ...markdown.literalAudit].sort(
+            (left, right) => left.number - right.number,
+          )
+        : ordinaryLines;
       for (const { number, text: line } of identifierAuditLines) {
         for (const match of line.matchAll(livePrefixIdentifierContinuationPattern)) {
           problems.push(
@@ -1212,7 +1224,7 @@ export function auditLineNumberCitations(files) {
 
   for (const rel of [...files.keys()].sort()) {
     if (CITATION_EXEMPT_FILES.has(rel)) continue;
-    for (const { number, text: line } of scannableLines(files.get(rel))) {
+    for (const { number, text: line } of ordinaryAuditLines(rel, files.get(rel))) {
       for (const match of line.matchAll(INVARIANT_LINE_CITATION_PATTERN)) {
         problems.push(
           `${rel}:${number} cites ${match[1]}:${match[2]} — an invariants document by ` +

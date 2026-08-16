@@ -571,6 +571,32 @@ describe("auditDocs — the whole check", () => {
     },
   );
 
+  it("does not let type-7 HTML interrupt a lazy blockquote paragraph continuation", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n> paragraph\n<fixture>\n## INV-MONEY-001 — duplicate rule\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("looks like an invariant definition heading");
+  });
+
+  it("does not treat an indented lazy blockquote paragraph continuation as code", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n> paragraph\n    INV-MONEY-002\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("INV-MONEY-002 is cited at");
+  });
+
   it("does not let an ordered list starting above one interrupt a paragraph", () => {
     const files = repo();
     files.set(
@@ -619,6 +645,24 @@ describe("auditInvariantIds", () => {
 
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("INV-MONYE-");
+    expect(problems[0]).toContain("reserved");
+  });
+
+  it.each([
+    ["indented TypeScript", "src/lib/example.ts", "    // See INV-CPA-001.\n"],
+    ["indented TSX", "src/components/Example.tsx", "    {/* See INV-CPA-001. */}\n"],
+    ["indented YAML", ".semgrep/rules/example.yml", "    invariant: INV-CPA-001\n"],
+    ["indented JSON", "fixtures/example.json", '    "invariant": "INV-CPA-001"\n'],
+    [
+      "JSX-shaped source",
+      "src/components/Example.tsx",
+      "export const Example = () => (\n  <div>\n    INV-CPA-001\n  </div>\n);\n",
+    ],
+  ])("does not apply Markdown literal suppression to %s", (_name, rel, source) => {
+    const problems = auditInvariantIds(repo({ [rel]: source }));
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("INV-CPA-");
     expect(problems[0]).toContain("reserved");
   });
 
