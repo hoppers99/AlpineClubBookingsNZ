@@ -414,6 +414,38 @@ describe("auditDefinitionHeadingShapes", () => {
     expect(problems[0]).toContain("definition heading");
   });
 
+  it.each([
+    "## INV-**MONEY**-001",
+    "## INV-*MONEY*-001",
+    "## INV-__MONEY__-001",
+    "## INV-_MONEY_-001",
+    "## **INV**-MONEY-001",
+    "## INV-~~MONEY~~-001",
+    "## INV-`MONEY`-001",
+    "## INV-<em>MONEY</em>-001",
+  ])("fails an invariant token split by inline decoration: %s", (heading) => {
+    const problems = auditDefinitionHeadingShapes(
+      repo({
+        "docs/invariants/money.md": [
+          "# Money",
+          "",
+          "## INV-MONEY-001",
+          "",
+          "- A rule.",
+          "",
+          heading,
+          "",
+          "- Invisible.",
+          "",
+        ].join("\n"),
+      }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("docs/invariants/money.md:7");
+    expect(problems[0]).toContain("no decoration");
+  });
+
   it("fails an invariant-shaped Setext heading rather than treating it as prose", () => {
     const problems = auditDefinitionHeadingShapes(
       repo({
@@ -456,6 +488,24 @@ describe("auditDocs — the whole check", () => {
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("docs/invariants/money.md:9");
     expect(problems[0]).toContain("canonical");
+  });
+
+  it.each([
+    "## INV-**MONEY**-001",
+    "## INV-*MONEY*-001",
+    "## INV-__MONEY__-001",
+    "## INV-_MONEY_-001",
+  ])("fails an emphasis-split invariant heading in the whole audit: %s", (heading) => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n${heading}\n\n- Not a definition.\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("looks like an invariant definition heading");
   });
 
   it.each(["INV-MONEY-001a", "INV-MONEY-001_extra"])(
@@ -672,6 +722,53 @@ describe("auditDocs — the whole check", () => {
       expect(auditDocs(files)).toEqual([]);
     },
   );
+
+  it.each([
+    [
+      "ordered marker digit width",
+      "9. cites INV-MONEY-001 in ordinary prose\n10. ## INV-MONEY-001 — duplicate rule",
+    ],
+    [
+      "ordered item padding width",
+      "1. cites INV-MONEY-001 in ordinary prose\n2.   ## INV-MONEY-001 — duplicate rule",
+    ],
+    [
+      "nested ordered marker digit width",
+      "1. outer item\n\n   9. cites INV-MONEY-001 in ordinary prose\n   10. ## INV-MONEY-001 — duplicate rule",
+    ],
+  ])("recognises a %s change as a list sibling in the whole audit", (_kind, fixture) => {
+    const files = repo({
+      "docs/invariants/money.md": [
+        "# Money",
+        "",
+        "## INV-MONEY-001",
+        "",
+        fixture,
+        "",
+      ].join("\n"),
+    });
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("canonical top-level");
+  });
+
+  it("does not treat a changed ordered-list delimiter as the active list's sibling", () => {
+    const files = repo({
+      "docs/invariants/money.md": [
+        "# Money",
+        "",
+        "## INV-MONEY-001",
+        "",
+        "9. cites INV-MONEY-001 in ordinary prose",
+        "10) ## INV-MONEY-001 — still paragraph text",
+        "",
+      ].join("\n"),
+    });
+
+    expect(auditDocs(files)).toEqual([]);
+  });
 
   it("does not treat an indented lazy blockquote paragraph continuation as code", () => {
     const files = repo();
@@ -1082,6 +1179,41 @@ describe("auditInvariantIds", () => {
 });
 
 describe("tracked citation source extensions", () => {
+  it("loads every tracked text form by Git classification and excludes binary/untracked files", () => {
+    const repoRoot = initGitRepo();
+    const trackedText = {
+      "src/fixture.mts": "// See INV-MONEY-001.\n",
+      "src/fixture.cts": "// See INV-MONEY-001.\n",
+      "scripts/fixture.sh": "# See INV-MONEY-001.\n",
+      "config/fixture.toml": "rule = \"INV-MONEY-001\"\n",
+      "config/fixture.jsonc": "{ \"rule\": \"INV-MONEY-001\" }\n",
+      "fixtures/fixture.txt": "See INV-MONEY-001.\n",
+      "fixtures/fixture.html": "<p>See INV-MONEY-001.</p>\n",
+      Dockerfile: "# See INV-MONEY-001.\n",
+    };
+    commitFiles(repoRoot, "tracked text forms", {
+      ...Object.fromEntries(repo()),
+      ...trackedText,
+    });
+
+    const binaryPath = path.join(repoRoot, "fixtures", "fixture.bin");
+    writeFileSync(binaryPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]));
+    git(repoRoot, "add", "fixtures/fixture.bin");
+    git(repoRoot, "commit", "-m", "tracked binary");
+    writeFileSync(
+      path.join(repoRoot, "fixtures", "untracked.txt"),
+      "See INV-MONEY-001.\n",
+      "utf8",
+    );
+
+    const files = loadTrackedFiles(repoRoot);
+
+    expect([...Object.keys(trackedText)].every((file) => files.has(file))).toBe(true);
+    expect(files.has("fixtures/fixture.bin")).toBe(false);
+    expect(files.has("fixtures/untracked.txt")).toBe(false);
+    expect(auditInvariantIds(files)).toEqual([]);
+  });
+
   it("loads and audits the invariant citations in the migration safety TSV", () => {
     const files = loadTrackedFiles(REPO_ROOT);
     const safetyLedger = files.get("docs/BLUE_GREEN_MIGRATION_SAFETY.tsv");

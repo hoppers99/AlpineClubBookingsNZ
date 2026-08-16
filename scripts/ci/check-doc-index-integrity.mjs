@@ -75,7 +75,7 @@
  * `npm run docs:linkcheck` already validates fragments against real headings, and
  * duplicating it would give two places to disagree.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -171,23 +171,6 @@ export const SHAPE_GUARD_EXEMPT_FILES = new Set(["docs/invariants/SCHEME.md"]);
  */
 export const CITATION_EXEMPT_FILES = new Set([
   "scripts/ci/check-doc-index-integrity.test.mjs",
-]);
-
-/** Tracked text files scanned for citations. */
-export const SCANNED_EXTENSIONS = new Set([
-  ".md",
-  ".ts",
-  ".tsx",
-  ".js",
-  ".jsx",
-  ".mjs",
-  ".cjs",
-  ".prisma",
-  ".sql",
-  ".yml",
-  ".yaml",
-  ".json",
-  ".tsv",
 ]);
 
 /**
@@ -362,6 +345,7 @@ function listPrefix(line) {
   if (!hasContent) {
     return {
       consumedLength: marker.length + whitespace.length,
+      delimiter: match[3] === undefined ? match[2] : match[2].at(-1),
       orderedDigits: match[3],
       width: markerColumn + 1,
     };
@@ -374,6 +358,7 @@ function listPrefix(line) {
 
   return {
     consumedLength: marker.length + consumedWhitespace.length,
+    delimiter: match[3] === undefined ? match[2] : match[2].at(-1),
     orderedDigits: match[3],
     width: markerColumn + consumedWhitespace.length,
   };
@@ -412,6 +397,7 @@ function stripOpeningContainers(line, { interruptingParagraph = false } = {}) {
         return { containers, text };
       }
       containers.push({
+        delimiter: list.delimiter,
         ordered: list.orderedDigits !== undefined,
         type: "list",
         width: list.width,
@@ -503,10 +489,58 @@ function sameContainers(left, right) {
       (container, index) =>
         container.type === right[index].type &&
         (container.type !== "list" ||
-          (container.width === right[index].width &&
+          (container.delimiter === right[index].delimiter &&
+            container.width === right[index].width &&
             container.ordered === right[index].ordered)),
     )
   );
+}
+
+/**
+ * List membership is marker-shaped, not padding-shaped. Marker digit count and
+ * item padding change the continuation width of one item, but not whether the
+ * next marker is its sibling. Delimiter identity remains structural: `.` and
+ * `)` ordered lists (and the three bullet marker characters) are distinct.
+ */
+function sameContainerIdentity(left, right) {
+  return (
+    left.type === right.type &&
+    (left.type !== "list" ||
+      (left.delimiter === right.delimiter && left.ordered === right.ordered))
+  );
+}
+
+/**
+ * Retry a marker as a sibling of any active list depth.
+ *
+ * A fresh `10.` cannot interrupt a paragraph, so the ordinary CommonMark pass
+ * initially leaves it as text. If that paragraph belongs to `9.`, however,
+ * `10.` is a sibling even though its continuation width grew by one column.
+ * Strip each possible ancestor stack exactly, then compare the fresh marker's
+ * structural identity with the active list at that depth. This both preserves
+ * nesting and lets an outer sibling close an inner list.
+ */
+function listSiblingLine(line, activeContainers) {
+  for (let index = activeContainers.length - 1; index >= 0; index -= 1) {
+    const active = activeContainers[index];
+    if (active.type !== "list") continue;
+
+    const ancestors = activeContainers.slice(0, index);
+    const remainder = stripExpectedContainers(line, ancestors);
+    if (remainder === null) continue;
+
+    const sibling = stripOpeningContainers(remainder);
+    if (
+      sibling.containers.length > 0 &&
+      sameContainerIdentity(sibling.containers[0], active)
+    ) {
+      return {
+        containers: [...ancestors, ...sibling.containers],
+        text: sibling.text,
+      };
+    }
+  }
+  return null;
 }
 
 /** Resolve a line against active or blank-retained containers, or fresh openers. */
@@ -531,14 +565,12 @@ function structuralLine(line, paragraph, retainedContainers = null) {
 
   // A top-level ordered marker greater than one cannot interrupt an unrelated
   // paragraph, but it can be the next sibling of an already-open ordered list.
-  // The same retry admits an empty sibling marker in either list kind.  Accept
-  // it only when the fresh container stack exactly matches the active stack;
-  // this does not turn `2.` into an interrupting nested or unrelated list.
+  // The same retry admits an empty sibling marker in either list kind. Compare
+  // marker identity at an active list depth rather than continuation width, so
+  // `9.` -> `10.` and padding changes remain siblings without turning `2.` into
+  // an interrupting nested or unrelated list.
   if (paragraph?.containers.length > 0 && fresh.containers.length === 0) {
-    const sibling = stripOpeningContainers(line);
-    if (sameContainers(sibling.containers, paragraph.containers)) {
-      fresh = sibling;
-    }
+    fresh = listSiblingLine(line, paragraph.containers) ?? fresh;
   }
   return {
     ...fresh,
@@ -898,7 +930,13 @@ export function auditDefinitionHeadingShapes(files) {
     for (const heading of scanMarkdownBlocks(text).headings) {
       const { number, text: line } = heading;
       if (
-        INVARIANT_SHAPED_TOKEN_PATTERN.test(line) &&
+        INVARIANT_SHAPED_TOKEN_PATTERN.test(
+          // Inline emphasis/code/strike delimiters and inline HTML may split a
+          // visually contiguous token around the ordinary word-boundary scan.
+          // Remove only decoration syntax for this heading sentinel; the
+          // canonical definition parser above remains deliberately exact.
+          line.replace(/[*_~`]/g, "").replace(/<\/?[A-Za-z][^>]*>/g, ""),
+        ) &&
         (heading.kind !== "atx" ||
           heading.containerDepth > 0 ||
           !DEFINITION_PATTERN.test(line))
@@ -1130,7 +1168,7 @@ export function auditInvariantIds(files) {
 }
 
 /**
- * Assertion 5: every file under {@link INVARIANT_DIR} is linked from the index.
+ * Every file under {@link INVARIANT_DIR} is linked from the index.
  *
  * Stricter than general reachability on purpose — reaching an invariant file
  * through some other document is not good enough, because the index is what a
@@ -1161,7 +1199,7 @@ export function auditInvariantFilesLinkedFromIndex(files) {
 }
 
 /**
- * Assertion 6: every defined id has exactly one catalogue row in the index, and
+ * Every defined id has exactly one catalogue row in the index, and
  * every catalogue row names a defined id.
  *
  * This is what stops the index rotting, which is the part the issue's own
@@ -1238,7 +1276,7 @@ export function routingTableRows(agentsText) {
 }
 
 /**
- * Assertion 7: the routing table resolves.
+ * The routing table resolves.
  *
  * Three directions, all of them cheap and none of them needing an exemption:
  *
@@ -1321,7 +1359,7 @@ export function auditRoutingTable(files) {
 }
 
 /**
- * Assertion 8: nobody cites a line number into the invariants. No exceptions.
+ * Nobody cites a line number into the invariants. No exceptions.
  *
  * A line reference into a domain file is stale the next time somebody edits
  * above it, and it fails silently — the reader lands on unrelated text and
@@ -1354,7 +1392,7 @@ export function auditLineNumberCitations(files) {
 }
 
 /**
- * Assertion 9: no tracked text file is double-encoded or carries a byte-order
+ * No tracked text file is double-encoded or carries a byte-order
  * mark.
  *
  * `docs/invariants/member-guest-consent.md` was once committed with a UTF-8 BOM
@@ -1451,7 +1489,7 @@ export function auditDocReachability(files) {
 }
 
 /**
- * Assertion 10: every prefix's numbers run from `001` to its highest with no
+ * Every prefix's numbers run from `001` to its highest with no
  * gaps (issue #2889).
  *
  * ## Why contiguity is the property, and why it is enough
@@ -1462,8 +1500,9 @@ export function auditDocReachability(files) {
  * keeps forever.
  *
  * Density is what makes `max + 1` *forced* rather than merely instructed. Every
- * number below the maximum is taken, and no id may be defined twice (assertion
- * 1), so the only number a new invariant can have is one more than the highest.
+ * number below the maximum is taken, and no id may be defined twice (the
+ * duplicate-definition audit), so the only number a new invariant can have is
+ * one more than the highest.
  * Any other choice is either a duplicate — caught there — or a hole, caught
  * here. Between the two, the allocation rule is mechanical.
  *
@@ -1620,20 +1659,37 @@ export function auditDocs(
   ];
 }
 
-/** Read every tracked file this check scans, keyed by repo-relative path. */
+/**
+ * Read every nonempty tracked text file, keyed by repo-relative path.
+ *
+ * Git owns both halves of that classification: its index supplies the tracked
+ * tree, and `grep -I` applies Git's binary/text rules instead of a file-extension
+ * allowlist that inevitably omits a new source or configuration form. Empty
+ * files are absent because grep has no line to return; they cannot contain an
+ * invariant token, a byte-order mark, mojibake, a link or a definition.
+ */
 export function loadTrackedFiles(repoRoot) {
-  const listed = execFileSync("git", ["ls-files", "-z"], {
+  const listed = spawnSync("git", ["grep", "-Il", "-z", "-e", "", "--"], {
     cwd: repoRoot,
     encoding: "utf8",
     maxBuffer: 1 << 28,
-  })
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (listed.error) throw listed.error;
+  if (listed.status !== 0 && listed.status !== 1) {
+    throw new Error(
+      `git grep could not classify tracked text files (status ${listed.status}): ` +
+        listed.stderr.trim(),
+    );
+  }
+
+  const trackedText = listed.stdout
     .split("\0")
     .filter(Boolean);
 
   const files = new Map();
-  for (const entry of listed) {
+  for (const entry of trackedText) {
     const rel = entry.replace(/\\/g, "/");
-    if (!SCANNED_EXTENSIONS.has(path.extname(rel).toLowerCase())) continue;
     const absolute = path.join(repoRoot, rel);
     // A tracked-but-deleted path in a dirty working tree is not this check's
     // business; git status reports it and reading it would throw here.

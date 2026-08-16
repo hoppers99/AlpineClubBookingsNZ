@@ -643,9 +643,11 @@ a bullet or blockquote marker, retain at least four code-indentation columns.
 An empty list marker also establishes the default one-column padding used to
 classify its following indented code. A blank line retains an open list's
 container widths, so an indented continuation remains list-owned rather than
-being misclassified as top-level code. A fresh same-width bullet sibling, or
-the next numbered sibling after `1.`, starts a fresh list paragraph; the rule
-that `2.` cannot interrupt an unrelated paragraph still holds. An unmarked
+being misclassified as top-level code. A fresh list sibling is recognised by
+its nesting, list kind and delimiter rather than by the previous item's padding:
+`9.` followed by `10.`, or two items with different padding, still starts a
+fresh list paragraph. A changed `.`/`)` delimiter is a different list, and the
+rule that `2.` cannot interrupt an unrelated paragraph still holds. An unmarked
 thematic break ends the container paragraph, and a spaced top-level `- - -` or
 `* * *` takes thematic-break precedence over the list marker its first
 character resembles. Within the same marked container, a dash or equals
@@ -672,16 +674,23 @@ backticked, wrongly levelled, wrongly padded, decorated, container-owned, Setext
 or identifier-suffixed heading (`INV-<PREFIX>-002a`,
 `INV-<PREFIX>-002_extra`, `INV-<PREFIX>-002-extra`, or the forbidden dotted
 sub-ID `INV-<PREFIX>-002.1`) that would otherwise be invisible as a definition
-or pass merely because an embedded ID resolved as a citation. The same four
+or pass merely because an embedded ID resolved as a citation. Inline emphasis,
+strong emphasis, code, strike-through and inline HTML cannot split the visible
+token around that sentinel: a heading such as `INV-**<PREFIX>**-002` is rejected
+as decorated rather than disappearing from the definition census. The same four
 identifier continuations are rejected in ordinary prose, source code, literal
 blocks and fence opener info strings rather than being truncated to the
 valid-looking numeric prefix. A full stop used as punctuation remains legal;
 only a dot immediately followed by a digit is a dotted sub-ID.
 
-**Citation** — collected from every tracked `*.md`, `*.ts`, `*.tsx`, `*.mjs`,
-`*.js`, `*.jsx`, `*.cjs`, `*.prisma`, `*.sql`, `*.yml`, `*.yaml`, `*.json` and
-`*.tsv`
-file. CommonMark block classification applies only to `*.md`; every other
+**Citation** — collected from every nonempty tracked text file. The loader asks
+Git for its tracked working tree and uses Git's own binary/text classification;
+it does not maintain an extension allowlist. That includes TypeScript's `.mts`
+and `.cts` forms, shell scripts, TOML, JSON-with-comments, plain text, HTML and
+extensionless text files without traversing anything outside the tracked tree,
+such as dependency or generated directories. Empty files have no line, token,
+byte-order mark or encoding sequence to audit. CommonMark block classification
+applies only to `*.md`; every other
 format is scanned linewise so indentation or JSX/HTML syntax cannot disguise a
 citation as a Markdown code or raw-HTML block:
 
