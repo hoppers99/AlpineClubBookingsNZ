@@ -87,6 +87,9 @@ export const INVARIANT_INDEX = "docs/DOMAIN_INVARIANTS.md";
 /** Where invariant definitions live. Nothing outside it may define an id. */
 export const INVARIANT_DIR = "docs/invariants/";
 
+/** The scheme's illustrative fences must never look like live invariant ids. */
+export const INVARIANT_SCHEME = "docs/invariants/SCHEME.md";
+
 /**
  * A DEFINITION is a heading whose entire text is the id. A citation is never a
  * whole heading line, so the two patterns cannot be confused in either
@@ -305,7 +308,7 @@ const FENCE_OPENER_PATTERN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const FENCE_CLOSER_PATTERN = /^ {0,3}(`+|~+)[ \t]*$/;
 const BLOCKQUOTE_PREFIX_PATTERN = /^ {0,3}>[ \t]?/;
 const LIST_PREFIX_PATTERN =
-  /^( {0,3})(?:[*+-]|[0-9]{1,9}[.)])([ \t]{1,4})(?=\S|$)/;
+  /^( {0,3})([*+-]|([0-9]{1,9})[.)])([ \t]{1,4})(?=\S|$)/;
 const HTML_BLOCK_TAGS =
   "address|article|aside|base|basefont|blockquote|body|caption|center|col|" +
   "colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|" +
@@ -317,7 +320,7 @@ const HTML_BLOCK_TAG_PATTERN = new RegExp(
   "i",
 );
 const COMPLETE_HTML_TAG_PATTERN =
-  /^ {0,3}<\/?[A-Za-z][A-Za-z0-9-]*(?:[ \t][^<>]*)?\/?>[ \t]*$/;
+  /^ {0,3}(?:<\/[A-Za-z][A-Za-z0-9-]*[ \t]*>|<[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[A-Za-z_:][A-Za-z0-9_.:-]*(?:[ \t]*=[ \t]*(?:[^ "'=<>`]+|'[^']*'|"[^"]*"))?)*[ \t]*\/?>)[ \t]*$/;
 
 function indentationColumns(text) {
   let column = 0;
@@ -328,7 +331,7 @@ function indentationColumns(text) {
 }
 
 /** Strip quote/list markers from a possible container-block opener. */
-function stripOpeningContainers(line) {
+function stripOpeningContainers(line, { interruptingParagraph = false } = {}) {
   const containers = [];
   let text = line;
   while (true) {
@@ -336,16 +339,26 @@ function stripOpeningContainers(line) {
     if (blockquote) {
       containers.push({ type: "blockquote" });
       text = text.slice(blockquote[0].length);
+      interruptingParagraph = false;
       continue;
     }
 
     const list = text.match(LIST_PREFIX_PATTERN);
     if (list) {
+      const itemText = text.slice(list[0].length);
+      const orderedStart = list[3] === undefined ? null : Number(list[3]);
+      if (
+        interruptingParagraph &&
+        (itemText.trim() === "" || (orderedStart !== null && orderedStart !== 1))
+      ) {
+        return { containers, text };
+      }
       containers.push({
         type: "list",
         width: indentationColumns(list[0]),
       });
       text = text.slice(list[0].length);
+      interruptingParagraph = false;
       continue;
     }
     return { containers, text };
@@ -399,7 +412,7 @@ function rawHtmlBlockTerminator(line) {
   if (rawTag) {
     return {
       canInterruptParagraph: true,
-      end: new RegExp(`</${rawTag[1]}\\s*>`, "i"),
+      end: /<\/(?:pre|script|style|textarea)\s*>/i,
       type: "explicit",
     };
   }
@@ -440,14 +453,18 @@ function structuralLine(line, paragraph) {
   if (paragraph?.containers.length > 0) {
     const continuation = stripExpectedContainers(line, paragraph.containers);
     if (continuation !== null) {
-      const nested = stripOpeningContainers(continuation);
+      const nested = stripOpeningContainers(continuation, {
+        interruptingParagraph: true,
+      });
       return {
         containers: [...paragraph.containers, ...nested.containers],
         text: nested.text,
       };
     }
   }
-  return stripOpeningContainers(line);
+  return stripOpeningContainers(line, {
+    interruptingParagraph: paragraph !== null,
+  });
 }
 
 function leadingIndentColumns(text) {
@@ -465,6 +482,7 @@ const ATX_HEADING_PATTERN = /^ {0,3}#{1,6}(?:[ \t]+|$)/;
 function scanMarkdownBlocks(text) {
   const scannable = [];
   const fenced = [];
+  const fenceOpeners = [];
   const headings = [];
   let literal = null;
   let paragraph = null;
@@ -540,6 +558,10 @@ function scanMarkdownBlocks(text) {
         headings.push({
           containerDepth: paragraph.containers.length,
           kind: "setext",
+          lineNumbers: [
+            ...paragraph.lines.map((entry) => entry.number),
+            numberedLine.number,
+          ],
           number: paragraph.lines[0].number,
           text: paragraph.lines.map((entry) => entry.text).join(" "),
         });
@@ -575,6 +597,7 @@ function scanMarkdownBlocks(text) {
         markerRun && (markerRun[0] === "~" || !info.includes("`"));
       if (isValidOpener) {
         paragraph = null;
+        fenceOpeners.push(numberedLine);
         literal = {
           containers: outside.containers,
           length: markerRun.length,
@@ -595,6 +618,7 @@ function scanMarkdownBlocks(text) {
         headings.push({
           containerDepth: outside.containers.length,
           kind: "atx",
+          lineNumbers: [numberedLine.number],
           number: numberedLine.number,
           text: outside.text,
         });
@@ -615,7 +639,12 @@ function scanMarkdownBlocks(text) {
     }
   }
 
-  return { fenced, headings, scannable };
+  return {
+    fenced,
+    headings,
+    literalAudit: [...fenced, ...fenceOpeners].sort((left, right) => left.number - right.number),
+    scannable,
+  };
 }
 
 /**
@@ -627,7 +656,8 @@ function scanMarkdownBlocks(text) {
  * non-container line is reprocessed outside the block. Explicitly terminated
  * raw HTML blocks ignore fence markers until their terminator. Backtick info
  * strings may not themselves contain a backtick. Fence opener/closer lines
- * belong to neither output; raw HTML boundary lines belong to the literal view.
+ * belong to neither output; raw HTML and indented-code boundary lines belong
+ * to the literal view.
  */
 export function scanMarkdownFenceLines(text) {
   const { fenced, scannable } = scanMarkdownBlocks(text);
@@ -640,8 +670,8 @@ export function scannableLines(text) {
 }
 
 /**
- * Lines inside fenced code or explicitly terminated raw HTML literal blocks,
- * with their original line numbers.
+ * Lines inside fenced code, indented code or raw HTML literal blocks, with their
+ * original line numbers.
  *
  * This is deliberately separate from {@link scannableLines}: most audits must
  * ignore examples, while the narrow live-prefix citation audit below must see
@@ -649,6 +679,11 @@ export function scannableLines(text) {
  */
 export function fencedLines(text) {
   return scanMarkdownFenceLines(text).fenced;
+}
+
+/** Literal lines inspected by the narrow live-prefix audit, including fence openers. */
+export function literalAuditLines(text) {
+  return scanMarkdownBlocks(text).literalAudit;
 }
 
 /** The prefix half of an id: `INV-CAP-021` -> `CAP`. */
@@ -824,14 +859,14 @@ export function auditInvariantIds(files) {
     );
   }
 
-  // Fences may carry placeholders, invoice-number fixtures and examples under
-  // custom prefixes. But a numeric token under a prefix this repository really
-  // declares is a claim about a live invariant even inside a fence: malformed
-  // widths fail the shape rule and well-formed ids must resolve. Unknown/custom
-  // prefixes remain ignored here; the ordinary out-of-fence scan still fails
-  // them as typos.
+  // Literal source may carry placeholders, invoice-number fixtures, custom
+  // prefixes and real citations. A numeric token under a declared prefix must
+  // resolve and use the canonical width. SCHEME's illustrative literal blocks
+  // are stricter: they use placeholders/custom prefixes exclusively, because a
+  // live-looking example is the grep trap this issue exists to remove.
   const unresolvedFenced = new Map();
   const malformedFenced = [];
+  const schemeLiteralLiveIds = [];
 
   // Built only from declared prefixes, so placeholders, reserved invoice
   // numbers and custom fixture prefixes never enter this audit.
@@ -846,7 +881,7 @@ export function auditInvariantIds(files) {
   if (livePrefixNumericPattern) {
     for (const [rel, text] of files) {
       if (CITATION_EXEMPT_FILES.has(rel)) continue;
-      for (const { number, text: line } of fencedLines(text)) {
+      for (const { number, text: line } of literalAuditLines(text)) {
         for (const match of line.matchAll(livePrefixNumericPattern)) {
           const id = match[0];
           const digits = id.slice(id.lastIndexOf("-") + 1);
@@ -859,6 +894,8 @@ export function auditInvariantIds(files) {
           } else if (!definitions.has(id)) {
             if (!unresolvedFenced.has(id)) unresolvedFenced.set(id, []);
             unresolvedFenced.get(id).push(`${rel}:${number}`);
+          } else if (rel === INVARIANT_SCHEME) {
+            schemeLiteralLiveIds.push({ at: `${rel}:${number}`, id });
           }
         }
       }
@@ -867,7 +904,7 @@ export function auditInvariantIds(files) {
 
   for (const { id, digits, at } of malformedFenced) {
     problems.push(
-      `${id} at ${at} uses ${digits} digit(s) inside a fenced code block or raw HTML literal block. Invariant ` +
+      `${id} at ${at} uses ${digits} digit(s) inside a Markdown literal block or fence opener. Invariant ` +
         "numbers under a live prefix are exactly three, zero-padded, even in examples. " +
         "Use a placeholder such as `INV-<PREFIX>-<NNN>` when the example must not " +
         "claim a real invariant id.",
@@ -876,11 +913,21 @@ export function auditInvariantIds(files) {
 
   for (const [id, places] of unresolvedFenced) {
     problems.push(
-      `${id} appears inside a fenced code block or raw HTML literal block at ${places.join(", ")} but no ` +
+      `${id} appears inside a Markdown literal block or fence opener at ${places.join(", ")} but no ` +
         `file under ${INVARIANT_DIR} defines it. A fence may use ` +
         "`INV-<PREFIX>-<NNN>`, a reserved invoice number, a custom fixture prefix, " +
-        "or a real defined id; it may not invent a number under a live invariant " +
-        "prefix, because that reads as a real maximum to repository searches.",
+        "or a real citation that resolves; it may not invent a number under a live " +
+        "invariant prefix, because that reads as a real maximum to repository searches.",
+    );
+  }
+
+  for (const { at, id } of schemeLiteralLiveIds) {
+    problems.push(
+      `${id} at ${at} is a live invariant id inside an illustrative literal block in ` +
+        `${INVARIANT_SCHEME}. That file teaches allocation and is the source of the ` +
+        "#2889 grep trap, so its examples use `INV-<PREFIX>-<NNN>` placeholders or a " +
+        "custom non-live prefix instead of anything a live-id grep can mistake for " +
+        "the current maximum.",
     );
   }
 
@@ -914,6 +961,35 @@ export function auditInvariantIds(files) {
                 "heading does.",
             );
           }
+        }
+      }
+    }
+  }
+
+  const prefixAlternation = [...declaredPrefixes].sort().join("|");
+  const livePrefixIdentifierContinuationPattern =
+    prefixAlternation.length > 0
+      ? new RegExp(
+          `\\bINV-(?:${prefixAlternation})-([0-9]+)((?:[A-Za-z_]|-[A-Za-z0-9_])[A-Za-z0-9_-]*)\\b`,
+          "g",
+        )
+      : null;
+
+  if (livePrefixIdentifierContinuationPattern) {
+    for (const [rel, text] of files) {
+      if (SHAPE_GUARD_EXEMPT_FILES.has(rel) || CITATION_EXEMPT_FILES.has(rel)) continue;
+      const headingLines = new Set(
+        scanMarkdownBlocks(text).headings.flatMap((heading) => heading.lineNumbers),
+      );
+      for (const { number, text: line } of scannableLines(text)) {
+        if (headingLines.has(number)) continue;
+        for (const match of line.matchAll(livePrefixIdentifierContinuationPattern)) {
+          problems.push(
+            `${match[0]} at ${rel}:${number} extends an invariant id with the identifier ` +
+              `continuation ${match[2]}. Invariant ids end after exactly three digits; ` +
+              "use punctuation or whitespace after the id, and put any explanatory " +
+              "word outside the identifier.",
+          );
         }
       }
     }

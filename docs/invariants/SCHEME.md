@@ -382,11 +382,15 @@ own section below" and "this subsection". Rules, in order:
    In `additional-payment-chasing.md`, where "rule (b) above" names a rule that
    now lives in `booking-dates-and-capacity.md`:
 
+   `INV-EXAMPLE` is a non-live stand-in. Illustrative fences in this scheme never
+   spell a real prefix/number pair, because a repository grep cannot distinguish
+   teaching text from the live catalogue.
+
    ```
    before:  moves AWAITING_REVIEW → PENDING, which keeps holding via rule (b) above, so an
             accepted-but-unpaid quote does not lose its bed before payment.
 
-   after:   moves AWAITING_REVIEW → PENDING, which keeps holding via rule (b) above [INV-CAP-004], so an
+   after:   moves AWAITING_REVIEW → PENDING, which keeps holding via rule (b) above [INV-EXAMPLE-004], so an
             accepted-but-unpaid quote does not lose its bed before payment.
    ```
 
@@ -540,14 +544,15 @@ split. It adds one top-level bullet to `docs/DOMAIN_INVARIANTS.md` inside
 client-side `yyyy-MM-dd` rule, stating that a server asking for "today" asks the
 club's calendar, with two exact boundaries and one reverse case.
 
-Resolved against this scheme:
+Resolved against this scheme. The fenced transcript uses the non-live
+`INV-EXAMPLE` stand-in so it cannot masquerade as the live prefix maximum:
 
 ```
 File:      docs/invariants/booking-dates-and-capacity.md
 Section:   ## Date handling rules
-Position:  immediately after INV-DATE-013, immediately before INV-DATE-014
-ID:        INV-DATE-019          <- next free in the prefix, NOT 013.5 and NOT 014
-Index row: | `INV-DATE-019` | Ask the club's calendar for "today", never the UTC clock |
+Position:  immediately after INV-EXAMPLE-013, immediately before INV-EXAMPLE-014
+ID:        INV-EXAMPLE-019          <- next free in the prefix, NOT 013.5 and NOT 014
+Index row: | `INV-EXAMPLE-019` | Ask the club's calendar for "today", never the UTC clock |
 ```
 
 Note the ID would be `019` while the block sits fourth in its section. That is
@@ -589,13 +594,13 @@ block pass classifies fenced code inside blockquote and list containers,
 indented code, raw HTML, paragraphs, and ATX/Setext headings. A type-7 HTML tag
 cannot interrupt an active paragraph; a literal fence marker inside `<pre>` or
 another HTML block cannot change how the following headings are classified. The
-shape audit covers both sides of a literal region: any numeric token under a
-prefix this repository really declares has exactly three digits, and a
-well-formed one must resolve even in a literal example. Placeholders
-(`INV-<PREFIX>-<NNN>`), reserved invoice numbers and
-custom fixture prefixes remain legal examples. This document, and any future
-one, can therefore teach the shape without being allowed to invent what looks
-like a live maximum or a malformed live ID.
+shape audit covers both sides of a literal region, including a fence opener's
+info string: any numeric token under a prefix this repository really declares
+has exactly three digits, and a well-formed one must resolve. Placeholders
+(`INV-<PREFIX>-<NNN>`), reserved invoice numbers and custom fixture prefixes
+remain legal examples. This scheme adds a stronger source-trap rule: its own
+illustrative literal blocks contain no live prefix/number pair, even one that
+resolves, because a repository grep cannot tell an example from the catalogue.
 
 Both sides come from that one bounded block classifier. It remembers a fence's
 blockquote/list containers, whether the opener used backticks or tildes, and how
@@ -603,9 +608,10 @@ long that marker run was. Only the same marker with at least that length closes
 the block; a triple-backtick line inside a four-backtick fence, or a tilde run
 inside a backtick fence, stays content and cannot invert which audits see the
 following lines. Four-space indented code is literal when it begins outside a
-paragraph. Raw HTML types with explicit closing tokens stay literal until that
-token; standard block tags stay literal until the terminating blank line, while
-a complete type-7 tag starts that form only when no paragraph is active.
+paragraph. Any type-1 closing tag ends a type-1 raw HTML block; standard block
+tags stay literal until the terminating blank line, while a syntactically valid
+type-7 tag starts that form only when no paragraph is active. An ordered list
+can interrupt an active paragraph only when it starts at one.
 
 **Definition** — collected only from `docs/invariants/**/*.md`:
 
@@ -623,10 +629,13 @@ Every unfenced Markdown heading under `docs/invariants/` that contains a numeric
 invariant-shaped token is checked against that exact shape. Numeric tokens in
 headings are reserved for definitions: a legitimate narrative heading names the
 topic and puts any invariant citation in its body. This catches a lower-cased,
-backticked, wrongly levelled, wrongly padded, decorated, container-owned, Setext or
-identifier-suffixed heading (`INV-<PREFIX>-002a`,
-`INV-<PREFIX>-002_extra`) that would otherwise be invisible as a definition or
-pass merely because an embedded ID resolved as a citation.
+backticked, wrongly levelled, wrongly padded, decorated, container-owned, Setext
+or identifier-suffixed heading (`INV-<PREFIX>-002a`,
+`INV-<PREFIX>-002_extra`, `INV-<PREFIX>-002-extra`) that would otherwise be
+invisible as a definition or pass merely because an embedded ID resolved as a
+citation. The same three identifier continuations are rejected in ordinary
+prose and source code rather than being truncated to the valid-looking numeric
+prefix.
 
 **Citation** — collected from every tracked `*.md`, `*.ts`, `*.tsx`, `*.mjs`,
 `*.js`, `*.jsx`, `*.cjs`, `*.prisma`, `*.sql`, `*.yml`, `*.yaml` and `*.json`
@@ -657,16 +666,20 @@ every Xero invoice fixture in the test suite (§1.2.1).
 2. No duplicate definition of any ID, across all files.
 3. Every ordinary citation whose prefix is a **declared invariant prefix**
    resolves to a definition.
-4. Every numeric token inside a fence whose prefix is declared has exactly three
-   digits, and every such well-formed ID resolves; placeholders, reserved invoice
-   numbers and custom fixture prefixes are not treated as live IDs there.
+4. Every numeric token inside a literal block or fence opener whose prefix is
+   declared has exactly three digits, and every such well-formed ID resolves;
+   placeholders, reserved invoice numbers and custom fixture prefixes are not
+   treated as live IDs there. Illustrative literal blocks in this file are
+   stricter and contain no live prefix/number pair at all.
 5. Every ordinary citation whose prefix is **not** declared is either on the
    reserved list — `IB`, `SETTLE`, `SUP`, `SUB`, `XERO`, `FAM`, `LEGACY`, `PM`,
    `JOR`, `REB`, documented in the script as Xero invoice-number fixtures — or
    the check fails with "unrecognised `INV-` prefix: add it to the invariant
    index or to the reserved list". This is what catches a typo'd prefix — a
    misspelling of a real prefix — which a whitelist alone would silently ignore.
-6. Every ordinary (unfenced) shape-guard match has exactly three digits.
+6. Every ordinary (unfenced) shape-guard match has exactly three digits, and a
+   declared-prefix ID has no letter, underscore or hyphen identifier
+   continuation after those digits.
 7. Every file under `docs/invariants/` is linked from
    `docs/DOMAIN_INVARIANTS.md`, and every file linked from it exists.
 8. Every defined ID appears exactly once in the index.

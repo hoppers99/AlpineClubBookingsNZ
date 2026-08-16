@@ -26,6 +26,8 @@ import {
   auditPermanentInvariantIds,
   auditRoutingTable,
   fencedLines,
+  INVARIANT_SCHEME,
+  literalAuditLines,
   loadInvariantFilesAtRef,
   resolveInvariantBaselineRef,
   routingTableRows,
@@ -297,6 +299,28 @@ describe("scannableLines", () => {
     ]);
   });
 
+  it("ends any type-1 HTML block at the first type-1 closing tag", () => {
+    const source = "<pre>\nliteral\n</script>\nvisible\n";
+
+    expect(fencedLines(source).map((line) => line.text)).toEqual([
+      "<pre>",
+      "literal",
+      "</script>",
+    ]);
+    expect(scannableLines(source).map((line) => line.text)).toEqual(["visible", ""]);
+  });
+
+  it("includes backtick and tilde fence openers in the narrow literal audit", () => {
+    const source = "```lang INV-DEMO-002\nbody\n```\n~~~lang INV-DEMO-03\nbody\n~~~\n";
+
+    expect(literalAuditLines(source).map((line) => line.text)).toEqual([
+      "```lang INV-DEMO-002",
+      "body",
+      "~~~lang INV-DEMO-03",
+      "body",
+    ]);
+  });
+
   it("does not let indented code interrupt an active paragraph", () => {
     const source = "paragraph\n    paragraph continuation\n";
 
@@ -517,6 +541,48 @@ describe("auditDocs — the whole check", () => {
 
     expect(auditDocs(files)).toEqual([]);
   });
+
+  it("does not let a different type-1 closing tag hide a decorated invariant heading", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n<pre>\nliteral\n</script>\n## INV-MONEY-001 — duplicate rule\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("looks like an invariant definition heading");
+  });
+
+  it.each(["<fixture =bad>", "<fixture !>"])(
+    "does not let invalid type-7 tag %s hide a decorated invariant heading",
+    (invalidTag) => {
+      const files = repo();
+      files.set(
+        "docs/invariants/money.md",
+        `${files.get("docs/invariants/money.md")}\n${invalidTag}\n## INV-MONEY-001 — duplicate rule\n`,
+      );
+
+      const problems = auditDocs(files);
+
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain("looks like an invariant definition heading");
+    },
+  );
+
+  it("does not let an ordered list starting above one interrupt a paragraph", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\nParagraph text\n2. <fixture>\n   ## INV-MONEY-001 — another rule\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("looks like an invariant definition heading");
+  });
 });
 
 describe("auditInvariantIds", () => {
@@ -599,9 +665,30 @@ describe("auditInvariantIds", () => {
 
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("INV-MONEY-002");
-    expect(problems[0]).toContain("fenced code block");
+    expect(problems[0]).toContain("Markdown literal block or fence opener");
     expect(problems[0]).toContain("docs/example.md:4");
   });
+
+  it.each([
+    ["INV-MONEY-002", "```", "no file under docs/invariants/ defines it"],
+    ["INV-MONEY-002", "~~~", "no file under docs/invariants/ defines it"],
+    ["INV-MONEY-42", "```", "2 digit(s)"],
+    ["INV-MONEY-0042", "~~~", "4 digit(s)"],
+  ])(
+    "audits declared-prefix id %s in a %s opener info string",
+    (id, marker, expected) => {
+      const problems = auditInvariantIds(
+        repo({
+          "docs/example.md": `# Example\n\n${marker}lang ${id}\nbody\n${marker}\n`,
+        }),
+      );
+
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain(id);
+      expect(problems[0]).toContain(expected);
+      expect(problems[0]).toContain("docs/example.md:3");
+    },
+  );
 
   it.each([
     ["INV-MONEY-42", 2],
@@ -614,18 +701,17 @@ describe("auditInvariantIds", () => {
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain(id);
     expect(problems[0]).toContain(`${digitCount} digit(s)`);
-    expect(problems[0]).toContain("fenced code block");
+    expect(problems[0]).toContain("Markdown literal block or fence opener");
     expect(problems[0]).toContain("docs/example.md:4");
   });
 
-  it("allows real ids, placeholders, reserved invoices and custom prefixes in fences", () => {
+  it("allows placeholders, reserved invoices and custom prefixes in fences", () => {
     const problems = auditInvariantIds(
       repo({
         "docs/example.md": [
           "# Example",
           "",
           "```",
-          "INV-MONEY-001",
           "INV-<PREFIX>-<NNN>",
           "INV-XERO-999",
           "INV-XERO-42",
@@ -639,6 +725,49 @@ describe("auditInvariantIds", () => {
 
     expect(problems).toEqual([]);
   });
+
+  it("rejects a live id in an illustrative SCHEME fence even when it resolves", () => {
+    const problems = auditInvariantIds(
+      repo({
+        [INVARIANT_SCHEME]: "# Scheme\n\n```text\nINV-MONEY-001\n```\n",
+      }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("live invariant id inside an illustrative literal block");
+    expect(problems[0]).toContain(`${INVARIANT_SCHEME}:4`);
+  });
+
+  it("keeps every real SCHEME literal free of live-prefix ids", () => {
+    const scheme = readFileSync(path.join(REPO_ROOT, INVARIANT_SCHEME), "utf8");
+    const index = readFileSync(
+      path.join(REPO_ROOT, "docs", "DOMAIN_INVARIANTS.md"),
+      "utf8",
+    );
+    const livePrefixes = [
+      ...new Set([...index.matchAll(/\bINV-([A-Z][A-Z0-9]*)-\d{3}\b/g)].map((match) => match[1])),
+    ].sort();
+    const liveId = new RegExp(`\\bINV-(?:${livePrefixes.join("|")})-\\d+\\b`);
+
+    expect(
+      literalAuditLines(scheme)
+        .filter((line) => liveId.test(line.text))
+        .map((line) => `${INVARIANT_SCHEME}:${line.number}`),
+    ).toEqual([]);
+  });
+
+  it.each(["INV-MONEY-001a", "INV-MONEY-001_extra", "INV-MONEY-001-extra"])(
+    "rejects identifier continuation %s in ordinary source",
+    (malformed) => {
+      const problems = auditDocs(
+        repo({ "src/lib/money.ts": `// Malformed citation ${malformed}.\n` }),
+      );
+
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain(malformed);
+      expect(problems[0]).toContain("identifier continuation");
+    },
+  );
 
   it("catches a two-digit near-miss under a real prefix", () => {
     // It slips past the strict citation pattern and would otherwise resolve to
