@@ -805,6 +805,7 @@ export default function HutLeadersPage() {
 
       {lodgeScopeReady ? <AssignmentForm
         hutLeaderLabel={hutLeaderLabel}
+        lodgeId={scopedLodgeId}
         selectedStartDate={selection.startDate}
         selectedEndDate={selection.endDate}
         onPickNights={handlePickNights}

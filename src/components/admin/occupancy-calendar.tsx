@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -97,6 +97,17 @@ const CALENDAR_TONE_CLASSES: Record<
 
 type OccupancyCalendarProps = {
   mode: OccupancyCalendarMode;
+  /**
+   * The lodge whose occupancy this heat-map shows (#2887). REQUIRED, and
+   * deliberately not optional-with-a-default: `GET /api/admin/occupancy` now
+   * refuses a request that names no lodge (400), so a consumer that omits it
+   * gets a calendar that reads "Occupancy could not be loaded." for every
+   * month, forever. A required prop makes that a compile error instead.
+   *
+   * Both current callers render only once their own lodge scope has settled,
+   * so they always have a concrete id to pass.
+   */
+  lodgeId: string;
   selectedStartDate?: string;
   selectedEndDate?: string;
   onSelectionChange: (selection: { startDate: string; endDate: string }) => void;
@@ -191,6 +202,7 @@ function formatDisplayDate(dateString: string) {
 
 export function OccupancyCalendar({
   mode,
+  lodgeId,
   selectedStartDate,
   selectedEndDate,
   onSelectionChange,
@@ -212,6 +224,45 @@ export function OccupancyCalendar({
   const requestedMonthKeys = useRef(new Set<string>());
   const visibleMonthKey = monthKey(visibleMonth);
 
+  /*
+    #2887: the month caches below are keyed by month alone, so they belong to
+    ONE lodge. Two things follow.
+
+    The ownership ref moves in the COMMIT, never in the render body and never in
+    a passive effect — same rule, and same reasoning, as every other lodge-scope
+    fence in this PR. See
+    `src/lib/__tests__/lodge-scope-committed-ownership.test.tsx`.
+  */
+  const activeLodgeRef = useRef(lodgeId);
+  useLayoutEffect(() => {
+    activeLodgeRef.current = lodgeId;
+  }, [lodgeId]);
+
+  /*
+    …and the caches are dropped when the lodge CHANGES, so Lodge A's heat-map
+    cannot sit under Lodge B's heading while B loads. Declared BEFORE the
+    month-loading effects on purpose: effects flush in declaration order, so
+    this clears first and the reload that follows is B's.
+
+    The `previousLodgeRef` guard is load-bearing, not defensive. Without it this
+    fires on MOUNT as well, and `setOccupancyByMonth({})` hands back a fresh
+    object identity — which re-runs the month-loading effect, whose cleanup
+    cancels the first request and starts a second. That is a double fetch on
+    every calendar mount in production, and in test it swallowed the failure
+    state (the cancelled attempt's `.catch` is a no-op, and the retry
+    succeeded).
+  */
+  const previousLodgeRef = useRef(lodgeId);
+  useEffect(() => {
+    if (previousLodgeRef.current === lodgeId) return;
+    previousLodgeRef.current = lodgeId;
+    requestedMonthKeys.current.clear();
+    setOccupancyByMonth({});
+    setLoadingMonthKeys([]);
+    setFailedMonthKeys([]);
+    setLoadError("");
+  }, [lodgeId]);
+
   useEffect(() => {
     onVisibleMonthChange?.(visibleMonthKey);
   }, [visibleMonthKey, onVisibleMonthChange]);
@@ -228,6 +279,10 @@ export function OccupancyCalendar({
     if (requestedMonthKeys.current.has(month)) {
       return undefined;
     }
+    // #2887: no lodge, no read. The route refuses a lodgeless request, so
+    // firing one only paints the failure banner over an empty grid.
+    const requestedLodgeId = lodgeId;
+    if (!requestedLodgeId) return undefined;
 
     let cancelled = false;
     requestedMonthKeys.current.add(month);
@@ -237,13 +292,17 @@ export function OccupancyCalendar({
     setFailedMonthKeys((current) => current.filter((key) => key !== month));
     setLoadError("");
 
-    fetch(`/api/admin/occupancy?month=${month}`)
+    fetch(
+      `/api/admin/occupancy?month=${month}&lodgeId=${encodeURIComponent(requestedLodgeId)}`,
+    )
       .then((res) => {
         if (!res.ok) throw new Error("Failed to load occupancy");
         return res.json() as Promise<OccupancyCalendarResponse>;
       })
       .then((data) => {
-        if (!cancelled) {
+        // The month caches are keyed by month alone, so a response that
+        // outlived its lodge must not land in them.
+        if (!cancelled && activeLodgeRef.current === requestedLodgeId) {
           setOccupancyByMonth((current) => ({
             ...current,
             [month]: data,
@@ -252,7 +311,7 @@ export function OccupancyCalendar({
         }
       })
       .catch(() => {
-        if (!cancelled) {
+        if (!cancelled && activeLodgeRef.current === requestedLodgeId) {
           setFailedMonthKeys((current) =>
             current.includes(month) ? current : [...current, month],
           );
@@ -261,7 +320,7 @@ export function OccupancyCalendar({
       })
       .finally(() => {
         requestedMonthKeys.current.delete(month);
-        if (!cancelled) {
+        if (!cancelled && activeLodgeRef.current === requestedLodgeId) {
           setLoadingMonthKeys((current) => current.filter((key) => key !== month));
         }
       });
@@ -270,7 +329,7 @@ export function OccupancyCalendar({
       cancelled = true;
       requestedMonthKeys.current.delete(month);
     };
-  }, []);
+  }, [lodgeId]);
 
   useEffect(() => {
     if (!occupancyByMonth[visibleMonthKey]) {

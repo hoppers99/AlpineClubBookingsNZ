@@ -477,6 +477,10 @@ export default function RosterPage() {
             <div className="mt-4">
               <OccupancyCalendar
                 mode="single"
+                // #2887: the heat-map is lodge-scoped like everything else on
+                // this page. This branch only renders once the scope settles,
+                // so `scopedLodgeId` is concrete here.
+                lodgeId={scopedLodgeId}
                 selectedStartDate={selectedDate}
                 selectedEndDate={selectedDate}
                 onSelectionChange={({ startDate }) => changeDate(startDate)}
