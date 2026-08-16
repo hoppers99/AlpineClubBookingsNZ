@@ -873,7 +873,7 @@ export function auditInvariantIds(files) {
   const livePrefixNumericPattern =
     declaredPrefixes.size > 0
       ? new RegExp(
-          `\\bINV-(?:${[...declaredPrefixes].sort().join("|")})-[0-9]+\\b`,
+          `\\bINV-(?:${[...declaredPrefixes].sort().join("|")})-[0-9]+\\b(?!-[A-Za-z0-9_])`,
           "g",
         )
       : null;
@@ -977,12 +977,18 @@ export function auditInvariantIds(files) {
 
   if (livePrefixIdentifierContinuationPattern) {
     for (const [rel, text] of files) {
-      if (SHAPE_GUARD_EXEMPT_FILES.has(rel) || CITATION_EXEMPT_FILES.has(rel)) continue;
+      if (CITATION_EXEMPT_FILES.has(rel)) continue;
+      const markdown = scanMarkdownBlocks(text);
       const headingLines = new Set(
-        scanMarkdownBlocks(text).headings.flatMap((heading) => heading.lineNumbers),
+        markdown.headings.flatMap((heading) => heading.lineNumbers),
       );
-      for (const { number, text: line } of scannableLines(text)) {
-        if (headingLines.has(number)) continue;
+      const ordinaryLines = SHAPE_GUARD_EXEMPT_FILES.has(rel)
+        ? []
+        : markdown.scannable.filter(({ number }) => !headingLines.has(number));
+      const identifierAuditLines = [...ordinaryLines, ...markdown.literalAudit].sort(
+        (left, right) => left.number - right.number,
+      );
+      for (const { number, text: line } of identifierAuditLines) {
         for (const match of line.matchAll(livePrefixIdentifierContinuationPattern)) {
           problems.push(
             `${match[0]} at ${rel}:${number} extends an invariant id with the identifier ` +

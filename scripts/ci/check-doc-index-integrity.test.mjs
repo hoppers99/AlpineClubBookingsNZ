@@ -769,6 +769,25 @@ describe("auditInvariantIds", () => {
     },
   );
 
+  it.each([
+    ["backtick opener", "```lang INV-MONEY-999a\nbody\n```", "INV-MONEY-999a", 3],
+    ["tilde opener", "~~~lang INV-MONEY-999_extra\nbody\n~~~", "INV-MONEY-999_extra", 3],
+    ["hyphenated opener", "```lang INV-MONEY-999-extra\nbody\n```", "INV-MONEY-999-extra", 3],
+    ["fenced body", "```text\nINV-MONEY-999a\n```", "INV-MONEY-999a", 4],
+  ])(
+    "rejects identifier continuation in a %s",
+    (_location, fixture, malformed, lineNumber) => {
+      const problems = auditInvariantIds(
+        repo({ "docs/example.md": `# Example\n\n${fixture}\n` }),
+      );
+
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain(malformed);
+      expect(problems[0]).toContain("identifier continuation");
+      expect(problems[0]).toContain(`docs/example.md:${lineNumber}`);
+    },
+  );
+
   it("catches a two-digit near-miss under a real prefix", () => {
     // It slips past the strict citation pattern and would otherwise resolve to
     // nothing while being reported as nothing.

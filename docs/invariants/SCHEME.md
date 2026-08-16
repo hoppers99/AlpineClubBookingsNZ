@@ -634,8 +634,8 @@ or identifier-suffixed heading (`INV-<PREFIX>-002a`,
 `INV-<PREFIX>-002_extra`, `INV-<PREFIX>-002-extra`) that would otherwise be
 invisible as a definition or pass merely because an embedded ID resolved as a
 citation. The same three identifier continuations are rejected in ordinary
-prose and source code rather than being truncated to the valid-looking numeric
-prefix.
+prose, source code, literal blocks and fence opener info strings rather than
+being truncated to the valid-looking numeric prefix.
 
 **Citation** — collected from every tracked `*.md`, `*.ts`, `*.tsx`, `*.mjs`,
 `*.js`, `*.jsx`, `*.cjs`, `*.prisma`, `*.sql`, `*.yml`, `*.yaml` and `*.json`
@@ -677,9 +677,9 @@ every Xero invoice fixture in the test suite (§1.2.1).
    the check fails with "unrecognised `INV-` prefix: add it to the invariant
    index or to the reserved list". This is what catches a typo'd prefix — a
    misspelling of a real prefix — which a whitelist alone would silently ignore.
-6. Every ordinary (unfenced) shape-guard match has exactly three digits, and a
-   declared-prefix ID has no letter, underscore or hyphen identifier
-   continuation after those digits.
+6. Every ordinary (unfenced) shape-guard match has exactly three digits, and in
+   either ordinary or literal source a declared-prefix ID has no letter,
+   underscore or hyphen identifier continuation after those digits.
 7. Every file under `docs/invariants/` is linked from
    `docs/DOMAIN_INVARIANTS.md`, and every file linked from it exists.
 8. Every defined ID appears exactly once in the index.
