@@ -183,7 +183,7 @@ src/components/admin/xero-record-activity-panel.tsx 717 domain-module
 src/components/analytics-consent.tsx 737 domain-module
 src/components/book/member-guest-find-panel.tsx 713 domain-module
 src/components/calendar/event-dialog.tsx 991 domain-module
-src/components/edit-booking-panel.tsx 3876 domain-module
+src/components/edit-booking-panel.tsx 1834 domain-module
 src/components/website/skifield-whakapapa-widget.tsx 730 domain-module
 src/instrumentation.node.ts 1434 domain-module
 src/lib/admin-bed-allocation.ts 4484 domain-module

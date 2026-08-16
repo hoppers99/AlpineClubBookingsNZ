@@ -41,7 +41,7 @@ Examples: `INV-DATE-001`, `INV-CAP-029`.
 **Three digits, not two.** The two-digit shape was considered and rejected:
 
 ```
-INV-MONEY-01   INV-CAP-07   INV-DATE-03      <- rejected, never used
+INV-<PREFIX>-01   INV-<PREFIX>-07   INV-<PREFIX>-03   <- rejected, never used
 ```
 
 Two digits caps a prefix at 99 rules for all time, and because IDs are never
@@ -106,14 +106,51 @@ The `INV-` namespace is kept anyway, with three load-bearing consequences:
    Number order and file order diverged the moment the first invariant was added
    after the restructure, and they diverge further with every one since. That is
    intended, not a defect to be tidied.
+
+   **A repo-wide `grep` for the prefix is not how to find that maximum**, which
+   this rule now says out loud because saying only what to do left the thing
+   people actually do unwarned. A `grep` returns more than definitions: it
+   returns illustrative IDs from prose and from fenced examples — including this
+   file's own — and the deliberately unresolvable fixtures in the enforcement
+   check's tests. It also orders as text rather than as numbers, so `INV-CAP-07`
+   sorts *after* `INV-CAP-032`. That is not hypothetical: in #2889 a fenced
+   example in §1.4 read as the maximum and a branch took `042` for an `INV-CAP`
+   rule when the next free number was `033`. The index's tables contain
+   definitions and nothing else, which is exactly why they are what you read.
+
+   Those two numbers are written bare rather than as IDs on purpose: an invented
+   ID outside a fence is caught already, as a citation that resolves to nothing,
+   so a fence is the only place one can hide.
 2. Numbers were assigned once, at the restructure, in source-document order
    within each prefix, starting at `001` with no gaps. That was the only moment
    at which number order and document order agreed, and it will not recur.
-3. **A number is mutable only until it first merges to `main`.** Two lanes that
-   independently pick the same next number collide; the enforcement check fails
-   the PR on the duplicate definition, and whichever PR lands second simply
-   renumbers — it is renumbering an ID nothing has cited yet, which is free.
-   After merge, never.
+3. **A number is mutable only until it first merges to `main`.** Two lanes may
+   independently pick the same next number. Once the check is evaluated against
+   a base containing one of them, the other fails on the duplicate definition
+   and renumbers — it is renumbering an ID nothing has cited yet, which is free.
+   The check does not make an older green result current: branch protection does
+   not require status checks to be strict today, so GitHub need not rerun a
+   second independently green PR merely because the first merged. The repository
+   merge procedure therefore rechecks current `main`, conflict state, the exact
+   head SHA and every required check immediately before merge. That procedure,
+   not a claim that GitHub necessarily reruns CI, closes the race. After merge,
+   never renumber.
+4. **A prefix's numbers are dense, and CI enforces it** (§8). They
+   run from `001` to that prefix's highest with no holes, which is what makes
+   "take the next number" mechanical rather than a matter of looking carefully:
+   every number below the maximum is taken, and no ID may be defined twice
+   so `max + 1` is the only number a new invariant *can* have.
+   Anything else is either a duplicate or a hole, and both fail the PR — the hole
+   naming the prefix and the numbers it skipped. A gap is never allowlisted: an
+   ID is never deleted (§1.4), so the only two ways to make one are a wrong
+   number and a forbidden deletion, and each is a thing to fix. If a prefix ever
+   wants a reserved range, that is a new prefix (§1.2), not a hole in this one.
+
+   Density is a current-tree property, so it cannot see the highest number being
+   deleted or a whole prefix disappearing. CI therefore also compares the
+   current definitions with the base revision and requires every already-merged
+   ID to remain. The two checks are complementary: density makes allocation
+   mechanical; the revision comparison makes permanence append-only.
 
 ### 1.4 The no-renumber rule
 
@@ -132,10 +169,21 @@ The `INV-` namespace is kept anyway, with three load-bearing consequences:
   status line directly beneath it:
 
   ```
-  ### INV-CAP-013
+  ### INV-<PREFIX>-<NNN>
 
-  **Superseded by INV-CAP-041 (PR #NNNN).** <original text kept below, verbatim>
+  **Superseded by INV-<PREFIX>-<MMM> (PR #NNNN).** <original text kept below, verbatim>
   ```
+
+  That example carries placeholders rather than two real numbers, and the reason
+  is worth knowing. It used to name `INV-CAP` numbers, and the old enforcement
+  check ignored every fence while `grep` still saw it — so its higher number
+  read as that prefix's maximum, and the next branch to allocate one skipped
+  nine (#2889). The check now rejects every numeric token under a live prefix in
+  this file's literal blocks, whether or not that ID resolves, while leaving
+  placeholders, reserved invoice numbers and custom fixture prefixes alone.
+  **An illustrative invariant ID in this file therefore uses either the
+  bracketed placeholder form or a custom non-live prefix. It never spells a
+  live prefix/number pair.**
 
   A rule that is genuinely obsolete keeps its heading and gains
   `**Retired (PR #NNNN): <one-line reason>.**` in place of its body. Either way
@@ -340,11 +388,15 @@ own section below" and "this subsection". Rules, in order:
    In `additional-payment-chasing.md`, where "rule (b) above" names a rule that
    now lives in `booking-dates-and-capacity.md`:
 
+   `INV-EXAMPLE` is a non-live stand-in. Illustrative fences in this scheme never
+   spell a real prefix/number pair, because a repository grep cannot distinguish
+   teaching text from the live catalogue.
+
    ```
    before:  moves AWAITING_REVIEW → PENDING, which keeps holding via rule (b) above, so an
             accepted-but-unpaid quote does not lose its bed before payment.
 
-   after:   moves AWAITING_REVIEW → PENDING, which keeps holding via rule (b) above [INV-CAP-004], so an
+   after:   moves AWAITING_REVIEW → PENDING, which keeps holding via rule (b) above [INV-EXAMPLE-004], so an
             accepted-but-unpaid quote does not lose its bed before payment.
    ```
 
@@ -373,11 +425,14 @@ deliberately left unpointered, so a later reader does not repeat the sweep.
 
 ## 5. The files
 
-15 files in this directory, 17 prefixes, 497 IDs, plus this scheme and
-[`_FOLLOW_UPS.md`](_FOLLOW_UPS.md). (`INV-LOCK` is the seventeenth, added by
-#2722; the figures are what `npm run docs:indexcheck` reports, and the count in
-this sentence was 29 IDs stale before it was corrected — which is the rot the
-paragraph below is about.)
+One file per domain in this directory, plus this scheme and
+[`_FOLLOW_UPS.md`](_FOLLOW_UPS.md) — around fifteen files carrying roughly five
+hundred IDs. The counts here are deliberately approximate, and the prefix count
+is gone altogether: it read sixteen until `INV-LOCK` arrived mid-review and made
+it seventeen. A figure written by hand is wrong within the week, and
+`npm run docs:indexcheck` prints the live ID and prefix totals plus the number
+of tracked files it scanned on every run. The invariant-file count remains an
+approximation here rather than being mistaken for that tracked-file total.
 
 **The index is authoritative for prefix → file and ID → file**, and it is the
 only place that mapping is written down. It is deliberately not repeated here: a
@@ -429,11 +484,13 @@ than an outstanding item.
 | Largest single domain file (`membership-lifecycle.md`) | ~24k |
 | Typical domain file | 1–9k |
 
-`AGENTS.md` → "Read First" holds the always-read core to three documents under
-30,000 tokens, of which the index is one; every other invariant file is
-**routed** — opened at the moment its row matches what you are changing. That
-budget is the reason the index's one-line descriptions are capped at **12 words**
-each. The cap is load-bearing: relax it and the index stops fitting the core.
+`AGENTS.md` → "Read First" holds the agent-neutral always-read core to two
+documents, of which the index is one; every other invariant file is **routed** —
+opened at the moment its row matches what you are changing. Agent-interface
+adapters import or point to that authority instead of joining the mandatory
+core. That budget is the reason the index's one-line descriptions are capped at
+**12 words** each. The cap is load-bearing: relax it and the index stops fitting
+the core.
 
 If the index ever outgrows the budget, the cheapest lever is to move the full ID
 catalogue into a separate `docs/invariants/ID-INDEX.md`, leaving the routing
@@ -446,12 +503,11 @@ without opening more than one other file".
 ## 6. The index
 
 **The index is `docs/DOMAIN_INVARIANTS.md`.** It is not in this directory, and
-there is deliberately no `docs/invariants/README.md`: about 70 files —
-`AGENTS.md`, `CLAUDE.md`, `README.md`, nine `docs/guides/` pages, thirty source
-files and the Codex helper scripts — already point at that path, and 21 of the 27
-inbound anchors target headings the index keeps verbatim. Moving it would turn a
-free migration into ~97 edits and a permanent fork-compatibility break, and would
-gain nothing a reader can feel. `npm run docs:indexcheck` treats
+there is deliberately no `docs/invariants/README.md`: many entry-point docs,
+guides, source files and agent helper scripts already point at that path, and
+many inbound anchors target headings the index keeps verbatim. Moving it would
+turn a free migration into widespread edits and a permanent fork-compatibility
+break, and would gain nothing a reader can feel. `npm run docs:indexcheck` treats
 `docs/DOMAIN_INVARIANTS.md` as the root of the invariants tree.
 
 ### 6.1 What the index contains
@@ -495,14 +551,15 @@ split. It adds one top-level bullet to `docs/DOMAIN_INVARIANTS.md` inside
 client-side `yyyy-MM-dd` rule, stating that a server asking for "today" asks the
 club's calendar, with two exact boundaries and one reverse case.
 
-Resolved against this scheme:
+Resolved against this scheme. The fenced transcript uses the non-live
+`INV-EXAMPLE` stand-in so it cannot masquerade as the live prefix maximum:
 
 ```
 File:      docs/invariants/booking-dates-and-capacity.md
 Section:   ## Date handling rules
-Position:  immediately after INV-DATE-013, immediately before INV-DATE-014
-ID:        INV-DATE-019          <- next free in the prefix, NOT 013.5 and NOT 014
-Index row: | `INV-DATE-019` | Ask the club's calendar for "today", never the UTC clock |
+Position:  immediately after INV-EXAMPLE-013, immediately before INV-EXAMPLE-014
+ID:        INV-EXAMPLE-019          <- next free in the prefix, NOT 013.5 and NOT 014
+Index row: | `INV-EXAMPLE-019` | Ask the club's calendar for "today", never the UTC clock |
 ```
 
 Note the ID would be `019` while the block sits fourth in its section. That is
@@ -524,12 +581,79 @@ under a fresh ID heading, add the index row, and discard the conflict on
 
 `scripts/ci/check-doc-index-integrity.mjs`, run by `npm run docs:indexcheck` and
 by the `verify` job on every PR. It needs no network, no build and no Prisma
-client — it is a single `node` script over `git ls-files`.
+client — it is a single `node` script over the tracked tree and its git base
+revision.
 
-Two regexes, plus one shape guard. All three are applied line by line **outside
-fenced code blocks** — this document, and any future one, must be able to show
-an example ID without the checker treating it as real. That is a hard
-requirement, not a nicety.
+Current-tree scans plus one fail-closed revision comparison. Pull-request CI
+uses the event's exact base SHA, main-push CI uses the event's exact pre-push
+SHA, and local feature work uses its merge-base with `origin/main` (or `main`).
+That is an exact statement about what one evaluation checks, not a promise that
+an old green evaluation stays current after another PR merges. Evaluated against
+the current base, a duplicate or deletion is rejected. Before merge, the house
+procedure refreshes current `main` and verifies no conflict plus every required
+check on the exact current head; an independently green stale-base result is not
+merge evidence. Changing branch protection's strict-status setting is a separate
+owner action, not part of this checker.
+An explicit or event ref that is absent from the checkout fails the gate; it
+never drifts to the current branch tip or falls back to `HEAD^1`, which may be a
+feature commit made after an ID was deleted. Event identity is authoritative:
+`GITHUB_EVENT_NAME` chooses the pull-request or main-push contract before any
+payload field is interpreted. In particular, a pull-request `synchronize`
+payload's top-level `before` value is the previous PR head, not evidence of a
+second push event; the pull request still uses only `PR_BASE_SHA`. With no event
+identity, conflicting PR and push SHA fields fail rather than being guessed. An
+inherited `DOC_INDEX_BASE_REF` at process, workflow, job or step scope makes
+an event run fail rather than overriding `PR_BASE_SHA` or `PUSH_BASE_SHA`. The
+diagnostic override is local-only. The workflow contract pins both immutable
+environment mappings and the exact unprefixed
+`node scripts/ci/check-doc-index-integrity.mjs` command, so an inline assignment
+cannot replace either event identity with `HEAD`. Definitions and ordinary
+citations are read **outside Markdown literal blocks**. One bounded CommonMark
+block pass classifies fenced code inside blockquote and list containers,
+indented code, raw HTML, paragraphs, and ATX/Setext headings. A type-7 HTML tag
+cannot interrupt an active paragraph; a literal fence marker inside `<pre>` or
+another HTML block cannot change how the following headings are classified. The
+shape audit covers both sides of a literal region, including a fence opener's
+info string: any numeric token under a prefix this repository really declares
+has exactly three digits, and a well-formed one must resolve. Placeholders
+(`INV-<PREFIX>-<NNN>`), reserved invoice numbers and custom fixture prefixes
+remain legal examples. This scheme adds a stronger source-trap rule: its own
+illustrative literal blocks contain no live prefix/number pair, even one that
+resolves, because a repository grep cannot tell an example from the catalogue.
+
+Both sides come from that one bounded block classifier. It remembers a fence's
+blockquote/list containers, whether the opener used backticks or tildes, and how
+long that marker run was. Only the same marker with at least that length closes
+the block; a triple-backtick line inside a four-backtick fence, or a tilde run
+inside a backtick fence, stays content and cannot invert which audits see the
+following lines. Four-space indented code is literal when it begins outside a
+paragraph. A type-1 raw HTML block ends only at the closing tag matching its
+opener (`<pre>` at `</pre>`, never `</script>`); standard block tags stay literal
+until the terminating blank line, while a syntactically valid
+type-7 tag starts that form only when no paragraph is active, including a
+container paragraph continuing lazily without its quote/list marker. A newly
+opened blockquote or list interrupts the prior paragraph, so type-7 HTML and
+indented code may start inside that fresh container. An ordered list can
+interrupt an active paragraph only when it starts at one. A markerless lazy
+line retains its original container for the next marked continuation; five
+spaces after a list marker are one padding space plus four-space indented code,
+not ordinary prose. Tabs are expanded at four-column stops for the same choice,
+then container prefixes consume virtual-column slices rather than whole tab
+characters. Thus two tabs after a bullet, or a tab plus two spaces after either
+a bullet or blockquote marker, retain at least four code-indentation columns.
+An empty list marker also establishes the default one-column padding used to
+classify its following indented code. A blank line retains an open list's
+container widths, so an indented continuation remains list-owned rather than
+being misclassified as top-level code. A fresh list sibling is recognised by
+its nesting, list kind and delimiter rather than by the previous item's padding:
+`9.` followed by `10.`, or two items with different padding, still starts a
+fresh list paragraph. A changed `.`/`)` delimiter is a different list, and the
+rule that `2.` cannot interrupt an unrelated paragraph still holds. An unmarked
+thematic break ends the container paragraph, and a spaced top-level `- - -` or
+`* * *` takes thematic-break precedence over the list marker its first
+character resembles. Within the same marked container, a dash or equals
+underline keeps Setext-heading precedence. A markerless equals underline stays
+lazy paragraph text rather than becoming a Setext heading.
 
 **Definition** — collected only from `docs/invariants/**/*.md`:
 
@@ -537,14 +661,44 @@ requirement, not a nicety.
 /^#{2,4} (INV-[A-Z][A-Z0-9]*-\d{3})\s*$/
 ```
 
-A definition is a heading whose entire text is the ID. A citation is never a
-whole heading line, so there are no false positives in either direction. The
-level range `2–4` exists because an ID heading always sits exactly one level
+A definition is a top-level heading whose entire text is the ID. A citation is
+never a whole heading line, so there are no false positives in either direction.
+The level range `2–4` exists because an ID heading always sits exactly one level
 below its nearest structural heading, and a file with no subsections has one
 level less.
 
-**Citation** — collected from every tracked `*.md`, `*.ts`, `*.tsx`, `*.mjs`,
-`*.js`, `*.sql`, `*.yml` and `*.json` file:
+Every unfenced Markdown heading under `docs/invariants/` that contains a numeric
+invariant-shaped token is checked against that exact shape. Numeric tokens in
+headings are reserved for definitions: a legitimate narrative heading names the
+topic and puts any invariant citation in its body. This catches a lower-cased,
+backticked, wrongly levelled, wrongly padded, decorated, container-owned, Setext
+or identifier-suffixed heading (`INV-<PREFIX>-002a`,
+`INV-<PREFIX>-002_extra`, `INV-<PREFIX>-002-extra`, or the forbidden dotted
+sub-ID `INV-<PREFIX>-002.1`) that would otherwise be invisible as a definition
+or pass merely because an embedded ID resolved as a citation. Inline emphasis,
+strong emphasis, code, strike-through, inline HTML, GFM inline/reference link
+labels and numeric
+character references cannot split the visible token around that sentinel: a
+heading such as `INV-**<PREFIX>**-002`, `INV-[<PREFIX>](https://example.invalid)-002`
+or `INV-M&#79;NEY-002` is rejected as decorated rather than disappearing from the
+definition census. The sentinel uses a bounded visible-text normaliser rather
+than a second Markdown renderer; canonical definition parsing remains exact.
+The same four
+identifier continuations are rejected in ordinary prose, source code, literal
+blocks and fence opener info strings rather than being truncated to the
+valid-looking numeric prefix. A full stop used as punctuation remains legal;
+only a dot immediately followed by a digit is a dotted sub-ID.
+
+**Citation** — collected from every nonempty tracked text file. The loader asks
+Git for its tracked working tree and uses Git's own binary/text classification;
+it does not maintain an extension allowlist. That includes TypeScript's `.mts`
+and `.cts` forms, shell scripts, TOML, JSON-with-comments, plain text, HTML and
+extensionless text files without traversing anything outside the tracked tree,
+such as dependency or generated directories. Empty files have no line, token,
+byte-order mark or encoding sequence to audit. CommonMark block classification
+applies only to `*.md`; every other
+format is scanned linewise so indentation or JSX/HTML syntax cannot disguise a
+citation as a Markdown code or raw-HTML block:
 
 ```js
 /\bINV-[A-Z][A-Z0-9]*-\d{3}\b/g
@@ -554,39 +708,70 @@ level less.
 a near-miss under a real prefix is reported rather than being invisible:
 
 ```js
-new RegExp(`\\bINV-(?:${[...prefixes].join("|")})-[0-9]+\\b`, "g")
+new RegExp(`\\bINV-(?:${[...prefixes].join("|")})-[0-9]+\\b(?!-[A-Za-z0-9_])`, "g")
 ```
 
 Every match of it must have exactly three digits. Without this,
 `INV-CAP-1` and `INV-CAP-0011` slip past the strict citation regex and resolve
-to nothing while being reported as nothing. It is scoped to declared prefixes
-rather than to `INV-[A-Za-z]…` generally, because a generic shape guard flags
-every Xero invoice fixture in the test suite (§1.2.1).
+to nothing while being reported as nothing. A separate identifier-continuation
+audit owns letter, underscore, hyphen and dotted-numeric suffixes, so the numeric
+matcher does not also report the numeric prefix of a malformed ID. It is scoped to
+declared prefixes rather than to `INV-[A-Za-z]…` generally, because a generic
+shape guard flags every Xero invoice fixture in the test suite (§1.2.1).
 
 **The check asserts, in this order:**
 
-1. No duplicate definition of any ID, across all files.
-2. Every citation whose prefix is a **declared invariant prefix** resolves to a
-   definition.
-3. Every citation whose prefix is **not** declared is either on the reserved
-   list — `IB`, `SETTLE`, `SUP`, `SUB`, `XERO`, `FAM`, `LEGACY`, `PM`, `JOR`,
-   `REB`, documented in the script as Xero invoice-number fixtures — or the
-   check fails with "unrecognised `INV-` prefix: add it to the invariant index
-   or to the reserved list". This is what catches a typo'd prefix — a
+1. Every unfenced invariant-document heading containing a numeric invariant
+   token is exactly a canonical definition heading: correct case, level, digit
+   width, no identifier suffix and no decoration.
+2. No duplicate definition of any ID, across all files.
+3. Every ordinary citation whose prefix is a **declared invariant prefix**
+   resolves to a definition.
+4. Every numeric token inside a literal block or fence opener whose prefix is
+   declared has exactly three digits, and every such well-formed ID resolves;
+   placeholders, reserved invoice numbers and custom fixture prefixes are not
+   treated as live IDs there. Illustrative literal blocks in this file are
+   stricter and contain no live prefix/number pair at all.
+5. Every ordinary citation whose prefix is **not** declared is either on the
+   reserved list — `IB`, `SETTLE`, `SUP`, `SUB`, `XERO`, `FAM`, `LEGACY`, `PM`,
+   `JOR`, `REB`, documented in the script as Xero invoice-number fixtures — or
+   the check fails with "unrecognised `INV-` prefix: add it to the invariant
+   index or to the reserved list". This is what catches a typo'd prefix — a
    misspelling of a real prefix — which a whitelist alone would silently ignore.
-4. Every shape-guard match has exactly three digits.
-5. Every file under `docs/invariants/` is linked from
+6. Every ordinary (unfenced) shape-guard match has exactly three digits, and in
+   either ordinary or literal source a declared-prefix ID has no letter,
+   underscore, hyphen or dotted-numeric identifier continuation after those
+   digits.
+7. Every file under `docs/invariants/` is linked from
    `docs/DOMAIN_INVARIANTS.md`, and every file linked from it exists.
-6. Every defined ID appears exactly once in the index.
+8. Every defined ID appears exactly once in the index. A valid GFM table row may
+   carry zero to three leading spaces; all four forms count for both presence and
+   duplicate detection.
+9. The `AGENTS.md` routing table resolves in both directions: every family it
+   routes is declared, every declared family has a row, and every document it
+   links to is a tracked file.
+10. Nothing cites an invariants document by **line number**. No allowlist and no
+   grandfather register: that pointer goes stale silently, which is the habit the
+   IDs exist to replace.
+11. Every page under `docs/` is reachable from a documentation front door.
+12. No tracked text file carries a byte-order mark or double-encoded text.
+13. Every prefix's numbers are **dense from `001`** — no gap between its lowest
+    and its highest (§1.3.4).
+14. Every ID defined in the base revision is still defined in the current tree.
+    This catches deletion of a prefix's highest ID and deletion of a whole
+    prefix, which no snapshot-only density check can observe.
 
-Assertion 6 is what stops the index rotting, which is the thing most likely to
-rot.
+The catalogue assertion is what stops the index rotting, which is the thing most
+likely to rot. Density makes §1.3's allocation rule mechanical rather than
+advisory; base-revision retention separately enforces §1.4's append-only rule.
+Neither is a substitute for the other.
 
-Inline code spans are **not** skipped, only fenced blocks. Most real citations in
-prose are written as `` `INV-CAP-021` ``, and skipping backticks would make the
-check blind to them. This file is exempt from the shape guard alone — never from
-citation resolution — because it quotes malformed forms on purpose, in prose, to
-explain what the guard catches.
+Inline code spans are **not** skipped. Most real citations in prose are written
+as `` `INV-CAP-021` ``, and skipping backticks would make the check blind to
+them. Fences are skipped by the broad scans and inspected by the narrow
+live-prefix resolution pass described above. This file is exempt from the shape
+guard alone — never from citation resolution — because it quotes malformed forms
+on purpose, in prose, to explain what the guard catches.
 
 Anchor-style citations (`…#inv-cap-021`) are deliberately **not** handled here —
 `npm run docs:linkcheck` already validates fragments against real headings, so

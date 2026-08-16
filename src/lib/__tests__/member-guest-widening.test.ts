@@ -816,11 +816,25 @@ describe("consent columns have exactly one writer", () => {
       // request. It writes nothing.
       "src/lib/booking-request-shared.ts":
         "the hold-release notice reads which guests carry a consent record, so it can tell exactly the members who were told",
-      // --- MG4's edit surface (#2309). Neither WRITES a column.
-      // The panel builds one of the two legal preview shapes for the pre-save
-      // badge, exactly as the wizard's predictor does — no row exists yet.
-      "src/components/edit-booking-panel.tsx":
-        "the edit panel's pre-save consent prediction for a newly added member guest",
+      // --- MG4's edit surface (#2309). Nothing here WRITES a column.
+      //
+      // #2690 split the edit panel and this entry moved with the text that put
+      // it on the census. The match was only ever a sentence in the
+      // `NewGuest.memberGuestConsentPreview` docblock, explaining why the badge
+      // is PREDICTED rather than read: nothing is persisted yet, so there is no
+      // `consentRequestedAt` and no real expiry to show, and inventing one is
+      // how a fake deadline reaches the screen. This census matches raw text
+      // rather than stripping comments, deliberately — a file that discusses a
+      // consent column is a file whose author was reasoning about one — so a
+      // types module earns a row on the strength of its documentation alone.
+      //
+      // The reason names the code files on purpose. THIS census has no reverse
+      // check: it reports UNDECLARED matches only, so an entry whose reason has
+      // drifted away from the code it describes stays green for ever. That is
+      // exactly what happened here — rewording the docblock would silently
+      // strand the row — so the row points at where the behaviour actually is.
+      "src/components/edit-booking/types.ts":
+        "declares the pre-save consent-preview field and documents why it is predicted, not read; the prediction itself runs in components/edit-booking-panel.tsx (handleAddMemberGuest) and the two legal column shapes are built in components/edit-booking/guest-consent-notes.tsx",
       // Reads the status of a guest the edit REMOVED, to decide whether the
       // member was ever told about this booking and which sentence they are
       // owed. A null status means no message was ever sent about that row.

@@ -888,7 +888,7 @@ export default function AdminBookPage() {
               <div className="rounded-md bg-warning-3 p-3 text-sm text-warning-11">
                 This booking exceeds the {availableBeds} bed
                 {availableBeds === 1 ? "" : "s"} available for these dates.
-                You can still create it \u2014 you will confirm the over-capacity
+                You can still create it — you will confirm the over-capacity
                 override at the final step.
               </div>
             )}
