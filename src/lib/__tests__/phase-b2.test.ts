@@ -37,6 +37,16 @@ const mockPrisma = {
     findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
     findUnique: vi.fn().mockResolvedValue({ id: "lodge-1", active: true }),
   },
+  // #2887: hut-leader creation is now ALWAYS a locked write — the role-only
+  // path shares the per-lodge capacity key with the bed-holding path so both
+  // serialize the same overlap predicate — so the double needs the interactive
+  // transaction and the advisory-lock statement.
+  $executeRaw: vi.fn(async () => 0),
+  $transaction: vi.fn(async (arg: unknown) =>
+    typeof arg === "function"
+      ? (arg as (tx: typeof mockPrisma) => unknown)(mockPrisma)
+      : arg,
+  ),
 };
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));

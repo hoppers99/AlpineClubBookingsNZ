@@ -1729,7 +1729,13 @@ describe("AdminDisplayTemplatesPage view-only gating (#1940, lodge)", () => {
     stubFetchRoutes({
       "/api/admin/display/templates": { templates: [TEMPLATE] },
       "/api/admin/display/layouts": { layouts: [] },
-      "/api/admin/lodges": { lodges: [] },
+      // #2887: Preview now needs an explicit lodge — with no active lodge the
+      // page refuses rather than previewing the club default, so an empty list
+      // here would disable Preview for an EDIT admin too and the view-only
+      // assertion below would pass for the wrong reason.
+      "/api/admin/lodges": {
+        lodges: [{ id: "lodge-1", name: "Silverpeak Lodge", active: true }],
+      },
       // The token assistant's useDisplayLodgeConfig fetch (#2248). Stubbed
       // deliberately: without this the suite's unstubbed-fetch tripwire fires
       // but is silently absorbed by the hook's own catch — this keeps the

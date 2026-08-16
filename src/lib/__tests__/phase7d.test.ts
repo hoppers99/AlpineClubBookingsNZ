@@ -42,6 +42,17 @@ findUnique: vi.fn(),
     findFirst: vi.fn(),
     findUnique: vi.fn(),
   },
+  // #2887: creating a hut-leader assignment is now ALWAYS a locked write —
+  // the role-only path shares the per-lodge capacity key with the bed-holding
+  // path so both serialize the same overlap predicate. The interactive
+  // transaction therefore has to exist on the double, and the advisory lock
+  // has to be observable, or every create in this file 500s on a TypeError.
+  $executeRaw: vi.fn(async () => 0),
+  $transaction: vi.fn(async (arg: unknown) =>
+    typeof arg === "function"
+      ? (arg as (tx: typeof mockPrisma) => unknown)(mockPrisma)
+      : arg,
+  ),
 };
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
@@ -640,6 +651,10 @@ describe("F8: Hut Leader Role Assignment", () => {
         {
           checkIn: new Date("2026-07-10"),
           checkOut: new Date("2026-07-17"),
+          // #2887: the owner's own bed nights are now read off their guest row
+          // (sparse per-guest nights), so the route's select includes `guests`
+          // and it is always an array. The fixture has to say so.
+          guests: [],
           member: { id: "m1", firstName: "Alice", lastName: "Smith", email: "alice@test.com", active: true, ageTier: "ADULT" },
         },
       ]);
