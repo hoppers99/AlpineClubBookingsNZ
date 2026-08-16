@@ -446,6 +446,37 @@ describe("auditDefinitionHeadingShapes", () => {
     expect(problems[0]).toContain("no decoration");
   });
 
+  it.each([
+    ["GFM inline link", "## INV-[MONEY](https://example.invalid)-002"],
+    ["decimal character reference", "## INV-M&#79;NEY-002"],
+    ["hexadecimal character reference", "## INV-M&#x4f;NEY-002"],
+    [
+      "emphasised GFM link label",
+      "## INV-[**MONEY**](https://example.invalid/path_(one))-002",
+    ],
+  ])("fails an invariant token split by a %s", (_kind, heading) => {
+    const problems = auditDefinitionHeadingShapes(
+      repo({
+        "docs/invariants/money.md": [
+          "# Money",
+          "",
+          "## INV-MONEY-001",
+          "",
+          "- A rule.",
+          "",
+          heading,
+          "",
+          "- Invisible.",
+          "",
+        ].join("\n"),
+      }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("docs/invariants/money.md:7");
+    expect(problems[0]).toContain("no decoration");
+  });
+
   it("fails an invariant-shaped Setext heading rather than treating it as prose", () => {
     const problems = auditDefinitionHeadingShapes(
       repo({
@@ -496,6 +527,23 @@ describe("auditDocs — the whole check", () => {
     "## INV-__MONEY__-001",
     "## INV-_MONEY_-001",
   ])("fails an emphasis-split invariant heading in the whole audit: %s", (heading) => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n${heading}\n\n- Not a definition.\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("looks like an invariant definition heading");
+  });
+
+  it.each([
+    "## INV-[MONEY](https://example.invalid)-002",
+    "## INV-M&#79;NEY-002",
+    "## INV-M&#x4f;NEY-002",
+  ])("fails a link/entity-split invariant heading in the whole audit: %s", (heading) => {
     const files = repo();
     files.set(
       "docs/invariants/money.md",

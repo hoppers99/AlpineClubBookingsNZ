@@ -917,6 +917,50 @@ export function collectDefinitions(files) {
 }
 
 /**
+ * A conservative GFM inline-link shape used only by the invariant-heading
+ * sentinel. It retains the rendered label and removes a destination that is
+ * syntactically bounded on this line. The destination accepts an angle form or
+ * a whitespace-free form with one balanced-parentheses level, plus an optional
+ * quoted/parenthesised title. Images are deliberately excluded: alt text is not
+ * a visibly contiguous heading token.
+ */
+const HEADING_INLINE_LINK_PATTERN =
+  /(?<!!)\[([^\]\r\n]+)\]\(\s*(?:<[^<>\r\n]*>|(?:\\[^\r\n]|[^\\()\s\r\n]|\([^()\r\n]*\))+)(?:[ \t]+(?:"[^"\r\n]*"|'[^'\r\n]*'|\([^()\r\n]*\)))?[ \t]*\)/g;
+
+/** Decode bounded numeric character references without importing an HTML parser. */
+function decodeNumericCharacterReferences(text) {
+  return text.replace(
+    /&#(?:([0-9]{1,7})|[xX]([0-9A-Fa-f]{1,6}));/g,
+    (reference, decimal, hexadecimal) => {
+      const codePoint = Number.parseInt(decimal ?? hexadecimal, decimal ? 10 : 16);
+      if (
+        !Number.isInteger(codePoint) ||
+        codePoint === 0 ||
+        codePoint > 0x10ffff ||
+        (codePoint >= 0xd800 && codePoint <= 0xdfff)
+      ) {
+        return reference;
+      }
+      return String.fromCodePoint(codePoint);
+    },
+  );
+}
+
+/**
+ * Approximate the visible heading text only as far as the invariant sentinel
+ * needs. This is intentionally not a Markdown renderer: it unwraps bounded
+ * inline links, decodes numeric references, and removes inline decoration
+ * delimiters/tags that can split an otherwise canonical-looking token.
+ */
+function headingInvariantShapeText(line) {
+  return decodeNumericCharacterReferences(
+    line.replace(HEADING_INLINE_LINK_PATTERN, "$1"),
+  )
+    .replace(/[*_~`]/g, "")
+    .replace(/<\/?[A-Za-z][^>]*>/g, "");
+}
+
+/**
  * Fail headings under the invariant directory that contain a numeric invariant
  * token but are not canonical definitions. Without this, a lower-cased,
  * backticked or decorated heading can be mistaken for a citation (or ignored
@@ -930,13 +974,7 @@ export function auditDefinitionHeadingShapes(files) {
     for (const heading of scanMarkdownBlocks(text).headings) {
       const { number, text: line } = heading;
       if (
-        INVARIANT_SHAPED_TOKEN_PATTERN.test(
-          // Inline emphasis/code/strike delimiters and inline HTML may split a
-          // visually contiguous token around the ordinary word-boundary scan.
-          // Remove only decoration syntax for this heading sentinel; the
-          // canonical definition parser above remains deliberately exact.
-          line.replace(/[*_~`]/g, "").replace(/<\/?[A-Za-z][^>]*>/g, ""),
-        ) &&
+        INVARIANT_SHAPED_TOKEN_PATTERN.test(headingInvariantShapeText(line)) &&
         (heading.kind !== "atx" ||
           heading.containerDepth > 0 ||
           !DEFINITION_PATTERN.test(line))

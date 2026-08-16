@@ -675,9 +675,13 @@ or identifier-suffixed heading (`INV-<PREFIX>-002a`,
 `INV-<PREFIX>-002_extra`, `INV-<PREFIX>-002-extra`, or the forbidden dotted
 sub-ID `INV-<PREFIX>-002.1`) that would otherwise be invisible as a definition
 or pass merely because an embedded ID resolved as a citation. Inline emphasis,
-strong emphasis, code, strike-through and inline HTML cannot split the visible
-token around that sentinel: a heading such as `INV-**<PREFIX>**-002` is rejected
-as decorated rather than disappearing from the definition census. The same four
+strong emphasis, code, strike-through, inline HTML, GFM link labels and numeric
+character references cannot split the visible token around that sentinel: a
+heading such as `INV-**<PREFIX>**-002`, `INV-[<PREFIX>](https://example.invalid)-002`
+or `INV-M&#79;NEY-002` is rejected as decorated rather than disappearing from the
+definition census. The sentinel uses a bounded visible-text normaliser rather
+than a second Markdown renderer; canonical definition parsing remains exact.
+The same four
 identifier continuations are rejected in ordinary prose, source code, literal
 blocks and fence opener info strings rather than being truncated to the
 valid-looking numeric prefix. A full stop used as punctuation remains legal;
