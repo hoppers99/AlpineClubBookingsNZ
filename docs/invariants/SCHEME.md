@@ -580,26 +580,32 @@ never drifts to the current branch tip or falls back to `HEAD^1`, which may be a
 feature commit made after an ID was deleted. Event identity is authoritative:
 an inherited `DOC_INDEX_BASE_REF` at process, workflow, job or step scope makes
 an event run fail rather than overriding `PR_BASE_SHA` or `PUSH_BASE_SHA`. The
-diagnostic override is local-only. Definitions and ordinary citations are read
-**outside Markdown literal blocks**. Those blocks include fenced code inside
-blockquote and list containers plus CommonMark raw HTML; a literal fence marker
-inside `<pre>` or another HTML block cannot change how the following headings
-are classified. The shape audit covers both sides of a literal region: any
-numeric token under a prefix this repository really
-declares has exactly three digits, and a well-formed one must resolve even in a
-literal example. Placeholders (`INV-<PREFIX>-<NNN>`), reserved invoice numbers and
+diagnostic override is local-only. The workflow contract pins both immutable
+environment mappings and the exact unprefixed
+`node scripts/ci/check-doc-index-integrity.mjs` command, so an inline assignment
+cannot replace either event identity with `HEAD`. Definitions and ordinary
+citations are read **outside Markdown literal blocks**. One bounded CommonMark
+block pass classifies fenced code inside blockquote and list containers,
+indented code, raw HTML, paragraphs, and ATX/Setext headings. A type-7 HTML tag
+cannot interrupt an active paragraph; a literal fence marker inside `<pre>` or
+another HTML block cannot change how the following headings are classified. The
+shape audit covers both sides of a literal region: any numeric token under a
+prefix this repository really declares has exactly three digits, and a
+well-formed one must resolve even in a literal example. Placeholders
+(`INV-<PREFIX>-<NNN>`), reserved invoice numbers and
 custom fixture prefixes remain legal examples. This document, and any future
 one, can therefore teach the shape without being allowed to invent what looks
 like a live maximum or a malformed live ID.
 
-Both sides come from one bounded CommonMark literal scanner. It remembers a
-fence's blockquote/list containers, whether the opener used backticks or tildes,
-and how long that marker run was. Only the same marker with at least that length
-closes the block; a triple-backtick line inside a four-backtick fence, or a tilde
-run inside a backtick fence, stays content and cannot invert which audits see
-the following lines. Raw HTML types with explicit closing tokens stay literal
-until that token; standard and complete HTML block tags stay literal until the
-blank line CommonMark uses to terminate them.
+Both sides come from that one bounded block classifier. It remembers a fence's
+blockquote/list containers, whether the opener used backticks or tildes, and how
+long that marker run was. Only the same marker with at least that length closes
+the block; a triple-backtick line inside a four-backtick fence, or a tilde run
+inside a backtick fence, stays content and cannot invert which audits see the
+following lines. Four-space indented code is literal when it begins outside a
+paragraph. Raw HTML types with explicit closing tokens stay literal until that
+token; standard block tags stay literal until the terminating blank line, while
+a complete type-7 tag starts that form only when no paragraph is active.
 
 **Definition** — collected only from `docs/invariants/**/*.md`:
 
@@ -607,9 +613,9 @@ blank line CommonMark uses to terminate them.
 /^#{2,4} (INV-[A-Z][A-Z0-9]*-\d{3})\s*$/
 ```
 
-A definition is a heading whose entire text is the ID. A citation is never a
-whole heading line, so there are no false positives in either direction. The
-level range `2–4` exists because an ID heading always sits exactly one level
+A definition is a top-level heading whose entire text is the ID. A citation is
+never a whole heading line, so there are no false positives in either direction.
+The level range `2–4` exists because an ID heading always sits exactly one level
 below its nearest structural heading, and a file with no subsections has one
 level less.
 
@@ -617,7 +623,7 @@ Every unfenced Markdown heading under `docs/invariants/` that contains a numeric
 invariant-shaped token is checked against that exact shape. Numeric tokens in
 headings are reserved for definitions: a legitimate narrative heading names the
 topic and puts any invariant citation in its body. This catches a lower-cased,
-backticked, wrongly levelled, wrongly padded, decorated, Setext or
+backticked, wrongly levelled, wrongly padded, decorated, container-owned, Setext or
 identifier-suffixed heading (`INV-<PREFIX>-002a`,
 `INV-<PREFIX>-002_extra`) that would otherwise be invisible as a definition or
 pass merely because an embedded ID resolved as a citation.

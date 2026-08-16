@@ -236,12 +236,11 @@ describe("scannableLines", () => {
     ]);
   });
 
-  it("does not treat an over-indented or invalid backtick opener as a fence", () => {
+  it("treats an over-indented opener as code but rejects an invalid inline opener", () => {
     const source = "    ```\ncode\n```bad`info\ntext\n";
 
-    expect(fencedLines(source)).toEqual([]);
+    expect(fencedLines(source)).toEqual([{ number: 1, text: "    ```" }]);
     expect(scannableLines(source).map((line) => line.text)).toEqual([
-      "    ```",
       "code",
       "```bad`info",
       "text",
@@ -281,6 +280,30 @@ describe("scannableLines", () => {
     expect(scannableLines(source).map((line) => line.text)).toEqual([
       "",
       "## INV-DEMO-001",
+      "",
+    ]);
+  });
+
+  it("lets type-6 HTML interrupt a paragraph but keeps type-7 HTML in it", () => {
+    const typeSix = "paragraph\n<div>\ninside\n\nvisible\n";
+    const typeSeven = "paragraph\n<fixture>\nvisible\n";
+
+    expect(fencedLines(typeSix).map((line) => line.text)).toEqual(["<div>", "inside"]);
+    expect(scannableLines(typeSeven).map((line) => line.text)).toEqual([
+      "paragraph",
+      "<fixture>",
+      "visible",
+      "",
+    ]);
+  });
+
+  it("does not let indented code interrupt an active paragraph", () => {
+    const source = "paragraph\n    paragraph continuation\n";
+
+    expect(fencedLines(source)).toEqual([]);
+    expect(scannableLines(source).map((line) => line.text)).toEqual([
+      "paragraph",
+      "    paragraph continuation",
       "",
     ]);
   });
@@ -440,6 +463,59 @@ describe("auditDocs — the whole check", () => {
     expect(problems.some((problem) => problem.includes("no routing table row in AGENTS.md"))).toBe(
       true,
     );
+  });
+
+  it("does not let type-7 HTML interrupt a paragraph and hide a malformed heading", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\nParagraph text\n<fixture data-kind="docs">\n## INV-MONEY-001 — another rule\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("looks like an invariant definition heading");
+  });
+
+  it("fails a multiline Setext heading whose first line contains an invariant id", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\nINV-MONEY-001 — another rule\ncontinued heading text\n---\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("looks like an invariant definition heading");
+  });
+
+  it.each([
+    ["blockquote", "> ## INV-MONEY-001 — another rule"],
+    ["list", "- ## INV-MONEY-001 — another rule"],
+    ["list continuation", "- Item\n  ## INV-MONEY-001 — another rule"],
+  ])("fails a malformed invariant heading inside a %s", (_container, heading) => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n${heading}\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("canonical top-level");
+  });
+
+  it("treats four-space indented custom fixture ids as literal code", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n    INV-FIXTURE-999\n`,
+    );
+
+    expect(auditDocs(files)).toEqual([]);
   });
 });
 
@@ -994,6 +1070,9 @@ describe("doc-index CLI baseline wiring", () => {
       "          PUSH_BASE_SHA: ${{ github.event.before }}",
     ]);
     expect(step.match(/^ {8}env:\s*$/gm)).toHaveLength(1);
+    expect(step.match(/^ {8}run:.*$/gm)).toEqual([
+      "        run: node scripts/ci/check-doc-index-integrity.mjs",
+    ]);
     expect(workflow).not.toContain("DOC_INDEX_BASE_REF");
   });
 });

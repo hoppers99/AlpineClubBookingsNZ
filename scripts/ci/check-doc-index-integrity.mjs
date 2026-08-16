@@ -59,10 +59,10 @@
  *
  * Definitions, ordinary citations and malformed shapes skip Markdown literal
  * regions, so a document may show placeholders and fixture ids without treating
- * them as definitions. One bounded CommonMark classifier retains a fence's
- * marker, length and blockquote/list containers, and also protects explicitly
- * terminated raw HTML blocks (`pre`, comments, CDATA, and peers) from changing
- * fence state. A second, narrower pass does inspect the literal view: a
+ * them as definitions. One bounded CommonMark block pass classifies fenced and
+ * indented code, raw HTML, paragraphs, and ATX/Setext headings while retaining
+ * blockquote/list containers. A second, narrower pass does inspect the literal
+ * view: a
  * well-formed id under a prefix the repository really declares must resolve
  * there too. That catches an invented live-prefix example while leaving
  * `INV-<PREFIX>-<NNN>` placeholders, reserved invoice numbers and custom fixture
@@ -95,21 +95,11 @@ export const INVARIANT_DIR = "docs/invariants/";
  */
 export const DEFINITION_PATTERN = /^#{2,4} (INV-[A-Z][A-Z0-9]*-\d{3})\s*$/;
 
-/**
- * Any Markdown heading under `docs/invariants/` that contains a numeric
- * invariant-shaped token. Numeric invariant tokens in headings are reserved
- * for definitions; a narrative heading names the topic and cites the invariant
- * in its body. Every match must therefore also satisfy
- * {@link DEFINITION_PATTERN} exactly.
- */
-export const DEFINITION_LIKE_HEADING_PATTERN =
-  /^ {0,3}#{1,6}[ \t]+.*\bINV-[A-Z][A-Z0-9]*-\d+.*$/i;
-
 /** A numeric invariant-shaped token, used to recognise Setext headings too. */
 export const INVARIANT_SHAPED_TOKEN_PATTERN =
   /\bINV-[A-Z][A-Z0-9]*-\d+/i;
 
-/** The underline that turns the immediately preceding line into a Setext heading. */
+/** The underline that turns the active paragraph into a Setext heading. */
 export const SETEXT_HEADING_UNDERLINE_PATTERN = /^ {0,3}(?:=+|-+)[ \t]*$/;
 
 /** A CITATION is the id anywhere in a line of any tracked text file. */
@@ -407,44 +397,97 @@ function rawHtmlBlockTerminator(line) {
     /^ {0,3}<(pre|script|style|textarea)(?:[ \t]|>|$)/i,
   );
   if (rawTag) {
-    return { end: new RegExp(`</${rawTag[1]}\\s*>`, "i"), type: "explicit" };
+    return {
+      canInterruptParagraph: true,
+      end: new RegExp(`</${rawTag[1]}\\s*>`, "i"),
+      type: "explicit",
+    };
   }
-  if (/^ {0,3}<!--/.test(line)) return { end: /-->/, type: "explicit" };
-  if (/^ {0,3}<\?/.test(line)) return { end: /\?>/, type: "explicit" };
+  if (/^ {0,3}<!--/.test(line)) {
+    return { canInterruptParagraph: true, end: /-->/, type: "explicit" };
+  }
+  if (/^ {0,3}<\?/.test(line)) {
+    return { canInterruptParagraph: true, end: /\?>/, type: "explicit" };
+  }
   if (/^ {0,3}<!\[CDATA\[/.test(line)) {
-    return { end: /\]\]>/, type: "explicit" };
+    return { canInterruptParagraph: true, end: /\]\]>/, type: "explicit" };
   }
-  if (/^ {0,3}<![A-Z]/.test(line)) return { end: />/, type: "explicit" };
-  if (HTML_BLOCK_TAG_PATTERN.test(line) || COMPLETE_HTML_TAG_PATTERN.test(line)) {
-    return { type: "blank" };
+  if (/^ {0,3}<![A-Z]/.test(line)) {
+    return { canInterruptParagraph: true, end: />/, type: "explicit" };
+  }
+  if (HTML_BLOCK_TAG_PATTERN.test(line)) {
+    return { canInterruptParagraph: true, type: "blank" };
+  }
+  if (COMPLETE_HTML_TAG_PATTERN.test(line)) {
+    return { canInterruptParagraph: false, type: "blank" };
   }
   return null;
 }
 
+function sameContainers(left, right) {
+  return (
+    left.length === right.length &&
+    left.every(
+      (container, index) =>
+        container.type === right[index].type &&
+        (container.type !== "list" || container.width === right[index].width),
+    )
+  );
+}
+
+/** Resolve a line against an active paragraph's containers, or fresh openers. */
+function structuralLine(line, paragraph) {
+  if (paragraph?.containers.length > 0) {
+    const continuation = stripExpectedContainers(line, paragraph.containers);
+    if (continuation !== null) {
+      const nested = stripOpeningContainers(continuation);
+      return {
+        containers: [...paragraph.containers, ...nested.containers],
+        text: nested.text,
+      };
+    }
+  }
+  return stripOpeningContainers(line);
+}
+
+function leadingIndentColumns(text) {
+  return indentationColumns(text.match(/^[ \t]*/)?.[0] ?? "");
+}
+
+const ATX_HEADING_PATTERN = /^ {0,3}#{1,6}(?:[ \t]+|$)/;
+
 /**
- * Classify Markdown lines with one bounded CommonMark literal-block state.
+ * One bounded CommonMark block pass for every invariant audit.
  *
- * A closer uses the opener's marker and at least its length. A shorter run, the
- * other marker, or a candidate closer carrying non-whitespace is literal
- * content. Blockquote/list containers are retained until they end; the first
- * non-container line is reprocessed outside the block. Explicitly terminated
- * raw HTML blocks ignore fence markers until their terminator. Backtick info
- * strings may not themselves contain a backtick. Fence opener/closer lines
- * belong to neither output; raw HTML boundary lines belong to the literal view.
+ * It retains the paragraph/container state that makes type-7 HTML, indented
+ * code, multiline Setext headings and container-owned ATX headings meaningful.
  */
-export function scanMarkdownFenceLines(text) {
+function scanMarkdownBlocks(text) {
   const scannable = [];
   const fenced = [];
+  const headings = [];
   let literal = null;
+  let paragraph = null;
 
-  text.split(/\r?\n/).forEach((line, index) => {
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
     const numberedLine = { number: index + 1, text: line };
     let reprocess = true;
     while (reprocess) {
       reprocess = false;
+
       if (literal) {
         const content = stripExpectedContainers(line, literal.containers);
         if (content === null) {
+          literal = null;
+          reprocess = true;
+          continue;
+        }
+
+        if (literal.type === "indented") {
+          if (content.trim() === "" || leadingIndentColumns(content) >= 4) {
+            fenced.push(numberedLine);
+            continue;
+          }
           literal = null;
           reprocess = true;
           continue;
@@ -454,6 +497,7 @@ export function scanMarkdownFenceLines(text) {
           if (literal.terminator.type === "blank" && content.trim() === "") {
             literal = null;
             scannable.push(numberedLine);
+            paragraph = null;
             continue;
           }
           fenced.push(numberedLine);
@@ -479,10 +523,38 @@ export function scanMarkdownFenceLines(text) {
         continue;
       }
 
-      const outside = stripOpeningContainers(line);
+      const outside = structuralLine(line, paragraph);
+      const continuesParagraph =
+        paragraph !== null && sameContainers(outside.containers, paragraph.containers);
+
+      if (outside.text.trim() === "") {
+        scannable.push(numberedLine);
+        paragraph = null;
+        continue;
+      }
+
+      if (
+        continuesParagraph &&
+        SETEXT_HEADING_UNDERLINE_PATTERN.test(outside.text)
+      ) {
+        headings.push({
+          containerDepth: paragraph.containers.length,
+          kind: "setext",
+          number: paragraph.lines[0].number,
+          text: paragraph.lines.map((entry) => entry.text).join(" "),
+        });
+        scannable.push(numberedLine);
+        paragraph = null;
+        continue;
+      }
+
       const htmlTerminator = rawHtmlBlockTerminator(outside.text);
-      if (htmlTerminator) {
+      if (
+        htmlTerminator &&
+        (htmlTerminator.canInterruptParagraph || !continuesParagraph)
+      ) {
         fenced.push(numberedLine);
+        paragraph = null;
         if (
           htmlTerminator.type === "blank" ||
           !htmlTerminator.end.test(outside.text)
@@ -502,6 +574,7 @@ export function scanMarkdownFenceLines(text) {
       const isValidOpener =
         markerRun && (markerRun[0] === "~" || !info.includes("`"));
       if (isValidOpener) {
+        paragraph = null;
         literal = {
           containers: outside.containers,
           length: markerRun.length,
@@ -511,10 +584,53 @@ export function scanMarkdownFenceLines(text) {
         continue;
       }
 
-      scannable.push(numberedLine);
-    }
-  });
+      if (!continuesParagraph && leadingIndentColumns(outside.text) >= 4) {
+        paragraph = null;
+        fenced.push(numberedLine);
+        literal = { containers: outside.containers, type: "indented" };
+        continue;
+      }
 
+      if (ATX_HEADING_PATTERN.test(outside.text)) {
+        headings.push({
+          containerDepth: outside.containers.length,
+          kind: "atx",
+          number: numberedLine.number,
+          text: outside.text,
+        });
+        scannable.push(numberedLine);
+        paragraph = null;
+        continue;
+      }
+
+      scannable.push(numberedLine);
+      if (continuesParagraph) {
+        paragraph.lines.push({ number: numberedLine.number, text: outside.text });
+      } else {
+        paragraph = {
+          containers: outside.containers,
+          lines: [{ number: numberedLine.number, text: outside.text }],
+        };
+      }
+    }
+  }
+
+  return { fenced, headings, scannable };
+}
+
+/**
+ * Classify Markdown lines with one bounded CommonMark literal-block state.
+ *
+ * A closer uses the opener's marker and at least its length. A shorter run, the
+ * other marker, or a candidate closer carrying non-whitespace is literal
+ * content. Blockquote/list containers are retained until they end; the first
+ * non-container line is reprocessed outside the block. Explicitly terminated
+ * raw HTML blocks ignore fence markers until their terminator. Backtick info
+ * strings may not themselves contain a backtick. Fence opener/closer lines
+ * belong to neither output; raw HTML boundary lines belong to the literal view.
+ */
+export function scanMarkdownFenceLines(text) {
+  const { fenced, scannable } = scanMarkdownBlocks(text);
   return { fenced, scannable };
 }
 
@@ -623,21 +739,17 @@ export function auditDefinitionHeadingShapes(files) {
   const problems = [];
   for (const [rel, text] of files) {
     if (!rel.startsWith(INVARIANT_DIR) || !rel.endsWith(".md")) continue;
-    const lines = scannableLines(text);
-    for (let index = 0; index < lines.length; index += 1) {
-      const { number, text: line } = lines[index];
-      const next = lines[index + 1];
-      const isSetextHeading =
-        INVARIANT_SHAPED_TOKEN_PATTERN.test(line) &&
-        next?.number === number + 1 &&
-        SETEXT_HEADING_UNDERLINE_PATTERN.test(next.text);
+    for (const heading of scanMarkdownBlocks(text).headings) {
+      const { number, text: line } = heading;
       if (
-        (DEFINITION_LIKE_HEADING_PATTERN.test(line) || isSetextHeading) &&
-        !DEFINITION_PATTERN.test(line)
+        INVARIANT_SHAPED_TOKEN_PATTERN.test(line) &&
+        (heading.kind !== "atx" ||
+          heading.containerDepth > 0 ||
+          !DEFINITION_PATTERN.test(line))
       ) {
         problems.push(
           `${rel}:${number} looks like an invariant definition heading but is not in ` +
-            "the canonical `##`-to-`#### INV-<PREFIX>-<NNN>` shape with an uppercase " +
+            "the canonical top-level `##`-to-`#### INV-<PREFIX>-<NNN>` shape with an uppercase " +
             "prefix, exactly three digits, no identifier suffix and no decoration. Only " +
             "that canonical heading defines a rule, even when an embedded existing ID " +
             "resolves as a citation. Make this heading canonical, or give a narrative " +
