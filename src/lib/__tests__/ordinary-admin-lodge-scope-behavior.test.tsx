@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest"
-import type { ReactElement } from "react"
+import { useEffect, type ReactElement } from "react"
 import { act, cleanup, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions"
@@ -27,11 +27,28 @@ vi.mock("@/components/lodge-select", async (importOriginal) => {
     ...actual,
     initialLodgeIdFromLocation: () => "lodge-2",
     useLodgeOptions: () => lodgeOptions,
-    LodgeSelect: () => <div data-testid="lodge-select" />,
+    LodgeSelect: ({ lodges, value, onChange }: {
+      lodges: ReadonlyArray<{ id: string; name: string }>
+      value: string | null
+      onChange: (value: string | null) => void
+    }) => {
+      useEffect(() => {
+        if (!value && lodges[0]) onChange(lodges[0].id)
+      }, [lodges, onChange, value])
+      return <div data-testid="lodge-select" />
+    },
   }
 })
 
-vi.mock("@/hooks/use-admin-area-edit-access", () => ({
+// The contract under test is whether the page exposes its action surface at
+// all. A small form double makes that boundary observable without re-testing
+// the hut-leader form's own date/member workflow here.
+vi.mock("@/app/(admin)/admin/hut-leaders/_components/assignment-form", () => ({
+  AssignmentForm: () => <button>Confirm assignment</button>,
+}))
+
+vi.mock("@/hooks/use-admin-area-edit-access", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/use-admin-area-edit-access")>()),
   useAdminAreaEditAccess: () => true,
 }))
 
@@ -99,13 +116,13 @@ const EDITORS: Array<{
   { name: "lockers", render: () => <LockersPage />, action: /add locker|bulk create|save locker/i },
   { name: "hut fees", render: () => <HutFeesSection canEdit />, action: /add season|save season/i },
   { name: "roster", render: () => <RosterPage />, action: /generate roster|save roster|confirm roster/i },
-  { name: "hut leaders", render: () => <HutLeadersPage />, action: /assign hut leader|save assignment/i },
+  { name: "hut leaders", render: () => <HutLeadersPage />, action: /^confirm assignment$/i },
   {
     name: "rooms and beds",
     render: () => <RoomsBedsManager permissionMatrix={PERMISSION_MATRIX} />,
     action: /add room|bulk create|import rooms/i,
   },
-  { name: "lodge capacity", render: () => <LodgeCapacityCard />, action: /edit capacity|save capacity/i },
+  { name: "lodge capacity", render: () => <LodgeCapacityCard />, action: /^save$/i },
   { name: "work parties", render: () => <AdminWorkPartiesPage />, action: /add work party|save event/i },
   {
     name: "promo codes",
@@ -175,5 +192,48 @@ describe("ordinary admin editors fail closed until lodge scope settles (#2701, #
 
     expect(fetch).not.toHaveBeenCalled()
     expect(screen.queryByRole("button", { name: action })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    {
+      name: "lodge capacity",
+      render: () => <LodgeCapacityCard />,
+      action: /^save$/i,
+    },
+    {
+      name: "hut leaders",
+      render: () => <HutLeadersPage />,
+      action: /^confirm assignment$/i,
+    },
+  ])("$name exposes its real action after a concrete lodge settles", async ({ render: renderEditor, action }) => {
+    lodgeOptions = {
+      lodges: LODGES,
+      loading: false,
+      failed: false,
+      forbidden: false,
+      reload: vi.fn(),
+    }
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        assignments: [],
+        unassignedDates: [],
+        nights: [],
+        members: [],
+        capacity: 30,
+        hutLeaderLookaheadDays: 14,
+        schoolGroupSoftCap: 12,
+        clubConfigCapacity: 30,
+      }),
+    })))
+
+    render(
+      <ClubIdentityProvider value={clubIdentity}>
+        {renderEditor()}
+      </ClubIdentityProvider>,
+    )
+
+    expect(await screen.findByRole("button", { name: action })).toBeInTheDocument()
   })
 })

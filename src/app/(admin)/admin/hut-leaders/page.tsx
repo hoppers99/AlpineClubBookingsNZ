@@ -195,6 +195,10 @@ export default function HutLeadersPage() {
   });
   const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
   const lodgeScopeReady = scopedLodgeId !== null;
+  const activeLodgeIdRef = useRef<string | null>(scopedLodgeId);
+  useEffect(() => {
+    activeLodgeIdRef.current = scopedLodgeId;
+  }, [scopedLodgeId]);
 
   // The over-capacity question appears below the form after a declined save, so
   // it takes focus when it arrives (#2286 review M6) — otherwise a keyboard or
@@ -219,14 +223,18 @@ export default function HutLeadersPage() {
       setLoading(false);
       return;
     }
+    const requestedLodgeId = scopedLodgeId;
+    setLoading(true);
     try {
-      const res = await fetch(`/api/admin/hut-leaders?lodgeId=${encodeURIComponent(scopedLodgeId)}`);
+      const res = await fetch(`/api/admin/hut-leaders?lodgeId=${encodeURIComponent(requestedLodgeId)}`);
       if (res.ok) {
         const data = await res.json();
-        setAssignments(data.assignments);
+        if (activeLodgeIdRef.current === requestedLodgeId) {
+          setAssignments(Array.isArray(data?.assignments) ? data.assignments : []);
+        }
       }
     } finally {
-      setLoading(false);
+      if (activeLodgeIdRef.current === requestedLodgeId) setLoading(false);
     }
   }, [lodgeScopeReady, scopedLodgeId]);
 
@@ -237,11 +245,16 @@ export default function HutLeadersPage() {
       setUnassignedDates([]);
       return;
     }
+    const requestedLodgeId = scopedLodgeId;
     try {
-      const res = await fetch(`/api/admin/hut-leaders/unassigned-dates?lodgeId=${encodeURIComponent(scopedLodgeId)}`);
+      const res = await fetch(`/api/admin/hut-leaders/unassigned-dates?lodgeId=${encodeURIComponent(requestedLodgeId)}`);
       if (res.ok) {
         const data = await res.json();
-        setUnassignedDates(data.unassignedDates);
+        if (activeLodgeIdRef.current === requestedLodgeId) {
+          setUnassignedDates(
+            Array.isArray(data?.unassignedDates) ? data.unassignedDates : [],
+          );
+        }
       }
     } catch {
       // ignore
@@ -252,9 +265,10 @@ export default function HutLeadersPage() {
   // and occupied nights (for violet fill-vs-ring emphasis) via the occupancy API.
   const refreshOverlay = useCallback(async (monthKey: string) => {
     if (!lodgeScopeReady) return;
+    const requestedLodgeId = scopedLodgeId;
     try {
       const res = await fetch(
-        `/api/admin/hut-leaders/unassigned-dates?month=${monthKey}&lodgeId=${encodeURIComponent(scopedLodgeId)}`,
+        `/api/admin/hut-leaders/unassigned-dates?month=${monthKey}&lodgeId=${encodeURIComponent(requestedLodgeId)}`,
       );
       if (res.ok) {
         const data: { unassignedDates?: UnassignedDate[] } = await res.json();
@@ -267,13 +281,15 @@ export default function HutLeadersPage() {
         const dates = Array.isArray(data?.unassignedDates)
           ? data.unassignedDates.map((d) => d.date)
           : [];
-        setRedDatesByMonth((prev) => ({ ...prev, [monthKey]: dates }));
+        if (activeLodgeIdRef.current === requestedLodgeId) {
+          setRedDatesByMonth((prev) => ({ ...prev, [monthKey]: dates }));
+        }
       }
     } catch {
       // non-essential overlay
     }
     try {
-      const res = await fetch(`/api/admin/occupancy?month=${monthKey}&lodgeId=${encodeURIComponent(scopedLodgeId)}`);
+      const res = await fetch(`/api/admin/occupancy?month=${monthKey}&lodgeId=${encodeURIComponent(requestedLodgeId)}`);
       if (res.ok) {
         const data: { nights?: Array<{ date: string; guestCount: number }> } =
           await res.json();
@@ -282,7 +298,9 @@ export default function HutLeadersPage() {
             .filter((n) => n.guestCount > 0)
             .map((n) => n.date),
         );
-        setGuestNightsByMonth((prev) => ({ ...prev, [monthKey]: guestNights }));
+        if (activeLodgeIdRef.current === requestedLodgeId) {
+          setGuestNightsByMonth((prev) => ({ ...prev, [monthKey]: guestNights }));
+        }
       }
     } catch {
       // non-essential overlay
@@ -297,6 +315,27 @@ export default function HutLeadersPage() {
     },
     [fetchAssignments, refreshOverlay],
   );
+
+  useEffect(() => {
+    // State is labelled by the selected lodge but keyed only by month/member in
+    // memory. Clear it synchronously with a scope change; response fences below
+    // prevent a late Lodge A request from repopulating the Lodge B workspace.
+    setAssignments([]);
+    setUnassignedDates([]);
+    setEligibleMembers([]);
+    setRedDatesByMonth({});
+    setGuestNightsByMonth({});
+    setSelection({ startDate: "", endDate: "" });
+    setTarget(null);
+    setSelectedBedId(null);
+    setOverCapacity(null);
+    setError(null);
+    setMinorCustodianNote(null);
+    setPinMessage(null);
+    setCreating(false);
+    setSavingBedForId(null);
+    setResettingPinId(null);
+  }, [scopedLodgeId]);
 
   useEffect(() => {
     fetchAssignments();
@@ -323,7 +362,9 @@ export default function HutLeadersPage() {
     )
       .then((res) => (res.ok ? res.json() : Promise.reject()))
       .then((data) => {
-        if (!cancelled) setEligibleMembers(data.members);
+        if (!cancelled) {
+          setEligibleMembers(Array.isArray(data?.members) ? data.members : []);
+        }
       })
       .catch(() => {
         if (!cancelled) setEligibleMembers([]);
@@ -374,6 +415,7 @@ export default function HutLeadersPage() {
     // defence behind it, because a pending over-capacity card re-invokes this
     // through a captured closure rather than through the button.
     if (!scopedLodgeId) return;
+    const requestedLodgeId = scopedLodgeId;
     setError(null);
     setCreating(true);
     try {
@@ -384,13 +426,14 @@ export default function HutLeadersPage() {
           memberId: target.memberId,
           startDate: selection.startDate,
           endDate: selection.endDate,
-          lodgeId: scopedLodgeId,
+          lodgeId: requestedLodgeId,
           // #2286: omitted entirely for a role-only assignment, so the request
           // is byte-for-byte what it was before this feature.
           ...(selectedBedId ? { bedId: selectedBedId } : {}),
           ...(confirmOverCapacity ? { confirmOverCapacity: true } : {}),
         }),
       });
+      if (activeLodgeIdRef.current !== requestedLodgeId) return;
       if (!res.ok) {
         if (res.status === 403) {
           setError({
@@ -421,6 +464,7 @@ export default function HutLeadersPage() {
       // The minor-custodian privacy note is advisory: a body that cannot be
       // parsed must not turn a successful assignment into an error.
       const created = await res.json().catch(() => null);
+      if (activeLodgeIdRef.current !== requestedLodgeId) return;
       setMinorCustodianNote(created?.minorCustodianWarning ?? null);
       setSelection({ startDate: "", endDate: "" });
       setTarget(null);
@@ -430,7 +474,7 @@ export default function HutLeadersPage() {
       fetchUnassignedDates();
       refreshOverlay(visibleMonthKey);
     } finally {
-      setCreating(false);
+      if (activeLodgeIdRef.current === requestedLodgeId) setCreating(false);
     }
   }
 
@@ -449,7 +493,8 @@ export default function HutLeadersPage() {
     bedId: string | null,
     confirmOverCapacity = false,
   ) {
-    if (!lodgeScopeReady) return;
+    if (!scopedLodgeId) return;
+    const requestedLodgeId = scopedLodgeId;
     setError(null);
     setSavingBedForId(assignment.id);
     try {
@@ -464,6 +509,7 @@ export default function HutLeadersPage() {
           ...(confirmOverCapacity ? { confirmOverCapacity: true } : {}),
         }),
       });
+      if (activeLodgeIdRef.current !== requestedLodgeId) return;
       if (!res.ok) {
         if (res.status === 403) {
           setError({ message: ADMIN_FORBIDDEN_SAVE_REASON, memberId: null });
@@ -491,14 +537,18 @@ export default function HutLeadersPage() {
       fetchAssignments();
       refreshOverlay(visibleMonthKey);
     } finally {
-      setSavingBedForId(null);
+      if (activeLodgeIdRef.current === requestedLodgeId) {
+        setSavingBedForId(null);
+      }
     }
   }
 
   async function handleDelete(id: string) {
-    if (!lodgeScopeReady) return;
+    if (!scopedLodgeId) return;
+    const requestedLodgeId = scopedLodgeId;
     if (!confirm(`Delete this ${hutLeaderLabel.toLowerCase()} assignment?`)) return;
     const res = await fetch(`/api/admin/hut-leaders/${id}`, { method: "DELETE" });
+    if (activeLodgeIdRef.current !== requestedLodgeId) return;
     if (res.ok) {
       fetchAssignments();
       fetchUnassignedDates();
@@ -509,7 +559,8 @@ export default function HutLeadersPage() {
   }
 
   async function handleResetPin(assignment: HutLeaderAssignment) {
-    if (!lodgeScopeReady) return;
+    if (!scopedLodgeId) return;
+    const requestedLodgeId = scopedLodgeId;
     if (
       !confirm(
         `Generate a new kiosk PIN for ${assignment.memberName}? Their existing PIN will stop working.`,
@@ -525,6 +576,7 @@ export default function HutLeadersPage() {
       const res = await fetch(`/api/admin/hut-leaders/${assignment.id}/pin`, {
         method: "POST",
       });
+      if (activeLodgeIdRef.current !== requestedLodgeId) return;
       if (!res.ok && res.status === 403) {
         setError({ message: ADMIN_FORBIDDEN_SAVE_REASON, memberId: null });
         return;
@@ -542,7 +594,9 @@ export default function HutLeadersPage() {
       });
       fetchAssignments();
     } finally {
-      setResettingPinId(null);
+      if (activeLodgeIdRef.current === requestedLodgeId) {
+        setResettingPinId(null);
+      }
     }
   }
 

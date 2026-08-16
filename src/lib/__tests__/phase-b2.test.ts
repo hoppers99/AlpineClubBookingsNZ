@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { NextRequest } from "next/server";
 
 vi.setConfig({ testTimeout: 10_000 });
 
@@ -34,6 +35,7 @@ const mockPrisma = {
   },
   lodge: {
     findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
+    findUnique: vi.fn().mockResolvedValue({ id: "lodge-1", active: true }),
   },
 };
 
@@ -102,6 +104,7 @@ describe("#25: Hut Leader POST Overlap Enforcement", () => {
     vi.clearAllMocks();
     mockPrisma.member.count.mockResolvedValue(1);
     mockPrisma.lodge.findFirst.mockResolvedValue({ id: "lodge-1" });
+    mockPrisma.lodge.findUnique.mockResolvedValue({ id: "lodge-1", active: true });
   });
 
   function d(str: string) {
@@ -138,7 +141,7 @@ describe("#25: Hut Leader POST Overlap Enforcement", () => {
     const req = new Request("http://localhost/api/admin/hut-leaders", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ memberId: "m1", startDate: "2026-04-10", endDate: "2026-04-12" }),
+      body: JSON.stringify({ memberId: "m1", startDate: "2026-04-10", endDate: "2026-04-12", lodgeId: "lodge-1" }),
     });
 
     const res = await POST(req as any);
@@ -174,7 +177,7 @@ describe("#25: Hut Leader POST Overlap Enforcement", () => {
     const req = new Request("http://localhost/api/admin/hut-leaders", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ memberId: "m1", startDate: "2026-04-09", endDate: "2026-04-12" }),
+      body: JSON.stringify({ memberId: "m1", startDate: "2026-04-09", endDate: "2026-04-12", lodgeId: "lodge-1" }),
     });
 
     const res = await POST(req as any);
@@ -207,7 +210,7 @@ describe("#25: Hut Leader POST Overlap Enforcement", () => {
     const req = new Request("http://localhost/api/admin/hut-leaders", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ memberId: "m1", startDate: "2026-04-15", endDate: "2026-04-18" }),
+      body: JSON.stringify({ memberId: "m1", startDate: "2026-04-15", endDate: "2026-04-18", lodgeId: "lodge-1" }),
     });
 
     const res = await POST(req as any);
@@ -221,7 +224,7 @@ describe("#25: Hut Leader POST Overlap Enforcement", () => {
     const req = new Request("http://localhost/api/admin/hut-leaders", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ memberId: "m1", startDate: "2026-04-10", endDate: "2026-04-12" }),
+      body: JSON.stringify({ memberId: "m1", startDate: "2026-04-10", endDate: "2026-04-12", lodgeId: "lodge-1" }),
     });
 
     const res = await POST(req as any);
@@ -264,7 +267,7 @@ describe("#25: Eligible Members API", () => {
     const { GET } = await import("@/app/api/admin/hut-leaders/eligible-members/route");
     const { NextRequest } = await import("next/server");
     const req = new NextRequest(
-      "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-04-06&endDate=2026-04-08"
+      "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-04-06&endDate=2026-04-08&lodgeId=lodge-1"
     );
 
     const res = await GET(req);
@@ -317,7 +320,7 @@ describe("#25: Eligible Members API", () => {
     const { GET } = await import("@/app/api/admin/hut-leaders/eligible-members/route");
     const { NextRequest } = await import("next/server");
     const req = new NextRequest(
-      "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-04-06&endDate=2026-04-08"
+      "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-04-06&endDate=2026-04-08&lodgeId=lodge-1"
     );
 
     const res = await GET(req);
@@ -350,7 +353,7 @@ describe("#25: Eligible Members API", () => {
     const { GET } = await import("@/app/api/admin/hut-leaders/eligible-members/route");
     const { NextRequest } = await import("next/server");
     const req = new NextRequest(
-      "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-04-06&endDate=2026-04-14"
+      "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-04-06&endDate=2026-04-14&lodgeId=lodge-1"
     );
 
     const res = await GET(req);
@@ -378,7 +381,7 @@ describe("#25: Eligible Members API", () => {
     const { GET } = await import("@/app/api/admin/hut-leaders/eligible-members/route");
     const { NextRequest } = await import("next/server");
     const req = new NextRequest(
-      "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-04-06&endDate=2026-04-08"
+      "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-04-06&endDate=2026-04-08&lodgeId=lodge-1"
     );
 
     const res = await GET(req);
@@ -391,7 +394,7 @@ describe("#25: Eligible Members API", () => {
 
     const { GET } = await import("@/app/api/admin/hut-leaders/eligible-members/route");
     const { NextRequest } = await import("next/server");
-    const req = new NextRequest("http://localhost/api/admin/hut-leaders/eligible-members");
+    const req = new NextRequest("http://localhost/api/admin/hut-leaders/eligible-members?lodgeId=lodge-1");
 
     const res = await GET(req);
     expect(res.status).toBe(400);
@@ -409,7 +412,7 @@ describe("#25: Eligible Members API", () => {
     const { GET } = await import("@/app/api/admin/hut-leaders/eligible-members/route");
     const { NextRequest } = await import("next/server");
     const req = new NextRequest(
-      "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-04-06&endDate=2026-04-08"
+      "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-04-06&endDate=2026-04-08&lodgeId=lodge-1"
     );
 
     const res = await GET(req);
@@ -569,7 +572,7 @@ describe("#25: Unassigned Dates API", () => {
     ]);
 
     const { GET } = await import("@/app/api/admin/hut-leaders/unassigned-dates/route");
-    const res = await GET();
+    const res = await GET(new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"));
     expect(res.status).toBe(200);
     const body = await res.json();
     // Should have at least 1 unassigned date
@@ -595,7 +598,7 @@ describe("#25: Unassigned Dates API", () => {
     ]);
 
     const { GET } = await import("@/app/api/admin/hut-leaders/unassigned-dates/route");
-    const res = await GET();
+    const res = await GET(new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.unassignedDates).toHaveLength(0);
@@ -607,7 +610,7 @@ describe("#25: Unassigned Dates API", () => {
     mockPrisma.booking.findMany.mockResolvedValue([]);
 
     const { GET } = await import("@/app/api/admin/hut-leaders/unassigned-dates/route");
-    const res = await GET();
+    const res = await GET(new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.unassignedDates).toHaveLength(0);
@@ -623,7 +626,7 @@ describe("#25: Unassigned Dates API", () => {
     });
 
     const { GET } = await import("@/app/api/admin/hut-leaders/unassigned-dates/route");
-    const res = await GET();
+    const res = await GET(new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"));
     expect(res.status).toBe(403);
   });
 
@@ -637,7 +640,7 @@ describe("#25: Unassigned Dates API", () => {
     ]);
 
     const { GET } = await import("@/app/api/admin/hut-leaders/unassigned-dates/route");
-    const res = await GET();
+    const res = await GET(new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"));
     expect(res.status).toBe(200);
     const body = await res.json();
     const relevant = body.unassignedDates.filter((d: any) => d.guestCount === 4);

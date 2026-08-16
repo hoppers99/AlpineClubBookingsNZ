@@ -1686,6 +1686,12 @@ move, never a capacity or double-booking violation.
     booking on someone's behalf may continue**, with the lodge named on screen
     before anything is written. An admin will notice a wrong lodge name and
     knows how to correct it; a member paying online will not.
+    The member Dates step is the transport boundary as well as the visual one:
+    loading, failed, forbidden and successful-empty lodge lists mount no
+    availability calendar and issue no lodge-dependent room, availability,
+    policy, quote, create, waitlist, draft or exception-request call. A retry
+    returns to Dates, reloads the options and waits for a selected id validated
+    by that successful response.
   - **Every booking-create service requires the authoritative lodge, including
     callers that bypass the HTTP route.** Copying a booking carries the source
     booking's `lodgeId`; a member joining a group carries the organiser
@@ -1707,6 +1713,12 @@ a **custodian occupancy** (#2286). The invariants:
   capacity effect — the pre-#2286 behaviour, and what every
   `hut-leader-auto-assign` cron row is. Only a bed-holding assignment reaches a
   capacity or allocation consumer.
+- **One explicit lodge owns the interactive workflow.** The hut-leader admin
+  assignment list, uncovered dates, occupancy overlay, eligible guests/owners,
+  existing coverage and create all carry the same validated lodge id. The create
+  refuses an omitted lodge before member lookup. Club-wide dashboard coverage is
+  still valid, but its caller must opt into an explicit `all` scope rather than
+  obtaining it by omission.
 - **Inclusive night semantics.** The hold covers the night of every date from
   `startDate` to `endDate` **inclusive**, never the half-open booking envelope.
   The bed is bookable again for the night after `endDate`. (This is the

@@ -129,6 +129,7 @@ export default function BookPage() {
     lodges,
     lodgeId,
     lodgesLoading,
+    lodgeScope,
     lodgeUnresolved,
     retryLodgeOptions,
     handleLodgeChange,
@@ -559,6 +560,8 @@ export default function BookPage() {
           lodges={lodges}
           lodgeId={lodgeId}
           lodgesLoading={lodgesLoading}
+          lodgeScope={lodgeScope}
+          retryLodgeOptions={retryLodgeOptions}
           handleLodgeChange={handleLodgeChange}
           selectedLodge={selectedLodge}
         />

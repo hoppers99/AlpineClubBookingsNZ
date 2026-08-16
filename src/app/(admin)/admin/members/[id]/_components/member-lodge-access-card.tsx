@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
   AdminViewOnlyNotice,
   ViewOnlyActionButton,
@@ -67,12 +67,32 @@ export function MemberLodgeAccessCard({
   const [staffLodgeIds, setStaffLodgeIds] = useState<string[]>([])
   const lodgeOptionsReady =
     !lodgesLoading && !lodgesFailed && !lodgesForbidden && lodges.length >= 2
+  const lodgeOptionsKey = lodgeOptionsReady
+    ? lodges
+        .map((lodge) => lodge.id)
+        .sort()
+        .join("\u0000")
+    : ""
+  const loadSequenceRef = useRef(0)
+  const saveSequenceRef = useRef(0)
+  const lodgeOptionsReadyRef = useRef(lodgeOptionsReady)
+  const lodgeOptionsKeyRef = useRef(lodgeOptionsKey)
+  useEffect(() => {
+    lodgeOptionsReadyRef.current = lodgeOptionsReady
+    lodgeOptionsKeyRef.current = lodgeOptionsKey
+  }, [lodgeOptionsKey, lodgeOptionsReady])
 
   const loadAccess = useCallback(async () => {
+    const sequence = (loadSequenceRef.current += 1)
     // #2701: the grants are only meaningful next to the lodges they name, and
     // no control renders without them, so there is nothing to load them for.
     if (!lodgeOptionsReady) {
+      saveSequenceRef.current += 1
       setLoading(false)
+      setError("")
+      setSuccess("")
+      setBookingRestrictionLodgeIds([])
+      setStaffLodgeIds([])
       return
     }
     setLoading(true)
@@ -80,6 +100,13 @@ export function MemberLodgeAccessCard({
     try {
       const res = await fetch(`/api/admin/members/${memberId}/lodge-access`)
       const body = await res.json()
+      if (
+        sequence !== loadSequenceRef.current ||
+        !lodgeOptionsReadyRef.current ||
+        lodgeOptionsKeyRef.current !== lodgeOptionsKey
+      ) {
+        return
+      }
       if (!res.ok) {
         throw new Error(body.error || "Failed to load lodge access")
       }
@@ -93,15 +120,28 @@ export function MemberLodgeAccessCard({
         rows.filter((row) => row.kind === "STAFF").map((row) => row.lodgeId),
       )
     } catch (loadError) {
+      if (
+        sequence !== loadSequenceRef.current ||
+        !lodgeOptionsReadyRef.current ||
+        lodgeOptionsKeyRef.current !== lodgeOptionsKey
+      ) {
+        return
+      }
       setError(
         loadError instanceof Error
           ? loadError.message
           : "Failed to load lodge access",
       )
     } finally {
-      setLoading(false)
+      if (
+        sequence === loadSequenceRef.current &&
+        lodgeOptionsReadyRef.current &&
+        lodgeOptionsKeyRef.current === lodgeOptionsKey
+      ) {
+        setLoading(false)
+      }
     }
-  }, [memberId, lodgeOptionsReady])
+  }, [lodgeOptionsKey, memberId, lodgeOptionsReady])
 
   useEffect(() => {
     void loadAccess()
@@ -112,6 +152,11 @@ export function MemberLodgeAccessCard({
     // and a PUT from here would send the empty tick state as the member's whole
     // set of grants — silently revoking every restriction and staff binding.
     if (!lodgeOptionsReady) return
+    const sequence = (saveSequenceRef.current += 1)
+    const ownsCurrentScope = () =>
+      sequence === saveSequenceRef.current &&
+      lodgeOptionsReadyRef.current &&
+      lodgeOptionsKeyRef.current === lodgeOptionsKey
     setSaving(true)
     setError("")
     setSuccess("")
@@ -122,18 +167,20 @@ export function MemberLodgeAccessCard({
         body: JSON.stringify({ bookingRestrictionLodgeIds, staffLodgeIds }),
       })
       const body = await res.json()
+      if (!ownsCurrentScope()) return
       if (!res.ok) {
         throw new Error(body.error || "Failed to save lodge access")
       }
       setSuccess("Lodge access saved.")
     } catch (saveError) {
+      if (!ownsCurrentScope()) return
       setError(
         saveError instanceof Error
           ? saveError.message
           : "Failed to save lodge access",
       )
     } finally {
-      setSaving(false)
+      if (ownsCurrentScope()) setSaving(false)
     }
   }
 

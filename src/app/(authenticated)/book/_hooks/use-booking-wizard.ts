@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
@@ -231,6 +231,10 @@ export function useBookingWizard() {
     forbidden: lodgesForbidden,
   });
   const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
+  const activeScopedLodgeIdRef = useRef<string | null>(scopedLodgeId);
+  useEffect(() => {
+    activeScopedLodgeIdRef.current = scopedLodgeId;
+  }, [scopedLodgeId]);
   // Set when the booking is created on the card-payment path; drives step 4.
   const [createdBooking, setCreatedBooking] = useState<CreatedBooking | null>(
     null,
@@ -251,13 +255,19 @@ export function useBookingWizard() {
    * selector is not rendered in this state.
    */
   const [lodgeUnresolved, setLodgeUnresolved] = useState(false);
-  const retryLodgeOptions = useCallback(() => {
+  function retryLodgeOptions() {
     setStep("dates");
     setLodgeId(null);
     setLodgeUnresolved(false);
     setError("");
     reloadLodges();
-  }, [reloadLodges]);
+  }
+
+  function returnToUnresolvedLodge() {
+    setStep("dates");
+    setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
+    setLodgeUnresolved(true);
+  }
   const [errorPaymentTargets, setErrorPaymentTargets] = useState<
     BookingErrorPaymentTarget[]
   >([]);
@@ -342,6 +352,9 @@ export function useBookingWizard() {
   function handleLodgeChange(nextLodgeId: string | null) {
     if (nextLodgeId === lodgeId) return;
     const hadLodge = lodgeId !== null;
+    // Fence pending Lodge A responses immediately, before React commits the
+    // Lodge B render and its effect updates the same ref.
+    activeScopedLodgeIdRef.current = nextLodgeId;
     setLodgeId(nextLodgeId);
     if (!hadLodge) return;
     // Availability, pricing, policies, promos, and rooms are all per lodge:
@@ -353,6 +366,7 @@ export function useBookingWizard() {
     setGuestProfileBlocks([]);
     setAppliedPromo(null);
     setPriceQuote(null);
+    setPriceLoading(false);
     setUseCredit(false);
     setRequestedRoomId(null);
     setAvailabilityNightDetails([]);
@@ -693,7 +707,7 @@ export function useBookingWizard() {
   // (`handleLodgeChange`), so the previous lodge's options are never on screen
   // while the replacement is in flight.
   useEffect(() => {
-    if (!lodgeId) {
+    if (!scopedLodgeId) {
       // Two different states reach here, and the answer is the same for both.
       //
       // Usually it is "not resolved yet" — the mount window before the lodge list
@@ -717,7 +731,7 @@ export function useBookingWizard() {
       return;
     }
     let cancelled = false;
-    fetch(`/api/bookings/rooms?lodgeId=${encodeURIComponent(lodgeId)}`)
+    fetch(`/api/bookings/rooms?lodgeId=${encodeURIComponent(scopedLodgeId)}`)
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
         if (cancelled) return;
@@ -732,7 +746,7 @@ export function useBookingWizard() {
     return () => {
       cancelled = true;
     };
-  }, [lodgeId]);
+  }, [scopedLodgeId]);
 
   // Fetch subscription status for the current season
   useEffect(() => {
@@ -1014,11 +1028,10 @@ export function useBookingWizard() {
 
   async function handleDateSelect(ci: string, co: string) {
     if (!scopedLodgeId) {
-      setStep("dates");
-      setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
-      setLodgeUnresolved(true);
+      returnToUnresolvedLodge();
       return;
     }
+    const requestedLodgeId = scopedLodgeId;
     setCheckIn(ci);
     setCheckOut(co);
     setError("");
@@ -1034,14 +1047,22 @@ export function useBookingWizard() {
     setWorkPartyClearedNotice(null);
     const ciStr = ci;
     const coStr = co;
-    const lodgeParam = `&lodgeId=${encodeURIComponent(scopedLodgeId)}`;
+    const lodgeParam = `&lodgeId=${encodeURIComponent(requestedLodgeId)}`;
 
     // Fetch availability for selected range
     const res = await fetch(
       `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}${lodgeParam}`
     );
+    if (activeScopedLodgeIdRef.current !== requestedLodgeId) {
+      if (activeScopedLodgeIdRef.current === null) returnToUnresolvedLodge();
+      return;
+    }
     if (res.ok) {
       const data = await res.json();
+      if (activeScopedLodgeIdRef.current !== requestedLodgeId) {
+        if (activeScopedLodgeIdRef.current === null) returnToUnresolvedLodge();
+        return;
+      }
       setAvailableBeds(data.minAvailable);
       setAvailabilityNightDetails(data.nightDetails || []);
     } else {
@@ -1050,8 +1071,16 @@ export function useBookingWizard() {
 
     // Check minimum stay policies
     const policyRes = await fetch(`/api/booking-policies/check?checkIn=${ciStr}&checkOut=${coStr}${lodgeParam}`);
+    if (activeScopedLodgeIdRef.current !== requestedLodgeId) {
+      if (activeScopedLodgeIdRef.current === null) returnToUnresolvedLodge();
+      return;
+    }
     if (policyRes.ok) {
       const policyData = await policyRes.json();
+      if (activeScopedLodgeIdRef.current !== requestedLodgeId) {
+        if (activeScopedLodgeIdRef.current === null) returnToUnresolvedLodge();
+        return;
+      }
       if (!policyData.valid) {
         // #2562: the date precheck must not strand a member before they can
         // describe the party that the officer would review. Reuse the ONE
@@ -1078,11 +1107,10 @@ export function useBookingWizard() {
 
   async function handleGuestsDone() {
     if (!scopedLodgeId) {
-      setStep("dates");
-      setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
-      setLodgeUnresolved(true);
+      returnToUnresolvedLodge();
       return;
     }
+    const requestedLodgeId = scopedLodgeId;
     setGuestProfileBlocks([]);
     setMemberNightConflicts([]);
     if (guests.length === 0) {
@@ -1124,7 +1152,7 @@ export function useBookingWizard() {
       body: JSON.stringify({
         checkIn: checkInStr,
         checkOut: checkOutStr,
-        lodgeId: scopedLodgeId,
+        lodgeId: requestedLodgeId,
         guests: guestPayload.map((g) => ({
           ageTier: g.ageTier,
           isMember: g.isMember,
@@ -1135,9 +1163,19 @@ export function useBookingWizard() {
         })),
       }),
     });
+    if (activeScopedLodgeIdRef.current !== requestedLodgeId) {
+      setPriceLoading(false);
+      if (activeScopedLodgeIdRef.current === null) returnToUnresolvedLodge();
+      return;
+    }
 
     if (res.ok) {
       const data = await res.json();
+      if (activeScopedLodgeIdRef.current !== requestedLodgeId) {
+        setPriceLoading(false);
+        if (activeScopedLodgeIdRef.current === null) returnToUnresolvedLodge();
+        return;
+      }
       setPriceQuote(data);
       setStep("review");
 
@@ -1154,12 +1192,13 @@ export function useBookingWizard() {
       // bound to another lodge are filtered out server-side.
       fetch(
         `/api/work-parties/active?checkIn=${checkInStr}&checkOut=${checkOutStr}${
-          `&lodgeId=${encodeURIComponent(scopedLodgeId)}`
+          `&lodgeId=${encodeURIComponent(requestedLodgeId)}`
         }`
       )
         .then((r) => r.ok ? r.json() : { events: [] })
         .then((data) => {
           const events: WorkPartyEvent[] = data.events || [];
+          if (activeScopedLodgeIdRef.current !== requestedLodgeId) return;
           setActiveWorkPartyEvents(events);
           if (
             selectedWorkPartyEventId &&
@@ -1484,11 +1523,17 @@ export function useBookingWizard() {
     memberMessage: string;
     supersedeRequestId: string | null;
   }): Promise<ExceptionRequestSubmitResult> {
+    if (!scopedLodgeId) {
+      setStep("dates");
+      setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
+      setLodgeUnresolved(true);
+      throw new Error(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
+    }
     const res = await fetch("/api/bookings/exception-requests", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        lodgeId: lodgeId ?? undefined,
+        lodgeId: scopedLodgeId,
         checkIn: checkIn!,
         checkOut: checkOut!,
         guests: buildGuestPayload(),
@@ -1622,7 +1667,13 @@ export function useBookingWizard() {
   // Apply or refresh the working bee discount preview when a work party
   // event is selected (or the booking changes while one is selected).
   useEffect(() => {
-    if (!selectedWorkPartyEventId || !checkIn || !checkOut || !priceQuote) {
+    if (
+      !scopedLodgeId ||
+      !selectedWorkPartyEventId ||
+      !checkIn ||
+      !checkOut ||
+      !priceQuote
+    ) {
       return;
     }
 
@@ -1675,7 +1726,7 @@ export function useBookingWizard() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedWorkPartyEventId, checkIn, checkOut, priceQuote, JSON.stringify(reviewGuestPayload)]);
+  }, [scopedLodgeId, selectedWorkPartyEventId, checkIn, checkOut, priceQuote, JSON.stringify(reviewGuestPayload)]);
 
   const wizardSteps: Array<{ id: BookingWizardStep; label: string }> = [
     { id: "dates", label: "Select Dates" },
@@ -1788,6 +1839,8 @@ export function useBookingWizard() {
     lodgeCapacity,
     lodges,
     lodgeId,
+    lodgeScope,
+    scopedLodgeId,
     lodgesLoading,
     // #2701: the member half of the unnamed-lodge refusal.
     lodgesFailed,

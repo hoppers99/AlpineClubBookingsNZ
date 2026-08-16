@@ -7,9 +7,9 @@ import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 
 /**
- * GET /api/admin/hut-leaders/eligible-members?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+ * GET /api/admin/hut-leaders/eligible-members?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&lodgeId=...
  * Returns adult members who have paid/operational bookings overlapping the given date range,
- * along with their booking dates and suggested assignment dates.
+ * at the required lodge, along with their booking dates and suggested assignment dates.
  */
 export async function GET(req: NextRequest) {
   const guard = await requireAdmin();

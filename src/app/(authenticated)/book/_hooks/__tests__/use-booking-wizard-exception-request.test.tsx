@@ -255,6 +255,7 @@ describe("booking wizard — when a refusal opens the request door", () => {
     const { result } = renderHook(() => useBookingWizard());
     await waitFor(() => expect(result.current.guests).toHaveLength(1));
 
+    act(() => result.current.handleLodgeChange("lodge-1"));
     await act(async () => {
       await result.current.handleDateSelect("2026-06-11", "2026-06-12");
     });
@@ -279,6 +280,7 @@ describe("booking wizard — when a refusal opens the request door", () => {
     const { result } = renderHook(() => useBookingWizard());
     await waitFor(() => expect(result.current.guests).toHaveLength(1));
 
+    act(() => result.current.handleLodgeChange("lodge-1"));
     await act(async () => {
       await result.current.handleDateSelect("2026-06-11", "2026-06-12");
     });

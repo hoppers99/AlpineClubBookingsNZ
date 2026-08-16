@@ -44,7 +44,13 @@ vi.mock("@/components/club-identity-provider", () => ({
 }));
 
 vi.mock("@/components/lodge-select", () => ({
-  useLodgeOptions: () => ({ lodges: [], loading: false }),
+  useLodgeOptions: () => ({
+    lodges: [{ id: "lodge-1", name: "Alpine Lodge" }],
+    loading: false,
+    failed: false,
+    forbidden: false,
+    reload: vi.fn(),
+  }),
 }));
 
 vi.mock("sonner", () => ({

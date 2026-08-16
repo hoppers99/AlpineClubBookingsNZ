@@ -9,9 +9,9 @@ import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 /**
  * GET /api/admin/hut-leaders/unassigned-dates
  *
- * With no query params, returns dates in the configured hut-leader lookahead
- * window that have paid/operational bookings but no HutLeaderAssignment (the
- * amber "Upcoming Dates Without…" card — unchanged).
+ * lodgeId is required. With no other query params, returns dates in the
+ * configured hut-leader lookahead window at that lodge with paid or operational
+ * bookings but no HutLeaderAssignment (the amber upcoming-dates card).
  *
  * Optional windowing (used to paint one calendar month red on the redesigned
  * assignment page):
@@ -19,11 +19,11 @@ import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
  *   ?from=YYYY-MM-DD&to=YYYY-MM-DD — an explicit inclusive date-only window
  * Bad input returns 400.
  */
-export async function GET(req?: NextRequest) {
+export async function GET(req: NextRequest) {
   const guard = await requireAdmin();
   if (!guard.ok) return guard.response;
 
-  const searchParams = req ? new URL(req.url).searchParams : new URLSearchParams();
+  const searchParams = new URL(req.url).searchParams;
   const month = searchParams.get("month");
   const from = searchParams.get("from");
   const to = searchParams.get("to");
@@ -62,6 +62,9 @@ export async function GET(req?: NextRequest) {
   }
 
   return NextResponse.json({
-    unassignedDates: await getUnassignedHutLeaderDates({ ...window, lodgeId }),
+    unassignedDates: await getUnassignedHutLeaderDates({
+      ...window,
+      scope: { kind: "lodge", lodgeId },
+    }),
   });
 }

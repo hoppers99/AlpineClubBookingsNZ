@@ -39,7 +39,11 @@ type HutLeaderCoverageDb = LodgeSettingsReader & {
   };
 };
 
-export async function getUnassignedHutLeaderDates(input?: {
+export type HutLeaderCoverageScope =
+  | { kind: "lodge"; lodgeId: string }
+  | { kind: "all" };
+
+export async function getUnassignedHutLeaderDates(input: {
   db?: HutLeaderCoverageDb;
   lookAheadDays?: number;
   today?: Date;
@@ -48,12 +52,14 @@ export async function getUnassignedHutLeaderDates(input?: {
   // past nights for history). When absent, behaviour is exactly as before.
   from?: Date;
   to?: Date;
-  lodgeId?: string;
+  // Interactive pages must name one lodge. Club dashboards opt into `all`
+  // explicitly, so omission can never widen a lodge read by accident.
+  scope: HutLeaderCoverageScope;
 }): Promise<UnassignedHutLeaderDate[]> {
-  const db = input?.db ?? (prisma as unknown as HutLeaderCoverageDb);
-  const today = input?.today ?? getTodayDateOnly();
+  const db = input.db ?? (prisma as unknown as HutLeaderCoverageDb);
+  const today = input.today ?? getTodayDateOnly();
 
-  const hasWindow = input?.from != null && input?.to != null;
+  const hasWindow = input.from != null && input.to != null;
   let windowStart: Date;
   let endDate: Date;
   if (hasWindow) {
@@ -61,7 +67,7 @@ export async function getUnassignedHutLeaderDates(input?: {
     endDate = input!.to!;
   } else {
     const lookAheadDays =
-      input?.lookAheadDays ?? (await loadHutLeaderLookaheadDays(db));
+      input.lookAheadDays ?? (await loadHutLeaderLookaheadDays(db));
     windowStart = today;
     endDate = addDaysDateOnly(
       today,
@@ -72,7 +78,9 @@ export async function getUnassignedHutLeaderDates(input?: {
   const [assignments, bookings] = await Promise.all([
     db.hutLeaderAssignment.findMany({
       where: {
-        ...(input?.lodgeId ? { lodgeId: input.lodgeId } : {}),
+        ...(input.scope.kind === "lodge"
+          ? { lodgeId: input.scope.lodgeId }
+          : {}),
         startDate: { lte: endDate },
         endDate: { gte: windowStart },
       },
@@ -80,7 +88,9 @@ export async function getUnassignedHutLeaderDates(input?: {
     }),
     db.booking.findMany({
       where: {
-        ...(input?.lodgeId ? { lodgeId: input.lodgeId } : {}),
+        ...(input.scope.kind === "lodge"
+          ? { lodgeId: input.scope.lodgeId }
+          : {}),
         status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
         deletedAt: null,
         checkIn: { lte: endDate },

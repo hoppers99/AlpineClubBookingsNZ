@@ -41,6 +41,7 @@ describe("getUnassignedHutLeaderDates", () => {
 
     await expect(
       getUnassignedHutLeaderDates({
+        scope: { kind: "all" },
         db: buildDb({ hutLeaderLookaheadDays: 3, bookings: [booking] }),
         today,
       }),
@@ -48,6 +49,7 @@ describe("getUnassignedHutLeaderDates", () => {
 
     await expect(
       getUnassignedHutLeaderDates({
+        scope: { kind: "all" },
         db: buildDb({ hutLeaderLookaheadDays: 6, bookings: [booking] }),
         today,
       }),
@@ -76,6 +78,7 @@ describe("getUnassignedHutLeaderDates", () => {
     });
 
     const result = await getUnassignedHutLeaderDates({
+      scope: { kind: "all" },
       db,
       from: dateOnly("2026-03-01"),
       to: dateOnly("2026-03-31"),
@@ -100,6 +103,7 @@ describe("getUnassignedHutLeaderDates", () => {
 
     await expect(
       getUnassignedHutLeaderDates({
+        scope: { kind: "all" },
         db: buildDb({ hutLeaderLookaheadDays: 6, bookings: [booking] }),
         today: dateOnly("2026-04-10"),
         from: dateOnly("2026-03-01"),
@@ -122,6 +126,7 @@ describe("getUnassignedHutLeaderDates", () => {
     });
 
     const result = await getUnassignedHutLeaderDates({
+      scope: { kind: "all" },
       db,
       today: dateOnly("2026-04-10"),
       lookAheadDays: 6,
@@ -129,5 +134,31 @@ describe("getUnassignedHutLeaderDates", () => {
 
     expect(db.lodgeSettings.findUnique).not.toHaveBeenCalled();
     expect(result.map((item) => item.date)).toEqual(["2026-04-15"]);
+  });
+
+  it("binds both assignments and occupied bookings to the selected lodge", async () => {
+    const db = buildDb({
+      bookings: [
+        {
+          checkIn: dateOnly("2026-08-10"),
+          checkOut: dateOnly("2026-08-11"),
+          guests: [{}],
+        },
+      ],
+    });
+
+    await getUnassignedHutLeaderDates({
+      scope: { kind: "lodge", lodgeId: "lodge-b" },
+      db,
+      from: dateOnly("2026-08-10"),
+      to: dateOnly("2026-08-10"),
+    });
+
+    expect(db.hutLeaderAssignment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ lodgeId: "lodge-b" }) }),
+    );
+    expect(db.booking.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ lodgeId: "lodge-b" }) }),
+    );
   });
 });

@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { hashActionToken } from "@/lib/action-tokens";
 
+// This legacy file imports several Next route modules inside individual cases;
+// Node 24 cold transformation on Windows can exceed Vitest's 5 s default.
+vi.setConfig({ testTimeout: 15_000 });
+
 // ---------------------------------------------------------------------------
 // Mock Prisma
 // ---------------------------------------------------------------------------
@@ -81,8 +85,14 @@ function makeRequest(body: unknown, method = "POST") {
   return new Request("http://localhost/api/admin/hut-leaders", {
     method,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(
+      body && typeof body === "object" ? { lodgeId: "lodge-1", ...body } : body,
+    ),
   });
+}
+
+function makeListRequest(lodgeId = "lodge-1") {
+  return new Request(`http://localhost/api/admin/hut-leaders?lodgeId=${lodgeId}`);
 }
 
 function makeParams(id = "assign-1") {
@@ -109,6 +119,10 @@ describe("F8: Hut Leader Role Assignment", () => {
       accessRoles: [{ role: "ADMIN" }],
     });
     mockPrisma.lodge.findFirst.mockResolvedValue({ id: "lodge-1" });
+    mockPrisma.lodge.findUnique.mockImplementation(async (args: { where: { id: string } }) => ({
+      id: args.where.id,
+      active: true,
+    }));
   });
 
   describe("isHutLeader helper", () => {
@@ -167,7 +181,7 @@ describe("F8: Hut Leader Role Assignment", () => {
       const { GET } = await import(
         "@/app/api/admin/hut-leaders/route"
       );
-      const res = await GET();
+      const res = await GET(makeListRequest() as any);
       expect(res.status).toBe(403);
     });
 
@@ -190,7 +204,7 @@ describe("F8: Hut Leader Role Assignment", () => {
       const { GET } = await import(
         "@/app/api/admin/hut-leaders/route"
       );
-      const res = await GET();
+      const res = await GET(makeListRequest() as any);
       expect(res.status).toBe(200);
 
       const data = await res.json();
@@ -220,12 +234,15 @@ describe("F8: Hut Leader Role Assignment", () => {
       const { GET } = await import(
         "@/app/api/admin/hut-leaders/route"
       );
-      const res = await GET();
+      const res = await GET(makeListRequest("lodge-2") as any);
       expect(res.status).toBe(200);
 
       const data = await res.json();
       expect(data.assignments[0].lodgeId).toBe("lodge-2");
       expect(data.assignments[0].lodgeName).toBe("River Lodge");
+      expect(mockPrisma.hutLeaderAssignment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { lodgeId: "lodge-2" } }),
+      );
     });
   });
 
@@ -555,7 +572,7 @@ describe("F8: Hut Leader Role Assignment", () => {
       const { GET } = await import(
         "@/app/api/admin/hut-leaders/eligible-members/route"
       );
-      const req = new Request("http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-10&endDate=2026-07-17");
+      const req = new Request("http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-10&endDate=2026-07-17&lodgeId=lodge-1");
       const res = await GET(req as any);
       expect(res.status).toBe(403);
     });
@@ -568,7 +585,7 @@ describe("F8: Hut Leader Role Assignment", () => {
       const { GET } = await import(
         "@/app/api/admin/hut-leaders/eligible-members/route"
       );
-      const req = new Request("http://localhost/api/admin/hut-leaders/eligible-members");
+      const req = new Request("http://localhost/api/admin/hut-leaders/eligible-members?lodgeId=lodge-1");
       const res = await GET(req as any);
       expect(res.status).toBe(400);
     });
@@ -591,7 +608,7 @@ describe("F8: Hut Leader Role Assignment", () => {
       const { GET } = await import(
         "@/app/api/admin/hut-leaders/eligible-members/route"
       );
-      const req = new Request("http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-10&endDate=2026-07-17");
+      const req = new Request("http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-10&endDate=2026-07-17&lodgeId=lodge-1");
       const res = await GET(req as any);
       expect(res.status).toBe(200);
 
@@ -631,7 +648,7 @@ describe("F8: Hut Leader Role Assignment", () => {
       const { GET } = await import(
         "@/app/api/admin/hut-leaders/eligible-members/route"
       );
-      const req = new Request("http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-10&endDate=2026-07-17");
+      const req = new Request("http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-10&endDate=2026-07-17&lodgeId=lodge-1");
       const res = await GET(req as any);
       const data = await res.json();
       expect(data.members).toHaveLength(1);
@@ -666,7 +683,7 @@ describe("F8: Hut Leader Role Assignment", () => {
       const { GET } = await import(
         "@/app/api/admin/hut-leaders/eligible-members/route"
       );
-      const req = new Request("http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-10&endDate=2026-07-17");
+      const req = new Request("http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-10&endDate=2026-07-17&lodgeId=lodge-1");
       const res = await GET(req as any);
       const data = await res.json();
 
@@ -720,7 +737,7 @@ describe("F8: Hut Leader Role Assignment", () => {
       const { GET } = await import(
         "@/app/api/admin/hut-leaders/eligible-members/route"
       );
-      const req = new Request("http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-11&endDate=2026-07-23");
+      const req = new Request("http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-11&endDate=2026-07-23&lodgeId=lodge-1");
       const res = await GET(req as any);
       const data = await res.json();
 
@@ -766,7 +783,7 @@ describe("F8: Hut Leader Role Assignment", () => {
       const { GET } = await import(
         "@/app/api/admin/hut-leaders/eligible-members/route"
       );
-      const req = new Request("http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-12&endDate=2026-07-15");
+      const req = new Request("http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-12&endDate=2026-07-15&lodgeId=lodge-1");
       const res = await GET(req as any);
       const data = await res.json();
 

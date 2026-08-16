@@ -25,7 +25,7 @@ const createSchema = z.object({
   memberId: z.string().min(1),
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  lodgeId: z.string().min(1).optional(),
+  lodgeId: z.string().min(1),
   // Custodian bed hold (#2286). Optional AND nullable: absent or null is the
   // default "No bed — role only", which behaves exactly as it did before this
   // feature and has zero capacity effect.
@@ -38,14 +38,14 @@ const createSchema = z.object({
 
 /**
  * GET /api/admin/hut-leaders
- * List all hut leader assignments.
+ * List hut leader assignments for one required active lodge.
  */
 export async function GET(req: NextRequest) {
   const guard = await requireAdmin({
     permission: { area: "lodge", level: "view" },
   });
   if (!guard.ok) return guard.response;
-  const requestedLodgeId = req.nextUrl.searchParams.get("lodgeId");
+  const requestedLodgeId = new URL(req.url).searchParams.get("lodgeId");
   const lodgeId = requestedLodgeId
     ? await resolveOptionalActiveLodgeId(prisma, requestedLodgeId)
     : null;
@@ -113,6 +113,20 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // The assignment is a lodge-scoped operational writer. Resolve that scope
+  // before even looking up the member so an omitted/invalid lodge cannot fall
+  // through to the club default or perform unrelated downstream work.
+  const lodgeId = await resolveOptionalActiveLodgeId(
+    prisma,
+    parsed.data.lodgeId,
+  );
+  if (!lodgeId) {
+    return NextResponse.json(
+      { error: "Lodge not found or not active" },
+      { status: 400 }
+    );
+  }
+
   const member = await prisma.member.findUnique({
     where: { id: parsed.data.memberId },
     select: {
@@ -140,17 +154,6 @@ export async function POST(req: NextRequest) {
   }
   const newStart = parseDateOnly(parsed.data.startDate);
   const newEnd = parseDateOnly(parsed.data.endDate);
-
-  const lodgeId = await resolveOptionalActiveLodgeId(
-    prisma,
-    parsed.data.lodgeId,
-  );
-  if (!lodgeId) {
-    return NextResponse.json(
-      { error: "Lodge not found or not active" },
-      { status: 400 }
-    );
-  }
 
   // Each lodge has its own hut leader, so the overlap check is per lodge;
   // assignments still missing a lodgeId (expand-release tolerance)

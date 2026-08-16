@@ -63,10 +63,10 @@ function stubFetch() {
     if (url.startsWith("/api/admin/hut-leaders/eligible-members")) {
       return { ok: true, json: async () => ({ members: [] }) };
     }
-    if (url === "/api/admin/hut-leaders/unassigned-dates") {
+    if (url.startsWith("/api/admin/hut-leaders/unassigned-dates?lodgeId=")) {
       return { ok: true, json: async () => ({ unassignedDates: [] }) };
     }
-    if (url === "/api/admin/hut-leaders") {
+    if (url.startsWith("/api/admin/hut-leaders?lodgeId=")) {
       return { ok: true, json: async () => ({ assignments: [] }) };
     }
     if (url.startsWith("/api/admin/roster/")) {
@@ -107,7 +107,7 @@ describe("occupancy calendar page integration", () => {
     expect(screen.getByLabelText("End Date")).toHaveValue("2099-07-12");
     await waitFor(() =>
       expect(global.fetch).toHaveBeenCalledWith(
-        "/api/admin/hut-leaders/eligible-members?startDate=2099-07-10&endDate=2099-07-12",
+        expect.stringContaining("/api/admin/hut-leaders/eligible-members?startDate=2099-07-10&endDate=2099-07-12&lodgeId="),
       ),
     );
   });

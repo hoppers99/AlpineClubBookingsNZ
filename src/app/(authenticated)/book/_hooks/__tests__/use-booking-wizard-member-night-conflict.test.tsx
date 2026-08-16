@@ -34,7 +34,13 @@ vi.mock("@/components/club-identity-provider", () => ({
 }));
 
 vi.mock("@/components/lodge-select", () => ({
-  useLodgeOptions: () => ({ lodges: [], loading: false }),
+  useLodgeOptions: () => ({
+    lodges: [{ id: "lodge-1", name: "Alpine Lodge" }],
+    loading: false,
+    failed: false,
+    forbidden: false,
+    reload: vi.fn(),
+  }),
 }));
 
 vi.mock("sonner", () => ({
@@ -119,8 +125,9 @@ async function seatedWizard(conflictBody: Record<string, unknown>) {
   const { result } = renderHook(() => useBookingWizard());
   await waitFor(() => expect(result.current.guests).toHaveLength(1));
 
-  act(() => {
-    result.current.handleDateSelect("2026-06-11", "2026-06-12");
+  act(() => result.current.handleLodgeChange("lodge-1"));
+  await act(async () => {
+    await result.current.handleDateSelect("2026-06-11", "2026-06-12");
   });
   await act(async () => {
     await result.current.handleGuestsDone();

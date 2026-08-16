@@ -265,9 +265,21 @@ operational documents (which may carry door/emergency access details).
   components in
   `src/lib/__tests__/ordinary-admin-lodge-scope-behavior.test.tsx`: all forty
   editor/state pairs (ten editors times loading, failed, forbidden and empty)
-  assert zero downstream requests and no action. Replacing every production
-  guard with a no-op makes all forty cases fail, so this is behavioural evidence
-  rather than a census that merely sees the helper name.
+  assert zero downstream requests and no action. The lodge-capacity **Save** and
+  hut-leader **Confirm assignment** names are exact, and two positive cases prove
+  those same controls appear after a concrete lodge settles; a misspelled action
+  matcher therefore cannot make the negative matrix pass vacuously. Replacing
+  either production guard with a no-op makes its negative cases fail.
+
+  Three stateful consumers have additional response-ownership rules. A capacity
+  GET or PUT started for Lodge A cannot overwrite Lodge B after a selector
+  change, including the success message. The member lodge-access card issues no
+  grants GET in loading, failed, forbidden or successful-empty states and only
+  renders populated grants after a successful two-lodge recovery. The member
+  booking Dates step mounts neither its availability calendar nor any
+  lodge-dependent read/write until its selected id belongs to the successful
+  options response; retry returns to Dates, reloads the list and lets the selector
+  establish a fresh concrete id.
 - **The board's lodge scope is five named states, the set is TOTAL, and `null`
   means exactly one thing** (#2701). It used to mean three: a deliberate
   club-wide view, a selector that had not resolved, and a failed
@@ -375,6 +387,16 @@ operational documents (which may carry door/emergency access details).
   `src/app/api/admin/hut-leaders/available-beds/__tests__/assignment-lodge-scope.test.ts`.
   Nothing here was exploitable: the reason it was safe was a guard on the write
   rather than the read being correct, which is the shape #2664 was filed about.
+- **The hut-leader admin workspace is one selected lodge end to end** (#2887).
+  Its assignment list, uncovered-night calculation, occupancy overlay and
+  eligible-member search all require the same validated `lodgeId`; the create
+  route refuses an omitted or inactive lodge before member lookup. The domain
+  helpers make widening explicit: interactive coverage uses `{ kind: "lodge" }`,
+  while the two genuine club dashboards must spell `{ kind: "all" }`. Lodge A
+  responses are fenced after a switch to Lodge B and lodge-keyed in-memory
+  overlays are cleared, so old assignments or red nights never inherit the new
+  selector label. Two-lodge route/domain tests pin all four read filters and the
+  create refusal.
 
 ## Club-Wide Models (No Lodge Dimension)
 

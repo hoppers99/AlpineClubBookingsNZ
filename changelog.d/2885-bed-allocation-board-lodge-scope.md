@@ -85,3 +85,13 @@
   redemptions panel and the public booking-requests panel already show a genuine
   "All lodges" view where every figure is correct, so losing the filter costs
   nothing and an error there would be worse than the gap it closed.
+
+  The final review also closed the stateful edges behind those screens. A slow
+  Lodge A capacity load or save can no longer overwrite Lodge B after you switch;
+  member lodge-access grants are not fetched until the complete lodge list is
+  available and populate normally after retry; and the member booking calendar
+  does not start lodge-specific reads or writes until a real lodge has resolved.
+  The Hut Leaders page now scopes its assignments, uncovered nights, occupancy,
+  eligible members and new assignments to the same selected lodge, and clears
+  old results on a switch. Its APIs refuse a missing lodge instead of using the
+  club default.

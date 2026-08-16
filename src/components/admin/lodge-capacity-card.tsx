@@ -89,6 +89,11 @@ export function LodgeCapacityCard() {
   // result as well as aborting it: some fetch mocks/transports ignore abort,
   // and a late A response must never repopulate the form now labelled B.
   const loadSequenceRef = useRef(0);
+  const saveSequenceRef = useRef(0);
+  const activeLodgeIdRef = useRef<string | null>(scopedLodgeId);
+  useEffect(() => {
+    activeLodgeIdRef.current = scopedLodgeId;
+  }, [scopedLodgeId]);
   const { scrollToError, scrollToTop } = useScrollToFeedback();
 
   async function load(
@@ -141,6 +146,18 @@ export function LodgeCapacityCard() {
 
   useEffect(() => {
     const sequence = (loadSequenceRef.current += 1);
+    // Invalidate a save started for the previous lodge. Its response may still
+    // arrive (and a fetch mock may ignore abort), but it no longer owns any UI
+    // state on the newly labelled card.
+    saveSequenceRef.current += 1;
+    setSaving(false);
+    setError("");
+    setSavedMessage("");
+    setForbidden(false);
+    setClubConfigCapacity(null);
+    setCapacityValue("");
+    setHutLeaderLookaheadValue("14");
+    setSoftCapValue("");
     const controller = new AbortController();
     if (!scopedLodgeId) {
       setLoading(false);
@@ -148,7 +165,6 @@ export function LodgeCapacityCard() {
     }
     void load(scopedLodgeId, sequence, controller.signal);
     return () => controller.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopedLodgeId]);
 
   useEffect(() => {
@@ -164,6 +180,11 @@ export function LodgeCapacityCard() {
     // on the club's default lodge, and while the lodge list is down nobody has
     // chosen that lodge.
     if (!scopedLodgeId) return;
+    const requestedLodgeId = scopedLodgeId;
+    const sequence = (saveSequenceRef.current += 1);
+    const ownsCurrentScope = () =>
+      sequence === saveSequenceRef.current &&
+      activeLodgeIdRef.current === requestedLodgeId;
     setSaving(true);
     setError("");
     setSavedMessage("");
@@ -212,9 +233,10 @@ export function LodgeCapacityCard() {
           capacity,
           hutLeaderLookaheadDays,
           schoolGroupSoftCap,
-          lodgeId: scopedLodgeId,
+          lodgeId: requestedLodgeId,
         }),
       });
+      if (!ownsCurrentScope()) return;
       // A stale tab whose permissions were narrowed after load surfaces a
       // persistent forbidden-save message rather than the generic failure (#1940).
       if (response.status === 403) {
@@ -223,15 +245,17 @@ export function LodgeCapacityCard() {
       }
       if (!response.ok) throw new Error("Failed to save lodge settings");
       const body = (await response.json()) as LodgeSettingsResponse;
+      if (!ownsCurrentScope()) return;
       setClubConfigCapacity(body.clubConfigCapacity);
       setCapacityValue(body.capacity === null ? "" : String(body.capacity));
       setHutLeaderLookaheadValue(String(body.hutLeaderLookaheadDays));
       setSoftCapValue(String(body.schoolGroupSoftCap));
       setSavedMessage("Lodge settings saved.");
     } catch (err) {
+      if (!ownsCurrentScope()) return;
       setError(err instanceof Error ? err.message : "Failed to save lodge settings");
     } finally {
-      setSaving(false);
+      if (ownsCurrentScope()) setSaving(false);
     }
   }
 

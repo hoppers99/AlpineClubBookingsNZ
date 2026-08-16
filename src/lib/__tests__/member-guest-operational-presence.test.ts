@@ -42,7 +42,7 @@ const { mockPrisma, mockAuth, mockFlags, mockLookahead } = vi.hoisted(() => ({
     choreAssignment: { findMany: vi.fn(), groupBy: vi.fn() },
     hutLeaderAssignment: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn() },
     member: { findUnique: vi.fn() },
-    lodge: { findFirst: vi.fn() },
+    lodge: { findFirst: vi.fn(), findUnique: vi.fn() },
     auditLog: { create: vi.fn() },
   },
   mockAuth: vi.fn(),
@@ -155,6 +155,7 @@ beforeEach(() => {
   mockPrisma.hutLeaderAssignment.findFirst.mockResolvedValue(null);
   mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([]);
   mockPrisma.lodge.findFirst.mockResolvedValue({ id: "lodge-1" });
+  mockPrisma.lodge.findUnique.mockResolvedValue({ id: "lodge-1", active: true });
   mockFlags.mockResolvedValue({ hutLeaders: true });
   mockLookahead.mockResolvedValue(1);
 });
@@ -587,7 +588,7 @@ describe("hut leader eligible-members picker (D-12)", () => {
     );
     const res = await GET(
       new Request(
-        "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-10&endDate=2026-07-12",
+        "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-10&endDate=2026-07-12&lodgeId=lodge-1",
       ) as never,
     );
 
