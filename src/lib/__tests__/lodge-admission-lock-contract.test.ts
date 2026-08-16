@@ -15,6 +15,38 @@ function expectOrdered(body: string, markers: string[]): void {
   }
 }
 
+/**
+ * The slice for ONE transaction, bounded by the next one's opening line (#2887).
+ *
+ * This used to be `body.slice(body.indexOf(start))` — unbounded, to end of
+ * file. For every transaction but the last that made the ordering assertion
+ * unfalsifiable: markers belonging to a LATER transaction satisfied it. Moving
+ * `acquireLodgeCapacityLock` in `createDraftBooking` to after
+ * `resolveBookingLodgeId` and `assertMemberMayBookLodge` — reintroducing the
+ * pre-#2701 race exactly — left all four assertions green, because the third
+ * transaction's correctly-ordered markers were still downstream in the slice.
+ * Only `createWaitlistedBooking` was genuinely pinned, and only because nothing
+ * follows it.
+ */
+function transactionSlices(body: string, starts: readonly string[]): string[] {
+  const offsets = starts.map((start) => {
+    const at = body.indexOf(start);
+    expect(at, `missing transaction opener: ${start}`).toBeGreaterThan(-1);
+    return at;
+  });
+  // Bounds are only bounds if the openers appear in the order given; a source
+  // reorder must fail loudly rather than silently widen a slice.
+  for (let i = 1; i < offsets.length; i += 1) {
+    expect(
+      offsets[i],
+      `transaction openers are out of source order at index ${i}`,
+    ).toBeGreaterThan(offsets[i - 1]);
+  }
+  return offsets.map((from, i) =>
+    body.slice(from, i + 1 < offsets.length ? offsets[i + 1] : body.length),
+  );
+}
+
 describe("lodge admission and assignment lock topology (#2701)", () => {
   it("keeps every booking admission path behind the lodge key and post-lock scope reads", () => {
     const body = source("src/lib/booking-create.ts");
@@ -24,17 +56,23 @@ describe("lodge admission and assignment lock topology (#2701)", () => {
     expect(body.split(lock)).toHaveLength(4);
     expect(body.split(resolve)).toHaveLength(3);
 
-    for (const transactionStart of [
+    const slices = transactionSlices(body, [
       "const newBooking = await prisma.$transaction(async (tx) => {",
       "booking = await withOptionalTransaction(input.tx, async (tx) => {",
       "const { newBooking, position } = await prisma.$transaction(async (tx) => {",
-    ]) {
-      const transaction = body.slice(body.indexOf(transactionStart));
+    ]);
+    for (const transaction of slices) {
       expectOrdered(transaction, [
         lock,
         "resolveBookingLodgeId(",
         "await assertMemberMayBookLodge(tx,",
       ]);
+      // Each slice must carry its OWN lock — with the old unbounded slice a
+      // transaction that had lost its lock entirely still found a later one's.
+      expect(
+        transaction.split(lock).length - 1,
+        "a booking-admission transaction takes the lodge key exactly once",
+      ).toBe(1);
     }
   });
 
