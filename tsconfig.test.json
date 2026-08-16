@@ -2,13 +2,36 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "types": ["vitest/globals", "node"],
-    "noEmit": true
+    "noEmit": true,
+    // JavaScript/MJS Vitest files are deliberately loaded by this project so
+    // they cannot sit in neither config, but they are not claimed as statically
+    // typechecked. #2693 owns converting the remaining files and disabling
+    // allowJs; until then checkJs remains explicitly off.
+    "checkJs": false
   },
+  // Every Vitest test under the configured src/ and scripts/ collection roots.
+  //
+  // `tsconfig.json` excludes test/spec files in these roots and every
+  // `__tests__` directory to keep test code out of the app project. This file
+  // used to re-include only the `src/` half of what that exclusion removed. The
+  // other half — the tests under `scripts/__tests__/` — was therefore in
+  // neither project, so `npm run typecheck` walked straight past it. That
+  // included the tests for the
+  // file-size gate this PR adds: a gate whose own tests were outside the
+  // typechecker (#2875).
+  //
+  // Broad `*.test.*` / `*.spec.*` patterns cover every TypeScript extension
+  // Vitest and TypeScript share, including `.mts` and `.cts`, plus the current
+  // JavaScript forms while allowJs remains enabled. The project-coverage test
+  // pins the exact Vitest default and refuses a collected extension TypeScript
+  // cannot load, so broad patterns cannot turn into a silent scope claim.
   "include": [
-    "src/**/*.test.ts",
-    "src/**/*.test.tsx",
-    "src/**/__tests__/**/*.ts",
-    "src/**/__tests__/**/*.tsx",
+    "src/**/*.test.*",
+    "src/**/*.spec.*",
+    "src/**/__tests__/**/*",
+    "scripts/**/*.test.*",
+    "scripts/**/*.spec.*",
+    "scripts/**/__tests__/**/*",
     "vitest.config.ts"
   ],
   "exclude": ["node_modules"]
