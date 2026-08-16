@@ -717,16 +717,21 @@ CI-green → evidence**.
   - **`npm test` does not typecheck, and `tsc --noEmit` without
     `-p tsconfig.test.json` skips every test file.** Run `npm run typecheck`,
     which covers both configs — that is what CI runs.
-  - **Known-environmental failures**, for targeted diagnosis when CI fails:
-    `backup.test.ts`
-    (Windows path separators in `gunzip`/`aws` argument assertions),
-    `page-content-starter-backfill.test.ts` (seed-copy drift), and
-    `review-findings-contracts.test.ts` (load-sensitive timeouts that
-    `--testTimeout` cannot raise, because they are inline; re-run it alone
-    before believing it — `docs/TESTING.md`). Prove non-involvement
+  - **Known-environmental failure**, for targeted diagnosis when CI fails:
+    `page-content-starter-backfill.test.ts` (seed-copy drift). Prove non-involvement
     cheaply and strongly by checking `git diff main --name-only` against those
     suites' imports rather than by re-running on a stashed tree. **Never report
     the suite as clean when it is not** — say what failed and why it is not yours.
+    `backup.test.ts` used to be listed for Windows path-separator assertions and
+    `review-findings-contracts.test.ts` for
+    "load-sensitive timeouts — re-run it alone". That was **wrong**, and wrong in
+    a way that cost several lanes a diagnosis each: those suites failed
+    deterministically on Windows because one asserted POSIX separators while
+    Node correctly constructed native paths, and another handed `bash` a
+    `C:\…` fixture path plus gate variables on `spawnSync`'s `env`. Windows
+    `bash` is WSL, which receives neither those variables nor a drive-letter
+    path. Fixed in #2886 — if a shell-out or backup suite here fails again,
+    investigate it rather than dismissing it as a known environment red.
   - **Mutation-verify every new guard.** Break the thing the guard exists to
     catch, confirm it fails, **then restore the mutation and re-run**; a probe
     left in the tree is a shipped defect wearing a green suite, caught only by
