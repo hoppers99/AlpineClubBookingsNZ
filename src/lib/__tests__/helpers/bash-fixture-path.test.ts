@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
@@ -50,7 +53,9 @@ describe("bash fixture path transport (#2886)", () => {
   });
 
   it("asks the selected bash to translate a cross-volume Windows path", () => {
-    const runner = vi.fn(() => "/mnt/c/Temp/fixture.sql\n");
+    const runner = vi.fn<(command: string, cwd: string) => string>(
+      () => "/mnt/c/Temp/fixture.sql\n",
+    );
 
     expect(
       translateWindowsAbsolutePathForBash(
@@ -67,7 +72,9 @@ describe("bash fixture path transport (#2886)", () => {
   });
 
   it("fails clearly when bash cannot produce a POSIX path", () => {
-    const runner = vi.fn(() => "C:/Temp/fixture.sql\n");
+    const runner = vi.fn<(command: string, cwd: string) => string>(
+      () => "C:/Temp/fixture.sql\n",
+    );
 
     expect(() =>
       translateWindowsAbsolutePathForBash(
@@ -81,7 +88,9 @@ describe("bash fixture path transport (#2886)", () => {
   it.skipIf(process.platform !== "win32")(
     "routes a real cross-drive relative calculation through the translator",
     () => {
-      const runner = vi.fn(() => "/mnt/c/Temp/fixture.sql\n");
+      const runner = vi.fn<(command: string, cwd: string) => string>(
+        () => "/mnt/c/Temp/fixture.sql\n",
+      );
 
       expect(
         bashFixturePath("C:\\Temp\\fixture.sql", "D:\\repo", runner),
@@ -90,14 +99,28 @@ describe("bash fixture path transport (#2886)", () => {
   );
 
   it.skipIf(process.platform !== "win32")(
-    "translates through the actual stock Windows bash launcher",
+    "produces a path the selected Windows bash can open",
     () => {
-      expect(
-        translateWindowsAbsolutePathForBash(
-          "C:\\Temp\\fixture with spaces.sql",
+      const directory = mkdtempSync(
+        path.join(tmpdir(), "acb-bash-fixture-path-"),
+      );
+      const fixture = path.join(directory, "fixture with spaces.sql");
+      writeFileSync(fixture, "SELECT 1;\n");
+
+      try {
+        const translated = translateWindowsAbsolutePathForBash(
+          fixture,
           process.cwd(),
-        ),
-      ).toBe("/mnt/c/Temp/fixture with spaces.sql");
+        );
+        expect(() =>
+          execFileSync("bash", bashToolArgs("test", ["-f", translated]), {
+            cwd: process.cwd(),
+            stdio: "ignore",
+          }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
     },
   );
 });
