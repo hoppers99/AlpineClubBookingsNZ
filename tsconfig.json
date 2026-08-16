@@ -32,8 +32,13 @@
   ],
   "exclude": [
     "node_modules",
-    "**/*.test.ts",
-    "**/*.test.tsx",
+    // Vitest's source/script tests belong to tsconfig.test.json for every
+    // supported extension. Keep e2e/*.spec.ts in this project until #2693
+    // gives Playwright a deliberate project of its own.
+    "src/**/*.test.*",
+    "src/**/*.spec.*",
+    "scripts/**/*.test.*",
+    "scripts/**/*.spec.*",
     "**/__tests__/**",
     // #2686: Semgrep rule fixtures. They are deliberately-broken sample code
     // whose only reader is Semgrep's own `--test` runner — they import modules
