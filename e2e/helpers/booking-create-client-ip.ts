@@ -307,19 +307,23 @@ export async function resolveBookableLodgeId(
 ): Promise<string | null> {
   const response = await request.get("/api/lodges");
 
-  // `null`, NOT a throw, when the caller has no session. Two specs post here
-  // deliberately unauthenticated — the booking-create rate limiter runs BEFORE
-  // authentication, so proving retry-key isolation requires reaching the route
-  // with no cookies at all. Throwing here turned "the route refused you", which
-  // is the measurement, into "the harness exploded", which is not: the probe
-  // never reached `POST /api/bookings` and the shared counter never moved.
-  // A session that may not list lodges cannot create a booking either, so
-  // skipping the fill costs nothing and the create refuses on its own terms.
-  if (response.status() === 401 || response.status() === 403) return null;
-
   if (!response.ok()) {
+    // `null`, NOT a throw, when the caller has no session. Two specs post here
+    // deliberately unauthenticated — the booking-create rate limiter runs
+    // BEFORE authentication, so proving retry-key isolation requires reaching
+    // the route with no cookies at all. Throwing turned "the route refused
+    // you", which is the measurement, into "the harness exploded", which is
+    // not: the probe never reached `POST /api/bookings` and the shared counter
+    // never moved. A session that may not list lodges cannot create a booking
+    // either, so skipping the fill costs nothing and the create refuses on its
+    // own terms.
+    //
+    // `status()` is read only on this failure path, so a happy-path response
+    // double need not implement it.
+    const status = response.status();
+    if (status === 401 || status === 403) return null;
     throw new Error(
-      `resolve bookable lodge for a booking create (${response.status()})`,
+      `resolve bookable lodge for a booking create (${status})`,
     );
   }
   const body = (await response.json()) as { lodges?: Array<{ id: string }> };
