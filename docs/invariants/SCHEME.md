@@ -124,11 +124,17 @@ The `INV-` namespace is kept anyway, with three load-bearing consequences:
 2. Numbers were assigned once, at the restructure, in source-document order
    within each prefix, starting at `001` with no gaps. That was the only moment
    at which number order and document order agreed, and it will not recur.
-3. **A number is mutable only until it first merges to `main`.** Two lanes that
-   independently pick the same next number collide; the enforcement check fails
-   the PR on the duplicate definition, and whichever PR lands second simply
-   renumbers — it is renumbering an ID nothing has cited yet, which is free.
-   After merge, never.
+3. **A number is mutable only until it first merges to `main`.** Two lanes may
+   independently pick the same next number. Once the check is evaluated against
+   a base containing one of them, the other fails on the duplicate definition
+   and renumbers — it is renumbering an ID nothing has cited yet, which is free.
+   The check does not make an older green result current: branch protection does
+   not require status checks to be strict today, so GitHub need not rerun a
+   second independently green PR merely because the first merged. The repository
+   merge procedure therefore rechecks current `main`, conflict state, the exact
+   head SHA and every required check immediately before merge. That procedure,
+   not a claim that GitHub necessarily reruns CI, closes the race. After merge,
+   never renumber.
 4. **A prefix's numbers are dense, and CI enforces it** (§8). They
    run from `001` to that prefix's highest with no holes, which is what makes
    "take the next number" mechanical rather than a matter of looking carefully:
@@ -580,6 +586,13 @@ revision.
 Current-tree scans plus one fail-closed revision comparison. Pull-request CI
 uses the event's exact base SHA, main-push CI uses the event's exact pre-push
 SHA, and local feature work uses its merge-base with `origin/main` (or `main`).
+That is an exact statement about what one evaluation checks, not a promise that
+an old green evaluation stays current after another PR merges. Evaluated against
+the current base, a duplicate or deletion is rejected. Before merge, the house
+procedure refreshes current `main` and verifies no conflict plus every required
+check on the exact current head; an independently green stale-base result is not
+merge evidence. Changing branch protection's strict-status setting is a separate
+owner action, not part of this checker.
 An explicit or event ref that is absent from the checkout fails the gate; it
 never drifts to the current branch tip or falls back to `HEAD^1`, which may be a
 feature commit made after an ID was deleted. Event identity is authoritative:
@@ -608,8 +621,9 @@ long that marker run was. Only the same marker with at least that length closes
 the block; a triple-backtick line inside a four-backtick fence, or a tilde run
 inside a backtick fence, stays content and cannot invert which audits see the
 following lines. Four-space indented code is literal when it begins outside a
-paragraph. Any type-1 closing tag ends a type-1 raw HTML block; standard block
-tags stay literal until the terminating blank line, while a syntactically valid
+paragraph. A type-1 raw HTML block ends only at the closing tag matching its
+opener (`<pre>` at `</pre>`, never `</script>`); standard block tags stay literal
+until the terminating blank line, while a syntactically valid
 type-7 tag starts that form only when no paragraph is active, including a
 container paragraph continuing lazily without its quote/list marker. A newly
 opened blockquote or list interrupts the prior paragraph, so type-7 HTML and
@@ -622,7 +636,9 @@ then container prefixes consume virtual-column slices rather than whole tab
 characters. Thus two tabs after a bullet, or a tab plus two spaces after either
 a bullet or blockquote marker, retain at least four code-indentation columns.
 An empty list marker also establishes the default one-column padding used to
-classify its following indented code. An unmarked thematic break ends the
+classify its following indented code. A blank line retains an open list's
+container widths, so an indented continuation remains list-owned rather than
+being misclassified as top-level code. An unmarked thematic break ends the
 container paragraph; within the same marked container, a dash or equals
 underline keeps Setext-heading precedence. A markerless equals underline stays
 lazy paragraph text rather than becoming a Setext heading.
@@ -652,7 +668,8 @@ prose, source code, literal blocks and fence opener info strings rather than
 being truncated to the valid-looking numeric prefix.
 
 **Citation** — collected from every tracked `*.md`, `*.ts`, `*.tsx`, `*.mjs`,
-`*.js`, `*.jsx`, `*.cjs`, `*.prisma`, `*.sql`, `*.yml`, `*.yaml` and `*.json`
+`*.js`, `*.jsx`, `*.cjs`, `*.prisma`, `*.sql`, `*.yml`, `*.yaml`, `*.json` and
+`*.tsv`
 file. CommonMark block classification applies only to `*.md`; every other
 format is scanned linewise so indentation or JSX/HTML syntax cannot disguise a
 citation as a Markdown code or raw-HTML block:
@@ -700,7 +717,9 @@ shape guard flags every Xero invoice fixture in the test suite (§1.2.1).
    underscore or hyphen identifier continuation after those digits.
 7. Every file under `docs/invariants/` is linked from
    `docs/DOMAIN_INVARIANTS.md`, and every file linked from it exists.
-8. Every defined ID appears exactly once in the index.
+8. Every defined ID appears exactly once in the index. A valid GFM table row may
+   carry zero to three leading spaces; all four forms count for both presence and
+   duplicate detection.
 9. The `AGENTS.md` routing table resolves in both directions: every family it
    routes is declared, every declared family has a row, and every document it
    links to is a tracked file.

@@ -28,6 +28,7 @@ import {
   fencedLines,
   INVARIANT_SCHEME,
   literalAuditLines,
+  loadTrackedFiles,
   loadInvariantFilesAtRef,
   resolveInvariantBaselineRef,
   routingTableRows,
@@ -299,13 +300,15 @@ describe("scannableLines", () => {
     ]);
   });
 
-  it("ends any type-1 HTML block at the first type-1 closing tag", () => {
-    const source = "<pre>\nliteral\n</script>\nvisible\n";
+  it("ends a type-1 HTML block only at the matching closing tag", () => {
+    const source = "<pre>\nliteral\n</script>\nstill literal\n</pre>\nvisible\n";
 
     expect(fencedLines(source).map((line) => line.text)).toEqual([
       "<pre>",
       "literal",
       "</script>",
+      "still literal",
+      "</pre>",
     ]);
     expect(scannableLines(source).map((line) => line.text)).toEqual(["visible", ""]);
   });
@@ -536,23 +539,20 @@ describe("auditDocs — the whole check", () => {
     const files = repo();
     files.set(
       "docs/invariants/money.md",
-      `${files.get("docs/invariants/money.md")}\n    INV-FIXTURE-999\n`,
+      `${files.get("docs/invariants/money.md")}\n# Literal fixture\n\n    INV-FIXTURE-999\n`,
     );
 
     expect(auditDocs(files)).toEqual([]);
   });
 
-  it("does not let a different type-1 closing tag hide a decorated invariant heading", () => {
+  it("keeps a decorated heading literal until the matching type-1 closing tag", () => {
     const files = repo();
     files.set(
       "docs/invariants/money.md",
-      `${files.get("docs/invariants/money.md")}\n<pre>\nliteral\n</script>\n## INV-MONEY-001 — duplicate rule\n`,
+      `${files.get("docs/invariants/money.md")}\n<pre>\nliteral\n</script>\n## INV-MONEY-001 — illustrative\n</pre>\n`,
     );
 
-    const problems = auditDocs(files);
-
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain("looks like an invariant definition heading");
+    expect(auditDocs(files)).toEqual([]);
   });
 
   it.each(["<fixture =bad>", "<fixture !>"])(
@@ -727,6 +727,19 @@ describe("auditDocs — the whole check", () => {
     );
 
     expect(auditDocs(files)).toEqual([]);
+  });
+
+  it("retains a list container across a blank line before an indented heading", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n- item\n\n    ## INV-MONEY-001 — duplicate rule\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("canonical top-level");
   });
 
   it("does not let an ordered list starting above one interrupt a paragraph", () => {
@@ -993,6 +1006,34 @@ describe("auditInvariantIds", () => {
     // citation — which is the loud outcome, not a silent second definition.
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("no file under docs/invariants/ defines it");
+  });
+});
+
+describe("tracked citation source extensions", () => {
+  it("loads and audits the invariant citations in the migration safety TSV", () => {
+    const files = loadTrackedFiles(REPO_ROOT);
+    const safetyLedger = files.get("docs/BLUE_GREEN_MIGRATION_SAFETY.tsv");
+
+    expect(safetyLedger).toContain("INV-MOD-026");
+    expect(safetyLedger).toContain("INV-MOD-006");
+    expect(safetyLedger).toContain("INV-MOD-005");
+    expect(auditInvariantIds(files)).toEqual([]);
+  });
+
+  it("fails a bad id planted in the tracked migration safety TSV", () => {
+    const files = loadTrackedFiles(REPO_ROOT);
+    files.set(
+      "docs/BLUE_GREEN_MIGRATION_SAFETY.tsv",
+      files
+        .get("docs/BLUE_GREEN_MIGRATION_SAFETY.tsv")
+        .replace("INV-MOD-026", "INV-MOD-999"),
+    );
+
+    const problems = auditInvariantIds(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("INV-MOD-999");
+    expect(problems[0]).toContain("docs/BLUE_GREEN_MIGRATION_SAFETY.tsv:208");
   });
 });
 
@@ -1427,6 +1468,21 @@ describe("auditInvariantFilesLinkedFromIndex", () => {
 });
 
 describe("auditIndexRows", () => {
+  it.each(["", " ", "  ", "   "])(
+    "accepts a valid GFM index row with %s leading spaces",
+    (indent) => {
+      const files = repo();
+      files.set(
+        "docs/DOMAIN_INVARIANTS.md",
+        files
+          .get("docs/DOMAIN_INVARIANTS.md")
+          .replace("| `INV-MONEY-001`", `${indent}| \`INV-MONEY-001\``),
+      );
+
+      expect(auditIndexRows(files)).toEqual([]);
+    },
+  );
+
   it("fails a defined id with no catalogue row", () => {
     const files = repo({
       "docs/invariants/money.md": [
@@ -1472,6 +1528,19 @@ describe("auditIndexRows", () => {
     );
 
     const problems = auditIndexRows(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("2 rows");
+  });
+
+  it("fails a three-space-indented duplicate row through the whole audit", () => {
+    const files = repo();
+    files.set(
+      "docs/DOMAIN_INVARIANTS.md",
+      `${files.get("docs/DOMAIN_INVARIANTS.md")}   | \`INV-MONEY-001\` | Listed twice |\n`,
+    );
+
+    const problems = auditDocs(files);
 
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("2 rows");

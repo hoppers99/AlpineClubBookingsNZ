@@ -115,7 +115,7 @@ export const CITATION_PATTERN = /\bINV-[A-Z][A-Z0-9]*-\d{3}\b/g;
  * row rather than any mention is what lets the index's own prose use a real id
  * as an illustration without counting as a second catalogue entry.
  */
-export const INDEX_ROW_PATTERN = /^\|\s*`(INV-[A-Z][A-Z0-9]*-\d{3})`\s*\|/;
+export const INDEX_ROW_PATTERN = /^ {0,3}\|\s*`(INV-[A-Z][A-Z0-9]*-\d{3})`\s*\|/;
 
 /**
  * Prefixes that belong to Xero invoice-number fixtures, not to invariants, and
@@ -187,6 +187,7 @@ export const SCANNED_EXTENSIONS = new Set([
   ".yml",
   ".yaml",
   ".json",
+  ".tsv",
 ]);
 
 /**
@@ -461,7 +462,7 @@ function rawHtmlBlockTerminator(line) {
   if (rawTag) {
     return {
       canInterruptParagraph: true,
-      end: /<\/(?:pre|script|style|textarea)\s*>/i,
+      end: new RegExp(`</${rawTag[1]}\\s*>`, "i"),
       type: "explicit",
     };
   }
@@ -497,16 +498,17 @@ function sameContainers(left, right) {
   );
 }
 
-/** Resolve a line against an active paragraph's containers, or fresh openers. */
-function structuralLine(line, paragraph) {
-  if (paragraph?.containers.length > 0) {
-    const continuation = stripExpectedContainers(line, paragraph.containers);
+/** Resolve a line against active or blank-retained containers, or fresh openers. */
+function structuralLine(line, paragraph, retainedContainers = null) {
+  const expectedContainers = paragraph?.containers ?? retainedContainers;
+  if (expectedContainers?.length > 0) {
+    const continuation = stripExpectedContainers(line, expectedContainers);
     if (continuation !== null) {
       const nested = stripOpeningContainers(continuation, {
-        interruptingParagraph: true,
+        interruptingParagraph: paragraph !== null,
       });
       return {
-        containers: [...paragraph.containers, ...nested.containers],
+        containers: [...expectedContainers, ...nested.containers],
         opensContainer: nested.containers.length > 0,
         text: nested.text,
       };
@@ -544,6 +546,7 @@ function scanMarkdownBlocks(text) {
   const headings = [];
   let literal = null;
   let paragraph = null;
+  let retainedListContainers = null;
 
   for (const [index, line] of text.split(/\r?\n/).entries()) {
     const numberedLine = { number: index + 1, text: line };
@@ -600,7 +603,11 @@ function scanMarkdownBlocks(text) {
         continue;
       }
 
-      const outside = structuralLine(structuralText, paragraph);
+      const outside = structuralLine(
+        structuralText,
+        paragraph,
+        retainedListContainers,
+      );
       const continuesParagraph =
         paragraph !== null &&
         (sameContainers(outside.containers, paragraph.containers) ||
@@ -608,9 +615,16 @@ function scanMarkdownBlocks(text) {
 
       if (outside.text.trim() === "") {
         scannable.push(numberedLine);
+        const blankContainers = outside.opensContainer
+          ? outside.containers
+          : paragraph?.containers;
+        if (blankContainers?.some((container) => container.type === "list")) {
+          retainedListContainers = blankContainers;
+        }
         paragraph = null;
         continue;
       }
+      retainedListContainers = null;
 
       if (
         continuesParagraph &&
