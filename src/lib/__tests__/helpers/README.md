@@ -142,6 +142,46 @@ against what PostgreSQL will actually hand the provisioned role. Two copies of t
 parser would let those halves drift apart while both stayed green. Import it
 directly rather than through the barrel, like `clock.ts`.
 
+## Shelling out to a bash gate script
+
+```ts
+import {
+  bashFixturePath,
+  bashGateArgs,
+} from "@/lib/__tests__/helpers/bash-fixture-path";
+
+const result = spawnSync(
+  "bash",
+  bashGateArgs("scripts/validate-blue-green-migrations.sh", [bashFixturePath(migrationPath)], {
+    MIGRATION_SAFETY_LEDGER: bashFixturePath(ledgerPath),
+  }),
+  { cwd: process.cwd(), env: process.env, encoding: "utf8" },
+);
+```
+
+**Use these for every new shell-out.** On Windows `bash` is
+`C:\Windows\System32\bash.exe` — WSL, not Git Bash — and it can read neither a
+drive-letter path nor a variable set on `spawnSync`'s `env`. Writing the
+invocation the obvious way therefore fails two ways: loudly (`Migration SQL file
+not found: C:/Users/…`) and, worse, silently, with the gate falling back to its
+production defaults and validating the repository's real files instead of the
+fixture (#2886).
+
+`bashFixturePath` returns a path relative to the spawn's `cwd`, which resolves
+under WSL and Git Bash alike. If the repository and fixture are on different
+Windows volumes, it asks the selected shell's `wslpath` or `cygpath` for the
+absolute POSIX form and fails before invoking the gate if neither can translate
+it. `bashGateArgs` inlines variables into the `-c` string, which is the only form
+that crosses into WSL. These are no-ops or equivalents on Linux and CI. The
+module comment carries the measurements and the equivalence check. Import it
+directly rather than through the barrel, like `clock.ts`.
+
+Run a POSIX tool through `bashToolArgs`. Windows ships no native `awk.exe`, but
+the stock WSL bash provides `/usr/bin/awk`; the splitter-equivalence contract
+therefore runs on Windows rather than being capability-skipped. The helper
+quotes every argument into one `bash -c` command, so spaces and apostrophes do
+not become a reason to fall back to direct spawning.
+
 ## Conventions
 
 - Helpers must not import anything from `src/app/...` so they stay
