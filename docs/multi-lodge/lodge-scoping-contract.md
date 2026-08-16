@@ -294,6 +294,15 @@ operational documents (which may carry door/emergency access details).
   selected; late A reads and post-action refreshes cannot repopulate them, and a
   save keeps the scope it captured rather than pairing A data with B. The same
   sequence/abort ownership applies to lodge instructions and admin quotes.
+
+  The ref that names the scope currently on screen is written in the COMMIT,
+  never in the render body and never in a passive effect (#2887). A render-body
+  write also moves for a render React abandons; a passive write lands after
+  paint, leaving a window in which a late Lodge A response still reads A as
+  current. Every one of the seven refs is therefore set in a `useLayoutEffect`,
+  which `src/lib/__tests__/lodge-scope-committed-ownership.test.tsx` pins for
+  each file — that test also carries the full reasoning and is the one home for
+  it.
 - **The board's lodge scope is five named states, the set is TOTAL, and `null`
   means exactly one thing** (#2701). It used to mean three: a deliberate
   club-wide view, a selector that had not resolved, and a failed
