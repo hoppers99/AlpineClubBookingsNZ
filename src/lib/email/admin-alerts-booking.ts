@@ -18,7 +18,7 @@ import {
 } from "@/lib/email-templates/admin-booking";
 import {
   wholeLodgeManualInvoiceAmountCents,
-} from "@/lib/email-templates/booking-money";
+} from "@/lib/booking-money-lines";
 import {
   adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,

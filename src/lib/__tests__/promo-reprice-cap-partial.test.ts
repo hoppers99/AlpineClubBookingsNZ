@@ -32,7 +32,7 @@ import { recalculateBookingPromo } from "../booking-guest-removal-service";
 import { buildBookingHistoryItems } from "../booking-history";
 import {
   bookingModificationSummaryRows,
-} from "@/lib/email-templates/booking-money";
+} from "@/lib/booking-money-lines";
 import {
   describePromoCapCoverage,
   joinNames,

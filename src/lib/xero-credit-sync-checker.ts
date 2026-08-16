@@ -9,7 +9,7 @@
  * local computation safe: a manual Xero-side edit that diverges from the local
  * ledger surfaces to an admin instead of the two silently disagreeing.
  *
- * WHAT IT RECONCILES (per the docblock in email-templates/booking-money.ts →
+ * WHAT IT RECONCILES (per the docblock in booking-money-lines.ts →
  * `resolveUnpaidCreditNetting`): the population is every booking with at least
  * one `BOOKING_APPLIED` row STAMPED with a Xero credit-note id — i.e. a booking
  * BookingApp believes it has allocated credit onto a Xero invoice for. For each,

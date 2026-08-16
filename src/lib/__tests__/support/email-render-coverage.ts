@@ -11,11 +11,11 @@
  * `src/lib/email/<family>.ts` is the repository's own message-family boundary,
  * and the split follows it — but NOT one-to-one. Fourteen modules mirror a
  * sender module directly; `communications` and `refunds` cover the two families
- * sent from a route or a lib module rather than a sender; and four more
- * (`booking-reminders`, `booking-exceptions`, `booking-money`,
- * `admin-xero-reports`) are sub-modules of a family that would otherwise be
+ * sent from a route or a lib module rather than a sender; and three more
+ * (`booking-reminders`, `booking-exceptions`, `admin-xero-reports`) are
+ * sub-modules of a family that would otherwise be
  * over the 700-line budget, `src/lib/email/booking.ts` alone accounting for
- * three of them. Twenty-two modules, fourteen families. Each sub-module's own
+ * three of them. Twenty-one modules, fourteen families. Each sub-module's own
  * docblock names the family it belongs to.
  *
  * COVERAGE. `readEmailTemplateModuleExports()` reads the module DIRECTORY at
@@ -67,7 +67,8 @@ export const REGISTRY_KEYS_WITHOUT_A_TEMPLATE_FUNCTION = new Set<string>([
   // EMPTY, and it should stay that way. Both former entries were registry keys
   // whose HTML was built at the send site, which put them outside the render
   // gate: a refactor could change what an operator receives with nothing going
-  // red. #2689 moved both into `email-templates/admin-ops.ts` verbatim.
+  // red. #2689 moved both into `email-templates/admin-ops.ts`; their deliberate
+  // standard-layout and escaping correction is pinned with the rest of the corpus.
   //
   // A key added here needs a stated reason, not just a line.
 ]);

@@ -62,7 +62,8 @@ vi.mock("@/lib/email-templates/escape", () => ({
 const { DEFAULT_CONTACT_EMAIL } = vi.hoisted(() => ({
   DEFAULT_CONTACT_EMAIL: "committee-inbox@club.test",
 }));
-vi.mock("@/lib/email-message-settings", () => ({
+vi.mock("@/lib/email-message-settings", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   loadEmailMessageSettings: vi.fn(async () => ({
     contactEmail: DEFAULT_CONTACT_EMAIL,
   })),

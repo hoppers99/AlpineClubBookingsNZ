@@ -67,7 +67,7 @@ import {
   resolveUnpaidCreditNetting,
   unpaidMoneySummaryRows,
   wholeLodgeManualInvoiceAmountCents,
-} from "@/lib/email-templates/booking-money";
+} from "@/lib/booking-money-lines";
 import { plainTextEmailTemplate } from "@/lib/email-templates/layout";
 import {
   renderTemplateString,

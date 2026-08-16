@@ -2,10 +2,10 @@
  * Admin alerts about bookings and lodge capacity.
  *
  * The family boundary is `src/lib/email/admin-alerts-booking.ts`. The
- * manual-invoice figures come from `./booking-money`, the same resolver the
+ * manual-invoice figures come from `@/lib/booking-money-lines`, the same resolver the
  * member's own confirmation uses, so the two cannot state different amounts.
  */
-import { wholeLodgeManualInvoiceAmountCents } from "./booking-money";
+import { wholeLodgeManualInvoiceAmountCents } from "@/lib/booking-money-lines";
 import { escapeHtml } from "./escape";
 import {
   alertBox,

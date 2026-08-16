@@ -5,7 +5,7 @@ import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
 import {
   type AppliedCreditSummary,
   type ConfirmationSettlementMethod,
-} from "@/lib/email-templates/booking-money";
+} from "@/lib/booking-money-lines";
 
 /**
  * #2328: the applied-account-credit facts a booking confirmation must state,
@@ -64,7 +64,7 @@ import {
  *    most — a stay fully covered by credit, whose Payment row carries no source
  *    at all — the label is method-neutral anyway ("Nothing more to pay"), by
  *    the same reasoning; see `NOTHING_SETTLED_LABEL` in
- *    `email-templates/booking-money.ts`.
+ *    `booking-money-lines.ts`.
  *
  * `expectedTotalCents` is the total the CALLER is about to print. Passing it
  * costs nothing and makes a two-instant read observable: this function reads

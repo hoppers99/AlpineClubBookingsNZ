@@ -29,7 +29,7 @@ import {
   settledByPaymentCents,
   unpaidCreditNoteInput,
   unpaidMoneySummaryRows,
-} from "@/lib/email-templates/booking-money";
+} from "@/lib/booking-money-lines";
 import {
   additionalPaymentReminderTemplate,
   checkinReminderTemplate,

@@ -1,6 +1,5 @@
 - **The two biggest content files in the system are now organised by subject,
-  with every email preserved byte-for-byte and one stale help entry reconciled
-  (#2689).** The club's email
+  with moved output pinned and every discovered residual resolved (#2689).** The club's email
   templates lived in one 5,000-line file and its admin help content in one
   2,695-line file. Both have been broken up: emails now sit in one module per
   kind of message — bookings, membership, waitlist, family groups, the finance
@@ -9,22 +8,25 @@
   per section of the admin menu, so the help for a page lives under the same
   heading an operator found the page under.
 
-  Every one of the 217
-  rendered email bodies was compared byte for byte before and after the move
-  and came out identical. The structural help move was also compared before and
-  after for every resolved path before the Notifications correction below.
-  That email comparison is now a permanent check, so a future reorganisation
-  cannot quietly alter what a member receives; deliberate mutations proved it
-  can catch body drift, an unregistered module, and duplicate case or pin IDs.
+  The 193 pre-existing rendered email bodies compared byte for byte before and
+  after the structural move and came out identical. The permanent corpus now
+  pins 219 complete outputs, including the three bodies previously built at
+  their send sites. Those three now use the standard branded email shell, and
+  the two failure alerts escape their recipient, template, and booking values.
+  Deliberate mutations proved the gate catches body drift, an unregistered
+  module, duplicate case or pin IDs, and a removed escaping call.
 
-  One operator-visible help correction travelled with it. The help panel for
+  The operator-visible corrections are deliberate. The help panel for
   **Admin > Notifications** carried two versions of its text, and the one
   nobody could ever see was an out-of-date description of an older page; that
   has been removed, and the surviving panel now also explains the per-template
   delivery setting (always, only when there is something to report, or off).
-  Nothing else an operator reads has changed.
+  Contact-form and email-failure alerts now carry the same branded shell as the
+  rest of the system catalogue rather than one-off raw HTML.
 
-  Two smaller things improved along the way. A member's booking page no longer
+  Three smaller things improved along the way. Booking-money arithmetic now
+  lives at the business-logic boundary instead of inside the template folder.
+  A member's booking page no longer
   has to load the entire administrator help corpus to show the eleven-line
   booking status glossary. And the one place the system relaxes its
   date-formatting rule — for the chore roster's long weekday date — is now

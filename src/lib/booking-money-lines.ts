@@ -1,5 +1,5 @@
 /**
- * The money lines a booking email states, and the arithmetic behind them.
+ * Canonical booking-money rows and the arithmetic behind them.
  *
  * Separated from `booking.ts` because the same figures have to appear on BOTH
  * sides of a transaction: the member's confirmation says what to transfer, and
@@ -10,21 +10,11 @@
  * Money is integer cents throughout. Values here are unescaped plain text —
  * the HTML templates escape at their own edge.
  *
- * IT IS NOT RENDERING CODE, and it is worth being honest about that. There is
- * no HTML in this module and it does not import `escapeHtml`; the tell is that
- * the render gate has to pin its exports through `JSON.stringify`, because they
- * return values rather than bodies. `booking-confirmation-credit.ts` — a
- * Prisma-backed domain module — imports it, and `xero-credit-sync-checker.ts`
- * cites `resolveUnpaidCreditNetting` here as the authoritative contract it
- * reconciles against. It is also cross-family: `admin-booking.ts` imports it,
- * not just `booking.ts`.
- *
- * It lives under `email-templates/` only because both of its consumers are
- * email paths, which is where it already was before the #2689 split. Promoting
- * it to a domain module (`src/lib/booking-money-lines.ts`) is a reasonable
- * follow-up; it was left alone here because #2689 is a behaviour-preserving
- * move and re-homing domain logic is a different change with a different
- * review.
+ * This is domain code rather than rendering code: it holds no HTML and does not
+ * import `escapeHtml`. Email renderers consume its rows at their escaping edge,
+ * while `booking-confirmation-credit.ts` and `xero-credit-sync-checker.ts` use
+ * the same arithmetic directly. Keeping the module at the `src/lib` business
+ * boundary makes that ownership explicit without duplicating the calculation.
  */
 import { type BookingPaymentDueCredit } from "@/lib/email-message-notes";
 import { formatNZDate } from "@/lib/nzst-date";

@@ -141,7 +141,7 @@ import {
   unpaidCreditNoteInput,
   unpaidMoneySummaryRows,
   wholeLodgeManualInvoiceAmountCents,
-} from "@/lib/email-templates/booking-money";
+} from "@/lib/booking-money-lines";
 import {
   additionalPaymentReminderTemplate,
   checkinReminderTemplate,
@@ -1013,12 +1013,31 @@ const MOVED_SEND_SITE_CASES: EmailRenderCase[] = [
       }),
   },
   {
+    id: "adminEmailDeliveryFailedTemplate:escaping",
+    fn: "adminEmailDeliveryFailedTemplate",
+    render: () =>
+      adminEmailDeliveryFailedTemplate({
+        recipient: `<member&"'@example.org>`,
+        templateName: `booking<&"'confirmed`,
+        attemptCount: 3,
+      }),
+  },
+  {
     id: "adminEmailWithheldTemplate:minimal",
     fn: "adminEmailWithheldTemplate",
     render: () =>
       adminEmailWithheldTemplate({
         templateName: "booking-confirmed",
         bookingId: "bkg_example",
+      }),
+  },
+  {
+    id: "adminEmailWithheldTemplate:escaping",
+    fn: "adminEmailWithheldTemplate",
+    render: () =>
+      adminEmailWithheldTemplate({
+        templateName: `booking<&"'confirmed`,
+        bookingId: `bkg_<&"'example`,
       }),
   },
 ];

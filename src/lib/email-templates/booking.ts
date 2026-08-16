@@ -7,7 +7,7 @@
  * ships these. Three sub-modules split off it to stay inside the 700-line
  * module budget, not as a new taxonomy: `./booking-reminders` (sent ahead of a
  * stay), `./booking-exceptions` (asking the club to bend a booking rule, and
- * every answer to that ask), and `./booking-money` (the money rows, shared
+ * every answer to that ask), and `@/lib/booking-money-lines` (the money rows, shared
  * with the admin alerts about the same booking).
  */
 import {
@@ -21,7 +21,7 @@ import {
   settledByPaymentCents,
   unpaidCreditNoteInput,
   unpaidMoneySummaryRows,
-} from "./booking-money";
+} from "@/lib/booking-money-lines";
 import { escapeHtml } from "./escape";
 import {
   alertBox,
