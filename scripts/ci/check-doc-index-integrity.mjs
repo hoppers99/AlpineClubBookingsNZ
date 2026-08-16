@@ -305,8 +305,21 @@ const HTML_BLOCK_TAG_PATTERN = new RegExp(
   `^ {0,3}</?(?:${HTML_BLOCK_TAGS})(?:[ \\t]|/?>|$)`,
   "i",
 );
+// Upper bound on the inline-tag stripping loop in stripInlineHtmlTags. Each pass
+// must strip at least one `<...>` to continue, so a heading cannot need more
+// passes than it has characters; this only caps pathological input.
+const MAX_INLINE_HTML_STRIP_PASSES = 100;
+
+// The unquoted attribute value excludes TAB as well as space. CommonMark defines
+// it as "a nonempty string of characters not including whitespace, ", ', =, <, >,
+// or `" — and whitespace is both. Letting it swallow tabs was not only wrong, it
+// made the value overlap the `[ \t]+` that separates the next attribute, so the
+// outer `(...)*` could re-split the same tabs an exponential number of ways.
+// Measured before the fix: a line of `<a` followed by 22 repetitions of "\t\t:=!"
+// took 337ms, and each further repetition doubled it — a ~200-character line in
+// any tracked Markdown file would have hung this gate forever. Now linear.
 const COMPLETE_HTML_TAG_PATTERN =
-  /^ {0,3}(?:<\/[A-Za-z][A-Za-z0-9-]*[ \t]*>|<[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[A-Za-z_:][A-Za-z0-9_.:-]*(?:[ \t]*=[ \t]*(?:[^ "'=<>`]+|'[^']*'|"[^"]*"))?)*[ \t]*\/?>)[ \t]*$/;
+  /^ {0,3}(?:<\/[A-Za-z][A-Za-z0-9-]*[ \t]*>|<[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[A-Za-z_:][A-Za-z0-9_.:-]*(?:[ \t]*=[ \t]*(?:[^ \t"'=<>`]+|'[^']*'|"[^"]*"))?)*[ \t]*\/?>)[ \t]*$/;
 
 function indentationColumns(text, initialColumn = 0) {
   let column = initialColumn;
@@ -462,6 +475,15 @@ function rawHtmlBlockTerminator(line) {
     };
   }
   if (/^ {0,3}<!--/.test(line)) {
+    // CommonMark ends HTML block type 2 on the literal string `-->`, and nothing
+    // else. Browsers additionally accept `--!>`, and CodeQL's js/bad-tag-filter
+    // flags this line for not matching it — correctly for an HTML *sanitizer*,
+    // but wrongly here. This is a CommonMark block scanner, and widening it would
+    // make the checker disagree with the renderer GitHub actually uses: text that
+    // GitHub keeps inside the comment would start counting as live document. A
+    // heading hidden after `--!>` is invisible to readers too, so treating it as
+    // still-commented is the faithful reading, and a real id that vanished that
+    // way is caught anyway by the retention assertion against the base revision.
     return { canInterruptParagraph: true, end: /-->/, type: "explicit" };
   }
   if (/^ {0,3}<\?/.test(line)) {
@@ -963,14 +985,72 @@ function decodeNumericCharacterReferences(text) {
  * delimiters/tags that can split an otherwise canonical-looking token.
  */
 function headingInvariantShapeText(line) {
-  return decodeNumericCharacterReferences(
-    line
-      .replace(HEADING_INLINE_LINK_PATTERN, "$1")
-      .replace(HEADING_REFERENCE_LINK_PATTERN, "$1")
-      .replace(HEADING_SHORTCUT_LINK_PATTERN, "$1"),
-  )
-    .replace(/[*_~`]/g, "")
-    .replace(/<\/?[A-Za-z][^>]*>/g, "");
+  return foldInvariantLookalikes(
+    stripInlineHtmlTags(
+      decodeNumericCharacterReferences(
+        line
+          .replace(HEADING_INLINE_LINK_PATTERN, "$1")
+          .replace(HEADING_REFERENCE_LINK_PATTERN, "$1")
+          .replace(HEADING_SHORTCUT_LINK_PATTERN, "$1"),
+      ).replace(/[*_~`]/g, ""),
+    ),
+  );
+}
+
+/**
+ * Fold the characters that *look* like an invariant id but are not one.
+ *
+ * Every other defence in this function works on ASCII `INV-[A-Z]-\d`, so a
+ * single lookalike codepoint used to walk through all of them at once: the
+ * heading, `collectDefinitions`, `CITATION_PATTERN` and `INDEX_ROW_PATTERN`
+ * would all miss a heading whose hyphen is U+2011 rather than hyphen-minus,
+ * while GitHub rendered it as an ordinary, correct-looking id. A reviewer saw a
+ * normal new invariant that had skipped nine numbers, and CI was green — the
+ * exact outcome this check exists to make impossible.
+ *
+ * No literal id is written in this comment on purpose. This file is scanned for
+ * citations like any other, so an illustrative id here would either have to
+ * resolve or be excused — and an invented one under a live prefix is precisely
+ * the grep bait #2889 exists to remove. Describe the shape; do not spell it.
+ *
+ * Two steps, because they catch different things. NFKC settles the
+ * compatibility forms (full-width letters and digits). The dash class then
+ * folds the hyphen lookalikes NFKC deliberately leaves alone, since U+2011 and
+ * U+2013 are distinct characters rather than compatibility variants of `-`.
+ *
+ * Letter homoglyphs from other scripts — Cyrillic `А` for `A` — are not
+ * foldable this way and are handled instead by the ASCII-only rule in
+ * `auditDefinitionHeadingShapes`: an invariant heading is pure ASCII by
+ * construction, so anything else in it is worth failing on.
+ */
+function foldInvariantLookalikes(text) {
+  return text
+    .normalize("NFKC")
+    .replace(/[­‐-―−﹘﹣－]/g, "-");
+}
+
+/**
+ * Remove inline HTML tags, repeatedly, until the text stops changing.
+ *
+ * A single pass is not enough: removing the inner tag from `<scr<span>ipt>`
+ * splices its neighbours into a *new* tag, so one pass leaves behind markup a
+ * reader never sees. That matters here because this text is what decides
+ * whether a heading carries an invariant token — residue can split an
+ * otherwise canonical id and make a real definition invisible to the
+ * catalogue, which is the failure this whole check exists to prevent.
+ * (CodeQL js/incomplete-multi-character-sanitization flagged the single pass.)
+ *
+ * The loop is bounded: each pass must shorten the string to continue, so it
+ * terminates in at most one iteration per character even on adversarial input.
+ */
+function stripInlineHtmlTags(text) {
+  let current = text;
+  for (let pass = 0; pass < MAX_INLINE_HTML_STRIP_PASSES; pass += 1) {
+    const next = current.replace(/<\/?[A-Za-z][^>]*>/g, "");
+    if (next === current) return current;
+    current = next;
+  }
+  return current;
 }
 
 /**
@@ -980,12 +1060,54 @@ function headingInvariantShapeText(line) {
  * entirely) while the rule it appears to define stays invisible to catalogue
  * and sequence checks.
  */
+/**
+ * Report a non-ASCII character sitting inside something that reads as an
+ * invariant id, or `null` when the heading is clean.
+ *
+ * `foldInvariantLookalikes` handles the dash and compatibility families, but it
+ * cannot help with letter homoglyphs: Cyrillic `А` (U+0410) is a different
+ * letter from `A` and folding it would be wrong everywhere else. The workable
+ * rule is the structural one. An invariant id is ASCII by construction, so a
+ * word-run that contains `INV` and also contains a non-ASCII character is
+ * either a lookalike or a typo, and both deserve to fail rather than to be
+ * silently skipped by every scan in this file.
+ *
+ * Scoped to word-runs containing `INV` so ordinary prose in a heading — an em
+ * dash, a macron, a te reo Māori word — is untouched.
+ */
+function nonAsciiInsideInvariantWord(line) {
+  for (const run of line.split(/[^\p{L}\p{N}\p{Pd}_&#;]+/u)) {
+    if (!/INV/i.test(run.normalize("NFKC")) || !/[^\x20-\x7e]/.test(run)) {
+      continue;
+    }
+    const offender = [...run].find((ch) => !/[\x20-\x7e]/.test(ch));
+    const codePoint = offender.codePointAt(0).toString(16).toUpperCase();
+    return {
+      description: `U+${codePoint.padStart(4, "0")} (${JSON.stringify(offender)})`,
+    };
+  }
+  return null;
+}
+
 export function auditDefinitionHeadingShapes(files) {
   const problems = [];
   for (const [rel, text] of files) {
     if (!rel.startsWith(INVARIANT_DIR) || !rel.endsWith(".md")) continue;
     for (const heading of scanMarkdownBlocks(text).headings) {
       const { number, text: line } = heading;
+      const lookalike = nonAsciiInsideInvariantWord(line);
+      if (lookalike) {
+        problems.push(
+          `${rel}:${number} writes ${lookalike.description} inside what reads as an ` +
+            "invariant id. An invariant id is pure ASCII, so this heading is invisible to " +
+            "every audit here — the definition scan, the citation scan and the index-row " +
+            "scan all miss it — while GitHub renders it as an ordinary id. That is how a " +
+            "wrong number reaches a reviewer looking correct and merges permanently. " +
+            "Retype the id with ASCII letters, digits and hyphen-minus. A smart-punctuation " +
+            "editor, or a paste from a document or chat transcript, is the usual cause.",
+        );
+        continue;
+      }
       if (
         INVARIANT_SHAPED_TOKEN_PATTERN.test(headingInvariantShapeText(line)) &&
         (heading.kind !== "atx" ||
@@ -1850,6 +1972,13 @@ export function resolveInvariantBaselineRef(repoRoot, env = process.env) {
   }
 
   if (eventName) {
+    // Fail closed rather than guess — but note what that costs if the workflow's
+    // triggers change. This matches `.github/workflows/ci.yml`'s triggers exactly
+    // as they stand. Adding `merge_group` (which GitHub merge queues require) or
+    // `workflow_dispatch` there without also giving that event a baseline here
+    // would make `verify` — a required check — fail on every run with the message
+    // below. If you add a trigger, add its baseline in the same PR. Relevant
+    // because #2686 put branch protection on `main`.
     throw new Error(
       `Unsupported GitHub event ${eventName}; refusing to infer an invariant ` +
         "baseline from environment fields that belong to another event shape",

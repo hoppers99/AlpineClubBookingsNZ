@@ -188,6 +188,24 @@ describe("scannableLines", () => {
     expect(lines[0].text).toContain("INV-MONEY-001");
   });
 
+  it("classifies a tab-heavy pseudo-tag in linear time, not exponential", () => {
+    // The HTML-block tag pattern let an unquoted attribute value swallow TAB,
+    // which overlaps the whitespace separating the next attribute, so the outer
+    // repeat could re-split the same tabs exponentially many ways. Measured on
+    // the pre-fix pattern: 22 repetitions took 337ms and every further
+    // repetition doubled it, so a ~200-character line in any tracked Markdown
+    // file would have hung this gate rather than failed it. 400 repetitions
+    // would not have finished before the heat death of anything; if this ever
+    // regresses the test does not fail slowly, it stops finishing.
+    const pathological = `<a${"\t\t:=!".repeat(400)}\t\t:=!X\n`;
+
+    const started = process.hrtime.bigint();
+    scannableLines(pathological);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+    expect(elapsedMs).toBeLessThan(1000);
+  });
+
   it("has a separate view of fenced lines for the narrow live-prefix audit", () => {
     const lines = fencedLines("real\n```ts\nfenced\n```\nreal again\n");
     expect(lines).toEqual([{ number: 3, text: "fenced" }]);
@@ -377,6 +395,66 @@ describe("auditDefinitionHeadingShapes", () => {
     expect(problems[0]).toContain("docs/invariants/money.md:7");
     expect(problems[0]).toContain("definition heading");
     expect(problems[0]).toContain("exactly three digits");
+  });
+
+  it.each([
+    ["a non-breaking hyphen", "## INV‑CAP-042", "U+2011"],
+    ["an en dash", "## INV–CAP-042", "U+2013"],
+    ["a Cyrillic A", "## INV-CАP-042", "U+0410"],
+    ["a full-width digit", "## INV-CAP-04２", "U+FF12"],
+  ])("fails %s hiding inside an invariant id", (_name, heading, codePoint) => {
+    // The worst bypass this checker had. Every other defence works on ASCII
+    // `INV-[A-Z]-\d`, so one lookalike codepoint walked past all of them at
+    // once — definition scan, citation scan and index-row scan alike — while
+    // GitHub rendered a perfectly ordinary `INV-CAP-042`. A reviewer saw a new
+    // invariant that had skipped nine numbers, and CI was green.
+    const problems = auditDefinitionHeadingShapes(
+      repo({ "docs/invariants/money.md": `# Money\n\n${heading}\n\n- A rule.\n` }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("docs/invariants/money.md:3");
+    expect(problems[0]).toContain(codePoint);
+  });
+
+  it.each([
+    ["an em dash in ordinary prose", "## Capacity — the whole-lodge rule"],
+    ["a macron in ordinary prose", "## Whakatūpato about capacity"],
+    ["a clean canonical definition", "## INV-MONEY-001"],
+  ])("leaves %s alone", (_name, heading) => {
+    const problems = auditDefinitionHeadingShapes(
+      repo({ "docs/invariants/money.md": `# Money\n\n${heading}\n\n- A rule.\n` }),
+    );
+
+    expect(problems).toEqual([]);
+  });
+
+  it("sees through nested inline tags that one strip pass would leave behind", () => {
+    // Stripping `<b>` out of `<s<b>pan>` splices its neighbours into a *new*
+    // tag, so a single pass leaves markup a reader never sees. Left in, the
+    // residue splits the id and the heading stops looking like a definition —
+    // the rule would be live in the document and invisible to the catalogue,
+    // which is precisely the failure this whole check exists to prevent.
+    const problems = auditDefinitionHeadingShapes(
+      repo({
+        "docs/invariants/money.md": [
+          "# Money",
+          "",
+          "## INV-MONEY-001",
+          "",
+          "- A rule.",
+          "",
+          "## <s<b>pan>inv-money-002</s<b>pan>",
+          "",
+          "- Invisible.",
+          "",
+        ].join("\n"),
+      }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("docs/invariants/money.md:7");
+    expect(problems[0]).toContain("canonical");
   });
 
   it("fails a backticked id-only heading rather than silently ignoring it", () => {
@@ -1178,14 +1256,14 @@ describe("auditInvariantIds", () => {
   );
 
   it.each([
-    ["backtick opener", "```lang INV-MONEY-999a\nbody\n```", "INV-MONEY-999a", 3],
-    ["tilde opener", "~~~lang INV-MONEY-999_extra\nbody\n~~~", "INV-MONEY-999_extra", 3],
-    ["hyphenated opener", "```lang INV-MONEY-999-extra\nbody\n```", "INV-MONEY-999-extra", 3],
-    ["dotted opener", "```lang INV-MONEY-999.1\nbody\n```", "INV-MONEY-999.1", 3],
-    ["fenced body", "```text\nINV-MONEY-999a\n```", "INV-MONEY-999a", 4],
-    ["dotted fenced body", "```text\nINV-MONEY-999.1\n```", "INV-MONEY-999.1", 4],
-    ["dotted raw-HTML body", "<pre>\nINV-MONEY-999.1\n</pre>", "INV-MONEY-999.1", 4],
-    ["dotted indented code", "    INV-MONEY-999.1", "INV-MONEY-999.1", 3],
+    ["backtick opener", "```lang INV-MONEY-001a\nbody\n```", "INV-MONEY-001a", 3],
+    ["tilde opener", "~~~lang INV-MONEY-001_extra\nbody\n~~~", "INV-MONEY-001_extra", 3],
+    ["hyphenated opener", "```lang INV-MONEY-001-extra\nbody\n```", "INV-MONEY-001-extra", 3],
+    ["dotted opener", "```lang INV-MONEY-001.1\nbody\n```", "INV-MONEY-001.1", 3],
+    ["fenced body", "```text\nINV-MONEY-001a\n```", "INV-MONEY-001a", 4],
+    ["dotted fenced body", "```text\nINV-MONEY-001.1\n```", "INV-MONEY-001.1", 4],
+    ["dotted raw-HTML body", "<pre>\nINV-MONEY-001.1\n</pre>", "INV-MONEY-001.1", 4],
+    ["dotted indented code", "    INV-MONEY-001.1", "INV-MONEY-001.1", 3],
   ])(
     "rejects identifier continuation in a %s",
     (_location, fixture, malformed, lineNumber) => {
@@ -1281,18 +1359,25 @@ describe("tracked citation source extensions", () => {
 
   it("fails a bad id planted in the tracked migration safety TSV", () => {
     const files = loadTrackedFiles(REPO_ROOT);
-    files.set(
-      "docs/BLUE_GREEN_MIGRATION_SAFETY.tsv",
-      files
-        .get("docs/BLUE_GREEN_MIGRATION_SAFETY.tsv")
-        .replace("INV-MOD-026", "INV-MOD-999"),
-    );
+    const ledger = "docs/BLUE_GREEN_MIGRATION_SAFETY.tsv";
+    // One above the real INV-MOD maximum, not a far-out-of-range number: this
+    // fixture is greppable, and #2889 is the issue about a repo-wide grep
+    // returning an illustrative id and sending the next invariant to the wrong
+    // number. Misleading a grep by one — which density then catches — is the
+    // smallest lie this test can tell. See this file's fixture rule above.
+    const planted = "INV-MOD-027";
+    files.set(ledger, files.get(ledger).replace("INV-MOD-026", planted));
+
+    // Derived, not pinned: any row inserted above it by an unrelated PR would
+    // otherwise turn this into a red `verify` on a file this test does not own.
+    const expectedLine =
+      files.get(ledger).split("\n").findIndex((l) => l.includes(planted)) + 1;
 
     const problems = auditInvariantIds(files);
 
     expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain("INV-MOD-999");
-    expect(problems[0]).toContain("docs/BLUE_GREEN_MIGRATION_SAFETY.tsv:208");
+    expect(problems[0]).toContain(planted);
+    expect(problems[0]).toContain(`${ledger}:${expectedLine}`);
   });
 });
 
