@@ -11,6 +11,12 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { splitSqlStatements } from "../../../prisma/migration-verification/split-statements";
 import { MIGRATION_GATE_TREE_TIMEOUT_MS } from "./helpers/migration-gate-timeouts";
+import {
+  bashFixtureEnv,
+  bashFixturePath,
+  bashGateArgs,
+  bashToolArgs,
+} from "./helpers/bash-fixture-path";
 
 /**
  * #2418 — the coverage gate that makes a verification fixture non-optional.
@@ -41,16 +47,6 @@ const REPO_ROOT = process.cwd();
  * MIGRATION_GATE_TREE_TIMEOUT_MS instead.
  */
 const GATE_TIMEOUT_MS = 120_000;
-
-/**
- * A path bash will accept on either platform. Node hands back `C:\Users\…` on
- * Windows and Git Bash's `find` does not resolve backslash paths, so every gate
- * run would pass over an empty tree and report success — a false green in the
- * one place a false green is unacceptable. On Linux this is a no-op.
- */
-function bashPath(value: string): string {
-  return value.split(path.sep).join("/");
-}
 
 type TempMigration = { name: string; sql: string };
 
@@ -119,22 +115,38 @@ function runGate(
   tree: ReturnType<typeof createTree>,
   env: Record<string, string> = {},
 ) {
-  return spawnSync("bash", [GATE], {
-    cwd: REPO_ROOT,
-    env: {
-      ...process.env,
-      MIGRATIONS_DIR: bashPath(tree.migrationsDir),
-      DATA_MIGRATION_VERIFICATION_DIR: bashPath(tree.fixturesDir),
-      DATA_MIGRATION_GRANDFATHER_FILE: bashPath(tree.grandfatherFile),
+  // #2886 — the fixture tree is addressed relative to this spawn's `cwd`, and
+  // the variables are inlined into the bash command rather than handed to
+  // `spawnSync`'s `env`. On Windows `bash` is WSL, which can open neither a
+  // drive-letter path nor a Win32 environment variable: the gate used to see
+  // MIGRATIONS_DIR unset and sweep the REAL `prisma/migrations` instead of this
+  // throwaway tree — a false green in the one place a false green is
+  // unacceptable. See ./helpers/bash-fixture-path.
+  return spawnSync(
+    "bash",
+    bashGateArgs(GATE, [], {
+      MIGRATIONS_DIR: bashFixturePath(tree.migrationsDir, REPO_ROOT),
+      DATA_MIGRATION_VERIFICATION_DIR: bashFixturePath(
+        tree.fixturesDir,
+        REPO_ROOT,
+      ),
+      DATA_MIGRATION_GRANDFATHER_FILE: bashFixturePath(
+        tree.grandfatherFile,
+        REPO_ROOT,
+      ),
       EXPECTED_GRANDFATHERED_COUNT: "0",
       // These trees use a far-future synthetic migration name (2099) as the
       // grandfather subject, so push the "authored after the gate" cutoff (#2418,
       // R7) beyond it by default; the dedicated R7 case below sets a real cutoff.
       GATE_INTRODUCED_PREFIX: "29990101000000",
-      ...env,
+      ...bashFixtureEnv(env, REPO_ROOT),
+    }),
+    {
+      cwd: REPO_ROOT,
+      env: process.env,
+      encoding: "utf8",
     },
-    encoding: "utf8",
-  });
+  );
 }
 
 /** A migration whose only statement is the given SQL, plus a header comment. */
@@ -408,14 +420,14 @@ describe("the two statement splitters agree (#2418)", () => {
       // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       const file = path.join(migrationsRoot, name, "migration.sql");
       const awkResult = spawnSync(
-        "awk",
-        [
+        "bash",
+        bashToolArgs("awk", [
           "-v",
           "tool=agreement-test",
           "-f",
           "scripts/lib/split-sql-statements.awk",
-          bashPath(file),
-        ],
+          bashFixturePath(file, REPO_ROOT),
+        ]),
         { cwd: REPO_ROOT, encoding: "utf8" },
       );
       expect(awkResult.status, `${name}: ${awkResult.stderr}`).toBe(0);
