@@ -1,8 +1,5 @@
-import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-
-vi.mock("node:child_process", () => ({ execFileSync: vi.fn() }));
 
 import {
   bashFixtureEnv,
@@ -11,8 +8,6 @@ import {
   PATH_VALUED_ENV_KEYS,
   translateWindowsAbsolutePathForBash,
 } from "./bash-fixture-path";
-
-const execFileSyncMock = vi.mocked(execFileSync);
 
 describe("bash fixture path transport (#2886)", () => {
   it("keeps the supported gate path-variable inventory explicit", () => {
@@ -44,8 +39,10 @@ describe("bash fixture path transport (#2886)", () => {
       cwd,
     );
 
+    const expectedFixture =
+      path.sep === "/" ? fixture : "fixtures/migration.sql";
     for (const key of PATH_VALUED_ENV_KEYS) {
-      expect(converted[key]).toBe("fixtures/migration.sql");
+      expect(converted[key]).toBe(expectedFixture);
     }
     expect(converted.BLUE_GREEN_MIGRATION_OVERRIDE_REASON).toBe(
       "keep \\ exactly",
@@ -53,33 +50,30 @@ describe("bash fixture path transport (#2886)", () => {
   });
 
   it("asks the selected bash to translate a cross-volume Windows path", () => {
-    execFileSyncMock.mockReturnValue("/mnt/c/Temp/fixture.sql\n" as never);
+    const runner = vi.fn(() => "/mnt/c/Temp/fixture.sql\n");
 
     expect(
       translateWindowsAbsolutePathForBash(
         "C:\\Temp\\fixture.sql",
         "D:\\repo",
+        runner,
       ),
     ).toBe("/mnt/c/Temp/fixture.sql");
-    expect(execFileSyncMock).toHaveBeenCalledWith(
-      "bash",
-      [
-        "-c",
-        expect.stringContaining("wslpath"),
-        "bash-fixture-path",
-        "C:/Temp/fixture.sql",
-      ],
-      expect.objectContaining({ cwd: "D:\\repo", encoding: "utf8" }),
+    expect(runner).toHaveBeenCalledWith(
+      expect.stringContaining(`wslpath -u 'C:\\Temp\\fixture.sql'`),
+      "D:\\repo",
     );
+    expect(runner.mock.calls[0]?.[0]).not.toContain("$1");
   });
 
   it("fails clearly when bash cannot produce a POSIX path", () => {
-    execFileSyncMock.mockReturnValue("C:/Temp/fixture.sql\n" as never);
+    const runner = vi.fn(() => "C:/Temp/fixture.sql\n");
 
     expect(() =>
       translateWindowsAbsolutePathForBash(
         "C:\\Temp\\fixture.sql",
         "D:\\repo",
+        runner,
       ),
     ).toThrow("Cannot translate cross-volume Windows fixture path");
   });
@@ -87,11 +81,23 @@ describe("bash fixture path transport (#2886)", () => {
   it.skipIf(process.platform !== "win32")(
     "routes a real cross-drive relative calculation through the translator",
     () => {
-      execFileSyncMock.mockReturnValue("/mnt/c/Temp/fixture.sql\n" as never);
+      const runner = vi.fn(() => "/mnt/c/Temp/fixture.sql\n");
 
-      expect(bashFixturePath("C:\\Temp\\fixture.sql", "D:\\repo")).toBe(
-        "/mnt/c/Temp/fixture.sql",
-      );
+      expect(
+        bashFixturePath("C:\\Temp\\fixture.sql", "D:\\repo", runner),
+      ).toBe("/mnt/c/Temp/fixture.sql");
+    },
+  );
+
+  it.skipIf(process.platform !== "win32")(
+    "translates through the actual stock Windows bash launcher",
+    () => {
+      expect(
+        translateWindowsAbsolutePathForBash(
+          "C:\\Temp\\fixture with spaces.sql",
+          process.cwd(),
+        ),
+      ).toBe("/mnt/c/Temp/fixture with spaces.sql");
     },
   );
 });

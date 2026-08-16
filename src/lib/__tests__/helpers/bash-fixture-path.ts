@@ -106,6 +106,7 @@ import path from "node:path";
 export function bashFixturePath(
   value: string,
   cwd: string = process.cwd(),
+  runner: BashPathTranslatorRunner = runBashPathTranslator,
 ): string {
   // POSIX hosts (Linux/CI, macOS): identity. Nothing below can improve a string
   // that is already exactly what bash reads.
@@ -124,23 +125,33 @@ export function bashFixturePath(
     path.isAbsolute(relative) ||
     /^[A-Za-z]:/.test(relative)
   ) {
-    return translateWindowsAbsolutePathForBash(value, cwd);
+    return translateWindowsAbsolutePathForBash(value, cwd, runner);
   }
 
   return relative.split(path.sep).join("/");
+}
+
+type BashPathTranslatorRunner = (command: string, cwd: string) => string;
+
+function runBashPathTranslator(command: string, cwd: string): string {
+  return execFileSync("bash", ["-c", command], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 }
 
 /** Translate a Windows absolute path into the namespace of the selected bash. */
 export function translateWindowsAbsolutePathForBash(
   value: string,
   cwd: string = process.cwd(),
+  runner: BashPathTranslatorRunner = runBashPathTranslator,
 ): string {
-  const portableValue = value.replace(/\\/g, "/");
   const command = [
     "if command -v wslpath >/dev/null 2>&1; then",
-    '  exec wslpath -u "$1"',
+    `  exec wslpath -u ${shellQuote(value)}`,
     "elif command -v cygpath >/dev/null 2>&1; then",
-    '  exec cygpath -u "$1"',
+    `  exec cygpath -u ${shellQuote(value)}`,
     "else",
     '  echo "bash has neither wslpath nor cygpath" >&2',
     "  exit 127",
@@ -148,15 +159,7 @@ export function translateWindowsAbsolutePathForBash(
   ].join("\n");
 
   try {
-    const translated = execFileSync(
-      "bash",
-      ["-c", command, "bash-fixture-path", portableValue],
-      {
-        cwd,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    ).trim();
+    const translated = runner(command, cwd).trim();
     if (!translated.startsWith("/")) {
       throw new Error(`translator returned non-POSIX path ${translated}`);
     }
