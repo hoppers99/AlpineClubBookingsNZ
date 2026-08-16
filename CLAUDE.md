@@ -195,10 +195,11 @@ It follows imports, so it is blind to **contract tests that scan `src/` from
 disk** — those have no import edge and stay CI-caught by design. When your diff
 touches anything under `src/`, re-read it for text a scanner might match; PR
 #2813's other failure was a banned function name written with parentheses inside
-a comment. Running those 186 suites locally was measured and rejected: natively
-on Windows they take ~3 minutes and false-fail on load-sensitive timeouts,
-including the very contract test they would exist to protect
-(`AGENTS.md` → "Split local validation from CI").
+a comment. Running every disk-scanning contract locally was measured and
+rejected as a routine substitute for CI. On Windows, shell-out fixtures must use
+`src/lib/__tests__/helpers/bash-fixture-path.ts`: the former failures were WSL
+path/`env` translation defects, not load-sensitive timeouts that a retry could
+fix (`AGENTS.md` → "Split local validation from CI").
 
 GitHub Actions runs the full `npm test`, build, migration-drift, E2E,
 static/secret/dependency, and container gates. Do not duplicate them locally

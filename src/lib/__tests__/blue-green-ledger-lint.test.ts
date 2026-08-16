@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { MIGRATION_GATE_TIMEOUT_MS } from "./helpers/migration-gate-timeouts";
+import { bashFixturePath, bashGateArgs } from "./helpers/bash-fixture-path";
 
 /**
  * #2818 decision 10 — the safety ledger's own well-formedness.
@@ -28,16 +29,6 @@ import { MIGRATION_GATE_TIMEOUT_MS } from "./helpers/migration-gate-timeouts";
 const VALIDATOR = "scripts/validate-blue-green-migrations.sh";
 const REPO_ROOT = process.cwd();
 
-/**
- * A path bash will accept on either platform. Node hands back `C:\\Users\\…` on
- * Windows and Git Bash does not resolve backslash paths, so the validator would
- * read no ledger at all and report success — a false green in the one place a
- * false green is unacceptable. On Linux this is a no-op.
- */
-function bashPath(value: string): string {
-  return value.split(path.sep).join("/");
-}
-
 const HEADER =
   "# migration_name\tphase\tprevious_expand_release\told_code_compatible\tlock_impact_plan";
 
@@ -52,16 +43,27 @@ function lint(lines: string[], { trailingNewline = true } = {}) {
   const ledger = path.join(dir, "ledger.tsv");
   writeFileSync(ledger, lines.join("\n") + (trailingNewline ? "\n" : ""));
 
-  const result = spawnSync("bash", [VALIDATOR], {
-    cwd: REPO_ROOT,
-    env: {
-      ...process.env,
-      MIGRATION_SAFETY_LEDGER: bashPath(ledger),
+  // #2886 — the ledger path is made relative to this spawn's `cwd`, and the
+  // variables are inlined into the bash command rather than handed to
+  // `spawnSync`'s `env`. On Windows `bash` is WSL, which can open neither a
+  // drive-letter path nor a Win32 environment variable: the validator used to
+  // see MIGRATION_SAFETY_LEDGER unset and lint the REAL
+  // `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv` instead of this fixture — a false
+  // green in the one place a false green is unacceptable. See
+  // ./helpers/bash-fixture-path.
+  const result = spawnSync(
+    "bash",
+    bashGateArgs(VALIDATOR, [], {
+      MIGRATION_SAFETY_LEDGER: bashFixturePath(ledger, REPO_ROOT),
       ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "0",
       BLUE_GREEN_MIGRATION_OVERRIDE_REASON: "",
+    }),
+    {
+      cwd: REPO_ROOT,
+      env: process.env,
+      encoding: "utf8",
     },
-    encoding: "utf8",
-  });
+  );
 
   return {
     status: result.status,
