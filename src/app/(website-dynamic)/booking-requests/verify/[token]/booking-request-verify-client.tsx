@@ -67,8 +67,9 @@ export function BookingRequestVerifyClient({
               <p className="font-medium">Your email address is confirmed.</p>
             </div>
             <p className="text-sm text-muted-foreground">
-              Thanks for your booking request with {clubLodgeName}. It has been added to our
-              review queue and an officer will be in touch with pricing and a payment link.
+              Thanks for your booking request with {result.lodgeName ?? clubLodgeName}. It has
+              been added to our review queue and an officer will be in touch with pricing and a
+              payment link.
             </p>
             {result.checkIn && result.checkOut ? (
               <div className="rounded-md border bg-muted p-3 text-sm text-muted-foreground">
