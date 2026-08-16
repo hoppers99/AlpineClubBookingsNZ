@@ -57,15 +57,16 @@
  *
  * ## Scanning rules
  *
- * Definitions, ordinary citations and malformed shapes skip fenced code blocks,
- * so a document may show placeholders and fixture ids without treating them as
- * definitions. One CommonMark fence scanner retains the opener's marker and
- * length for both its outside and inside views: a shorter run or the other
- * marker is content, not a state toggle. A second, narrower pass does inspect
- * the inside view: a well-formed id under a prefix the repository really
- * declares must resolve there too. That catches an invented live-prefix example
- * while leaving `INV-<PREFIX>-<NNN>` placeholders, reserved invoice numbers and
- * custom fixture prefixes alone.
+ * Definitions, ordinary citations and malformed shapes skip Markdown literal
+ * regions, so a document may show placeholders and fixture ids without treating
+ * them as definitions. One bounded CommonMark classifier retains a fence's
+ * marker, length and blockquote/list containers, and also protects explicitly
+ * terminated raw HTML blocks (`pre`, comments, CDATA, and peers) from changing
+ * fence state. A second, narrower pass does inspect the literal view: a
+ * well-formed id under a prefix the repository really declares must resolve
+ * there too. That catches an invented live-prefix example while leaving
+ * `INV-<PREFIX>-<NNN>` placeholders, reserved invoice numbers and custom fixture
+ * prefixes alone.
  * Inline backticks are **not** skipped — most real citations in prose are
  * written `` `INV-CAP-021` `` and skipping them would make the check blind to
  * the common case.
@@ -312,59 +313,219 @@ const REF_DEF = /^\s*\[[^\]]+\]:\s*(\S+)/;
 
 const FENCE_OPENER_PATTERN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const FENCE_CLOSER_PATTERN = /^ {0,3}(`+|~+)[ \t]*$/;
+const BLOCKQUOTE_PREFIX_PATTERN = /^ {0,3}>[ \t]?/;
+const LIST_PREFIX_PATTERN =
+  /^( {0,3})(?:[*+-]|[0-9]{1,9}[.)])([ \t]{1,4})(?=\S|$)/;
+const HTML_BLOCK_TAGS =
+  "address|article|aside|base|basefont|blockquote|body|caption|center|col|" +
+  "colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|" +
+  "footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|" +
+  "li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|" +
+  "search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul";
+const HTML_BLOCK_TAG_PATTERN = new RegExp(
+  `^ {0,3}</?(?:${HTML_BLOCK_TAGS})(?:[ \\t]|/?>|$)`,
+  "i",
+);
+const COMPLETE_HTML_TAG_PATTERN =
+  /^ {0,3}<\/?[A-Za-z][A-Za-z0-9-]*(?:[ \t][^<>]*)?\/?>[ \t]*$/;
+
+function indentationColumns(text) {
+  let column = 0;
+  for (const character of text) {
+    column = character === "\t" ? column + (4 - (column % 4)) : column + 1;
+  }
+  return column;
+}
+
+/** Strip quote/list markers from a possible container-block opener. */
+function stripOpeningContainers(line) {
+  const containers = [];
+  let text = line;
+  while (true) {
+    const blockquote = text.match(BLOCKQUOTE_PREFIX_PATTERN);
+    if (blockquote) {
+      containers.push({ type: "blockquote" });
+      text = text.slice(blockquote[0].length);
+      continue;
+    }
+
+    const list = text.match(LIST_PREFIX_PATTERN);
+    if (list) {
+      containers.push({
+        type: "list",
+        width: indentationColumns(list[0]),
+      });
+      text = text.slice(list[0].length);
+      continue;
+    }
+    return { containers, text };
+  }
+}
+
+/** Consume at least the indentation columns that keep a line in one list item. */
+function stripIndentation(text, requiredColumns) {
+  let column = 0;
+  let index = 0;
+  while (index < text.length && column < requiredColumns) {
+    if (text[index] === " ") column += 1;
+    else if (text[index] === "\t") column += 4 - (column % 4);
+    else return null;
+    index += 1;
+  }
+  return column >= requiredColumns ? text.slice(index) : null;
+}
+
+/** Strip the exact container stack that owned an open literal block. */
+function stripExpectedContainers(line, containers) {
+  if (line.trim() === "") return "";
+  let text = line;
+  for (const container of containers) {
+    if (container.type === "blockquote") {
+      const blockquote = text.match(BLOCKQUOTE_PREFIX_PATTERN);
+      if (!blockquote) return null;
+      text = text.slice(blockquote[0].length);
+      continue;
+    }
+
+    text = stripIndentation(text, container.width);
+    if (text === null) return null;
+  }
+  return text;
+}
 
 /**
- * Classify Markdown lines with one CommonMark-correct fenced-block state.
+ * Return the terminator for a CommonMark raw HTML block whose contents may
+ * legally contain fence markers. `null` means ordinary Markdown.
+ *
+ * Types 1-5 have explicit terminators. Types 6-7 (the standard block-tag list
+ * and a complete open/close tag) end at the next blank line. The latter is
+ * deliberately recognised only as a complete tag, so ordinary prose beginning
+ * with an angle bracket cannot hide the rest of a document from the audit.
+ */
+function rawHtmlBlockTerminator(line) {
+  const rawTag = line.match(
+    /^ {0,3}<(pre|script|style|textarea)(?:[ \t]|>|$)/i,
+  );
+  if (rawTag) {
+    return { end: new RegExp(`</${rawTag[1]}\\s*>`, "i"), type: "explicit" };
+  }
+  if (/^ {0,3}<!--/.test(line)) return { end: /-->/, type: "explicit" };
+  if (/^ {0,3}<\?/.test(line)) return { end: /\?>/, type: "explicit" };
+  if (/^ {0,3}<!\[CDATA\[/.test(line)) {
+    return { end: /\]\]>/, type: "explicit" };
+  }
+  if (/^ {0,3}<![A-Z]/.test(line)) return { end: />/, type: "explicit" };
+  if (HTML_BLOCK_TAG_PATTERN.test(line) || COMPLETE_HTML_TAG_PATTERN.test(line)) {
+    return { type: "blank" };
+  }
+  return null;
+}
+
+/**
+ * Classify Markdown lines with one bounded CommonMark literal-block state.
  *
  * A closer uses the opener's marker and at least its length. A shorter run, the
- * other marker, or a candidate closer carrying non-whitespace is fenced content.
- * Backtick info strings may not themselves contain a backtick. Opener/closer
- * lines belong to neither output.
+ * other marker, or a candidate closer carrying non-whitespace is literal
+ * content. Blockquote/list containers are retained until they end; the first
+ * non-container line is reprocessed outside the block. Explicitly terminated
+ * raw HTML blocks ignore fence markers until their terminator. Backtick info
+ * strings may not themselves contain a backtick. Fence opener/closer lines
+ * belong to neither output; raw HTML boundary lines belong to the literal view.
  */
 export function scanMarkdownFenceLines(text) {
   const scannable = [];
   const fenced = [];
-  let opener = null;
+  let literal = null;
 
   text.split(/\r?\n/).forEach((line, index) => {
     const numberedLine = { number: index + 1, text: line };
-    if (opener) {
-      const closer = line.match(FENCE_CLOSER_PATTERN);
-      if (
-        closer &&
-        closer[1][0] === opener.marker &&
-        closer[1].length >= opener.length
-      ) {
-        opener = null;
-      } else {
-        fenced.push(numberedLine);
+    let reprocess = true;
+    while (reprocess) {
+      reprocess = false;
+      if (literal) {
+        const content = stripExpectedContainers(line, literal.containers);
+        if (content === null) {
+          literal = null;
+          reprocess = true;
+          continue;
+        }
+
+        if (literal.type === "html") {
+          if (literal.terminator.type === "blank" && content.trim() === "") {
+            literal = null;
+            scannable.push(numberedLine);
+            continue;
+          }
+          fenced.push(numberedLine);
+          if (
+            literal.terminator.type === "explicit" &&
+            literal.terminator.end.test(content)
+          ) {
+            literal = null;
+          }
+          continue;
+        }
+
+        const closer = content.match(FENCE_CLOSER_PATTERN);
+        if (
+          closer &&
+          closer[1][0] === literal.marker &&
+          closer[1].length >= literal.length
+        ) {
+          literal = null;
+        } else {
+          fenced.push(numberedLine);
+        }
+        continue;
       }
-      return;
-    }
 
-    const candidate = line.match(FENCE_OPENER_PATTERN);
-    const markerRun = candidate?.[1];
-    const info = candidate?.[2] ?? "";
-    const isValidOpener =
-      markerRun && (markerRun[0] === "~" || !info.includes("`"));
-    if (isValidOpener) {
-      opener = { marker: markerRun[0], length: markerRun.length };
-      return;
-    }
+      const outside = stripOpeningContainers(line);
+      const htmlTerminator = rawHtmlBlockTerminator(outside.text);
+      if (htmlTerminator) {
+        fenced.push(numberedLine);
+        if (
+          htmlTerminator.type === "blank" ||
+          !htmlTerminator.end.test(outside.text)
+        ) {
+          literal = {
+            containers: outside.containers,
+            terminator: htmlTerminator,
+            type: "html",
+          };
+        }
+        continue;
+      }
 
-    scannable.push(numberedLine);
+      const candidate = outside.text.match(FENCE_OPENER_PATTERN);
+      const markerRun = candidate?.[1];
+      const info = candidate?.[2] ?? "";
+      const isValidOpener =
+        markerRun && (markerRun[0] === "~" || !info.includes("`"));
+      if (isValidOpener) {
+        literal = {
+          containers: outside.containers,
+          length: markerRun.length,
+          marker: markerRun[0],
+          type: "fence",
+        };
+        continue;
+      }
+
+      scannable.push(numberedLine);
+    }
   });
 
   return { fenced, scannable };
 }
 
-/** Lines outside fenced code blocks, with their original line numbers. */
+/** Lines outside Markdown literal blocks, with their original line numbers. */
 export function scannableLines(text) {
   return scanMarkdownFenceLines(text).scannable;
 }
 
 /**
- * Lines inside fenced code blocks, with their original line numbers.
+ * Lines inside fenced code or explicitly terminated raw HTML literal blocks,
+ * with their original line numbers.
  *
  * This is deliberately separate from {@link scannableLines}: most audits must
  * ignore examples, while the narrow live-prefix citation audit below must see
@@ -594,7 +755,7 @@ export function auditInvariantIds(files) {
 
   for (const { id, digits, at } of malformedFenced) {
     problems.push(
-      `${id} at ${at} uses ${digits} digit(s) inside a fenced code block. Invariant ` +
+      `${id} at ${at} uses ${digits} digit(s) inside a fenced code block or raw HTML literal block. Invariant ` +
         "numbers under a live prefix are exactly three, zero-padded, even in examples. " +
         "Use a placeholder such as `INV-<PREFIX>-<NNN>` when the example must not " +
         "claim a real invariant id.",
@@ -603,7 +764,7 @@ export function auditInvariantIds(files) {
 
   for (const [id, places] of unresolvedFenced) {
     problems.push(
-      `${id} appears inside a fenced code block at ${places.join(", ")} but no ` +
+      `${id} appears inside a fenced code block or raw HTML literal block at ${places.join(", ")} but no ` +
         `file under ${INVARIANT_DIR} defines it. A fence may use ` +
         "`INV-<PREFIX>-<NNN>`, a reserved invoice number, a custom fixture prefix, " +
         "or a real defined id; it may not invent a number under a live invariant " +

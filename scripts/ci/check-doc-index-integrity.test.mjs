@@ -248,6 +248,70 @@ describe("scannableLines", () => {
       "",
     ]);
   });
+
+  it("does not let a fence marker inside raw pre HTML hide later headings", () => {
+    const source = [
+      "<pre>",
+      "```",
+      "literal text",
+      "</pre>",
+      "## INV-DEMO-001",
+      "",
+    ].join("\n");
+
+    expect(fencedLines(source).map((line) => line.text)).toEqual([
+      "<pre>",
+      "```",
+      "literal text",
+      "</pre>",
+    ]);
+    expect(scannableLines(source).map((line) => line.text)).toEqual([
+      "## INV-DEMO-001",
+      "",
+    ]);
+  });
+
+  it.each([
+    ["a standard block tag", ["<div>", "```", "</div>"]],
+    ["a complete custom tag", ['<fixture data-kind="docs">', "```", "</fixture>"]],
+  ])("ends raw HTML from %s at the following blank line", (_name, html) => {
+    const source = [...html, "", "## INV-DEMO-001", ""].join("\n");
+
+    expect(fencedLines(source).map((line) => line.text)).toEqual(html);
+    expect(scannableLines(source).map((line) => line.text)).toEqual([
+      "",
+      "## INV-DEMO-001",
+      "",
+    ]);
+  });
+
+  it.each([
+    ["blockquote", ["> ```text", "> INV-DEMO-999", "> ```"]],
+    ["list", ["- ```text", "  INV-DEMO-999", "  ```"]],
+  ])("recognises a fence owned by a %s container", (_name, lines) => {
+    const source = ["outside", ...lines, "outside again", ""].join("\n");
+
+    expect(fencedLines(source).map((line) => line.text)).toEqual([lines[1]]);
+    expect(scannableLines(source).map((line) => line.text)).toEqual([
+      "outside",
+      "outside again",
+      "",
+    ]);
+  });
+
+  it("reprocesses the first non-container line after an unclosed container fence", () => {
+    const source = [
+      "- ```text",
+      "  literal",
+      "## INV-MONEY-001",
+      "",
+    ].join("\n");
+
+    expect(scannableLines(source).map((line) => line.text)).toEqual([
+      "## INV-MONEY-001",
+      "",
+    ]);
+  });
 });
 
 describe("auditDefinitionHeadingShapes", () => {
@@ -360,6 +424,23 @@ describe("auditDocs — the whole check", () => {
       expect(problems[0]).toContain("no identifier suffix");
     },
   );
+
+  it("does not let raw pre HTML hide a newly declared family", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n<pre>\n\`\`\`\n</pre>\n\n## INV-DEMO-001\n\n- A new family.\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems.some((problem) => problem.includes("INV-DEMO-001 is defined at"))).toBe(
+      true,
+    );
+    expect(problems.some((problem) => problem.includes("no routing table row in AGENTS.md"))).toBe(
+      true,
+    );
+  });
 });
 
 describe("auditInvariantIds", () => {
@@ -414,6 +495,19 @@ describe("auditInvariantIds", () => {
     const problems = auditInvariantIds(
       repo({
         "docs/example.md": "# Example\n\n```\nINV-NOPE-001\n```\n",
+      }),
+    );
+
+    expect(problems).toEqual([]);
+  });
+
+  it.each([
+    ["blockquote", "> ```text\n> INV-DEMO-999\n> ```"],
+    ["list", "- ```text\n  INV-DEMO-999\n  ```"],
+  ])("ignores a custom-prefix fixture inside a %s fence", (_name, fixture) => {
+    const problems = auditInvariantIds(
+      repo({
+        "docs/example.md": `# Example\n\n${fixture}\n`,
       }),
     );
 

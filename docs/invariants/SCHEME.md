@@ -420,8 +420,9 @@ One file per domain in this directory, plus this scheme and
 hundred IDs. The counts here are deliberately approximate, and the prefix count
 is gone altogether: it read sixteen until `INV-LOCK` arrived mid-review and made
 it seventeen. A figure written by hand is wrong within the week, and
-`npm run docs:indexcheck` prints the live ones — files, IDs and prefixes — on
-every run.
+`npm run docs:indexcheck` prints the live ID and prefix totals plus the number
+of tracked files it scanned on every run. The invariant-file count remains an
+approximation here rather than being mistaken for that tracked-file total.
 
 **The index is authoritative for prefix → file and ID → file**, and it is the
 only place that mapping is written down. It is deliberately not repeated here: a
@@ -579,20 +580,26 @@ never drifts to the current branch tip or falls back to `HEAD^1`, which may be a
 feature commit made after an ID was deleted. Event identity is authoritative:
 an inherited `DOC_INDEX_BASE_REF` at process, workflow, job or step scope makes
 an event run fail rather than overriding `PR_BASE_SHA` or `PUSH_BASE_SHA`. The
-diagnostic override is local-only. Definitions and ordinary
-citations are read **outside fenced code blocks**. The shape audit covers both
-sides of a fence: any numeric token under a prefix this repository really
+diagnostic override is local-only. Definitions and ordinary citations are read
+**outside Markdown literal blocks**. Those blocks include fenced code inside
+blockquote and list containers plus CommonMark raw HTML; a literal fence marker
+inside `<pre>` or another HTML block cannot change how the following headings
+are classified. The shape audit covers both sides of a literal region: any
+numeric token under a prefix this repository really
 declares has exactly three digits, and a well-formed one must resolve even in a
-fenced example. Placeholders (`INV-<PREFIX>-<NNN>`), reserved invoice numbers and
+literal example. Placeholders (`INV-<PREFIX>-<NNN>`), reserved invoice numbers and
 custom fixture prefixes remain legal examples. This document, and any future
 one, can therefore teach the shape without being allowed to invent what looks
 like a live maximum or a malformed live ID.
 
-Both sides come from one CommonMark fence scanner. It remembers whether the
-opener used backticks or tildes and how long that marker run was. Only the same
-marker with at least that length closes the block; a triple-backtick line inside
-a four-backtick fence, or a tilde run inside a backtick fence, stays content and
-cannot invert which audits see the following lines.
+Both sides come from one bounded CommonMark literal scanner. It remembers a
+fence's blockquote/list containers, whether the opener used backticks or tildes,
+and how long that marker run was. Only the same marker with at least that length
+closes the block; a triple-backtick line inside a four-backtick fence, or a tilde
+run inside a backtick fence, stays content and cannot invert which audits see
+the following lines. Raw HTML types with explicit closing tokens stay literal
+until that token; standard and complete HTML block tags stay literal until the
+blank line CommonMark uses to terminate them.
 
 **Definition** — collected only from `docs/invariants/**/*.md`:
 
@@ -616,7 +623,8 @@ identifier-suffixed heading (`INV-<PREFIX>-002a`,
 pass merely because an embedded ID resolved as a citation.
 
 **Citation** — collected from every tracked `*.md`, `*.ts`, `*.tsx`, `*.mjs`,
-`*.js`, `*.sql`, `*.yml` and `*.json` file:
+`*.js`, `*.jsx`, `*.cjs`, `*.prisma`, `*.sql`, `*.yml`, `*.yaml` and `*.json`
+file:
 
 ```js
 /\bINV-[A-Z][A-Z0-9]*-\d{3}\b/g
