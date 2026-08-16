@@ -463,6 +463,26 @@ function stripExpectedContainers(line, containers) {
  * deliberately recognised only as a complete tag, so ordinary prose beginning
  * with an angle bracket cannot hide the rest of a document from the audit.
  */
+/**
+ * A terminator that ends on a literal string, which is what CommonMark actually
+ * specifies for HTML block types 2 to 5: the block ends on the line *containing*
+ * `-->`, `?>`, `]]>` or `>`. Four of the five end conditions are substring
+ * searches, not patterns, and saying so in the code is both clearer and more
+ * accurate than four regexes that only look like matchers.
+ *
+ * It also removes a standing false positive. Written as `/-->/`, the comment
+ * terminator tripped CodeQL's js/bad-tag-filter, which wants `--!>` accepted
+ * too. That is right for an HTML *sanitizer* and wrong here: browsers accept
+ * `--!>`, CommonMark does not, and widening it would make this scanner disagree
+ * with the renderer GitHub actually uses — text GitHub keeps inside a comment
+ * would start counting as live document. The behaviour below is unchanged from
+ * the regexes it replaces; only the alert, which was never about this code, goes
+ * away. Same interface (`.test`) so callers do not care which they hold.
+ */
+function endsOn(marker) {
+  return { test: (text) => text.includes(marker) };
+}
+
 function rawHtmlBlockTerminator(line) {
   const rawTag = line.match(
     /^ {0,3}<(pre|script|style|textarea)(?:[ \t]|>|$)/i,
@@ -475,25 +495,16 @@ function rawHtmlBlockTerminator(line) {
     };
   }
   if (/^ {0,3}<!--/.test(line)) {
-    // CommonMark ends HTML block type 2 on the literal string `-->`, and nothing
-    // else. Browsers additionally accept `--!>`, and CodeQL's js/bad-tag-filter
-    // flags this line for not matching it — correctly for an HTML *sanitizer*,
-    // but wrongly here. This is a CommonMark block scanner, and widening it would
-    // make the checker disagree with the renderer GitHub actually uses: text that
-    // GitHub keeps inside the comment would start counting as live document. A
-    // heading hidden after `--!>` is invisible to readers too, so treating it as
-    // still-commented is the faithful reading, and a real id that vanished that
-    // way is caught anyway by the retention assertion against the base revision.
-    return { canInterruptParagraph: true, end: /-->/, type: "explicit" };
+    return { canInterruptParagraph: true, end: endsOn("-->"), type: "explicit" };
   }
   if (/^ {0,3}<\?/.test(line)) {
-    return { canInterruptParagraph: true, end: /\?>/, type: "explicit" };
+    return { canInterruptParagraph: true, end: endsOn("?>"), type: "explicit" };
   }
   if (/^ {0,3}<!\[CDATA\[/.test(line)) {
-    return { canInterruptParagraph: true, end: /\]\]>/, type: "explicit" };
+    return { canInterruptParagraph: true, end: endsOn("]]>"), type: "explicit" };
   }
   if (/^ {0,3}<![A-Z]/.test(line)) {
-    return { canInterruptParagraph: true, end: />/, type: "explicit" };
+    return { canInterruptParagraph: true, end: endsOn(">"), type: "explicit" };
   }
   if (HTML_BLOCK_TAG_PATTERN.test(line)) {
     return { canInterruptParagraph: true, type: "blank" };
