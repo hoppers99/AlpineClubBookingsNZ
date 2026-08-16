@@ -44,4 +44,3 @@ export function settledLodgeId(
 ): string | null {
   return scope.kind === "lodge" ? scope.lodgeId : null
 }
-

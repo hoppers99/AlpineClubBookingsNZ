@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions"
 
 type LodgeOptionState = {
-  lodges: Array<{ id: string; name: string }>
+  lodges: ReadonlyArray<{ id: string; name: string }>
   loading: boolean
   failed: boolean
   forbidden: boolean

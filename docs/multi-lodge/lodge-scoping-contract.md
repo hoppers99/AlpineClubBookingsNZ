@@ -208,11 +208,13 @@ operational documents (which may carry door/emergency access details).
   express, not just the bed board** (#2701). `useLodgeOptions` reports `failed`
   and `forbidden` beside its list, because an empty list used to mean three
   different things and `LodgeSelect` renders nothing below two lodges (ADR-002)
-  — so on twenty admin surfaces a failed request looked exactly like a club with
-  no lodges. That was never cosmetic: the selection normalises to `null`, and a
+  — so on **twenty-two admin surfaces** a failed request looked exactly like a
+  club with no lodges. That was never cosmetic: the selection normalises to `null`, and a
   `null` lodge was resolved server-side to the club's DEFAULT lodge, so the next
-  thing the operator saved landed somewhere they were never shown. Ten surfaces
-  could write to the wrong lodge that way, two of them on money paths. Five more
+  thing the operator saved landed somewhere they were never shown. Eight ordinary
+  editors could write to the default lodge that way, while work parties and promo
+  codes could silently make a lodge-specific choice club-wide; two of those ten
+  surfaces are money paths. Five more
   policy editors — default cancellation, minimum stay, booking periods,
   adult-member hosting and lodge instructions — treated the same unresolved
   `null` as club-wide, leaving club-wide reads and writes reachable. All fifteen
@@ -239,6 +241,33 @@ operational documents (which may carry door/emergency access details).
   all-lodges read where every figure stays correct, so the lodge is a filter
   over content that stands alone. Forcing an error there would be worse than
   the ambiguity it removed.
+
+  The census is exact, not “roughly twenty”. There are eighteen production
+  `useLodgeOptions` call sites in the admin tree; the shared policy selector is
+  used by five editors, so replacing that one call site with its five rendered
+  surfaces gives **twenty-two admin consumers**. The member booking wizard is a
+  twenty-third product consumer outside the admin tree and is listed separately
+  because its failed-list response is governed by `INV-CAP-034`.
+
+  | Admin consumer(s) | Count | Failed-list treatment and reason |
+  | --- | ---: | --- |
+  | Bed-allocation board | 1 | Required explicit error/retry; no dashboard request. A lodge-forbidden viewer gets the separately labelled read-only all-lodges board. |
+  | Admin booking on behalf | 1 | Required visible warning and an always-visible lodge name. The admin may continue through the form, but the strict create boundary refuses an unknown lodge instead of defaulting it. |
+  | Seasons, chores, lockers, hut fees, roster, hut leaders, rooms/beds, lodge capacity | 8 | Required total settled-scope gate. Loading, failure, forbidden and successful-empty states issue no downstream GET and expose no action. Only a lodge id validated by the successful options response is transported. |
+  | Work parties, promo codes | 2 | Required total settled-scope gate. Their legitimate club-wide state is represented by an explicit sentinel, never inferred from an empty list; the same four unresolved states issue no downstream GET and expose no action. |
+  | Default cancellation, minimum stay, booking periods, adult-member hosting, lodge instructions | 5 | Required policy gate. A deliberate club-wide choice or validated lodge is settled; resolving/unavailable states issue no policy GET and expose no policy action. |
+  | Member lodge-access card | 1 | Required error/access explanation; its lodge-access GET and every assignment control stop until options resolve. |
+  | Lodge kiosk accounts | 1 | Required explanation, because a failure hides the lodge-binding controls. The club-wide kiosk-account list remains valid and continues to load; create/rebind controls cannot appear without the real options. |
+  | Reports, promo-code redemptions, public booking requests | 3 | Deliberate quiet degradation. Each already has a genuine labelled all-lodges dataset and the lodge picker is only an optional filter, so its figures remain correct without the options. |
+  | **Total admin surfaces** | **22** | Every consumer is classified; none silently treats a failed list as evidence that the club has no lodges. |
+
+  The ten ordinary-editor transport gates are exercised through the real
+  components in
+  `src/lib/__tests__/ordinary-admin-lodge-scope-behavior.test.tsx`: all forty
+  editor/state pairs (ten editors times loading, failed, forbidden and empty)
+  assert zero downstream requests and no action. Replacing every production
+  guard with a no-op makes all forty cases fail, so this is behavioural evidence
+  rather than a census that merely sees the helper name.
 - **The board's lodge scope is five named states, the set is TOTAL, and `null`
   means exactly one thing** (#2701). It used to mean three: a deliberate
   club-wide view, a selector that had not resolved, and a failed

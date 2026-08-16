@@ -16,11 +16,11 @@ import type { SettledLodgeOptionScope } from "@/lib/lodge-option-scope";
  * lodge, so the next thing the operator saved landed on a lodge they were never
  * shown.
  *
- * This exists so twenty surfaces share one explanation and one retry rather
- * than twenty variants of an empty dropdown. Deliberately small: it says what
- * is missing and offers the retry. Deciding what ELSE to suppress — which is
- * the half that actually prevents the wrong write — belongs to each page,
- * because only the page knows which of its controls are lodge-scoped.
+ * This exists so every surface that must stop shares one explanation and one
+ * retry rather than inventing another empty-dropdown state. Deliberately small:
+ * it says what is missing and offers the retry. Deciding what ELSE to suppress
+ * — which is the half that actually prevents the wrong write — belongs to each
+ * page, because only the page knows which of its controls are lodge-scoped.
  *
  * `forbidden` is not an error and must never be dressed up as one. A role that
  * holds `bookings` but not `lodge:view` (shipped `ADMIN_MEMBERSHIP` and

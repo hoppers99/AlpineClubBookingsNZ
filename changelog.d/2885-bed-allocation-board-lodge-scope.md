@@ -49,10 +49,11 @@
   and anything saved next went to whichever lodge the system treats as the
   default — a lodge nobody had been shown.
 
-  Fifteen edit surfaces could write under the wrong scope. Ten could fall into
+  Fifteen edit surfaces could write under the wrong scope. Eight could fall into
   the default lodge: rooms and beds, the roster, seasons, chore templates,
-  lockers, hut fee rates, hut leader assignments, lodge capacity, work parties
-  and promo codes. Five policy editors instead fell into the club-wide scope:
+  lockers, hut fee rates, hut leader assignments and lodge capacity. Work
+  parties and promo codes could silently turn a lodge-specific choice into a
+  club-wide one. Five policy editors also fell into the club-wide scope:
   default cancellation, minimum stay, booking periods, adult-member hosting and
   lodge instructions. Each now explains that the lodge list did not load and
   holds back its downstream reads and every edit, save, create, remove, delete
