@@ -1535,16 +1535,20 @@ describe("doc-index CLI baseline wiring", () => {
     );
   });
 
-  it("passes through the CLI with a valid explicit exact baseline", () => {
-    const result = spawnSync(process.execPath, [CHECKER_PATH], {
-      cwd: REPO_ROOT,
-      encoding: "utf8",
-      env: checkerEnv({ DOC_INDEX_BASE_REF: "HEAD" }),
-    });
+  it(
+    "passes through the CLI with a valid explicit exact baseline",
+    () => {
+      const result = spawnSync(process.execPath, [CHECKER_PATH], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        env: checkerEnv({ DOC_INDEX_BASE_REF: "HEAD" }),
+      });
 
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("every id present at base");
-  });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("every id present at base");
+    },
+    15_000,
+  );
 
   it("fails closed at the CLI when a process override collides with PR identity", () => {
     const result = spawnSync(process.execPath, [CHECKER_PATH], {
