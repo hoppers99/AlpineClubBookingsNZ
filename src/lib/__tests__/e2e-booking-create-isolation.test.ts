@@ -1533,6 +1533,46 @@ describe("E2E booking-create retry isolation (#2599)", () => {
     });
   });
 
+  it("posts unfilled when the session may not list lodges, so an anonymous probe still reaches the limiter (#2887)", async () => {
+    // `booking-create-rate-isolation` runs with no cookies on purpose: the
+    // limiter is upstream of authentication, and that is exactly what it
+    // measures. If the lodge fill throws on the 401, the probe dies here and
+    // the shared counter it is reading never moves — the spec then fails for a
+    // reason that has nothing to do with retry-key isolation.
+    const response = { ok: () => true };
+    const request = {
+      get: vi.fn(async () => ({ ok: () => false, status: () => 401 })),
+      post: vi.fn(async () => response),
+    } as unknown as APIRequestContext;
+    const isolation = bookingCreateIsolation("waitlist-placement", 0);
+
+    await expect(
+      postBookingCreate(request, isolation, { data: {} }),
+    ).resolves.toBe(response);
+    // The create still went out, and it went out WITHOUT an invented lodge.
+    expect(request.post).toHaveBeenCalledWith("/api/bookings", {
+      headers: { "x-forwarded-for": isolation.clientIp },
+      data: {},
+    });
+  });
+
+  it("still fails loudly when an authenticated session can book no lodge (#2887)", async () => {
+    // The tolerance above is for a REFUSAL. An empty list from a session that
+    // is allowed to ask is a broken fixture, and silently posting a lodgeless
+    // create would hide it behind whatever the route says next.
+    const request = {
+      get: vi.fn(async () => ({ ok: () => true, json: async () => ({ lodges: [] }) })),
+      post: vi.fn(),
+    } as unknown as APIRequestContext;
+
+    await expect(
+      postBookingCreate(request, bookingCreateIsolation("waitlist-placement", 0), {
+        data: {},
+      }),
+    ).rejects.toThrow(/may book no lodge/);
+    expect(request.post).not.toHaveBeenCalled();
+  });
+
   it("keeps waitlist and whole-lodge creates live after one and two Stripe retries", () => {
     // IP extraction and limiter namespacing happen before either production
     // store is selected. Drive the shipped in-process fallback directly here:
