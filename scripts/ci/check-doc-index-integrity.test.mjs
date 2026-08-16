@@ -1017,6 +1017,7 @@ describe("tracked citation source extensions", () => {
     expect(safetyLedger).toContain("INV-MOD-026");
     expect(safetyLedger).toContain("INV-MOD-006");
     expect(safetyLedger).toContain("INV-MOD-005");
+    expect(safetyLedger).toContain("INV-INT-017");
     expect(auditInvariantIds(files)).toEqual([]);
   });
 
