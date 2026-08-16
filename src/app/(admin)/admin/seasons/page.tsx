@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -71,6 +71,8 @@ export default function SeasonsPage() {
     forbidden: lodgeOptionsForbidden,
   })
   const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null
+  const activeScopeRef = useRef<string | null>(scopedLodgeId)
+  activeScopeRef.current = scopedLodgeId
   const lodgeScopeReady = scopedLodgeId !== null
 
   // Form state (window fields only)
@@ -126,6 +128,14 @@ export default function SeasonsPage() {
     setError("")
   }
 
+  function handleLodgeChange(nextLodgeId: string | null) {
+    activeScopeRef.current = nextLodgeId
+    setLodgeId(nextLodgeId)
+    setSeasons([])
+    setLoading(true)
+    resetForm()
+  }
+
   function startEdit(season: Season) {
     if (!lodgeScopeReady) return
     setEditingId(season.id)
@@ -139,6 +149,7 @@ export default function SeasonsPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!editingId || !lodgeScopeReady) return
+    const requestedScope = scopedLodgeId
     setSaving(true)
     setError("")
 
@@ -157,6 +168,7 @@ export default function SeasonsPage() {
         const data = await res.json()
         throw new Error(data.error || "Failed to save season")
       }
+      if (activeScopeRef.current !== requestedScope) return
       resetForm()
       fetchSeasons()
     } catch (err) {
@@ -168,6 +180,7 @@ export default function SeasonsPage() {
 
   async function handleDelete(id: string) {
     if (!lodgeScopeReady) return
+    const requestedScope = scopedLodgeId
     if (!confirm("Are you sure you want to delete this season?")) return
     try {
       const res = await fetch(`/api/admin/seasons/${id}`, { method: "DELETE" })
@@ -175,6 +188,7 @@ export default function SeasonsPage() {
         const data = await res.json()
         throw new Error(data.error || "Failed to delete")
       }
+      if (activeScopeRef.current !== requestedScope) return
       fetchSeasons()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
@@ -183,6 +197,7 @@ export default function SeasonsPage() {
 
   async function handleToggleActive(season: Season) {
     if (!lodgeScopeReady) return
+    const requestedScope = scopedLodgeId
     try {
       const res = await fetch(`/api/admin/seasons/${season.id}`, {
         method: "PUT",
@@ -193,6 +208,7 @@ export default function SeasonsPage() {
         const data = await res.json()
         throw new Error(data.error || "Failed to update")
       }
+      if (activeScopeRef.current !== requestedScope) return
       fetchSeasons()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
@@ -241,7 +257,7 @@ export default function SeasonsPage() {
       />
 
       <div className="max-w-xs">
-        <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} loading={lodgesLoading}
+        <LodgeSelect lodges={lodges} value={lodgeId} onChange={handleLodgeChange} loading={lodgesLoading}
             // #2701: an empty list from a FAILED request is not evidence the
             // caller's lodge is gone, so the ADR-002 normaliser must not wipe a
             // ?lodgeId= hub link (ADR-003) while the outage lasts.

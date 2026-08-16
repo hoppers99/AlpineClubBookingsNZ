@@ -324,6 +324,8 @@ export function RoomsBedsManager({
     forbidden: lodgesForbidden,
   });
   const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
+  const activeScopeRef = useRef<string | null>(scopedLodgeId);
+  activeScopeRef.current = scopedLodgeId;
   const lodgeScopeReady = scopedLodgeId !== null;
   const canWrite = canEdit && lodgeScopeReady;
   const [bulkRoomCount, setBulkRoomCount] = useState("");
@@ -378,6 +380,7 @@ export function RoomsBedsManager({
       return;
     }
     const seq = ++loadSeqRef.current;
+    const requestedScope = scopedLodgeId;
     setLoading(true);
     try {
       const response = await fetch(
@@ -418,7 +421,10 @@ export function RoomsBedsManager({
       const data = (await response.json()) as RoomsBedsPayload;
       // A newer load started while this one was in flight — drop this (stale)
       // payload so it can't clobber the fresher list/drafts.
-      if (seq !== loadSeqRef.current) return;
+      if (
+        seq !== loadSeqRef.current ||
+        activeScopeRef.current !== requestedScope
+      ) return;
       setPayload(data);
       // Preserve every unsaved draft across the refetch; only the just-saved
       // row and untouched rows re-sync to server state (see mergeRoomEdits).
@@ -485,12 +491,14 @@ export function RoomsBedsManager({
     onError?: (message: string) => void,
   ): Promise<boolean> {
     if (!scopedLodgeId) return false;
+    const requestedScope = scopedLodgeId;
     setSaving(label);
     try {
       const response = await request();
       if (!response.ok) {
         throw new Error(await readApiError(response, "Request failed"));
       }
+      if (activeScopeRef.current !== requestedScope) return false;
       toast.success(success);
       await loadRooms(undefined, saved);
       return true;
@@ -502,6 +510,19 @@ export function RoomsBedsManager({
     } finally {
       setSaving(null);
     }
+  }
+
+  function handleLodgeChange(nextLodgeId: string | null) {
+    activeScopeRef.current = nextLodgeId;
+    loadSeqRef.current += 1;
+    setLodgeId(nextLodgeId);
+    setPayload(null);
+    setRoomEdits({});
+    setBedDrafts({});
+    setBedEdits({});
+    setDeleteErrors({});
+    setBedFormErrors({});
+    setBedEditErrors({});
   }
 
   function updateRoomEdit(roomId: string, patch: Partial<RoomDraft>) {
@@ -827,7 +848,7 @@ export function RoomsBedsManager({
       </div>
 
       <div className="max-w-xs">
-        <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} loading={lodgesLoading}
+        <LodgeSelect lodges={lodges} value={lodgeId} onChange={handleLodgeChange} loading={lodgesLoading}
             // #2701: an empty list from a FAILED request is not evidence the
             // caller's lodge is gone, so the ADR-002 normaliser must not wipe a
             // ?lodgeId= hub link (ADR-003) while the outage lasts.

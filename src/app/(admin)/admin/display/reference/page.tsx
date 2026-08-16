@@ -310,11 +310,18 @@ export default function AdminDisplayReferencePage() {
   const [status, setStatus] = useState<ConditionStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lodgeOptionsError, setLodgeOptionsError] = useState<string | null>(null);
+  const [lodgeReloadToken, setLodgeReloadToken] = useState(0);
 
   const refreshStatus = useCallback(async (selectedLodgeId: string) => {
+    if (!selectedLodgeId) {
+      setError("Choose an explicit lodge before loading live condition status.");
+      setStatus(null);
+      return;
+    }
     setLoading(true);
     setError(null);
-    const query = selectedLodgeId ? `?lodgeId=${encodeURIComponent(selectedLodgeId)}` : "";
+    const query = `?lodgeId=${encodeURIComponent(selectedLodgeId)}`;
     const response = await fetch(`/api/admin/display/reference/conditions${query}`);
     if (!response.ok) {
       setError("Could not load the live condition status.");
@@ -344,13 +351,25 @@ export default function AdminDisplayReferencePage() {
         };
         const active = (body.lodges ?? []).filter((lodge) => lodge.active !== false);
         setLodges(active.map((lodge) => ({ id: lodge.id, name: lodge.name })));
+        const firstLodgeId = active[0]?.id ?? "";
+        setLodgeId(firstLodgeId);
+        setLodgeOptionsError(
+          firstLodgeId ? null : "No active lodge is available for live status.",
+        );
+        if (firstLodgeId) void refreshStatus(firstLodgeId);
+      } else if (!cancelled) {
+        setLodges([]);
+        setLodgeId("");
+        setStatus(null);
+        setLodgeOptionsError(
+          "The lodge list could not be loaded. Live status is stopped rather than silently using a default lodge.",
+        );
       }
-      if (!cancelled) void refreshStatus("");
     })();
     return () => {
       cancelled = true;
     };
-  }, [refreshStatus]);
+  }, [refreshStatus, lodgeReloadToken]);
 
   function onSelectLodge(next: string) {
     setLodgeId(next);
@@ -442,6 +461,18 @@ export default function AdminDisplayReferencePage() {
           <CardTitle>Conditions</CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
+          {lodgeOptionsError ? (
+            <div role="alert" className="space-y-2 text-sm text-destructive">
+              <p>{lodgeOptionsError}</p>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setLodgeReloadToken((value) => value + 1)}
+              >
+                Try again
+              </Button>
+            </div>
+          ) : null}
           <div className="flex flex-wrap items-end gap-3">
             <p className="text-muted-foreground flex-1 text-sm">
               Conditions gate any area (show/hide) and drive rotator eligibility.
@@ -471,7 +502,7 @@ export default function AdminDisplayReferencePage() {
             <Button
               variant="outline"
               onClick={() => void refreshStatus(lodgeId)}
-              disabled={loading}
+              disabled={loading || !lodgeId || lodgeOptionsError !== null}
             >
               {loading ? "Refreshing…" : "Refresh"}
             </Button>

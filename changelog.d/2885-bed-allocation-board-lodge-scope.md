@@ -99,3 +99,20 @@
   eligible members and new assignments to the same selected lodge, and clears
   old results on a switch. Its APIs refuse a missing lodge instead of using the
   club default.
+
+- **The review follow-through closes stale-scope and concurrent-write gaps
+  instead of carrying them forward (#2701, #2887).** Lodge instructions,
+  ordinary lodge editors, admin quotes and member date/work-party reads now own
+  their lodge and request sequence, so a late Lodge A response cannot overwrite
+  or save as Lodge B. Removed lodges are no longer accepted as hidden policy
+  scopes. Display devices, authoring previews, notices, the lodge list and
+  whole-lodge requests fail closed when their lodge list cannot be recovered;
+  their server routes require the explicit lodge too.
+
+  Booking admission and lodge deactivation now serialize on the same immutable
+  lodge-capacity key and repeat active/access/room or remaining-lodge checks
+  after the lock. Hut-leader assignments use that key for role-only and bed
+  paths, repeat overlap and bed checks post-lock, preserve lodge identity in
+  club-wide coverage, and respect sparse per-guest nights. These controls are
+  pinned by settled positive UI controls, exact production-consumer censuses,
+  cross-lodge/sparse coverage cases and lock-order tests.

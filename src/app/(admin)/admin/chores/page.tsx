@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { FieldHint, useFieldHint } from "@/components/ui/field-hint"
@@ -104,6 +104,8 @@ export default function ChoresPage() {
     forbidden: lodgeOptionsForbidden,
   })
   const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null
+  const activeScopeRef = useRef<string | null>(scopedLodgeId)
+  activeScopeRef.current = scopedLodgeId
   const lodgeScopeReady = scopedLodgeId !== null
 
   // Form state
@@ -183,6 +185,14 @@ export default function ChoresPage() {
     setError("")
   }
 
+  function handleLodgeChange(nextLodgeId: string | null) {
+    activeScopeRef.current = nextLodgeId
+    setLodgeId(nextLodgeId)
+    setChores([])
+    setLoading(true)
+    resetForm()
+  }
+
   function startEdit(chore: ChoreTemplate) {
     if (!lodgeScopeReady) return
     setEditingId(chore.id)
@@ -206,6 +216,7 @@ export default function ChoresPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!scopedLodgeId) return
+    const requestedScope = scopedLodgeId
     setSaving(true)
     setError("")
 
@@ -245,6 +256,7 @@ export default function ChoresPage() {
         const data = await res.json()
         throw new Error(data.error || "Failed to save")
       }
+      if (activeScopeRef.current !== requestedScope) return
       resetForm()
       fetchChores()
     } catch (err) {
@@ -256,6 +268,7 @@ export default function ChoresPage() {
 
   async function handleDelete(id: string) {
     if (!lodgeScopeReady) return
+    const requestedScope = scopedLodgeId
     if (!confirm("Are you sure you want to delete this chore template?")) return
     try {
       const res = await fetch(`/api/admin/chores/${id}`, { method: "DELETE" })
@@ -267,6 +280,7 @@ export default function ChoresPage() {
         const data = await res.json()
         throw new Error(data.error || "Failed to delete")
       }
+      if (activeScopeRef.current !== requestedScope) return
       fetchChores()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
@@ -275,6 +289,7 @@ export default function ChoresPage() {
 
   async function handleToggleActive(chore: ChoreTemplate) {
     if (!lodgeScopeReady) return
+    const requestedScope = scopedLodgeId
     try {
       const res = await fetch(`/api/admin/chores/${chore.id}`, {
         method: "PUT",
@@ -289,6 +304,7 @@ export default function ChoresPage() {
         const data = await res.json()
         throw new Error(data.error || "Failed to update")
       }
+      if (activeScopeRef.current !== requestedScope) return
       fetchChores()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
@@ -349,7 +365,7 @@ export default function ChoresPage() {
       />
 
       <div className="max-w-xs">
-        <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} loading={lodgesLoading}
+        <LodgeSelect lodges={lodges} value={lodgeId} onChange={handleLodgeChange} loading={lodgesLoading}
             // #2701: an empty list from a FAILED request is not evidence the
             // caller's lodge is gone, so the ADR-002 normaliser must not wipe a
             // ?lodgeId= hub link (ADR-003) while the outage lasts.

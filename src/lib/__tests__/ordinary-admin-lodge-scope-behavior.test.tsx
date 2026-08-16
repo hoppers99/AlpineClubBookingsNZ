@@ -111,9 +111,9 @@ const EDITORS: Array<{
   render: () => ReactElement
   action: RegExp
 }> = [
-  { name: "seasons", render: () => <SeasonsPage />, action: /save changes|delete|deactivate/i },
+  { name: "seasons", render: () => <SeasonsPage />, action: /^edit window$/i },
   { name: "chores", render: () => <ChoresPage />, action: /add chore|create chore|update chore/i },
-  { name: "lockers", render: () => <LockersPage />, action: /add locker|bulk create|save locker/i },
+  { name: "lockers", render: () => <LockersPage />, action: /^create locker$/i },
   { name: "hut fees", render: () => <HutFeesSection canEdit />, action: /add season|save season/i },
   { name: "roster", render: () => <RosterPage />, action: /generate roster|save roster|confirm roster/i },
   { name: "hut leaders", render: () => <HutLeadersPage />, action: /^confirm assignment$/i },
@@ -123,11 +123,11 @@ const EDITORS: Array<{
     action: /add room|bulk create|import rooms/i,
   },
   { name: "lodge capacity", render: () => <LodgeCapacityCard />, action: /^save$/i },
-  { name: "work parties", render: () => <AdminWorkPartiesPage />, action: /add work party|save event/i },
+  { name: "work parties", render: () => <AdminWorkPartiesPage />, action: /^new event$/i },
   {
     name: "promo codes",
     render: () => <PromoCodesPageClient permissionMatrix={PERMISSION_MATRIX} />,
-    action: /new promo code|create promo code|save promo code/i,
+    action: /^add promo code$/i,
   },
 ]
 
@@ -194,18 +194,7 @@ describe("ordinary admin editors fail closed until lodge scope settles (#2701, #
     expect(screen.queryByRole("button", { name: action })).not.toBeInTheDocument()
   })
 
-  it.each([
-    {
-      name: "lodge capacity",
-      render: () => <LodgeCapacityCard />,
-      action: /^save$/i,
-    },
-    {
-      name: "hut leaders",
-      render: () => <HutLeadersPage />,
-      action: /^confirm assignment$/i,
-    },
-  ])("$name exposes its real action after a concrete lodge settles", async ({ render: renderEditor, action }) => {
+  it.each(EDITORS)("$name exposes its real action after a concrete lodge settles", async ({ render: renderEditor, action }) => {
     lodgeOptions = {
       lodges: LODGES,
       loading: false,
@@ -213,20 +202,59 @@ describe("ordinary admin editors fail closed until lodge scope settles (#2701, #
       forbidden: false,
       reload: vi.fn(),
     }
-    vi.stubGlobal("fetch", vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        assignments: [],
-        unassignedDates: [],
-        nights: [],
-        members: [],
-        capacity: 30,
-        hutLeaderLookaheadDays: 14,
-        schoolGroupSoftCap: 12,
-        clubConfigCapacity: 30,
-      }),
-    })))
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      const json = async () => {
+        if (url.includes("/api/admin/seasons")) {
+          return [{
+            id: "season-1",
+            name: "Winter",
+            type: "WINTER",
+            startDate: "2026-08-01",
+            endDate: "2026-09-01",
+            active: true,
+            flatWholeLodgeNightCents: null,
+            membershipTypeRates: [],
+          }]
+        }
+        if (url.includes("/api/admin/chores")) return []
+        if (url.includes("/api/admin/lockers")) return { lockers: [], members: [] }
+        if (url.includes("/api/admin/roster/")) {
+          return { date: "2026-08-01", assignments: [], availableGuests: [], status: "DRAFT" }
+        }
+        if (url.includes("/api/admin/roster/status")) return { statuses: [] }
+        if (url.includes("/api/admin/hut-leaders")) return { assignments: [], members: [] }
+        if (url.includes("/api/admin/bed-allocation/rooms")) {
+          return {
+            rooms: [],
+            capacity: {
+              capacity: 30,
+              source: "capacity_override",
+              bedAllocationEnabled: true,
+              activeBedCount: 0,
+              fallbackCapacity: 30,
+            },
+            canImportFromConfig: false,
+            configBeds: [],
+          }
+        }
+        if (url.includes("/api/admin/work-parties")) return { events: [] }
+        if (url.includes("/api/admin/promo-codes")) return []
+        if (url.includes("/api/admin/membership-types")) return { membershipTypes: [] }
+        if (url.includes("/api/admin/age-tier-settings")) return { settings: [] }
+        return {
+          assignments: [],
+          unassignedDates: [],
+          nights: [],
+          members: [],
+          capacity: 30,
+          hutLeaderLookaheadDays: 14,
+          schoolGroupSoftCap: 12,
+          clubConfigCapacity: 30,
+        }
+      }
+      return { ok: true, status: 200, json } as Response
+    }))
 
     render(
       <ClubIdentityProvider value={clubIdentity}>

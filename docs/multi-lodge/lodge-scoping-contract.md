@@ -249,6 +249,17 @@ operational documents (which may carry door/emergency access details).
   twenty-third product consumer outside the admin tree and is listed separately
   because its failed-list response is governed by `INV-CAP-034`.
 
+  A second exact census covers the eleven production consumers that fetch a
+  lodge list directly rather than through `useLodgeOptions`: display builder,
+  devices, reference, setup wizard and templates; the lodge list, lodge detail
+  and lodge setup pages; the whole-lodge request form; lodge details panel; and
+  notice audience picker. The census fails on an added or removed direct fetch
+  so a new consumer cannot silently inherit default-lodge behaviour. Display
+  authoring/preview and whole-lodge requests now require an explicit recovered
+  lodge even for a single-lodge club. Devices, the lodge list and notice picker
+  show an honest failed state with retry and suppress the affected create or
+  audience controls; no non-OK response is rendered as “No lodges”.
+
   | Admin consumer(s) | Count | Failed-list treatment and reason |
   | --- | ---: | --- |
   | Bed-allocation board | 1 | Required explicit error/retry; no dashboard request. A lodge-forbidden viewer gets the separately labelled read-only all-lodges board. |
@@ -265,13 +276,12 @@ operational documents (which may carry door/emergency access details).
   components in
   `src/lib/__tests__/ordinary-admin-lodge-scope-behavior.test.tsx`: all forty
   editor/state pairs (ten editors times loading, failed, forbidden and empty)
-  assert zero downstream requests and no action. The lodge-capacity **Save** and
-  hut-leader **Confirm assignment** names are exact, and two positive cases prove
-  those same controls appear after a concrete lodge settles; a misspelled action
-  matcher therefore cannot make the negative matrix pass vacuously. Replacing
-  either production guard with a no-op makes its negative cases fail.
+  assert zero downstream requests and no action. All ten exact action labels
+  have settled-scope positive controls, so a misspelled matcher cannot make any
+  negative group pass vacuously. Replacing a production guard with a no-op makes
+  its negative cases fail.
 
-  Three stateful consumers have additional response-ownership rules. A capacity
+  Stateful consumers have additional response-ownership rules. A capacity
   GET or PUT started for Lodge A cannot overwrite Lodge B after a selector
   change, including the success message. The member lodge-access card issues no
   grants GET in loading, failed, forbidden or successful-empty states and only
@@ -279,7 +289,11 @@ operational documents (which may carry door/emergency access details).
   booking Dates step mounts neither its availability calendar nor any
   lodge-dependent read/write until its selected id belongs to the successful
   options response; retry returns to Dates, reloads the list and lets the selector
-  establish a fresh concrete id.
+  establish a fresh concrete id. Seasons, chores, hut fees, lockers, roster and
+  rooms/beds clear Lodge A rows and edit drafts synchronously when Lodge B is
+  selected; late A reads and post-action refreshes cannot repopulate them, and a
+  save keeps the scope it captured rather than pairing A data with B. The same
+  sequence/abort ownership applies to lodge instructions and admin quotes.
 - **The board's lodge scope is five named states, the set is TOTAL, and `null`
   means exactly one thing** (#2701). It used to mean three: a deliberate
   club-wide view, a selector that had not resolved, and a failed
@@ -377,6 +391,14 @@ operational documents (which may carry door/emergency access details).
   B booking. Initial waitlist positions are counted under the selected lodge's
   capacity lock using only older overlapping entries at that lodge, matching
   every later waitlist position calculation and the member's confirmation email.
+- **Booking admission and lodge deactivation share one lodge lock** (#2701).
+  Draft, confirmed and waitlist creation take the selected lodge's immutable
+  capacity key before re-reading active status, member access and requested-room
+  ownership. Deactivation takes config-import then the same capacity key and
+  re-reads both the target and the “another active lodge remains” predicate.
+  This prevents admission at a lodge that became inactive while the request was
+  waiting and prevents concurrent last-two-lodge deactivations from leaving no
+  active lodge.
 - **The hut-leader bed picker obeys the same rule when an assignment is named**
   (#2678). `GET /api/admin/hut-leaders/available-beds` took `assignmentId` and
   `lodgeId` as unrelated parameters and never reconciled them, so a request
@@ -402,7 +424,14 @@ operational documents (which may carry door/emergency access details).
   responses are fenced after a switch to Lodge B and lodge-keyed in-memory
   overlays are cleared, so old assignments or red nights never inherit the new
   selector label. Two-lodge route/domain tests pin all four read filters and the
-  create refusal.
+  create refusal. Coverage and eligibility use each guest's explicit `nights`
+  rows when present, falling back to the legacy contiguous envelope only when
+  none exist; a sparse stay on the 10th and 12th neither occupies nor suggests
+  the 11th. Club-wide uncovered-night aggregation retains lodge identity, so an
+  assignment at Lodge A does not suppress the same date at Lodge B. Assignment
+  creation serializes on the lodge key and repeats member, overlap and optional
+  bed checks after acquiring it; overlapping same-lodge role-only/different-bed
+  requests cannot both commit, while different lodges remain independent.
 
 ## Club-Wide Models (No Lodge Dimension)
 

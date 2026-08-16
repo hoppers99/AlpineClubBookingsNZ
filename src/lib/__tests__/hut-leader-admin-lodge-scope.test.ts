@@ -161,4 +161,51 @@ describe("hut-leader admin workspace has one strict lodge scope (#2701, #2887)",
       where: expect.objectContaining({ lodgeId: "lodge-b" }),
     }))
   })
+
+  it("suggests only explicit sparse guest nights, not their envelope gap", async () => {
+    mocks.bookingGuestFindMany.mockResolvedValue([{
+      memberId: "member-b",
+      stayStart: new Date("2026-08-10T00:00:00.000Z"),
+      stayEnd: new Date("2026-08-13T00:00:00.000Z"),
+      nights: [
+        { stayDate: new Date("2026-08-10T00:00:00.000Z") },
+        { stayDate: new Date("2026-08-12T00:00:00.000Z") },
+      ],
+      member: {
+        id: "member-b",
+        firstName: "Briar",
+        lastName: "Beech",
+        email: "b@example.test",
+        active: true,
+        hutLeaderEligible: true,
+        hutLeaderEligibleAt: new Date("2026-07-01T00:00:00.000Z"),
+      },
+      booking: {
+        checkIn: new Date("2026-08-10T00:00:00.000Z"),
+        checkOut: new Date("2026-08-13T00:00:00.000Z"),
+      },
+    }])
+    mocks.hutLeaderFindMany.mockResolvedValue([])
+
+    const response = await listEligible(request(
+      "/api/admin/hut-leaders/eligible-members?startDate=2026-08-10&endDate=2026-08-12&lodgeId=lodge-b",
+    ))
+    const body = await response.json()
+
+    expect(body.members[0]).toMatchObject({
+      bookingCheckIn: "2026-08-10",
+      bookingCheckOut: "2026-08-13",
+      suggestedStartDate: "2026-08-10",
+      suggestedEndDate: "2026-08-10",
+      uncoveredNightCount: 2,
+      fullyCovered: false,
+    })
+    expect(mocks.bookingGuestFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          nights: { select: { stayDate: true } },
+        }),
+      }),
+    )
+  })
 })

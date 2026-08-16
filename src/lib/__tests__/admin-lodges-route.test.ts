@@ -100,9 +100,14 @@ function installTransactionMock() {
       lodge: {
         create: mocks.lodgeCreate,
         update: mocks.lodgeUpdate,
+        findUnique: mocks.lodgeFindUnique,
         findFirst: mocks.lodgeFindFirst,
         findMany: mocks.lodgeFindMany,
+        count: mocks.lodgeCount,
       },
+      booking: { count: mocks.bookingCount },
+      hutLeaderAssignment: { count: mocks.hutLeaderAssignmentCount },
+      memberLodgeAccess: { count: mocks.memberLodgeAccessCount },
       auditLog: {
         create: mocks.auditLogCreate,
       },

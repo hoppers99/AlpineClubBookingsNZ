@@ -66,13 +66,18 @@ export default function AdminDisplayPreviewPage() {
       setLoading(false);
       return;
     }
+    if (!previewLodge) {
+      setError("No lodge to preview. Return to Templates and choose a lodge.");
+      setLoading(false);
+      return;
+    }
     try {
       const response = await fetch("/api/admin/display/preview-grant", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           templateId,
-          ...(previewLodge ? { previewLodge } : {}),
+          previewLodge,
           ...(previewDate ? { previewDate } : {}),
         }),
       });

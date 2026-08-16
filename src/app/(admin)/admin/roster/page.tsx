@@ -139,12 +139,16 @@ export default function RosterPage() {
   const lodgeScopeReady = scopedLodgeId !== null
   const [overlayByDate, setOverlayByDate] = useState<Record<string, { tone: CalendarTone; label: string }>>({})
   const lodgeIdRef = useRef(scopedLodgeId)
+  const selectedDateRef = useRef(selectedDate)
   const rosterRequestRef = useRef(0)
   const pageAlertRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     lodgeIdRef.current = scopedLodgeId
   }, [scopedLodgeId])
+  useEffect(() => {
+    selectedDateRef.current = selectedDate
+  }, [selectedDate])
 
   useEffect(() => {
     if (!error) return
@@ -262,6 +266,7 @@ export default function RosterPage() {
   function changeDate(nextDate: string) {
     if (!confirmDiscardDraft()) return
     rosterRequestRef.current += 1
+    selectedDateRef.current = nextDate
     setRoster(null)
     setSelectedDate(nextDate)
   }
@@ -269,6 +274,7 @@ export default function RosterPage() {
   function changeLodge(nextLodgeId: string | null) {
     if (!confirmDiscardDraft()) return
     rosterRequestRef.current += 1
+    lodgeIdRef.current = nextLodgeId
     setRoster(null)
     setLodgeId(nextLodgeId)
   }
@@ -282,6 +288,8 @@ export default function RosterPage() {
     // to a URL whose lodgeId must be the id validated by the successful options
     // response, never an unresolved deep-link value or an omitted default.
     if (!scopedLodgeId) return null
+    const requestedLodgeId = scopedLodgeId
+    const requestedDate = selectedDate
     setSavingAction(true)
     setError("")
     try {
@@ -311,6 +319,12 @@ export default function RosterPage() {
             ? decoded.error
             : actionFailure(failureLabel, failureKind),
         )
+      }
+      if (
+        lodgeIdRef.current !== requestedLodgeId ||
+        selectedDateRef.current !== requestedDate
+      ) {
+        return null
       }
       return decoded
     } catch (actionError) {

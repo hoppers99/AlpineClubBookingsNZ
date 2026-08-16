@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
-import { prisma } from "@/lib/prisma";
 import { buildDisplayState } from "@/lib/lodge-display-state";
 import { resolveDisplayTemplate } from "@/lib/lodge-display/template-resolution";
-import { getDefaultLodgeId } from "@/lib/lodges";
 
 // Admin display preview (fork issue #34): the same read-only discipline as
 // the kiosk per-account preview (upstream #1721) — GET-only, admin-only, and
@@ -25,8 +23,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Template not found" }, { status: 404 });
   }
 
-  const lodgeId =
-    req.nextUrl.searchParams.get("lodgeId") ?? (await getDefaultLodgeId(prisma));
+  const lodgeId = req.nextUrl.searchParams.get("lodgeId");
+  if (!lodgeId) {
+    return NextResponse.json({ error: "lodgeId is required" }, { status: 400 });
+  }
   const state = await buildDisplayState(lodgeId);
   if (!state) {
     return NextResponse.json({ error: "Lodge not found" }, { status: 404 });

@@ -95,7 +95,7 @@ describe("POST /api/admin/display/preview-grant", () => {
     const { POST } = await import("@/app/api/admin/display/preview-grant/route");
     const { decodePreviewGrant } = await import("@/lib/lodge-display-auth");
     const res = await POST(
-      await jsonRequest({ templateId: "tpl-1", previewDate: "2026-08-01" })
+      await jsonRequest({ templateId: "tpl-1", previewDate: "2026-08-01", previewLodge: "lodge-b" })
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { token: string };
@@ -107,7 +107,7 @@ describe("POST /api/admin/display/preview-grant", () => {
   it("404s an unknown template", async () => {
     mockPrisma.displayTemplate.findUnique.mockResolvedValue(null);
     const { POST } = await import("@/app/api/admin/display/preview-grant/route");
-    const res = await POST(await jsonRequest({ templateId: "ghost" }));
+    const res = await POST(await jsonRequest({ templateId: "ghost", previewLodge: "lodge-b" }));
     expect(res.status).toBe(404);
   });
 
@@ -123,7 +123,7 @@ describe("POST /api/admin/display/preview-grant", () => {
   it("mints a template-less grant (lodge board) when templateId is omitted", async () => {
     const { POST } = await import("@/app/api/admin/display/preview-grant/route");
     const { decodePreviewGrant } = await import("@/lib/lodge-display-auth");
-    const res = await POST(await jsonRequest({}));
+    const res = await POST(await jsonRequest({ previewLodge: "lodge-b" }));
     expect(res.status).toBe(200);
     const body = (await res.json()) as { token: string };
     expect(decodePreviewGrant(body.token)).toMatchObject({

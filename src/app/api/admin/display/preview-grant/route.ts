@@ -59,7 +59,7 @@ const bodyField = z
     draft: draftField.nullish(),
     // Templates are lodge-agnostic, so the lodge is explicit; omitted → the
     // club default lodge (resolveOptionalActiveLodgeId).
-    previewLodge: z.string().min(1).nullish(),
+    previewLodge: z.string().min(1),
     // Optional simulated window start (LTV-017).
     previewDate: z.string().regex(DATE_ONLY).nullish(),
   })

@@ -232,13 +232,14 @@ export function useBookingWizard() {
   });
   const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
   const activeScopedLodgeIdRef = useRef<string | null>(scopedLodgeId);
+  // Ownership must change during the render that changes the recovered scope.
+  // Waiting for an effect leaves one commit where a late response can still
+  // regard a removed/failed lodge as current.
+  activeScopedLodgeIdRef.current = scopedLodgeId;
   const dateSelectionSequenceRef = useRef(0);
   const dateSelectionAbortRef = useRef<AbortController | null>(null);
   const workPartySequenceRef = useRef(0);
   const workPartyAbortRef = useRef<AbortController | null>(null);
-  useEffect(() => {
-    activeScopedLodgeIdRef.current = scopedLodgeId;
-  }, [scopedLodgeId]);
   useEffect(
     () => () => {
       dateSelectionAbortRef.current?.abort();
@@ -1061,6 +1062,11 @@ export function useBookingWizard() {
     const ownsSelection = () =>
       sequence === dateSelectionSequenceRef.current &&
       activeScopedLodgeIdRef.current === requestedLodgeId;
+    const lostSelectionOwnership = () => {
+      if (ownsSelection()) return false;
+      if (activeScopedLodgeIdRef.current === null) returnToUnresolvedLodge();
+      return true;
+    };
     setCheckIn(ci);
     setCheckOut(co);
     setError("");
@@ -1086,10 +1092,10 @@ export function useBookingWizard() {
         `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}${lodgeParam}`,
         { signal: controller.signal },
       );
-      if (!ownsSelection()) return;
+      if (lostSelectionOwnership()) return;
       if (res.ok) {
         const data = await res.json();
-        if (!ownsSelection()) return;
+        if (lostSelectionOwnership()) return;
         setAvailableBeds(data.minAvailable);
         setAvailabilityNightDetails(data.nightDetails || []);
       } else {
@@ -1100,10 +1106,10 @@ export function useBookingWizard() {
         `/api/booking-policies/check?checkIn=${ciStr}&checkOut=${coStr}${lodgeParam}`,
         { signal: controller.signal },
       );
-      if (!ownsSelection()) return;
+      if (lostSelectionOwnership()) return;
       if (policyRes.ok) {
         const policyData = await policyRes.json();
-        if (!ownsSelection()) return;
+        if (lostSelectionOwnership()) return;
         if (!policyData.valid) {
         // #2562: the date precheck must not strand a member before they can
         // describe the party that the officer would review. Reuse the ONE
@@ -1127,7 +1133,9 @@ export function useBookingWizard() {
       if (ownsSelection()) setStep("guests");
     } catch (requestError) {
       if (requestError instanceof DOMException && requestError.name === "AbortError") return;
-      if (ownsSelection()) setError("Failed to check availability. Please try again.");
+      if (!lostSelectionOwnership()) {
+        setError("Failed to check availability. Please try again.");
+      }
     } finally {
       if (dateSelectionAbortRef.current === controller) {
         dateSelectionAbortRef.current = null;

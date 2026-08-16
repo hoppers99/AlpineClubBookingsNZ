@@ -140,7 +140,10 @@ describe("Display reference page data sources", () => {
   it("shows the live indicator once the status endpoint responds", async () => {
     fetchMock.mockImplementation((url: string) => {
       if (url.startsWith("/api/admin/lodges")) {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve({ lodges: [] }) });
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ lodges: [{ id: "lodge-default", name: "Silverpeak Lodge" }] }),
+        });
       }
       return Promise.resolve({
         ok: true,

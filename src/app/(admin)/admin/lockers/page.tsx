@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Pencil, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -133,6 +133,8 @@ export default function LockersPage() {
     forbidden: lodgeOptionsForbidden,
   });
   const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
+  const activeScopeRef = useRef<string | null>(scopedLodgeId);
+  activeScopeRef.current = scopedLodgeId;
   const lodgeScopeReady = scopedLodgeId !== null;
 
   const loadData = useCallback(async (signal?: AbortSignal) => {
@@ -183,6 +185,7 @@ export default function LockersPage() {
   async function handleFormSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!scopedLodgeId) return;
+    const requestedScope = scopedLodgeId;
     setSaving(true);
     setError("");
 
@@ -221,6 +224,7 @@ export default function LockersPage() {
               : "Failed to create locker"),
         );
       }
+      if (activeScopeRef.current !== requestedScope) return;
 
       if (editingLockerId) {
         setLockers((previous) =>
@@ -266,8 +270,18 @@ export default function LockersPage() {
     setError("");
   }
 
+  function handleLodgeChange(nextLodgeId: string | null) {
+    activeScopeRef.current = nextLodgeId;
+    setLodgeId(nextLodgeId);
+    setMembers([]);
+    setLockers([]);
+    setLoading(true);
+    resetForm();
+  }
+
   async function deleteLocker(locker: LockerRecord) {
     if (!lodgeScopeReady) return;
+    const requestedScope = scopedLodgeId;
     if (
       !(await confirm({
         title: `Delete locker ${locker.name}?`,
@@ -293,6 +307,7 @@ export default function LockersPage() {
         }
         throw new Error(body?.error || "Failed to delete locker");
       }
+      if (activeScopeRef.current !== requestedScope) return;
 
       setLockers((previous) =>
         previous.filter((current) => current.id !== locker.id),
@@ -313,6 +328,7 @@ export default function LockersPage() {
 
   async function bulkCreateLockers() {
     if (!scopedLodgeId) return;
+    const requestedScope = scopedLodgeId;
     const count = Number(bulkCount);
     setBulkSaving(true);
     setError("");
@@ -334,6 +350,7 @@ export default function LockersPage() {
         }
         throw new Error(body.error || "Failed to create lockers");
       }
+      if (activeScopeRef.current !== requestedScope) return;
       setBulkCount("");
       await loadData();
     } catch (bulkError) {
@@ -422,7 +439,7 @@ export default function LockersPage() {
       />
 
       <div className="max-w-xs">
-        <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} loading={lodgesLoading}
+        <LodgeSelect lodges={lodges} value={lodgeId} onChange={handleLodgeChange} loading={lodgesLoading}
             // #2701: an empty list from a FAILED request is not evidence the
             // caller's lodge is gone, so the ADR-002 normaliser must not wipe a
             // ?lodgeId= hub link (ADR-003) while the outage lasts.

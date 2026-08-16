@@ -207,11 +207,9 @@ export async function POST(req: NextRequest) {
     const pin = generateHutLeaderPin();
     const hutLeaderPin = await hashHutLeaderPin(pin);
 
-    // #2286: creating a BED-HOLDING assignment is a capacity-mutating write, so
-    // validation and the insert move into one transaction that takes the
-    // per-lodge advisory lock first — the same key booking admission and the
-    // allocation chokepoints take. A role-only assignment changes no capacity,
-    // so it keeps the plain unlocked create it has always used.
+    // Bed-holding and role-only assignments share the lodge key: both must
+    // serialize the overlap predicate, while the bed path additionally repeats
+    // capacity validation after that same lock (INV-LOCK-001/002).
     //
     // The PIN email deliberately stays OUTSIDE the transaction (AGENTS.md: no
     // external provider call inside a DB transaction), with its existing

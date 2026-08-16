@@ -252,4 +252,61 @@ describe("member booking wizard unresolved lodge scope (#2701, #2887)", () => {
       String(input).includes("/api/booking-policies/check"),
     )).toBe(false)
   })
+
+  it("keeps the newer date range when two selections race at the same lodge", async () => {
+    options = {
+      lodges: [{ id: "lodge-a", name: "Lodge A" }],
+      loading: false,
+      failed: false,
+      forbidden: false,
+      reload,
+    }
+    let releaseFirst!: () => void
+    const firstAvailability = new Promise<Response>((resolve) => {
+      releaseFirst = () => resolve(response({ minAvailable: 1, nightDetails: [] }))
+    })
+    let availabilityCount = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes("/api/availability/check")) {
+        availabilityCount += 1
+        return availabilityCount === 1
+          ? firstAvailability
+          : response({ minAvailable: 9, nightDetails: [] })
+      }
+      if (url.includes("/api/booking-policies/check")) return response({ valid: true })
+      if (url.includes("/api/members/family")) return response({ familyMembers: [] })
+      if (url.includes("/api/payments/options")) {
+        return response({ methods: { stripe: { enabled: true, default: true } }, groupBookingsEnabled: false })
+      }
+      if (url.includes("/api/member/subscription-status")) return response({ status: "PAID" })
+      if (url.includes("/api/booking-messages")) return response({ messages: {} })
+      if (url.includes("/api/bookings/rooms")) return response({ enabled: false, rooms: [] })
+      return response()
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const view = renderHook(() => useBookingWizard())
+    act(() => view.result.current.handleLodgeChange("lodge-a"))
+    let first!: Promise<void>
+    act(() => {
+      first = view.result.current.handleDateSelect("2026-08-10", "2026-08-11")
+    })
+    await waitFor(() => expect(availabilityCount).toBe(1))
+
+    await act(async () => {
+      await view.result.current.handleDateSelect("2026-08-20", "2026-08-22")
+    })
+    expect(view.result.current.step).toBe("guests")
+    expect(view.result.current.checkIn).toBe("2026-08-20")
+    expect(view.result.current.checkOut).toBe("2026-08-22")
+
+    await act(async () => {
+      releaseFirst()
+      await first
+    })
+    expect(view.result.current.step).toBe("guests")
+    expect(view.result.current.checkIn).toBe("2026-08-20")
+    expect(view.result.current.checkOut).toBe("2026-08-22")
+  })
 })

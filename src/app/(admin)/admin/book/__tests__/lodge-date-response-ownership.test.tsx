@@ -108,8 +108,18 @@ vi.mock("@/components/booking-calendar", () => ({
 }))
 
 vi.mock("@/components/guest-form", () => ({
-  GuestForm: ({ maxGuests }: { maxGuests: number }) => (
-    <div data-testid="guest-form" data-max-guests={String(maxGuests)} />
+  GuestForm: ({ maxGuests, onGuestsChange }: {
+    maxGuests: number
+    onGuestsChange: (guests: Array<{ firstName: string; lastName: string; ageTier: string; isMember: boolean }>) => void
+  }) => (
+    <div data-testid="guest-form" data-max-guests={String(maxGuests)}>
+      <button
+        type="button"
+        onClick={() => onGuestsChange([{ firstName: "Alex", lastName: "Guest", ageTier: "ADULT", isMember: true }])}
+      >
+        Add test guest
+      </button>
+    </div>
   ),
 }))
 
@@ -248,5 +258,41 @@ describe("admin booking date response ownership (#2701, #2887)", () => {
       "10",
     )
     expect(screen.getByText(/12 Aug 2026/)).toHaveTextContent("14 Aug 2026")
+  })
+
+  it("does not install a Lodge A quote after Back and a switch to Lodge B", async () => {
+    const quoteA = deferred<Response>()
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes("/api/availability/check") && url.includes("lodgeId=lodge-a")) {
+        return response({ minAvailable: 8, nightDetails: [{ occupiedBeds: 2, availableBeds: 8 }] })
+      }
+      if (url === "/api/bookings/quote") {
+        expect(JSON.parse(String(init?.body))).toMatchObject({ lodgeId: "lodge-a" })
+        return quoteA.promise
+      }
+      if (url.includes("/api/admin/bookings/eligible-family")) return response({ familyMembers: [] })
+      if (url.includes("/api/payments/options")) return response({ methods: { internetBanking: { enabled: false } } })
+      return response({})
+    })
+
+    await openDates()
+    fireEvent.click(screen.getByRole("button", { name: "Choose dates at lodge-a" }))
+    expect(await screen.findByTestId("guest-form")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Add test guest" }))
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/bookings/quote")).toBe(true))
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }))
+    fireEvent.click(screen.getByRole("button", { name: "Choose Lodge B" }))
+    expect(screen.getByTestId("admin-book-lodge")).toHaveTextContent("Lodge B")
+
+    await act(async () => {
+      quoteA.resolve(response({ totalPriceCents: 1000, guests: [] }))
+      await quoteA.promise
+    })
+
+    expect(screen.queryByText("Booking Summary")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Choose dates at lodge-b" })).toBeInTheDocument()
   })
 })
