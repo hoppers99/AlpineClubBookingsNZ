@@ -170,7 +170,11 @@ function StatCard({
 
 export default function ReportsPage() {
   const club = useClubIdentity();
-  const { lodges } = useLodgeOptions("admin");
+  const {
+    lodges,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+  } = useLodgeOptions("admin");
   // The reports API interprets from/to in the club time zone, so anchor the
   // default range on the club-timezone "today" rather than the browser's local
   // date (a browser trailing NZ across a month boundary would otherwise seed a
@@ -191,12 +195,29 @@ export default function ReportsPage() {
   const [error, setError] = useState<string | null>(null);
   const [generatingPDF, setGeneratingPDF] = useState(false);
   const reportRef = useRef<HTMLDivElement>(null);
+  /*
+    #2887: the qualifier disappeared in exactly the state where a reader most
+    needs it. `lodges.length > 1` is false for a FAILED or FORBIDDEN list too,
+    and `/admin/reports` is in the FINANCE area — `FINANCE_ADMIN`,
+    `FINANCE_USER` and `ADMIN_MEMBERSHIP` all hold no `lodge` entry, so for
+    them `/api/admin/lodges` is a permanent 403. The occupancy card and chart
+    title then read "Occupancy Rate" with no scope, and a club-wide figure is
+    indistinguishable from one lodge's.
+
+    Unknown plurality is labelled as unknown rather than left blank. The
+    selector is not rendered in that state, so the scope really is whatever the
+    API defaults to — all active lodges — and saying so is honest; saying
+    nothing is not.
+  */
+  const lodgeCountUnknown = lodgeOptionsFailed || lodgeOptionsForbidden;
   const occupancyScopeLabel =
     lodges.length > 1
       ? lodgeId
         ? (lodges.find((lodge) => lodge.id === lodgeId)?.name ?? "Selected lodge")
         : "All lodges"
-      : null;
+      : lodgeCountUnknown
+        ? "All lodges"
+        : null;
 
   // Monotonic ticket for the LATEST query. Every filter change refires the effect
   // below while earlier fetches are still in flight, and without this guard the

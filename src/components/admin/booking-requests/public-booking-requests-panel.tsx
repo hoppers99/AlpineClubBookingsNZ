@@ -395,10 +395,34 @@ export function PublicBookingRequestsPanel({
   const searchParams = useSearchParams();
   const initialFilter = searchParams.get("status");
   const requestId = searchParams.get("requestId");
-  // Lodge badge only renders for multi-lodge clubs (ADR-002 presentation
-  // rule); a single-lodge club sees no lodge copy in the queue.
-  const { lodges: activeLodges } = useLodgeOptions("admin");
-  const showLodgeContext = activeLodges.length >= 2;
+  /*
+    Lodge badge only renders for multi-lodge clubs (ADR-002 presentation rule);
+    a single-lodge club sees no lodge copy in the queue.
+
+    #2887: "fewer than two lodges came back" is not the same fact as "this club
+    has one lodge". A FAILED or FORBIDDEN lodge list also returns an empty
+    array, and this panel then rendered a multi-lodge club's officer queue
+    exactly like a single-lodge club's — while `lodgeName` sat unused in the
+    payload it had already been given.
+
+    It is not only an outage case. `/admin/booking-requests` is in the BOOKINGS
+    area, and `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold `bookings: "view"`
+    with no `lodge` entry, so for those two shipped presets `/api/admin/lodges`
+    is a permanent 403 and the badge was permanently absent. An officer prices
+    and approves a stay with no lodge on screen — on a MUTATION screen, which
+    is the defect #2887 exists to remove.
+
+    So the badge fails OPEN when plurality is unknown and closed only when the
+    list actually came back saying one lodge. Identity is withheld only on
+    evidence, never on the absence of it.
+  */
+  const {
+    lodges: activeLodges,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+  } = useLodgeOptions("admin");
+  const lodgeCountUnknown = lodgeOptionsFailed || lodgeOptionsForbidden;
+  const showLodgeContext = activeLodges.length >= 2 || lodgeCountUnknown;
   const [requests, setRequests] = useState<PublicBookingRequestData[]>([]);
   const [filter, setFilter] = useState<PublicRequestFilter>(
     isPublicRequestFilter(initialFilter) ? initialFilter : "QUEUE"

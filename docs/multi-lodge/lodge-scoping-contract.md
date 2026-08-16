@@ -237,10 +237,33 @@ operational documents (which may carry door/emergency access details).
   cosmetic notice without the transport/action gate fails.
   Three surfaces are deliberately left to degrade quietly, and that is a
   decision rather than an omission: `reports`, the promo-redemptions panel and
-  the public booking-requests panel already default to a genuine, labelled
-  all-lodges read where every figure stays correct, so the lodge is a filter
-  over content that stands alone. Forcing an error there would be worse than
-  the ambiguity it removed.
+  the public booking-requests panel already default to a genuine all-lodges
+  read where every figure stays correct, so the lodge is a filter over content
+  that stands alone. Forcing an error there would be worse than the ambiguity
+  it removed.
+
+  Quiet degradation means the DATA degrades quietly, never the LABEL (#2887).
+  The original wording here — "the lodge picker is only an optional filter" —
+  did not describe two of the three, and that is how the miss survived review:
+
+  - the public booking-requests panel **has no lodge picker at all**. Its lodge
+    identity is a per-row badge, and it was gated on `activeLodges.length >= 2`,
+    which is also false for a failed or forbidden list. `/admin/booking-requests`
+    is in the **bookings** area, and `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold
+    `bookings: "view"` with no `lodge` entry, so for those shipped presets the
+    badge was permanently absent while `lodgeName` sat in the payload — an
+    officer pricing and approving a stay with no lodge on screen, on a mutation
+    surface;
+  - `reports` dropped its `occupancyScopeLabel` in the same states, so a
+    club-wide occupancy figure became indistinguishable from one lodge's.
+    `/admin/reports` is in the **finance** area, where `FINANCE_ADMIN`,
+    `FINANCE_USER` and `ADMIN_MEMBERSHIP` all get a permanent 403 on the lodge
+    list.
+
+  Both now fail OPEN on identity: unknown plurality shows the lodge badge and
+  labels the scope, and identity is withheld only when the list actually came
+  back saying one lodge. ADR-002's "no lodge copy in a single-lodge club" still
+  holds, because that is now decided on evidence rather than on its absence.
 
   The census is exact, not “roughly twenty”. There are eighteen production
   `useLodgeOptions` call sites in the admin tree; the shared policy selector is
@@ -254,7 +277,11 @@ operational documents (which may carry door/emergency access details).
   devices, reference, setup wizard and templates; the lodge list, lodge detail
   and lodge setup pages; the whole-lodge request form; lodge details panel; and
   notice audience picker. The census fails on an added or removed direct fetch
-  so a new consumer cannot silently inherit default-lodge behaviour. Display
+  so a new consumer cannot silently inherit default-lodge behaviour. It matched
+  three exact literal spellings until #2887, which meant a consumer written as
+  a template literal or with a query string was invisible to it; the match is
+  now any `fetch` of the endpoint in any quote style, still anchored to a call
+  or a named endpoint constant so route tables and prose do not register. Display
   authoring/preview and whole-lodge requests now require an explicit recovered
   lodge even for a single-lodge club. Devices, the lodge list and notice picker
   show an honest failed state with retry and suppress the affected create or
@@ -269,7 +296,7 @@ operational documents (which may carry door/emergency access details).
   | Default cancellation, minimum stay, booking periods, adult-member hosting, lodge instructions | 5 | Required policy gate. A deliberate club-wide choice or validated lodge is settled; resolving/unavailable states issue no policy GET and expose no policy action. |
   | Member lodge-access card | 1 | Required error/access explanation; its lodge-access GET and every assignment control stop until options resolve. |
   | Lodge kiosk accounts | 1 | Required explanation, because a failure hides the lodge-binding controls. The club-wide kiosk-account list remains valid and continues to load; create/rebind controls cannot appear without the real options. |
-  | Reports, promo-code redemptions, public booking requests | 3 | Deliberate quiet degradation. Each already has a genuine labelled all-lodges dataset and the lodge picker is only an optional filter, so its figures remain correct without the options. |
+  | Reports, promo-code redemptions, public booking requests | 3 | Deliberate quiet degradation of the DATA, never of the label (#2887). Each already reads a genuine all-lodges dataset whose figures stay correct without the options. Reports keeps its occupancy scope qualifier and the public booking-requests panel keeps its per-row lodge badge in the failed/forbidden states — both of which previously vanished there, and the booking-requests panel has no picker to call an "optional filter" in the first place. |
   | **Total admin surfaces** | **22** | Every consumer is classified; none silently treats a failed list as evidence that the club has no lodges. |
 
   The ten ordinary-editor transport gates are exercised through the real
