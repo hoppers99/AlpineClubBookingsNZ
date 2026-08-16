@@ -18,6 +18,7 @@ import {
 import { PaymentSource, PaymentTransactionKind } from "@prisma/client";
 import { prisma } from "./prisma";
 import logger from "@/lib/logger";
+import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { getStayNights } from "./pricing";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
@@ -460,13 +461,17 @@ export async function createXeroInvoiceForBooking(
   const checkOut = new Date(booking.checkOut);
   const nights = getStayNights(checkIn, checkOut).length;
 
-  // Determine season type from check-in date for item code mapping
+  // Determine season type from check-in date for item code mapping.
+  // Scoped to the BOOKING'S OWN LODGE: lodges may run different season windows
+  // (lodge-scoping-contract.md), so an unscoped read can match another lodge's
+  // season and pick its item code — and therefore its GL account.
   let bookingSeasonType: string | null = null;
   const season = await prisma.season.findFirst({
     where: {
       startDate: { lte: checkIn },
       endDate: { gte: checkIn },
       active: true,
+      ...lodgeNullTolerantScope(booking.lodgeId),
     },
     select: { type: true },
   });
@@ -1078,12 +1083,16 @@ export async function updateXeroBookingInvoiceForBooking(
   const checkOut = new Date(booking.checkOut);
   const nights = getStayNights(checkIn, checkOut).length;
 
+  // Same lodge scoping as the create path above: the season that decides the
+  // item code must be this booking's lodge's season, not whichever lodge's row
+  // happened to match the date first.
   let bookingSeasonType: string | null = null;
   const season = await prisma.season.findFirst({
     where: {
       startDate: { lte: checkIn },
       endDate: { gte: checkIn },
       active: true,
+      ...lodgeNullTolerantScope(booking.lodgeId),
     },
     select: { type: true },
   });

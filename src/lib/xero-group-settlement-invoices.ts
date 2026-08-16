@@ -22,6 +22,7 @@ import {
 import { BookingStatus, GroupBookingStatus } from "@prisma/client";
 import { prisma } from "./prisma";
 import logger from "@/lib/logger";
+import { lodgeNullTolerantScope } from "@/lib/lodges";
 import {
   recordWithheldBookingEmail,
   XERO_GROUP_SETTLEMENT_INVOICE_EMAIL_TEMPLATE,
@@ -285,12 +286,16 @@ export async function createXeroInvoiceForGroupSettlement(
     const checkOut = new Date(child.checkOut);
     const nights = getStayNights(checkIn, checkOut).length;
 
+    // Scoped to the CHILD booking's own lodge, for the same reason as the
+    // per-booking invoice paths: lodges may run different season windows, so an
+    // unscoped read can take another lodge's season and its item code.
     let seasonType: string | null = null;
     const season = await prisma.season.findFirst({
       where: {
         startDate: { lte: checkIn },
         endDate: { gte: checkIn },
         active: true,
+        ...lodgeNullTolerantScope(child.lodgeId),
       },
       select: { type: true },
     });
