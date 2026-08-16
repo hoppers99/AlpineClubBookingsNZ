@@ -261,6 +261,39 @@ describe("EditBookingPanel — the debounced modify-quote arm (#2690)", () => {
     expect(screen.queryByText("Price Summary")).not.toBeInTheDocument();
   });
 
+  it("disarms an armed debounce when the panel closes", async () => {
+    /*
+      The effect's CLEANUP, which nothing else in this PR reaches.
+
+      The effect clears the previous timer at the top of its own body, so on a
+      re-run the cleanup is redundant — which is exactly why deleting it left
+      every other case here green. The one moment it is the only thing standing
+      is UNMOUNT: an officer edits a date and closes the panel inside the 500ms
+      window. Without the cleanup that timer still fires into a dead tree, so a
+      modify-quote request goes out for a panel nobody is looking at, and its
+      response writes through setters belonging to an unmounted component.
+
+      Measured: deleting the `return () => clearTimeout(...)` passes all four of
+      the other cases in this file and both refactor-guard suites; it fails only
+      here.
+    */
+    const quoteRequestBodies = installFetch().bodies;
+    const { unmount } = render(
+      <EditBookingPanel booking={makeBooking()} onDone={() => {}} />,
+    );
+
+    // Arms the timer, then closes the panel before the window elapses.
+    setCheckOut("2026-09-08");
+    unmount();
+
+    await advance(TWENTY_DEBOUNCE_WINDOWS_MS);
+    expect(
+      quoteRequestBodies,
+      "the debounce effect's cleanup no longer disarms its timer, so a quote " +
+        "fires for a panel that has already closed",
+    ).toHaveLength(0);
+  });
+
   it("asks the family route once per mount, not once per edit", async () => {
     // This case counts family calls off the mock itself, so it needs the fetch
     // installed but not the quote recorder.
