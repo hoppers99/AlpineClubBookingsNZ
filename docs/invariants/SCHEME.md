@@ -429,11 +429,13 @@ than an outstanding item.
 | Largest single domain file (`membership-lifecycle.md`) | ~24k |
 | Typical domain file | 1–9k |
 
-`AGENTS.md` → "Read First" holds the always-read core to three documents under
-30,000 tokens, of which the index is one; every other invariant file is
-**routed** — opened at the moment its row matches what you are changing. That
-budget is the reason the index's one-line descriptions are capped at **12 words**
-each. The cap is load-bearing: relax it and the index stops fitting the core.
+`AGENTS.md` → "Read First" holds the agent-neutral always-read core to two
+documents, of which the index is one; every other invariant file is **routed** —
+opened at the moment its row matches what you are changing. Agent-interface
+adapters import or point to that authority instead of joining the mandatory
+core. That budget is the reason the index's one-line descriptions are capped at
+**12 words** each. The cap is load-bearing: relax it and the index stops fitting
+the core.
 
 If the index ever outgrows the budget, the cheapest lever is to move the full ID
 catalogue into a separate `docs/invariants/ID-INDEX.md`, leaving the routing
@@ -446,12 +448,11 @@ without opening more than one other file".
 ## 6. The index
 
 **The index is `docs/DOMAIN_INVARIANTS.md`.** It is not in this directory, and
-there is deliberately no `docs/invariants/README.md`: about 70 files —
-`AGENTS.md`, `CLAUDE.md`, `README.md`, nine `docs/guides/` pages, thirty source
-files and the Codex helper scripts — already point at that path, and 21 of the 27
-inbound anchors target headings the index keeps verbatim. Moving it would turn a
-free migration into ~97 edits and a permanent fork-compatibility break, and would
-gain nothing a reader can feel. `npm run docs:indexcheck` treats
+there is deliberately no `docs/invariants/README.md`: many entry-point docs,
+guides, source files and agent helper scripts already point at that path, and
+many inbound anchors target headings the index keeps verbatim. Moving it would
+turn a free migration into widespread edits and a permanent fork-compatibility
+break, and would gain nothing a reader can feel. `npm run docs:indexcheck` treats
 `docs/DOMAIN_INVARIANTS.md` as the root of the invariants tree.
 
 ### 6.1 What the index contains
