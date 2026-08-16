@@ -492,9 +492,9 @@ describe("auditDocs — the whole check", () => {
   });
 
   it.each([
-    ["blockquote", "> ## INV-MONEY-001 — another rule"],
-    ["list", "- ## INV-MONEY-001 — another rule"],
-    ["list continuation", "- Item\n  ## INV-MONEY-001 — another rule"],
+    ["blockquote", "> ## INV-MONEY-001"],
+    ["list", "- ## INV-MONEY-001"],
+    ["list continuation", "- Item\n  ## INV-MONEY-001"],
   ])("fails a malformed invariant heading inside a %s", (_container, heading) => {
     const files = repo();
     files.set(
