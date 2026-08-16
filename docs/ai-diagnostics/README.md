@@ -15,12 +15,12 @@ read-only, budgeted, and audited. Keeping the two products' security models
 separate is the reason this subsystem exists — see
 [ADR-001](decisions/ADR-001-separate-admin-only-diagnostics-product.md).
 
-**Status:** delivered, in release hardening. Eight of the nine implementation
-children of epic #2369 have landed — AID-2, AID-3, AID-4, AID-5, AID-6A/6B/6C and
-AID-7 (the live question-and-answer product) — and AID-8 (#2379) is the release
-hardening pass in progress. The subsystem remains **off by default** and
-deployment-local: nothing changes for a deployment that does not enable it. This
-hub, the ADRs, and the [threat model](threat-model.md) remain the
+**Status:** delivered and release-hardened. All nine implementation children of
+epic #2369 have landed — AID-2, AID-3, AID-4, AID-5, AID-6A/6B/6C, AID-7 (the
+live question-and-answer product), and AID-8 (#2379), whose final adversarial
+release verification shipped through PR #2871. The subsystem remains **off by
+default** and deployment-local: nothing changes for a deployment that does not
+enable it. This hub, the ADRs, and the [threat model](threat-model.md) remain the
 security/privacy/authority/evidence contracts, written under issue #2370 (AID-1)
 **before** those children were built. **AID-2 (#2371) was the first implementation
 child to land** —
@@ -41,8 +41,8 @@ readiness evidence behind `support:view`, bounded sanitized audit correlation be
 membership pack and the finance/Xero pack are documented below. **AID-7 (#2378) has
 since landed the product itself** — the setup/status page, the budget, and the whole
 question-and-answer surface in the Help bubble, with its
-[operator-facing side documented in `ux.md`](ux.md). Release hardening (AID-8, #2379)
-is the remaining child.
+[operator-facing side documented in `ux.md`](ux.md). **AID-8 (#2379) has also
+landed**, completing the adversarial release-hardening pass through PR #2871.
 
 ## Governance: these contracts are binding
 
@@ -135,32 +135,32 @@ The [STRIDE-style threat model](threat-model.md) enumerates the trust boundaries
 data flows, abuse cases, per-boundary threats and mitigations, and the fail-closed
 control matrix. Each mitigation is fixed by one of the ADRs above.
 
-## Documentation plan
+## Documentation
 
-The subsystem's documentation is delivered with its implementation children. This
-hub is the index; each child adds or extends the documents below and links them
-here as it lands, so this hub stays the single reachable entry point. With AID-8
-(#2379) all planned subsystem documents are now written and linked; the existing
+The subsystem's documentation was delivered with its implementation children. This
+hub is the index; each child added or extended the documents below and linked them
+here when it landed, so this hub remains the single reachable entry point. With AID-8
+(#2379), all subsystem documents are written and linked; the existing
 repository-wide documents each one extends are linked in the right-hand column.
 
-| Area | Planned subsystem doc (owner) | Existing docs it extends |
+| Area | Subsystem doc (owner) | Existing docs it extends |
 | --- | --- | --- |
 | **Architecture** | [`architecture.md`](architecture.md) — the end-to-end shell/route/loop/provider path, the tool substrate and its two read-only seams, the knowledge bundle, the consent ledger and permission model, the untrusted-text defusal boundary across all five evidence channels, and budget/rate/recovery (AID-8 #2379, **delivered**) | [`ARCHITECTURE.md`](../ARCHITECTURE.md), [`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) |
 | **Tool substrate** | [`tools.md`](tools.md) — the server-owned typed registry, the twelve fail-closed gates, per-invocation authorization, bounds, untrusted-evidence render, approved audit metadata, and the rules for adding a tool (AID-5 #2374, **delivered**) | [ADR-001](decisions/ADR-001-separate-admin-only-diagnostics-product.md), [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md), [ADR-007](decisions/ADR-007-least-privilege-select-only-database-credential.md) |
 | **Page context** | [`page-context.md`](page-context.md) — the typed selector, the route registry, the permission-checked server re-fetch, the personal-detail opt-in, and the evidence block (AID-4 #2373, **delivered**) | [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-003](decisions/ADR-003-untrusted-evidence-classes.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md) |
 | **Security / privacy** | This hub's [threat model](threat-model.md) and [ADRs](decisions/) (AID-1, this issue); release hardening notes (AID-8 #2379) | [`SECURITY.md`](../SECURITY.md), [`SECURITY-ATTACK-SURFACE.md`](../SECURITY-ATTACK-SURFACE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](../agents/PROMPT_INJECTION_GUIDE.md) |
-| **Deployment / operator** | [`deployment.md`](deployment.md) — setup order, provisioning and rotating the SELECT-only DB role, the credential, budget/limits, and reading readiness (AID-2 #2371 / AID-5 #2374, **delivered**); provider disclosure, zero-retention, and the private overlay are documented as **deferred, not implemented this release** (AID-8 #2379) | [`../../DEPLOYMENT.md`](../../DEPLOYMENT.md), [`ONGOING_DEVELOPMENT_WORKFLOW.md`](../ONGOING_DEVELOPMENT_WORKFLOW.md) |
+| **Deployment / operator** | [`deployment.md`](deployment.md) — setup order, provisioning and rotating the SELECT-only DB role, the credential, budget/limits, and reading readiness (AID-2 #2371 / AID-5 #2374, **delivered**); the generic private deployment overlay is **delivered** through #2861 / PR #2866, while provider disclosure and the optional zero-retention provider posture remain documented as **deferred, not implemented** (AID-8 #2379) | [`../../DEPLOYMENT.md`](../../DEPLOYMENT.md), [`ONGOING_DEVELOPMENT_WORKFLOW.md`](../ONGOING_DEVELOPMENT_WORKFLOW.md) |
 | **UX** | [`ux.md`](ux.md) — the two surfaces, the Diagnostics tab, the per-question consent ticks, choosing the record under investigation, the nineteen failure states, and keyboard/screen-reader/narrow-viewport behaviour (AID-7 #2378, **delivered**) | [`UX_FLOW_MAP.md`](../UX_FLOW_MAP.md) |
 | **E2E test matrix** | [`e2e-matrix.md`](e2e-matrix.md) — the security verification matrix: admission, per-tool auth, fresh revocation, consent, injection inertness across every channel, SELECT-only reads and the server_owned seam, no-mutation, secret/PII leakage, budget/rate/recovery, and the deployment artifact — each with its test files and proof tier, and the live browser/model gaps stated plainly (AID-8 #2379, **delivered**) | [`END_TO_END_TEST_MATRIX.md`](../END_TO_END_TEST_MATRIX.md) |
 | **Operator help** | Operator guidance for the Diagnostics surface (AID-7 #2378 / AID-8 #2379) | [`guides/ai-help.md`](../guides/ai-help.md) |
 
 ## Delivered capability: budget, metering, rate limits, and configuration (AID-2, #2371)
 
-AID-2 is the first implementation child of epic #2369 to land. It builds the
+AID-2 was the first implementation child of epic #2369 to land. It built the
 **fail-closed capability, configuration, metering, and rate-limit foundation**
-the later children (AID-3…AID-8) build the diagnostics product on — the
-deployed-knowledge bundle, typed structured page context, SELECT-only tool
-substrate, tool packs, and UI all arrive in those children. AID-2 shares nothing
+that AID-3…AID-8 built the diagnostics product on — the deployed-knowledge
+bundle, typed structured page context, SELECT-only tool substrate, tool packs,
+and UI arrived in those children. AID-2 shares nothing
 with the page-help assistant at the credential, budget, or metering layer
 (ADR-001). All money is NZD integer cents.
 
@@ -253,7 +253,7 @@ trips early:
 | `claude-haiku-4-5` | $1.00 / $5.00 / $1.25 / $0.10 | 180 / 900 / 225 / 18 |
 
 An **unknown** model is priced at the highest known row (fail-expensive), so a
-model swap by a later child never silently under-counts. `estimateDiagnosticsCostCents`
+future model swap can never silently under-count. `estimateDiagnosticsCostCents`
 `Math.ceil`s the summed per-token cost and bills at least 1 cent whenever any
 usage is present (0 only for a token-free error). **UPDATE THIS TABLE** whenever
 Anthropic changes prices or the FX drifts materially.
@@ -391,7 +391,7 @@ The money-safety invariant — that no burst of concurrent reservers can push
 
 ## Delivered capability: the SELECT-only tool substrate (AID-5, #2374)
 
-AID-5 builds the **typed, server-owned, read-only tool substrate** and the
+AID-5 delivered the **typed, server-owned, read-only tool substrate** and the
 dedicated least-privilege database identity it reads through. Full reference:
 [`tools.md`](tools.md). Operator setup: [`deployment.md`](deployment.md).
 
@@ -402,8 +402,9 @@ chooses an entry by id and supplies arguments a `.strict()` schema has already
 accepted; those become positional parameters and nothing else.
 
 - **A separate database identity, verified not assumed.** Reads run as
-  `AI_DIAGNOSTICS_DATABASE_URL` — a non-superuser role with an empty `SELECT`
-  allowlist today — inside `BEGIN READ ONLY` under a statement timeout. The
+  `AI_DIAGNOSTICS_DATABASE_URL` — a non-superuser role whose narrow, declared
+  `SELECT` allowlist is contract-checked against the shipped registry's relation
+  and column reads — inside `BEGIN READ ONLY` under a statement timeout. The
   application asks the **server** what privileges the role holds and refuses every
   tool call unless superuser, `CREATEDB`, `CREATEROLE`, `REPLICATION`, `BYPASSRLS`,
   database `TEMPORARY`/`CREATE`, schema `CREATE`, `pg_read_file` execute, any write or
@@ -429,10 +430,12 @@ accepted; those become positional parameters and nothing else.
   id, areas checked, auth outcome, failure reason, non-reversible hashes of the
   accepted arguments and of the result, and row/byte/timing counts — never raw
   arguments or raw results.
-- **No domain tool.** The single registered entry reads no relation: it is a
-  readiness probe that reports whether the transaction is read-only and what
-  timeout is in force. AID-6A/B/C (#2375–#2377) add the tool packs, each with its
-  own permission review and its own table grant.
+- **Server-owned domain tools.** The original readiness probe reports whether the
+  transaction is read-only and what timeout is in force. The shipped AID-6A/B/C
+  packs (#2375–#2377) add bounded support, booking, membership, finance, and Xero
+  evidence. Every entry carries its own permission requirement; each
+  `select_only_sql` entry also declares its relation and column grants, while the
+  closed `server_owned` seam is bounded separately.
 - **Readiness now verifies the role.** `GET /api/admin/ai-diagnostics/readiness`
   reports a `databaseState` of `not_configured`, `misconfigured`, `unverified`,
   `over_privileged`, `under_provisioned`, or `verified`, and anything but
@@ -773,5 +776,5 @@ why the module is not ready and set it up.
   SQL into `invokeDiagnosticsTool`, and do not relax the privilege self-check in
   `database.ts` into a configuration-only check; ADR-007 requires the server to be
   asked.
-- When a child ships a subsystem document from the plan above, replace its
-  `code-font` placeholder with a real link in the same PR.
+- When a subsystem document moves or is superseded, keep the documentation table
+  above linked to the current page in the same PR.

@@ -1,20 +1,14 @@
 import { loadBookingAppliedCredit } from "@/lib/booking-confirmation-credit";
 import logger from "@/lib/logger";
 import {
-  bookingBumpedTemplate,
-  bookingCancelledTemplate,
-  bookingConfirmedTemplate,
-  bookingGuestsCancelledTemplate,
-  bookingModifiedTemplate,
-  bookingPendingTemplate,
+  bookingBumpedTemplate, bookingCancelledTemplate, bookingConfirmedTemplate,
+  bookingGuestsCancelledTemplate, bookingModifiedTemplate, bookingPendingTemplate,
   setupIntentFailedTemplate,
   splitGuestPortionCancelledTemplate,
 } from "@/lib/email-templates/booking";
 import {
-  bookingPolicyExceptionApprovedTemplate,
-  bookingPolicyExceptionRefusedTemplate,
-  bookingReviewApprovedTemplate,
-  bookingReviewRejectedTemplate,
+  bookingPolicyExceptionApprovedTemplate, bookingPolicyExceptionRefusedTemplate,
+  bookingReviewApprovedTemplate, bookingReviewRejectedTemplate,
   hostingCoverageLostTemplate,
   policyExceptionRequestExpiredTemplate,
 } from "@/lib/email-templates/booking-exceptions";

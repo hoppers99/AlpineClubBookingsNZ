@@ -6,104 +6,40 @@
  * then prints a markdown summary. Uses `git ls-files` and `fs` only — no
  * external services, no network, no production build.
  *
- * Tracked budgets (from docs/MAINTENANCE.md):
- *   - route handlers <= 250 LOC
- *   - App Router page shells <= 500 LOC
- *   - new domain modules <= 700 LOC
- *   - pre-existing accepted hotspots are allow-listed inline below
+ * Budgets, classification and the committed baseline all come from
+ * `scripts/lib/file-size-budget.ts`, which is the same module the blocking gate
+ * uses. That is deliberate: this report and `npm run quality:budget` must never
+ * be able to disagree about which files are over budget (#2687).
  *
- * Exit status is always 0 today: this is a warn-and-inform report, not a
- * hard gate.
+ * Exit status is always 0: this is the warn-and-inform half. The half that
+ * fails CI is `scripts/ci/check-file-size-budget.ts`.
  */
-import { execSync } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import {
+  BASELINE_PATH,
+  CHECK_COMMAND,
+  PRODUCTION_LIMIT,
+  ROUTE_HANDLER_LIMIT,
+  ROUTE_PAGE_LIMIT,
+  budgetForFile,
+  evaluateRatchet,
+  isProductionFile,
+  isRatchetExcludedTestFile,
+  isRouteHandler,
+  isRoutePage,
+  countLines,
+  scanRepository,
+  type FileStat,
+  type OversizedFileStat,
+  type RatchetFinding,
+} from "./lib/file-size-budget";
+
 const ROOT = process.cwd();
 
-export const PRODUCTION_LIMIT = 700;
-const ROUTE_HANDLER_LIMIT = 250;
-const ROUTE_PAGE_LIMIT = 500;
-
 const TOP_N = 10;
-
-export const KNOWN_OVERSIZED_PRODUCTION_FILES = new Set<string>([
-  "src/lib/xero-inbound-reconciliation.ts",
-  "src/lib/xero-booking-repair.ts",
-  "src/lib/xero-operation-outbox.ts",
-  "src/lib/email.ts",
-  "src/lib/xero-hardening.ts",
-  "src/lib/finance-sync-xero-datasets.ts",
-  "src/app/(admin)/admin/members/[id]/page.tsx",
-  "src/app/(admin)/admin/family-groups/page.tsx",
-]);
-
-function listGitFiles(): string[] {
-  const out = execSync("git ls-files", { encoding: "utf8", cwd: ROOT });
-  return out.split("\n").filter(Boolean);
-}
-
-function isProductionFile(file: string): boolean {
-  if (!file.startsWith("src/")) return false;
-  if (!/\.(ts|tsx)$/.test(file)) return false;
-  if (file.includes("/__tests__/")) return false;
-  if (file.endsWith(".test.ts") || file.endsWith(".test.tsx")) return false;
-  if (file.endsWith(".spec.ts") || file.endsWith(".spec.tsx")) return false;
-  return true;
-}
-
-function isTestFile(file: string): boolean {
-  if (!file.startsWith("src/")) return false;
-  if (!/\.(ts|tsx)$/.test(file)) return false;
-  return (
-    file.includes("/__tests__/") ||
-    file.endsWith(".test.ts") ||
-    file.endsWith(".test.tsx") ||
-    file.endsWith(".spec.ts") ||
-    file.endsWith(".spec.tsx")
-  );
-}
-
-function isRouteHandler(file: string): boolean {
-  return /^src\/app\/.*\/route\.(ts|tsx)$/.test(file);
-}
-
-function isRoutePage(file: string): boolean {
-  return /^src\/app\/.*\/page\.tsx$/.test(file);
-}
-
-export type FileStat = { file: string; lines: number };
-export type BudgetCategory = "domain module" | "route handler" | "route page shell";
-export type Budget = {
-  category: BudgetCategory;
-  limit: number;
-};
-export type OversizedFileStat = FileStat & Budget & { overBy: number };
-
-function countLines(file: string): number {
-  try {
-    const buf = readFileSync(path.join(ROOT, file), "utf8");
-    if (buf.length === 0) return 0;
-    let count = 1;
-    for (let i = 0; i < buf.length; i += 1) {
-      if (buf.charCodeAt(i) === 10) count += 1;
-    }
-    if (buf.endsWith("\n")) count -= 1;
-    return count;
-  } catch {
-    return 0;
-  }
-}
-
-function safeExists(file: string): boolean {
-  try {
-    statSync(path.join(ROOT, file));
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 function topBy<T>(items: T[], score: (item: T) => number, n: number): T[] {
   return [...items].sort((a, b) => score(b) - score(a)).slice(0, n);
@@ -142,7 +78,12 @@ function scanSuppressions(file: string): {
     const line = lines[i];
     for (const { kind, pattern } of ANY_PATTERNS) {
       if (pattern.test(line)) {
-        any.push({ file, line: i + 1, snippet: line.trim().slice(0, 160), kind });
+        any.push({
+          file,
+          line: i + 1,
+          snippet: line.trim().slice(0, 160),
+          kind,
+        });
       }
     }
     if (/eslint-disable\b/.test(line)) {
@@ -208,39 +149,6 @@ function renderBudgetedProductionTable(stats: FileStat[]): string {
   ].join("\n");
 }
 
-function budgetForFile(file: string): Budget {
-  if (isRouteHandler(file)) {
-    return { category: "route handler", limit: ROUTE_HANDLER_LIMIT };
-  }
-  if (isRoutePage(file)) {
-    return { category: "route page shell", limit: ROUTE_PAGE_LIMIT };
-  }
-  return { category: "domain module", limit: PRODUCTION_LIMIT };
-}
-
-export function findOversizedProductionFiles(stats: FileStat[]): OversizedFileStat[] {
-  return stats
-    .map((stat) => {
-      const budget = budgetForFile(stat.file);
-      return {
-        ...stat,
-        ...budget,
-        overBy: stat.lines - budget.limit,
-      };
-    })
-    .filter((stat) => stat.overBy > 0)
-    .sort((a, b) => b.overBy - a.overBy || b.lines - a.lines);
-}
-
-export function findNewlyOversizedFiles(
-  stats: FileStat[],
-  allowList: ReadonlySet<string> = KNOWN_OVERSIZED_PRODUCTION_FILES,
-): OversizedFileStat[] {
-  return findOversizedProductionFiles(stats).filter(
-    (stat) => !allowList.has(stat.file),
-  );
-}
-
 function renderOversizedTable(stats: OversizedFileStat[]): string {
   return renderTable(
     stats.map((s) => [
@@ -254,15 +162,38 @@ function renderOversizedTable(stats: OversizedFileStat[]): string {
   );
 }
 
-export function main() {
-  const files = listGitFiles().filter(safeExists);
+function renderRatchetTable(findings: readonly RatchetFinding[]): string {
+  return renderTable(
+    findings.map((finding) => [
+      finding.file ?? BASELINE_PATH,
+      finding.severity,
+      finding.budget ?? "-",
+      finding.baseline ?? "-",
+      finding.current ?? "-",
+      finding.problem,
+    ]),
+    ["File", "Severity", "Budget", "Baseline", "Current", "Problem"],
+  );
+}
 
-  const productionStats: FileStat[] = files
-    .filter(isProductionFile)
-    .map((file) => ({ file, lines: countLines(file) }));
+function readBaseline(): string | null {
+  try {
+    return readFileSync(path.join(ROOT, BASELINE_PATH), "utf8").replace(
+      /\r\n/g,
+      "\n",
+    );
+  } catch {
+    return null;
+  }
+}
+
+export function main() {
+  const scan = scanRepository(ROOT);
+  const files = scan.trackedFiles;
+  const productionStats = scan.productionStats;
   const testStats: FileStat[] = files
-    .filter(isTestFile)
-    .map((file) => ({ file, lines: countLines(file) }));
+    .filter(isRatchetExcludedTestFile)
+    .map((file) => ({ file, lines: countLines(ROOT, file) }));
   const routeHandlerStats: FileStat[] = productionStats.filter((s) =>
     isRouteHandler(s.file),
   );
@@ -275,7 +206,7 @@ export function main() {
   let testAnyCount = 0;
 
   for (const file of files) {
-    if (!isProductionFile(file) && !isTestFile(file)) continue;
+    if (!isProductionFile(file) && !isRatchetExcludedTestFile(file)) continue;
     const { any, eslintDisable } = scanSuppressions(file);
     if (isProductionFile(file)) {
       allAny.push(...any);
@@ -288,7 +219,10 @@ export function main() {
   const totalProdLoc = productionStats.reduce((sum, s) => sum + s.lines, 0);
   const totalTestLoc = testStats.reduce((sum, s) => sum + s.lines, 0);
   const overBudgetModules = productionStats.filter(
-    (s) => s.lines > PRODUCTION_LIMIT && !isRouteHandler(s.file) && !isRoutePage(s.file),
+    (s) =>
+      s.lines > PRODUCTION_LIMIT &&
+      !isRouteHandler(s.file) &&
+      !isRoutePage(s.file),
   );
   const overBudgetHandlers = routeHandlerStats.filter(
     (s) => s.lines > ROUTE_HANDLER_LIMIT,
@@ -296,7 +230,14 @@ export function main() {
   const overBudgetPages = routePageStats.filter(
     (s) => s.lines > ROUTE_PAGE_LIMIT,
   );
-  const newlyOversized = findNewlyOversizedFiles(productionStats);
+  const ratchet = evaluateRatchet(
+    productionStats,
+    readBaseline(),
+    scan.unclassified,
+  );
+  const regressions = ratchet.findings.filter(
+    (finding) => finding.severity === "regression",
+  );
 
   const lines: string[] = [];
   lines.push("# Quality report");
@@ -312,36 +253,72 @@ export function main() {
       [
         ["Production files (src/)", String(productionStats.length)],
         ["Production LOC (src/)", String(totalProdLoc)],
-        ["Test files (src/)", String(testStats.length)],
-        ["Test LOC (src/)", String(totalTestLoc)],
+        ["Test files (src/ and scripts/)", String(testStats.length)],
+        ["Test LOC (src/ and scripts/)", String(totalTestLoc)],
         ["Route handlers", String(routeHandlerStats.length)],
         ["App Router pages", String(routePageStats.length)],
         ["Production `any` / type suppressions", String(allAny.length)],
         ["Production `eslint-disable` lines", String(allEslintDisable.length)],
         ["Test `as any` occurrences", String(testAnyCount)],
-        [`Modules over ${PRODUCTION_LIMIT} LOC budget`, String(overBudgetModules.length)],
-        [`Route handlers over ${ROUTE_HANDLER_LIMIT} LOC budget`, String(overBudgetHandlers.length)],
-        [`Pages over ${ROUTE_PAGE_LIMIT} LOC budget`, String(overBudgetPages.length)],
-        ["Newly oversized files", String(newlyOversized.length)],
+        [
+          `Modules over ${PRODUCTION_LIMIT} LOC budget`,
+          String(overBudgetModules.length),
+        ],
+        [
+          `Route handlers over ${ROUTE_HANDLER_LIMIT} LOC budget`,
+          String(overBudgetHandlers.length),
+        ],
+        [
+          `Pages over ${ROUTE_PAGE_LIMIT} LOC budget`,
+          String(overBudgetPages.length),
+        ],
+        ["Files over budget (all categories)", String(ratchet.oversizedFiles)],
+        [
+          "Accepted size debt (LOC over budget)",
+          String(ratchet.currentOverage),
+        ],
+        ["Ratchet findings", String(ratchet.findings.length)],
+        ["…of which regressions", String(regressions.length)],
       ],
       ["Metric", "Value"],
     ),
   );
   lines.push("");
 
-  lines.push("## Newly oversized files");
+  lines.push("## File-size budget ratchet");
   lines.push("");
   lines.push(
-    "_Oversized production files not in the accepted-hotspot allow-list. Advisory only; this report never fails CI._",
+    `_Compared against the committed baseline \`${BASELINE_PATH}\`. This report never fails; ` +
+      `\`${CHECK_COMMAND}\` runs the same comparison and does._`,
   );
   lines.push("");
-  lines.push(renderOversizedTable(newlyOversized));
+  lines.push(renderRatchetTable(ratchet.findings));
   lines.push("");
 
   lines.push("## Largest production files");
   lines.push("");
   lines.push(
-    renderBudgetedProductionTable(topBy(productionStats, (s) => s.lines, TOP_N)),
+    renderBudgetedProductionTable(
+      topBy(productionStats, (s) => s.lines, TOP_N),
+    ),
+  );
+  lines.push("");
+
+  lines.push("## Largest oversized files");
+  lines.push("");
+  lines.push(
+    renderOversizedTable(
+      topBy(
+        productionStats
+          .map((stat) => {
+            const budget = budgetForFile(stat.file);
+            return { ...stat, ...budget, overBy: stat.lines - budget.limit };
+          })
+          .filter((stat) => stat.overBy > 0),
+        (s) => s.overBy,
+        TOP_N,
+      ),
+    ),
   );
   lines.push("");
 
@@ -371,7 +348,10 @@ export function main() {
   lines.push("");
   lines.push(
     renderTable(
-      topBy(testStats, (s) => s.lines, TOP_N).map((s) => [s.file, String(s.lines)]),
+      topBy(testStats, (s) => s.lines, TOP_N).map((s) => [
+        s.file,
+        String(s.lines),
+      ]),
       ["File", "LOC"],
     ),
   );
@@ -414,7 +394,7 @@ export function main() {
   lines.push("## Notes");
   lines.push("");
   lines.push(
-    "- Budgets are advisory at this stage. Treat them as review prompts, not CI gates.",
+    "- The documented budgets are the long-term target. What CI enforces is the ratchet: a file not in the baseline may not go over budget, and a file in it may not exceed its recorded ceiling.",
   );
   lines.push(
     "- New production code should not add `any` or `eslint-disable` without a local justification comment.",
@@ -423,7 +403,7 @@ export function main() {
     "- For oversized files, prefer extracting cohesive helpers into `src/lib` modules before adding new functionality.",
   );
   lines.push(
-    "- The newly oversized section excludes only the documented accepted hotspots in `docs/MAINTENANCE.md`.",
+    `- Shrinking an oversized file lowers its ceiling: regenerate with \`npm run quality:budget:update\` so the lower number is what the next change is measured against.`,
   );
 
   process.stdout.write(lines.join("\n") + "\n");

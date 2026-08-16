@@ -106,7 +106,7 @@ jobs:
       # gate on findings so the alerts still publish.
       - name: Upload Semgrep SARIF to code scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@v4.37.4
+        uses: github/codeql-action/upload-sarif@v4.37.6
         with:
           sarif_file: ${{ runner.temp }}/semgrep-output/semgrep-results.sarif
           category: semgrep
@@ -365,6 +365,18 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      # #2687: the file-size budgets in docs/MAINTENANCE.md, enforced as a
+      # regression ratchet against the committed baseline in
+      # `scripts/quality/file-size-baseline.txt`. Current debt may stay; new
+      # debt and debt growth may not appear silently. `git ls-files` plus the
+      # working tree and nothing else — no network, no database, no build — and
+      # it runs in well under a second, so it sits here rather than behind the
+      # slower gates. It exits non-zero on a missing, stale or malformed
+      # baseline as well as on a regression: a gate that cannot trust its own
+      # input must say so instead of reporting a pass it has not earned.
+      - name: File-size budget ratchet
+        run: npm run quality:budget
 
       - name: Generate Prisma client
         run: npm run db:generate

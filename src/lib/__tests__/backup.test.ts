@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "child_process";
+import path from "node:path";
 import {
   existsSync,
   mkdirSync,
@@ -51,6 +52,9 @@ import {
   type ResolvedBackupConfig,
 } from "@/lib/backup-config";
 import logger from "@/lib/logger";
+
+const BACKUP_DIRECTORY_FRAGMENT =
+  path.join("/tmp", "tacbookings-backups") + path.sep;
 
 function makeConfig(
   overrides: Partial<ResolvedBackupConfig> = {},
@@ -317,7 +321,7 @@ describe("backup", () => {
     await expect(runDatabaseBackup()).resolves.toMatchObject({
       success: false,
       filename: expect.stringMatching(/^tacbookings-/),
-      filepath: expect.stringContaining("/tmp/tacbookings-backups/"),
+      filepath: expect.stringContaining(BACKUP_DIRECTORY_FRAGMENT),
       sizeBytes: 1024,
       error: expect.stringContaining("S3 upload/readback failed: AccessDenied"),
     });
@@ -334,7 +338,7 @@ describe("backup", () => {
       [
         "s3",
         "cp",
-        expect.stringContaining("/tmp/tacbookings-backups/"),
+        expect.stringContaining(BACKUP_DIRECTORY_FRAGMENT),
         expect.stringMatching(/s3:\/\/tacbookings-backups\/tacbookings_s3backup\/tacbookings-/),
         "--region",
         "ap-southeast-2",
@@ -458,7 +462,7 @@ describe("backup", () => {
       [
         "s3",
         "cp",
-        expect.stringContaining("/tmp/tacbookings-backups/"),
+        expect.stringContaining(BACKUP_DIRECTORY_FRAGMENT),
         expect.stringMatching(/s3:\/\/tacbookings-backups\/tacbookings_s3backup\/tacbookings-/),
         "--region",
         "ap-southeast-2",
@@ -514,7 +518,7 @@ describe("backup", () => {
     );
     expect(execFileSyncMock).toHaveBeenCalledWith(
       "gunzip",
-      ["-c", expect.stringContaining("/tmp/tacbookings-backups/")],
+      ["-c", expect.stringContaining(BACKUP_DIRECTORY_FRAGMENT)],
       expect.any(Object)
     );
   });

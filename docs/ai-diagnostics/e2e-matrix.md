@@ -21,8 +21,10 @@ because the tiers do not prove the same thing:
   provider**: a demo deployment has no diagnostics credential, so a real question is
   refused by a real gate, which is exactly the "told something true and actionable,
   not 'AI failed'" property #2378 asked to be proved.
-- **live browser + model — still needed** — properties that only a real model and a
-  real browser can close, listed as such rather than claimed.
+- **live browser + model — out-of-band deployment validation** — useful checks that
+  require a configured deployment and written test window, plus a real browser
+  and/or provider spend depending on the check; they are listed honestly rather
+  than claimed as CI evidence.
 
 This extends the repository-wide [`END_TO_END_TEST_MATRIX.md`](../END_TO_END_TEST_MATRIX.md).
 
@@ -46,26 +48,30 @@ This extends the repository-wide [`END_TO_END_TEST_MATRIX.md`](../END_TO_END_TES
 | 14 | **The deployment artifact refuses safely end to end.** Against the real route and seeded data with no provider credential, the module switch controls the tab and the endpoint together, a seeded booking row becomes the subject, the ticks start unticked and reset, and the refusal is the server's own copy — never "AI failed", never "reload". | `e2e/ai-diagnostics.spec.ts` | Playwright E2E |
 | 15 | **The answer render is inert under a strict CSP** (ADR-008): no auto-loaded images, arbitrary hyperlinks, or `data:` URIs, and an `img-src`/`connect-src` CSP blocks egress. | route/render unit coverage above | mocked-provider unit (see gap B) |
 
-## Gaps: what still needs a live browser + model pass
+## Out-of-band checks: useful, not release gates
 
 These are stated plainly rather than folded into a green cell. None is a code
-deficiency; each is a property that only a real model or a real browser can close,
-and none is exercised by the E2E suite because it deliberately never spends money.
+deficiency or an unfinished AID release gate: the owner approved AID-8's exact
+PR #2871 head with live-provider work excluded from its safe test scope. Each check
+can add deployment-specific confidence only with a real model or browser. None is
+exercised by the current E2E suite; the paid-provider checks additionally stay out
+of CI so it never spends money.
 
 - **Gap A — injection inertness against a real model.** The five channels are proven
   *neutralised at the boundary* (property 5) — the model receives folded, wrapped,
   label-defused text. Whether a live model, given that neutralised text, ever treats
   it as instruction is not asserted by any automated test here. A manual adversarial
-  pass against the real provider is the closing step, run out of band because it
-  spends budget.
+  pass against the real provider is useful out-of-band validation when an owner
+  authorises the spend and test window; it is not a release carry-forward.
 - **Gap B — CSP egress in a real browser.** ADR-008's inert render and the
-  `img-src`/`connect-src` CSP are asserted at the markup/route level. That the CSP
-  actually blocks a beacon *in a browser* — an injected image or `fetch` failing to
-  leave the admin's tab — needs a live browser check against a deployed instance.
+  `img-src`/`connect-src` CSP are asserted at the markup/route level. A deployment
+  can additionally validate browser enforcement by attempting an injected image or
+  `fetch` during an authorised test window; that operational check is not a release
+  carry-forward.
 - **Gap C — a real end-to-end answer.** Every E2E path stops at a gate refusal by
   design (no credential in the demo stack). A configured staging deployment with a
   dedicated key is where a real question, a real tool round, and a real cited answer
-  are exercised; that is a staging/owner step, not a CI gate.
+  can be exercised; that is optional staging validation, not a CI or release gate.
 
 ## Related links
 
