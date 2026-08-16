@@ -296,6 +296,10 @@ function resolveInternalSpecifier(
   return null;
 }
 
+// A test is "nearby" only when it names this module. Matching every test in the
+// sibling `__tests__` directory instead listed all 1,108 files of
+// `src/lib/__tests__/` under each node, which pushed a single ordinary `src/lib`
+// entry past two million characters and failed the cap for most of the repo.
 function nearbyTestsFor(relativePath: string, typeScriptPaths: string[]): Set<string> {
   const directory = path.posix.dirname(relativePath);
   const baseName = path.posix.basename(relativePath).replace(/\.(?:ts|tsx|mts|cts)$/, "");
@@ -303,14 +307,13 @@ function nearbyTestsFor(relativePath: string, typeScriptPaths: string[]): Set<st
     typeScriptPaths.filter((candidate) => {
       if (!isTestPath(candidate)) return false;
       const candidateDirectory = path.posix.dirname(candidate);
+      if (candidateDirectory !== directory && candidateDirectory !== `${directory}/__tests__`) {
+        return false;
+      }
       const candidateName = path.posix
         .basename(candidate)
         .replace(/\.(?:test|spec)\.(?:ts|tsx|mts|cts)$/, "");
-      return (
-        candidateName === baseName ||
-        candidateDirectory === directory ||
-        candidateDirectory === `${directory}/__tests__`
-      );
+      return candidateName === baseName;
     }),
   );
 }
@@ -662,8 +665,21 @@ export function generateAgentContext(options: AgentContextOptions): AgentContext
     OUTPUT_FILES.map((fileName) => [fileName, files[fileName].length]),
   ) as AgentContextResult["sectionChars"];
   if (manifest.combinedChars > maxChars) {
+    // Name the dominant section and the widest node so "narrow it" is
+    // actionable: a hub entrypoint can pull in hundreds of importers, and the
+    // caller cannot see which one without this breakdown.
+    const bySize = OUTPUT_FILES.map((fileName) => `${fileName} ${sectionChars[fileName]}`).join(", ");
+    const widest = [...selectedNodes.keys()]
+      .map((node) => ({
+        node,
+        fanOut: (graph.imports.get(node)?.size ?? 0) + (graph.importers.get(node)?.size ?? 0),
+      }))
+      .sort((left, right) => right.fanOut - left.fanOut || left.node.localeCompare(right.node))
+      .slice(0, 3)
+      .map(({ node, fanOut }) => `${node} (${fanOut})`)
+      .join(", ");
     throw new AgentContextError(
-      `Scoped context is ${manifest.combinedChars} characters, exceeding --max-chars ${maxChars} by ${manifest.combinedChars - maxChars}. Narrow --entry/--model, reduce --depth, or raise the explicit cap. No artifact was written.`,
+      `Scoped context is ${manifest.combinedChars} characters, exceeding --max-chars ${maxChars} by ${manifest.combinedChars - maxChars}. Sections: ${bySize}. ${selectedNodes.size} TypeScript node(s) selected at depth ${depth}; widest fan-out: ${widest || "none"}. Narrow --entry/--model, reduce --depth, or raise the explicit cap. No artifact was written.`,
     );
   }
   publishAtomically(outputRoot, outputDirectory, files);
@@ -678,16 +694,27 @@ export function generateAgentContext(options: AgentContextOptions): AgentContext
 
 type CliOptions = Omit<AgentContextOptions, "repoRoot" | "outputRoot">;
 
+const USAGE =
+  "Usage: npm run agent:context -- -- --base <ref> --entry <tracked-path> [--entry <tracked-path> ...] [--model <PrismaModel> ...] [--depth 1|2] [--max-chars 32000]";
+
+// PowerShell removes the first `--` before `npm` sees it, so npm then swallows
+// `--base`/`--entry` as its own config flags and the script receives bare
+// values. Documenting `-- --` fixes PowerShell, and tolerating the literal `--`
+// that a POSIX shell forwards keeps that one command correct in every shell.
 export function parseAgentContextArgs(args: string[]): CliOptions {
   const parsed: CliOptions = { base: "", entries: [], models: [] };
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
+    if (flag === "--") continue;
     if (flag === "--help") {
-      throw new AgentContextError(
-        "Usage: npm run agent:context -- --base <ref> --entry <tracked-path> [--entry <tracked-path> ...] [--model <PrismaModel> ...] [--depth 1|2] [--max-chars 32000]",
-      );
+      throw new AgentContextError(USAGE);
     }
     if (!["--base", "--entry", "--model", "--depth", "--max-chars"].includes(flag)) {
+      if (!flag.startsWith("-")) {
+        throw new AgentContextError(
+          `Unexpected bare value: ${flag}. The option flags did not reach this script — the shell or npm consumed them. ${USAGE}`,
+        );
+      }
       throw new AgentContextError(`Unknown argument: ${flag}`);
     }
     const value = args[index + 1];

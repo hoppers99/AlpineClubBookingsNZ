@@ -13,6 +13,7 @@ import path from "node:path";
 import {
   generateAgentContext,
   normalizeTrackedPath,
+  parseAgentContextArgs,
 } from "../agent-context";
 
 type Fixture = {
@@ -58,6 +59,7 @@ function createFixture(): Fixture {
     "src/__tests__/entry.test.ts",
     'import { entry } from "../entry";\nit("loads", () => expect(entry).toBe(3));\n',
   );
+  write("src/__tests__/unrelated.test.ts", 'it("unrelated", () => expect(1).toBe(1));\n');
   write("docs/note.md", "# Note\n");
   write(
     "prisma/schema.prisma",
@@ -181,6 +183,10 @@ describe("agent context generator", () => {
     expect(oneHop).toContain("`src/__tests__/entry.test.ts`");
     expect(oneHop).toContain("`react`");
     expect(oneHop).not.toContain("## `src/deep.ts`");
+    // #2903: "nearby" means the test names this module. Listing every sibling
+    // test instead put all 1,108 files of `src/lib/__tests__/` under each node
+    // and failed the cap for most real entrypoints.
+    expect(oneHop).not.toContain("unrelated.test.ts");
 
     const depthTwo = generateAgentContext({
       base: "HEAD",
@@ -304,5 +310,50 @@ describe("agent context generator", () => {
     });
     expect(existsSync(narrowed.outputDirectory)).toBe(true);
     expect(narrowed.combinedChars).toBeLessThan(measured.combinedChars);
+  });
+
+  // #2903: the documented command carries a doubled `--` so that one line works
+  // in PowerShell, which eats the first separator. A POSIX shell forwards the
+  // extra `--` to the script, so the parser must skip it rather than reject it.
+  it("parses the documented command in every shell and explains a stripped separator", () => {
+    const expected = {
+      base: "origin/main",
+      entries: ["src/entry.ts", "src/local.ts"],
+      models: ["Booking"],
+      depth: 2,
+      maxChars: 32_000,
+    };
+    const flags = [
+      "--base",
+      "origin/main",
+      "--entry",
+      "src/entry.ts",
+      "--entry",
+      "src/local.ts",
+      "--model",
+      "Booking",
+      "--depth",
+      "2",
+      "--max-chars",
+      "32000",
+    ];
+
+    // POSIX shell: npm forwards the second separator verbatim.
+    expect(parseAgentContextArgs(["--", ...flags])).toEqual(expected);
+    // PowerShell: the first separator is stripped, so the script sees flags only.
+    expect(parseAgentContextArgs(flags)).toEqual(expected);
+
+    // Single `--` under PowerShell: npm consumes the flags and only bare values
+    // survive. The error has to name that cause, not just the stray value.
+    expect(() =>
+      parseAgentContextArgs(["origin/main", "src/entry.ts"]),
+    ).toThrow(/Unexpected bare value: origin\/main\. .*shell or npm consumed them/);
+
+    expect(() => parseAgentContextArgs(["--entry", "src/entry.ts"])).toThrow(/--base is required/);
+    expect(() => parseAgentContextArgs(["--base", "origin/main"])).toThrow(/At least one --entry/);
+    expect(() => parseAgentContextArgs(["--base", "--entry", "src/entry.ts"])).toThrow(
+      /--base requires a value/,
+    );
+    expect(() => parseAgentContextArgs(["--nope", "x"])).toThrow(/Unknown argument: --nope/);
   });
 });
