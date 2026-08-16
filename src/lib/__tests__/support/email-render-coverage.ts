@@ -11,12 +11,12 @@
  * `src/lib/email/<family>.ts` is the repository's own message-family boundary,
  * and the split follows it — but NOT one-to-one. Fourteen modules mirror a
  * sender module directly; `communications` and `refunds` cover the two families
- * sent from a route or a lib module rather than a sender; and three more
- * (`booking-reminders`, `booking-exceptions`, `admin-xero-reports`) are
- * sub-modules of a family that would otherwise be
- * over the 700-line budget, `src/lib/email/booking.ts` alone accounting for
- * three of them. Twenty-one modules, fourteen families. Each sub-module's own
- * docblock names the family it belongs to.
+ * sent from a route or a lib module rather than a sender; and three more are
+ * sub-modules of families that would otherwise exceed the 700-line budget:
+ * `booking-reminders` and `booking-exceptions` split the booking family, while
+ * `admin-xero-reports` splits the finance/Xero alerts. Twenty-one modules,
+ * fourteen families. Each sub-module's own docblock names the family it belongs
+ * to.
  *
  * COVERAGE. `readEmailTemplateModuleExports()` reads the module DIRECTORY at
  * run time and imports whatever is in it. It is deliberately not a hand-written
