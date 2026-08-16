@@ -120,12 +120,15 @@ describe("occupancy calendar page integration", () => {
     fireEvent.click(await screen.findByRole("button", { name: /pick single/i }));
 
     expect(screen.getByLabelText("Date")).toHaveValue("2099-07-11");
-    // Multi-lodge phase 8: the roster URL now carries `?lodgeId=` when a lodge
-    // is selected, but this test has no `?lodgeId=` in the page location and
-    // no lodges loaded (stubFetch does not stub /api/admin/lodges), so the
-    // page's lodgeId state stays null and the query string is empty. The
-    // fetch call also carries an AbortSignal (pre-existing abort-on-date-change
-    // pattern, unrelated to lodge scoping).
+    // #2701: the roster URL always carries `?lodgeId=`, because the page now
+    // fetches nothing until a lodge is settled — `stubFetch` answers
+    // `/api/admin/lodges` with a single lodge, the selector adopts it
+    // (ADR-002), and every roster read is scoped to it. This comment used to
+    // say the opposite: that the lodge list was unstubbed and the query string
+    // empty. That stopped being true when the stub was added, and the
+    // assertion below already expected `?lodgeId=lodge-1`. The fetch also
+    // carries an AbortSignal (pre-existing abort-on-date-change pattern,
+    // unrelated to lodge scoping).
     await waitFor(() =>
       expect(global.fetch).toHaveBeenCalledWith(
         "/api/admin/roster/2099-07-11?lodgeId=lodge-1",
