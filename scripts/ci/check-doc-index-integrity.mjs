@@ -392,6 +392,14 @@ function stripOpeningContainers(line, { interruptingParagraph = false } = {}) {
       continue;
     }
 
+    // CommonMark gives a thematic break precedence over the list marker that
+    // its first `-` or `*` could otherwise resemble.  Do this after stripping
+    // any blockquote prefix, but before consuming a list marker, so spaced
+    // forms such as `- - -` retain the same precedence inside a quote too.
+    if (THEMATIC_BREAK_PATTERN.test(text)) {
+      return { containers, text };
+    }
+
     const list = listPrefix(text);
     if (list) {
       const itemText = text.slice(list.consumedLength);
@@ -404,6 +412,7 @@ function stripOpeningContainers(line, { interruptingParagraph = false } = {}) {
         return { containers, text };
       }
       containers.push({
+        ordered: list.orderedDigits !== undefined,
         type: "list",
         width: list.width,
       });
@@ -493,7 +502,9 @@ function sameContainers(left, right) {
     left.every(
       (container, index) =>
         container.type === right[index].type &&
-        (container.type !== "list" || container.width === right[index].width),
+        (container.type !== "list" ||
+          (container.width === right[index].width &&
+            container.ordered === right[index].ordered)),
     )
   );
 }
@@ -514,9 +525,21 @@ function structuralLine(line, paragraph, retainedContainers = null) {
       };
     }
   }
-  const fresh = stripOpeningContainers(line, {
+  let fresh = stripOpeningContainers(line, {
     interruptingParagraph: paragraph !== null,
   });
+
+  // A top-level ordered marker greater than one cannot interrupt an unrelated
+  // paragraph, but it can be the next sibling of an already-open ordered list.
+  // The same retry admits an empty sibling marker in either list kind.  Accept
+  // it only when the fresh container stack exactly matches the active stack;
+  // this does not turn `2.` into an interrupting nested or unrelated list.
+  if (paragraph?.containers.length > 0 && fresh.containers.length === 0) {
+    const sibling = stripOpeningContainers(line);
+    if (sameContainers(sibling.containers, paragraph.containers)) {
+      fresh = sibling;
+    }
+  }
   return {
     ...fresh,
     lazyContinuation:
@@ -610,6 +633,7 @@ function scanMarkdownBlocks(text) {
       );
       const continuesParagraph =
         paragraph !== null &&
+        !outside.opensContainer &&
         (sameContainers(outside.containers, paragraph.containers) ||
           outside.lazyContinuation);
 
@@ -970,7 +994,9 @@ export function auditInvariantIds(files) {
   const livePrefixNumericPattern =
     declaredPrefixes.size > 0
       ? new RegExp(
-          `\\bINV-(?:${[...declaredPrefixes].sort().join("|")})-[0-9]+\\b(?!-[A-Za-z0-9_])`,
+          `\\bINV-(?:${[...declaredPrefixes].sort().join("|")})-[0-9]+\\b(?!\\.[0-9]|-[A-Za-z0-9_])`,
+          // A dotted numeric continuation is owned by the identifier audit
+          // below; do not also truncate it to a plausible unresolved ID.
           "g",
         )
       : null;
@@ -1067,7 +1093,7 @@ export function auditInvariantIds(files) {
   const livePrefixIdentifierContinuationPattern =
     prefixAlternation.length > 0
       ? new RegExp(
-          `\\bINV-(?:${prefixAlternation})-([0-9]+)((?:[A-Za-z_]|-[A-Za-z0-9_])[A-Za-z0-9_-]*)\\b`,
+          `\\bINV-(?:${prefixAlternation})-([0-9]+)((?:[A-Za-z_]|-[A-Za-z0-9_]|\\.(?=[0-9]))[A-Za-z0-9_.-]*)(?=$|[^A-Za-z0-9_.-])`,
           "g",
         )
       : null;
@@ -1667,16 +1693,69 @@ export function resolveInvariantBaselineRef(repoRoot, env = process.env) {
   const head = tryResolveCommit(repoRoot, "HEAD");
   if (!head) throw new Error("HEAD does not resolve to a commit");
 
+  const eventName = env.GITHUB_EVENT_NAME?.trim();
   const prBase = env.PR_BASE_SHA?.trim();
   const pushBase = env.PUSH_BASE_SHA?.trim();
+
+  // The webhook kind is the event identity. A pull-request `synchronize`
+  // payload also has a top-level `before` field, so the workflow's immutable
+  // PUSH_BASE_SHA mapping is populated even though that SHA is the previous PR
+  // head, not a push baseline. Never infer a second event from an unrelated
+  // payload field when GitHub has already named the event.
+  if (eventName === "pull_request") {
+    if (explicit) {
+      throw new Error(
+        "DOC_INDEX_BASE_REF cannot be set for a pull-request event; PR_BASE_SHA is " +
+          "authoritative and an inherited diagnostic override must not replace it",
+      );
+    }
+    if (!prBase) {
+      throw new Error(
+        "PR_BASE_SHA is required for a pull-request invariant baseline; a branch name " +
+          "can drift after the event and is not an exact substitute",
+      );
+    }
+    return resolveRequiredCommit(repoRoot, prBase, "PR_BASE_SHA");
+  }
+
+  if (eventName === "push") {
+    const isMainRef =
+      env.GITHUB_REF === "refs/heads/main" || env.GITHUB_REF_NAME === "main";
+    if (!isMainRef) {
+      throw new Error(
+        "Invariant push baselines are supported only for pushes to main; refusing " +
+          "to interpret PUSH_BASE_SHA for a different ref",
+      );
+    }
+    if (explicit) {
+      throw new Error(
+        "DOC_INDEX_BASE_REF cannot be set for a main-push event; PUSH_BASE_SHA is " +
+          "authoritative and an inherited diagnostic override must not replace it",
+      );
+    }
+    if (!pushBase) {
+      throw new Error(
+        "PUSH_BASE_SHA is required for a main-push invariant baseline; HEAD^1 can " +
+          "postdate a deletion when one push contains several commits",
+      );
+    }
+    return resolveRequiredCommit(repoRoot, pushBase, "PUSH_BASE_SHA");
+  }
+
+  if (eventName) {
+    throw new Error(
+      `Unsupported GitHub event ${eventName}; refusing to infer an invariant ` +
+        "baseline from environment fields that belong to another event shape",
+    );
+  }
+
   const isPullRequest =
-    env.GITHUB_EVENT_NAME === "pull_request" ||
     Boolean(env.GITHUB_BASE_REF?.trim()) ||
     Boolean(prBase);
   const isMainPush =
     Boolean(pushBase) ||
-    (env.GITHUB_EVENT_NAME === "push" &&
-      (env.GITHUB_REF === "refs/heads/main" || env.GITHUB_REF_NAME === "main"));
+    env.GITHUB_REF === "refs/heads/main" ||
+    env.GITHUB_REF_NAME === "main";
 
   if (isPullRequest && isMainPush) {
     throw new Error(

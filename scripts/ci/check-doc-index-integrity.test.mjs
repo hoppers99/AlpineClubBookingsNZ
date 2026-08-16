@@ -653,6 +653,26 @@ describe("auditDocs — the whole check", () => {
     expect(auditDocs(files)).toEqual([]);
   });
 
+  it.each(["- - -", "* * *"])(
+    "gives the spaced thematic break %s precedence over a list marker",
+    (thematicBreak) => {
+      const source = `${thematicBreak}\n      ## INV-MONEY-001 — literal example\n`;
+
+      expect(fencedLines(source)).toEqual([
+        { number: 2, text: "      ## INV-MONEY-001 — literal example" },
+        { number: 3, text: "" },
+      ]);
+      expect(scannableLines(source).map((line) => line.text)).toEqual([thematicBreak]);
+
+      const files = repo();
+      files.set(
+        "docs/invariants/money.md",
+        `${files.get("docs/invariants/money.md")}\n${source}`,
+      );
+      expect(auditDocs(files)).toEqual([]);
+    },
+  );
+
   it("does not treat an indented lazy blockquote paragraph continuation as code", () => {
     const files = repo();
     files.set(
@@ -740,6 +760,49 @@ describe("auditDocs — the whole check", () => {
 
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("canonical top-level");
+  });
+
+  it.each([
+    ["bullet", "- cites INV-MONEY-001 in ordinary prose\n- ordinary heading\n  ---"],
+    ["ordered", "1. cites INV-MONEY-001 in ordinary prose\n2. ordinary heading\n   ---"],
+  ])(
+    "does not merge a same-width %s sibling Setext heading with the prior item's citation",
+    (_kind, fixture) => {
+      const files = repo({
+        "docs/invariants/money.md": [
+          "# Money",
+          "",
+          "## INV-MONEY-001",
+          "",
+          fixture,
+          "",
+        ].join("\n"),
+      });
+
+      expect(auditDocs(files)).toEqual([]);
+    },
+  );
+
+  it.each([
+    ["bullet", "- first item\n-\n      INV-DEMO-999"],
+    ["ordered", "1. first item\n2.\n       INV-DEMO-999"],
+  ])(
+    "retains list-owned indented code after a fresh same-width %s sibling",
+    (_kind, fixture) => {
+      const files = repo();
+      files.set(
+        "docs/invariants/money.md",
+        `${files.get("docs/invariants/money.md")}\n${fixture}\n`,
+      );
+
+      expect(auditDocs(files)).toEqual([]);
+    },
+  );
+
+  it("allows a normal full stop immediately after a valid invariant citation", () => {
+    expect(
+      auditDocs(repo({ "src/lib/money.ts": "// See INV-MONEY-001. Then continue.\n" })),
+    ).toEqual([]);
   });
 
   it("does not let an ordered list starting above one interrupt a paragraph", () => {
@@ -945,7 +1008,12 @@ describe("auditInvariantIds", () => {
     ).toEqual([]);
   });
 
-  it.each(["INV-MONEY-001a", "INV-MONEY-001_extra", "INV-MONEY-001-extra"])(
+  it.each([
+    "INV-MONEY-001a",
+    "INV-MONEY-001_extra",
+    "INV-MONEY-001-extra",
+    "INV-MONEY-001.1",
+  ])(
     "rejects identifier continuation %s in ordinary source",
     (malformed) => {
       const problems = auditDocs(
@@ -962,7 +1030,11 @@ describe("auditInvariantIds", () => {
     ["backtick opener", "```lang INV-MONEY-999a\nbody\n```", "INV-MONEY-999a", 3],
     ["tilde opener", "~~~lang INV-MONEY-999_extra\nbody\n~~~", "INV-MONEY-999_extra", 3],
     ["hyphenated opener", "```lang INV-MONEY-999-extra\nbody\n```", "INV-MONEY-999-extra", 3],
+    ["dotted opener", "```lang INV-MONEY-999.1\nbody\n```", "INV-MONEY-999.1", 3],
     ["fenced body", "```text\nINV-MONEY-999a\n```", "INV-MONEY-999a", 4],
+    ["dotted fenced body", "```text\nINV-MONEY-999.1\n```", "INV-MONEY-999.1", 4],
+    ["dotted raw-HTML body", "<pre>\nINV-MONEY-999.1\n</pre>", "INV-MONEY-999.1", 4],
+    ["dotted indented code", "    INV-MONEY-999.1", "INV-MONEY-999.1", 3],
   ])(
     "rejects identifier continuation in a %s",
     (_location, fixture, malformed, lineNumber) => {
@@ -1221,6 +1293,39 @@ describe("invariant baseline resolution and loading", () => {
     expect(resolved).not.toBe(movedMain);
   });
 
+  it("uses pull-request identity when synchronize also supplies webhook.before", () => {
+    const repoRoot = initGitRepo();
+    const base = commitFiles(repoRoot, "base", { "README.md": "base\n" });
+    const previousHead = commitFiles(repoRoot, "previous PR head", {
+      "feature.txt": "one\n",
+    });
+    commitFiles(repoRoot, "synchronized PR head", { "feature.txt": "two\n" });
+
+    expect(
+      resolveInvariantBaselineRef(
+        repoRoot,
+        checkerEnv({
+          GITHUB_BASE_REF: "main",
+          GITHUB_EVENT_NAME: "pull_request",
+          PR_BASE_SHA: base,
+          PUSH_BASE_SHA: previousHead,
+        }),
+      ),
+    ).toBe(base);
+  });
+
+  it("fails closed when event identity is absent and both exact SHA fields are set", () => {
+    const repoRoot = initGitRepo();
+    const base = commitFiles(repoRoot, "base", { "README.md": "base\n" });
+
+    expect(() =>
+      resolveInvariantBaselineRef(
+        repoRoot,
+        checkerEnv({ PR_BASE_SHA: base, PUSH_BASE_SHA: base }),
+      ),
+    ).toThrow("Conflicting pull-request and push baseline identity");
+  });
+
   it("fails closed when a pull-request event omits or names a missing base SHA", () => {
     const repoRoot = initGitRepo();
     commitFiles(repoRoot, "base", { "README.md": "# Repo\n" });
@@ -1373,6 +1478,46 @@ describe("invariant baseline resolution and loading", () => {
 });
 
 describe("doc-index CLI baseline wiring", () => {
+  it(
+    "passes a real pull-request synchronize shape whose webhook.before is populated",
+    () => {
+      const eventRoot = mkdtempSync(path.join(tmpdir(), "doc-index-event-"));
+      TEMP_ROOTS.add(eventRoot);
+      const eventPath = path.join(eventRoot, "event.json");
+      const event = {
+        action: "synchronize",
+        after: git(REPO_ROOT, "rev-parse", "HEAD"),
+        before: git(REPO_ROOT, "rev-parse", "HEAD^1"),
+        number: 2891,
+        pull_request: {
+          base: { ref: "main", sha: git(REPO_ROOT, "rev-parse", "origin/main") },
+          head: { sha: git(REPO_ROOT, "rev-parse", "HEAD") },
+        },
+      };
+      writeFileSync(eventPath, `${JSON.stringify(event)}\n`, "utf8");
+      const synchronize = JSON.parse(readFileSync(eventPath, "utf8"));
+
+      const result = spawnSync(process.execPath, [CHECKER_PATH], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        env: checkerEnv({
+          GITHUB_BASE_REF: synchronize.pull_request.base.ref,
+          GITHUB_EVENT_NAME: "pull_request",
+          GITHUB_EVENT_PATH: eventPath,
+          PR_BASE_SHA: synchronize.pull_request.base.sha,
+          // This is exactly what the workflow's github.event.before mapping
+          // receives for a synchronize payload. It is a previous PR head, not
+          // evidence that this is also a push event.
+          PUSH_BASE_SHA: synchronize.before,
+        }),
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("every id present at base");
+    },
+    15_000,
+  );
+
   it("fails closed at the CLI when an event base SHA is missing", () => {
     const result = spawnSync(process.execPath, [CHECKER_PATH], {
       cwd: REPO_ROOT,

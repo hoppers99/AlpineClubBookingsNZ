@@ -596,7 +596,12 @@ owner action, not part of this checker.
 An explicit or event ref that is absent from the checkout fails the gate; it
 never drifts to the current branch tip or falls back to `HEAD^1`, which may be a
 feature commit made after an ID was deleted. Event identity is authoritative:
-an inherited `DOC_INDEX_BASE_REF` at process, workflow, job or step scope makes
+`GITHUB_EVENT_NAME` chooses the pull-request or main-push contract before any
+payload field is interpreted. In particular, a pull-request `synchronize`
+payload's top-level `before` value is the previous PR head, not evidence of a
+second push event; the pull request still uses only `PR_BASE_SHA`. With no event
+identity, conflicting PR and push SHA fields fail rather than being guessed. An
+inherited `DOC_INDEX_BASE_REF` at process, workflow, job or step scope makes
 an event run fail rather than overriding `PR_BASE_SHA` or `PUSH_BASE_SHA`. The
 diagnostic override is local-only. The workflow contract pins both immutable
 environment mappings and the exact unprefixed
@@ -638,8 +643,12 @@ a bullet or blockquote marker, retain at least four code-indentation columns.
 An empty list marker also establishes the default one-column padding used to
 classify its following indented code. A blank line retains an open list's
 container widths, so an indented continuation remains list-owned rather than
-being misclassified as top-level code. An unmarked thematic break ends the
-container paragraph; within the same marked container, a dash or equals
+being misclassified as top-level code. A fresh same-width bullet sibling, or
+the next numbered sibling after `1.`, starts a fresh list paragraph; the rule
+that `2.` cannot interrupt an unrelated paragraph still holds. An unmarked
+thematic break ends the container paragraph, and a spaced top-level `- - -` or
+`* * *` takes thematic-break precedence over the list marker its first
+character resembles. Within the same marked container, a dash or equals
 underline keeps Setext-heading precedence. A markerless equals underline stays
 lazy paragraph text rather than becoming a Setext heading.
 
@@ -661,11 +670,13 @@ headings are reserved for definitions: a legitimate narrative heading names the
 topic and puts any invariant citation in its body. This catches a lower-cased,
 backticked, wrongly levelled, wrongly padded, decorated, container-owned, Setext
 or identifier-suffixed heading (`INV-<PREFIX>-002a`,
-`INV-<PREFIX>-002_extra`, `INV-<PREFIX>-002-extra`) that would otherwise be
-invisible as a definition or pass merely because an embedded ID resolved as a
-citation. The same three identifier continuations are rejected in ordinary
-prose, source code, literal blocks and fence opener info strings rather than
-being truncated to the valid-looking numeric prefix.
+`INV-<PREFIX>-002_extra`, `INV-<PREFIX>-002-extra`, or the forbidden dotted
+sub-ID `INV-<PREFIX>-002.1`) that would otherwise be invisible as a definition
+or pass merely because an embedded ID resolved as a citation. The same four
+identifier continuations are rejected in ordinary prose, source code, literal
+blocks and fence opener info strings rather than being truncated to the
+valid-looking numeric prefix. A full stop used as punctuation remains legal;
+only a dot immediately followed by a digit is a dotted sub-ID.
 
 **Citation** — collected from every tracked `*.md`, `*.ts`, `*.tsx`, `*.mjs`,
 `*.js`, `*.jsx`, `*.cjs`, `*.prisma`, `*.sql`, `*.yml`, `*.yaml`, `*.json` and
@@ -688,8 +699,8 @@ new RegExp(`\\bINV-(?:${[...prefixes].join("|")})-[0-9]+\\b(?!-[A-Za-z0-9_])`, "
 Every match of it must have exactly three digits. Without this,
 `INV-CAP-1` and `INV-CAP-0011` slip past the strict citation regex and resolve
 to nothing while being reported as nothing. A separate identifier-continuation
-audit owns letter, underscore and hyphen suffixes, so the numeric matcher does
-not also report the numeric prefix of a hyphenated malformed ID. It is scoped to
+audit owns letter, underscore, hyphen and dotted-numeric suffixes, so the numeric
+matcher does not also report the numeric prefix of a malformed ID. It is scoped to
 declared prefixes rather than to `INV-[A-Za-z]…` generally, because a generic
 shape guard flags every Xero invoice fixture in the test suite (§1.2.1).
 
@@ -714,7 +725,8 @@ shape guard flags every Xero invoice fixture in the test suite (§1.2.1).
    misspelling of a real prefix — which a whitelist alone would silently ignore.
 6. Every ordinary (unfenced) shape-guard match has exactly three digits, and in
    either ordinary or literal source a declared-prefix ID has no letter,
-   underscore or hyphen identifier continuation after those digits.
+   underscore, hyphen or dotted-numeric identifier continuation after those
+   digits.
 7. Every file under `docs/invariants/` is linked from
    `docs/DOMAIN_INVARIANTS.md`, and every file linked from it exists.
 8. Every defined ID appears exactly once in the index. A valid GFM table row may
