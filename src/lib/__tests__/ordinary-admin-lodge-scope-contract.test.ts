@@ -51,8 +51,22 @@ describe("ordinary admin editors share one settled lodge-scope gate (#2701, #288
     expect(body).toContain('lodgeScope.kind === "all"')
   })
 
-  it.each(ALL_EDITORS)("%s sends no downstream request or action before scope settles", (file) => {
-    const clubWide = ALL_LODGES_EDITORS.includes(file as (typeof ALL_LODGES_EDITORS)[number])
+  /*
+    #2887: the two cases below are properties of the SHARED DERIVATION, and
+    their names now say so.
+
+    They used to be `it.each(ALL_EDITORS)` named "<file> sends no downstream
+    request…", which promised per-file proof they do not deliver: neither one
+    imports or renders an editor. They build a gate inline from
+    `deriveSettledLodgeOptionScope` and assert their own re-implementation, so
+    deleting a production guard leaves them green. (The second did not even
+    take the file parameter.) The behaviour IS covered, properly, against the
+    real components in `ordinary-admin-lodge-scope-behavior.test.tsx` — the
+    honesty fix is to stop claiming it twice, and to pin the link to that file
+    so a new editor cannot join the list with no behavioural coverage.
+  */
+  it("the shared scope gate opens for no unsettled state", () => {
+    const clubWide = false
     const request = vi.fn()
     const action = vi.fn()
     const tryDownstream = (state: {
@@ -76,16 +90,34 @@ describe("ordinary admin editors share one settled lodge-scope gate (#2701, #288
       { lodges: LODGES, selectedLodgeId: "lodge-2", loading: true, failed: false, forbidden: false },
       { lodges: LODGES, selectedLodgeId: "lodge-2", loading: false, failed: true, forbidden: false },
       { lodges: LODGES, selectedLodgeId: "lodge-2", loading: false, failed: false, forbidden: true },
-      { lodges: [], selectedLodgeId: clubWide ? "__all_lodges__" : "lodge-2", loading: false, failed: false, forbidden: false },
+      { lodges: [], selectedLodgeId: "lodge-2", loading: false, failed: false, forbidden: false },
     ]) {
       tryDownstream(state)
     }
 
     expect(request).not.toHaveBeenCalled()
     expect(action).not.toHaveBeenCalled()
+    void clubWide
   })
 
-  it.each(LODGE_EDITORS)("%s keeps a deep link inert, then uses that exact lodge after retry", () => {
+  it("every editor on this list has real behavioural coverage (#2887)", () => {
+    // The list above is a source-shape census; it cannot prove behaviour. This
+    // is the link that stops a new editor being added here — and so LOOKING
+    // covered — while nothing ever renders it. The negative and positive
+    // per-editor cases live in the behaviour suite.
+    const behaviour = source(
+      "src/lib/__tests__/ordinary-admin-lodge-scope-behavior.test.tsx",
+    )
+    for (const file of ALL_EDITORS) {
+      const specifier = `@/${file.replace(/^src\//, "").replace(/\.tsx?$/, "")}`
+      expect(
+        behaviour,
+        `${file} is on the scope-contract list but the behaviour suite never imports it`,
+      ).toContain(specifier)
+    }
+  })
+
+  it("the shared gate keeps a deep link inert, then uses that exact lodge after retry", () => {
     const request = vi.fn()
     const deepLinkLodgeId = "lodge-2"
     const tryRequest = (loading: boolean, failed: boolean) => {

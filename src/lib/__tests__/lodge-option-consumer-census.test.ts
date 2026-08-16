@@ -38,6 +38,20 @@ const EXPECTED_HOOK_CONSUMERS = [
   "src/components/admin/rooms-beds-manager.tsx",
 ] as const;
 
+/*
+  #2887: this used to match three hardcoded literal spellings
+  (`fetch("/api/admin/lodges"`, `fetch("/api/lodges"`, and one exact endpoint
+  constant), so the next consumer writing a template literal or adding a query
+  string was invisible to a census whose entire job is to be exhaustive.
+
+  Both patterns stay anchored to a CALL or a named endpoint, deliberately: a
+  bare search for the path also hits the permission matrix, the proxy route
+  table and prose, none of which fetch anything.
+*/
+const LODGE_LIST_FETCH = /fetch\(\s*[`'"][^`'"]*\/api\/(?:admin\/)?lodges/;
+const LODGE_LIST_ENDPOINT_CONST =
+  /(?:const|let|var)\s+\w*(?:ENDPOINT|URL|PATH)\w*\s*=\s*[`'"][^`'"]*\/api\/(?:admin\/)?lodges/i;
+
 function productionSources(root: string): string[] {
   const files: string[] = [];
   for (const entry of readdirSync(root, { withFileTypes: true })) {
@@ -66,11 +80,7 @@ describe("production lodge-option consumers stay in the fail-closed census (#288
       .filter((path) => {
         if (repoPath(path) === "src/components/lodge-select.tsx") return false;
         const body = readFileSync(path, "utf8");
-        return (
-          body.includes('fetch("/api/admin/lodges"') ||
-          body.includes('fetch("/api/lodges"') ||
-          body.includes('const LODGES_ENDPOINT = "/api/admin/lodges"')
-        );
+        return LODGE_LIST_FETCH.test(body) || LODGE_LIST_ENDPOINT_CONST.test(body);
       })
       .map(repoPath)
       .sort();
