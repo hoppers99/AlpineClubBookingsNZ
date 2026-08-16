@@ -4,6 +4,8 @@ import {
   parseOccupancyMonth,
 } from "@/lib/admin-occupancy";
 import { requireAdmin } from "@/lib/session-guards";
+import { prisma } from "@/lib/prisma";
+import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 
 /**
  * GET /api/admin/occupancy?month=YYYY-MM
@@ -19,6 +21,13 @@ export async function GET(req: NextRequest) {
   if (!parsedMonth.ok) {
     return NextResponse.json({ error: parsedMonth.error }, { status: 400 });
   }
+  const requestedLodgeId = req.nextUrl.searchParams.get("lodgeId");
+  const lodgeId = requestedLodgeId
+    ? await resolveOptionalActiveLodgeId(prisma, requestedLodgeId)
+    : null;
+  if (!lodgeId) {
+    return NextResponse.json({ error: "A valid lodgeId is required." }, { status: 400 });
+  }
 
-  return NextResponse.json(await getAdminOccupancyMonth(parsedMonth));
+  return NextResponse.json(await getAdminOccupancyMonth({ ...parsedMonth, lodgeId }));
 }

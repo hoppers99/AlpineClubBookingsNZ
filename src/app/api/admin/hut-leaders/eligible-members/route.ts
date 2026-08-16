@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { addDaysDateOnly, formatDateOnly, isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
+import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 
 /**
  * GET /api/admin/hut-leaders/eligible-members?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
@@ -16,6 +17,13 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const startDate = searchParams.get("startDate");
   const endDate = searchParams.get("endDate");
+  const requestedLodgeId = searchParams.get("lodgeId");
+  const lodgeId = requestedLodgeId
+    ? await resolveOptionalActiveLodgeId(prisma, requestedLodgeId)
+    : null;
+  if (!lodgeId) {
+    return NextResponse.json({ error: "A valid lodgeId is required." }, { status: 400 });
+  }
 
   if (!startDate || !endDate || !/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
     return NextResponse.json({ error: "startDate and endDate are required (YYYY-MM-DD)" }, { status: 400 });
@@ -46,6 +54,7 @@ export async function GET(req: NextRequest) {
       // unaffected — a booker is never a consent subject on their own booking.
       ...OPERATIONALLY_PRESENT_GUEST_WHERE,
       booking: {
+        lodgeId,
         status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
         checkIn: { lte: rangeEnd },
         checkOut: { gt: rangeStart },
@@ -113,6 +122,7 @@ export async function GET(req: NextRequest) {
   // Also include booking owners who are adults
   const bookings = await prisma.booking.findMany({
     where: {
+      lodgeId,
       status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
       checkIn: { lte: rangeEnd },
       checkOut: { gt: rangeStart },
@@ -191,7 +201,7 @@ export async function GET(req: NextRequest) {
   // by more than the 1-day handover boundary the POST route already allows), so
   // they are always safely POST-able.
   const coverageAssignments = await prisma.hutLeaderAssignment.findMany({
-    where: { startDate: { lte: coverageWindowEnd }, endDate: { gte: coverageWindowStart } },
+    where: { lodgeId, startDate: { lte: coverageWindowEnd }, endDate: { gte: coverageWindowStart } },
     select: { startDate: true, endDate: true },
   });
 

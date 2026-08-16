@@ -65,11 +65,13 @@ export function MemberLodgeAccessCard({
     string[]
   >([])
   const [staffLodgeIds, setStaffLodgeIds] = useState<string[]>([])
+  const lodgeOptionsReady =
+    !lodgesLoading && !lodgesFailed && !lodgesForbidden && lodges.length >= 2
 
   const loadAccess = useCallback(async () => {
     // #2701: the grants are only meaningful next to the lodges they name, and
     // no control renders without them, so there is nothing to load them for.
-    if (lodgesFailed || lodgesForbidden) {
+    if (!lodgeOptionsReady) {
       setLoading(false)
       return
     }
@@ -99,7 +101,7 @@ export function MemberLodgeAccessCard({
     } finally {
       setLoading(false)
     }
-  }, [memberId, lodgesFailed, lodgesForbidden])
+  }, [memberId, lodgeOptionsReady])
 
   useEffect(() => {
     void loadAccess()
@@ -109,7 +111,7 @@ export function MemberLodgeAccessCard({
     // #2701 backstop: no Save button renders while the lodge list is missing,
     // and a PUT from here would send the empty tick state as the member's whole
     // set of grants — silently revoking every restriction and staff binding.
-    if (lodgesFailed || lodgesForbidden) return
+    if (!lodgeOptionsReady) return
     setSaving(true)
     setError("")
     setSuccess("")

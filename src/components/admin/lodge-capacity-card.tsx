@@ -85,23 +85,28 @@ export function LodgeCapacityCard() {
   const [savedMessage, setSavedMessage] = useState("");
   const cardRef = useRef<HTMLDivElement>(null);
   const feedbackRef = useRef<HTMLDivElement>(null);
+  // A scope change can leave the previous lodge's GET in flight. Fence every
+  // result as well as aborting it: some fetch mocks/transports ignore abort,
+  // and a late A response must never repopulate the form now labelled B.
+  const loadSequenceRef = useRef(0);
   const { scrollToError, scrollToTop } = useScrollToFeedback();
 
-  async function load() {
+  async function load(
+    requestedLodgeId: string,
+    sequence: number,
+    signal: AbortSignal,
+  ) {
     // #2701: without the lodge list, an unfiltered read resolves server-side to
     // the club's default lodge — so the numbers below would describe one lodge
     // while the card names none. Do not read, and do not fall back club-wide.
-    if (!scopedLodgeId) {
-      setLoading(false);
-      return;
-    }
     setLoading(true);
     setError("");
     try {
       const response = await fetch(
-        `/api/admin/lodge-settings?lodgeId=${encodeURIComponent(scopedLodgeId)}`,
-        { credentials: "same-origin" },
+        `/api/admin/lodge-settings?lodgeId=${encodeURIComponent(requestedLodgeId)}`,
+        { credentials: "same-origin", signal },
       );
+      if (signal.aborted || sequence !== loadSequenceRef.current) return;
       // The embedding page normally hides this card by permission matrix; this
       // in-card backstop keeps a future cross-area embedding degrading quietly
       // (render nothing) instead of showing the error box for a viewer who
@@ -119,19 +124,30 @@ export function LodgeCapacityCard() {
       }
       if (!response.ok) throw new Error("Failed to load lodge settings");
       const body = (await response.json()) as LodgeSettingsResponse;
+      if (signal.aborted || sequence !== loadSequenceRef.current) return;
       setClubConfigCapacity(body.clubConfigCapacity);
       setCapacityValue(body.capacity === null ? "" : String(body.capacity));
       setHutLeaderLookaheadValue(String(body.hutLeaderLookaheadDays));
       setSoftCapValue(String(body.schoolGroupSoftCap));
     } catch (err) {
+      if (signal.aborted || sequence !== loadSequenceRef.current) return;
       setError(err instanceof Error ? err.message : "Failed to load lodge settings");
     } finally {
-      setLoading(false);
+      if (!signal.aborted && sequence === loadSequenceRef.current) {
+        setLoading(false);
+      }
     }
   }
 
   useEffect(() => {
-    void load();
+    const sequence = (loadSequenceRef.current += 1);
+    const controller = new AbortController();
+    if (!scopedLodgeId) {
+      setLoading(false);
+      return () => controller.abort();
+    }
+    void load(scopedLodgeId, sequence, controller.signal);
+    return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopedLodgeId]);
 

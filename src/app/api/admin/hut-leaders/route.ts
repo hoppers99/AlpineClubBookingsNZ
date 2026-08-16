@@ -40,12 +40,20 @@ const createSchema = z.object({
  * GET /api/admin/hut-leaders
  * List all hut leader assignments.
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   const guard = await requireAdmin({
     permission: { area: "lodge", level: "view" },
   });
   if (!guard.ok) return guard.response;
+  const requestedLodgeId = req.nextUrl.searchParams.get("lodgeId");
+  const lodgeId = requestedLodgeId
+    ? await resolveOptionalActiveLodgeId(prisma, requestedLodgeId)
+    : null;
+  if (!lodgeId) {
+    return NextResponse.json({ error: "A valid lodgeId is required." }, { status: 400 });
+  }
   const assignments = await prisma.hutLeaderAssignment.findMany({
+    where: { lodgeId },
     include: {
       member: {
         select: { id: true, firstName: true, lastName: true, email: true },

@@ -3,6 +3,8 @@ import { requireAdmin } from "@/lib/session-guards";
 import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
 import { parseOccupancyMonth } from "@/lib/admin-occupancy";
 import { addDaysDateOnly, isDateOnlyString, parseDateOnly } from "@/lib/date-only";
+import { prisma } from "@/lib/prisma";
+import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 
 /**
  * GET /api/admin/hut-leaders/unassigned-dates
@@ -25,6 +27,13 @@ export async function GET(req?: NextRequest) {
   const month = searchParams.get("month");
   const from = searchParams.get("from");
   const to = searchParams.get("to");
+  const requestedLodgeId = searchParams.get("lodgeId");
+  const lodgeId = requestedLodgeId
+    ? await resolveOptionalActiveLodgeId(prisma, requestedLodgeId)
+    : null;
+  if (!lodgeId) {
+    return NextResponse.json({ error: "A valid lodgeId is required." }, { status: 400 });
+  }
 
   let window: { from: Date; to: Date } | undefined;
 
@@ -53,6 +62,6 @@ export async function GET(req?: NextRequest) {
   }
 
   return NextResponse.json({
-    unassignedDates: await getUnassignedHutLeaderDates(window),
+    unassignedDates: await getUnassignedHutLeaderDates({ ...window, lodgeId }),
   });
 }

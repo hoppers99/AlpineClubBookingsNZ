@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { type GuestData } from "@/components/guest-form";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { useLodgeOptions } from "@/components/lodge-select";
+import { deriveSettledLodgeOptionScope } from "@/lib/lodge-option-scope";
 import { BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE } from "@/lib/booking-lodge-scope";
 import { type PromoResult } from "@/components/promo-code-input";
 import {
@@ -218,9 +219,18 @@ export function useBookingWizard() {
     lodges,
     loading: lodgesLoading,
     failed: lodgesFailed,
+    forbidden: lodgesForbidden,
     reload: reloadLodges,
   } = useLodgeOptions("member");
   const [lodgeId, setLodgeId] = useState<string | null>(null);
+  const lodgeScope = deriveSettledLodgeOptionScope({
+    lodges,
+    selectedLodgeId: lodgeId,
+    loading: lodgesLoading,
+    failed: lodgesFailed,
+    forbidden: lodgesForbidden,
+  });
+  const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
   // Set when the booking is created on the card-payment path; drives step 4.
   const [createdBooking, setCreatedBooking] = useState<CreatedBooking | null>(
     null,
@@ -242,6 +252,8 @@ export function useBookingWizard() {
    */
   const [lodgeUnresolved, setLodgeUnresolved] = useState(false);
   const retryLodgeOptions = useCallback(() => {
+    setStep("dates");
+    setLodgeId(null);
     setLodgeUnresolved(false);
     setError("");
     reloadLodges();
@@ -1001,6 +1013,12 @@ export function useBookingWizard() {
   }
 
   async function handleDateSelect(ci: string, co: string) {
+    if (!scopedLodgeId) {
+      setStep("dates");
+      setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
+      setLodgeUnresolved(true);
+      return;
+    }
     setCheckIn(ci);
     setCheckOut(co);
     setError("");
@@ -1016,7 +1034,7 @@ export function useBookingWizard() {
     setWorkPartyClearedNotice(null);
     const ciStr = ci;
     const coStr = co;
-    const lodgeParam = lodgeId ? `&lodgeId=${encodeURIComponent(lodgeId)}` : "";
+    const lodgeParam = `&lodgeId=${encodeURIComponent(scopedLodgeId)}`;
 
     // Fetch availability for selected range
     const res = await fetch(
@@ -1059,6 +1077,12 @@ export function useBookingWizard() {
   }
 
   async function handleGuestsDone() {
+    if (!scopedLodgeId) {
+      setStep("dates");
+      setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
+      setLodgeUnresolved(true);
+      return;
+    }
     setGuestProfileBlocks([]);
     setMemberNightConflicts([]);
     if (guests.length === 0) {
@@ -1100,7 +1124,7 @@ export function useBookingWizard() {
       body: JSON.stringify({
         checkIn: checkInStr,
         checkOut: checkOutStr,
-        lodgeId: lodgeId ?? undefined,
+        lodgeId: scopedLodgeId,
         guests: guestPayload.map((g) => ({
           ageTier: g.ageTier,
           isMember: g.isMember,
@@ -1130,7 +1154,7 @@ export function useBookingWizard() {
       // bound to another lodge are filtered out server-side.
       fetch(
         `/api/work-parties/active?checkIn=${checkInStr}&checkOut=${checkOutStr}${
-          lodgeId ? `&lodgeId=${encodeURIComponent(lodgeId)}` : ""
+          `&lodgeId=${encodeURIComponent(scopedLodgeId)}`
         }`
       )
         .then((r) => r.ok ? r.json() : { events: [] })
@@ -1185,7 +1209,7 @@ export function useBookingWizard() {
      * member should be told what is wrong and given something to do about it,
      * not handed a dead control with no reason attached.
      */
-    if (!lodgeId) {
+    if (!scopedLodgeId) {
       setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
       setLodgeUnresolved(true);
       return;
@@ -1218,7 +1242,7 @@ export function useBookingWizard() {
       body: JSON.stringify({
         checkIn: checkInStr,
         checkOut: checkOutStr,
-        lodgeId: lodgeId ?? undefined,
+        lodgeId: scopedLodgeId,
         guests: guestPayload,
         notes: notes || undefined,
         promoCode: appliedPromo?.code || undefined,
@@ -1312,6 +1336,12 @@ export function useBookingWizard() {
   }
 
   async function handleJoinWaitlist() {
+    if (!scopedLodgeId) {
+      setStep("dates");
+      setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
+      setLodgeUnresolved(true);
+      return;
+    }
     if (requiresAdminReviewLocal && !memberReviewJustification.trim()) {
       setError("Please add a reason for booking without an adult guest before joining the waitlist.");
       return;
@@ -1351,7 +1381,7 @@ export function useBookingWizard() {
           guests.some((g) => !g.isMember) && cancelIfGuestsBumped
             ? true
             : undefined,
-        lodgeId: lodgeId ?? undefined,
+        lodgeId: scopedLodgeId,
         waitlist: true,
         alternateLodgeIds:
           waitlistAlternateLodgeIds.length > 0
@@ -1374,6 +1404,12 @@ export function useBookingWizard() {
   }
 
   async function handleSaveAsDraft() {
+    if (!scopedLodgeId) {
+      setStep("dates");
+      setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
+      setLodgeUnresolved(true);
+      return;
+    }
     const guestPayload = buildGuestPayload();
     const stayRangeError = validateGuestStayRanges(guestPayload);
     if (stayRangeError) {
@@ -1407,7 +1443,7 @@ export function useBookingWizard() {
             ? true
             : undefined,
         applyCreditCents: appliedCreditCents > 0 ? appliedCreditCents : undefined,
-        lodgeId: lodgeId ?? undefined,
+        lodgeId: scopedLodgeId,
         draft: true,
         memberReviewJustification: requiresAdminReviewLocal
           ? memberReviewJustification.trim() || undefined
@@ -1755,6 +1791,7 @@ export function useBookingWizard() {
     lodgesLoading,
     // #2701: the member half of the unnamed-lodge refusal.
     lodgesFailed,
+    lodgesForbidden,
     lodgeUnresolved,
     retryLodgeOptions,
     handleLodgeChange,

@@ -220,7 +220,7 @@ export default function HutLeadersPage() {
       return;
     }
     try {
-      const res = await fetch("/api/admin/hut-leaders");
+      const res = await fetch(`/api/admin/hut-leaders?lodgeId=${encodeURIComponent(scopedLodgeId)}`);
       if (res.ok) {
         const data = await res.json();
         setAssignments(data.assignments);
@@ -228,7 +228,7 @@ export default function HutLeadersPage() {
     } finally {
       setLoading(false);
     }
-  }, [lodgeScopeReady]);
+  }, [lodgeScopeReady, scopedLodgeId]);
 
   // Default lookahead window — feeds the amber "Upcoming Dates Without…" card.
   // Intentionally the un-windowed variant so that card is byte-for-byte unchanged.
@@ -238,7 +238,7 @@ export default function HutLeadersPage() {
       return;
     }
     try {
-      const res = await fetch("/api/admin/hut-leaders/unassigned-dates");
+      const res = await fetch(`/api/admin/hut-leaders/unassigned-dates?lodgeId=${encodeURIComponent(scopedLodgeId)}`);
       if (res.ok) {
         const data = await res.json();
         setUnassignedDates(data.unassignedDates);
@@ -246,7 +246,7 @@ export default function HutLeadersPage() {
     } catch {
       // ignore
     }
-  }, [lodgeScopeReady]);
+  }, [lodgeScopeReady, scopedLodgeId]);
 
   // Per-month overlay data: red (needs-leader) nights via the windowed variant,
   // and occupied nights (for violet fill-vs-ring emphasis) via the occupancy API.
@@ -254,7 +254,7 @@ export default function HutLeadersPage() {
     if (!lodgeScopeReady) return;
     try {
       const res = await fetch(
-        `/api/admin/hut-leaders/unassigned-dates?month=${monthKey}`,
+        `/api/admin/hut-leaders/unassigned-dates?month=${monthKey}&lodgeId=${encodeURIComponent(scopedLodgeId)}`,
       );
       if (res.ok) {
         const data: { unassignedDates?: UnassignedDate[] } = await res.json();
@@ -273,7 +273,7 @@ export default function HutLeadersPage() {
       // non-essential overlay
     }
     try {
-      const res = await fetch(`/api/admin/occupancy?month=${monthKey}`);
+      const res = await fetch(`/api/admin/occupancy?month=${monthKey}&lodgeId=${encodeURIComponent(scopedLodgeId)}`);
       if (res.ok) {
         const data: { nights?: Array<{ date: string; guestCount: number }> } =
           await res.json();
@@ -287,7 +287,7 @@ export default function HutLeadersPage() {
     } catch {
       // non-essential overlay
     }
-  }, [lodgeScopeReady]);
+  }, [lodgeScopeReady, scopedLodgeId]);
 
   const handleVisibleMonthChange = useCallback(
     (monthKey: string) => {
@@ -319,7 +319,7 @@ export default function HutLeadersPage() {
     setLoadingMembers(true);
 
     fetch(
-      `/api/admin/hut-leaders/eligible-members?startDate=${selection.startDate}&endDate=${selection.endDate}`,
+      `/api/admin/hut-leaders/eligible-members?startDate=${selection.startDate}&endDate=${selection.endDate}&lodgeId=${encodeURIComponent(scopedLodgeId)}`,
     )
       .then((res) => (res.ok ? res.json() : Promise.reject()))
       .then((data) => {
@@ -335,7 +335,7 @@ export default function HutLeadersPage() {
     return () => {
       cancelled = true;
     };
-  }, [selection.startDate, selection.endDate, lodgeScopeReady]);
+  }, [selection.startDate, selection.endDate, lodgeScopeReady, scopedLodgeId]);
 
   // Step 1 — picking new nights always drops any selected target.
   function handlePickNights(next: { startDate: string; endDate: string }) {

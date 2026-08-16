@@ -48,6 +48,7 @@ export async function getUnassignedHutLeaderDates(input?: {
   // past nights for history). When absent, behaviour is exactly as before.
   from?: Date;
   to?: Date;
+  lodgeId?: string;
 }): Promise<UnassignedHutLeaderDate[]> {
   const db = input?.db ?? (prisma as unknown as HutLeaderCoverageDb);
   const today = input?.today ?? getTodayDateOnly();
@@ -71,6 +72,7 @@ export async function getUnassignedHutLeaderDates(input?: {
   const [assignments, bookings] = await Promise.all([
     db.hutLeaderAssignment.findMany({
       where: {
+        ...(input?.lodgeId ? { lodgeId: input.lodgeId } : {}),
         startDate: { lte: endDate },
         endDate: { gte: windowStart },
       },
@@ -78,6 +80,7 @@ export async function getUnassignedHutLeaderDates(input?: {
     }),
     db.booking.findMany({
       where: {
+        ...(input?.lodgeId ? { lodgeId: input.lodgeId } : {}),
         status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
         deletedAt: null,
         checkIn: { lte: endDate },
