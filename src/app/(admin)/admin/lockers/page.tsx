@@ -135,13 +135,11 @@ export default function LockersPage() {
   const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
   const activeScopeRef = useRef<string | null>(scopedLodgeId);
   /*
-    #2887: ownership follows the COMMIT, never the render. A render-body write
-    also marks a lodge current for a render React then threw away (concurrent
-    retry / StrictMode double-render). A LAYOUT effect runs synchronously inside
-    the commit, so it closes the A->B window a passive `useEffect` would leave:
-    passive effects are scheduled after paint, and an in-flight `.then` for
-    lodge A can run in between and still see A as current. React 19's server
-    renderer makes layout effects a no-op with no warning.
+    #2887: ownership follows the COMMIT, not the render, and this must stay a
+    LAYOUT effect - a passive one is flushed after paint, leaving a window in
+    which a late lodge-A response still reads A as current. Full reasoning and
+    both mutation proofs live in one place:
+    `src/lib/__tests__/lodge-scope-committed-ownership.test.tsx`.
   */
   useLayoutEffect(() => {
     activeScopeRef.current = scopedLodgeId;
