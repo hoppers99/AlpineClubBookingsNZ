@@ -30,7 +30,9 @@ vi.mock("@/lib/prisma", () => ({
 import { applyPromoCodeChanges } from "../booking-modify-plan";
 import { recalculateBookingPromo } from "../booking-guest-removal-service";
 import { buildBookingHistoryItems } from "../booking-history";
-import { bookingModificationSummaryRows } from "../email-templates";
+import {
+  bookingModificationSummaryRows,
+} from "@/lib/booking-money-lines";
 import {
   describePromoCapCoverage,
   joinNames,

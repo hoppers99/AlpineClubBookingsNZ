@@ -46,7 +46,7 @@ import {
   renderTemplateString,
   validateEmailTemplateContent,
 } from "@/lib/email-message-renderer";
-import { memberGuestAddedTemplate } from "@/lib/email-templates";
+import { memberGuestAddedTemplate } from "@/lib/email-templates/member-guest";
 import { sendMemberGuestAddedEmail } from "@/lib/email/member-guest";
 import {
   buildMemberGuestPartyList,

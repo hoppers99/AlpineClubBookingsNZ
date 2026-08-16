@@ -757,7 +757,7 @@ describe("consent columns have exactly one writer", () => {
       "src/lib/double-bed-sharing.ts": "D-12: pending guests do not anchor an offer",
       "src/app/api/member/data-export/route.ts":
         "deliberately NOT excluded — a data-subject export includes their own pending rows",
-      "src/lib/email-templates.ts": "the consent email renderers",
+      "src/lib/email-templates/member-guest.ts": "the consent email renderers",
       "src/lib/email/member-guest.ts": "the consent email senders",
       // The per-request policy read and the pure write plan every add path uses.
       "src/lib/member-guest-add-policy.ts": "the add paths' shared consent-write plan",

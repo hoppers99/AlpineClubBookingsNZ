@@ -1,4 +1,4 @@
-import { plainTextEmailTemplate } from "@/lib/email-templates";
+import { plainTextEmailTemplate } from "@/lib/email-templates/layout";
 import {
   applyEmailMessageSettingsToHtml,
   applyEmailMessageSettingsToSubject,

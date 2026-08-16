@@ -13,7 +13,9 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/email", () => ({ sendEmail: mocks.sendEmail }));
-vi.mock("@/lib/email-templates", () => ({ noticePublishedTemplate: () => "<html></html>" }));
+vi.mock("@/lib/email-templates/communications", () => ({
+  noticePublishedTemplate: () => "<html></html>",
+}));
 vi.mock("@/lib/app-url", () => ({ getAppBaseUrl: mocks.getAppBaseUrl }));
 vi.mock("@/lib/audit", () => ({ createAuditLog: mocks.createAuditLog }));
 vi.mock("@/lib/logger", () => ({ default: { error: vi.fn() } }));

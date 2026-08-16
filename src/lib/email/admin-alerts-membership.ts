@@ -1,13 +1,13 @@
 import {
-  adminMembershipApplicationPendingTemplate,
-  adminFamilyGroupRequestTemplate,
-  adminMembershipCancellationRequestTemplate,
   adminAccountDeletionRequestedTemplate,
+  adminFamilyGroupRequestTemplate,
   adminMemberArchiveRequestedTemplate,
-  adminMemberDeleteRequestedTemplate,
   adminMemberDeleteApprovedTemplate,
   adminMemberDeleteRejectedTemplate,
-} from "../email-templates";
+  adminMemberDeleteRequestedTemplate,
+  adminMembershipApplicationPendingTemplate,
+  adminMembershipCancellationRequestTemplate,
+} from "@/lib/email-templates/admin-membership";
 import {
   composeOptionalEmailLine,
 } from "../email-message-notes";

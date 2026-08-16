@@ -1,11 +1,13 @@
 import {
   bookingRequestVerificationTemplate,
-  groupSettlementReceiptTemplate,
+} from "@/lib/email-templates/booking-requests";
+import {
+  groupJoinCancelledTemplate,
+  groupJoinReleasedTemplate,
   groupJoinSettledTemplate,
   groupSettlementExpiredTemplate,
-  groupJoinReleasedTemplate,
-  groupJoinCancelledTemplate,
-} from "../email-templates";
+  groupSettlementReceiptTemplate,
+} from "@/lib/email-templates/groups";
 import { CLUB_NAME } from "@/config/club-identity";
 import {
   formatNZDate,
