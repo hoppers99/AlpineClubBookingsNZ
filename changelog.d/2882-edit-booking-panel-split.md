@@ -4,8 +4,9 @@
   the partner quick-add button read "Jane Smith \u2014 partner of Bob"; on the
   admin new-booking screen the over-capacity warning read "You can still create
   it \u2014 you will confirm the override at the final step." Both now show a
-  normal dash. A repository-wide check found only those two and now runs on every
-  change, so the same thing cannot come back anywhere.
+  normal dash. A check over every screen and browser test in the repository
+  found only those two, and it now runs on every change so the class cannot come
+  back unnoticed.
 
   Behind that, the screen that admins and members use to change a booking's
   dates, guests, promo code and account credit had grown into a single

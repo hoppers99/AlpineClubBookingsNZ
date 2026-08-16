@@ -831,7 +831,14 @@ const eslintConfig = defineConfig([
       `off` above is untouched; widening either rule is a separate decision with
       its own measurement.
     */
-    files: ["src/components/edit-booking/**/*.{ts,tsx}"],
+    /*
+      Every extension the ratchet treats as production, not just .ts/.tsx. Next
+      serves .js/.jsx by default and tsconfig sets allowJs, so a component
+      written as .jsx in this folder would otherwise be scoped out of the very
+      rule this block exists to apply — and, as file-size-budget.ts records, a
+      .js file under src is policed by nothing at all.
+    */
+    files: ["src/components/edit-booking/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"],
     rules: {
       "react-hooks/static-components": "error",
     },

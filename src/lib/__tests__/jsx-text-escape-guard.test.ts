@@ -38,7 +38,15 @@ const ROOTS = ["src", "e2e"];
 /** The escapes a developer plausibly expects JSX to resolve. It does not. */
 const ESCAPE_IN_TEXT = /\\(u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|[ntr0])/g;
 
-function tsxFiles(dir: string, out: string[] = []): string[] {
+/**
+ * Every extension that can carry JSX in this repository, not only `.tsx`.
+ * Next serves `.js`/`.jsx` by default and `tsconfig` sets `allowJs`, so a `.jsx`
+ * file renders the same garbled label a `.tsx` one would — and would have been
+ * invisible to this guard. Kept in step with `scripts/lib/file-size-budget.ts`.
+ */
+const JSX_CAPABLE_EXTENSIONS = /\.(?:[cm]?[jt]sx?)$/;
+
+function jsxCapableFiles(dir: string, out: string[] = []): string[] {
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -49,8 +57,8 @@ function tsxFiles(dir: string, out: string[] = []): string[] {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (entry.name === "node_modules" || entry.name === ".next") continue;
-      tsxFiles(full, out);
-    } else if (entry.name.endsWith(".tsx")) {
+      jsxCapableFiles(full, out);
+    } else if (JSX_CAPABLE_EXTENSIONS.test(entry.name)) {
       out.push(full);
     }
   }
@@ -111,7 +119,7 @@ function scan(file: string, source: string): Finding[] {
 }
 
 describe("no backslash escape sequence is left sitting in JSX text", () => {
-  const files = ROOTS.flatMap((root) => tsxFiles(root));
+  const files = ROOTS.flatMap((root) => jsxCapableFiles(root));
 
   // The single pass. Both assertions below read this; nothing re-parses.
   const swept = files.map((file) => {
@@ -150,7 +158,7 @@ describe("no backslash escape sequence is left sitting in JSX text", () => {
   });
 
   it("scans a tree that actually contains JSX, so it cannot pass vacuously", () => {
-    expect(files.length, "no .tsx files found; the scan is checking nothing").toBeGreaterThan(
+    expect(files.length, "no JSX-capable files found; the scan is checking nothing").toBeGreaterThan(
       200,
     );
     const jsxTextNodes = swept.reduce((total, f) => total + f.jsxTextNodes, 0);

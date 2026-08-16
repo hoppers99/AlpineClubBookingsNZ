@@ -45,6 +45,13 @@ const PANEL = join(process.cwd(), "src", "components", "edit-booking-panel.tsx")
 const NOTIFY_MEMBER_KEY = /\bnotifyMember\b/;
 
 /**
+ * The extensions this repository treats as production source, kept in step with
+ * `scripts/lib/file-size-budget.ts`. Narrower than that set is a blind spot, and
+ * a blind spot is what this fence exists to close.
+ */
+const POLICED_EXTENSIONS = /\.(?:[cm]?[jt]sx?)$/;
+
+/**
  * `source` with every comment blanked out, using TypeScript's own parser rather
  * than a regex — the same technique, and for the same reason, as the shared
  * census: raw text cannot tell a call site from prose about one, and the module
@@ -91,7 +98,18 @@ function subtreeFiles(dir = SUBTREE, out: string[] = []): string[] {
       subtreeFiles(full, out);
       continue;
     }
-    if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+    // Every extension the ratchet treats as production, not just .ts/.tsx.
+    // This fence exists because the shared #2259 census walks .tsx only, so the
+    // byte-identical file renamed to .ts slips past it — and a .tsx?-only walk
+    // here would reproduce that same hole one extension over. Next serves
+    // .js/.jsx by default, tsconfig sets allowJs and names .mts, and every
+    // custom lint rule block is scoped to .ts/.tsx under src, so a .js file
+    // there is policed by nothing at all. See scripts/lib/file-size-budget.ts,
+    // which widened to this exact set for the same reason.
+    if (
+      POLICED_EXTENSIONS.test(entry.name) &&
+      !/\.test\.[cm]?[jt]sx?$/.test(entry.name)
+    ) {
       out.push(full);
     }
   }
