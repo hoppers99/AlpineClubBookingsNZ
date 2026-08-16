@@ -682,7 +682,7 @@ export function BookingBedAllocationPanel({
          * a bed nobody was shown. Scoped, Confirm can only ever approve what
          * the officer could see.
          */
-        body: JSON.stringify({ bookingId, ...(lodgeId ? { lodgeId } : {}) }),
+        body: JSON.stringify({ bookingId, lodgeId }),
       });
       if (!response.ok) {
         toast.error(await readApiError(response, "Failed to confirm beds"));

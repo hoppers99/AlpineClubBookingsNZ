@@ -39,7 +39,12 @@ vi.mock("@/lib/admin-bed-allocation", async () => {
       mockApproveBedAllocations(...args),
   };
 });
-vi.mock("@/lib/prisma", () => ({ prisma: {} }));
+// #2887: the route now resolves a named lodgeId and checks it is ACTIVE, the
+// same treatment the `auto-allocate` sibling gives it.
+const mockLodgeFindUnique = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/prisma", () => ({
+  prisma: { lodge: { findUnique: (...args: unknown[]) => mockLodgeFindUnique(...args) } },
+}));
 vi.mock("@/lib/lodge-capacity", () => ({
   getLodgeCapacityStatus: vi.fn(),
   getLodgePartnerSharedCapacityStatus: vi.fn(),
@@ -60,6 +65,7 @@ function post(body: unknown) {
 
 describe("POST /api/admin/bed-allocation/approve", () => {
   beforeEach(() => {
+  mockLodgeFindUnique.mockResolvedValue({ id: "lodge-1", active: true });
     vi.clearAllMocks();
     mockRequireAdmin.mockResolvedValue({
       ok: true,
@@ -147,6 +153,42 @@ describe("POST /api/admin/bed-allocation/approve", () => {
 
     const response = await post({});
     expect(response.status).toBe(400);
+  });
+
+  it("refuses a date-window sweep that names no lodge (#2887, owner decision 7)", async () => {
+    // The last board mutation without a server-side lodge refusal. Omitting
+    // `lodgeId` made the service lock every lodge and approve across all of
+    // them, so any bookings:edit admin could approve the whole club's visible
+    // drafts with a hand-made request. The board's disabled button is not a
+    // guard.
+    const response = await post({ from: "2026-06-01", to: "2026-06-08" });
+    expect(response.status).toBe(400);
+    expect(mockApproveBedAllocations).not.toHaveBeenCalled();
+  });
+
+  it("still accepts a selector that has already named its rows", async () => {
+    // `allocationIds` and `bookingId` enumerate what they touch, so a lodge
+    // adds no safety there — and the E2E cleanup paths restore approvals by id.
+    mockApproveBedAllocations.mockResolvedValue({ count: 2 });
+    const byIds = await post({ allocationIds: ["alloc-1", "alloc-2"] });
+    expect(byIds.status).toBe(200);
+
+    const byBooking = await post({ bookingId: "booking-1" });
+    expect(byBooking.status).toBe(200);
+  });
+
+  it("refuses a named lodge that is not active (#2887)", async () => {
+    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-1", active: false });
+    const response = await post({
+      from: "2026-06-01",
+      to: "2026-06-08",
+      lodgeId: "lodge-1",
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Lodge not found or not active",
+    });
+    expect(mockApproveBedAllocations).not.toHaveBeenCalled();
   });
 
   it("404s when the bed allocation module is off", async () => {
