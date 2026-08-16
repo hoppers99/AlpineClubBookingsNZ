@@ -98,7 +98,9 @@ describe("LodgeInstructionsPanel response ownership (#2887)", () => {
     await act(async () => releaseA());
     expect(screen.getByDisplayValue("B opening")).toBeInTheDocument();
 
-    const openingCard = screen.getByText(/Opening the Lodge/).closest("div.rounded-xl") ?? document.body;
+    const openingCard =
+      screen.getByText(/Opening the Lodge/).closest<HTMLElement>("div.rounded-xl") ??
+      document.body;
     fireEvent.click(within(openingCard).getByRole("button", { name: /Save/ }));
     await waitFor(() => expect(writes).toHaveLength(1));
     expect(writes[0]).toMatchObject({ key: "OPEN", lodgeId: "lodge-b", contentHtml: "B opening" });

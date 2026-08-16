@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Save } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -110,7 +110,18 @@ export function LodgeInstructionsPanel() {
     emptyRecord(null),
   );
   const activeScopeRef = useRef<string | null>(scopeLodgeId);
-  activeScopeRef.current = scopeLodgeId;
+  /*
+    #2887: ownership follows the COMMIT, never the render. A render-body write
+    also marks a scope current for a render React then threw away (concurrent
+    retry / StrictMode double-render). A LAYOUT effect runs synchronously inside
+    the commit, so it closes the A->B window a passive `useEffect` would leave:
+    passive effects are scheduled after paint, and an in-flight `.then` for
+    scope A can run in between and still see A as current. React 19's server
+    renderer makes layout effects a no-op with no warning.
+  */
+  useLayoutEffect(() => {
+    activeScopeRef.current = scopeLodgeId;
+  }, [scopeLodgeId]);
   const loadSequenceRef = useRef(0);
   const loadAbortRef = useRef<AbortController | null>(null);
 

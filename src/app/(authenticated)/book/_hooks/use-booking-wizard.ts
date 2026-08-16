@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
@@ -232,10 +232,20 @@ export function useBookingWizard() {
   });
   const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
   const activeScopedLodgeIdRef = useRef<string | null>(scopedLodgeId);
-  // Ownership must change during the render that changes the recovered scope.
-  // Waiting for an effect leaves one commit where a late response can still
-  // regard a removed/failed lodge as current.
-  activeScopedLodgeIdRef.current = scopedLodgeId;
+  /*
+    #2887: ownership follows the COMMIT, never the render. Writing this ref in
+    the render body marked a lodge current for a render React then threw away
+    (concurrent retry / StrictMode double-render), which both drops a response
+    that is still valid for what is on screen and admits one from a scope that
+    never committed. A LAYOUT effect keeps the property the render write was
+    reaching for — the ref moves in the same synchronous commit that changes the
+    recovered scope, so no PASSIVE-effect gap exists in which a late response
+    can still regard a removed/failed lodge as current. React 19's server
+    renderer makes layout effects a no-op with no warning.
+  */
+  useLayoutEffect(() => {
+    activeScopedLodgeIdRef.current = scopedLodgeId;
+  }, [scopedLodgeId]);
   const dateSelectionSequenceRef = useRef(0);
   const dateSelectionAbortRef = useRef<AbortController | null>(null);
   const workPartySequenceRef = useRef(0);

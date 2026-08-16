@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback, useRef } from "react"
+import { useEffect, useLayoutEffect, useState, useCallback, useRef } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -72,7 +72,18 @@ export default function SeasonsPage() {
   })
   const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null
   const activeScopeRef = useRef<string | null>(scopedLodgeId)
-  activeScopeRef.current = scopedLodgeId
+  /*
+    #2887: ownership follows the COMMIT, never the render. A render-body write
+    also marks a lodge current for a render React then threw away (concurrent
+    retry / StrictMode double-render). A LAYOUT effect runs synchronously inside
+    the commit, so it closes the A->B window a passive `useEffect` would leave:
+    passive effects are scheduled after paint, and an in-flight `.then` for
+    lodge A can run in between and still see A as current. React 19's server
+    renderer makes layout effects a no-op with no warning.
+  */
+  useLayoutEffect(() => {
+    activeScopeRef.current = scopedLodgeId
+  }, [scopedLodgeId])
   const lodgeScopeReady = scopedLodgeId !== null
 
   // Form state (window fields only)
