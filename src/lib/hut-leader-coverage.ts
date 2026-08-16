@@ -19,11 +19,13 @@ export interface UnassignedHutLeaderDate {
 }
 
 type HutLeaderBooking = {
+  lodgeId: string | null;
   checkIn: Date;
   checkOut: Date;
   guests?: Array<{
     stayStart?: Date | null;
     stayEnd?: Date | null;
+    nights?: Array<{ stayDate: Date }> | null;
   }> | null;
   _count?: {
     guests?: number;
@@ -35,7 +37,9 @@ type HutLeaderCoverageDb = LodgeSettingsReader & {
     findMany(args: unknown): Promise<HutLeaderBooking[]>;
   };
   hutLeaderAssignment: {
-    findMany(args: unknown): Promise<Array<{ startDate: Date; endDate: Date }>>;
+    findMany(args: unknown): Promise<
+      Array<{ lodgeId: string | null; startDate: Date; endDate: Date }>
+    >;
   };
 };
 
@@ -84,7 +88,7 @@ export async function getUnassignedHutLeaderDates(input: {
         startDate: { lte: endDate },
         endDate: { gte: windowStart },
       },
-      select: { startDate: true, endDate: true },
+      select: { lodgeId: true, startDate: true, endDate: true },
     }),
     db.booking.findMany({
       where: {
@@ -97,21 +101,24 @@ export async function getUnassignedHutLeaderDates(input: {
         checkOut: { gt: windowStart },
       },
       select: {
+        lodgeId: true,
         checkIn: true,
         checkOut: true,
         guests: {
           select: {
             stayStart: true,
             stayEnd: true,
+            nights: { select: { stayDate: true } },
           },
         },
       },
     }),
   ]);
 
-  function isDateCovered(date: Date): boolean {
+  function isDateCovered(date: Date, lodgeId: string | null): boolean {
     return assignments.some(
       (assignment) =>
+        assignment.lodgeId === lodgeId &&
         assignment.startDate.getTime() <= date.getTime() &&
         assignment.endDate.getTime() >= date.getTime(),
     );
@@ -122,6 +129,9 @@ export async function getUnassignedHutLeaderDates(input: {
     let guestCount = 0;
 
     for (const booking of bookings) {
+      if (isDateCovered(date, booking.lodgeId)) {
+        continue;
+      }
       if (
         booking.checkIn.getTime() > date.getTime() ||
         booking.checkOut.getTime() <= date.getTime()
@@ -150,7 +160,6 @@ export async function getUnassignedHutLeaderDates(input: {
     day.getTime() <= endDate.getTime();
     day = addDaysDateOnly(day, 1)
   ) {
-    if (isDateCovered(day)) continue;
     const stats = getBookingStats(day);
     if (stats.bookingCount > 0) {
       unassignedDates.push({

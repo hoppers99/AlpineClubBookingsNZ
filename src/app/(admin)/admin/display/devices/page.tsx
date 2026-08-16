@@ -63,6 +63,7 @@ export default function AdminDisplayDevicesPage() {
   const [lodges, setLodges] = useState<LodgeOption[]>([]);
   const [newName, setNewName] = useState("");
   const [newLodgeId, setNewLodgeId] = useState("");
+  const [lodgeOptionsError, setLodgeOptionsError] = useState(false);
   const [codeByDevice, setCodeByDevice] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -102,9 +103,12 @@ export default function AdminDisplayDevicesPage() {
       const active = (body.lodges ?? []).filter((lodge) => lodge.active !== false);
       setLodges(active.map((lodge) => ({ id: lodge.id, name: lodge.name })));
       setNewLodgeId((current) => current || active[0]?.id || "");
+      setLodgeOptionsError(false);
+    } else {
+      setLodges([]);
+      setNewLodgeId("");
+      setLodgeOptionsError(true);
     }
-    // When no lodge is selected (e.g. a single-lodge club shows no picker),
-    // creation falls back to the club's default lodge server-side.
     setLoading(false);
   }, []);
 
@@ -114,10 +118,14 @@ export default function AdminDisplayDevicesPage() {
 
   async function createDevice() {
     setMessage(null);
+    if (!newLodgeId) {
+      setMessage("Choose a lodge before creating a display device.");
+      return;
+    }
     const response = await fetch("/api/admin/display/devices", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: newName, ...(newLodgeId ? { lodgeId: newLodgeId } : {}) }),
+      body: JSON.stringify({ name: newName, lodgeId: newLodgeId }),
     });
     if (response.status === 403) {
       setMessage(ADMIN_FORBIDDEN_SAVE_REASON);
@@ -276,6 +284,18 @@ export default function AdminDisplayDevicesPage() {
 
       {message && <p className="text-sm font-medium">{message}</p>}
 
+      {lodgeOptionsError ? (
+        <div role="alert" className="space-y-2 text-sm text-destructive">
+          <p>
+            The lodge list could not be loaded. Display devices can still be
+            viewed, but a new device cannot be created without an explicit lodge.
+          </p>
+          <Button type="button" variant="outline" onClick={() => void refresh()}>
+            Try again
+          </Button>
+        </div>
+      ) : null}
+
       <Card>
         <CardHeader>
           <CardTitle>Setting up a screen</CardTitle>
@@ -344,7 +364,7 @@ export default function AdminDisplayDevicesPage() {
             canEdit={canEdit}
             describeReason={false}
             onClick={() => void createDevice()}
-            disabled={!newName}
+            disabled={!newName || !newLodgeId || lodgeOptionsError}
           >
             Create device
           </ViewOnlyActionButton>

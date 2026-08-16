@@ -232,9 +232,20 @@ export function useBookingWizard() {
   });
   const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
   const activeScopedLodgeIdRef = useRef<string | null>(scopedLodgeId);
+  const dateSelectionSequenceRef = useRef(0);
+  const dateSelectionAbortRef = useRef<AbortController | null>(null);
+  const workPartySequenceRef = useRef(0);
+  const workPartyAbortRef = useRef<AbortController | null>(null);
   useEffect(() => {
     activeScopedLodgeIdRef.current = scopedLodgeId;
   }, [scopedLodgeId]);
+  useEffect(
+    () => () => {
+      dateSelectionAbortRef.current?.abort();
+      workPartyAbortRef.current?.abort();
+    },
+    [],
+  );
   // Set when the booking is created on the card-payment path; drives step 4.
   const [createdBooking, setCreatedBooking] = useState<CreatedBooking | null>(
     null,
@@ -264,6 +275,8 @@ export function useBookingWizard() {
   }
 
   function returnToUnresolvedLodge() {
+    dateSelectionSequenceRef.current += 1;
+    dateSelectionAbortRef.current?.abort();
     setStep("dates");
     setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
     setLodgeUnresolved(true);
@@ -355,6 +368,10 @@ export function useBookingWizard() {
     // Fence pending Lodge A responses immediately, before React commits the
     // Lodge B render and its effect updates the same ref.
     activeScopedLodgeIdRef.current = nextLodgeId;
+    dateSelectionSequenceRef.current += 1;
+    dateSelectionAbortRef.current?.abort();
+    workPartySequenceRef.current += 1;
+    workPartyAbortRef.current?.abort();
     setLodgeId(nextLodgeId);
     if (!hadLodge) return;
     // Availability, pricing, policies, promos, and rooms are all per lodge:
@@ -371,6 +388,11 @@ export function useBookingWizard() {
     setRequestedRoomId(null);
     setAvailabilityNightDetails([]);
     setShowWaitlistPrompt(false);
+    setActiveWorkPartyEvents([]);
+    setSelectedWorkPartyEventId(null);
+    setAttendingWorkParty(false);
+    setWorkPartyError("");
+    setWorkPartyClearedNotice(null);
   }
 
   function getBookingDateStrings() {
@@ -1032,6 +1054,13 @@ export function useBookingWizard() {
       return;
     }
     const requestedLodgeId = scopedLodgeId;
+    const sequence = ++dateSelectionSequenceRef.current;
+    dateSelectionAbortRef.current?.abort();
+    const controller = new AbortController();
+    dateSelectionAbortRef.current = controller;
+    const ownsSelection = () =>
+      sequence === dateSelectionSequenceRef.current &&
+      activeScopedLodgeIdRef.current === requestedLodgeId;
     setCheckIn(ci);
     setCheckOut(co);
     setError("");
@@ -1049,39 +1078,33 @@ export function useBookingWizard() {
     const coStr = co;
     const lodgeParam = `&lodgeId=${encodeURIComponent(requestedLodgeId)}`;
 
-    // Fetch availability for selected range
-    const res = await fetch(
-      `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}${lodgeParam}`
-    );
-    if (activeScopedLodgeIdRef.current !== requestedLodgeId) {
-      if (activeScopedLodgeIdRef.current === null) returnToUnresolvedLodge();
-      return;
-    }
-    if (res.ok) {
-      const data = await res.json();
-      if (activeScopedLodgeIdRef.current !== requestedLodgeId) {
-        if (activeScopedLodgeIdRef.current === null) returnToUnresolvedLodge();
-        return;
+    try {
+      // One sequence and one abort signal own both dependent reads. A second
+      // date pick at the same lodge invalidates the first just as decisively as
+      // a lodge switch.
+      const res = await fetch(
+        `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}${lodgeParam}`,
+        { signal: controller.signal },
+      );
+      if (!ownsSelection()) return;
+      if (res.ok) {
+        const data = await res.json();
+        if (!ownsSelection()) return;
+        setAvailableBeds(data.minAvailable);
+        setAvailabilityNightDetails(data.nightDetails || []);
+      } else {
+        setAvailabilityNightDetails([]);
       }
-      setAvailableBeds(data.minAvailable);
-      setAvailabilityNightDetails(data.nightDetails || []);
-    } else {
-      setAvailabilityNightDetails([]);
-    }
 
-    // Check minimum stay policies
-    const policyRes = await fetch(`/api/booking-policies/check?checkIn=${ciStr}&checkOut=${coStr}${lodgeParam}`);
-    if (activeScopedLodgeIdRef.current !== requestedLodgeId) {
-      if (activeScopedLodgeIdRef.current === null) returnToUnresolvedLodge();
-      return;
-    }
-    if (policyRes.ok) {
-      const policyData = await policyRes.json();
-      if (activeScopedLodgeIdRef.current !== requestedLodgeId) {
-        if (activeScopedLodgeIdRef.current === null) returnToUnresolvedLodge();
-        return;
-      }
-      if (!policyData.valid) {
+      const policyRes = await fetch(
+        `/api/booking-policies/check?checkIn=${ciStr}&checkOut=${coStr}${lodgeParam}`,
+        { signal: controller.signal },
+      );
+      if (!ownsSelection()) return;
+      if (policyRes.ok) {
+        const policyData = await policyRes.json();
+        if (!ownsSelection()) return;
+        if (!policyData.valid) {
         // #2562: the date precheck must not strand a member before they can
         // describe the party that the officer would review. Reuse the ONE
         // fail-closed exception-door reader against the server's frozen review:
@@ -1090,19 +1113,26 @@ export function useBookingWizard() {
         // This does NOT open the request door. The action is still set only from
         // the authoritative POST /api/bookings refusal after the member reviews
         // and confirms the exact proposal.
-        const reviewable = readExceptionOffer({
-          code: "MINIMUM_STAY_VIOLATION",
-          error: policyData.message,
-          exceptionReview: policyData.exceptionReview,
-        });
-        if (!reviewable) {
-          setError(policyData.message);
-          return;
+          const reviewable = readExceptionOffer({
+            code: "MINIMUM_STAY_VIOLATION",
+            error: policyData.message,
+            exceptionReview: policyData.exceptionReview,
+          });
+          if (!reviewable) {
+            setError(policyData.message);
+            return;
+          }
         }
       }
+      if (ownsSelection()) setStep("guests");
+    } catch (requestError) {
+      if (requestError instanceof DOMException && requestError.name === "AbortError") return;
+      if (ownsSelection()) setError("Failed to check availability. Please try again.");
+    } finally {
+      if (dateSelectionAbortRef.current === controller) {
+        dateSelectionAbortRef.current = null;
+      }
     }
-
-    setStep("guests");
   }
 
   async function handleGuestsDone() {
@@ -1190,15 +1220,23 @@ export function useBookingWizard() {
 
       // Fetch active working bee events that overlap these dates; events
       // bound to another lodge are filtered out server-side.
+      const workPartySequence = ++workPartySequenceRef.current;
+      workPartyAbortRef.current?.abort();
+      const workPartyController = new AbortController();
+      workPartyAbortRef.current = workPartyController;
+      const ownsWorkPartyRequest = () =>
+        workPartySequence === workPartySequenceRef.current &&
+        activeScopedLodgeIdRef.current === requestedLodgeId;
       fetch(
         `/api/work-parties/active?checkIn=${checkInStr}&checkOut=${checkOutStr}${
           `&lodgeId=${encodeURIComponent(requestedLodgeId)}`
-        }`
+        }`,
+        { signal: workPartyController.signal },
       )
         .then((r) => r.ok ? r.json() : { events: [] })
         .then((data) => {
           const events: WorkPartyEvent[] = data.events || [];
-          if (activeScopedLodgeIdRef.current !== requestedLodgeId) return;
+          if (!ownsWorkPartyRequest()) return;
           setActiveWorkPartyEvents(events);
           if (
             selectedWorkPartyEventId &&
@@ -1217,7 +1255,15 @@ export function useBookingWizard() {
             );
           }
         })
-        .catch(() => setActiveWorkPartyEvents([]));
+        .catch((requestError) => {
+          if (requestError instanceof DOMException && requestError.name === "AbortError") return;
+          if (ownsWorkPartyRequest()) setActiveWorkPartyEvents([]);
+        })
+        .finally(() => {
+          if (workPartyAbortRef.current === workPartyController) {
+            workPartyAbortRef.current = null;
+          }
+        });
     } else {
       const data = await res.json();
       handleBookingApiError(data, "Failed to calculate price");
@@ -1678,12 +1724,14 @@ export function useBookingWizard() {
     }
 
     let cancelled = false;
+    const requestedLodgeId = scopedLodgeId;
     setWorkPartyError("");
 
     fetch("/api/promo-codes/validate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        lodgeId: requestedLodgeId,
         workPartyEventId: selectedWorkPartyEventId,
         checkIn,
         checkOut,

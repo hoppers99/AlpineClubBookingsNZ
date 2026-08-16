@@ -9,6 +9,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status"
+import { Alert } from "@/components/ui/alert"
+import { Button } from "@/components/ui/button"
 import {
   type LodgeOption,
   useLodgeOptions,
@@ -19,6 +21,7 @@ const CLUB_WIDE = "__club_wide__"
 export type PolicyScopeState =
   | { kind: "resolving" }
   | { kind: "unavailable"; failed: boolean; forbidden: boolean }
+  | { kind: "invalid-lodge"; lodgeId: string }
   | { kind: "club-wide" }
   | { kind: "lodge"; lodgeId: string; lodgeName: string | null }
 
@@ -45,11 +48,10 @@ export function usePolicyScopeOptions(
   } else if (failed || forbidden) {
     state = { kind: "unavailable", failed, forbidden }
   } else if (lodgeId) {
-    state = {
-      kind: "lodge",
-      lodgeId,
-      lodgeName: lodges.find((lodge) => lodge.id === lodgeId)?.name ?? null,
-    }
+    const lodge = lodges.find((option) => option.id === lodgeId)
+    state = lodge
+      ? { kind: "lodge", lodgeId, lodgeName: lodge.name }
+      : { kind: "invalid-lodge", lodgeId }
   } else {
     state = { kind: "club-wide" }
   }
@@ -105,6 +107,20 @@ export function PolicyScopeSelect({
         what="per-lodge rule overrides"
         className="max-w-xl"
       />
+    )
+  }
+
+  if (state.kind === "invalid-lodge") {
+    return (
+      <Alert variant="error" title="This lodge is no longer available">
+        <p className="mb-3">
+          The selected lodge is not in the current active lodge list. Nothing
+          can be viewed or changed in that stale scope.
+        </p>
+        <Button type="button" variant="outline" onClick={() => onChange(null)}>
+          Return to club-wide rules
+        </Button>
+      </Alert>
     )
   }
 

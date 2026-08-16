@@ -20,6 +20,7 @@ import { revalidatePublicPageContent } from "@/lib/public-content-revalidation";
 import { invalidatePublicClubIdentity } from "@/lib/public-layout-cache";
 import { primeClubIdentitySync } from "@/lib/club-identity-settings";
 import { acquireConfigImportLock } from "@/lib/config-transfer-lock";
+import { acquireLodgeCapacityLock } from "@/lib/lodge-capacity-lock";
 
 const paramsSchema = z.object({
   id: z.string().min(1),
@@ -175,10 +176,99 @@ export async function PATCH(
     return NextResponse.json({ lodge: serializeLodge(existing) });
   }
 
-  const updated = await prisma.$transaction(async (tx) => {
+  const outcome = await prisma.$transaction(async (tx) => {
+    // Lodge identity mutations share the config-import singleton first and
+    // then the immutable per-lodge capacity key. Booking creation takes the
+    // same capacity key before its active/access/room reads, so neither side
+    // can validate against a state the other is about to invalidate.
     await acquireConfigImportLock(tx);
-    if (nameChanges) {
-      data.slug = await buildUniqueLodgeSlug(tx, data.name!, existing.id);
+    await acquireLodgeCapacityLock(tx, parsedParams.data.id);
+
+    const lockedExisting = await tx.lodge.findUnique({
+      where: { id: parsedParams.data.id },
+      select: lodgeSelect,
+    });
+    if (!lockedExisting) {
+      return {
+        kind: "error" as const,
+        status: 404,
+        body: { error: "Lodge not found" },
+      };
+    }
+
+    if (parsed.data.active === false && lockedExisting.active) {
+      const otherActive = await tx.lodge.count({
+        where: { active: true, id: { not: lockedExisting.id } },
+      });
+      if (otherActive === 0) {
+        return {
+          kind: "error" as const,
+          status: 409,
+          body: { error: "At least one lodge must remain active." },
+        };
+      }
+
+      if (!parsed.data.force) {
+        const today = getTodayDateOnly();
+        const [futureBookings, waitlistEntries, hutLeaderAssignments, kioskBindings] =
+          await Promise.all([
+            tx.booking.count({
+              where: {
+                lodgeId: lockedExisting.id,
+                status: { in: [...ACTIVE_BOOKING_STATUSES] },
+                checkOut: { gte: today },
+              },
+            }),
+            tx.booking.count({
+              where: {
+                lodgeId: lockedExisting.id,
+                status: {
+                  in: [BookingStatus.WAITLISTED, BookingStatus.WAITLIST_OFFERED],
+                },
+              },
+            }),
+            tx.hutLeaderAssignment.count({
+              where: { lodgeId: lockedExisting.id, endDate: { gte: today } },
+            }),
+            tx.memberLodgeAccess.count({
+              where: { lodgeId: lockedExisting.id, kind: "STAFF" },
+            }),
+          ]);
+        if (
+          futureBookings +
+            waitlistEntries +
+            hutLeaderAssignments +
+            kioskBindings >
+          0
+        ) {
+          return {
+            kind: "error" as const,
+            status: 409,
+            body: {
+              error:
+                "This lodge still has active dependencies. Deactivating stops new bookings but leaves these in place. Confirm to proceed.",
+              code: "LODGE_HAS_DEPENDENCIES",
+              dependencies: {
+                futureBookings,
+                waitlistEntries,
+                hutLeaderAssignments,
+                kioskBindings,
+              },
+            },
+          };
+        }
+      }
+    }
+
+    const lockedNameChanges =
+      parsed.data.name !== undefined &&
+      parsed.data.name !== lockedExisting.name;
+    if (lockedNameChanges) {
+      data.slug = await buildUniqueLodgeSlug(
+        tx,
+        data.name!,
+        lockedExisting.id,
+      );
     }
     const lodge = await tx.lodge.update({
       where: { id: existing.id },
@@ -207,7 +297,7 @@ export async function PATCH(
               : "Lodge deactivated",
         metadata: {
           changedFields: Object.keys(data),
-          previousLodge: redactLodgeForAudit(serializeLodge(existing)),
+          previousLodge: redactLodgeForAudit(serializeLodge(lockedExisting)),
           newLodge: redactLodgeForAudit(serializeLodge(lodge)),
           forcedDeactivation:
             data.active === false && parsed.data.force === true,
@@ -216,8 +306,13 @@ export async function PATCH(
       }),
     );
 
-    return lodge;
+    return { kind: "updated" as const, lodge };
   });
+
+  if (outcome.kind === "error") {
+    return NextResponse.json(outcome.body, { status: outcome.status });
+  }
+  const updated = outcome.lodge;
 
   revalidatePublicPageContent();
   // The default lodge's name feeds DB-first club identity (E3 #1929); refresh

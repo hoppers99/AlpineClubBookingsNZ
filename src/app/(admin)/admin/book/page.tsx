@@ -103,12 +103,15 @@ export default function AdminBookPage() {
   const activeLodgeIdRef = useRef<string | null>(lodgeId);
   const dateSelectionSequenceRef = useRef(0);
   const dateSelectionAbortRef = useRef<AbortController | null>(null);
+  const quoteSequenceRef = useRef(0);
+  const quoteAbortRef = useRef<AbortController | null>(null);
   useEffect(() => {
     activeLodgeIdRef.current = lodgeId;
   }, [lodgeId]);
   useEffect(
     () => () => {
       dateSelectionAbortRef.current?.abort();
+      quoteAbortRef.current?.abort();
     },
     [],
   );
@@ -221,8 +224,16 @@ export default function AdminBookPage() {
     pendingRequest?.abort();
   }
 
+  function invalidatePendingQuote() {
+    quoteSequenceRef.current += 1;
+    quoteAbortRef.current?.abort();
+    quoteAbortRef.current = null;
+    setPriceLoading(false);
+  }
+
   function handleMemberSelect(member: SelectedMember) {
     invalidatePendingDateSelection();
+    invalidatePendingQuote();
     setSelectedMember(member);
     setFamilyMembers([]);
     setStep("dates");
@@ -258,6 +269,7 @@ export default function AdminBookPage() {
 
   function handleMemberClear() {
     invalidatePendingDateSelection();
+    invalidatePendingQuote();
     setSelectedMember(null);
     setStep("member");
     setCheckIn(null);
@@ -302,6 +314,7 @@ export default function AdminBookPage() {
     // advance Lodge B's wizard or install Lodge A's capacity under Lodge B's
     // selector.
     invalidatePendingDateSelection(nextLodgeId);
+    invalidatePendingQuote();
     setLodgeId(nextLodgeId);
     if (!hadLodge) return;
     // Availability, pricing, and promos are all per lodge: switching lodges
@@ -405,35 +418,55 @@ export default function AdminBookPage() {
     setHostingConfirmMessage(null);
     setAdultMemberHostingReason("");
     setError("");
+    const requestedLodgeId = lodgeId;
+    if (!requestedLodgeId || !checkIn || !checkOut || !selectedMember) {
+      setError("Choose a lodge, dates, and booking owner before continuing");
+      return;
+    }
+    const requestedMemberId = selectedMember.id;
+    const sequence = ++quoteSequenceRef.current;
+    quoteAbortRef.current?.abort();
+    const controller = new AbortController();
+    quoteAbortRef.current = controller;
+    const ownsQuote = () =>
+      sequence === quoteSequenceRef.current &&
+      activeLodgeIdRef.current === requestedLodgeId;
     setPriceLoading(true);
     const checkInStr = checkIn!;
     const checkOutStr = checkOut!;
 
-    const res = await fetch("/api/bookings/quote", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        checkIn: checkInStr,
-        checkOut: checkOutStr,
-        lodgeId: lodgeId ?? undefined,
-        guests: guests.map((g) => ({
-          ageTier: g.ageTier,
-          isMember: g.isMember,
-          memberId: g.memberId,
-        })),
-        forMemberId: selectedMember!.id,
-      }),
-    });
-
-    if (res.ok) {
+    try {
+      const res = await fetch("/api/bookings/quote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          checkIn: checkInStr,
+          checkOut: checkOutStr,
+          lodgeId: requestedLodgeId,
+          guests: guests.map((g) => ({
+            ageTier: g.ageTier,
+            isMember: g.isMember,
+            memberId: g.memberId,
+          })),
+          forMemberId: requestedMemberId,
+        }),
+      });
       const data = await res.json();
-      setPriceQuote(data);
-      setStep("review");
-    } else {
-      const data = await res.json();
-      setError(data.error || "Failed to calculate price");
+      if (!ownsQuote()) return;
+      if (res.ok) {
+        setPriceQuote(data);
+        setStep("review");
+      } else {
+        setError(data.error || "Failed to calculate price");
+      }
+    } catch (quoteError) {
+      if (quoteError instanceof DOMException && quoteError.name === "AbortError") return;
+      if (ownsQuote()) setError("Failed to calculate price");
+    } finally {
+      if (ownsQuote()) setPriceLoading(false);
+      if (quoteAbortRef.current === controller) quoteAbortRef.current = null;
     }
-    setPriceLoading(false);
   }
 
   const requiresAdminReviewLocal = (() => {
@@ -927,7 +960,13 @@ export default function AdminBookPage() {
               maxGuests={resolvedCapacity}
             />
             <div className="flex justify-between pt-4">
-              <Button variant="outline" onClick={() => setStep("dates")}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  invalidatePendingQuote();
+                  setStep("dates");
+                }}
+              >
                 Back
               </Button>
               <Button
@@ -1299,7 +1338,13 @@ export default function AdminBookPage() {
           </div>
 
           <div className="flex justify-between">
-            <Button variant="outline" onClick={() => setStep("guests")}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                invalidatePendingQuote();
+                setStep("guests");
+              }}
+            >
               Back
             </Button>
             <div className="flex gap-3">

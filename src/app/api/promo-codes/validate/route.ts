@@ -89,6 +89,10 @@ const validateSchema = z
   })
   .refine((data) => Boolean(data.code) !== Boolean(data.workPartyEventId), {
     message: "Provide either a promo code or a working bee event, not both",
+  })
+  .refine((data) => !data.workPartyEventId || Boolean(data.lodgeId), {
+    message: "lodgeId is required for a working bee event",
+    path: ["lodgeId"],
   });
 
 export async function POST(req: NextRequest) {

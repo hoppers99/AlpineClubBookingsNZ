@@ -36,6 +36,13 @@ const createSchema = z.object({
   message: "startDate must be before or equal to endDate",
 });
 
+class HutLeaderOverlapError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HutLeaderOverlapError";
+  }
+}
+
 /**
  * GET /api/admin/hut-leaders
  * List hut leader assignments for one required active lodge.
@@ -209,43 +216,87 @@ export async function POST(req: NextRequest) {
     // The PIN email deliberately stays OUTSIDE the transaction (AGENTS.md: no
     // external provider call inside a DB transaction), with its existing
     // failure-tolerant `emailSent` handling untouched.
-    const assignment = bedId
-      ? await prisma.$transaction(async (tx) => {
-          await acquireLodgeCapacityLock(tx, lodgeId);
+    const created = await prisma.$transaction(async (tx) => {
+      await acquireLodgeCapacityLock(tx, parsed.data.lodgeId);
+      const lockedLodgeId = await resolveOptionalActiveLodgeId(
+        tx,
+        parsed.data.lodgeId,
+      );
+      if (!lockedLodgeId) throw new Error("LOCKED_LODGE_NOT_ACTIVE");
+
+      const lockedMember = await tx.member.findUnique({
+        where: { id: parsed.data.memberId },
+        select: {
+          id: true,
+          active: true,
+          email: true,
+          firstName: true,
+          ageTier: true,
+          accessRoles: { select: { role: true } },
+        },
+      });
+      if (
+        !lockedMember ||
+        !lockedMember.active ||
+        !hasAccessRole(lockedMember, "USER")
+      ) {
+        throw new Error("LOCKED_MEMBER_NOT_ELIGIBLE");
+      }
+
+      const lockedOverlaps = await tx.hutLeaderAssignment.findMany({
+        where: {
+          startDate: { lte: newEnd },
+          endDate: { gte: newStart },
+          ...lodgeNullTolerantScope(lockedLodgeId),
+        },
+        include: {
+          member: { select: { firstName: true, lastName: true } },
+        },
+      });
+      for (const existing of lockedOverlaps) {
+        const overlapDays = calculateOverlapDays(
+          newStart,
+          newEnd,
+          existing.startDate,
+          existing.endDate,
+        );
+        if (overlapDays > 1) {
+          const name = `${existing.member.firstName} ${existing.member.lastName}`;
+          throw new HutLeaderOverlapError(
+            `Assignment overlaps with ${name}'s assignment (${formatDateOnly(existing.startDate)} to ${formatDateOnly(existing.endDate)}) by ${overlapDays} days. Maximum 1 day overlap is allowed for handover.`,
+          );
+        }
+      }
+
+      if (bedId) {
           await validateCustodianBedHold({
             bedId,
-            lodgeId,
+            lodgeId: lockedLodgeId,
             startDate: newStart,
             endDate: newEnd,
             confirmOverCapacity: parsed.data.confirmOverCapacity,
             db: tx,
           });
-          return tx.hutLeaderAssignment.create({
-            data: {
-              memberId: parsed.data.memberId,
-              startDate: newStart,
-              endDate: newEnd,
-              hutLeaderPin,
-              lodgeId,
-              bedId,
-            },
-          });
-        })
-      : await prisma.hutLeaderAssignment.create({
-          data: {
-            memberId: parsed.data.memberId,
-            startDate: newStart,
-            endDate: newEnd,
-            hutLeaderPin,
-            lodgeId,
-          },
-        });
+      }
+      const assignment = await tx.hutLeaderAssignment.create({
+        data: {
+          memberId: parsed.data.memberId,
+          startDate: newStart,
+          endDate: newEnd,
+          hutLeaderPin,
+          lodgeId: lockedLodgeId,
+          ...(bedId ? { bedId } : {}),
+        },
+      });
+      return { assignment, member: lockedMember };
+    });
+    const { assignment } = created;
 
     let emailSent = true;
     try {
       await sendHutLeaderAssignmentEmail({
-        email: member.email,
-        firstName: member.firstName,
+        email: created.member.email,
+        firstName: created.member.firstName,
         startDate: newStart,
         endDate: newEnd,
         pin,
@@ -254,7 +305,7 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       emailSent = false;
       logger.error(
-        { err, assignmentId: assignment.id, memberId: member.id },
+        { err, assignmentId: assignment.id, memberId: created.member.id },
         "Failed to send hut leader assignment email"
       );
     }
@@ -273,13 +324,28 @@ export async function POST(req: NextRequest) {
         // granularity), so the screen shows the role word alone. Tell the admin
         // now rather than letting them expect a name that will never appear.
         minorCustodianWarning:
-          bedId && isMinorAgeTier(member.ageTier)
+          bedId && isMinorAgeTier(created.member.ageTier)
             ? "This member is a minor, so the lodge screen will show the custodian role only and never their name."
             : null,
       },
       { status: 201 }
     );
   } catch (err) {
+    if (err instanceof HutLeaderOverlapError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
+    if (err instanceof Error && err.message === "LOCKED_LODGE_NOT_ACTIVE") {
+      return NextResponse.json(
+        { error: "Lodge not found or not active" },
+        { status: 400 },
+      );
+    }
+    if (err instanceof Error && err.message === "LOCKED_MEMBER_NOT_ELIGIBLE") {
+      return NextResponse.json(
+        { error: "Member not found or not eligible for hut leader assignment" },
+        { status: 404 },
+      );
+    }
     const custodianResponse = custodianBedHoldErrorResponse(err);
     if (custodianResponse) return custodianResponse;
     logger.error({ err }, "Error creating hut leader assignment");

@@ -282,6 +282,10 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
 
   const newBooking = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    // The explicit lodge id is the immutable lock key.  Take the capacity lock
+    // before trusting active/access/room state so lodge deactivation cannot
+    // commit between validation and the booking write (INV-LOCK-002).
+    await acquireLodgeCapacityLock(tx, lodgeId);
     const bookingLodgeId = await resolveBookingLodgeId(
       tx,
       lodgeId,
@@ -292,7 +296,6 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
       lodgeId: bookingLodgeId,
       isOnBehalf,
     });
-    await acquireLodgeCapacityLock(tx, bookingLodgeId);
     // Duplicate member nights (upstream #80cbdf4c): a member cannot hold
     // two bookings covering the same night, regardless of lodge.
     await assertNoBookingMemberNightConflicts(tx, {
@@ -728,6 +731,9 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
       if (!input.tx) {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       }
+      // The caller-provided id is also the immutable capacity-lock key.  The
+      // authoritative active/access/requested-room reads belong after it.
+      await acquireLodgeCapacityLock(tx, lodgeId);
       const bookingLodgeId = await resolveBookingLodgeId(
         tx,
         lodgeId,
@@ -738,7 +744,6 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         lodgeId: bookingLodgeId,
         isOnBehalf,
       });
-      await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
       // Cross-lodge duplicate-stay guard, in-transaction layer (#1587 item 2).
       // Only the cross-lodge waitlist confirm sets duplicateStayGuard; every
@@ -1696,7 +1701,22 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
   const hasNonMembers = guests.some((g) => !g.isMember);
 
   const { newBooking, position } = await prisma.$transaction(async (tx) => {
-    await acquireLodgeCapacityLock(tx, waitlistLodgeId);
+    await acquireLodgeCapacityLock(tx, lodgeId);
+    // The preflight above is only for pricing/error quality.  Re-establish the
+    // authoritative scope after the lock immediately before persisting.
+    const lockedLodgeId = await resolveBookingLodgeId(
+      tx,
+      lodgeId,
+      requestedRoomId,
+    );
+    await assertMemberMayBookLodge(tx, {
+      memberId: effectiveMemberId,
+      lodgeId: lockedLodgeId,
+      isOnBehalf,
+    });
+    if (lockedLodgeId !== waitlistLodgeId) {
+      throw new BookingLodgeError("Booking lodge changed during creation");
+    }
     // Duplicate member nights (upstream #80cbdf4c): waitlist entries also
     // may not overlap the member's existing booked nights.
     await assertNoBookingMemberNightConflicts(tx, {
