@@ -44,6 +44,14 @@ const { mockPrisma, mockAuth, mockFlags, mockLookahead } = vi.hoisted(() => ({
     member: { findUnique: vi.fn() },
     lodge: { findFirst: vi.fn(), findUnique: vi.fn() },
     auditLog: { create: vi.fn() },
+    // #2887: the auto-assign cron now does its overlap read and its insert as
+    // ONE serialized decision under the per-lodge capacity key, so the double
+    // needs the interactive transaction and the advisory-lock statement. The
+    // transaction hands back THIS same object, so every assertion below still
+    // observes the same `hutLeaderAssignment` mocks whether the call arrived
+    // through `prisma` or through `tx`.
+    $executeRaw: vi.fn(async () => 0),
+    $transaction: vi.fn(),
   },
   mockAuth: vi.fn(),
   mockFlags: vi.fn(),
@@ -152,6 +160,11 @@ beforeEach(() => {
   mockPrisma.choreTemplate.findMany.mockResolvedValue([]);
   mockPrisma.choreAssignment.findMany.mockResolvedValue([]);
   mockPrisma.choreAssignment.groupBy.mockResolvedValue([]);
+  mockPrisma.$transaction.mockImplementation(async (arg: unknown) =>
+    typeof arg === "function"
+      ? (arg as (tx: typeof mockPrisma) => unknown)(mockPrisma)
+      : arg,
+  );
   mockPrisma.hutLeaderAssignment.findFirst.mockResolvedValue(null);
   mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([]);
   mockPrisma.lodge.findFirst.mockResolvedValue({ id: "lodge-1" });
