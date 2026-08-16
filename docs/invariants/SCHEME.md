@@ -611,9 +611,10 @@ following lines. Four-space indented code is literal when it begins outside a
 paragraph. Any type-1 closing tag ends a type-1 raw HTML block; standard block
 tags stay literal until the terminating blank line, while a syntactically valid
 type-7 tag starts that form only when no paragraph is active, including a
-container paragraph continuing lazily without its quote/list marker. Indented
-code obeys the same paragraph-interruption rule. An ordered list can interrupt
-an active paragraph only when it starts at one.
+container paragraph continuing lazily without its quote/list marker. A newly
+opened blockquote or list interrupts the prior paragraph, so type-7 HTML and
+indented code may start inside that fresh container. An ordered list can
+interrupt an active paragraph only when it starts at one.
 
 **Definition** — collected only from `docs/invariants/**/*.md`:
 

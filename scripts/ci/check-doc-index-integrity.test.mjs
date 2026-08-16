@@ -597,6 +597,22 @@ describe("auditDocs — the whole check", () => {
     expect(problems[0]).toContain("INV-MONEY-002 is cited at");
   });
 
+  it.each([
+    [
+      "type-7 HTML",
+      "paragraph\n> <fixture>\n> ## INV-MONEY-001 — literal duplicate\n",
+    ],
+    ["indented code", "paragraph\n>     INV-DEMO-999\n"],
+  ])("lets a fresh blockquote interrupt a paragraph with %s", (_kind, fixture) => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n${fixture}`,
+    );
+
+    expect(auditDocs(files)).toEqual([]);
+  });
+
   it("does not let an ordered list starting above one interrupt a paragraph", () => {
     const files = repo();
     files.set(

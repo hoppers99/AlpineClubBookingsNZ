@@ -458,13 +458,18 @@ function structuralLine(line, paragraph) {
       });
       return {
         containers: [...paragraph.containers, ...nested.containers],
+        opensContainer: nested.containers.length > 0,
         text: nested.text,
       };
     }
   }
-  return stripOpeningContainers(line, {
+  const fresh = stripOpeningContainers(line, {
     interruptingParagraph: paragraph !== null,
   });
+  return {
+    ...fresh,
+    opensContainer: fresh.containers.length > 0,
+  };
 }
 
 function leadingIndentColumns(text) {
@@ -573,7 +578,9 @@ function scanMarkdownBlocks(text) {
       const htmlTerminator = rawHtmlBlockTerminator(outside.text);
       if (
         htmlTerminator &&
-        (htmlTerminator.canInterruptParagraph || paragraph === null)
+        (htmlTerminator.canInterruptParagraph ||
+          paragraph === null ||
+          outside.opensContainer)
       ) {
         fenced.push(numberedLine);
         paragraph = null;
@@ -607,7 +614,10 @@ function scanMarkdownBlocks(text) {
         continue;
       }
 
-      if (paragraph === null && leadingIndentColumns(outside.text) >= 4) {
+      if (
+        (paragraph === null || outside.opensContainer) &&
+        leadingIndentColumns(outside.text) >= 4
+      ) {
         paragraph = null;
         fenced.push(numberedLine);
         literal = { containers: outside.containers, type: "indented" };
