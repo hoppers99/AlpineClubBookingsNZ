@@ -309,10 +309,8 @@ const REF_DEF = /^\s*\[[^\]]+\]:\s*(\S+)/;
 const FENCE_OPENER_PATTERN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const FENCE_CLOSER_PATTERN = /^ {0,3}(`+|~+)[ \t]*$/;
 const BLOCKQUOTE_PREFIX_PATTERN = /^ {0,3}>[ \t]?/;
-const LIST_PREFIX_PATTERN =
-  /^( {0,3})([*+-]|([0-9]{1,9})[.)])([ \t]{1,4})(?=\S|$)/;
-const LIST_INDENTED_CODE_PREFIX_PATTERN =
-  /^( {0,3})([*+-]|([0-9]{1,9})[.)])( )(?= {4})/;
+const LIST_MARKER_PATTERN =
+  /^( {0,3})([*+-]|([0-9]{1,9})[.)])([ \t]+)(?=\S|$)/;
 const HTML_BLOCK_TAGS =
   "address|article|aside|base|basefont|blockquote|body|caption|center|col|" +
   "colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|" +
@@ -326,12 +324,30 @@ const HTML_BLOCK_TAG_PATTERN = new RegExp(
 const COMPLETE_HTML_TAG_PATTERN =
   /^ {0,3}(?:<\/[A-Za-z][A-Za-z0-9-]*[ \t]*>|<[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[A-Za-z_:][A-Za-z0-9_.:-]*(?:[ \t]*=[ \t]*(?:[^ "'=<>`]+|'[^']*'|"[^"]*"))?)*[ \t]*\/?>)[ \t]*$/;
 
-function indentationColumns(text) {
-  let column = 0;
+function indentationColumns(text, initialColumn = 0) {
+  let column = initialColumn;
   for (const character of text) {
     column = character === "\t" ? column + (4 - (column % 4)) : column + 1;
   }
   return column;
+}
+
+/** Resolve CommonMark list padding while retaining any four-column code indent. */
+function listPrefix(line) {
+  const match = line.match(LIST_MARKER_PATTERN);
+  if (!match) return null;
+
+  const marker = `${match[1]}${match[2]}`;
+  const markerColumn = indentationColumns(marker);
+  const whitespace = match[4];
+  const paddingColumns =
+    indentationColumns(whitespace, markerColumn) - markerColumn;
+  const consumedWhitespace = paddingColumns <= 4 ? whitespace : whitespace[0];
+
+  return {
+    orderedDigits: match[3],
+    prefix: `${marker}${consumedWhitespace}`,
+  };
 }
 
 /** Strip quote/list markers from a possible container-block opener. */
@@ -347,11 +363,11 @@ function stripOpeningContainers(line, { interruptingParagraph = false } = {}) {
       continue;
     }
 
-    const list =
-      text.match(LIST_PREFIX_PATTERN) ?? text.match(LIST_INDENTED_CODE_PREFIX_PATTERN);
+    const list = listPrefix(text);
     if (list) {
-      const itemText = text.slice(list[0].length);
-      const orderedStart = list[3] === undefined ? null : Number(list[3]);
+      const itemText = text.slice(list.prefix.length);
+      const orderedStart =
+        list.orderedDigits === undefined ? null : Number(list.orderedDigits);
       if (
         interruptingParagraph &&
         (itemText.trim() === "" || (orderedStart !== null && orderedStart !== 1))
@@ -360,9 +376,9 @@ function stripOpeningContainers(line, { interruptingParagraph = false } = {}) {
       }
       containers.push({
         type: "list",
-        width: indentationColumns(list[0]),
+        width: indentationColumns(list.prefix),
       });
-      text = text.slice(list[0].length);
+      text = itemText;
       interruptingParagraph = false;
       continue;
     }

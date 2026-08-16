@@ -669,6 +669,16 @@ describe("auditDocs — the whole check", () => {
     expect(auditDocs(files)).toEqual([]);
   });
 
+  it("expands tabs when recognising list-owned indented code", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n-\t\tINV-DEMO-999\n`,
+    );
+
+    expect(auditDocs(files)).toEqual([]);
+  });
+
   it("does not let an ordered list starting above one interrupt a paragraph", () => {
     const files = repo();
     files.set(
