@@ -37,9 +37,11 @@ type OccupancyCalendarResponse = {
   bookings: OccupancyCalendarBooking[];
 };
 
+// Re-exported so no caller import changes when the tone vocabulary moved out.
+// `CalendarOverlayEmphasis` is deliberately NOT re-exported: nothing imports it
+// from here, and knip counts a re-export nobody consumes as dead surface.
 export type {
   CalendarTone,
-  CalendarOverlayEmphasis,
   CalendarOverlayValue,
 } from "./occupancy-calendar-tones";
 import type {
