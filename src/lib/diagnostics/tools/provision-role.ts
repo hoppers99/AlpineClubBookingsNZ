@@ -881,7 +881,8 @@ export function quoteLiteral(value: string): string {
 /**
  * The ordered, idempotent statement list that provisions the role. Every
  * statement is safe to re-run, and the ORDER is load-bearing: create/repair the
- * role, strip everything, then grant back only the (currently empty) allowlist.
+ * role, strip everything, then grant back only the declared allowlist, which
+ * contract tests keep aligned with the shipped registry's relation/column reads.
  * Running the list is what makes the role's shape a database fact rather than an
  * operator's good intentions.
  */

@@ -7,7 +7,7 @@ import { checkRateLimitInMemory as checkRateLimit, _testStore, rateLimiters } fr
 import {
   accountDeletionApprovedTemplate,
   accountDeletionRejectedTemplate,
-} from "@/lib/email-templates";
+} from "@/lib/email-templates/account";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 

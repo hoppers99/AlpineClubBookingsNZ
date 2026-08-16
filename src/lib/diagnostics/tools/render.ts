@@ -111,11 +111,11 @@ function neutralize(value: string): string {
  * `severity=`, two `outcome=` and two `action=` assignments, the second of them
  * naming a payment event that never happened. `AuditLog.requestId` is verbatim
  * client header text (`audit.ts` → `getAuditRequestContext`), so that value was
- * attacker-chosen, and AID-6B/6C will project genuinely free text (member names,
- * booking notes, payment narrations) where the same hole would be wide open.
+ * attacker-chosen, and the shipped AID-6B pack projects genuinely free-text
+ * member, lodge, room, and bed names where the same hole would be wide open.
  *
  * Quoting rather than stripping `;` and `=` is deliberate: those characters are
- * legitimate content in the free text the later packs project, and a quoted span
+ * legitimate content in the free text the shipped packs project, and a quoted span
  * cannot be escaped because `neutralize` has already removed every `"` from the
  * value. `null`, booleans and numbers stay unquoted so `note=null` remains
  * distinguishable from the string `note="null"`.

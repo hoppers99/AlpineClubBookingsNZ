@@ -64,7 +64,7 @@ vi.mock("@/lib/email", () => ({
   sendEmail: mocks.sendEmail,
 }));
 
-vi.mock("@/lib/email-templates", () => ({
+vi.mock("@/lib/email-templates/refunds", () => ({
   // #2321: one function per outcome — no boolean can route approval wording to
   // a declined member.
   refundRequestApprovedTemplate: mocks.refundRequestApprovedTemplate,

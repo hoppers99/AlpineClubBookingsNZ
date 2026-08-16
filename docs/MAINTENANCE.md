@@ -1,23 +1,31 @@
 # Maintenance
 
+Audience: Developer, Agent
+
 This document describes the public maintenance baseline for AlpineClubBookingsNZ.
 
 ## Required Gates
 
-Run lightweight local gates before opening or merging application changes:
+Run the fast local gates before pushing application changes. `test:related` is
+mandatory because it follows the module graph to adjacent suites that a
+filename-only selection misses; add focused tests for the contracts you changed.
 
 ```bash
-npm audit --audit-level=high
-npm run lint
-DATABASE_URL=postgresql://user:pass@localhost:5432/tacbookings npx prisma validate
 npm run db:generate
+npm run lint
 DATABASE_URL=postgresql://user:pass@localhost:5432/tacbookings npm run typecheck
-npm test
-npm run quality:report
+npm run test:related -- $(git diff --name-only main...HEAD)
+npm test -- path/to/focused.test.ts
+npm run knip                 # when files or exports change
+npm run docs:linkcheck       # when docs change
+npm run docs:indexcheck      # when docs change or INV-* ids are cited
+npm run quality:budget
 git diff --check
 ```
 
-`npm test` includes property-based tests (fast-check) for the pure money math —
+The blocking `verify` job owns the full `npm test`, production build and audit;
+do not duplicate the full suite locally unless diagnosing CI or CI is
+unavailable. `npm test` includes property-based tests (fast-check) for the pure money math —
 pricing, promo discounts, refund tiers, change fees, member credit, and the
 Xero booking-edit settlement classifier — in
 `src/lib/policies/__tests__/*.property.test.ts` and
@@ -293,22 +301,114 @@ shared volume:
 
 ## Maintainability Budgets
 
-The repo has a handful of oversized files and route surfaces. Future
-refactors should keep new code inside soft budgets so reviewers can spot
-regressions early. Treat these as review prompts, not hard CI gates:
+The budgets below are the long-term target for every production source file:
 
-- Route handlers (`src/app/.../route.ts`) should generally stay under
-  roughly 250 LOC.
-- App Router page shells (`src/app/.../page.tsx`) should generally stay
-  under roughly 500 LOC.
-- New domain modules (`src/lib/...`, `src/components/...`) should
-  generally stay under roughly 700 LOC.
+- Route handlers (`src/app/.../route.ts`) should stay under 250 LOC.
+- App Router page shells (`src/app/.../page.tsx`) should stay under 500 LOC.
+- New domain modules (`src/lib/...`, `src/components/...`) should stay under
+  700 LOC.
 - No new production `any`, type suppression (`@ts-ignore`,
   `@ts-expect-error`, `@ts-nocheck`), or `eslint-disable` without a
   short inline comment explaining the local justification.
 
-When a file is already over budget, prefer extracting cohesive helpers
-into a focused module rather than adding more to the existing surface.
+The first three are enforced, as a **regression ratchet** rather than a
+flag-day hard gate (#2687). When a file is already over budget, prefer
+extracting cohesive helpers into a focused module rather than adding more to
+the existing surface.
+
+### File-size budget ratchet
+
+The tree does not meet the budgets today and will not for some time. At the
+baseline carried after `main` commit `aafbd08f3`, the scanner measured 1,903
+production files; 281 were over budget and carried 131,709 lines of size debt.
+These are an anchored measurement, not acceptance constants — rerun
+`npm run quality:budget` for the current tree. Failing all debt at once would
+produce either a permanently red gate or a mass exception list, and both are
+worse than no gate, because they look like enforcement while providing none.
+So the rule CI enforces is:
+
+> Current size debt may stay. New debt and debt growth may not appear silently.
+
+Every over-budget file is recorded in
+[`scripts/quality/file-size-baseline.txt`](../scripts/quality/file-size-baseline.txt)
+with the line count that is now its ceiling. From that:
+
+- a file **not** in the baseline may not exceed its budget;
+- a file **in** the baseline may not exceed its recorded line count;
+- shrinking is always allowed; verification reports the old ceiling as stale
+  until regeneration **lowers** it;
+- a missing, stale or malformed baseline fails too — an enforcement tool that
+  cannot trust its own input must say so rather than report a pass it has not
+  earned.
+
+```bash
+npm run quality:budget          # verify (also a step in CI's `verify` job)
+npm run quality:budget:update    # regenerate against the working tree
+```
+
+Both read `git ls-files` and the working tree only: no network, no database,
+no build. A full run is well under a second.
+
+**Scope.** Tracked source under `src/` only, tests excluded, in any of
+`.ts .tsx .mts .cts .js .jsx .mjs .cjs`. Everything outside `src/` —
+`scripts/`, `prisma/`, `e2e/`, `load/`, and a temporary `measurement/` tree —
+is outside the file-size policy by definition and never appears in the
+baseline. That scope is stated once, in the tool, rather than as a per-issue
+exemption; adding or deleting a measurement tree is a non-event for this gate.
+
+The extension list is checked rather than trusted. A tracked file under `src/`
+whose extension is in neither the source set nor the tool's short list of
+declared non-source kinds (`.css`, `.md`, `.json`, images, fonts) **fails the
+check**, naming the file and asking for it to be classified. Without that, the
+scope silently narrows the first time a new file kind lands, and a narrowing
+scope in a ratchet looks exactly like progress: renaming a baselined
+`src/lib/audit.ts` to `audit.js` used to remove it from the gate entirely and
+report the removal as a 45-line *reduction* in accepted debt, in a diff showing
+one deleted baseline line. That is the shape this section teaches reviewers to
+read as a split going well.
+
+#### Changing the baseline
+
+The baseline is generated, never hand-edited. Regenerate it whenever the tree
+legitimately changes and commit the result in the same PR. Update mode is an
+intentional, reviewed escape from the old ceiling, not a verification pass: CI
+runs only `npm run quality:budget`, never the update command. It may accept
+regression and stale-record findings from a valid committed ledger, but it
+refuses to write from a missing, malformed or untracked ledger, an empty scan,
+or an unclassified source file. Restore the last reviewed baseline first; an
+update without a trusted comparison could erase the very per-record warnings a
+reviewer needs.
+
+- **A split or a thinning** lowers a number, or removes a line entirely. This is
+  the expected direction. Never edit a reduced file back upward to avoid a
+  conflict.
+- **A rebase** that conflicts on the baseline is resolved by regenerating
+  against the rebased tree, not by merging counts by hand. The file is one
+  sorted record per line with no totals and no header that changes, so
+  concurrent branches touching different files usually merge without a
+  conflict at all.
+- **A deliberate increase** is allowed, and is the only escape path. It must
+  land as added, removed or changed records in this file, and the PR body must
+  say why the increase is necessary and why splitting is worse at that point. There is no
+  second exceptions list, and there is no way to pass the gate without the
+  changed line: hand-raising a ceiling the tree does not justify, deleting a
+  record for a file that is still over budget, or retyping a route handler as a
+  domain module all fail as a malformed or stale baseline.
+
+`npm run quality:budget:update` lists every pre-update regression separately,
+including its path, budget, baseline status and current size, then prints the
+aggregate debt change as context. Review the per-record list first: a reduction
+in one file must not cancel the warning for growth in another. A pure rename of
+an oversized file fails verification before update as one new-debt record plus
+one stale old-path record; regeneration moves the ledger entry and reports an
+unchanged aggregate. A rename that also grows remains in the per-record warning
+even when a larger unrelated split makes aggregate debt fall. Because a rename
+appears as a new path, the command cannot claim which deleted path was its old
+identity or ceiling; the ledger diff supplies that old-path evidence. The diff
+shows both path records and the command names the accepted regression, so the
+PR body must justify the growth rather than pointing only to the favourable net
+total. That visible, reviewed acceptance is the intended contract — neither
+case is a silent bypass.
 
 ### Quality report
 
@@ -324,8 +424,8 @@ The script scans tracked files via `git ls-files` and prints a markdown
 summary of:
 
 - largest production files
-- largest route handlers and App Router pages
-- newly oversized files outside the accepted-hotspot allow-list
+- the same ratchet findings the blocking gate reports
+- largest oversized files, largest route handlers and App Router pages
 - largest test files
 - production `any` / type-suppression hotspots
 - production `eslint-disable` hotspots
@@ -333,32 +433,36 @@ summary of:
 
 It uses only existing repo tooling, runs without external service
 credentials or network access, and is advisory: it warns and informs rather
-than failing the build. The `Over budget` column is a soft review prompt:
-`yes` means the file exceeds the route-handler, page-shell, or new-domain-module
-budget. The `Newly oversized files` section is stricter: it lists oversized
-production files that are not in the accepted hotspot allow-list below, so
-reviewers can spot regressions without making the report a CI gate.
+than failing the build. The `Over budget` column is a review prompt: `yes`
+means the file exceeds the route-handler, page-shell, or new-domain-module
+budget. The `File-size budget ratchet` section is the enforced part, and it is
+computed by the same module `npm run quality:budget` uses — the report and the
+gate cannot disagree about which files are over budget.
 
-### Known remaining hotspots
+### Refactor history and split guidance
 
-These files are intentionally accepted carry-over hotspots in the current
-post-refactor baseline. This table is not a blanket allow-list for every file
-that may appear in `npm run quality:report`. Feature-heavy releases can leave
-additional advisory "newly oversized" entries visible; keep those warnings
-visible unless a reviewer explicitly accepts them, and prefer follow-up
-extraction over expanding this table casually.
+The ledger of accepted size debt is
+[`scripts/quality/file-size-baseline.txt`](../scripts/quality/file-size-baseline.txt),
+regenerated from the tree. This table is not that ledger and is not an
+allow-list: it is the standing guidance for a handful of surfaces whose split
+axis was decided once and should not be relitigated. It carries no line counts,
+because a hand-maintained count is exactly what went stale here before — the
+nine files this table used to list were presented as *the* over-budget
+population while the real figure was in the hundreds, and three of the counts
+were off by two orders of magnitude.
 
-| File | Current LOC | Disposition |
-| --- | ---: | --- |
-| `src/lib/xero-inbound-reconciliation.ts` | 13 | Split (#1270, #1208 item 1) into a re-export barrel over cohesive `src/lib/xero-inbound/` modules (`types`, `constants`, `amounts`, `object-links`, `audit`, `incremental-reconciliation`, `contact`, `payment`, `invoice-paid-effects`, `invoice`, `credit-note-repairs`, `credit-note`, `event-processing`). Behavior-preserving verbatim motion with an acyclic import graph (`types`/`constants` are leaves; the `event-processing` worker sits on top); the barrel re-exports the unchanged public surface (3 functions + 5 result types + `XeroInboundReplayError`). |
-| `src/lib/xero-booking-repair.ts` | 2682 | Accepted as-is for now: operator repair tool, documented separately, not normal request-path code. |
-| `src/lib/xero-operation-outbox.ts` | 1972 | Queued for future split when queue dispatch, release, or retry policy changes next land (PR-b of #1272 co-locates the replay stack). |
-| `src/lib/email-templates.ts` | 2006 | Accepted as-is for now: central template catalogue; split only with a template-registry change. |
-| `src/lib/email.ts` | 11 | Split (#1137) into a re-export facade over cohesive `src/lib/email/` modules (`core`, `admin-alerts`, `account`, `booking`, `membership`, `family`, `waitlist`, `groups`, `booking-requests`, `chores`, `ses-feedback`, plus non-re-exported `internal` plumbing). The `admin-alerts` surface was itself split (#1210) by **domain/source** — `admin-alerts.ts` is now a barrel re-exporting `admin-alerts-shared` (plumbing + `getAdminEmails`), `admin-alerts-booking`, `admin-alerts-membership`, `admin-alerts-finance`, and `admin-alerts-ops`. When an alerts/email module next exceeds the ~700 LOC soft cap, split it along the **domain axis** (booking/capacity, membership lifecycle, finance/Xero/payments, ops) — not by audience, which is fuzzy because most alerts fan out to all admins — and keep the facade barrel's exports byte-identical so `src/lib/email.ts` and every importer keep resolving. |
-| `src/lib/xero-hardening.ts` | 1606 | Accepted as-is for now: central Xero hardening policy and diagnostics boundary. The `xero-hardening-canonical-links.ts` ↔ `xero-hardening-report.ts` clone pair (112 duplicated lines / 2 clones, jscpd 2026-07-07) is recorded as accepted under this same disposition (#1524 C4, owner-ticked 2026-07; same subsystem call as #1208 items 5/6). |
-| `src/lib/finance-sync-xero-datasets.ts` | 47 | Split (#1531, #1524 C3) into a re-export barrel over cohesive `src/lib/finance-sync-xero-datasets/` modules (`constants`, `types`, `date-format`, `report-snapshot`, `invoice-helpers`, `open-invoices`, `aged-invoices-snapshot`, `open-invoices-snapshot`, `report-sync`, `monthly-facts`, `chart-of-accounts`, `invoice-sync`). Behavior-preserving verbatim motion with an acyclic import graph (`constants`/`types`/`date-format` are leaves; the sync orchestrators sit on top); the barrel re-exports the unchanged public surface (29 functions/consts + the `FinanceMonthlyFactsWindowInput` type). The self-duplicated clone regions were deduped: the accounts-receivable and accounts-payable invoice builders now share one generic `buildFinanceOpenInvoicesSnapshot` (each snapshot's persisted invoice shape is supplied verbatim by the caller, keeping `expectedPaymentDate`/`plannedPaymentDate` divergent), and the aged + open-invoice builders share `updateContactDueDateRange`/`compareOpenInvoicePayloadsByDueDate`/`deriveSnapshotCurrency`. jscpd (min-tokens 70) dropped from 186 duplicated lines / 7 clones to 38 / 3 (2026-07-08); the 3 residual clones are the intentionally-separate AR-vs-AP payload literals plus two short prefix regions whose further extraction would over-abstract. |
-| `src/app/(admin)/admin/members/[id]/page.tsx` | 1747 | Queued for future route-shell thinning as member-detail sections continue to move local state out. |
-| `src/app/(admin)/admin/family-groups/page.tsx` | 565 | Route-shell thinning completed (#1530, closes the #1524 C2 carry-over). The request-review duplication with `src/components/admin/family-group-editor.tsx` was extracted to a shared `FamilyGroupRequestReviewSection` (`src/components/admin/family-groups/request-review-section.tsx`) that both the admin page and the editor render; the per-request state and the approve/reject/search handlers now live there once (behaviour-preserving — the two prior copies differed only by a `member`/`adult` noun and their refresh callback, now props). jscpd (min-tokens 70) across the pair drops from the catalogued 225 duplicated lines / 7 clones to 29 lines / 3 clones — the residue is the unavoidable shared UI-import block plus the create/edit member-search combobox, left inline because its surrounding selected-member badges differ between the two forms. page.tsx thinned 786 → 565 LOC; editor 715 → 499 LOC. |
+| File | Disposition |
+| --- | --- |
+| `src/lib/xero-inbound-reconciliation.ts` | Split (#1270, #1208 item 1) into a re-export barrel over cohesive `src/lib/xero-inbound/` modules (`types`, `constants`, `amounts`, `object-links`, `audit`, `incremental-reconciliation`, `contact`, `payment`, `invoice-paid-effects`, `invoice`, `credit-note-repairs`, `credit-note`, `event-processing`). Behavior-preserving verbatim motion with an acyclic import graph (`types`/`constants` are leaves; the `event-processing` worker sits on top); the barrel re-exports the unchanged public surface (3 functions + 5 result types + `XeroInboundReplayError`). |
+| `src/lib/xero-booking-repair.ts` | Accepted as-is for now: operator repair tool, documented separately, not normal request-path code. |
+| `src/lib/xero-operation-outbox.ts` | Queued for future split when queue dispatch, release, or retry policy changes next land (PR-b of #1272 co-locates the replay stack). |
+| `src/lib/email-templates.ts` (deleted) | Split (#2689) into 19 cohesive family/content modules under `src/lib/email-templates/`, plus the shared `layout` shell and `escape` leaf (21 files altogether), with **no compatibility barrel** — callers import the family module directly. Fourteen modules mirror sender families in `src/lib/email/`; `communications` and `refunds` cover senders outside that tree; and `booking-reminders`, `booking-exceptions`, and `admin-xero-reports` keep large families within budget. The domain-only money rows and netting arithmetic live separately at `src/lib/booking-money-lines.ts`, shared by renderers, booking settlement reads, and the Xero drift checker. Largest rendering module 581 LOC, inside the 700 budget. The render-equivalence gate pins 219 complete outputs and discovers template modules from the directory, so a new renderer cannot arrive uncovered. Three former send-site bodies under two registry keys (`website-contact` and `admin-email-failure`) were brought under that gate, then deliberately moved onto the standard club shell; recipient, template, and booking values are escaped at the rendering edge. The old `adminXeroRepeatedFailureTemplate:minimal` pin was stale: the exact pre-split head renders 5,799 bytes with sha256 `f7a72f30fc8250c8ff75ca1417b9251541f5a06664e7d5c4fe3b8b171b9f6d4d`, byte-identical to the split head, rather than its recorded 5,802-byte hash. The split corrected that one pin row; it did not change that body. Mutation proofs cover byte-neutral body drift, module omissions, duplicate export names, duplicate case and pin IDs, and removed escaping. |
+| `src/lib/contextual-help.ts` (deleted) | Split (#2689) into 16 modules under `src/lib/contextual-help/`. `index.ts` **is** the registry (path matching, longest-prefix resolution, fallbacks, question attachment) rather than a barrel, and keeps the same three exported accessors; entry content sits in one module per **admin sidebar section** (`admin/*.ts`, matching `navSections` in `admin-sidebar.tsx`) — plus one `appearance-and-website` module split off Setup & Configuration, because `/admin/appearance` is an item in that section rather than a section of its own and folding its seven pages back would take that module to ~810 lines, over budget — with `finance.ts`, `questions-*.ts`, `fallbacks.ts`, and the two leaves `types.ts` and `booking-status-glossary.ts`. Content stayed TypeScript by owner decision — the typed shape is the schema check. Largest module 580 LOC. The structural move was proved value-for-value for every one of the 68 resolved paths: a JSON dump keyed by path — both scopes, both fallbacks, nested resolution and `normalisePath` — was byte-identical before and after (106,917 bytes, same sha256). The same PR then reconciled the shadowed second `/admin/notifications` entry against the live page and folded its accurate delivery-mode field into the surviving entry. The registry now has 68 entries with 68 unique paths (67 admin, one finance), and a permanent test rejects any future duplicate as unreachable text. |
+| `src/lib/email.ts` | Split (#1137) into a re-export facade over cohesive `src/lib/email/` modules (`core`, `admin-alerts`, `account`, `booking`, `membership`, `family`, `waitlist`, `groups`, `booking-requests`, `chores`, `ses-feedback`, plus non-re-exported `internal` plumbing). The `admin-alerts` surface was itself split (#1210) by **domain/source** — `admin-alerts.ts` is now a barrel re-exporting `admin-alerts-shared` (plumbing + `getAdminEmails`), `admin-alerts-booking`, `admin-alerts-membership`, `admin-alerts-finance`, and `admin-alerts-ops`. When an alerts/email module next exceeds the ~700 LOC soft cap, split it along the **domain axis** (booking/capacity, membership lifecycle, finance/Xero/payments, ops) — not by audience, which is fuzzy because most alerts fan out to all admins — and keep the facade barrel's exports byte-identical so `src/lib/email.ts` and every importer keep resolving. |
+| `src/lib/xero-hardening.ts` | Accepted as-is for now: central Xero hardening policy and diagnostics boundary. The `xero-hardening-canonical-links.ts` ↔ `xero-hardening-report.ts` clone pair (112 duplicated lines / 2 clones, jscpd 2026-07-07) is recorded as accepted under this same disposition (#1524 C4, owner-ticked 2026-07; same subsystem call as #1208 items 5/6). |
+| `src/lib/finance-sync-xero-datasets.ts` | Split (#1531, #1524 C3) into a re-export barrel over cohesive `src/lib/finance-sync-xero-datasets/` modules (`constants`, `types`, `date-format`, `report-snapshot`, `invoice-helpers`, `open-invoices`, `aged-invoices-snapshot`, `open-invoices-snapshot`, `report-sync`, `monthly-facts`, `chart-of-accounts`, `invoice-sync`). Behavior-preserving verbatim motion with an acyclic import graph (`constants`/`types`/`date-format` are leaves; the sync orchestrators sit on top); the barrel re-exports the unchanged public surface (29 functions/consts + the `FinanceMonthlyFactsWindowInput` type). The self-duplicated clone regions were deduped: the accounts-receivable and accounts-payable invoice builders now share one generic `buildFinanceOpenInvoicesSnapshot` (each snapshot's persisted invoice shape is supplied verbatim by the caller, keeping `expectedPaymentDate`/`plannedPaymentDate` divergent), and the aged + open-invoice builders share `updateContactDueDateRange`/`compareOpenInvoicePayloadsByDueDate`/`deriveSnapshotCurrency`. jscpd (min-tokens 70) dropped from 186 duplicated lines / 7 clones to 38 / 3 (2026-07-08); the 3 residual clones are the intentionally-separate AR-vs-AP payload literals plus two short prefix regions whose further extraction would over-abstract. |
+| `src/app/(admin)/admin/members/[id]/page.tsx` | Queued for future route-shell thinning as member-detail sections continue to move local state out. |
+| `src/app/(admin)/admin/family-groups/page.tsx` | Route-shell thinning completed (#1530, closes the #1524 C2 carry-over). The request-review duplication with `src/components/admin/family-group-editor.tsx` was extracted to a shared `FamilyGroupRequestReviewSection` (`src/components/admin/family-groups/request-review-section.tsx`) that both the admin page and the editor render; the per-request state and the approve/reject/search handlers now live there once (behaviour-preserving — the two prior copies differed only by a `member`/`adult` noun and their refresh callback, now props). jscpd (min-tokens 70) across the pair drops from the catalogued 225 duplicated lines / 7 clones to 29 lines / 3 clones — the residue is the unavoidable shared UI-import block plus the create/edit member-search combobox, left inline because its surrounding selected-member badges differ between the two forms. page.tsx thinned 786 → 565 LOC; editor 715 → 499 LOC. |
 
 ## Operational Repair Tools
 

@@ -11,7 +11,10 @@ import {
 } from "react";
 import { CircleHelp, Maximize2, X } from "lucide-react";
 import { usePathname } from "next/navigation";
-import type { HelpQuestion, HelpSection } from "@/lib/contextual-help";
+import {
+  type HelpQuestion,
+  type HelpSection,
+} from "@/lib/contextual-help/types";
 import type { HelpPageContent } from "@/lib/help/types";
 import { HelpBrowseView } from "./help-browse-view";
 import { HelpChatThread } from "./help-chat-thread";

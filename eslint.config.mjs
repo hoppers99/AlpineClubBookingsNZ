@@ -914,14 +914,14 @@ const eslintConfig = defineConfig([
     // Documented exclusions (each has its own block below):
     //   * `src/lib/nzst-date.ts`, `src/lib/date-only.ts` — the helpers
     //     themselves, the sanctioned home for raw date formatting.
-    //   * `src/lib/email-templates.ts` — `formatChoreRosterDate` (#2256): the
-    //     chore-roster long-weekday subject line and body must stay
+    //   * `src/lib/email-templates/chores.ts` — `formatChoreRosterDate`
+    //     (#2256): the chore-roster long-weekday subject line and body must stay
     //     byte-identical, and the helper is shared with `src/lib/email/chores.ts`.
     //     Flat config cannot scope a rule to one function, so the exemption is
-    //     file-wide and therefore coarser than we would like. It exists SOLELY
-    //     for `formatChoreRosterDate`; new date rendering in that file must
-    //     still use the helpers, as `formatOperationalDateTime` does after
-    //     being migrated in this very pull request.
+    //     still file-wide — but the file is now the 88-line chore-template
+    //     module rather than the 5,000-line template monolith (#2689), which is
+    //     as narrow as flat config allows. New date rendering in it must still
+    //     use the helpers.
     //   * the three Number-formatting files — a narrowed block, NOT an `off`:
     //     they keep both date restrictions and drop only `toLocaleString`.
     //   * `src/lib/xero-invoice-helpers.ts` — ISO payload dates for the Xero
@@ -1003,7 +1003,7 @@ const eslintConfig = defineConfig([
     // SQL or a hand-written date truncation, and the exemption they need is from
     // the toLocale* DATE-RENDERING rules only. Same reasoning in the
     // Number-formatting block below.
-    files: ["src/lib/nzst-date.ts", "src/lib/email-templates.ts"],
+    files: ["src/lib/nzst-date.ts", "src/lib/email-templates/chores.ts"],
     rules: {
       "no-restricted-syntax": srcRestrictedSyntax(),
     },

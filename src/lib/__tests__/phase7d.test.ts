@@ -1102,7 +1102,7 @@ describe("F10: Per-Guest Email Link for Chore Access", () => {
 
   describe("choreRosterTemplate with link", () => {
     it("includes chore link when provided", async () => {
-      const { choreRosterTemplate } = await import("@/lib/email-templates");
+      const { choreRosterTemplate } = await import("@/lib/email-templates/chores");
       const html = choreRosterTemplate(
         "Bob Jones",
         "2026-07-15",
@@ -1116,7 +1116,7 @@ describe("F10: Per-Guest Email Link for Chore Access", () => {
     });
 
     it("omits chore link section when not provided", async () => {
-      const { choreRosterTemplate } = await import("@/lib/email-templates");
+      const { choreRosterTemplate } = await import("@/lib/email-templates/chores");
       const html = choreRosterTemplate(
         "Bob Jones",
         "2026-07-15",

@@ -1,4 +1,6 @@
-import { BOOKING_STATUS_GLOSSARY } from "@/lib/contextual-help";
+import {
+  BOOKING_STATUS_GLOSSARY,
+} from "@/lib/contextual-help/booking-status-glossary";
 import { buildProfilePathWithReturnTo } from "@/lib/internal-return-path";
 import type { HelpPageContent, HelpPageEntry } from "./types";
 

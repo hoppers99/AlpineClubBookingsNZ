@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 describe("Family group email templates", () => {
   it("familyGroupInvitationTemplate includes inviter name and group name", async () => {
-    const { familyGroupInvitationTemplate } = await import("../email-templates");
+    const { familyGroupInvitationTemplate } = await import("@/lib/email-templates/family");
     const html = familyGroupInvitationTemplate("Jane Doe", "Doe Family", "https://example.com/profile");
 
     expect(html).toContain("Jane Doe");
@@ -14,7 +14,7 @@ describe("Family group email templates", () => {
   });
 
   it("familyGroupInvitationTemplate escapes HTML in names", async () => {
-    const { familyGroupInvitationTemplate } = await import("../email-templates");
+    const { familyGroupInvitationTemplate } = await import("@/lib/email-templates/family");
     const html = familyGroupInvitationTemplate("<b>Evil</b>", "<script>alert(1)</script>", "https://x.com");
 
     expect(html).not.toContain("<b>Evil</b>");
@@ -23,7 +23,7 @@ describe("Family group email templates", () => {
   });
 
   it("familyGroupInviteAcceptedTemplate includes invitee name and group name", async () => {
-    const { familyGroupInviteAcceptedTemplate } = await import("../email-templates");
+    const { familyGroupInviteAcceptedTemplate } = await import("@/lib/email-templates/family");
     const html = familyGroupInviteAcceptedTemplate("Alice Smith", "Smith Family");
 
     expect(html).toContain("Alice Smith");
@@ -32,7 +32,7 @@ describe("Family group email templates", () => {
   });
 
   it("childRequestSubmittedTemplate includes parent name, child name, and group", async () => {
-    const { childRequestSubmittedTemplate } = await import("../email-templates");
+    const { childRequestSubmittedTemplate } = await import("@/lib/email-templates/family");
     const html = childRequestSubmittedTemplate("Bob", "Bobby Jr", "Johnson Family");
 
     expect(html).toContain("Bob");
@@ -42,7 +42,7 @@ describe("Family group email templates", () => {
   });
 
   it("childRequestApprovedTemplate includes parent name, child name, and group", async () => {
-    const { childRequestApprovedTemplate } = await import("../email-templates");
+    const { childRequestApprovedTemplate } = await import("@/lib/email-templates/family");
     const html = childRequestApprovedTemplate("Carol", "Timmy", "Taylor Family");
 
     expect(html).toContain("Carol");
@@ -52,7 +52,7 @@ describe("Family group email templates", () => {
   });
 
   it("childRequestRejectedTemplate includes parent name and child name", async () => {
-    const { childRequestRejectedTemplate } = await import("../email-templates");
+    const { childRequestRejectedTemplate } = await import("@/lib/email-templates/family");
     const html = childRequestRejectedTemplate("Dave", "Susie", "Child is not registered");
 
     expect(html).toContain("Dave");
@@ -62,7 +62,7 @@ describe("Family group email templates", () => {
   });
 
   it("childRequestRejectedTemplate works without reason", async () => {
-    const { childRequestRejectedTemplate } = await import("../email-templates");
+    const { childRequestRejectedTemplate } = await import("@/lib/email-templates/family");
     const html = childRequestRejectedTemplate("Dave", "Susie");
 
     expect(html).toContain("Dave");
@@ -72,7 +72,7 @@ describe("Family group email templates", () => {
   });
 
   it("groupCreateRequestConfirmationTemplate includes requester and group name", async () => {
-    const { groupCreateRequestConfirmationTemplate } = await import("../email-templates");
+    const { groupCreateRequestConfirmationTemplate } = await import("@/lib/email-templates/family");
     const html = groupCreateRequestConfirmationTemplate("Alice Smith", "Smith Family");
 
     expect(html).toContain("Alice Smith");
@@ -81,7 +81,7 @@ describe("Family group email templates", () => {
   });
 
   it("groupCreateApprovedTemplate includes requester and group name", async () => {
-    const { groupCreateApprovedTemplate } = await import("../email-templates");
+    const { groupCreateApprovedTemplate } = await import("@/lib/email-templates/family");
     const html = groupCreateApprovedTemplate("Alice", "Smith Family");
 
     expect(html).toContain("Alice");
@@ -90,7 +90,7 @@ describe("Family group email templates", () => {
   });
 
   it("groupCreateRejectedTemplate includes reason when provided and escapes HTML", async () => {
-    const { groupCreateRejectedTemplate } = await import("../email-templates");
+    const { groupCreateRejectedTemplate } = await import("@/lib/email-templates/family");
     const html = groupCreateRejectedTemplate("Alice", "<b>Smith</b> Family", "Duplicate group");
 
     expect(html).toContain("Alice");
@@ -101,7 +101,7 @@ describe("Family group email templates", () => {
   });
 
   it("groupCreateRejectedTemplate works without reason", async () => {
-    const { groupCreateRejectedTemplate } = await import("../email-templates");
+    const { groupCreateRejectedTemplate } = await import("@/lib/email-templates/family");
     const html = groupCreateRejectedTemplate("Alice", "Smith Family");
 
     expect(html).toContain("not approved");
@@ -109,7 +109,7 @@ describe("Family group email templates", () => {
   });
 
   it("partnerInviteTemplate includes inviter, group, claim URL, and expiry", async () => {
-    const { partnerInviteTemplate } = await import("../email-templates");
+    const { partnerInviteTemplate } = await import("@/lib/email-templates/family");
     const expiresAt = new Date("2026-08-10T00:00:00.000Z");
     // Same-origin claim link (the sameOrigin button sanitiser drops foreign
     // origins, matching the membership-cancellation token template).
@@ -128,7 +128,7 @@ describe("Family group email templates", () => {
   });
 
   it("partnerInviteTemplate escapes HTML in user-controlled inviter and group names", async () => {
-    const { partnerInviteTemplate } = await import("../email-templates");
+    const { partnerInviteTemplate } = await import("@/lib/email-templates/family");
     const html = partnerInviteTemplate({
       inviterName: "<b>Evil</b>",
       groupName: "<script>alert(1)</script>",
@@ -142,7 +142,7 @@ describe("Family group email templates", () => {
   });
 
   it("partnerInviteClaimedTemplate includes first name and group name", async () => {
-    const { partnerInviteClaimedTemplate } = await import("../email-templates");
+    const { partnerInviteClaimedTemplate } = await import("@/lib/email-templates/family");
     const html = partnerInviteClaimedTemplate("Bob", "Smith Family");
 
     expect(html).toContain("Bob");
@@ -151,7 +151,7 @@ describe("Family group email templates", () => {
   });
 
   it("partnerInviteClaimedTemplate escapes HTML in group name", async () => {
-    const { partnerInviteClaimedTemplate } = await import("../email-templates");
+    const { partnerInviteClaimedTemplate } = await import("@/lib/email-templates/family");
     const html = partnerInviteClaimedTemplate("Bob", "<script>alert(1)</script>");
 
     expect(html).not.toContain("<script>alert(1)</script>");

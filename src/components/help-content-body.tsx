@@ -2,7 +2,7 @@ import {
   type ContextualHelpContent,
   type HelpField,
   type HelpSection,
-} from "@/lib/contextual-help";
+} from "@/lib/contextual-help/types";
 
 /**
  * Presentational help renderers, extracted VERBATIM from the retired

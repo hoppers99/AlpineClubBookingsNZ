@@ -1,8 +1,39 @@
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   getContextualHelp,
   getContextualHelpPaths,
 } from "@/lib/contextual-help";
+import type { HelpEntry } from "@/lib/contextual-help/types";
+
+function findQualifiedRegistrationDrift(
+  discovered: readonly string[],
+  registered: readonly string[],
+): string[] {
+  const remainingRegistered = new Map<string, number>();
+  for (const key of registered) {
+    remainingRegistered.set(key, (remainingRegistered.get(key) ?? 0) + 1);
+  }
+
+  const drift: string[] = [];
+  for (const key of discovered) {
+    const remaining = remainingRegistered.get(key) ?? 0;
+    if (remaining === 0) {
+      drift.push(`discovered but not registered: ${key}`);
+    } else if (remaining === 1) {
+      remainingRegistered.delete(key);
+    } else {
+      remainingRegistered.set(key, remaining - 1);
+    }
+  }
+  for (const [key, count] of remainingRegistered) {
+    for (let index = 0; index < count; index += 1) {
+      drift.push(`registered but not discovered: ${key}`);
+    }
+  }
+  return drift.sort();
+}
 
 describe("contextual help registry", () => {
   it.each([
@@ -174,5 +205,102 @@ describe("contextual help registry", () => {
       ]),
     );
     expect(getContextualHelpPaths("finance")).toEqual(["/finance"]);
+  });
+
+  /**
+   * #2689 review: `/admin/notifications` carried TWO entries with different
+   * copy. Resolution sorts by path length and takes the first, so the second
+   * was dead text that read as live — an earlier draft describing a page shape
+   * that no longer exists. It was deleted and its one accurate field (the
+   * delivery tri-state) folded into the surviving entry.
+   *
+   * The guard is the general one, not the instance: no admin path may be
+   * registered twice, because a second entry is unreachable by construction.
+   */
+  it("registers each admin help path exactly once", () => {
+    const paths = getContextualHelpPaths("admin");
+    const seen = new Set<string>();
+    const duplicated = paths.filter((path) => {
+      if (seen.has(path)) return true;
+      seen.add(path);
+      return false;
+    });
+    expect(
+      duplicated,
+      "These paths have more than one entry. Longest-prefix resolution takes " +
+        "the first, so every later entry is dead text that reads as live:\n" +
+        duplicated.join("\n"),
+    ).toEqual([]);
+  });
+
+  it("resolves /admin/notifications to the entry that matches the page", () => {
+    const help = getContextualHelp("/admin/notifications", "admin");
+
+    expect(help.title).toBe("Notifications & Email");
+    // The five cards the page actually renders.
+    const actions = help.actions.join(" ");
+    for (const card of [
+      "Delivery Rules",
+      "Recipients",
+      "Email Messages",
+      "Booking Messages",
+      "Membership Cancellation",
+    ]) {
+      expect(actions).toContain(card);
+    }
+    // The deleted draft's vocabulary, kept because the tri-state is real.
+    expect(help.fields?.map((field) => field.name)).toContain("Delivery mode");
+    // And the draft's own summary must not be what resolves.
+    expect(help.summary).not.toContain("delivery policies");
+  });
+
+  /**
+   * #2689 split the corpus into one module per admin sidebar section. The
+   * failure that split makes possible is a silent one: add a section module,
+   * forget the line in `contextual-help/index.ts`, and every page in it drops
+   * to the generic fallback with nothing red. So read the directory rather than
+   * trusting a list, and require every module's entries to be registered.
+   */
+  it("compares discovered and registered admin entries as an exact qualified multiset", async () => {
+    const sectionDir = join(process.cwd(), "src/lib/contextual-help/admin");
+    const modules = readdirSync(sectionDir)
+      .filter((f) => f.endsWith(".ts"))
+      .sort();
+    expect(modules.length).toBeGreaterThan(0);
+
+    const discovered: string[] = [];
+    for (const file of modules) {
+      // The `.ts` stays in the static part of the specifier: Vite's
+      // dynamic-import-vars plugin needs an extension there to build the glob.
+      const loaded: Record<string, unknown> = await import(
+        `@/lib/contextual-help/admin/${file.replace(/\.ts$/, "")}.ts`
+      );
+      const entries = Object.values(loaded).find(Array.isArray) as
+        | HelpEntry[]
+        | undefined;
+      expect(entries, `${file} exports no help-entry array`).toBeDefined();
+      for (const helpEntry of entries ?? []) {
+        discovered.push(`${file}: ${helpEntry.path}`);
+      }
+    }
+    const drift = findQualifiedRegistrationDrift(
+      discovered,
+      getContextualHelpPaths("admin", { qualifyAdminModule: true }),
+    );
+    expect(
+      drift,
+      "The discovered admin-section entries and module-qualified registry differ. " +
+        "An unregistered module silently falls back to generic help, while an " +
+        "unexpected registration makes the census stale:\n" + drift.join("\n"),
+    ).toEqual([]);
+  });
+
+  it("detects an orphan module that reuses an existing registered path", () => {
+    const existing = "dashboard.ts: /admin/dashboard";
+    const orphan = "orphan.ts: /admin/dashboard";
+
+    expect(
+      findQualifiedRegistrationDrift([existing, orphan], [existing]),
+    ).toEqual([`discovered but not registered: ${orphan}`]);
   });
 });

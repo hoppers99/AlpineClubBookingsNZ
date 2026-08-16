@@ -64,7 +64,7 @@ A caller who lacks an area is not offered the tool, and an invocation naming it
 anyway is denied server-side with `permission_denied` and the missing area named.
 Nothing infers the answer from elsewhere: a Booking Officer without `finance:view`
 gets no finance tool at all, and the only booking-level payment summary they may
-receive is the one AID-6B (#2376) will provide under `bookings:view`. This pack
+receive is the one AID-6B (#2376) provides under `bookings:view`. This pack
 offers no reduced, permission-free variant of any entry.
 
 ## Record selection comes first, and it is the containment

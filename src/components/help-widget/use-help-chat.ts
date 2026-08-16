@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import type { HelpQuestion } from "@/lib/contextual-help";
+import { type HelpQuestion } from "@/lib/contextual-help/types";
 
 /**
  * Help-widget conversation state. Two ways to add a turn:

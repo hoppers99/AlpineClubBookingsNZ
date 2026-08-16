@@ -351,7 +351,7 @@ describe("XER-01: createXeroCreditNoteForModification", () => {
 describe("EML-01: bookingModifiedTemplate", () => {
   it("renders template with date change details", async () => {
     const { bookingModifiedTemplate } = await import(
-      "@/lib/email-templates"
+      "@/lib/email-templates/booking"
     );
 
     const html = bookingModifiedTemplate({
@@ -379,7 +379,7 @@ describe("EML-01: bookingModifiedTemplate", () => {
 
   it("renders template with guest add details", async () => {
     const { bookingModifiedTemplate } = await import(
-      "@/lib/email-templates"
+      "@/lib/email-templates/booking"
     );
 
     const html = bookingModifiedTemplate({
@@ -406,7 +406,7 @@ describe("EML-01: bookingModifiedTemplate", () => {
 
   it("renders refund message for price decrease", async () => {
     const { bookingModifiedTemplate } = await import(
-      "@/lib/email-templates"
+      "@/lib/email-templates/booking"
     );
 
     const html = bookingModifiedTemplate({
@@ -431,7 +431,7 @@ describe("EML-01: bookingModifiedTemplate", () => {
 
   it("escapes HTML in user-provided firstName", async () => {
     const { bookingModifiedTemplate } = await import(
-      "@/lib/email-templates"
+      "@/lib/email-templates/booking"
     );
 
     const html = bookingModifiedTemplate({
@@ -456,7 +456,7 @@ describe("EML-01: bookingModifiedTemplate", () => {
 
   it("shows same price when unchanged", async () => {
     const { bookingModifiedTemplate } = await import(
-      "@/lib/email-templates"
+      "@/lib/email-templates/booking"
     );
 
     const html = bookingModifiedTemplate({

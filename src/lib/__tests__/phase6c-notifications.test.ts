@@ -50,7 +50,7 @@ describe("N-09: bulkCommunicationTemplate", () => {
   });
 
   it("escapes HTML in subject and body", async () => {
-    const { bulkCommunicationTemplate } = await import("../email-templates");
+    const { bulkCommunicationTemplate } = await import("@/lib/email-templates/communications");
     const html = bulkCommunicationTemplate(
       "<script>alert('xss')</script>",
       "Hello <b>world</b> & \"friends\""
@@ -64,7 +64,7 @@ describe("N-09: bulkCommunicationTemplate", () => {
   });
 
   it("preserves whitespace in body via pre-wrap", async () => {
-    const { bulkCommunicationTemplate } = await import("../email-templates");
+    const { bulkCommunicationTemplate } = await import("@/lib/email-templates/communications");
     const html = bulkCommunicationTemplate("Test", "Line 1\nLine 2");
 
     expect(html).toContain("white-space: pre-wrap");
@@ -197,8 +197,16 @@ describe("N-09: Bulk communication preference filtering", () => {
 
 describe("N-12: dormant feedback flow removal", () => {
   it("does not export the removed feedback template", async () => {
-    const templates = await import("../email-templates");
-    expect(templates).not.toHaveProperty("postStayFeedbackTemplate");
+    // #2689 split the template monolith into one module per message family,
+    // so "not exported" now means not exported by ANY of them. The coverage
+    // helper reads the module directory at run time, so this cannot go stale.
+    const { readEmailTemplateModuleExports } = await import(
+      "@/lib/__tests__/support/email-render-coverage"
+    );
+    const moduleExports = await readEmailTemplateModuleExports();
+    expect(Object.values(moduleExports).flat()).not.toContain(
+      "postStayFeedbackTemplate",
+    );
   });
 });
 

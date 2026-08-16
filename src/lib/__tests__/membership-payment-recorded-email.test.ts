@@ -8,7 +8,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { sendEmailMock } = vi.hoisted(() => ({ sendEmailMock: vi.fn() }));
 vi.mock("@/lib/email/core", () => ({ sendEmail: sendEmailMock }));
 
-import { membershipPaymentRecordedTemplate } from "@/lib/email-templates";
+import {
+  membershipPaymentRecordedTemplate,
+} from "@/lib/email-templates/membership";
 import {
   getDefaultDeliveryMode,
   getEmailTemplateDefinition,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EMAIL_AUDIT_DEFAULTS } from "@/lib/email-message-audit-defaults";
-import { plainTextEmailTemplate } from "@/lib/email-templates";
+import { plainTextEmailTemplate } from "@/lib/email-templates/layout";
 import { renderTemplateString } from "@/lib/email-message-renderer";
 
 // Regression guard for the club-editable "notice-published" email message. The

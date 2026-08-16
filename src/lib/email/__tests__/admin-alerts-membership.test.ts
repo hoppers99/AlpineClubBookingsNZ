@@ -17,15 +17,11 @@ vi.mock("../admin-alerts-shared", () => ({
   shouldSendDirectAdminSystemEmail: h.shouldSendDirectAdminSystemEmail,
 }));
 vi.mock("../core", () => ({ sendEmail: h.sendEmail }));
-vi.mock("@/lib/email-templates", () => ({
-  adminMembershipApplicationPendingTemplate: vi.fn(() => "<html></html>"),
-  adminFamilyGroupRequestTemplate: vi.fn(() => "<html></html>"),
-  adminMembershipCancellationRequestTemplate: vi.fn(() => "<html></html>"),
-  adminAccountDeletionRequestedTemplate: vi.fn(() => "<html></html>"),
-  adminMemberArchiveRequestedTemplate: vi.fn(() => "<html></html>"),
+// Derived from the module's own exports (#2689 review), so a new template
+// cannot arrive here as `undefined`.
+vi.mock("@/lib/email-templates/admin-membership", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   adminMemberDeleteRequestedTemplate: h.deleteRequestedTemplate,
-  adminMemberDeleteApprovedTemplate: vi.fn(() => "<html></html>"),
-  adminMemberDeleteRejectedTemplate: vi.fn(() => "<html></html>"),
 }));
 
 import { sendAdminMemberDeleteRequestedAlert } from "@/lib/email/admin-alerts-membership";
