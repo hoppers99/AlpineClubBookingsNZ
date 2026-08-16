@@ -57,11 +57,10 @@ export async function readEmailTemplateModuleExports(): Promise<
 }
 
 /**
- * Registry template keys that deliberately have no template function: their
- * HTML is composed at the send site rather than in a template module.
- *
- * Both are noted rather than fixed here — #2689 is a structural split and
- * changing where these two compose their bodies would change output.
+ * Registry template keys explicitly allowed to have no template function.
+ * This set is currently empty: #2689 moved both former send-site bodies into
+ * `email-templates/admin-ops.ts`, corrected their layout/escaping deliberately,
+ * and pinned the resulting output. A future exception needs a stated reason.
  */
 export const REGISTRY_KEYS_WITHOUT_A_TEMPLATE_FUNCTION = new Set<string>([
   // EMPTY, and it should stay that way. Both former entries were registry keys
