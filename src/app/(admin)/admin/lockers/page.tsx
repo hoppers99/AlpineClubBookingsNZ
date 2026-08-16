@@ -429,10 +429,23 @@ export default function LockersPage() {
     </AdminViewOnlySectionBanner>
   );
 
-  return (
-    <div>
-      {viewOnlyBanner}
-      <div className="space-y-6">
+  /*
+    #2701: the lodge selector, the scope notice and the page heading are the
+    only things that make sense with no lodge resolved, so they are hoisted and
+    both returns render them.
+
+    This is an EARLY RETURN rather than a `{lodgeScopeReady ? … : null}` wrapper
+    around the cards, and that is deliberate. The locker list carries the shared
+    dataset Reset control, and `dataset-reset-contract` requires that control to
+    be unconditional within the view that shows the dataset — a Reset that
+    appears and disappears moves every other control under it. Wrapping the
+    cards in a ternary put Reset inside a conditional and broke that rule for a
+    reason the rule was not about. An early return says the true thing instead:
+    there are two pages here, and the one with the locker table always has its
+    Reset.
+  */
+  const scopeChrome = (
+    <>
       {confirmDialog}
       <AdminPageHeader
         title="Lockers"
@@ -455,9 +468,23 @@ export default function LockersPage() {
             deferDefaultSelection={lodgeOptionsFailed || lodgeOptionsForbidden}
           />
       </div>
+    </>
+  );
 
-      {lodgeScopeReady ? (
-        <>
+  if (!lodgeScopeReady) {
+    return (
+      <div>
+        {viewOnlyBanner}
+        <div className="space-y-6">{scopeChrome}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {viewOnlyBanner}
+      <div className="space-y-6">
+      {scopeChrome}
       <Card>
         <CardHeader>
           <CardTitle>{editingLockerId ? "Edit Locker" : "New Locker"}</CardTitle>
@@ -717,8 +744,6 @@ export default function LockersPage() {
           )}
         </CardContent>
       </Card>
-        </>
-      ) : null}
       </div>
     </div>
   );

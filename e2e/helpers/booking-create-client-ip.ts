@@ -302,10 +302,21 @@ type BookingCreatePostOptions = NonNullable<
  * booker's own eligible lodge rather than to whichever row happens to be
  * marked default.
  */
-async function resolveBookableLodgeId(
+export async function resolveBookableLodgeId(
   request: APIRequestContext,
-): Promise<string> {
+): Promise<string | null> {
   const response = await request.get("/api/lodges");
+
+  // `null`, NOT a throw, when the caller has no session. Two specs post here
+  // deliberately unauthenticated — the booking-create rate limiter runs BEFORE
+  // authentication, so proving retry-key isolation requires reaching the route
+  // with no cookies at all. Throwing here turned "the route refused you", which
+  // is the measurement, into "the harness exploded", which is not: the probe
+  // never reached `POST /api/bookings` and the shared counter never moved.
+  // A session that may not list lodges cannot create a booking either, so
+  // skipping the fill costs nothing and the create refuses on its own terms.
+  if (response.status() === 401 || response.status() === 403) return null;
+
   if (!response.ok()) {
     throw new Error(
       `resolve bookable lodge for a booking create (${response.status()})`,
@@ -314,6 +325,7 @@ async function resolveBookableLodgeId(
   const body = (await response.json()) as { lodges?: Array<{ id: string }> };
   const lodgeId = body.lodges?.[0]?.id;
   if (!lodgeId) {
+    // Authenticated and still no lodge is a broken fixture, not a refusal.
     throw new Error(
       "resolve bookable lodge for a booking create: this session may book no lodge",
     );
@@ -334,13 +346,14 @@ export async function postBookingCreate(
     typeof data === "object" &&
     !Array.isArray(data) &&
     data.lodgeId === undefined;
-  const resolvedData = needsLodge
-    ? { ...data, lodgeId: await resolveBookableLodgeId(request) }
-    : options.data;
+  const resolvedLodgeId = needsLodge
+    ? await resolveBookableLodgeId(request)
+    : null;
+  const filled = needsLodge && resolvedLodgeId !== null;
 
   return request.post("/api/bookings", {
     ...options,
-    ...(needsLodge ? { data: resolvedData } : {}),
+    ...(filled ? { data: { ...data, lodgeId: resolvedLodgeId } } : {}),
     headers: {
       ...options.headers,
       ...isolation.headers,
