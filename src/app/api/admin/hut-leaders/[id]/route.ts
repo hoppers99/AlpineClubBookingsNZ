@@ -104,35 +104,7 @@ export async function PUT(
     );
   }
 
-  // Check for overlapping assignments (excluding self) — 1 day overlap
-  // allowed, 2+ rejected. Each lodge has its own hut leader, so the check is
-  // per lodge; an assignment still missing a lodgeId (expand-release
-  // tolerance) conservatively conflicts at every lodge.
   const finalLodgeId = updateData.lodgeId ?? existing.lodgeId;
-  const potentialOverlaps = await prisma.hutLeaderAssignment.findMany({
-    where: {
-      id: { not: id },
-      startDate: { lte: finalEnd },
-      endDate: { gte: finalStart },
-      ...(finalLodgeId ? lodgeNullTolerantScope(finalLodgeId) : {}),
-    },
-    include: {
-      member: { select: { firstName: true, lastName: true } },
-    },
-  });
-
-  for (const existing of potentialOverlaps) {
-    const overlapDays = calculateOverlapDays(finalStart, finalEnd, existing.startDate, existing.endDate);
-    if (overlapDays > 1) {
-      const name = `${existing.member.firstName} ${existing.member.lastName}`;
-      const start = formatDateOnly(existing.startDate);
-      const end = formatDateOnly(existing.endDate);
-      return NextResponse.json(
-        { error: `Assignment overlaps with ${name}'s assignment (${start} to ${end}) by ${overlapDays} days. Maximum 1 day overlap is allowed for handover.` },
-        { status: 409 }
-      );
-    }
-  }
 
   // Custodian bed hold (#2286). Three-state: absent leaves the hold alone,
   // explicit null clears it, a string sets it. `bedIdProvided` is the only way
@@ -158,13 +130,60 @@ export async function PUT(
   }
 
   try {
-    // A hold that still exists after this edit is re-validated against the
-    // FINAL dates and lodge, under the lodge lock — shortening, extending or
-    // moving lodges can all invalidate a bed that was fine before. Clearing the
-    // bed (or never having one) needs no lock: it only ever frees capacity.
-    if (nextBedId) {
-      await prisma.$transaction(async (tx) => {
-        await acquireLodgeCapacityLock(tx, finalLodgeId);
+    /*
+      EVERY edit runs under the target lodge's capacity key (#2887), not just a
+      bed-holding one.
+
+      #2286 locked only the bed path, reasoning that clearing a bed or never
+      having one moves no capacity. True of capacity, false of the OVERLAP
+      predicate — and this route decides that predicate too. The overlap read
+      used to run on `prisma`, outside any transaction, and the role-only branch
+      then wrote with a bare `prisma.update`, so two concurrent edits (or an
+      edit racing a POST) could each read a clean overlap set and both commit,
+      leaving one lodge two hut leaders for a night. Nothing behind it: there is
+      no unique constraint on the range. A bedless edit can still MOVE DATES,
+      which is exactly how it creates an overlap.
+
+      So: take the key, re-read the overlap set under it, re-validate any
+      surviving hold against the FINAL dates and lodge, then write.
+    */
+    const refusal = await prisma.$transaction(async (tx) => {
+      await acquireLodgeCapacityLock(tx, finalLodgeId);
+
+      // Excluding self — 1 day overlap allowed for handover, 2+ rejected. Each
+      // lodge has its own hut leader, so the check is per lodge; a row still
+      // missing a lodgeId (expand-release tolerance) conservatively conflicts
+      // at every lodge.
+      const potentialOverlaps = await tx.hutLeaderAssignment.findMany({
+        where: {
+          id: { not: id },
+          startDate: { lte: finalEnd },
+          endDate: { gte: finalStart },
+          ...lodgeNullTolerantScope(finalLodgeId),
+        },
+        include: {
+          member: { select: { firstName: true, lastName: true } },
+        },
+      });
+      for (const other of potentialOverlaps) {
+        const overlapDays = calculateOverlapDays(
+          finalStart,
+          finalEnd,
+          other.startDate,
+          other.endDate,
+        );
+        if (overlapDays > 1) {
+          const name = `${other.member.firstName} ${other.member.lastName}`;
+          const start = formatDateOnly(other.startDate);
+          const end = formatDateOnly(other.endDate);
+          return {
+            status: 409,
+            error: `Assignment overlaps with ${name}'s assignment (${start} to ${end}) by ${overlapDays} days. Maximum 1 day overlap is allowed for handover.`,
+          };
+        }
+      }
+
+      if (nextBedId) {
         await validateCustodianBedHold({
           bedId: nextBedId,
           lodgeId: finalLodgeId,
@@ -174,15 +193,17 @@ export async function PUT(
           confirmOverCapacity: parsed.data.confirmOverCapacity,
           db: tx,
         });
-        await tx.hutLeaderAssignment.update({ where: { id }, data: updateData });
-      });
-    } else {
-      await prisma.hutLeaderAssignment.update({
-        where: { id },
-        data: updateData,
-      });
-    }
+      }
+      await tx.hutLeaderAssignment.update({ where: { id }, data: updateData });
+      return null;
+    });
 
+    if (refusal) {
+      return NextResponse.json(
+        { error: refusal.error },
+        { status: refusal.status },
+      );
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     const custodianResponse = custodianBedHoldErrorResponse(err);

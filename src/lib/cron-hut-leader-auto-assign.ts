@@ -2,7 +2,8 @@ import { prisma } from "./prisma";
 import { eachDayOfInterval, addDays } from "date-fns";
 import { calculateOverlapDays } from "./hut-leader-overlap";
 import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
-import { getDefaultLodgeId } from "./lodges";
+import { getDefaultLodgeId, lodgeNullTolerantScope } from "./lodges";
+import { acquireLodgeCapacityLock } from "./lodge-capacity-lock";
 import { loadHutLeaderLookaheadDays } from "./lodge-settings";
 import { loadEffectiveModuleFlags } from "./module-settings";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
@@ -125,41 +126,51 @@ export async function autoAssignHutLeaders(): Promise<{
 
     const [, member] = [...adultMembers.entries()][0];
 
-    // Check overlap validation before creating
-    const potentialOverlaps = await prisma.hutLeaderAssignment.findMany({
-      where: {
-        startDate: { lte: member.checkOut },
-        endDate: { gte: member.checkIn },
-      },
-    });
+    /*
+      #2887: the overlap read and the insert are ONE serialized decision, under
+      the same per-lodge key the interactive POST and PUT take.
 
-    let hasInvalidOverlap = false;
-    for (const existing of potentialOverlaps) {
-      const overlapDays = calculateOverlapDays(
-        member.checkIn,
-        member.checkOut,
-        existing.startDate,
-        existing.endDate
-      );
-      if (overlapDays > 1) {
-        hasInvalidOverlap = true;
-        break;
-      }
-    }
-
-    if (hasInvalidOverlap) continue;
-
-    // Create the assignment
+      Both were wrong here before. The read ran on `prisma` outside any
+      transaction and the create followed it unlocked, so this cron could race
+      an admin (or a second cron container) and both insert — leaving one lodge
+      two hut leaders for a night, with no unique constraint behind it. And the
+      read was not lodge-scoped at all, so an assignment at a DIFFERENT lodge
+      suppressed an auto-assignment that should have gone ahead.
+    */
     try {
       const lodgeId = member.lodgeId ?? (await getDefaultLodgeId(prisma));
-      await prisma.hutLeaderAssignment.create({
-        data: {
-          memberId: member.id,
-          startDate: member.checkIn,
-          endDate: member.checkOut,
-          lodgeId,
-        },
+      const created = await prisma.$transaction(async (tx) => {
+        await acquireLodgeCapacityLock(tx, lodgeId);
+
+        const potentialOverlaps = await tx.hutLeaderAssignment.findMany({
+          where: {
+            startDate: { lte: member.checkOut },
+            endDate: { gte: member.checkIn },
+            ...lodgeNullTolerantScope(lodgeId),
+          },
+        });
+        for (const existing of potentialOverlaps) {
+          const overlapDays = calculateOverlapDays(
+            member.checkIn,
+            member.checkOut,
+            existing.startDate,
+            existing.endDate
+          );
+          if (overlapDays > 1) return false;
+        }
+
+        await tx.hutLeaderAssignment.create({
+          data: {
+            memberId: member.id,
+            startDate: member.checkIn,
+            endDate: member.checkOut,
+            lodgeId,
+          },
+        });
+        return true;
       });
+
+      if (!created) continue;
 
       const dateStr = formatDateOnly(day);
       assignedDates.push(dateStr);

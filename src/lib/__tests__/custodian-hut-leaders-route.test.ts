@@ -384,15 +384,50 @@ describe("PUT /api/admin/hut-leaders/[id] — three-state bedId", () => {
     );
   });
 
-  it("EXPLICIT NULL clears the bed, with no lock and no validation — releasing capacity is always safe", async () => {
+  it("EXPLICIT NULL clears the bed — no bed validation, but still under the lock (#2887)", async () => {
     const res = await PUT(putRequest({ bedId: null }), { params });
     expect(res.status).toBe(200);
-    expect(mocks.transaction).not.toHaveBeenCalled();
-    expect(mocks.acquireLodgeCapacityLock).not.toHaveBeenCalled();
+    // Releasing capacity is safe, so nothing re-validates a hold…
     expect(mocks.validateCustodianBedHold).not.toHaveBeenCalled();
-    expect(mocks.assignmentUpdate.mock.calls[0][0].data).toMatchObject({
+    // …but this edit still DECIDES the overlap predicate, and a bedless edit
+    // can move dates, so it is serialized on the lodge key like every other.
+    // #2286 left this branch unlocked on the capacity argument alone, which is
+    // how two concurrent edits could each read a clean overlap set and commit.
+    expect(callOrder).toEqual([
+      "txBegin",
+      "lock",
+      "readOverlaps",
+      "update",
+      "txEnd",
+    ]);
+    expect(mocks.txAssignmentUpdate.mock.calls[0][0].data).toMatchObject({
       bedId: null,
     });
+    expect(mocks.assignmentUpdate).not.toHaveBeenCalled();
+  });
+
+  it("refuses an edit whose overlap only appears in the post-lock re-read (#2887)", async () => {
+    // The race the key exists for: the row that conflicts is inserted after any
+    // pre-lock look and before this edit commits.
+    mocks.assignmentFindMany.mockImplementation(async () => {
+      callOrder.push("readOverlaps");
+      return [
+        {
+          id: "other",
+          startDate: new Date("2026-07-01T00:00:00.000Z"),
+          endDate: new Date("2026-07-05T00:00:00.000Z"),
+          member: { firstName: "Ada", lastName: "Lovelace" },
+        },
+      ];
+    });
+
+    const res = await PUT(putRequest({ endDate: "2026-07-09" }), { params });
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining("Ada Lovelace"),
+    });
+    expect(mocks.txAssignmentUpdate).not.toHaveBeenCalled();
+    expect(mocks.assignmentUpdate).not.toHaveBeenCalled();
   });
 
   it("RELEASES the bed even with the bedAllocation module OFF (#2286 review M11)", async () => {
@@ -404,7 +439,7 @@ describe("PUT /api/admin/hut-leaders/[id] — three-state bedId", () => {
 
     const res = await PUT(putRequest({ bedId: null }), { params });
     expect(res.status).toBe(200);
-    expect(mocks.assignmentUpdate.mock.calls[0][0].data).toMatchObject({
+    expect(mocks.txAssignmentUpdate.mock.calls[0][0].data).toMatchObject({
       bedId: null,
     });
   });
@@ -427,11 +462,15 @@ describe("PUT /api/admin/hut-leaders/[id] — three-state bedId", () => {
     });
     const res = await PUT(putRequest({ bedId: "bed-9" }), { params });
     expect(res.status).toBe(200);
-    expect(callOrder.slice(callOrder.indexOf("txBegin"), callOrder.indexOf("txBegin") + 4)).toEqual([
+    // Lock, then the authoritative overlap re-read, then the hold check, then
+    // the write — every read the decision rests on is inside the key.
+    expect(callOrder).toEqual([
       "txBegin",
       "lock",
+      "readOverlaps",
       "validate",
       "update",
+      "txEnd",
     ]);
     expect(mocks.validateCustodianBedHold).toHaveBeenCalledWith(
       expect.objectContaining({ bedId: "bed-9", assignmentId: "a1" }),

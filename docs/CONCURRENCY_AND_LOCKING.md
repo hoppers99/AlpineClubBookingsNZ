@@ -164,12 +164,25 @@ dependencies. Consequently a create cannot validate an active lodge and commit
 after its deactivation, while two attempts to deactivate the last two lodges
 cannot both validate the other's stale active state.
 
-Hut-leader assignment creation also takes this per-lodge key for both role-only
-and bed-holding assignments. Its member, overlap and optional bed-availability
-checks are authoritative post-lock reads, so overlapping same-lodge requests
-serialize even when they name different beds or no bed. Different lodges retain
-independent keys. The confirmation email is sent only after commit and outside
-the transaction.
+**Every** writer of `HutLeaderAssignment` takes this per-lodge key, and each
+one's overlap read is an authoritative post-lock read. That is what makes
+"one lodge cannot end up with two overlapping hut leaders" true, and it has to
+be all three of them, because there is no unique constraint on the range behind
+the application check:
+
+- `POST /api/admin/hut-leaders` — role-only and bed-holding alike. Member,
+  overlap and optional bed-availability checks all re-run under the key.
+- `PUT /api/admin/hut-leaders/[id]` — including an edit that clears the bed or
+  never had one. #2887 corrected this: #2286 had locked only the bed-holding
+  branch on the reasoning that releasing capacity is safe, which is true of
+  capacity and false of the overlap predicate a bedless edit can still break by
+  MOVING DATES.
+- `cron-hut-leader-auto-assign` — #2887 also brought this under the key, and
+  lodge-scoped its overlap read, which previously scanned every lodge and so
+  suppressed valid auto-assignments as well as racing the interactive routes.
+
+Different lodges retain independent keys. Confirmation email is sent only after
+commit and outside the transaction.
 
 ### Composition: roster-date writers (#2586)
 

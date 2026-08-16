@@ -94,6 +94,36 @@ describe("lodge admission and assignment lock topology (#2701)", () => {
     expect(body).not.toContain("prisma.memberLodgeAccess.count(");
   });
 
+  it("puts EVERY HutLeaderAssignment writer behind the lodge key (#2887)", () => {
+    // The doc in CONCURRENCY_AND_LOCKING claims one lodge cannot end up with
+    // two overlapping hut leaders. Nothing enforces that in the database, so
+    // the claim is only as true as the writer census: all three must decide
+    // overlap under the key. Two of them did not until #2887.
+    const put = source("src/app/api/admin/hut-leaders/[id]/route.ts");
+    expectOrdered(put, [
+      "await prisma.$transaction(async (tx) => {",
+      "await acquireLodgeCapacityLock(tx, finalLodgeId);",
+      "const potentialOverlaps = await tx.hutLeaderAssignment.findMany(",
+      "await tx.hutLeaderAssignment.update(",
+    ]);
+    // …and no unlocked writer or unlocked overlap read survives beside it.
+    expect(put).not.toContain("await prisma.hutLeaderAssignment.update(");
+    expect(put).not.toContain("await prisma.hutLeaderAssignment.findMany(");
+
+    const cron = source("src/lib/cron-hut-leader-auto-assign.ts");
+    expectOrdered(cron, [
+      "await prisma.$transaction(async (tx) => {",
+      "await acquireLodgeCapacityLock(tx, lodgeId);",
+      "const potentialOverlaps = await tx.hutLeaderAssignment.findMany(",
+      "await tx.hutLeaderAssignment.create(",
+    ]);
+    expect(cron).not.toContain("await prisma.hutLeaderAssignment.create(");
+    expect(cron).not.toContain("await prisma.hutLeaderAssignment.findMany(");
+    // The cron's overlap read used to scan every lodge, which both raced the
+    // interactive routes and suppressed valid auto-assignments elsewhere.
+    expect(cron).toContain("...lodgeNullTolerantScope(lodgeId),");
+  });
+
   it("asks the deactivation predicate the same question before and under the lock", () => {
     // One predicate, two callers. A dependency class added to a copy rather
     // than to the shared helper is what this refuses to allow back.
