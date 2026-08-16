@@ -50,6 +50,7 @@ import {
   type EmailRenderCase,
 } from "@/lib/__tests__/support/email-render-cases";
 import {
+  assertUniqueEmailTemplateExportNames,
   readEmailTemplateModuleExports,
   REGISTRY_KEY_RENDERERS,
   REGISTRY_KEYS_WITHOUT_A_TEMPLATE_FUNCTION,
@@ -260,6 +261,18 @@ describe("rendered-email equivalence (#2689)", () => {
       "These exported render functions have no case in email-render-cases.ts, so a " +
         "structural move could change their output unnoticed:\n" + uncovered.join("\n"),
     ).toEqual([]);
+  });
+
+  it("rejects duplicate bare render-function names across template modules", () => {
+    expect(() =>
+      assertUniqueEmailTemplateExportNames({
+        account: ["passwordResetTemplate"],
+        "unregistered-family": ["passwordResetTemplate"],
+      }),
+    ).toThrowError(
+      'Duplicate email-template function export "passwordResetTemplate" in ' +
+        'modules "account" and "unregistered-family"',
+    );
   });
 
   it("covers every production template the message registry registers", () => {

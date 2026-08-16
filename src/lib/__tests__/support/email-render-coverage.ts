@@ -14,9 +14,10 @@
  * sent from a route or a lib module rather than a sender; and three more are
  * sub-modules of families that would otherwise exceed the 700-line budget:
  * `booking-reminders` and `booking-exceptions` split the booking family, while
- * `admin-xero-reports` splits the finance/Xero alerts. Twenty-one modules,
- * fourteen families. Each sub-module's own docblock names the family it belongs
- * to.
+ * `admin-xero-reports` splits the finance/Xero alerts. That makes nineteen
+ * family/content modules across fourteen families, plus the shared `layout`
+ * shell and `escape` leaf: twenty-one files in the directory altogether. Each
+ * sub-module's own docblock names the family it belongs to.
  *
  * COVERAGE. `readEmailTemplateModuleExports()` reads the module DIRECTORY at
  * run time and imports whatever is in it. It is deliberately not a hand-written
@@ -29,6 +30,31 @@ import { join } from "node:path";
 
 /** The one directory every email-template module lives in. */
 export const EMAIL_TEMPLATE_MODULE_DIR = "src/lib/email-templates";
+
+/**
+ * A render case currently identifies its renderer by the exported function's
+ * bare name. Refuse two modules that export the same name: otherwise one case
+ * would appear to cover both module-qualified functions and a newly added
+ * renderer could evade the directory census.
+ */
+export function assertUniqueEmailTemplateExportNames(
+  byModule: Readonly<Record<string, readonly string[]>>,
+): void {
+  const ownerByExportName = new Map<string, string>();
+  for (const [moduleName, exportNames] of Object.entries(byModule)) {
+    for (const exportName of exportNames) {
+      const existingOwner = ownerByExportName.get(exportName);
+      if (existingOwner) {
+        throw new Error(
+          `Duplicate email-template function export "${exportName}" in ` +
+            `modules "${existingOwner}" and "${moduleName}". Render cases use ` +
+            "bare function names, so this would create false coverage.",
+        );
+      }
+      ownerByExportName.set(exportName, moduleName);
+    }
+  }
+}
 
 /**
  * Every template module, and the render functions it exports, read from disk so
@@ -53,21 +79,24 @@ export async function readEmailTemplateModuleExports(): Promise<
       .map(([name]) => name)
       .sort();
   }
+  assertUniqueEmailTemplateExportNames(byModule);
   return byModule;
 }
 
 /**
  * Registry template keys explicitly allowed to have no template function.
- * This set is currently empty: #2689 moved both former send-site bodies into
- * `email-templates/admin-ops.ts`, corrected their layout/escaping deliberately,
- * and pinned the resulting output. A future exception needs a stated reason.
+ * This set is currently empty: #2689 moved three former send-site bodies under
+ * two registry keys into `email-templates/admin-ops.ts`, corrected their
+ * layout/escaping deliberately, and pinned the resulting output. A future
+ * exception needs a stated reason.
  */
 export const REGISTRY_KEYS_WITHOUT_A_TEMPLATE_FUNCTION = new Set<string>([
-  // EMPTY, and it should stay that way. Both former entries were registry keys
-  // whose HTML was built at the send site, which put them outside the render
-  // gate: a refactor could change what an operator receives with nothing going
-  // red. #2689 moved both into `email-templates/admin-ops.ts`; their deliberate
-  // standard-layout and escaping correction is pinned with the rest of the corpus.
+  // EMPTY, and it should stay that way. The two former registry keys covered
+  // three HTML bodies built at their send sites, which put those bodies outside
+  // the render gate: a refactor could change what an operator receives with
+  // nothing going red. #2689 moved all three into `email-templates/admin-ops.ts`;
+  // their deliberate standard-layout and escaping correction is pinned with the
+  // rest of the corpus.
   //
   // A key added here needs a stated reason, not just a line.
 ]);

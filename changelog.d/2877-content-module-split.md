@@ -9,12 +9,17 @@
   heading an operator found the page under.
 
   The 193 pre-existing rendered email bodies compared byte for byte before and
-  after the structural move and came out identical. The permanent corpus now
-  pins 219 complete outputs, including the three bodies previously built at
-  their send sites. Those three now use the standard branded email shell, and
-  the two failure alerts escape their recipient, template, and booking values.
+  after the structural move and came out identical. One pre-split recorded pin
+  for the repeated-Xero-failure alert was stale; re-rendering the exact old head
+  produces the same 5,799 bytes and hash as the split head, so the corrected pin
+  records existing output rather than accepting a split-induced change. The
+  permanent corpus now pins 219 complete outputs, including the three bodies
+  previously built at their send sites. Those three now use the standard branded
+  email shell, and the two failure alerts escape their recipient, template, and
+  booking values.
   Deliberate mutations proved the gate catches body drift, an unregistered
-  module, duplicate case or pin IDs, and a removed escaping call.
+  module, duplicate renderer names, duplicate case or pin IDs, and a removed
+  escaping call.
 
   The operator-visible corrections are deliberate. The help panel for
   **Admin > Notifications** carried two versions of its text, and the one

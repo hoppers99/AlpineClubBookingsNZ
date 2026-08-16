@@ -7,6 +7,34 @@ import {
 } from "@/lib/contextual-help";
 import type { HelpEntry } from "@/lib/contextual-help/types";
 
+function findQualifiedRegistrationDrift(
+  discovered: readonly string[],
+  registered: readonly string[],
+): string[] {
+  const remainingRegistered = new Map<string, number>();
+  for (const key of registered) {
+    remainingRegistered.set(key, (remainingRegistered.get(key) ?? 0) + 1);
+  }
+
+  const drift: string[] = [];
+  for (const key of discovered) {
+    const remaining = remainingRegistered.get(key) ?? 0;
+    if (remaining === 0) {
+      drift.push(`discovered but not registered: ${key}`);
+    } else if (remaining === 1) {
+      remainingRegistered.delete(key);
+    } else {
+      remainingRegistered.set(key, remaining - 1);
+    }
+  }
+  for (const [key, count] of remainingRegistered) {
+    for (let index = 0; index < count; index += 1) {
+      drift.push(`registered but not discovered: ${key}`);
+    }
+  }
+  return drift.sort();
+}
+
 describe("contextual help registry", () => {
   it.each([
     ["/admin/members", "search, filters, sort, and page"],
@@ -233,13 +261,14 @@ describe("contextual help registry", () => {
    * to the generic fallback with nothing red. So read the directory rather than
    * trusting a list, and require every module's entries to be registered.
    */
-  it("registers every admin section module", async () => {
+  it("compares discovered and registered admin entries as an exact qualified multiset", async () => {
     const sectionDir = join(process.cwd(), "src/lib/contextual-help/admin");
-    const modules = readdirSync(sectionDir).filter((f) => f.endsWith(".ts"));
+    const modules = readdirSync(sectionDir)
+      .filter((f) => f.endsWith(".ts"))
+      .sort();
     expect(modules.length).toBeGreaterThan(0);
 
-    const registered = new Set(getContextualHelpPaths("admin"));
-    const orphaned: string[] = [];
+    const discovered: string[] = [];
     for (const file of modules) {
       // The `.ts` stays in the static part of the specifier: Vite's
       // dynamic-import-vars plugin needs an extension there to build the glob.
@@ -251,16 +280,27 @@ describe("contextual help registry", () => {
         | undefined;
       expect(entries, `${file} exports no help-entry array`).toBeDefined();
       for (const helpEntry of entries ?? []) {
-        if (!registered.has(helpEntry.path)) {
-          orphaned.push(`${file}: ${helpEntry.path}`);
-        }
+        discovered.push(`${file}: ${helpEntry.path}`);
       }
     }
+    const drift = findQualifiedRegistrationDrift(
+      discovered,
+      getContextualHelpPaths("admin", { qualifyAdminModule: true }),
+    );
     expect(
-      orphaned,
-      "These section modules are not spread into `adminHelpEntries` in " +
-        "src/lib/contextual-help/index.ts, so their pages silently fall back to " +
-        "the generic admin help:\n" + orphaned.join("\n"),
+      drift,
+      "The discovered admin-section entries and module-qualified registry differ. " +
+        "An unregistered module silently falls back to generic help, while an " +
+        "unexpected registration makes the census stale:\n" + drift.join("\n"),
     ).toEqual([]);
+  });
+
+  it("detects an orphan module that reuses an existing registered path", () => {
+    const existing = "dashboard.ts: /admin/dashboard";
+    const orphan = "orphan.ts: /admin/dashboard";
+
+    expect(
+      findQualifiedRegistrationDrift([existing, orphan], [existing]),
+    ).toEqual([`discovered but not registered: ${orphan}`]);
   });
 });

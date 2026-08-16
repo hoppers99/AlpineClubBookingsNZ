@@ -46,17 +46,23 @@ import type { ContextualHelpContent, HelpEntry, HelpScope } from "./types";
  * rather than relying on array order (the old `/admin/notifications` duplicate
  * was reconciled in #2689).
  */
-const adminHelpEntries: HelpEntry[] = [
-  ...adminDashboardHelpEntries,
-  ...adminBookingsAndBedsHelpEntries,
-  ...adminMembersHelpEntries,
-  ...adminFinanceHelpEntries,
-  ...adminMonitoringAndSupportHelpEntries,
-  ...adminLodgeOperationsHelpEntries,
-  ...adminRatesAndPoliciesHelpEntries,
-  ...adminSetupAndConfigurationHelpEntries,
-  ...adminAppearanceAndWebsiteHelpEntries,
+const adminHelpEntryModules: Array<
+  readonly [fileName: string, entries: HelpEntry[]]
+> = [
+  ["dashboard.ts", adminDashboardHelpEntries],
+  ["bookings-and-beds.ts", adminBookingsAndBedsHelpEntries],
+  ["members.ts", adminMembersHelpEntries],
+  ["finance.ts", adminFinanceHelpEntries],
+  ["monitoring-and-support.ts", adminMonitoringAndSupportHelpEntries],
+  ["lodge-operations.ts", adminLodgeOperationsHelpEntries],
+  ["rates-and-policies.ts", adminRatesAndPoliciesHelpEntries],
+  ["setup-and-configuration.ts", adminSetupAndConfigurationHelpEntries],
+  ["appearance-and-website.ts", adminAppearanceAndWebsiteHelpEntries],
 ];
+
+const adminHelpEntries: HelpEntry[] = adminHelpEntryModules.flatMap(
+  ([, entries]) => entries,
+);
 
 for (const candidate of adminHelpEntries) {
   const questions = ADMIN_HELP_QUESTIONS[candidate.path];
@@ -106,7 +112,15 @@ export function getContextualHelp(
 }
 
 // test seam
-export function getContextualHelpPaths(scope: HelpScope): string[] {
+export function getContextualHelpPaths(
+  scope: HelpScope,
+  options?: { qualifyAdminModule?: boolean },
+): string[] {
+  if (scope === "admin" && options?.qualifyAdminModule) {
+    return adminHelpEntryModules.flatMap(([fileName, entries]) =>
+      entries.map((entry) => `${fileName}: ${entry.path}`),
+    );
+  }
   return (scope === "admin" ? adminHelpEntries : financeHelpEntries).map(
     (candidate) => candidate.path,
   );
