@@ -34,6 +34,9 @@ const mockPrisma = {
   },
   lodge: {
     findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
+    // The auto-assign cron iterates active lodges (#2915); a single-lodge club
+    // is the shape these cases already assume.
+    findMany: vi.fn().mockResolvedValue([{ id: "lodge-1" }]),
   },
 };
 
