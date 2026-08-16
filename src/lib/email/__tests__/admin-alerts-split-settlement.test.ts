@@ -18,19 +18,12 @@ vi.mock("../admin-alerts-shared", () => ({
   sendToAdmins: h.sendToAdmins,
   shouldSendDirectAdminSystemEmail: h.shouldSendDirectAdminSystemEmail,
 }));
-vi.mock("@/lib/email-templates", () => ({
-  adminMinorsReviewRequiredTemplate: vi.fn(() => "<html></html>"),
-  adminOwnerSubstitutionTemplate: vi.fn(() => "<html></html>"),
-  adminPartnerShareSweptTemplate: vi.fn(() => "<html></html>"),
-  adminNewBookingTemplate: vi.fn(() => "<html></html>"),
-  adminPendingDeadlineTemplate: vi.fn(() => "<html></html>"),
-  adminBookingBumpedTemplate: vi.fn(() => "<html></html>"),
-  adminCapacityWarningTemplate: vi.fn(() => "<html></html>"),
-  adminWaitlistOfferTemplate: vi.fn(() => "<html></html>"),
-  adminBookingChangeRequestTemplate: vi.fn(() => "<html></html>"),
-  adminBookingRequestPendingTemplate: vi.fn(() => "<html></html>"),
-  adminSchoolManualInvoiceTemplate: vi.fn(() => "<html></html>"),
-  adminBookingRequestHoldExpiredTemplate: vi.fn(() => "<html></html>"),
+// Derived from the module's own exports (#2689 review): this factory used to
+// name 14 of the 16 templates by hand, so a new one silently arrived as
+// `undefined`. Spreading the real module means only the two this suite
+// asserts on are stubbed, and a new template needs no edit here.
+vi.mock("@/lib/email-templates/admin-booking", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   adminSplitSettlementUnpaidTemplate: h.unpaidTemplate,
   adminSplitSettlementCancelledTemplate: h.cancelledTemplate,
 }));

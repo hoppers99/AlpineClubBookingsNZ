@@ -266,7 +266,8 @@ export function adminSplitSettlementCancelledLeadParagraph(
  * (`bookingConfirmedTemplate`) and the flat `{{paymentDueNote}}` token the
  * admin-editable body renders inside `{{paymentOutcome}}`.
  *
- * It was written out TWICE — once in `email-templates.ts` and once in
+ * It was written out TWICE — once in the template monolith (now
+ * `email-templates/booking.ts`) and once in
  * `email/booking.ts` — with only a comment claiming the two copies were
  * byte-identical. #2444 has to add a sentence to it, and adding a sentence to
  * two hand-kept copies is exactly the drift `composeOptionalEmailLine` and

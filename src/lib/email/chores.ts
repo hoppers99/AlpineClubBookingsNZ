@@ -2,7 +2,7 @@ import {
   choreRosterTemplate,
   formatChoreRosterDate,
   hutLeaderAssignmentTemplate,
-} from "../email-templates";
+} from "@/lib/email-templates/chores";
 import {
   composeChoreLine,
   composeOptionalEmailLine,

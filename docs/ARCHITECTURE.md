@@ -2160,9 +2160,17 @@ question/answer chips distilled from the corpus, and **Page guide**, the full
 templated page help. It is templated-only today — the free-text LLM path is dead
 code behind an `llmEnabled={false}` prop until epic #2094 C3/C4 ships the route.
 The corpus lives under `src/lib/help/` (`getHelpForPage` / `match.ts`): admin and
-finance delegate to the `src/lib/contextual-help.ts` registry (client-safe, most
+finance delegate to the `src/lib/contextual-help/` registry (client-safe, most
 specific matching route wins so nested Admin pages inherit their parent menu
-help), while member and public use the hand-distilled corpora in that folder. A
+help), while member and public use the hand-distilled corpora in that folder.
+That registry is `index.ts` — the path matching, longest-prefix resolution,
+fallbacks and question attachment — over one entry module per **admin sidebar
+section** (`src/lib/contextual-help/admin/*.ts`, the same sections
+`navSections` shows operators, plus one `appearance-and-website` module split
+off Setup & Configuration for size — `/admin/appearance` is an item in that
+section, not a section of its own), plus `types.ts` and
+`booking-status-glossary.ts` as leaves so a client component can take the shape
+or the eleven status strings without pulling the corpus in (#2689). A
 page can inject extra sections/questions and a chip-ordering hint through
 `HelpWidgetProvider` + `useHelpWidgetExtras`/`useHelpWidgetHint`; the booking
 detail page uses this (`booking-help-extras.tsx`) to re-surface the booking status

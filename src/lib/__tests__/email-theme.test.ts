@@ -16,7 +16,7 @@ import {
   primeEmailPalette,
   type EmailPalette,
 } from "../email-theme";
-import { passwordResetTemplate } from "../email-templates";
+import { passwordResetTemplate } from "@/lib/email-templates/account";
 import {
   DEFAULT_CLUB_THEME_VALUES,
   deriveBrandShims,

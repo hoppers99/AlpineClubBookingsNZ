@@ -1,7 +1,12 @@
 "use client";
 
-import { BOOKING_STATUS_GLOSSARY } from "@/lib/contextual-help";
-import type { HelpQuestion, HelpSection } from "@/lib/contextual-help";
+import {
+  BOOKING_STATUS_GLOSSARY,
+} from "@/lib/contextual-help/booking-status-glossary";
+import {
+  type HelpQuestion,
+  type HelpSection,
+} from "@/lib/contextual-help/types";
 import type { CancellationScheduleRow } from "@/lib/cancellation-schedule";
 import { buildProfilePathWithReturnTo } from "@/lib/internal-return-path";
 import { useHelpWidgetExtras } from "@/components/help-widget/help-widget-context";

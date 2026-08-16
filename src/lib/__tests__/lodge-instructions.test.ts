@@ -120,7 +120,7 @@ import {
 import { GET as kioskGET } from "@/app/api/lodge/instructions/route";
 import { getSanitizedLodgeInstructions } from "@/lib/lodge-instructions";
 import { addDaysDateOnly, getTodayDateOnly } from "@/lib/date-only";
-import { hutLeaderAssignmentTemplate } from "@/lib/email-templates";
+import { hutLeaderAssignmentTemplate } from "@/lib/email-templates/chores";
 
 const memberSession = { user: { id: "member-1", role: "MEMBER", accessRoles: [{ role: "USER" }] } };
 const adminSession = { user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } };

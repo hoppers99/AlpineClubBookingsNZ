@@ -45,9 +45,11 @@ import {
   SETUP_STATE_TTL_MS,
 } from "@/lib/setup-gate";
 import {
+  buildSetupInProgressDocument,
   SETUP_IN_PROGRESS_COPY,
   SETUP_IN_PROGRESS_RETRY_AFTER_SECONDS,
 } from "@/lib/setup-in-progress-screen";
+import { escapeHtml } from "@/lib/email-templates/escape";
 import { CSP_HEADER, SECURITY_HEADERS } from "@/lib/csp";
 import proxy from "@/proxy";
 
@@ -566,5 +568,34 @@ describe("the shared chrome's fallback screen says the same thing", () => {
     expect(source).toContain("SETUP_IN_PROGRESS_COPY.heading(");
     expect(source).toContain("SETUP_IN_PROGRESS_COPY.body");
     expect(source).toContain("SETUP_IN_PROGRESS_COPY.contactPrefix");
+  });
+});
+
+/**
+ * #2689 review: `setup-in-progress-screen.ts` keeps its OWN copy of the HTML
+ * escaper rather than importing the leaf, deliberately — it is bundled into the
+ * proxy and its whole point is to carry no edge into the email layer. That is a
+ * defensible choice, but two copies of an escaper are exactly the pair that
+ * drifts silently, and only one of them has a rendered-output gate behind it.
+ * So pin them equal on every character the leaf maps.
+ */
+describe("setup-in-progress screen escaper parity (#2689)", () => {
+  it("escapes club name and contact email exactly as the shared leaf does", () => {
+    const nasty = `R&D <b>"quoted"</b> O'Brien`;
+    const document = buildSetupInProgressDocument({
+      clubName: nasty,
+      contactEmail: nasty,
+      themeCss: "",
+    });
+
+    const expected = escapeHtml(nasty);
+    expect(expected).toBe(
+      "R&amp;D &lt;b&gt;&quot;quoted&quot;&lt;/b&gt; O&#39;Brien",
+    );
+    // Both interpolation sites carry the leaf's exact output...
+    expect(document).toContain(expected);
+    // ...and the raw characters never reach the document.
+    expect(document).not.toContain(nasty);
+    expect(document).not.toContain("<b>");
   });
 });

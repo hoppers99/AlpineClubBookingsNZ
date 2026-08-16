@@ -4,7 +4,7 @@ import {
   HelpContentBody,
   SectionHelpList,
 } from "@/components/help-content-body";
-import type { HelpSection } from "@/lib/contextual-help";
+import { type HelpSection } from "@/lib/contextual-help/types";
 import type { HelpPageContent } from "@/lib/help/types";
 
 /**

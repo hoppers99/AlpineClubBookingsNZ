@@ -734,7 +734,7 @@ describe("N-13: sendAdminDigest", () => {
 
 describe("Email templates - Phase 6b", () => {
   it("adminXeroSyncErrorTemplate escapes HTML in error message", async () => {
-    const { adminXeroSyncErrorTemplate } = await import("../email-templates");
+    const { adminXeroSyncErrorTemplate } = await import("@/lib/email-templates/admin-finance");
     const html = adminXeroSyncErrorTemplate({
       errorType: "<script>xss</script>",
       operation: "createInvoice",
@@ -748,7 +748,7 @@ describe("Email templates - Phase 6b", () => {
   });
 
   it("adminCapacityWarningTemplate renders day table", async () => {
-    const { adminCapacityWarningTemplate } = await import("../email-templates");
+    const { adminCapacityWarningTemplate } = await import("@/lib/email-templates/admin-booking");
     const html = adminCapacityWarningTemplate([
       { date: new Date("2026-04-10"), occupiedBeds: 26, availableBeds: 3 },
       { date: new Date("2026-04-11"), occupiedBeds: 28, availableBeds: 1 },
@@ -760,7 +760,7 @@ describe("Email templates - Phase 6b", () => {
   });
 
   it("adminDailyDigestTemplate shows alert counts", async () => {
-    const { adminDailyDigestTemplate } = await import("../email-templates");
+    const { adminDailyDigestTemplate } = await import("@/lib/email-templates/admin-ops");
     const html = adminDailyDigestTemplate({
       newBookings: 5,
       paymentFailures: 1,
@@ -782,7 +782,7 @@ describe("Email templates - Phase 6b", () => {
   });
 
   it("adminDailyDigestTemplate shows no-alerts message when all zero", async () => {
-    const { adminDailyDigestTemplate } = await import("../email-templates");
+    const { adminDailyDigestTemplate } = await import("@/lib/email-templates/admin-ops");
     const html = adminDailyDigestTemplate({
       newBookings: 0,
       paymentFailures: 0,
@@ -797,7 +797,7 @@ describe("Email templates - Phase 6b", () => {
   });
 
   it("adminXeroRepeatedFailureTemplate escapes HTML and renders links", async () => {
-    const { adminXeroRepeatedFailureTemplate } = await import("../email-templates");
+    const { adminXeroRepeatedFailureTemplate } = await import("@/lib/email-templates/admin-finance");
     const html = adminXeroRepeatedFailureTemplate({
       correlationKey: "booking:<script>",
       failureCount: 3,
@@ -819,7 +819,7 @@ describe("Email templates - Phase 6b", () => {
   });
 
   it("adminXeroReconciliationReportTemplate renders summary counts", async () => {
-    const { adminXeroReconciliationReportTemplate } = await import("../email-templates");
+    const { adminXeroReconciliationReportTemplate } = await import("@/lib/email-templates/admin-xero-reports");
     const html = adminXeroReconciliationReportTemplate({
       generatedAt: new Date("2026-04-13T10:00:00Z"),
       lookbackHours: 24,

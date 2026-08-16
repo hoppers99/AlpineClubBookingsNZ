@@ -305,7 +305,27 @@ describe("newly-registered hardcoded email templates (#1797)", () => {
     },
   );
 
-  it("does not confuse two-factor-code as editable (stays hardcoded)", () => {
+  /**
+   * DELIBERATE, and it keeps getting re-reported as a gap — most recently in
+   * the #2689 review — because from the outside it looks like an oversight:
+   * `two-factor-code` is a live `templateName` that no admin can see or edit,
+   * while every other transactional email is editable.
+   *
+   * It stays out because it is authentication-critical (#1797; the decision is
+   * recorded for operators in `docs/UPGRADING.md` under v0.11.0). Registering it
+   * would hand an operator three ways to lock every member out of their own
+   * account: drop the `{{code}}` token, mangle the copy around it, or — the one
+   * that is not obvious — put `{{code}}` in the SUBJECT. Subjects are persisted
+   * on every EmailLog row and travel in clear text in the mail headers, while
+   * this template's BODY is already withheld from the log by
+   * `SENSITIVE_EMAIL_LOG_TEMPLATES`. Registering it therefore OPENS an exposure
+   * that would then have to be closed by adding `code` to
+   * `SENSITIVE_EMAIL_SUBJECT_TOKENS` — which is a good sign the exclusion is
+   * the simpler and safer position.
+   *
+   * If this is ever revisited, it needs an owner decision, not a tidy-up.
+   */
+  it("keeps two-factor-code out of the registry (authentication-critical)", () => {
     expect(getEmailTemplateDefinition("two-factor-code")).toBeUndefined();
   });
 

@@ -12,7 +12,7 @@ import { sendEmail } from "@/lib/email";
 import {
   refundRequestApprovedTemplate,
   refundRequestDeclinedTemplate,
-} from "@/lib/email-templates";
+} from "@/lib/email-templates/refunds";
 import {
   composeOptionalEmailLine,
 } from "@/lib/email-message-notes";

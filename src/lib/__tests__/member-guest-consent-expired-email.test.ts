@@ -46,7 +46,9 @@ import {
   renderTemplateString,
   validateEmailTemplateContent,
 } from "@/lib/email-message-renderer";
-import { memberGuestConsentExpiredTemplate } from "@/lib/email-templates";
+import {
+  memberGuestConsentExpiredTemplate,
+} from "@/lib/email-templates/member-guest";
 import { sendMemberGuestConsentExpiredEmail } from "@/lib/email/member-guest";
 
 const TEMPLATE = "member-guest-consent-expired";
