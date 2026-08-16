@@ -675,7 +675,8 @@ or identifier-suffixed heading (`INV-<PREFIX>-002a`,
 `INV-<PREFIX>-002_extra`, `INV-<PREFIX>-002-extra`, or the forbidden dotted
 sub-ID `INV-<PREFIX>-002.1`) that would otherwise be invisible as a definition
 or pass merely because an embedded ID resolved as a citation. Inline emphasis,
-strong emphasis, code, strike-through, inline HTML, GFM link labels and numeric
+strong emphasis, code, strike-through, inline HTML, GFM inline/reference link
+labels and numeric
 character references cannot split the visible token around that sentinel: a
 heading such as `INV-**<PREFIX>**-002`, `INV-[<PREFIX>](https://example.invalid)-002`
 or `INV-M&#79;NEY-002` is rejected as decorated rather than disappearing from the

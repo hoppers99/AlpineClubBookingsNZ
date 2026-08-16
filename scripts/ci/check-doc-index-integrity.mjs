@@ -927,6 +927,16 @@ export function collectDefinitions(files) {
 const HEADING_INLINE_LINK_PATTERN =
   /(?<!!)\[([^\]\r\n]+)\]\(\s*(?:<[^<>\r\n]*>|(?:\\[^\r\n]|[^\\()\s\r\n]|\([^()\r\n]*\))+)(?:[ \t]+(?:"[^"\r\n]*"|'[^'\r\n]*'|\([^()\r\n]*\)))?[ \t]*\)/g;
 
+/**
+ * Full/collapsed reference-link labels, followed by shortcut-link labels.
+ * Resolving a shortcut requires definitions elsewhere in the document, so the
+ * sentinel conservatively unwraps bracketed labels whenever doing so reveals
+ * an invariant-shaped heading. Literal brackets around a would-be invariant ID
+ * are decoration too and cannot be a canonical definition.
+ */
+const HEADING_REFERENCE_LINK_PATTERN = /(?<!!)\[([^\]\r\n]+)\][ \t]*\[[^\]\r\n]*\]/g;
+const HEADING_SHORTCUT_LINK_PATTERN = /(?<!!)\[([^\]\r\n]+)\]/g;
+
 /** Decode bounded numeric character references without importing an HTML parser. */
 function decodeNumericCharacterReferences(text) {
   return text.replace(
@@ -954,7 +964,10 @@ function decodeNumericCharacterReferences(text) {
  */
 function headingInvariantShapeText(line) {
   return decodeNumericCharacterReferences(
-    line.replace(HEADING_INLINE_LINK_PATTERN, "$1"),
+    line
+      .replace(HEADING_INLINE_LINK_PATTERN, "$1")
+      .replace(HEADING_REFERENCE_LINK_PATTERN, "$1")
+      .replace(HEADING_SHORTCUT_LINK_PATTERN, "$1"),
   )
     .replace(/[*_~`]/g, "")
     .replace(/<\/?[A-Za-z][^>]*>/g, "");

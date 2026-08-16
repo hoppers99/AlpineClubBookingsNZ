@@ -448,6 +448,9 @@ describe("auditDefinitionHeadingShapes", () => {
 
   it.each([
     ["GFM inline link", "## INV-[MONEY](https://example.invalid)-002"],
+    ["GFM full reference link", "## INV-[MONEY][money]-002"],
+    ["GFM collapsed reference link", "## INV-[MONEY][]-002"],
+    ["GFM shortcut reference link", "## INV-[MONEY]-002"],
     ["decimal character reference", "## INV-M&#79;NEY-002"],
     ["hexadecimal character reference", "## INV-M&#x4f;NEY-002"],
     [
@@ -541,6 +544,9 @@ describe("auditDocs — the whole check", () => {
 
   it.each([
     "## INV-[MONEY](https://example.invalid)-002",
+    "## INV-[MONEY][money]-002",
+    "## INV-[MONEY][]-002",
+    "## INV-[MONEY]-002",
     "## INV-M&#79;NEY-002",
     "## INV-M&#x4f;NEY-002",
   ])("fails a link/entity-split invariant heading in the whole audit: %s", (heading) => {
