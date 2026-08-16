@@ -104,6 +104,8 @@ export const INVARIANT_SHAPED_TOKEN_PATTERN =
 
 /** The underline that turns the active paragraph into a Setext heading. */
 export const SETEXT_HEADING_UNDERLINE_PATTERN = /^ {0,3}(?:=+|-+)[ \t]*$/;
+const THEMATIC_BREAK_PATTERN =
+  /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 
 /** A CITATION is the id anywhere in a line of any tracked text file. */
 export const CITATION_PATTERN = /\bINV-[A-Z][A-Z0-9]*-\d{3}\b/g;
@@ -472,7 +474,9 @@ function structuralLine(line, paragraph) {
   return {
     ...fresh,
     lazyContinuation:
-      paragraph?.containers.length > 0 && fresh.containers.length === 0,
+      paragraph?.containers.length > 0 &&
+      fresh.containers.length === 0 &&
+      !THEMATIC_BREAK_PATTERN.test(fresh.text),
     opensContainer: fresh.containers.length > 0,
   };
 }
@@ -577,6 +581,12 @@ function scanMarkdownBlocks(text) {
           number: paragraph.lines[0].number,
           text: paragraph.lines.map((entry) => entry.text).join(" "),
         });
+        scannable.push(numberedLine);
+        paragraph = null;
+        continue;
+      }
+
+      if (THEMATIC_BREAK_PATTERN.test(outside.text)) {
         scannable.push(numberedLine);
         paragraph = null;
         continue;

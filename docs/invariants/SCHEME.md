@@ -617,7 +617,9 @@ indented code may start inside that fresh container. An ordered list can
 interrupt an active paragraph only when it starts at one. A markerless lazy
 line retains its original container for the next marked continuation; five
 spaces after a list marker are one padding space plus four-space indented code,
-not ordinary prose.
+not ordinary prose. An unmarked thematic break ends the container paragraph;
+within the same marked container, a dash underline still keeps Setext-heading
+precedence over a thematic break.
 
 **Definition** — collected only from `docs/invariants/**/*.md`:
 

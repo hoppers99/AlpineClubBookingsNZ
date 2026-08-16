@@ -597,6 +597,39 @@ describe("auditDocs — the whole check", () => {
     expect(problems[0]).toContain("looks like an invariant definition heading");
   });
 
+  it("treats an unmarked dash thematic break as ending a blockquote paragraph", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n> INV-MONEY-001\n---\n`,
+    );
+
+    expect(auditDocs(files)).toEqual([]);
+  });
+
+  it("keeps a marked dash underline as a blockquote Setext heading", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n> INV-MONEY-001\n> ---\n`,
+    );
+
+    const problems = auditDocs(files);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("looks like an invariant definition heading");
+  });
+
+  it("resets container paragraph state at an asterisk thematic break", () => {
+    const files = repo();
+    files.set(
+      "docs/invariants/money.md",
+      `${files.get("docs/invariants/money.md")}\n> paragraph\n***\n<fixture>\n## INV-MONEY-001 — literal duplicate\n`,
+    );
+
+    expect(auditDocs(files)).toEqual([]);
+  });
+
   it("does not treat an indented lazy blockquote paragraph continuation as code", () => {
     const files = repo();
     files.set(
