@@ -1060,7 +1060,7 @@ describe("N-07: sendAdminBookingBumpedAlert", () => {
 
 describe("Email templates - Phase 6a", () => {
   it("checkinReminderTemplate escapes HTML in user values", async () => {
-    const { checkinReminderTemplate } = await import("../email-templates");
+    const { checkinReminderTemplate } = await import("@/lib/email-templates/booking-reminders");
     const html = checkinReminderTemplate(
       "<script>alert('xss')</script>",
       new Date("2026-04-10"),
@@ -1075,7 +1075,7 @@ describe("Email templates - Phase 6a", () => {
   });
 
   it("adminNewBookingTemplate escapes member name", async () => {
-    const { adminNewBookingTemplate } = await import("../email-templates");
+    const { adminNewBookingTemplate } = await import("@/lib/email-templates/admin-booking");
     const html = adminNewBookingTemplate({
       memberName: '<img src=x onerror="alert(1)">',
       checkIn: new Date("2026-04-10"),
@@ -1095,7 +1095,7 @@ describe("Email templates - Phase 6a", () => {
     // mark-paid has neither a Stripe intent nor an invoice by definition), as
     // well as Stripe intents. A label naming the wrong system sends an officer
     // hunting in Stripe for something that was never there.
-    const { adminPaymentFailureTemplate } = await import("../email-templates");
+    const { adminPaymentFailureTemplate } = await import("@/lib/email-templates/admin-finance");
     const html = adminPaymentFailureTemplate({
       memberName: "John Doe",
       checkIn: new Date("2026-04-10"),
@@ -1111,7 +1111,7 @@ describe("Email templates - Phase 6a", () => {
   });
 
   it("adminPaymentFailureTemplate includes stripe PI ID", async () => {
-    const { adminPaymentFailureTemplate } = await import("../email-templates");
+    const { adminPaymentFailureTemplate } = await import("@/lib/email-templates/admin-finance");
     const html = adminPaymentFailureTemplate({
       memberName: "John Doe",
       checkIn: new Date("2026-04-10"),
@@ -1126,7 +1126,7 @@ describe("Email templates - Phase 6a", () => {
   });
 
   it("adminPendingDeadlineTemplate renders booking table", async () => {
-    const { adminPendingDeadlineTemplate } = await import("../email-templates");
+    const { adminPendingDeadlineTemplate } = await import("@/lib/email-templates/admin-booking");
     const html = adminPendingDeadlineTemplate([
       {
         memberName: "Jane Doe",
@@ -1143,7 +1143,7 @@ describe("Email templates - Phase 6a", () => {
   });
 
   it("adminBookingBumpedTemplate shows triggering member", async () => {
-    const { adminBookingBumpedTemplate } = await import("../email-templates");
+    const { adminBookingBumpedTemplate } = await import("@/lib/email-templates/admin-booking");
     const html = adminBookingBumpedTemplate({
       bumpedMemberName: "Jane Doe",
       checkIn: new Date("2026-04-10"),

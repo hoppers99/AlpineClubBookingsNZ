@@ -106,7 +106,7 @@ const PROVENANCE_SCANNED_FILES = [
   "src/lib/email-message-renderer.ts",
   "src/lib/email-message-audit-defaults.ts",
   "src/lib/email-message-notes.ts",
-  "src/lib/email-templates.ts",
+  "src/lib/email-templates/admin-finance.ts",
   "src/lib/email/admin-alerts-finance.ts",
   "src/components/admin/manual-refund-task-queue.tsx",
   // The test files matter as much as the sources. A test docblock is what the next

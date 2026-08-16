@@ -225,7 +225,6 @@ src/lib/config-transfer/categories/lodge-config.ts 1008 domain-module
 src/lib/config-transfer/categories/membership-fees.ts 1076 domain-module
 src/lib/config-transfer/categories/site-content.ts 953 domain-module
 src/lib/config-transfer/categories/xero-config.ts 808 domain-module
-src/lib/contextual-help.ts 2695 domain-module
 src/lib/cron-confirm-pending.ts 1687 domain-module
 src/lib/cron-group-settlement-reaper.ts 740 domain-module
 src/lib/deleted-booking-modification-payment.ts 838 domain-module
@@ -244,7 +243,6 @@ src/lib/diagnostics/tools/types.ts 733 domain-module
 src/lib/email-message-registry.ts 2001 domain-module
 src/lib/email-message-renderer.ts 842 domain-module
 src/lib/email-message-token-contract.ts 715 domain-module
-src/lib/email-templates.ts 5000 domain-module
 src/lib/email/booking.ts 1426 domain-module
 src/lib/finance-booking-metrics.ts 1281 domain-module
 src/lib/finance-dashboard-page.ts 1653 domain-module

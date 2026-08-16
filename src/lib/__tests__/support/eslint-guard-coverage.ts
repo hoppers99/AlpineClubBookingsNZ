@@ -83,7 +83,7 @@ export const PRODUCTION_GUARD_ROSTER: readonly GuardRosterEntry[] = [
   { file: "src/lib/nzst-date.ts", why: "the NZ date helper — exempt from the DATE rules only" },
   { file: "src/lib/date-only.ts", why: "the date-only helper — exempt from the DATE rules only" },
   {
-    file: "src/lib/email-templates.ts",
+    file: "src/lib/email-templates/chores.ts",
     why: "the chore-roster subject line — exempt from the DATE rules only",
   },
   {

@@ -1,7 +1,7 @@
 import {
   adminDailyDigestTemplate,
   adminIssueReportTemplate,
-} from "../email-templates";
+} from "@/lib/email-templates/admin-ops";
 import { sendToAdmins } from "./admin-alerts-shared";
 
 // N-13: Admin daily digest

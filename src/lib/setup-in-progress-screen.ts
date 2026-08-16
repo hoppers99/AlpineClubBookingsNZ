@@ -63,9 +63,10 @@ export const SETUP_IN_PROGRESS_RETRY_AFTER_SECONDS = 120;
  * Minimal HTML escaper for the two admin-editable values interpolated into the
  * document (club name, contact email).
  *
- * Local rather than `escapeHtml` from `@/lib/email-templates`: this module is
- * bundled into the proxy, and that import would drag the whole email-template
- * layer — and its own settings/config imports — in with it.
+ * Local rather than `escapeHtml` from `@/lib/email-templates/escape`: this
+ * module is bundled into the proxy, and even a leaf import is one more edge
+ * into the email layer from a module whose whole point is to have none. The
+ * two escapers stay separate deliberately.
  */
 function escapeHtml(value: string): string {
   return value

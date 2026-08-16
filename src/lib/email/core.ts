@@ -28,6 +28,10 @@ import {
   shouldPersistEmailHtml,
   type EmailAttachment,
 } from "./internal";
+// A pure string builder, and `email-message-renderer` above already pulls the
+// template layer in, so this adds no failure mode to the alert that reports a
+// failure (#2689).
+import { adminEmailWithheldTemplate } from "@/lib/email-templates/admin-ops";
 
 export type EmailSendOutcome =
   | {
@@ -143,12 +147,10 @@ async function alertAdminsOfFailClosedWithhold(params: {
 
   const { getAdminEmails } = await import("./admin-alerts-shared");
   const admins = await getAdminEmails();
-  const html =
-    `<p>An email to a member was NOT sent and will NOT be retried automatically.</p>` +
-    `<p>Template: <strong>${params.templateName}</strong><br/>` +
-    `Booking: <strong>${params.bookingId}</strong></p>` +
-    `<p>The booking's "No emails" setting could not be read, so the system withheld the message rather than risk sending one that was meant to be held back. ` +
-    `The setting itself may well be off — check the booking, then re-send the message if it is.</p>`;
+  const html = adminEmailWithheldTemplate({
+    templateName: params.templateName,
+    bookingId: params.bookingId,
+  });
   for (const admin of admins) {
     await sendEmail({
       to: admin,

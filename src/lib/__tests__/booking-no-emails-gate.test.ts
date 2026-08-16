@@ -27,8 +27,16 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 vi.mock("@/lib/logger", () => ({ default: mocks.logger }));
-vi.mock("@/lib/email-sender", () => ({ EMAIL_FROM: "club@club.test" }));
+vi.mock("@/lib/email-sender", () => ({
+  EMAIL_FROM: "club@club.test",
+  // The fail-closed alert now renders through the shared email shell (#2689),
+  // which imports the support address even though this body does not use the
+  // support-link block. Keep the module mock complete for that real graph.
+  SUPPORT_EMAIL: "support@club.test",
+}));
 vi.mock("@/lib/email-message-settings", () => ({
+  // The shared shell renders this value in its <title>.
+  EMAIL_DEFAULT_FROM_NAME: "Club Bookings",
   formatEmailFromAddressWithSettings: () => "Club <club@club.test>",
 }));
 vi.mock("@/lib/email-message-renderer", () => ({
