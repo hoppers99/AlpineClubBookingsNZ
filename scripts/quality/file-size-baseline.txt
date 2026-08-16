@@ -291,7 +291,7 @@ src/lib/waitlist-cross-lodge.ts 956 domain-module
 src/lib/waitlist.ts 1311 domain-module
 src/lib/xero-api-client.ts 768 domain-module
 src/lib/xero-applied-credit-deallocation.ts 955 domain-module
-src/lib/xero-booking-invoices.ts 1291 domain-module
+src/lib/xero-booking-invoices.ts 1294 domain-module
 src/lib/xero-booking-repair-classify.ts 1394 domain-module
 src/lib/xero-bulk-contact-sync.ts 705 domain-module
 src/lib/xero-contact-create-recovery.ts 830 domain-module
