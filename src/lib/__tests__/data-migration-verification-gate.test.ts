@@ -15,6 +15,7 @@ import {
   bashFixtureEnv,
   bashFixturePath,
   bashGateArgs,
+  bashToolArgs,
 } from "./helpers/bash-fixture-path";
 
 /**
@@ -394,24 +395,6 @@ describe("data-migration verification coverage gate (#2418)", () => {
   }, MIGRATION_GATE_TREE_TIMEOUT_MS);
 });
 
-/**
- * #2886 — unlike every other shell-out here, the splitter-agreement case below
- * spawns `awk` DIRECTLY rather than through `bash`, so it needs an `awk` on
- * PATH rather than merely a shell. Windows ships none — measured on the Windows
- * host in #2886, `spawnSync("awk", …)` returns `error.code === "ENOENT"` and
- * `status: null`, and `status: null` then fails the `toBe(0)` assertion with a
- * message about the migration rather than about the missing binary.
- *
- * That is a different mechanism from the fixture-path one this file's `runGate`
- * fixes, so it gets a different answer: skip it where the binary genuinely
- * cannot exist, and keep it mandatory everywhere it can. The condition is
- * capability-detected AND pinned to Windows, so a missing `awk` on Linux or on
- * CI still fails loudly instead of quietly skipping the drift guard.
- */
-const AWK_ON_PATH =
-  spawnSync("awk", ["--version"], { encoding: "utf8" }).error === undefined;
-const SKIP_SPLITTER_AGREEMENT = process.platform === "win32" && !AWK_ON_PATH;
-
 describe("the two statement splitters agree (#2418)", () => {
   /**
    * There are two tokenisers on purpose, with different contracts: the awk one
@@ -422,7 +405,7 @@ describe("the two statement splitters agree (#2418)", () => {
    * runs both over every committed migration and fails if they ever disagree
    * about where a statement starts and ends.
    */
-  it.skipIf(SKIP_SPLITTER_AGREEMENT)("split every committed migration the same way", () => {
+  it("split every committed migration the same way", () => {
     const migrationsRoot = path.join(REPO_ROOT, "prisma", "migrations");
     const names = readdirSync(migrationsRoot, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
@@ -437,14 +420,14 @@ describe("the two statement splitters agree (#2418)", () => {
       // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       const file = path.join(migrationsRoot, name, "migration.sql");
       const awkResult = spawnSync(
-        "awk",
-        [
+        "bash",
+        bashToolArgs("awk", [
           "-v",
           "tool=agreement-test",
           "-f",
           "scripts/lib/split-sql-statements.awk",
           bashFixturePath(file, REPO_ROOT),
-        ],
+        ]),
         { cwd: REPO_ROOT, encoding: "utf8" },
       );
       expect(awkResult.status, `${name}: ${awkResult.stderr}`).toBe(0);

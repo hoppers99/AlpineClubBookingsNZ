@@ -453,18 +453,20 @@ fail deterministically, on a clean tree, with the suite run alone:
 
 Both are fixed centrally in `src/lib/__tests__/helpers/bash-fixture-path.ts`,
 which carries the measurements. **Use `bashFixturePath` and `bashGateArgs` for
-any new shell-out**; on Linux and CI they are equivalent to what these suites
-did before, which was checked by running both invocation shapes over the same
-fixtures inside `node:24-bookworm` and comparing status, stdout and stderr.
+gate scripts, and `bashToolArgs` for a POSIX tool**. A same-volume Windows path
+becomes relative; a cross-volume one is translated by the selected shell's
+`wslpath` or `cygpath` and fails clearly if neither exists. On Linux and CI the
+gate invocation is equivalent to what these suites did before, which was checked
+by running both shapes over the same fixtures inside `node:24-bookworm` and
+comparing status, stdout and stderr.
 
 Two things this does *not* cover, so that the list stays honest:
 
-- A test that spawns a POSIX tool **directly** rather than through `bash` still
-  needs that tool on PATH. The awk/TypeScript splitter-agreement case in
-  `data-migration-verification-gate.test.ts` spawns `awk`, Windows ships none,
-  and `spawnSync` reports `status: null` — which quietly satisfies a
-  `not.toBe(0)` assertion. That case now skips on Windows when `awk` is absent
-  and stays mandatory everywhere it can run, including CI.
+- A POSIX tool must run through `bashToolArgs`, not as a native Windows command.
+  The awk/TypeScript splitter-agreement case does exactly that: stock Windows
+  has no `awk.exe`, but its WSL bash has `/usr/bin/awk`, so the comparison stays
+  mandatory on Windows, Linux and CI. A missing shell-side tool is a real red,
+  never a capability skip or a `status: null` that a weak assertion could miss.
 - These suites do carry generous **inline** per-test timeouts, written as the
   third argument to each `it(...)`, and an inline timeout does win over
   `--testTimeout`. That is a real fact about editing them

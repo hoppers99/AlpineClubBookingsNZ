@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 /**
@@ -44,7 +45,10 @@ import path from "node:path";
  * every bash translates its own working directory — WSL reports
  * `/mnt/c/Users/…/repo`, Git Bash reports `/c/Users/…/repo` — so a relative
  * path resolves correctly under either, with no need to know which is
- * installed. Measured, passing the same fixture to a real script:
+ * installed. When the repository and fixture are on different volumes, no
+ * relative path exists; the selected shell translates the absolute path with
+ * `wslpath` or `cygpath` instead. Measured, passing the same fixture to a real
+ * script:
  *
  * | Form handed to bash                                   | Result  |
  * | ----------------------------------------------------- | ------- |
@@ -110,25 +114,72 @@ export function bashFixturePath(
   const relative = path.relative(cwd, value);
 
   // `path.relative` cannot express a relative path across Windows drives — it
-  // hands back the absolute target instead. A repository on `D:` with `TEMP` on
-  // `C:` lands here, and there is no relative form to offer. Fall back to the
-  // separator flip, which at least keeps Git Bash working; under WSL the gate
-  // then reports the path it could not find, so the reason stays visible rather
-  // than becoming mysterious.
+  // hands back the absolute target instead. Ask the selected bash to translate
+  // that absolute path into its own namespace: WSL provides `wslpath`, while
+  // Git Bash provides `cygpath`. Returning the drive-letter form would merely
+  // postpone the same deterministic "file not found" failure this helper exists
+  // to prevent.
   if (
     relative === "" ||
     path.isAbsolute(relative) ||
     /^[A-Za-z]:/.test(relative)
   ) {
-    return value.split(path.sep).join("/");
+    return translateWindowsAbsolutePathForBash(value, cwd);
   }
 
   return relative.split(path.sep).join("/");
 }
 
+/** Translate a Windows absolute path into the namespace of the selected bash. */
+export function translateWindowsAbsolutePathForBash(
+  value: string,
+  cwd: string = process.cwd(),
+): string {
+  const portableValue = value.replace(/\\/g, "/");
+  const command = [
+    "if command -v wslpath >/dev/null 2>&1; then",
+    '  exec wslpath -u "$1"',
+    "elif command -v cygpath >/dev/null 2>&1; then",
+    '  exec cygpath -u "$1"',
+    "else",
+    '  echo "bash has neither wslpath nor cygpath" >&2',
+    "  exit 127",
+    "fi",
+  ].join("\n");
+
+  try {
+    const translated = execFileSync(
+      "bash",
+      ["-c", command, "bash-fixture-path", portableValue],
+      {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    ).trim();
+    if (!translated.startsWith("/")) {
+      throw new Error(`translator returned non-POSIX path ${translated}`);
+    }
+    return translated;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Cannot translate cross-volume Windows fixture path ${value} for bash: ${detail}`,
+    );
+  }
+}
+
 /** POSIX single-quoting, so a value with spaces or quotes survives the shell. */
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+/** Build a safely quoted `bash -c` invocation for a POSIX tool. */
+export function bashToolArgs(tool: string, args: string[] = []): string[] {
+  return [
+    "-c",
+    ["exec", shellQuote(tool), ...args.map(shellQuote)].join(" "),
+  ];
 }
 
 /**
@@ -178,11 +229,13 @@ export function bashGateArgs(
  * keys means a value is converted because it *is* a path, not because it looked
  * like one.
  */
-const PATH_VALUED_ENV_KEYS = new Set([
+export const PATH_VALUED_ENV_KEYS = new Set([
   "MIGRATION_SAFETY_LEDGER",
   "MIGRATIONS_DIR",
   "DATA_MIGRATION_VERIFICATION_DIR",
   "DATA_MIGRATION_GRANDFATHER_FILE",
+  "SQL_STATEMENT_SPLITTER",
+  "VALIDATOR",
 ]);
 
 /**

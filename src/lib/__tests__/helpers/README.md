@@ -168,16 +168,19 @@ production defaults and validating the repository's real files instead of the
 fixture (#2886).
 
 `bashFixturePath` returns a path relative to the spawn's `cwd`, which resolves
-under WSL and Git Bash alike; `bashGateArgs` inlines the variables into the `-c`
-string, which is the only form that crosses into WSL. Both are no-ops or
-equivalents on Linux and CI. The module comment carries the measurements and the
-equivalence check. Import it directly rather than through the barrel, like
-`clock.ts`.
+under WSL and Git Bash alike. If the repository and fixture are on different
+Windows volumes, it asks the selected shell's `wslpath` or `cygpath` for the
+absolute POSIX form and fails before invoking the gate if neither can translate
+it. `bashGateArgs` inlines variables into the `-c` string, which is the only form
+that crosses into WSL. These are no-ops or equivalents on Linux and CI. The
+module comment carries the measurements and the equivalence check. Import it
+directly rather than through the barrel, like `clock.ts`.
 
-Note the limit: a test that spawns a POSIX tool **directly** rather than through
-`bash` still needs that tool on PATH, and Windows ships no `awk`. `spawnSync`
-then reports `status: null`, which quietly satisfies a `not.toBe(0)` assertion —
-so gate such a case on the binary being present rather than assuming it is.
+Run a POSIX tool through `bashToolArgs`. Windows ships no native `awk.exe`, but
+the stock WSL bash provides `/usr/bin/awk`; the splitter-equivalence contract
+therefore runs on Windows rather than being capability-skipped. The helper
+quotes every argument into one `bash -c` command, so spaces and apostrophes do
+not become a reason to fall back to direct spawning.
 
 ## Conventions
 
