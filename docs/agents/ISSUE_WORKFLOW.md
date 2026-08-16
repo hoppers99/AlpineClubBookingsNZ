@@ -164,8 +164,8 @@ issue you just edited: if the warning has cleared, the body is true.
 
 ## Claiming, and talking between lanes
 
-`AGENTS.md` and `CLAUDE.md` both tell you to post a CLAIM comment "per repo
-convention". This section is that convention.
+`AGENTS.md` tells you to post a CLAIM comment using the repository convention.
+This section is that convention for every agent interface.
 
 Every agent in this repository authenticates to GitHub as the **same account**,
 so GitHub's author field cannot tell two concurrent lanes apart. The comment

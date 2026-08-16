@@ -11,8 +11,12 @@ describe("repository agent workflow contract", () => {
     const claude = readRepoFile("CLAUDE.md");
     const codex = readRepoFile("docs/agents/CODEX_WORKFLOW.md");
     const subagents = readRepoFile("docs/agents/SUBAGENT_GUIDE.md");
+    const scopedContext = readRepoFile("docs/agents/SCOPED_CONTEXT.md");
     const issueWorkflow = readRepoFile("docs/agents/ISSUE_WORKFLOW.md");
     const generatedPrompt = readRepoFile("scripts/codex/issue-to-prompt.mjs");
+    const contextGenerator = readRepoFile("scripts/agent-context.ts");
+    const packageJson = readRepoFile("package.json");
+    const gitignore = readRepoFile(".gitignore");
     const lockGuard = readRepoFile("src/lib/__tests__/advisory-lock-guard.test.ts");
     const agentGuides = [agents, claude, codex, subagents].map((guide) =>
       guide.replace(/\s+/g, " "),
@@ -20,6 +24,7 @@ describe("repository agent workflow contract", () => {
     const agentsNormalized = agents.replace(/\s+/g, " ");
     const codexNormalized = codex.replace(/\s+/g, " ");
     const subagentsNormalized = subagents.replace(/\s+/g, " ");
+    const scopedContextNormalized = scopedContext.replace(/\s+/g, " ");
     const contradictoryFullLocalGate =
       /run\b.{0,80}\bfull\b.{0,100}(?:\bbefore (?:opening|push)|\blocally before)/i;
 
@@ -34,6 +39,13 @@ describe("repository agent workflow contract", () => {
     expect(agents).toContain("PR CI owns the full `npm test`");
     expect(agents).toMatch(/Do not\s+delay a draft PR/);
     expect(agents).not.toContain("Run the **full** `npm test` before opening the PR");
+    expect(agents).toContain("Keep a private 25% weekly reserve");
+    expect(agents).toContain("Gate the blueprint by risk");
+    expect(agents).toContain("Validate coherent batches");
+    expect(agents).toContain("Two identical failures trip a circuit breaker");
+    expect(agents).toContain("Codex Terra/Luna; Claude Sonnet");
+    expect(agents).toContain("security stays on Opus at `xhigh`");
+    expect(agents).toContain("`xhigh` remains the ceiling");
 
     // #2691: the merge gate's only human check is an on-repo owner comment, and
     // every agent here drives `gh` as the owner's account — so the rules that
@@ -65,19 +77,26 @@ describe("repository agent workflow contract", () => {
     expect(issueWorkflow).toContain("### `LANE-SYNC:`");
     expect(issueWorkflow).toContain("## Writing in the open");
 
-    expect(claude).toContain("Read [`AGENTS.md`](AGENTS.md) first");
-    expect(claude).toContain("never overrides `AGENTS.md`");
-    expect(claude).toContain('Follow `AGENTS.md` → "Orchestration Model"');
-    expect(claude).toContain("PR CI owns the full test, build, migration-drift");
-    expect(claude).toContain("Do not duplicate them locally");
-    expect(claude).not.toContain("Run the full `npm test` before opening a PR");
-    // #2468: `CLAUDE.md` is the file an interactive session reads instead of all
-    // of `AGENTS.md`, so the two `verify` gates that read the PR body rather than
-    // the code have to be named here — otherwise a lint-clean, typecheck-clean
-    // change fails CI for a reason nothing it was told to read explains.
-    expect(claude).toContain("changelog.d/<pr-number>-<slug>.md");
-    expect(claude).toContain("changelog.d/README.md");
-    expect(claude).toContain("editing the body alone does not re-run Actions");
+    // #2903: Claude imports the shared authority once. Its adapter is bounded
+    // and carries only interface-specific controls; removed normative rules
+    // survive in AGENTS.md rather than being copied into two homes again.
+    expect(claude.match(/^@AGENTS\.md$/gm)).toHaveLength(1);
+    expect(claude.split(/\r?\n/).length).toBeLessThanOrEqual(100);
+    expect(claude.length).toBeLessThanOrEqual(8_000);
+    expect(agents).not.toContain("CLAUDE.md");
+    expect(claude).toContain("/usage");
+    expect(claude).toContain("/context");
+    expect(claude).toContain("/mcp");
+    expect(claude).toContain("/hooks");
+    expect(claude).toContain("/clear");
+    expect(claude).toContain("Use Sonnet or local tooling");
+    expect(claude).not.toContain("## Completion and Merge");
+    expect(claude).not.toContain("## Local validation");
+    expect(claude).not.toContain("changelog.d/<pr-number>-<slug>.md");
+    expect(agents).toContain("changelog.d/<pr-number>-<slug>.md");
+    expect(agentsNormalized).toContain("a body edit does not re-run Actions");
+    expect(agents).toContain("npm run pr:check");
+    expect(agents).toContain("npm run test:related");
 
     expect(codex).toContain("Root `AGENTS.md` is authoritative");
     expect(codex).toContain("last 10 merged PRs affecting the subsystem");
@@ -90,6 +109,9 @@ describe("repository agent workflow contract", () => {
     expect(codex).toContain("### 5. Split fast local evidence from full CI gates");
     expect(codex).toContain("GitHub Actions owns the full");
     expect(codexNormalized).toContain("Run a full suite locally only to diagnose");
+    expect(codex).toContain("Luna/Terra");
+    expect(codexNormalized).toContain("clear issue-specific context");
+    expect(codexNormalized).toContain("Prefer `rg`, Git and repository scripts");
 
     expect(subagents).toContain("Follow the role split in root `AGENTS.md`");
     expect(subagents).toContain("Implementor subagents may edit only their clearly bounded issue/worktree area");
@@ -97,6 +119,17 @@ describe("repository agent workflow contract", () => {
     expect(subagentsNormalized).toContain("or run the full suite locally");
     expect(subagents).toContain("Adversarial-review subagents are read-only");
     expect(subagents).not.toContain("Use subagents mainly for read-only discovery");
+    expect(subagentsNormalized).toContain("smallest relevant files or section");
+
+    expect(scopedContextNormalized).toContain("Inventory and content come only from `git ls-files`");
+    expect(scopedContextNormalized).toContain("limited to one or two hops");
+    expect(scopedContext).toContain("npm run agent:context -- -- --base");
+    expect(scopedContextNormalized).toContain("computed dynamic imports");
+    expect(scopedContextNormalized).toContain("temporary sibling directory and renames it into place");
+    expect(packageJson).toContain('"agent:context": "tsx scripts/agent-context.ts"');
+    expect(gitignore).toMatch(/^\/\.artifacts\/$/m);
+    expect(contextGenerator).toContain("No artifact was written");
+    expect(contextGenerator).toContain('runGit(repoRoot, ["ls-files", "-z"])');
 
     for (const guide of agentGuides) {
       expect(guide).not.toMatch(contradictoryFullLocalGate);

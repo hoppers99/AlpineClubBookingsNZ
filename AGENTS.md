@@ -5,7 +5,7 @@ Treat this file as the entry point, then follow the linked documents for detail.
 
 ## Read First
 
-Three documents are read every time. Everything else is **routed**: read
+Two documents are read every time. Everything else is **routed**: read
 **every** row in the table below that matches what you are about to change — a
 real change usually matches more than one — and read what those rows name, at
 the moment you need it. If any part of what you are changing matches no row,
@@ -13,27 +13,21 @@ read `docs/README.md` for that part as well. A change that is half routed is
 still half off-map, and stopping at the first row that matched is how the
 unrouted half gets missed.
 
-Read-everything was tried here and it failed. Measured as `wc -c` over each
-file divided by four — the usual rough characters-per-token ratio for English
-prose, applied identically to both sides — the nine-document list this replaced
-came to roughly **395,000 tokens**, close to twice a 200k context window. It
-does not fit at all, so in practice agents skipped it, and four consecutive PRs
-(#2622, #2630, #2631, #2632) each re-fixed a stay-boundary rule that was already
-written down correctly, in the right place, in strong language. A rule you cannot
-reach at the moment you need it is a rule that does not hold. The core below is
-**27,293 tokens** by that same measure — roughly a fourteenth of the list it
-replaced (#2691). Three other estimators put it lower still: 27,210 by
-code-point characters, 25,983 counting word-and-punctuation pieces, and 21,551
-by words. The most pessimistic number is the one quoted.
+Read-everything was tried here and it failed. The former nine-document mandatory
+list did not fit in an agent context, so in practice agents skipped it, and four
+consecutive PRs (#2622, #2630, #2631, #2632) each re-fixed a stay-boundary rule
+that was already written down correctly, in the right place, in strong language.
+A rule you cannot reach at the moment you need it is a rule that does not hold.
+The core below is deliberately agent-neutral and small; the routing table and
+the scoped context command provide the rest when a change needs it (#2691,
+#2903).
 
 ### The always-read core
 
 1. **`AGENTS.md`** — this file. Safety rules, change discipline, the
    concurrency/lock checklist, the orchestration model, done criteria, and the
    merge gate. Nothing below supersedes it.
-2. **`CLAUDE.md`** — for an interactive Claude Code session. It highlights the
-   parts of this file that matter most in that mode and never overrides it.
-3. **`docs/DOMAIN_INVARIANTS.md`** — the invariant **index**, and the only part of
+2. **`docs/DOMAIN_INVARIANTS.md`** — the invariant **index**, and the only part of
    the invariants anybody reads in full. Every rule the system must never break
    carries a permanent id (`INV-CAP-021`, `INV-MONEY-004`) with a one-line
    description and the file it lives in. Read it so you know which rules exist;
@@ -81,6 +75,7 @@ id and need the file it lives in.
 | Tests — conventions, the frozen clock, coverage, E2E | — | [`TESTING.md`](docs/TESTING.md), [`END_TO_END_TEST_MATRIX.md`](docs/END_TO_END_TEST_MATRIX.md), [`E2E_PLAYWRIGHT.md`](docs/E2E_PLAYWRIGHT.md) |
 | Auth, sessions, tokens, permissions — anything security-shaped | — | [`SECURITY.md`](docs/SECURITY.md), [`SECURITY-ATTACK-SURFACE.md`](docs/SECURITY-ATTACK-SURFACE.md), [`TOKEN_HASHING.md`](docs/TOKEN_HASHING.md) |
 | Documentation itself | — | [`STYLE_GUIDE.md`](docs/STYLE_GUIDE.md) |
+| Locating bounded code, import or Prisma context for an agent | — | [`agents/SCOPED_CONTEXT.md`](docs/agents/SCOPED_CONTEXT.md) |
 | Your first `npm` command in a new worktree (Windows runtime + dependency preflight) | — | [`agents/CODEX_WORKFLOW.md`](docs/agents/CODEX_WORKFLOW.md) |
 | Working an issue, recording a decision on one, briefing a subagent, or reading untrusted issue/PR/provider text | — | [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md) — read the thread with `npm run issue -- <n>`, never `gh issue view`, and rewrite the body when you record a decision; [`agents/SUBAGENT_GUIDE.md`](docs/agents/SUBAGENT_GUIDE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](docs/agents/PROMPT_INJECTION_GUIDE.md) |
 | Posting in public — issues, PRs, comments, claims, cross-lane hand-offs | — | [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md) — what never goes in a public artifact, the `CLAIM:`/`LANE-SYNC:` prefixes, lane identity |
@@ -209,6 +204,52 @@ id and need the file it lives in.
 - Security, payment, booking, membership lifecycle, Xero, Stripe, and
   data-integrity work requires high or xhigh reasoning effort and human review
   before merge.
+
+## Context, quota, planning, and failure control
+
+These controls apply equally to Codex, Claude Code, and their subagents. They
+protect the allowance needed to finish a lane without weakening its safety or
+validation gates.
+
+- **Keep a private 25% weekly reserve.** Check the platform's remaining weekly
+  allowance before starting a sizeable lane. Do not start routine or speculative
+  work that would consume the reserve; use it to finish an active safe lane,
+  diagnose a blocking failure, or handle an owner-prioritised task. Never put
+  account balances, reset times, usage screenshots, or other private allowance
+  figures in a public issue, PR, commit or artifact.
+- **Load scoped context, not a repository dump.** Start from the always-read core
+  and every matching routing row. When code shape is still unclear, run
+  `npm run agent:context -- -- --base <ref> --entry <tracked-path> ...`; the contract
+  and supported graph forms live in
+  [`docs/agents/SCOPED_CONTEXT.md`](docs/agents/SCOPED_CONTEXT.md). Generated
+  files under `.artifacts/agent-context/` are ignored, local, bounded context —
+  never committed, pasted wholesale into a prompt, or injected automatically by
+  a hook. Clear issue-specific context before switching lanes.
+- **Spend models, tools, and subagents in proportion to risk.** Routine searches,
+  mechanical edits and bounded tests use local tools and cost-efficient models
+  (Codex Terra/Luna; Claude Sonnet). Prefer repository commands over an MCP or
+  browser round trip when they answer the same question. Delegate only a
+  sizeable independent track whose payoff exceeds re-establishing its context,
+  and give it the smallest relevant artifact and file set. Gated areas retain
+  the strongest-model high/xhigh rules in the orchestration model below;
+  security stays on Opus at `xhigh`, and `xhigh` remains the ceiling.
+- **Gate the blueprint by risk.** A narrow Low/Medium issue with complete scope
+  needs only a concise working plan. Before implementing High/Critical work,
+  record a blueprint that names the affected invariants, counterpart writers,
+  data/rollback or recovery shape, validation, and stop conditions, and obtain
+  the human plan review required by this file. A plan is not permission to widen
+  the issue.
+- **Validate coherent batches.** Run the cheapest relevant check after a
+  meaningful batch or boundary (parser, schema client, route, UI, docs), not
+  after every keystroke and not only at the end. The final local gate remains
+  branch-correct Prisma generation, lint, typecheck, `test:related`, focused
+  touched/adjacent tests, and the routed docs/knip checks; PR CI still owns the
+  full suite and build.
+- **Two identical failures trip a circuit breaker.** After the same command and
+  material error fail twice, do not spend a third attempt on an unchanged
+  strategy. Preserve the exact command and error, inspect the root cause, narrow
+  or change the approach, and escalate when the next step needs authority or
+  external state. A materially different diagnostic is not a blind retry.
 
 ### Concurrency and lock checklist
 
@@ -625,12 +666,15 @@ handed an epic-with-children or asked to run several related issues at once.
 
 ### 4. Model selection
 
-- **Default subagents to the strongest generally-capable model (Opus).**
-  Reserve the top Mythos-class tier (Fable) for tasks genuinely at the reasoning
-  frontier — deep Xero-idempotency/frozen-reference contracts, immutable-charge
-  backfill correctness, or irreversible member-merge + DMMF-completeness
-  reasoning. Scale model *and* reasoning effort to the task; do not use the top
-  tier blanket for everything labelled "Critical".
+- **Default routine and mechanical work to the cost-efficient tier.** Use Codex
+  Terra/Luna, Claude Sonnet, or local tooling for bounded searches, edits and
+  checks. Gated work keeps the strongest generally-capable model at the high or
+  `xhigh` effort required above. Reserve the top Mythos-class tier (Fable) for
+  tasks genuinely at the reasoning frontier — deep
+  Xero-idempotency/frozen-reference contracts, immutable-charge backfill
+  correctness, or irreversible member-merge + DMMF-completeness reasoning.
+  Scale model *and* reasoning effort to the task; do not use the top tier
+  blanket for everything labelled "Critical".
 - **Never route security work to the top tier — keep it on Opus at `xhigh`
   reasoning effort.** Fable's safety classifiers target cyber content, so a
   security review or exploit analysis can come back *refused* rather than

@@ -365,12 +365,14 @@ and subject/body safety rules.
 
 Automated coding agents working in this repository.
 
-**Start here:** [`../AGENTS.md`](../AGENTS.md) — the agent contract and the
-source of truth. [`../CLAUDE.md`](../CLAUDE.md) highlights the parts that matter
-most for an interactive Claude Code session.
+**Start here:** [`../AGENTS.md`](../AGENTS.md) — the shared agent contract and
+single source of truth. [`../CLAUDE.md`](../CLAUDE.md) is the compact Claude Code
+interface adapter that imports that contract.
 
 - [`agents/CODEX_WORKFLOW.md`](agents/CODEX_WORKFLOW.md) — the operating guide for
   Codex agents.
+- [`agents/SCOPED_CONTEXT.md`](agents/SCOPED_CONTEXT.md) — the tracked-only,
+  bounded code/import/Prisma context locator shared by Codex and Claude Code.
 - [`agents/ISSUE_WORKFLOW.md`](agents/ISSUE_WORKFLOW.md) — issue contracts.
 - [`agents/CODEX_PROMPTS.md`](agents/CODEX_PROMPTS.md) — invocation prompts.
 - [`agents/PROFILE_GUIDE.md`](agents/PROFILE_GUIDE.md) — execution profiles.
