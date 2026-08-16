@@ -1766,6 +1766,7 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
       (await tx.booking.count({
         where: {
           status: BookingStatus.WAITLISTED,
+          lodgeId: waitlistLodgeId,
           checkIn: { lt: createdBooking.checkOut },
           checkOut: { gt: createdBooking.checkIn },
           createdAt: { lt: createdBooking.createdAt },

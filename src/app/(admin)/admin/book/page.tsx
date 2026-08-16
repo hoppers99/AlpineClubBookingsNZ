@@ -1,7 +1,7 @@
 "use client";
 
 import type { AgeTier } from "@prisma/client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { BookingCalendar } from "@/components/booking-calendar";
@@ -100,6 +100,18 @@ export default function AdminBookPage() {
     reload: reloadLodges,
   } = useLodgeOptions("admin");
   const [lodgeId, setLodgeId] = useState<string | null>(null);
+  const activeLodgeIdRef = useRef<string | null>(lodgeId);
+  const dateSelectionSequenceRef = useRef(0);
+  const dateSelectionAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    activeLodgeIdRef.current = lodgeId;
+  }, [lodgeId]);
+  useEffect(
+    () => () => {
+      dateSelectionAbortRef.current?.abort();
+    },
+    [],
+  );
   // #2701: the lodge this booking will be written against, named on screen
   // before anything is written. Null means the page cannot say — and the create
   // is refused server-side rather than defaulted, so it is never a silent
@@ -199,7 +211,18 @@ export default function AdminBookPage() {
     };
   }, [selectedMember]);
 
+  function invalidatePendingDateSelection(
+    nextLodgeId = activeLodgeIdRef.current,
+  ) {
+    activeLodgeIdRef.current = nextLodgeId;
+    dateSelectionSequenceRef.current += 1;
+    const pendingRequest = dateSelectionAbortRef.current;
+    dateSelectionAbortRef.current = null;
+    pendingRequest?.abort();
+  }
+
   function handleMemberSelect(member: SelectedMember) {
+    invalidatePendingDateSelection();
     setSelectedMember(member);
     setFamilyMembers([]);
     setStep("dates");
@@ -215,6 +238,8 @@ export default function AdminBookPage() {
     setError("");
     setAllowPastDates(false);
     setOverCapacityNights(null);
+    setAvailableBeds(lodgeCapacity);
+    setResolvedCapacity(lodgeCapacity);
   }
 
   // An inline-created / picked non-login non-member owner (#1935) proceeds
@@ -232,6 +257,7 @@ export default function AdminBookPage() {
   }
 
   function handleMemberClear() {
+    invalidatePendingDateSelection();
     setSelectedMember(null);
     setStep("member");
     setCheckIn(null);
@@ -246,6 +272,8 @@ export default function AdminBookPage() {
     setFamilyMembers([]);
     setAllowPastDates(false);
     setOverCapacityNights(null);
+    setAvailableBeds(lodgeCapacity);
+    setResolvedCapacity(lodgeCapacity);
   }
 
   function addFamilyMemberAsGuest(fm: FamilyMember) {
@@ -269,6 +297,11 @@ export default function AdminBookPage() {
   function handleLodgeChange(nextLodgeId: string | null) {
     if (nextLodgeId === lodgeId) return;
     const hadLodge = lodgeId !== null;
+    // Invalidate a pending Lodge A availability request synchronously. Waiting
+    // for React's next effect leaves a small window where its response can
+    // advance Lodge B's wizard or install Lodge A's capacity under Lodge B's
+    // selector.
+    invalidatePendingDateSelection(nextLodgeId);
     setLodgeId(nextLodgeId);
     if (!hadLodge) return;
     // Availability, pricing, and promos are all per lodge: switching lodges
@@ -282,11 +315,20 @@ export default function AdminBookPage() {
     setError("");
     setAllowPastDates(false);
     setOverCapacityNights(null);
+    setAvailableBeds(lodgeCapacity);
     // The next date selection re-resolves the new lodge's capacity.
     setResolvedCapacity(lodgeCapacity);
   }
 
   async function handleDateSelect(ci: string, co: string) {
+    const requestedLodgeId = lodgeId;
+    const sequence = (dateSelectionSequenceRef.current += 1);
+    dateSelectionAbortRef.current?.abort();
+    const controller = new AbortController();
+    dateSelectionAbortRef.current = controller;
+    const ownsCurrentLodge = () =>
+      sequence === dateSelectionSequenceRef.current &&
+      activeLodgeIdRef.current === requestedLodgeId;
     setCheckIn(ci);
     setCheckOut(co);
     setError("");
@@ -296,26 +338,48 @@ export default function AdminBookPage() {
     const ciStr = ci;
     const coStr = co;
 
-    const res = await fetch(
-      `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}${
-        lodgeId ? `&lodgeId=${encodeURIComponent(lodgeId)}` : ""
-      }`
-    );
-    if (res.ok) {
-      const data = await res.json();
-      setAvailableBeds(data.minAvailable);
-      const night = Array.isArray(data.nightDetails) ? data.nightDetails[0] : null;
+    try {
+      const res = await fetch(
+        `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}${
+          requestedLodgeId
+            ? `&lodgeId=${encodeURIComponent(requestedLodgeId)}`
+            : ""
+        }`,
+        { signal: controller.signal },
+      );
+      if (!ownsCurrentLodge()) return;
+      if (res.ok) {
+        const data = await res.json();
+        if (!ownsCurrentLodge()) return;
+        setAvailableBeds(data.minAvailable);
+        const night = Array.isArray(data.nightDetails)
+          ? data.nightDetails[0]
+          : null;
+        if (
+          night &&
+          typeof night.occupiedBeds === "number" &&
+          typeof night.availableBeds === "number"
+        ) {
+          setResolvedCapacity(night.occupiedBeds + night.availableBeds);
+        }
+      }
+
+      if (!ownsCurrentLodge()) return;
+      // Admin bypasses minimum stay — skip policy check
+      setStep("guests");
+    } catch (requestError) {
       if (
-        night &&
-        typeof night.occupiedBeds === "number" &&
-        typeof night.availableBeds === "number"
+        requestError instanceof DOMException &&
+        requestError.name === "AbortError"
       ) {
-        setResolvedCapacity(night.occupiedBeds + night.availableBeds);
+        return;
+      }
+      throw requestError;
+    } finally {
+      if (dateSelectionAbortRef.current === controller) {
+        dateSelectionAbortRef.current = null;
       }
     }
-
-    // Admin bypasses minimum stay — skip policy check
-    setStep("guests");
   }
 
   async function handleGuestsDone() {

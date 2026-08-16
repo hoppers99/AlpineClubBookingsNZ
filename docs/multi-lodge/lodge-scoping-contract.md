@@ -371,6 +371,12 @@ operational documents (which may carry door/emergency access details).
   The board also offers a way OUT of the refusal — a control that drops the
   link's lodge and lets the server scope from the booking — because a hand-made
   URL should not be a dead end, and that is the only recovery that can succeed.
+- **Stateful booking responses and queue positions keep their lodge owner**
+  (#2701/#2887). The admin booking wizard owns each availability response by
+  request and lodge, so a late Lodge A response cannot advance or resize a Lodge
+  B booking. Initial waitlist positions are counted under the selected lodge's
+  capacity lock using only older overlapping entries at that lodge, matching
+  every later waitlist position calculation and the member's confirmation email.
 - **The hut-leader bed picker obeys the same rule when an assignment is named**
   (#2678). `GET /api/admin/hut-leaders/available-beds` took `assignmentId` and
   `lodgeId` as unrelated parameters and never reconciled them, so a request

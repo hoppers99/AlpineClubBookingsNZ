@@ -126,8 +126,8 @@ Two behaviours were pinned down during implementation:
   above and does not conflict with the club-wide *queue-order enum* under
   Configuration (that setting governs cross-lodge ordering policy, not how
   a single lodge's positions are numbered). Applies to the offer-time
-  count, `getWaitlistPosition`, `updateWaitlistPositions`, and
-  `getWaitlistForDates`.
+  count, the initial `createWaitlistedBooking` count,
+  `getWaitlistPosition`, `updateWaitlistPositions`, and `getWaitlistForDates`.
 - **Confirm rejects a duplicate stay at the offered lodge.** If Phase 3
   (cancel the waitlist entry) failed on an earlier confirm, the entry is
   stranded in `WAITLIST_OFFERED` with a booking already created at the

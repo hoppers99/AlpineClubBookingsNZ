@@ -91,6 +91,10 @@
   member lodge-access grants are not fetched until the complete lodge list is
   available and populate normally after retry; and the member booking calendar
   does not start lodge-specific reads or writes until a real lodge has resolved.
+  A late admin-booking availability result from the previous lodge can no longer
+  advance or resize the newly selected lodge's booking. A new waitlist entry's
+  position and confirmation email now count only older overlapping entries at
+  that booking's lodge, rather than including another lodge's queue.
   The Hut Leaders page now scopes its assignments, uncovered nights, occupancy,
   eligible members and new assignments to the same selected lodge, and clears
   old results on a switch. Its APIs refuse a missing lodge instead of using the
