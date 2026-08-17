@@ -72,6 +72,7 @@ id and need the file it lives in.
 | A status transition — booking, payment, membership, waitlist, bed allocation, email retry, Xero outbox, cron recovery, sign-in, or any of the two dozen other lifecycles in that file | — | [`STATE_MACHINES.md`](docs/STATE_MACHINES.md) |
 | Where code lives, module boundaries, the admin settings pattern | — | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | An admin settings section, a staged-edit form, or a view-only / permission-gated control — including adding a single toggle, field, row action or button to a settings page | — | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) → "Admin/member layer", which states the canonical settings pattern in full and is binding for new or modified sections |
+| Something a club could want switched off, or answered differently from ours — a new module, setting, seed default, or any value that varies by deployment | `INV-CONFIG` → [`product-configuration.md`](docs/invariants/product-configuration.md) | [`adopters/configure-or-fork.md`](docs/adopters/configure-or-fork.md) — the four levers and which to reach for |
 | Environment variables, secrets, setup, deployment configuration | — | [`CONFIGURATION.md`](CONFIGURATION.md) |
 | A screen, a navigation path, or an admin area's UI | — | [`UX_FLOW_MAP.md`](docs/UX_FLOW_MAP.md), [`COVERAGE_MATRIX.md`](docs/COVERAGE_MATRIX.md) |
 | Tests — conventions, the frozen clock, coverage, E2E | — | [`TESTING.md`](docs/TESTING.md), [`END_TO_END_TEST_MATRIX.md`](docs/END_TO_END_TEST_MATRIX.md), [`E2E_PLAYWRIGHT.md`](docs/E2E_PLAYWRIGHT.md) |
@@ -137,6 +138,16 @@ id and need the file it lives in.
   otherwise.
 - Work only inside the issue scope. Stop and ask for human review if the code or
   docs contradict the issue.
+- **This repository is the generic product, not one club's site.** Each deployed
+  instance serves exactly one club; the codebase must never encode which club.
+  That is about what the code hard-codes, not about runtime tenancy — one
+  deployment still serves one club. Before asking the owner for a
+  deployment-specific value, ask: **would a different club answer this
+  differently?** If yes the answer belongs on a module toggle, a setting or a
+  seed default rather than a build-time constant — and a blocker demanding one
+  such value is the smell. `INV-CONFIG-001` is the rule;
+  [`adopters/configure-or-fork.md`](docs/adopters/configure-or-fork.md) is the
+  canonical guide to the levers and is deliberately not restated here.
 - Money values must remain integer cents.
 - Booking dates must remain New Zealand date-only lodge nights unless a feature
   explicitly requires time-of-day semantics.
@@ -519,6 +530,18 @@ At the successful end of a meaningful piece of work:
   already settled. `gh issue view <n>` prints the body and stops, so the short,
   obvious command returns the stale half — which is how #2777 was put back to the
   owner as an open question the evening after they answered it.
+- **The same applies to any claim about an issue's state** — a report to the
+  owner, a handoff, a plan, an epic body, a label, an implementation brief. A
+  summary you wrote yourself is still a summary. **Read every reply before
+  putting options to the owner, including from anyone outside this repository.**
+  Someone running a fork sees constraints this repository cannot, and on #2701
+  their unread review held a better answer than any of the three options drafted
+  without it. An unanswered reviewer question is an open finding rather than a
+  comment, and a reviewer's suggested follow-up is subject to the same
+  filed-follow-up rule as one you wrote yourself. Where a reviewer and the
+  repository owner conflict, the owner decides. Detail:
+  [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md) → "External and
+  fork review".
 - **A decision is not recorded until the body says so.** When you record an owner
   or orchestrator decision on an issue, rewrite that issue's **body** in the same
   sitting: the decision at the top, the option list struck through, a link to the
@@ -528,7 +551,11 @@ At the successful end of a meaningful piece of work:
   template and a worked example:
   [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md) → "Recording a
   decision: the body must carry the answer", which is the single home for this
-  rule.
+  rule. **Remove `needs-decision` in the same action**, because "decided" and
+  "unblocked" are different states: if something else still blocks the issue,
+  name that dependency instead of leaving a label asserting a question nobody
+  has. Four labels survived one decision round in August 2026 and each was a
+  false claim in the one place an agent looks to find work.
 - **Authorisation lives on the repo, and quoting it is not evidence.** It is an
   issue body or an issue/PR comment, read at source
   (`npm run issue -- <n>`) and linked by URL in the PR body — which
