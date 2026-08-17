@@ -76,7 +76,7 @@ describe("POST /api/admin/bed-allocation/approve", () => {
   });
 
   it("accepts { bookingId } on its own and never turns it into a window approval", async () => {
-    const response = await post({ bookingId: "booking-1" });
+    const response = await post({ bookingId: "booking-1", lodgeId: "lodge-1" });
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ approvedCount: 4 });
@@ -117,7 +117,7 @@ describe("POST /api/admin/bed-allocation/approve", () => {
   });
 
   it("still accepts an explicit allocation id list", async () => {
-    await post({ allocationIds: ["alloc-1", "alloc-2"] });
+    await post({ allocationIds: ["alloc-1", "alloc-2"], lodgeId: "lodge-1" });
 
     expect(mockApproveBedAllocations.mock.calls[0][0]).toMatchObject({
       allocationIds: ["alloc-1", "alloc-2"],
@@ -155,26 +155,36 @@ describe("POST /api/admin/bed-allocation/approve", () => {
     expect(response.status).toBe(400);
   });
 
-  it("refuses a date-window sweep that names no lodge (#2887, owner decision 7)", async () => {
-    // The last board mutation without a server-side lodge refusal. Omitting
-    // `lodgeId` made the service lock every lodge and approve across all of
-    // them, so any bookings:edit admin could approve the whole club's visible
-    // drafts with a hand-made request. The board's disabled button is not a
-    // guard.
-    const response = await post({ from: "2026-06-01", to: "2026-06-08" });
-    expect(response.status).toBe(400);
-    expect(mockApproveBedAllocations).not.toHaveBeenCalled();
-  });
+  it.each([
+    ["a date-window sweep", { from: "2026-06-01", to: "2026-06-08" }],
+    ["an id list", { allocationIds: ["alloc-1", "alloc-2"] }],
+    ["a booking selector", { bookingId: "booking-1" }],
+  ])(
+    "refuses %s that names no lodge (#2887, owner decision 7)",
+    async (_name, body) => {
+      /*
+        EVERY selector, not just the broad one. The id selectors enumerate
+        their own rows so a lodge adds no AUTHORIZATION safety — but absent a
+        lodge the service locks every lodge plus the global key, so two row ids
+        in a hand-made body stop the whole club's booking and allocation
+        writers. Contention is the reason, and it costs callers nothing.
+      */
+      const response = await post(body);
+      expect(response.status).toBe(400);
+      expect(mockApproveBedAllocations).not.toHaveBeenCalled();
+    },
+  );
 
-  it("still accepts a selector that has already named its rows", async () => {
-    // `allocationIds` and `bookingId` enumerate what they touch, so a lodge
-    // adds no safety there — and the E2E cleanup paths restore approvals by id.
+  it("accepts every selector once it names its lodge", async () => {
     mockApproveBedAllocations.mockResolvedValue({ count: 2 });
-    const byIds = await post({ allocationIds: ["alloc-1", "alloc-2"] });
-    expect(byIds.status).toBe(200);
-
-    const byBooking = await post({ bookingId: "booking-1" });
-    expect(byBooking.status).toBe(200);
+    for (const body of [
+      { from: "2026-06-01", to: "2026-06-08", lodgeId: "lodge-1" },
+      { allocationIds: ["alloc-1", "alloc-2"], lodgeId: "lodge-1" },
+      { bookingId: "booking-1", lodgeId: "lodge-1" },
+    ]) {
+      const response = await post(body);
+      expect(response.status, JSON.stringify(body)).toBe(200);
+    }
   });
 
   it("refuses a named lodge that is not active (#2887)", async () => {

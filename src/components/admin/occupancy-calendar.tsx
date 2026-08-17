@@ -264,7 +264,13 @@ export function OccupancyCalendar({
         }
       })
       .finally(() => {
-        requestedMonthKeys.current.delete(month);
+        // #2887 review (F6): guarded like the other three callbacks. Deleting
+        // the in-flight marker unconditionally let a late Lodge-A response
+        // clear Lodge-B's marker, so B's month looked unrequested and a re-run
+        // fetched it twice. Data-safe, but a wasted request.
+        if (activeLodgeRef.current === requestedLodgeId) {
+          requestedMonthKeys.current.delete(month);
+        }
         if (!cancelled && activeLodgeRef.current === requestedLodgeId) {
           setLoadingMonthKeys((current) => current.filter((key) => key !== month));
         }

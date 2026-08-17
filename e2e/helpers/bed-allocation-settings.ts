@@ -6,7 +6,7 @@ export type BedAllocationSettingsSnapshot = {
   allocationPriorityOrder: string[];
 };
 
-async function resolveSingleActiveLodgeId(
+export async function resolveSingleActiveLodgeId(
   request: APIRequestContext,
 ): Promise<string> {
   const response = await request.get("/api/lodges");

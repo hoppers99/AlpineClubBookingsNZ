@@ -420,7 +420,16 @@ export default function AdminBookPage() {
     setError("");
     const requestedLodgeId = lodgeId;
     if (!requestedLodgeId || !checkIn || !checkOut || !selectedMember) {
-      setError("Choose a lodge, dates, and booking owner before continuing");
+      /*
+        #2887 review (F4): name only the controls that are actually on screen.
+        With a failed or forbidden lodge list the selector is not rendered, so
+        "Choose a lodge" pointed at nothing and read as operator error.
+      */
+      setError(
+        requestedLodgeId
+          ? "Choose dates and a booking owner before continuing"
+          : "The lodge list could not be loaded, so this booking cannot say which lodge it is for. Retry above, then choose dates and a booking owner.",
+      );
       return;
     }
     const requestedMemberId = selectedMember.id;
@@ -528,7 +537,7 @@ export default function AdminBookPage() {
         promoGuestIndexes: appliedPromo?.selectedGuestIndexes,
         expectedArrivalTime: expectedArrivalTime || undefined,
         applyCreditCents: appliedCreditCents > 0 ? appliedCreditCents : undefined,
-        lodgeId: lodgeId ?? undefined,
+        lodgeId,
         forMemberId: selectedMember!.id,
         paymentMethod:
           showPaymentMethodChoice && paymentMethod === "internet_banking"
@@ -607,7 +616,7 @@ export default function AdminBookPage() {
         promoGuestIndexes: appliedPromo?.selectedGuestIndexes,
         expectedArrivalTime: expectedArrivalTime || undefined,
         applyCreditCents: appliedCreditCents > 0 ? appliedCreditCents : undefined,
-        lodgeId: lodgeId ?? undefined,
+        lodgeId,
         draft: true,
         forMemberId: selectedMember!.id,
         memberReviewJustification: requiresAdminReviewLocal
@@ -794,12 +803,15 @@ export default function AdminBookPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {/*
-              #2701, owner decision 1: an admin booking on someone's behalf may
-              CONTINUE when the lodge list has failed — they will notice a wrong
-              lodge name and know how to fix it, where a member paying online
-              will not — but the lodge is named on screen before anything is
-              written, and the create is refused server-side rather than
-              defaulted if it still cannot be determined.
+              #2701, owner decision 1: the admin is TOLD the lodge list failed,
+              rather than being shown a silently-defaulted lodge, and the lodge
+              is named on screen before anything is written.
+
+              The wording here used to say they "may CONTINUE" with a failed
+              list. They may not, and have not since this branch: the quote and
+              the create both hard-refuse without a resolved lodge (see
+              `startQuote` above). The notice explains the outage; it does not
+              offer a way past it.
             */}
             <LodgeOptionsUnavailableNotice
               failed={lodgesFailed}

@@ -101,20 +101,55 @@ describe("ordinary admin editors share one settled lodge-scope gate (#2701, #288
   })
 
   it("every editor on this list has real behavioural coverage (#2887)", () => {
-    // The list above is a source-shape census; it cannot prove behaviour. This
-    // is the link that stops a new editor being added here — and so LOOKING
-    // covered — while nothing ever renders it. The negative and positive
-    // per-editor cases live in the behaviour suite.
+    /*
+      The list above is a source-shape census; it cannot prove behaviour. This
+      is the link that stops a new editor being added here - and so LOOKING
+      covered - while nothing ever renders it.
+
+      Asserted against the behaviour suite's EDITORS ARRAY, not its whole source
+      (#2887 review, F5). A plain source search was satisfied by a `vi.mock`
+      line or a comment, and `.../page` was satisfied by `.../page-client`. The
+      array is what actually decides what gets rendered.
+    */
     const behaviour = source(
       "src/lib/__tests__/ordinary-admin-lodge-scope-behavior.test.tsx",
     )
+    const editorsArray = behaviour.slice(
+      behaviour.indexOf("const EDITORS:"),
+      behaviour.indexOf("const UNSETTLED_STATES"),
+    )
+    expect(
+      editorsArray.length,
+      "could not find the behaviour suite's EDITORS array",
+    ).toBeGreaterThan(0)
+
     for (const file of ALL_EDITORS) {
       const specifier = `@/${file.replace(/^src\//, "").replace(/\.tsx?$/, "")}`
+      const importLine = `from "${specifier}"`
       expect(
         behaviour,
         `${file} is on the scope-contract list but the behaviour suite never imports it`,
-      ).toContain(specifier)
+      ).toContain(importLine)
+      // The imported symbol has to appear in the EDITORS array, so an import
+      // that is only mocked or mentioned does not count as coverage.
+      const head = behaviour.slice(0, behaviour.indexOf(importLine))
+      const symbol = (head.split(/^import /m).pop() ?? "")
+        .replace(/[{}]/g, " ")
+        .replace(/type/g, " ")
+        .split(",")[0]
+        .trim()
+      expect(
+        editorsArray,
+        `${file} is imported by the behaviour suite but never rendered by its EDITORS array`,
+      ).toContain(symbol)
     }
+
+    // …and the two lists are the same size, so the behaviour suite cannot
+    // quietly cover fewer editors than this one claims.
+    expect(
+      (editorsArray.match(/name: "/g) ?? []).length,
+      "EDITORS array size differs from the scope-contract list",
+    ).toBe(ALL_EDITORS.length)
   })
 
   it("the shared gate keeps a deep link inert, then uses that exact lodge after retry", () => {
