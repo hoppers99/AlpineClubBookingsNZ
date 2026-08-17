@@ -169,8 +169,8 @@ overlap predicate, and those three take this per-lodge key and re-read overlap
 under it. The guarantee that buys is narrower than "one lodge cannot end up
 with two overlapping hut leaders", and the narrower statement is the true one:
 
-> No two **independently created** hut-leader assignments overlap by more than
-> one day at one lodge.
+> No two hut-leader assignments overlap by more than one day at one lodge,
+> **excluding school-teacher records**, which are exempt by construction.
 
 There is no unique constraint on the range behind the application check, so
 that holds only for as long as all three keep deciding under the key:
@@ -196,24 +196,28 @@ The other three writers, and why the guarantee is worded the way it is:
   each other, because several teachers do supervise one group together. It
   holds the lodge key (it is inside the approval transaction) but runs no
   overlap read, and must not: adding one would refuse the club's own school
-  bookings. This is the "independently created" carve-out above, and it is the
-  reason the sentence cannot simply say "no two overlapping assignments".
+  bookings. This is the exemption named in the rule above.
 - `[id]/pin/route.ts` rotates a PIN and `[id]/route.ts`'s DELETE removes a row.
   Both write on the base client outside any lock. Neither can create an overlap
   — one changes no dates and no lodge, the other only ever removes a row — so
   neither needs the key.
 
-**One asymmetry is recorded here rather than resolved, because it is a product
-question and not a concurrency one.** The overlap predicate matches on dates
-and lodge with no role or source filter
-(`hut-leaders/route.ts`, `[id]/route.ts`, `cron-hut-leader-auto-assign.ts`), so
-teacher rows **block** a later manual or cron assignment for those nights while
-never being blocked themselves. Blocking looks deliberate — a club hut leader
-is redundant on nights a school group's own teachers are supervising — but
-nothing states it, and the alternative (a role/source filter, so teacher
-records sit outside the rule entirely) would need a discriminator the predicate
-does not currently read. Flagged for the owner; the wording above is true under
-either answer.
+Teacher records are excluded from the overlap predicate itself (#2887, owner
+decision). They used to **block** later manual and cron assignments while never
+being blocked themselves — an asymmetry nothing had decided. Only that
+direction changed: `findHutLeaderOverlapRefusal` filters
+`member: { role: { not: "SCHOOL" } }`, so a school group's own teachers no
+longer refuse a club hut leader on those nights. Whether an existing assignment
+blocks a TEACHER is unchanged, because the school path still runs no overlap
+read at all.
+
+No schema change was needed. `Member.role = "SCHOOL"` is set only by
+`school-booking-request.ts`, and among members that can HOLD an assignment it
+means "teacher" exactly — the school flow creates assignments for teacher
+members only, and the admin POST refuses any member without the `USER` access
+role, which no SCHOOL member has. `lodge-admission-lock-contract.test.ts` pins
+both facts, and a third SCHOOL creation appearing fails that test rather than
+silently widening the exemption.
 
 ### Composition: roster-date writers (#2586)
 
