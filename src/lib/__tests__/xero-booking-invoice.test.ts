@@ -248,6 +248,9 @@ describe("createXeroInvoiceForBooking", () => {
       id: "booking_1",
       memberId: "mem_1",
       member: { id: "mem_1" },
+      // Booking.lodgeId is NOT NULL in the schema; the season read that picks
+      // the hut-fee item code is scoped to it.
+      lodgeId: "lodge_1",
       checkIn: "2026-07-31T00:00:00.000Z",
       checkOut: "2026-08-02T00:00:00.000Z",
       createdAt: "2026-05-15T10:30:00.000Z",
@@ -299,6 +302,19 @@ describe("createXeroInvoiceForBooking", () => {
         ],
       },
     });
+  });
+
+  it("resolves the item-code season from the booking's own lodge, not any lodge", async () => {
+    // Lodges may run different season windows (lodge-scoping-contract.md), so an
+    // unscoped read can match another lodge's season — and Season.type picks the
+    // hut-fee item code, and therefore the GL account the revenue posts to.
+    await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
+
+    expect(mocks.prisma.season.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ lodgeId: "lodge_1" }),
+      }),
+    );
   });
 
   describe("#1641 card applied-credit allocation", () => {
@@ -593,6 +609,9 @@ describe("createXeroInvoiceForBooking", () => {
       id: "booking_1",
       memberId: "mem_1",
       member: { id: "mem_1" },
+      // Booking.lodgeId is NOT NULL in the schema; the season read that picks
+      // the hut-fee item code is scoped to it.
+      lodgeId: "lodge_1",
       checkIn: "2026-07-31T00:00:00.000Z",
       checkOut: "2026-08-02T00:00:00.000Z",
       createdAt: "2026-05-15T10:30:00.000Z",
@@ -658,6 +677,9 @@ describe("createXeroInvoiceForBooking", () => {
       id: "booking_1",
       memberId: "mem_1",
       member: { id: "mem_1" },
+      // Booking.lodgeId is NOT NULL in the schema; the season read that picks
+      // the hut-fee item code is scoped to it.
+      lodgeId: "lodge_1",
       checkIn: "2026-07-31T00:00:00.000Z",
       checkOut: "2026-08-02T00:00:00.000Z",
       createdAt: "2026-05-15T10:30:00.000Z",
