@@ -5,13 +5,12 @@ import { findHutLeaderOverlapRefusal } from "@/lib/hut-leader-overlap-guard";
 /**
  * The one hut-leader overlap predicate, and the SCHOOL carve-out (#2887).
  *
- * Owner decision: teacher records must not block. Approving a school booking
- * creates one assignment per teacher, same dates and same lodge, deliberately
- * overlapping each other — and those rows used to refuse any later manual or
- * cron assignment for those nights while never being refused themselves.
+ * Consolidating four hand-copied versions of this rule into one predicate is
+ * what this file guards: the >1-day comparison, the lodge scope and the
+ * exclude-self behaviour now have a single home, so they cannot drift between
+ * the POST, the PUT and the cron.
  *
- * The direction that changed is only that one. Whether an existing assignment
- * blocks a TEACHER is unchanged: the school path runs no overlap read at all.
+ * School-teacher rows are NOT excluded here — see #2926.
  */
 function tx(rows: Array<Record<string, unknown>>) {
   const findMany = vi.fn(async () => rows);
@@ -44,22 +43,24 @@ describe("findHutLeaderOverlapRefusal (#2887)", () => {
     });
   });
 
-  it("excludes SCHOOL-sourced rows in the QUERY, so teachers never block", async () => {
+  it("is role-blind: every assignment is a conflict, whatever created it (#2926)", async () => {
     /*
-      Asserted on the `where` rather than by handing the filter a teacher row:
-      the exclusion happens in the database, so a test that returned one from a
-      double would be testing the double. This pins the predicate that Prisma
-      is actually asked for.
+      Pins TODAY's behaviour so that changing it is deliberate.
+
+      School-teacher rows block, because the predicate filters on dates and
+      lodge only. Excluding them was attempted in this PR and reverted, and
+      nothing else here would have noticed it being put back — so this asserts
+      the absence of a member filter directly. #2926 must update this case, and
+      when it does it has to say WHICH rows it covers: `Member.role = "SCHOOL"`
+      is set for the school CONTACT member as well as for teachers.
     */
     const { client, findMany } = tx([]);
-    await expect(findHutLeaderOverlapRefusal(client, WINDOW)).resolves.toBeNull();
-    expect(findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          member: { role: { not: "SCHOOL" } },
-        }),
-      }),
-    );
+    await findHutLeaderOverlapRefusal(client, WINDOW);
+    const where = (
+      findMany.mock.calls[0] as unknown as [{ where: Record<string, unknown> }]
+    )[0].where;
+    expect(Object.keys(where).sort()).toEqual(["endDate", "lodgeId", "startDate"]);
+    expect(where).not.toHaveProperty("member");
   });
 
   it("still scopes to the lodge and still allows a one-day handover", async () => {

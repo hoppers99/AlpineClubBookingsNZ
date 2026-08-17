@@ -220,47 +220,6 @@ describe("lodge admission and assignment lock topology (#2701)", () => {
     );
   });
 
-  it("keeps SCHOOL meaning TEACHER among rows that can hold an assignment (#2887)", () => {
-    /*
-      The overlap guard excludes `member.role === "SCHOOL"` so teacher records
-      stop blocking. That is only correct while SCHOOL, among members that can
-      HOLD a hut-leader assignment, means teacher exactly — and `SCHOOL` is set
-      in three places, not one: the two school CONTACT members as well as the
-      teachers. Two independent facts keep the equivalence, and both are pinned
-      here because either one changing would silently widen the carve-out.
-    */
-    const school = source("src/lib/school-booking-request.ts");
-
-    // 1. The school flow creates assignments for TEACHERS only. One create, and
-    //    it is fed the teacher member.
-    expect(school.match(/hutLeaderAssignment\.create\(/g) ?? []).toHaveLength(1);
-    const create = school.slice(school.indexOf("hutLeaderAssignment.create("));
-    expect(create.slice(0, 200)).toContain("memberId: teacherMember.id");
-
-    // 2. The admin POST refuses any member without the USER access role, and no
-    //    SCHOOL member is given one — so a contact cannot be assigned there
-    //    either, pre-lock or post-lock.
-    const post = source("src/app/api/admin/hut-leaders/route.ts");
-    expect(post.match(/hasAccessRole\((?:member|lockedMember), "USER"\)/g) ?? [])
-      .toHaveLength(2);
-    for (const roleAssignment of school.match(/role: "SCHOOL",/g) ?? []) {
-      expect(roleAssignment).toBe('role: "SCHOOL",');
-    }
-    expect(
-      school.match(/role: "SCHOOL",/g) ?? [],
-      "a fourth SCHOOL member creation appeared - re-check the carve-out",
-    ).toHaveLength(3);
-    expect(
-      school,
-      "a SCHOOL member was given an access role, which would let it hold an assignment",
-    ).not.toMatch(/role: "SCHOOL",[\s\S]{0,400}?accessRoles/);
-
-    // The exclusion itself lives in the one shared predicate.
-    expect(source("src/lib/hut-leader-overlap-guard.ts")).toContain(
-      'member: { role: { not: "SCHOOL" } }',
-    );
-  });
-
   it("asks the deactivation predicate the same question before and under the lock", () => {
     // One predicate, two callers. A dependency class added to a copy rather
     // than to the shared helper is what this refuses to allow back.
