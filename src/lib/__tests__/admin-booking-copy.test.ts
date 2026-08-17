@@ -127,6 +127,7 @@ function makeSourceBooking(overrides: Record<string, unknown> = {}) {
     memberId: "member-1",
     checkIn: new Date("2026-08-01T00:00:00.000Z"),
     checkOut: new Date("2026-08-04T00:00:00.000Z"),
+    lodgeId: "lodge-b",
     deletedAt: null,
     notes: "Late arrival",
     expectedArrivalTime: "19:00",
@@ -232,6 +233,9 @@ describe("copyBookingToDraft", () => {
         effectiveMemberId: "member-1",
         isOnBehalf: true,
         sessionUserId: "admin-1",
+        // INV-CAP-034: a copy stays at the source lodge rather than falling
+        // through the service's legacy default-lodge compatibility path.
+        lodgeId: "lodge-b",
         checkIn: new Date("2026-09-10T00:00:00.000Z"),
         checkOut: new Date("2026-09-13T00:00:00.000Z"),
         notes: "Late arrival",

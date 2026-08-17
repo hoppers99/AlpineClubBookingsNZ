@@ -153,16 +153,15 @@ operational documents (which may carry door/emergency access details).
 - **The admin bed-allocation board obeys the same rule when a booking is named**
   (#2678). `GET /api/admin/bed-allocation` still supports a genuine club-wide
   mode — `ADMIN` access is club-wide and never lodge-filtered, so an omitted
-  `lodgeId` legitimately means "the whole club" and that is unchanged. **No board
-  selector currently offers that mode**, though: with two or more lodges
-  `LodgeSelect` forces a null value to `lodges[0].id`, so the API mode is
-  exercised only by the transient/outage null state described further down this
-  entry — making club-wide an explicit, selectable option is #2701. But when
-  the request names a `bookingId`, the lodge now comes from that booking's
-  `Booking.lodgeId` server-side and **any `lodgeId` on the query string is
-  ignored**, exactly as `requested-room/options` does. This was the last
-  booking-scoped read still taking its lodge from the caller, after #2673 (the
-  requested-room picker) and #2677 (the booking wizard).
+  `lodgeId` legitimately means "the whole club" and that is unchanged. Since
+  #2701 that mode is **deliberately selectable and read-only**; see the entry
+  below. But when the request names a `bookingId`, the lodge comes from that
+  booking's `Booking.lodgeId` server-side and a contradicting `lodgeId` on the
+  query string is **refused** (#2701 — it used to be silently ignored, as
+  `requested-room/options` still does; the divergence and its reason are in the
+  entry below). This was the last booking-scoped read still taking its lodge
+  from the caller, after #2673 (the requested-room picker) and #2677 (the
+  booking wizard).
   The path that made it worth fixing was not a hand-crafted request. Because
   `ADMIN` is club-wide, a caller pairing booking A with lodge B learned nothing
   they could not have asked for outright, and every cross-lodge write was
@@ -192,24 +191,292 @@ operational documents (which may carry door/emergency access details).
   so `src/lib/__tests__/bed-allocation-board-booking-scope.test.tsx` asserts it
   directly.
   **A focused booking pins the lodge, so choosing another lodge drops the
-  focus.** Because the API ignores a `lodgeId` sent beside a `bookingId`, an
+  focus.** Because the API does not take its scope from a `lodgeId` sent beside
+  a `bookingId`, an
   admin who arrived on the deep link and then picked a different lodge from the
   board's own selector would have been served the *booking's* lodge under a
   selector reading the lodge they chose. The board therefore clears the focused
   booking when the admin replaces one non-null lodge with a different one — the
   "Focused booking" badge goes with it, so the change is visible. `LodgeSelect`'s
-  own `onChange` calls are deliberately excluded: `onChange(null)` on an options
-  outage, and `onChange(lodges[0].id)` from a null value, are not the admin
-  browsing away, and the null case is precisely the state in which derivation
+  own `onChange` calls are deliberately excluded — they are not the admin
+  browsing away, and the outage case is precisely the state in which derivation
   from `bookingId` is the only thing keeping the board off a club-wide read.
-  **Still open:** the board can hold `lodgeId === null` without any booking being
-  named — transiently on every mount before `/api/admin/lodges` resolves, and
-  permanently if that endpoint fails, since `useLodgeOptions` then sets
-  `lodges = []` and `LodgeSelect` reports `null`. In that state the same four
-  pickers are club-wide again, and writes are **not** disabled for them (only
-  Run Auto Allocation, Reset allocations and the preferences section gate on
-  `lodgeId`). That is tracked separately because it needs a decision about what
-  a club-wide board should offer, not just where the lodge comes from (#2701).
+  Since #2701 the component **reports** which it was (`source: "user" | "auto"`)
+  rather than leaving the page to infer it from the values, which could not tell
+  a default apart from a deliberate pick landing on the same lodge.
+- **A failed lodge list is a state every lodge-scoped surface must be able to
+  express, not just the bed board** (#2701). `useLodgeOptions` reports `failed`
+  and `forbidden` beside its list, because an empty list used to mean three
+  different things and `LodgeSelect` renders nothing below two lodges (ADR-002)
+  — so on **twenty-two admin surfaces** a failed request looked exactly like a
+  club with no lodges. That was never cosmetic: the selection normalises to `null`, and a
+  `null` lodge was resolved server-side to the club's DEFAULT lodge, so the next
+  thing the operator saved landed somewhere they were never shown. Eight ordinary
+  editors could write to the default lodge that way, while work parties and promo
+  codes could silently make a lodge-specific choice club-wide; two of those ten
+  surfaces are money paths. Five more
+  policy editors — default cancellation, minimum stay, booking periods,
+  adult-member hosting and lodge instructions — treated the same unresolved
+  `null` as club-wide, leaving club-wide reads and writes reachable. All fifteen
+  edit surfaces now close their transport and action boundaries.
+  The shared treatment is `LodgeOptionsUnavailableNotice` — one explanation and
+  one working retry — plus, on each surface, suppression of the lodge-keyed
+  fetch and of every write control while the scope is unknown. **The suppression
+  is the half that matters**; a message alone leaves the wrong write reachable.
+  A 403 is deliberately NOT described as an outage: `ADMIN_MEMBERSHIP` and
+  `FINANCE_ADMIN` hold `bookings` and no `lodge` permission, so a refusal is
+  their normal answer and a retry could only refuse again. A surface that must
+  know a concrete policy partition still suppresses its downstream request and
+  actions and explains that lodge access is needed; the bed board's separate
+  read-only all-lodges exception is documented below.
+  The five policy editors make a deliberate club-wide choice a settled
+  `club-wide` state, distinct by construction from `resolving` and
+  `unavailable`. They issue no policy GET until that settled state or a concrete
+  `lodge` exists, and show no Edit, Save, Create, Remove, Delete or toggle action
+  before then. Their shared behavioral test renders all five and proves that a
+  cosmetic notice without the transport/action gate fails.
+  Three surfaces are deliberately left to degrade quietly, and that is a
+  decision rather than an omission: `reports`, the promo-redemptions panel and
+  the public booking-requests panel already default to a genuine all-lodges
+  read where every figure stays correct, so the lodge is a filter over content
+  that stands alone. Forcing an error there would be worse than the ambiguity
+  it removed.
+
+  Quiet degradation means the DATA degrades quietly, never the LABEL (#2887).
+  The original wording here — "the lodge picker is only an optional filter" —
+  did not describe two of the three, and that is how the miss survived review:
+
+  - the public booking-requests panel **has no lodge picker at all**. Its lodge
+    identity is a per-row badge, and it was gated on `activeLodges.length >= 2`,
+    which is also false for a failed or forbidden list. `/admin/booking-requests`
+    is in the **bookings** area, and `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold
+    `bookings: "view"` with no `lodge` entry, so for those shipped presets the
+    badge was permanently absent while `lodgeName` sat in the payload — an
+    officer pricing and approving a stay with no lodge on screen, on a mutation
+    surface;
+  - `reports` dropped its `occupancyScopeLabel` in the same states, so a
+    club-wide occupancy figure became indistinguishable from one lodge's.
+    `/admin/reports` is in the **finance** area, where `FINANCE_ADMIN`,
+    `FINANCE_USER` and `ADMIN_MEMBERSHIP` all get a permanent 403 on the lodge
+    list.
+
+  **The root cause is NOT fixed here — it is #2925.** `GET /api/admin/lodges`
+  requires `lodge:view`, and `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold no
+  `lodge` entry, so a 403 is their permanent answer and every admin surface that
+  needs only the lodge NAMES loses content it does not need permission for. The
+  right fix is at the route, where one gate serves all twenty-two consumers.
+
+  Relaxing it was attempted in this PR and reverted, and the reason is worth
+  recording because it is a trap for the next attempt: dropping the explicit
+  `permission` from `requireAdmin()` does NOT open the route.
+  `inferAdminAccessRequirement` reads the `x-pathname` and `x-request-method`
+  headers `proxy.ts` sets for it and resolves them through
+  `getAdminRouteRequirement`, which maps `/api/admin/lodges` to `area: "lodge"`
+  — so the same requirement returns by inference and nothing changes. The tests
+  written for the attempt passed anyway, because the shared `requireAdmin` mock
+  fell back to `hasAdminPortalAccess` when given no options, which the real
+  guard has never done. #2925 must change the mapping or the route's stated
+  requirement, not the call site, and must not be believed until a test drives
+  the real inference path.
+
+  Any #2925 fix also has to narrow the PAYLOAD, not just the access:
+  `lodgeSelect` carries `doorCode`, which this codebase already treats as a
+  physical-access secret kept out of audit metadata, plus the street address and
+  travel notes. A finance or membership admin needs id, name and active — and
+  nothing else.
+
+  They are also fixed at the surface, and the difference between the two is the
+  point.
+
+  The booking-requests badge no longer consults the lodge list at all. ADR-002's
+  count rule is applied SERVER-side — `serializeBookingRequestForAdmin` takes
+  the active-lodge count and nulls `lodgeName` below two — and the panel renders
+  whatever name it is handed. A client cannot honestly apply a count rule using
+  a list it may be forbidden to read, and counting client-side was wrong in both
+  directions: too closed for the two presets above, and too open once this PR
+  made the whole-lodge form always send the sole lodge id, which gives new
+  single-lodge rows a real name.
+
+  `reports` still decides client-side and fails OPEN on `failed`/`forbidden`
+  only, labelling the occupancy scope "All lodges" when it cannot tell. Two
+  honest limits on that: while the list is still LOADING the qualifier is
+  absent, which is transient and read-only; and on a genuinely single-lodge club
+  whose list is forbidden it says "All lodges" where ADR-002 would say nothing —
+  accurate about the data, since the API does return all-lodge figures, but more
+  verbose than the rule prefers. Fixing it properly needs a plurality signal on
+  the reports payload, the same shape as the booking-requests fix. Recorded
+  rather than guessed at.
+
+  The census is exact, not “roughly twenty”. There are eighteen production
+  `useLodgeOptions` call sites in the admin tree; the shared policy selector is
+  used by five editors, so replacing that one call site with its five rendered
+  surfaces gives **twenty-two admin consumers**. The member booking wizard is a
+  twenty-third product consumer outside the admin tree and is listed separately
+  because its failed-list response is governed by `INV-CAP-034`.
+
+  A second exact census covers the eleven production consumers that fetch a
+  lodge list directly rather than through `useLodgeOptions`: display builder,
+  devices, reference, setup wizard and templates; the lodge list, lodge detail
+  and lodge setup pages; the whole-lodge request form; lodge details panel; and
+  notice audience picker. The census fails on an added or removed direct fetch
+  so a new consumer cannot silently inherit default-lodge behaviour. It matched
+  three exact literal spellings until #2887, which meant a consumer written as
+  a template literal or with a query string was invisible to it; the match is
+  now any `fetch` of the endpoint in any quote style, still anchored to a call
+  or a named endpoint constant so route tables and prose do not register. Display
+  authoring/preview and whole-lodge requests now require an explicit recovered
+  lodge even for a single-lodge club. Devices, the lodge list and notice picker
+  show an honest failed state with retry and suppress the affected create or
+  audience controls; no non-OK response is rendered as “No lodges”.
+
+  | Admin consumer(s) | Count | Failed-list treatment and reason |
+  | --- | ---: | --- |
+  | Bed-allocation board | 1 | Required explicit error/retry; no dashboard request. A lodge-forbidden viewer gets the separately labelled read-only all-lodges board. |
+  | Admin booking on behalf | 1 | Required visible warning and an always-visible lodge name. The admin may continue through the form, but the strict create boundary refuses an unknown lodge instead of defaulting it. |
+  | Seasons, chores, lockers, hut fees, roster, hut leaders, rooms/beds, lodge capacity | 8 | Required total settled-scope gate. Loading, failure, forbidden and successful-empty states issue no downstream GET and expose no action. Only a lodge id validated by the successful options response is transported. |
+  | Work parties, promo codes | 2 | Required total settled-scope gate. Their legitimate club-wide state is represented by an explicit sentinel, never inferred from an empty list; the same four unresolved states issue no downstream GET and expose no action. A list OUTCOME beats the sentinel, deliberately (#2887): both gate their lodge-RESTRICTION control on `lodges.length > 1`, and the options hook empties the list on a 403 and on any other failure, so treating the sentinel as an answer there would unlock the create while hiding the control that scopes it — a promo code redeemable at every lodge, a work party at every lodge. |
+  | Default cancellation, minimum stay, booking periods, adult-member hosting, lodge instructions | 5 | Required policy gate. A deliberate club-wide choice or validated lodge is settled; resolving/unavailable states issue no policy GET and expose no policy action. |
+  | Member lodge-access card | 1 | Required error/access explanation; its lodge-access GET and every assignment control stop until options resolve. |
+  | Lodge kiosk accounts | 1 | Required explanation, because a failure hides the lodge-binding controls. The club-wide kiosk-account list remains valid and continues to load; create/rebind controls cannot appear without the real options. |
+  | Reports, promo-code redemptions, public booking requests | 3 | Deliberate quiet degradation of the DATA, never of the label (#2887). Each already reads a genuine all-lodges dataset whose figures stay correct without the options. Reports keeps its occupancy scope qualifier and the public booking-requests panel keeps its per-row lodge badge in the failed/forbidden states — both of which previously vanished there, and the booking-requests panel has no picker to call an "optional filter" in the first place. |
+  | **Total admin surfaces** | **22** | Every consumer is classified; none silently treats a failed list as evidence that the club has no lodges. |
+
+  The ten ordinary-editor transport gates are exercised through the real
+  components in
+  `src/lib/__tests__/ordinary-admin-lodge-scope-behavior.test.tsx`: all forty
+  editor/state pairs (ten editors times loading, failed, forbidden and empty)
+  assert zero downstream requests and no action. All ten exact action labels
+  have settled-scope positive controls, so a misspelled matcher cannot make any
+  negative group pass vacuously. Replacing a production guard with a no-op makes
+  its negative cases fail.
+
+  Stateful consumers have additional response-ownership rules. A capacity
+  GET or PUT started for Lodge A cannot overwrite Lodge B after a selector
+  change, including the success message. The member lodge-access card issues no
+  grants GET in loading, failed, forbidden or successful-empty states and only
+  renders populated grants after a successful two-lodge recovery. The member
+  booking Dates step mounts neither its availability calendar nor any
+  lodge-dependent read/write until its selected id belongs to the successful
+  options response; retry returns to Dates, reloads the list and lets the selector
+  establish a fresh concrete id. Seasons, chores, hut fees, lockers, roster and
+  rooms/beds clear Lodge A rows and edit drafts synchronously when Lodge B is
+  selected; late A reads and post-action refreshes cannot repopulate them, and a
+  save keeps the scope it captured rather than pairing A data with B. The same
+  sequence/abort ownership applies to lodge instructions and admin quotes.
+
+  The ref that names the scope currently on screen is written in the COMMIT,
+  never in the render body and never in a passive effect (#2887). A render-body
+  write also moves for a render React abandons; a passive write lands after
+  paint, leaving a window in which a late Lodge A response still reads A as
+  current. Every one of the seven refs is therefore set in a `useLayoutEffect`,
+  which `src/lib/__tests__/lodge-scope-committed-ownership.test.tsx` pins for
+  each file — that test also carries the full reasoning and is the one home for
+  it.
+- **The board's lodge scope is five named states, the set is TOTAL, and `null`
+  means exactly one thing** (#2701). It used to mean three: a deliberate
+  club-wide view, a selector that had not resolved, and a failed
+  `/api/admin/lodges` — and the board's four bed pickers were club-wide in all
+  three, offering every lodge's beds in the two nobody chose. The states are
+  `lodge`, `all`, `empty`, `resolving` and `unavailable`, decided in one place
+  (`deriveBoardLodgeScope`), and everything on the page derives from which is
+  active:
+  - **`all` carries the reason it was reached** — `chosen`, or
+    `no-lodge-permission`. `LodgeSelect` gained an opt-in `ALL_LODGES` sentinel
+    option (`allowAllLodges`, set only by this page) that its normalising effect
+    leaves alone. A single-lodge club never reaches it: ADR-002 still normalises
+    to the sole lodge, sentinel or not.
+  - **A 403 on the lodge list is not an outage.** `/admin/bed-allocation` is
+    gated on `bookings`; `GET /api/admin/lodges` needs `lodge:view`. The shipped
+    `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` presets hold `bookings: "view"` and
+    no `lodge` entry at all, so for them the refusal is the normal answer and
+    club-wide read-only is the only view they can have — the view they had
+    before #2701. `useLodgeOptions` therefore reports `forbidden` separately
+    from `failed`, and this board maps it to `all` / `no-lodge-permission` with
+    its own banner. Collapsing the two handed those roles a permanent error and
+    a retry that could only 403 again.
+  - **`empty` is a real state.** A successful lodge list with no ACTIVE lodge is
+    neither club-wide nor an outage nor a state that resolves; without it the
+    board sat on a "Choosing which lodge to show" spinner for ever with Refresh
+    disabled and no error.
+  - **`resolving` fetches nothing.** The board asks for no dashboard at all
+    until it holds a concrete lodge, a deliberate All lodges, or a focused
+    booking that the server scopes for it — so the transient club-wide read on
+    every direct visit is gone rather than tidied up.
+  - **`unavailable` is distinguishable by construction.** With no options there
+    is nothing to select, so All lodges cannot have been chosen; the page shows
+    an error with a retry rather than a club-wide board. It is not an error
+    message bolted onto an ambiguous state.
+  - **`all` is READ-ONLY.** Every allocation control that needs a concrete lodge
+    — the four bed pickers, Run Auto Allocation, Approve Visible (which used to
+    approve the whole club's visible window with no lodge at all), Reset
+    allocations, Remove allocation and the preferences section — is disabled,
+    with one explanation at the top of the board and the same sentence as each
+    control's tooltip. `Remove allocation` in particular was a clickable silent
+    no-op without a lodge, since its handler simply returned.
+- **A booking deep link lands on that booking's own lodge, and the server is
+  what says so** (#2701). `GET /api/admin/bed-allocation` echoes
+  `scopedLodgeId` — the lodge it actually scoped to, null for a deliberate
+  club-wide read — and the board adopts it while a booking is focused. The
+  field is read tolerantly: an old-colour payload during a deploy drain carries
+  none, which reads as "the server did not say", never as a club-wide answer.
+  **While a booking is focused, `LodgeSelect`'s default is held off entirely**
+  (`deferDefaultSelection`), not merely until the first payload arrives. This
+  is load-bearing and it is the single most important line in the whole change,
+  so it is worth stating why in full. The ADR-002 normaliser fires whenever
+  fewer than two ACTIVE lodges are offered, and that effect runs even though the
+  same condition makes the component render nothing. Left running it overwrites
+  the lodge the server just derived — which changes the scope key, refires the
+  request, re-adopts, and loops: a reviewer measured **62 dashboard reads in
+  about a second**, paced by round trips, so React never sees a synchronous
+  cycle, nothing crashes, and the only symptom is a flickering page hammering
+  the database for as long as the tab is open. Any club with fewer than two
+  active lodges reached it, including a **successful but empty** list, which
+  does not even raise the error banner.
+  The same overwrite is what fires the 409 below on honest navigation. A booking
+  at a **deactivated** lodge is filtered out of the options, so the normaliser
+  substitutes the surviving active lodge and pairs it with the booking — on the
+  exact URL `AdminBookingToolsCard` builds. And because the deferral used to
+  clear on any dashboard error, a single transient 500 was enough to convert a
+  recoverable blip into a permanent, wrong mismatch screen.
+  While a booking is focused there is nothing left to default: the server has
+  already answered from `Booking.lodgeId`. The deferral lifts when a deliberate
+  lodge change clears the focus.
+- **The board-level `LODGE_MISMATCH` backstop, and why this route diverges from
+  ignoring a contradiction** (#2701). `requested-room/options` and the
+  hut-leader bed picker IGNORE a `lodgeId` that contradicts their named row.
+  This route refuses it with a 409 carrying `code: "LODGE_MISMATCH"` — the same
+  spelling as the writer's own refusal in `bed-allocation-move.ts`, which is
+  untouched and remains the thing that actually protects the data. The board is
+  different in one way that matters: it renders the focused booking and a lodge
+  selector side by side, so quietly serving lodge A's board for a lodge-B
+  booking under a selector reading "Lodge A" is an internally contradictory
+  screen rather than a redundant parameter. The refusal is affordable **because**
+  the selection fixes above mean the client cannot produce the pair — it sends
+  the booking's own lodge, or sends no lodge and adopts the echo. An
+  unresolvable `bookingId` still refuses nothing: the caller's own scope
+  applies, because a stale deep link must not turn a valid board load into an
+  error. The predicate lives in `src/lib/bed-allocation-board-scope.ts`, a
+  client-safe module, so `bed-allocation-board-lodge-scope.test.tsx` can drive a
+  fake server through the SAME function the route calls — which is what makes
+  "the 409 cannot fire on normal navigation" a proof rather than a restatement,
+  and is how the deactivated-lodge case was found.
+  The board also offers a way OUT of the refusal — a control that drops the
+  link's lodge and lets the server scope from the booking — because a hand-made
+  URL should not be a dead end, and that is the only recovery that can succeed.
+- **Stateful booking responses and queue positions keep their lodge owner**
+  (#2701/#2887). The admin booking wizard owns each availability response by
+  request and lodge, so a late Lodge A response cannot advance or resize a Lodge
+  B booking. Initial waitlist positions are counted under the selected lodge's
+  capacity lock using only older overlapping entries at that lodge, matching
+  every later waitlist position calculation and the member's confirmation email.
+- **Booking admission and lodge deactivation share one lodge lock** (#2701).
+  Draft, confirmed and waitlist creation take the selected lodge's immutable
+  capacity key before re-reading active status, member access and requested-room
+  ownership. Deactivation takes config-import then the same capacity key and
+  re-reads both the target and the “another active lodge remains” predicate.
+  This prevents admission at a lodge that became inactive while the request was
+  waiting and prevents concurrent last-two-lodge deactivations from leaving no
+  active lodge.
 - **The hut-leader bed picker obeys the same rule when an assignment is named**
   (#2678). `GET /api/admin/hut-leaders/available-beds` took `assignmentId` and
   `lodgeId` as unrelated parameters and never reconciled them, so a request
@@ -226,6 +493,23 @@ operational documents (which may carry door/emergency access details).
   `src/app/api/admin/hut-leaders/available-beds/__tests__/assignment-lodge-scope.test.ts`.
   Nothing here was exploitable: the reason it was safe was a guard on the write
   rather than the read being correct, which is the shape #2664 was filed about.
+- **The hut-leader admin workspace is one selected lodge end to end** (#2887).
+  Its assignment list, uncovered-night calculation, occupancy overlay and
+  eligible-member search all require the same validated `lodgeId`; the create
+  route refuses an omitted or inactive lodge before member lookup. The domain
+  helpers make widening explicit: interactive coverage uses `{ kind: "lodge" }`,
+  while the two genuine club dashboards must spell `{ kind: "all" }`. Lodge A
+  responses are fenced after a switch to Lodge B and lodge-keyed in-memory
+  overlays are cleared, so old assignments or red nights never inherit the new
+  selector label. Two-lodge route/domain tests pin all four read filters and the
+  create refusal. Coverage and eligibility use each guest's explicit `nights`
+  rows when present, falling back to the legacy contiguous envelope only when
+  none exist; a sparse stay on the 10th and 12th neither occupies nor suggests
+  the 11th. Club-wide uncovered-night aggregation retains lodge identity, so an
+  assignment at Lodge A does not suppress the same date at Lodge B. Assignment
+  creation serializes on the lodge key and repeats member, overlap and optional
+  bed checks after acquiring it; overlapping same-lodge role-only/different-bed
+  requests cannot both commit, while different lodges remain independent.
 
 ## Club-Wide Models (No Lodge Dimension)
 

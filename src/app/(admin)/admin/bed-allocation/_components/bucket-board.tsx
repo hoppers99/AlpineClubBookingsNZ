@@ -8,6 +8,7 @@ import { getBookingAccent } from "./booking-accent";
 import { GuestChip } from "./guest-chip";
 import {
   BUCKET_DROPPABLE_ID,
+  type AllocationLockReason,
   type BedOption,
   type BedOptionGroup,
   type BucketGuestGroup,
@@ -29,6 +30,9 @@ interface BucketBoardProps {
   // Tri-state (#2065): `undefined` while the client session resolves; the
   // `!canEdit` idiom treats that as disabled, so no truthy default here.
   canEdit: boolean | undefined;
+  // #2701: set while the board is club-wide, which disables every allocation
+  // control and explains itself. Independent of `canEdit`.
+  lockReason?: AllocationLockReason;
 }
 
 export function BucketBoard({
@@ -43,11 +47,14 @@ export function BucketBoard({
   pendingGuestIds,
   highlightedBookingId,
   canEdit,
+  lockReason,
 }: BucketBoardProps) {
   const { setNodeRef, isOver } = useDroppable({
     id: BUCKET_DROPPABLE_ID,
     data: { type: "bucket" },
-    disabled: !canEdit,
+    // A club-wide board is not a drop target either: dropping a chip here
+    // removes an allocation, and removal needs a concrete lodge.
+    disabled: !canEdit || lockReason !== undefined,
   });
 
   const bookingsWithGroups = bookings.filter(
@@ -186,6 +193,7 @@ export function BucketBoard({
                     pending={pendingGuestIds.has(group.bookingGuestId)}
                     highlighted={highlighted}
                     canEdit={canEdit}
+                    lockReason={lockReason}
                   />
                 ))}
               </div>

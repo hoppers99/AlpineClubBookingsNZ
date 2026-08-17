@@ -1,12 +1,14 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { type GuestData } from "@/components/guest-form";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { useLodgeOptions } from "@/components/lodge-select";
+import { deriveSettledLodgeOptionScope } from "@/lib/lodge-option-scope";
+import { BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE } from "@/lib/booking-lodge-scope";
 import { type PromoResult } from "@/components/promo-code-input";
 import {
   getBookingErrorPaymentTargets,
@@ -213,8 +215,48 @@ export function useBookingWizard() {
   // lodges this member may book; LodgeSelect renders nothing (and reports
   // the sole lodge) while fewer than two come back (ADR-002), so
   // single-lodge clubs see no change.
-  const { lodges, loading: lodgesLoading } = useLodgeOptions("member");
+  const {
+    lodges,
+    loading: lodgesLoading,
+    failed: lodgesFailed,
+    forbidden: lodgesForbidden,
+    reload: reloadLodges,
+  } = useLodgeOptions("member");
   const [lodgeId, setLodgeId] = useState<string | null>(null);
+  const lodgeScope = deriveSettledLodgeOptionScope({
+    lodges,
+    selectedLodgeId: lodgeId,
+    loading: lodgesLoading,
+    failed: lodgesFailed,
+    forbidden: lodgesForbidden,
+  });
+  const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
+  const activeScopedLodgeIdRef = useRef<string | null>(scopedLodgeId);
+  /*
+    #2887: ownership follows the COMMIT, never the render. Writing this ref in
+    the render body marked a lodge current for a render React then threw away
+    (concurrent retry / StrictMode double-render), which both drops a response
+    that is still valid for what is on screen and admits one from a scope that
+    never committed. A LAYOUT effect keeps the property the render write was
+    reaching for — the ref moves in the same synchronous commit that changes the
+    recovered scope, so no PASSIVE-effect gap exists in which a late response
+    can still regard a removed/failed lodge as current. React 19's server
+    renderer makes layout effects a no-op with no warning.
+  */
+  useLayoutEffect(() => {
+    activeScopedLodgeIdRef.current = scopedLodgeId;
+  }, [scopedLodgeId]);
+  const dateSelectionSequenceRef = useRef(0);
+  const dateSelectionAbortRef = useRef<AbortController | null>(null);
+  const workPartySequenceRef = useRef(0);
+  const workPartyAbortRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      dateSelectionAbortRef.current?.abort();
+      workPartyAbortRef.current?.abort();
+    },
+    [],
+  );
   // Set when the booking is created on the card-payment path; drives step 4.
   const [createdBooking, setCreatedBooking] = useState<CreatedBooking | null>(
     null,
@@ -228,6 +270,28 @@ export function useBookingWizard() {
   const [priceQuote, setPriceQuote] = useState<PriceQuote | null>(null);
   const [priceLoading, setPriceLoading] = useState(false);
   const [error, setError] = useState("");
+  /**
+   * #2701: the member tried to book and no lodge could be determined. Drives
+   * the retry affordance beside the refusal — without it the member is told to
+   * "try again in a moment" with nothing to try again WITH, since the lodge
+   * selector is not rendered in this state.
+   */
+  const [lodgeUnresolved, setLodgeUnresolved] = useState(false);
+  function retryLodgeOptions() {
+    setStep("dates");
+    setLodgeId(null);
+    setLodgeUnresolved(false);
+    setError("");
+    reloadLodges();
+  }
+
+  function returnToUnresolvedLodge() {
+    dateSelectionSequenceRef.current += 1;
+    dateSelectionAbortRef.current?.abort();
+    setStep("dates");
+    setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
+    setLodgeUnresolved(true);
+  }
   const [errorPaymentTargets, setErrorPaymentTargets] = useState<
     BookingErrorPaymentTarget[]
   >([]);
@@ -312,6 +376,13 @@ export function useBookingWizard() {
   function handleLodgeChange(nextLodgeId: string | null) {
     if (nextLodgeId === lodgeId) return;
     const hadLodge = lodgeId !== null;
+    // Fence pending Lodge A responses immediately, before React commits the
+    // Lodge B render and its effect updates the same ref.
+    activeScopedLodgeIdRef.current = nextLodgeId;
+    dateSelectionSequenceRef.current += 1;
+    dateSelectionAbortRef.current?.abort();
+    workPartySequenceRef.current += 1;
+    workPartyAbortRef.current?.abort();
     setLodgeId(nextLodgeId);
     if (!hadLodge) return;
     // Availability, pricing, policies, promos, and rooms are all per lodge:
@@ -323,10 +394,16 @@ export function useBookingWizard() {
     setGuestProfileBlocks([]);
     setAppliedPromo(null);
     setPriceQuote(null);
+    setPriceLoading(false);
     setUseCredit(false);
     setRequestedRoomId(null);
     setAvailabilityNightDetails([]);
     setShowWaitlistPrompt(false);
+    setActiveWorkPartyEvents([]);
+    setSelectedWorkPartyEventId(null);
+    setAttendingWorkParty(false);
+    setWorkPartyError("");
+    setWorkPartyClearedNotice(null);
   }
 
   function getBookingDateStrings() {
@@ -663,7 +740,7 @@ export function useBookingWizard() {
   // (`handleLodgeChange`), so the previous lodge's options are never on screen
   // while the replacement is in flight.
   useEffect(() => {
-    if (!lodgeId) {
+    if (!scopedLodgeId) {
       // Two different states reach here, and the answer is the same for both.
       //
       // Usually it is "not resolved yet" — the mount window before the lodge list
@@ -687,7 +764,7 @@ export function useBookingWizard() {
       return;
     }
     let cancelled = false;
-    fetch(`/api/bookings/rooms?lodgeId=${encodeURIComponent(lodgeId)}`)
+    fetch(`/api/bookings/rooms?lodgeId=${encodeURIComponent(scopedLodgeId)}`)
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
         if (cancelled) return;
@@ -702,7 +779,7 @@ export function useBookingWizard() {
     return () => {
       cancelled = true;
     };
-  }, [lodgeId]);
+  }, [scopedLodgeId]);
 
   // Fetch subscription status for the current season
   useEffect(() => {
@@ -983,6 +1060,23 @@ export function useBookingWizard() {
   }
 
   async function handleDateSelect(ci: string, co: string) {
+    if (!scopedLodgeId) {
+      returnToUnresolvedLodge();
+      return;
+    }
+    const requestedLodgeId = scopedLodgeId;
+    const sequence = ++dateSelectionSequenceRef.current;
+    dateSelectionAbortRef.current?.abort();
+    const controller = new AbortController();
+    dateSelectionAbortRef.current = controller;
+    const ownsSelection = () =>
+      sequence === dateSelectionSequenceRef.current &&
+      activeScopedLodgeIdRef.current === requestedLodgeId;
+    const lostSelectionOwnership = () => {
+      if (ownsSelection()) return false;
+      if (activeScopedLodgeIdRef.current === null) returnToUnresolvedLodge();
+      return true;
+    };
     setCheckIn(ci);
     setCheckOut(co);
     setError("");
@@ -998,25 +1092,35 @@ export function useBookingWizard() {
     setWorkPartyClearedNotice(null);
     const ciStr = ci;
     const coStr = co;
-    const lodgeParam = lodgeId ? `&lodgeId=${encodeURIComponent(lodgeId)}` : "";
+    const lodgeParam = `&lodgeId=${encodeURIComponent(requestedLodgeId)}`;
 
-    // Fetch availability for selected range
-    const res = await fetch(
-      `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}${lodgeParam}`
-    );
-    if (res.ok) {
-      const data = await res.json();
-      setAvailableBeds(data.minAvailable);
-      setAvailabilityNightDetails(data.nightDetails || []);
-    } else {
-      setAvailabilityNightDetails([]);
-    }
+    try {
+      // One sequence and one abort signal own both dependent reads. A second
+      // date pick at the same lodge invalidates the first just as decisively as
+      // a lodge switch.
+      const res = await fetch(
+        `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}${lodgeParam}`,
+        { signal: controller.signal },
+      );
+      if (lostSelectionOwnership()) return;
+      if (res.ok) {
+        const data = await res.json();
+        if (lostSelectionOwnership()) return;
+        setAvailableBeds(data.minAvailable);
+        setAvailabilityNightDetails(data.nightDetails || []);
+      } else {
+        setAvailabilityNightDetails([]);
+      }
 
-    // Check minimum stay policies
-    const policyRes = await fetch(`/api/booking-policies/check?checkIn=${ciStr}&checkOut=${coStr}${lodgeParam}`);
-    if (policyRes.ok) {
-      const policyData = await policyRes.json();
-      if (!policyData.valid) {
+      const policyRes = await fetch(
+        `/api/booking-policies/check?checkIn=${ciStr}&checkOut=${coStr}${lodgeParam}`,
+        { signal: controller.signal },
+      );
+      if (lostSelectionOwnership()) return;
+      if (policyRes.ok) {
+        const policyData = await policyRes.json();
+        if (lostSelectionOwnership()) return;
+        if (!policyData.valid) {
         // #2562: the date precheck must not strand a member before they can
         // describe the party that the officer would review. Reuse the ONE
         // fail-closed exception-door reader against the server's frozen review:
@@ -1025,22 +1129,36 @@ export function useBookingWizard() {
         // This does NOT open the request door. The action is still set only from
         // the authoritative POST /api/bookings refusal after the member reviews
         // and confirms the exact proposal.
-        const reviewable = readExceptionOffer({
-          code: "MINIMUM_STAY_VIOLATION",
-          error: policyData.message,
-          exceptionReview: policyData.exceptionReview,
-        });
-        if (!reviewable) {
-          setError(policyData.message);
-          return;
+          const reviewable = readExceptionOffer({
+            code: "MINIMUM_STAY_VIOLATION",
+            error: policyData.message,
+            exceptionReview: policyData.exceptionReview,
+          });
+          if (!reviewable) {
+            setError(policyData.message);
+            return;
+          }
         }
       }
+      if (ownsSelection()) setStep("guests");
+    } catch (requestError) {
+      if (requestError instanceof DOMException && requestError.name === "AbortError") return;
+      if (!lostSelectionOwnership()) {
+        setError("Failed to check availability. Please try again.");
+      }
+    } finally {
+      if (dateSelectionAbortRef.current === controller) {
+        dateSelectionAbortRef.current = null;
+      }
     }
-
-    setStep("guests");
   }
 
   async function handleGuestsDone() {
+    if (!scopedLodgeId) {
+      returnToUnresolvedLodge();
+      return;
+    }
+    const requestedLodgeId = scopedLodgeId;
     setGuestProfileBlocks([]);
     setMemberNightConflicts([]);
     if (guests.length === 0) {
@@ -1082,7 +1200,7 @@ export function useBookingWizard() {
       body: JSON.stringify({
         checkIn: checkInStr,
         checkOut: checkOutStr,
-        lodgeId: lodgeId ?? undefined,
+        lodgeId: requestedLodgeId,
         guests: guestPayload.map((g) => ({
           ageTier: g.ageTier,
           isMember: g.isMember,
@@ -1093,9 +1211,19 @@ export function useBookingWizard() {
         })),
       }),
     });
+    if (activeScopedLodgeIdRef.current !== requestedLodgeId) {
+      setPriceLoading(false);
+      if (activeScopedLodgeIdRef.current === null) returnToUnresolvedLodge();
+      return;
+    }
 
     if (res.ok) {
       const data = await res.json();
+      if (activeScopedLodgeIdRef.current !== requestedLodgeId) {
+        setPriceLoading(false);
+        if (activeScopedLodgeIdRef.current === null) returnToUnresolvedLodge();
+        return;
+      }
       setPriceQuote(data);
       setStep("review");
 
@@ -1110,14 +1238,23 @@ export function useBookingWizard() {
 
       // Fetch active working bee events that overlap these dates; events
       // bound to another lodge are filtered out server-side.
+      const workPartySequence = ++workPartySequenceRef.current;
+      workPartyAbortRef.current?.abort();
+      const workPartyController = new AbortController();
+      workPartyAbortRef.current = workPartyController;
+      const ownsWorkPartyRequest = () =>
+        workPartySequence === workPartySequenceRef.current &&
+        activeScopedLodgeIdRef.current === requestedLodgeId;
       fetch(
         `/api/work-parties/active?checkIn=${checkInStr}&checkOut=${checkOutStr}${
-          lodgeId ? `&lodgeId=${encodeURIComponent(lodgeId)}` : ""
-        }`
+          `&lodgeId=${encodeURIComponent(requestedLodgeId)}`
+        }`,
+        { signal: workPartyController.signal },
       )
         .then((r) => r.ok ? r.json() : { events: [] })
         .then((data) => {
           const events: WorkPartyEvent[] = data.events || [];
+          if (!ownsWorkPartyRequest()) return;
           setActiveWorkPartyEvents(events);
           if (
             selectedWorkPartyEventId &&
@@ -1136,7 +1273,15 @@ export function useBookingWizard() {
             );
           }
         })
-        .catch(() => setActiveWorkPartyEvents([]));
+        .catch((requestError) => {
+          if (requestError instanceof DOMException && requestError.name === "AbortError") return;
+          if (ownsWorkPartyRequest()) setActiveWorkPartyEvents([]);
+        })
+        .finally(() => {
+          if (workPartyAbortRef.current === workPartyController) {
+            workPartyAbortRef.current = null;
+          }
+        });
     } else {
       const data = await res.json();
       handleBookingApiError(data, "Failed to calculate price");
@@ -1145,6 +1290,33 @@ export function useBookingWizard() {
   }
 
   async function handleSubmit() {
+    /*
+     * #2701, owner decision 1: A MEMBER CANNOT COMPLETE A BOOKING WHOSE LODGE
+     * IS UNKNOWN. Nobody pays for a stay at a lodge they were never shown.
+     *
+     * This is the member half of a defect that reached money. `/api/lodges`
+     * failing leaves `useLodgeOptions` with an empty list; `LodgeSelect`
+     * normalises the selection to `null` and renders nothing at all (ADR-002),
+     * so there is no selector on screen to look wrong; the review step's
+     * "Lodge:" line was suppressed by the very same emptiness; and this
+     * function then posted `lodgeId: undefined`, which the server resolved to
+     * the club's default lodge. A member of a three-lodge club could confirm
+     * and pay with nothing anywhere naming a lodge.
+     *
+     * The server now refuses that post outright, so this guard is not what
+     * makes it safe — it is what makes it EXPLAINED. Reaching the server's
+     * refusal would show a member a validation error about a field they were
+     * never offered.
+     *
+     * Deliberately checked at submit rather than by disabling the button: the
+     * member should be told what is wrong and given something to do about it,
+     * not handed a dead control with no reason attached.
+     */
+    if (!scopedLodgeId) {
+      setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
+      setLodgeUnresolved(true);
+      return;
+    }
     if (requiresAdminReviewLocal && !memberReviewJustification.trim()) {
       setError("Please add a reason for booking without an adult guest. This goes to an admin for review.");
       return;
@@ -1173,7 +1345,7 @@ export function useBookingWizard() {
       body: JSON.stringify({
         checkIn: checkInStr,
         checkOut: checkOutStr,
-        lodgeId: lodgeId ?? undefined,
+        lodgeId: scopedLodgeId,
         guests: guestPayload,
         notes: notes || undefined,
         promoCode: appliedPromo?.code || undefined,
@@ -1267,6 +1439,12 @@ export function useBookingWizard() {
   }
 
   async function handleJoinWaitlist() {
+    if (!scopedLodgeId) {
+      setStep("dates");
+      setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
+      setLodgeUnresolved(true);
+      return;
+    }
     if (requiresAdminReviewLocal && !memberReviewJustification.trim()) {
       setError("Please add a reason for booking without an adult guest before joining the waitlist.");
       return;
@@ -1306,7 +1484,7 @@ export function useBookingWizard() {
           guests.some((g) => !g.isMember) && cancelIfGuestsBumped
             ? true
             : undefined,
-        lodgeId: lodgeId ?? undefined,
+        lodgeId: scopedLodgeId,
         waitlist: true,
         alternateLodgeIds:
           waitlistAlternateLodgeIds.length > 0
@@ -1329,6 +1507,12 @@ export function useBookingWizard() {
   }
 
   async function handleSaveAsDraft() {
+    if (!scopedLodgeId) {
+      setStep("dates");
+      setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
+      setLodgeUnresolved(true);
+      return;
+    }
     const guestPayload = buildGuestPayload();
     const stayRangeError = validateGuestStayRanges(guestPayload);
     if (stayRangeError) {
@@ -1362,7 +1546,7 @@ export function useBookingWizard() {
             ? true
             : undefined,
         applyCreditCents: appliedCreditCents > 0 ? appliedCreditCents : undefined,
-        lodgeId: lodgeId ?? undefined,
+        lodgeId: scopedLodgeId,
         draft: true,
         memberReviewJustification: requiresAdminReviewLocal
           ? memberReviewJustification.trim() || undefined
@@ -1403,11 +1587,17 @@ export function useBookingWizard() {
     memberMessage: string;
     supersedeRequestId: string | null;
   }): Promise<ExceptionRequestSubmitResult> {
+    if (!scopedLodgeId) {
+      setStep("dates");
+      setError(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
+      setLodgeUnresolved(true);
+      throw new Error(BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE);
+    }
     const res = await fetch("/api/bookings/exception-requests", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        lodgeId: lodgeId ?? undefined,
+        lodgeId: scopedLodgeId,
         checkIn: checkIn!,
         checkOut: checkOut!,
         guests: buildGuestPayload(),
@@ -1541,17 +1731,25 @@ export function useBookingWizard() {
   // Apply or refresh the working bee discount preview when a work party
   // event is selected (or the booking changes while one is selected).
   useEffect(() => {
-    if (!selectedWorkPartyEventId || !checkIn || !checkOut || !priceQuote) {
+    if (
+      !scopedLodgeId ||
+      !selectedWorkPartyEventId ||
+      !checkIn ||
+      !checkOut ||
+      !priceQuote
+    ) {
       return;
     }
 
     let cancelled = false;
+    const requestedLodgeId = scopedLodgeId;
     setWorkPartyError("");
 
     fetch("/api/promo-codes/validate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        lodgeId: requestedLodgeId,
         workPartyEventId: selectedWorkPartyEventId,
         checkIn,
         checkOut,
@@ -1594,7 +1792,7 @@ export function useBookingWizard() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedWorkPartyEventId, checkIn, checkOut, priceQuote, JSON.stringify(reviewGuestPayload)]);
+  }, [scopedLodgeId, selectedWorkPartyEventId, checkIn, checkOut, priceQuote, JSON.stringify(reviewGuestPayload)]);
 
   const wizardSteps: Array<{ id: BookingWizardStep; label: string }> = [
     { id: "dates", label: "Select Dates" },
@@ -1707,7 +1905,14 @@ export function useBookingWizard() {
     lodgeCapacity,
     lodges,
     lodgeId,
+    lodgeScope,
+    scopedLodgeId,
     lodgesLoading,
+    // #2701: the member half of the unnamed-lodge refusal.
+    lodgesFailed,
+    lodgesForbidden,
+    lodgeUnresolved,
+    retryLodgeOptions,
     handleLodgeChange,
     selectedLodge,
     lodgeLabel,

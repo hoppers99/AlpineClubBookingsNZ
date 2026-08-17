@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useLodgeOptions } from "@/components/lodge-select";
+import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
@@ -305,7 +306,22 @@ export default function AdminLodgePage() {
   const [defaultLodgeName, setDefaultLodgeName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { lodges } = useLodgeOptions("admin");
+  const {
+    lodges,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+    reload: reloadLodgeOptions,
+  } = useLodgeOptions("admin");
+  /*
+   * #2701: every lodge-binding control on this page is gated on there being a
+   * second lodge, and a FAILED lodge list produced an empty array — so an
+   * outage looked exactly like a single-lodge club and the controls simply
+   * disappeared. On this page that is worse than a wrong default: a kiosk
+   * device bound to the wrong lodge cannot be rebound, and "Add a kiosk
+   * account" is the only way to create the second lodge's kiosk login at all.
+   * The notice below says the list did not load, so the absence is explained
+   * rather than mistaken for a club that has nothing to bind.
+   */
   const showLodgeControls = lodges.length > 1;
 
   // Add-account form (rendered only with a second lodge to point it at).
@@ -414,6 +430,13 @@ export default function AdminLodgePage() {
       {viewOnlyBanner}
       <div className="space-y-6">
       <h1 className="text-2xl font-bold text-foreground">Lodge Kiosk</h1>
+
+      <LodgeOptionsUnavailableNotice
+        failed={lodgeOptionsFailed}
+        forbidden={lodgeOptionsForbidden}
+        onRetry={reloadLodgeOptions}
+        what="the lodge each kiosk account is bound to"
+      />
 
       <p className="max-w-3xl text-sm text-muted-foreground">
         This is the shared sign-in used on the physical lodge kiosk screen — it is

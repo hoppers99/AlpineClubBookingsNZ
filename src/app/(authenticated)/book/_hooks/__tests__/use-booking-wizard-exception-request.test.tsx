@@ -35,9 +35,33 @@ vi.mock("@/components/club-identity-provider", () => ({
   useClubIdentity: () => ({ lodgeCapacity: 20 }),
 }));
 
-vi.mock("@/components/lodge-select", () => ({
-  useLodgeOptions: () => ({ lodges: [], loading: false }),
-}));
+/*
+  #2701: `useLodgeOptions` now reports `failed`, `forbidden` and `reload`
+  alongside `lodges`/`loading`, and the wizard destructures three of the five —
+  so a factory that returns only the old two hands its consumer `undefined`
+  where it expects a function. Mocked PARTIALLY over the real module so the next
+  export the wizard reaches for is already present, and the object is built once
+  so `reload` keeps a stable identity across renders.
+
+  The list is no longer empty either. #2701 refuses a submit whose lodge is
+  unknown, so an empty list would put every case below into that refusal instead
+  of the offer rules it means to exercise.
+*/
+vi.mock("@/components/lodge-select", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/components/lodge-select")>();
+  const options = {
+    lodges: [
+      { id: "lodge-1", name: "Alpine Lodge" },
+      { id: "lodge-2", name: "Bush Lodge" },
+    ],
+    loading: false,
+    failed: false,
+    forbidden: false,
+    reload: vi.fn(),
+  };
+  return { ...actual, useLodgeOptions: () => options };
+});
 
 vi.mock("sonner", () => ({ toast: { info: vi.fn(), success: vi.fn() } }));
 
@@ -176,6 +200,10 @@ async function seatedWizard(stubs: Stubs) {
   const fetchMock = stubFetch(stubs);
   const { result } = renderHook(() => useBookingWizard());
   await waitFor(() => expect(result.current.guests).toHaveLength(1));
+  // The hook owns lodge selection state; mocking useLodgeOptions supplies the
+  // choices but does not run LodgeSelect's defaulting effect. Name the lodge
+  // these proposal tests mean before exercising any create path (#2701).
+  act(() => result.current.handleLodgeChange("lodge-1"));
   await act(async () => {
     await result.current.handleDateSelect("2026-06-11", "2026-06-12");
   });
@@ -227,6 +255,7 @@ describe("booking wizard — when a refusal opens the request door", () => {
     const { result } = renderHook(() => useBookingWizard());
     await waitFor(() => expect(result.current.guests).toHaveLength(1));
 
+    act(() => result.current.handleLodgeChange("lodge-1"));
     await act(async () => {
       await result.current.handleDateSelect("2026-06-11", "2026-06-12");
     });
@@ -251,6 +280,7 @@ describe("booking wizard — when a refusal opens the request door", () => {
     const { result } = renderHook(() => useBookingWizard());
     await waitFor(() => expect(result.current.guests).toHaveLength(1));
 
+    act(() => result.current.handleLodgeChange("lodge-1"));
     await act(async () => {
       await result.current.handleDateSelect("2026-06-11", "2026-06-12");
     });
@@ -549,12 +579,10 @@ describe("booking wizard — an offer belongs to the proposal it was refused for
     expect(result.current.exceptionOffer).toBeNull();
   });
 
-  it("retires the offer when the LODGE changes under unchanged nights", async () => {
-    // The lodge is part of the proposal's identity, and this is the one path that
-    // moves it on its own: `handleLodgeChange` wipes the dates when a lodge was
-    // already chosen, so only the first seating leaves the nights standing. Without
-    // the lodge in the signature the offer would survive a change of building —
-    // and the rule it names belongs to the lodge that refused it.
+  it("retires the offer when the member changes lodge", async () => {
+    // The lodge is part of the proposal's identity. Since #2701 the member must
+    // already hold one before submitting, so switching buildings also restarts
+    // date selection; either way the old lodge's refusal cannot survive.
     const { result } = await seatedWizard({
       create: () => jsonResponse(MIN_STAY_REFUSAL, false, 400),
       request: REQUEST_CREATED,
@@ -564,10 +592,10 @@ describe("booking wizard — an offer belongs to the proposal it was refused for
     });
     expect(result.current.exceptionOffer).not.toBeNull();
 
-    act(() => {
+    await act(async () => {
       result.current.handleLodgeChange("lodge-2");
     });
-    expect(result.current.checkIn).toBe("2026-06-11");
+    expect(result.current.checkIn).toBeNull();
     expect(result.current.exceptionOffer).toBeNull();
   });
 

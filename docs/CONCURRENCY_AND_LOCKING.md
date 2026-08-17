@@ -133,7 +133,7 @@ are the literal `1`.
 | Lock | Key | Helper / where | Tier | Serialises |
 | --- | --- | --- | --- | --- |
 | **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore; plus bed-allocation inventory/placement/move/range/auto/approval/removal writers that must serialize with lifecycle prune. Member merge is the one bed-allocation writer that deliberately does NOT take this key — see "Merge joins the bed-allocation cohort" (#2595). |
-| **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`lodge-capacity-lock.ts`, re-exported by `capacity.ts`) | 1 | Capacity claims/checks and bed-allocation mutations for one lodge; roster eligibility snapshots; and direct or config-transfer chore-template changes, which serialize active-template validation for that lodge. |
+| **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`lodge-capacity-lock.ts`, re-exported by `capacity.ts`) | 1 | Capacity claims/checks and bed-allocation mutations for one lodge; booking admission versus lodge deactivation; hut-leader overlap and optional bed-hold writes; roster eligibility snapshots; and direct or config-transfer chore-template changes, which serialize active-template validation for that lodge. |
 | **Per-member night footprint** | `hashtext("booking-member-night"), hashtext(<memberId>)` | `lockBookingMemberNights(tx, guests)` (`booking-member-night-conflicts.ts`) | cross-lodge | Serialises the person-night guard ACROSS lodges (see below). |
 | **Per-owner hosting coverage** | `hashtext("hosting-coverage-owner"), hashtext(<Booking.memberId>)` | `lockHostingCoverageOwner` / `lockHostingCoverageOwners` (`adult-member-hosting-coverage-lock.ts`) | cross-booking | Serialises `SAME_BOOKING_OWNER` coverage (#2576 §9): one booking's compliance depends on another booking of the SAME owner, so the key remains authoritative even though #2600 made allocation-participating confirmation and cancellation compose global → lodge. Taken LAST among the application lock families a caller composes. Roster-aware modification paths take global → lodge → roster-date → any applicable member keys → sorted queue-participant `Member FOR KEY SHARE NOWAIT` rows → coverage-owner; queued incident reconciliation takes hosting policy-set → sorted claimed member-lifecycle keys → sorted claimed `Member FOR KEY SHARE` rows → coverage-owner. Paths that do not use roster or member keys omit those tiers. Ordinary producers try sorted owner keys before re-entering the blocking helper, while merge takes its sorted owner keys only after its one sorted participant `FOR UPDATE` statement. The key is taken only when the lodge actually has the scope enabled. |
 | **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit, and the #2265 stored-election consumption `consumeStoredCreditElection`, taken inside the `create-payment-intent` pay transaction and the Internet Banking switch transaction only when the booking carries an outstanding election). |
@@ -141,7 +141,7 @@ are the literal `1`.
 | **Membership application** | `hashtext(<application key>)` | `membershipApplicationLockKey` (`nomination.ts`) | — | State transitions of one membership application. |
 | **Membership applicant** | `hashtext(<applicant-email key>)` | `membershipApplicationApplicantLockKey` (`nomination.ts`) | — | Per-email applicant dedup at submit time. |
 | **Roster-date writers** | `hashtext("roster:<date>")` | `lockRosterDate(tx, date)` / sorted `lockRosterDates(tx, dates)` (`roster-lock.ts`) | date | Serialises whole-roster save/regenerate/confirm/auto-suggest, kiosk confirm and complete/uncomplete, and booking/guest cleanup that can remove suggested rows for the same lodge night. |
-| **Config-transfer import** | `hashtext("config-transfer-import")` | `acquireConfigImportLock(tx)` (`config-transfer-lock.ts`) | — | Single-flights configuration-bundle apply and excludes lodge create/rename while an import resolves bundle slugs to immutable lodge ids. |
+| **Config-transfer import** | `hashtext("config-transfer-import")` | `acquireConfigImportLock(tx)` (`config-transfer-lock.ts`) | — | Single-flights configuration-bundle apply and excludes lodge identity mutations while an import resolves bundle slugs to immutable lodge ids. A lodge update/deactivation then takes its immutable target-lodge capacity key before re-reading the lodge and active-lodge/dependency predicates. |
 | **Minimum-stay policy set** | `hashtext("minimum-stay-policy-set")` | `lockMinimumStayPolicySet(tx)` (`minimum-stay-policy-set.ts`) plus the migration's `MinimumStayPolicy_lock_set` statement trigger | policy config | Serialises every live CRUD and config-transfer replacement across the small club/lodge policy set. The database trigger puts draining old-colour DML behind the exact same key before any tuple lock. |
 | **Adult-member hosting policy set** | `hashtext("adult-member-hosting-policy-set")` | `lockAdultMemberHostingPolicySet(tx)` / `tryLockAdultMemberHostingPolicySet(tx)` (`adult-member-hosting-policy-set.ts`) plus the migration's `AdultMemberHostingPolicy_lock_set` statement trigger | policy config | Serialises the admin write route and the config-transfer replacement over the one club row plus one row per lodge (#2364), fences the drain's policy read before incident reconciliation, and excludes member merge while policy reconciliation enumerates bookings and inserts queue rows. Unlike its minimum-stay sibling the trigger is NOT a blue/green drain boundary — the table did not exist before its own migration, so no old colour writes it — it is there so advisory-before-tuple order holds for every writer, operator psql included. Policy writers and merge take the blocking form. The drain takes the fail-fast form, releases a contended exact queue claim without consuming an attempt, and otherwise composes policy-set → sorted member-lifecycle → sorted `Member FOR KEY SHARE` rows → coverage-owner. |
 | **Membership subscription billing** | `hashtext("membership-subscription-billing:<seasonYear>")` | `confirmSubscriptionBillingPreview`, `reconcileSubscriptionBillingExceptions` (`membership-subscription-billing.ts`) | — | Annual/approval charge snapshot creation for one membership year; the #2148 refresh-reconciliation holds the same key so exception auto-resolution serialises with confirm and never resolves rows a concurrent confirm is regenerating. The #2161 operator family-marker writers (MARK/UNMARK on the subscription-billing route) deliberately take **no** advisory lock: they only insert/release a `FamilyGroupSeasonInvoiceMarker` row (single-active enforced by a partial unique index, so a concurrent double-mark is a benign no-op), and confirm re-derives suppression from the live marker rows under this same lock inside its transaction, so a mark landing mid-confirm either is seen by the in-tx re-preview or shifts the confirmation token — never a torn snapshot. |
@@ -150,6 +150,81 @@ are the literal `1`.
 | **Xero member contact link (legacy key)** | `hashtext(<memberId>)` | short local-link transactions (`xero-contacts.ts`) | — | First-writer-wins local `Member.xeroContactId` linking after provider work. This legacy unnamespaced key is shared by both Xero contact-link writers; do not copy it for new domains. |
 | **Diagnostics budget reserve (per month)** | `hashtext("diagnostics-budget-reserve"), hashtext(<month>)` | `reserveDiagnosticsBudget` **and** `settleDiagnosticsRoundtrip` (`ai-diagnostics-usage.ts`, AID-2 #2371) | — | Serialises every AI Diagnostics budget RESERVE **and** SETTLE for one billing month so the reserve's read-check-insert (sum live reservations + settled spend, compare to budget, insert reservation) is atomic against concurrent reservers AND against a settle's reservation-delete + `settledCents` increment. A burst of paid diagnostics roundtrips therefore cannot push `settled + reserved` over the monthly budget, and a settle can never commit mid-reserve to under-count committed spend; a lost claim (over budget) inserts nothing and denies the paid call. Different months do not contend. Held only for the milliseconds of each short transaction; the provider call runs entirely OUTSIDE both. Both take ONLY this key (no second lock), so no ordering cycle is possible. See "Composition: diagnostics budget reserve" below. |
 | **Backup run claim** | `hashtext("backup:run-lock")` | `claimBackupRun` (`backup-run.ts`, #2095) | — | Single-flights managed database backups across containers (nightly cron vs admin run-now). Held only for the milliseconds of the reap-stale → active-check → insert-RUNNING claim transaction; the `pg_dump`/upload pipeline runs entirely outside any transaction, so a crashed run can never wedge the lock (a dead RUNNING row is reaped by heartbeat age on the next claim). Single-lock holder; composes with no other family. The config-transfer pre-apply safety backup deliberately bypasses this claim (it must run inline; concurrent dumps are independent snapshots writing uniquely-named files). |
+
+### Composition: lodge admission, deactivation and hut-leader assignments (#2701)
+
+The immutable lodge id is the one mint for this cohort's per-lodge key. Booking
+creation resolves an explicit requested lodge id, then takes any applicable
+global tier followed by that lodge's capacity key. Only after the key is held
+does it re-read active status, member access and the requested room before
+admitting a draft, confirmed booking or waitlist entry. Lodge deactivation
+takes the config-transfer singleton first, then the same target-lodge key, and
+re-reads the target, the other-active-lodge predicate and all blocking
+dependencies. Consequently a create cannot validate an active lodge and commit
+after its deactivation, while two attempts to deactivate the last two lodges
+cannot both validate the other's stale active state.
+
+There are **six** writers of `HutLeaderAssignment`. Three of them decide the
+overlap predicate, and those three take this per-lodge key and re-read overlap
+under it. The guarantee that buys is narrower than "one lodge cannot end up
+with two overlapping hut leaders", and the narrower statement is the true one:
+
+> No two hut-leader assignments overlap by more than one day at one lodge,
+> **except assignments created by the school-approval path**, which does not
+> decide the predicate at all.
+
+There is no unique constraint on the range behind the application check, so
+that holds only for as long as all three keep deciding under the key:
+
+- `POST /api/admin/hut-leaders` — role-only and bed-holding alike. Member,
+  overlap and optional bed-availability checks all re-run under the key.
+- `PUT /api/admin/hut-leaders/[id]` — including an edit that clears the bed or
+  never had one. #2887 corrected this: #2286 had locked only the bed-holding
+  branch on the reasoning that releasing capacity is safe, which is true of
+  capacity and false of the overlap predicate a bedless edit can still break by
+  MOVING DATES.
+- `cron-hut-leader-auto-assign` — two changes, from two PRs, and both are
+  needed. #2915 restructured the job to iterate active lodges and decide every
+  question per (lodge, night): one lodge's leader used to silence every other
+  lodge for that night, and two lodges with one eligible adult each summed to
+  two so neither got one. #2887 then put the create inside a transaction
+  holding that lodge's key, with the already-covered and overlap questions
+  re-asked under it — scoping alone still let the cron race an admin, or a
+  second cron container, into two overlapping leaders at one lodge.
+
+Different lodges retain independent keys. Confirmation email is sent only after
+commit and outside the transaction.
+
+The other three writers, and why the guarantee is worded the way it is:
+
+- `school-booking-request.ts` creates one assignment **per teacher** when a
+  school request is approved — same dates, same lodge, deliberately overlapping
+  each other, because several teachers do supervise one group together. It holds
+  the lodge key (it is inside the approval transaction) but runs no overlap read,
+  and must not: adding one would refuse the club's own school bookings.
+
+  This is the exemption in the rule above, and it covers TWO cases, which is why
+  the wording names the PATH rather than the relationship between the rows. The
+  first is the teachers of one approval overlapping each other, by design. The
+  second is easy to miss: nothing forbids two separately approved school bookings
+  at the same lodge on overlapping dates, and neither approval transaction reads
+  overlap, so their teacher assignments overlap too. An earlier wording said "no
+  two **independently created** assignments overlap", which reads as covering the
+  second case and does not — those two approvals are as independent as any two
+  writes in the system.
+- `[id]/pin/route.ts` rotates a PIN and `[id]/route.ts`'s DELETE removes a row.
+  Both write on the base client outside any lock. Neither can create an overlap
+  — one changes no dates and no lodge, the other only ever removes a row — so
+  neither needs the key.
+
+One asymmetry is recorded here rather than resolved, because it is a product
+question and not a concurrency one. The overlap predicate matches on dates and
+lodge with no role or source filter, so teacher rows **block** a later manual or
+cron assignment for those nights while never being blocked themselves. Excluding
+them was attempted in this PR and reverted; it is tracked as **#2926**, together
+with the fact that `Member.role = "SCHOOL"` is set for the school CONTACT
+member as well as for teachers, so any exclusion has to establish which rows it
+actually covers rather than assuming the role means "teacher".
 
 ### Composition: roster-date writers (#2586)
 

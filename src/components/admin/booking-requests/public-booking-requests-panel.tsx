@@ -31,7 +31,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useLodgeOptions } from "@/components/lodge-select";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
@@ -395,10 +394,25 @@ export function PublicBookingRequestsPanel({
   const searchParams = useSearchParams();
   const initialFilter = searchParams.get("status");
   const requestId = searchParams.get("requestId");
-  // Lodge badge only renders for multi-lodge clubs (ADR-002 presentation
-  // rule); a single-lodge club sees no lodge copy in the queue.
-  const { lodges: activeLodges } = useLodgeOptions("admin");
-  const showLodgeContext = activeLodges.length >= 2;
+  /*
+    #2887: the lodge badge follows `request.lodgeName` and nothing else.
+
+    ADR-002's "no lodge copy in a single-lodge club" rule is applied SERVER-side
+    now (`serializeBookingRequestForAdmin` takes the active-lodge count and
+    nulls the name below two), which is the only place it can be applied
+    honestly. This panel counted the lodge-options hook's list instead, and that
+    was wrong in both directions:
+
+      - too closed: `/api/admin/lodges` needs `lodge:view`, and
+        `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold `bookings: "view"` with no
+        `lodge` entry at all, so their 403 is permanent and a multi-lodge club's
+        officer queue rendered with no lodge on screen — on a MUTATION surface;
+      - too open: once this PR made the whole-lodge form always send the sole
+        lodge id, new single-lodge rows carry a real name, so a genuine
+        single-lodge club would have shown a permanent badge.
+
+    One rule, one place, and the client stops guessing.
+  */
   const [requests, setRequests] = useState<PublicBookingRequestData[]>([]);
   const [filter, setFilter] = useState<PublicRequestFilter>(
     isPublicRequestFilter(initialFilter) ? initialFilter : "QUEUE"
@@ -1287,7 +1301,7 @@ export function PublicBookingRequestsPanel({
                       </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
-                      {showLodgeContext && request.lodgeName ? (
+                      {request.lodgeName ? (
                         <Badge
                           variant="outline"
                           className="border-info-6 bg-info-3 text-info-11"

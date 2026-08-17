@@ -11,6 +11,7 @@ import { X } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
 
 // Audience input union sent to the notices API. Mirrors NoticeAudienceInput in
 // the server-only `@/lib/notices` module; redeclared locally so this client
@@ -109,6 +110,8 @@ export function NoticeAudiencePicker({
   const [lodges, setLodges] = useState<NamedOption[]>([]);
   const [roles, setRoles] = useState<NamedOption[]>([]);
   const [listsError, setListsError] = useState<string | null>(null);
+  const [lodgeListError, setLodgeListError] = useState<string | null>(null);
+  const [listsReloadToken, setListsReloadToken] = useState(0);
 
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<MemberResult[]>([]);
@@ -122,6 +125,8 @@ export function NoticeAudiencePicker({
   useEffect(() => {
     let cancelled = false;
     async function loadLists() {
+      setListsError(null);
+      setLodgeListError(null);
       try {
         const [typesRes, lodgesRes, rolesRes] = await Promise.all([
           fetch("/api/admin/membership-types", { credentials: "same-origin" }),
@@ -138,6 +143,13 @@ export function NoticeAudiencePicker({
         if (lodgesRes.ok) {
           const data = (await lodgesRes.json()) as { lodges?: NamedOption[] };
           if (!cancelled) setLodges(data.lodges ?? []);
+        } else if (!cancelled) {
+          setLodges([]);
+          setLodgeListError(
+            lodgesRes.status === 403
+              ? "Your role cannot view lodge audiences."
+              : "Failed to load lodge audiences.",
+          );
         }
         if (rolesRes.ok) {
           const data = (await rolesRes.json()) as { roles?: NamedOption[] };
@@ -153,7 +165,7 @@ export function NoticeAudiencePicker({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [listsReloadToken]);
 
   // Debounced member search.
   useEffect(() => {
@@ -314,7 +326,19 @@ export function NoticeAudiencePicker({
 
           <fieldset className="space-y-2">
             <legend className="text-sm font-medium">Lodges</legend>
-            {lodges.length === 0 ? (
+            {lodgeListError ? (
+              <div className="space-y-2 text-xs text-danger-11">
+                <p>{lodgeListError}</p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setListsReloadToken((value) => value + 1)}
+                >
+                  Try again
+                </Button>
+              </div>
+            ) : lodges.length === 0 ? (
               <p className="text-xs text-muted-foreground">
                 No lodges available.
               </p>

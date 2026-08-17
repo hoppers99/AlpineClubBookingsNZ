@@ -69,7 +69,6 @@ function renderReview(
       memberGuestPendingHoldExpiryDays={7}
       guests={guests}
       priceQuote={priceQuote}
-      lodges={[]}
       lodgeId={null}
       selectedLodge={null}
       reviewGuestPayload={guests}

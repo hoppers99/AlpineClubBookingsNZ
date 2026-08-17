@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
   AdminViewOnlyNotice,
   ViewOnlyActionButton,
@@ -15,6 +15,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
+import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status"
 import { useLodgeOptions } from "@/components/lodge-select"
 
 interface LodgeAccessRow {
@@ -39,7 +40,23 @@ export function MemberLodgeAccessCard({
   // lodge-access writes /api/admin/members/[id]/lodge-access (membership area);
   // a view-only membership admin sees the grants but cannot change them (#1997).
   const canEdit = useAdminAreaEditAccess("membership")
-  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin")
+  /*
+    #2701: this card is drawn ENTIRELY from the lodge list — every tickbox is a
+    lodge — so a failed list rendered it as a club with fewer than two lodges and
+    the whole card disappeared. That is the worst outcome on this page: a member
+    whose bookings are restricted to one lodge looks unrestricted, and the
+    restriction cannot be lifted because there is nothing on screen to untick.
+    Saving would have been worse still — the PUT sends the ticked ids as the
+    complete set, so an empty render saved as "clear every grant". The card now
+    states the failure and renders no controls at all.
+  */
+  const {
+    lodges,
+    loading: lodgesLoading,
+    failed: lodgesFailed,
+    forbidden: lodgesForbidden,
+    reload: reloadLodges,
+  } = useLodgeOptions("admin")
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
@@ -48,13 +65,48 @@ export function MemberLodgeAccessCard({
     string[]
   >([])
   const [staffLodgeIds, setStaffLodgeIds] = useState<string[]>([])
+  const lodgeOptionsReady =
+    !lodgesLoading && !lodgesFailed && !lodgesForbidden && lodges.length >= 2
+  const lodgeOptionsKey = lodgeOptionsReady
+    ? lodges
+        .map((lodge) => lodge.id)
+        .sort()
+        .join("\u0000")
+    : ""
+  const loadSequenceRef = useRef(0)
+  const saveSequenceRef = useRef(0)
+  const lodgeOptionsReadyRef = useRef(lodgeOptionsReady)
+  const lodgeOptionsKeyRef = useRef(lodgeOptionsKey)
+  useEffect(() => {
+    lodgeOptionsReadyRef.current = lodgeOptionsReady
+    lodgeOptionsKeyRef.current = lodgeOptionsKey
+  }, [lodgeOptionsKey, lodgeOptionsReady])
 
   const loadAccess = useCallback(async () => {
+    const sequence = (loadSequenceRef.current += 1)
+    // #2701: the grants are only meaningful next to the lodges they name, and
+    // no control renders without them, so there is nothing to load them for.
+    if (!lodgeOptionsReady) {
+      saveSequenceRef.current += 1
+      setLoading(false)
+      setError("")
+      setSuccess("")
+      setBookingRestrictionLodgeIds([])
+      setStaffLodgeIds([])
+      return
+    }
     setLoading(true)
     setError("")
     try {
       const res = await fetch(`/api/admin/members/${memberId}/lodge-access`)
       const body = await res.json()
+      if (
+        sequence !== loadSequenceRef.current ||
+        !lodgeOptionsReadyRef.current ||
+        lodgeOptionsKeyRef.current !== lodgeOptionsKey
+      ) {
+        return
+      }
       if (!res.ok) {
         throw new Error(body.error || "Failed to load lodge access")
       }
@@ -68,21 +120,43 @@ export function MemberLodgeAccessCard({
         rows.filter((row) => row.kind === "STAFF").map((row) => row.lodgeId),
       )
     } catch (loadError) {
+      if (
+        sequence !== loadSequenceRef.current ||
+        !lodgeOptionsReadyRef.current ||
+        lodgeOptionsKeyRef.current !== lodgeOptionsKey
+      ) {
+        return
+      }
       setError(
         loadError instanceof Error
           ? loadError.message
           : "Failed to load lodge access",
       )
     } finally {
-      setLoading(false)
+      if (
+        sequence === loadSequenceRef.current &&
+        lodgeOptionsReadyRef.current &&
+        lodgeOptionsKeyRef.current === lodgeOptionsKey
+      ) {
+        setLoading(false)
+      }
     }
-  }, [memberId])
+  }, [lodgeOptionsKey, memberId, lodgeOptionsReady])
 
   useEffect(() => {
     void loadAccess()
   }, [loadAccess])
 
   async function save() {
+    // #2701 backstop: no Save button renders while the lodge list is missing,
+    // and a PUT from here would send the empty tick state as the member's whole
+    // set of grants — silently revoking every restriction and staff binding.
+    if (!lodgeOptionsReady) return
+    const sequence = (saveSequenceRef.current += 1)
+    const ownsCurrentScope = () =>
+      sequence === saveSequenceRef.current &&
+      lodgeOptionsReadyRef.current &&
+      lodgeOptionsKeyRef.current === lodgeOptionsKey
     setSaving(true)
     setError("")
     setSuccess("")
@@ -93,18 +167,20 @@ export function MemberLodgeAccessCard({
         body: JSON.stringify({ bookingRestrictionLodgeIds, staffLodgeIds }),
       })
       const body = await res.json()
+      if (!ownsCurrentScope()) return
       if (!res.ok) {
         throw new Error(body.error || "Failed to save lodge access")
       }
       setSuccess("Lodge access saved.")
     } catch (saveError) {
+      if (!ownsCurrentScope()) return
       setError(
         saveError instanceof Error
           ? saveError.message
           : "Failed to save lodge access",
       )
     } finally {
-      setSaving(false)
+      if (ownsCurrentScope()) setSaving(false)
     }
   }
 
@@ -116,6 +192,27 @@ export function MemberLodgeAccessCard({
     setSuccess("")
     setIds((current) =>
       checked ? [...current, lodgeId] : current.filter((id) => id !== lodgeId),
+    )
+  }
+
+  // #2701: checked BEFORE the single-lodge rule below, because on a failure the
+  // list is empty and would otherwise read as a single-lodge club. This card
+  // must say the grants cannot be shown rather than quietly not existing.
+  if (lodgesFailed || lodgesForbidden) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base font-medium">Lodge Access</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <LodgeOptionsUnavailableNotice
+            failed={lodgesFailed}
+            forbidden={lodgesForbidden}
+            onRetry={reloadLodges}
+            what="this member's lodge access grants"
+          />
+        </CardContent>
+      </Card>
     )
   }
 

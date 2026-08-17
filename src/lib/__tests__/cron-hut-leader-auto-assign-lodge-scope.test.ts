@@ -17,6 +17,12 @@ const { mockPrisma, mockFlags, mockLookahead } = vi.hoisted(() => ({
       findMany: vi.fn(),
       create: vi.fn(),
     },
+    // #2887: the create runs inside a transaction holding the lodge's capacity
+    // key, so the double needs the interactive transaction and the advisory
+    // lock statement. It hands back the same object, so every assertion below
+    // still observes the same `hutLeaderAssignment` mocks.
+    $executeRaw: vi.fn(async () => 0),
+    $transaction: vi.fn(),
   },
   mockFlags: vi.fn(),
   mockLookahead: vi.fn(),
@@ -65,6 +71,11 @@ describe("autoAssignHutLeaders lodge scoping (#2915)", () => {
     mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([]);
     mockPrisma.hutLeaderAssignment.create.mockResolvedValue({ id: "assignment-1" });
     mockPrisma.booking.findMany.mockResolvedValue([]);
+    mockPrisma.$transaction.mockImplementation(async (arg: unknown) =>
+      typeof arg === "function"
+        ? (arg as (tx: typeof mockPrisma) => unknown)(mockPrisma)
+        : arg,
+    );
   });
 
   it("does not let one lodge's existing assignment silence another lodge", async () => {

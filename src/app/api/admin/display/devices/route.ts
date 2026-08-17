@@ -3,7 +3,6 @@ import { z } from "zod";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { nameField } from "@/lib/zod-helpers";
-import { getDefaultLodgeId } from "@/lib/lodges";
 
 // Admin lobby-display device management (fork issue #33, epic #25): list and
 // create device records. Creation never generates a token — pairing does
@@ -77,9 +76,7 @@ export async function GET() {
 
 const createSchema = z.object({
   name: nameField(),
-  // Optional: when a club runs a single lodge the UI shows no lodge picker,
-  // so the device binds to the club's default lodge.
-  lodgeId: z.string().min(1).optional(),
+  lodgeId: z.string().min(1),
 });
 
 export async function POST(req: NextRequest) {
@@ -95,7 +92,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
 
-  const lodgeId = body.lodgeId ?? (await getDefaultLodgeId(prisma));
+  const lodgeId = body.lodgeId;
   const lodge = await prisma.lodge.findUnique({
     where: { id: lodgeId },
     select: { id: true, active: true },

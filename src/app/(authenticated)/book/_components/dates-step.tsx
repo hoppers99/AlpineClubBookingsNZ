@@ -2,7 +2,10 @@
 
 import { BookingCalendar } from "@/components/booking-calendar";
 import { LodgeSelect, type LodgeOption } from "@/components/lodge-select";
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import type { SettledLodgeOptionScope } from "@/lib/lodge-option-scope";
 
 export function DatesStep({
   subscriptionUnpaid,
@@ -12,6 +15,8 @@ export function DatesStep({
   lodges,
   lodgeId,
   lodgesLoading,
+  lodgeScope,
+  retryLodgeOptions,
   handleLodgeChange,
   selectedLodge,
 }: {
@@ -23,9 +28,22 @@ export function DatesStep({
   lodges: LodgeOption[];
   lodgeId: string | null;
   lodgesLoading: boolean;
+  lodgeScope: SettledLodgeOptionScope;
+  retryLodgeOptions: () => void;
   handleLodgeChange: (nextLodgeId: string | null) => void;
   selectedLodge: LodgeOption | null;
 }) {
+  // A successful non-empty list can still be in the short normalisation window
+  // before LodgeSelect chooses its first option. Keep the selector mounted in
+  // that window so it can make the choice, but do not mount the calendar until
+  // the choice has been validated against that same successful response.
+  const lodgeUniverseReady =
+    !lodgesLoading &&
+    lodgeScope.kind !== "failed" &&
+    lodgeScope.kind !== "forbidden" &&
+    lodgeScope.kind !== "empty" &&
+    lodges.length > 0;
+
   return (
     <Card>
       <CardHeader>
@@ -38,25 +56,47 @@ export function DatesStep({
           </p>
         ) : (
           <>
-            <div className="max-w-xs">
+            {lodgeUniverseReady ? <div className="max-w-xs">
               <LodgeSelect
                 lodges={lodges}
                 value={lodgeId}
                 onChange={handleLodgeChange}
                 loading={lodgesLoading}
               />
-            </div>
-            {lodges.length > 1 && selectedLodge?.travelNote ? (
+            </div> : null}
+            {lodgeScope.kind === "loading" ? (
+              <p className="text-sm text-muted-foreground">Loading lodge options...</p>
+            ) : lodgeScope.kind === "failed" ? (
+              <Alert variant="error" title="The lodge list could not be loaded">
+                <p className="mb-3">
+                  We cannot show dates until we know which lodge the booking is
+                  for. Nothing has been booked or charged.
+                </p>
+                <Button variant="outline" onClick={retryLodgeOptions}>
+                  Try again
+                </Button>
+              </Alert>
+            ) : lodgeScope.kind === "forbidden" ? (
+              <Alert variant="error" title="Lodge access could not be checked">
+                We cannot show dates or start a booking because your account
+                could not load the lodge list. Nothing has been booked or charged.
+              </Alert>
+            ) : lodgeScope.kind === "empty" ? (
+              <Alert variant="info" title="No active lodges">
+                Booking is unavailable until the club has an active lodge.
+              </Alert>
+            ) : null}
+            {lodgeScope.kind === "lodge" && lodges.length > 1 && selectedLodge?.travelNote ? (
               <p className="text-sm text-muted-foreground">
                 {selectedLodge.travelNote}
               </p>
             ) : null}
-            <BookingCalendar
+            {lodgeScope.kind === "lodge" ? <BookingCalendar
               onDateSelect={handleDateSelect}
               selectedCheckIn={checkIn}
               selectedCheckOut={checkOut}
-              lodgeId={lodgeId}
-            />
+              lodgeId={lodgeScope.lodgeId}
+            /> : null}
           </>
         )}
       </CardContent>

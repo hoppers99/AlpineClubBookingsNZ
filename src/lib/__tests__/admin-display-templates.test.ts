@@ -172,7 +172,9 @@ describe("GET /api/admin/display/preview (AC3 — read-only, built-ins only)", (
     const { GET } = await import("@/app/api/admin/display/preview/route");
     const res = await GET(
       await jsonRequest(
-        "http://localhost/api/admin/display/preview?templateKey=everyday-board",
+        // #2887: the preview no longer falls back to the club's default lodge —
+        // an admin previewing "the board" has to say whose board.
+        "http://localhost/api/admin/display/preview?templateKey=everyday-board&lodgeId=lodge-default",
         "GET"
       )
     );

@@ -23,9 +23,15 @@ vi.mock("@/components/confirm-dialog", () => ({
   useConfirm: () => ({ confirm: mockConfirm, confirmDialog: null }),
 }));
 vi.mock("@/components/lodge-select", () => ({
-  useLodgeOptions: () => ({ lodges: [], loading: false }),
+  useLodgeOptions: () => ({
+    lodges: [{ id: "lodge-1", name: "Lodge One" }],
+    loading: false,
+    failed: false,
+    forbidden: false,
+    reload: vi.fn(),
+  }),
   LodgeSelect: () => null,
-  initialLodgeIdFromLocation: () => null,
+  initialLodgeIdFromLocation: () => "lodge-1",
 }));
 
 import { RoomsBedsManager } from "@/components/admin/rooms-beds-manager";

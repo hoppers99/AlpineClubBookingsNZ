@@ -6,7 +6,7 @@ import { DISPLAY_CONDITION_NAMES } from "@/lib/lodge-display/conditions";
 // reference. Read-only, admin-guarded, GET-only; it builds a lodge's
 // DisplayState and evaluates EVERY registry condition against it. These tests
 // pin the guard, the "every condition returns a boolean" contract, and lodge
-// resolution (explicit id honoured, default fallback). buildDisplayState and
+// resolution (an explicit id is required). buildDisplayState and
 // the lodge lookups are mocked; the conditions registry is the REAL one so the
 // truth vector is genuinely computed from the payload.
 
@@ -73,7 +73,7 @@ describe("GET /api/admin/display/reference/conditions (LTV-034)", () => {
       "@/app/api/admin/display/reference/conditions/route"
     );
     const res = await GET(
-      await getRequest("http://localhost/api/admin/display/reference/conditions")
+      await getRequest("http://localhost/api/admin/display/reference/conditions?lodgeId=lodge-default")
     );
     expect(res.status).toBe(401);
     expect(mockBuildDisplayState).not.toHaveBeenCalled();
@@ -84,7 +84,7 @@ describe("GET /api/admin/display/reference/conditions (LTV-034)", () => {
       "@/app/api/admin/display/reference/conditions/route"
     );
     const res = await GET(
-      await getRequest("http://localhost/api/admin/display/reference/conditions")
+      await getRequest("http://localhost/api/admin/display/reference/conditions?lodgeId=lodge-default")
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -109,7 +109,7 @@ describe("GET /api/admin/display/reference/conditions (LTV-034)", () => {
       "@/app/api/admin/display/reference/conditions/route"
     );
     const res = await GET(
-      await getRequest("http://localhost/api/admin/display/reference/conditions")
+      await getRequest("http://localhost/api/admin/display/reference/conditions?lodgeId=lodge-default")
     );
     const body = await res.json();
     const byName = new Map<string, boolean>(
@@ -138,17 +138,16 @@ describe("GET /api/admin/display/reference/conditions (LTV-034)", () => {
     expect(body.lodgeName).toBe("Silverpeak Lodge");
   });
 
-  it("falls back to the default lodge when lodgeId is omitted", async () => {
+  it("fails closed when lodgeId is omitted", async () => {
     const { GET } = await import(
       "@/app/api/admin/display/reference/conditions/route"
     );
     const res = await GET(
       await getRequest("http://localhost/api/admin/display/reference/conditions")
     );
-    expect(mockGetDefaultLodgeId).toHaveBeenCalled();
-    expect(mockBuildDisplayState).toHaveBeenCalledWith("lodge-default");
-    const body = await res.json();
-    expect(body.lodgeId).toBe("lodge-default");
+    expect(res.status).toBe(400);
+    expect(mockGetDefaultLodgeId).not.toHaveBeenCalled();
+    expect(mockBuildDisplayState).not.toHaveBeenCalled();
   });
 
   it("404s when the lodge cannot be built", async () => {
@@ -157,7 +156,7 @@ describe("GET /api/admin/display/reference/conditions (LTV-034)", () => {
       "@/app/api/admin/display/reference/conditions/route"
     );
     const res = await GET(
-      await getRequest("http://localhost/api/admin/display/reference/conditions")
+      await getRequest("http://localhost/api/admin/display/reference/conditions?lodgeId=lodge-default")
     );
     expect(res.status).toBe(404);
   });

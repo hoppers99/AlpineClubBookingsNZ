@@ -50,6 +50,7 @@ const {
     },
     lodge: {
       findFirst: vi.fn(),
+      findUnique: vi.fn(),
     },
     $executeRaw: vi.fn(),
     $transaction: vi.fn(),
@@ -107,6 +108,10 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     mockPrisma.choreAssignment.deleteMany.mockResolvedValue({ count: 0 });
     mockPrisma.memberLodgeAccess.findMany.mockResolvedValue([]);
     mockPrisma.lodge.findFirst.mockResolvedValue({ id: "default-lodge" });
+    mockPrisma.lodge.findUnique.mockResolvedValue({
+      id: "default-lodge",
+      active: true,
+    });
     mockPrisma.$transaction.mockImplementation(
       async (callback: (tx: typeof mockPrisma) => Promise<unknown>) =>
         callback(mockPrisma)
@@ -137,6 +142,7 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
           memberId: "member-1",
           startDate: "2026-07-10",
           endDate: "2026-07-17",
+          lodgeId: "default-lodge",
         }),
       }) as any
     );

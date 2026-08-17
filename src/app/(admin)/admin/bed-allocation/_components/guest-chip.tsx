@@ -19,6 +19,7 @@ import {
 import { cn } from "@/lib/utils";
 import { getBookingAccent } from "./booking-accent";
 import {
+  type AllocationLockReason,
   type BedOption,
   type BedOptionGroup,
   type BucketGuestGroup,
@@ -40,6 +41,9 @@ interface GuestChipProps {
   // Tri-state (#2065): `undefined` while the client session resolves; the
   // `!canEdit` idiom treats that as disabled, so no truthy default here.
   canEdit: boolean | undefined;
+  // #2701: set while the board is club-wide. Disables this guest's three bed
+  // choices — Select bed, Allocate, Assign range… — and the drag handle.
+  lockReason?: AllocationLockReason;
 }
 
 export function GuestChip({
@@ -53,12 +57,17 @@ export function GuestChip({
   pending,
   highlighted,
   canEdit,
+  lockReason,
 }: GuestChipProps) {
+  const locked = lockReason !== undefined;
+  // The view-only reason wins when both apply: it is the restriction the admin
+  // cannot resolve from this screen, and its own banner is already on the page.
+  const disabledReason = canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : lockReason;
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: bucketDraggableId(group.bookingGuestId),
       data: { type: "bucket-guest", bookingGuestId: group.bookingGuestId },
-      disabled: !canEdit,
+      disabled: !canEdit || locked,
     });
 
   const nightsLabel =
@@ -106,8 +115,8 @@ export function GuestChip({
         <button
           type="button"
           aria-label={`Drag ${group.guestName} to a bed`}
-          disabled={!canEdit}
-          title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
+          disabled={!canEdit || locked}
+          title={disabledReason}
           className="mt-0.5 cursor-grab touch-none rounded p-1 text-muted-foreground hover:bg-accent active:cursor-grabbing"
           {...attributes}
           {...listeners}
@@ -141,9 +150,12 @@ export function GuestChip({
         <Select
           value={selectedBedId || "none"}
           onValueChange={onSelectBed}
-          disabled={!canEdit}
+          disabled={!canEdit || locked}
         >
-          <SelectTrigger className="w-44">
+          {/* The trigger carried no title before #2701; it gains one only for
+              the club-wide lock, so a view-only admin's tooltips are unchanged
+              and stay on the buttons that already explain that restriction. */}
+          <SelectTrigger className="w-44" title={lockReason}>
             <SelectValue placeholder="Select bed">
               {selectedBed ? selectedBed.label : undefined}
             </SelectValue>
@@ -166,9 +178,13 @@ export function GuestChip({
           size="sm"
           onClick={onAllocate}
           disabled={
-            !canEdit || pending || !selectedBedId || selectedBedId === "none"
+            !canEdit ||
+            locked ||
+            pending ||
+            !selectedBedId ||
+            selectedBedId === "none"
           }
-          title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
+          title={disabledReason}
         >
           Allocate
         </Button>
@@ -176,11 +192,10 @@ export function GuestChip({
           size="sm"
           variant="outline"
           onClick={onAssignRange}
-          disabled={!canEdit || pending}
+          disabled={!canEdit || locked || pending}
           title={
-            canEdit === false
-              ? ADMIN_VIEW_ONLY_ACTION_REASON
-              : "Assign this guest to one bed across a range of any length"
+            disabledReason ??
+            "Assign this guest to one bed across a range of any length"
           }
         >
           Assign range…

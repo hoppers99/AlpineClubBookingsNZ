@@ -4,8 +4,9 @@
  * The bed-allocation board's own half of the #2678 fix.
  *
  * WHY THIS FILE EXISTS AT ALL. `bed-allocation-get-lodge-validation.test.ts`
- * proves the API derives the board's lodge from `bookingId` and ignores any
- * `lodgeId` beside it. That proof is worth nothing to the board unless the board
+ * proves the API derives the board's lodge from `bookingId` and (since #2701)
+ * refuses a `lodgeId` that contradicts it. That proof is worth nothing to the
+ * board unless the board
  * actually SENDS `bookingId` on its own fetch — and nothing pinned that. The
  * whole of #2678's fix for the four board bed pickers (bucket "Select bed", the
  * allocation chip's "Move to bed", drag-and-drop onto a cell, and
@@ -14,7 +15,8 @@
  * server-side test still passes while the board goes club-wide again.
  *
  * AND THE FLIP SIDE, which is the regression the fix itself created. Because the
- * API now ignores a `lodgeId` sent beside a `bookingId`, an admin who arrived on
+ * API does not take its scope from a `lodgeId` sent beside a `bookingId`, an
+ * admin who arrived on
  * the deep link and then chose a DIFFERENT lodge from the board's own selector
  * would have been served the booking's lodge under a selector reading the lodge
  * they picked. The board answers that by letting the focus go on a deliberate
@@ -67,26 +69,50 @@ vi.mock("@/components/club-identity-provider", () => ({
  * A LodgeSelect that fires nothing by itself. The real one normalises through
  * `onChange` in an effect, which is exactly the call this test has to be able to
  * tell apart from an admin's, so the two are driven explicitly here instead.
+ *
+ * Partially mocked (#2701): the board now reads the module's own `ALL_LODGES`
+ * constant, so a factory that replaced the whole module would break at import
+ * rather than at an assertion.
+ *
+ * Both buttons pass an explicit SOURCE (PR #2885 review). They used to pass
+ * none and rely on the page defaulting to `"user"`, which was fail-open — a
+ * caller that forgets the argument silently claims the admin browsed away from
+ * the focused booking. The page now requires it, so the mock states which it
+ * is, which is also what the real component does.
+ *
+ * The lodge list here is EMPTY, because `onChange(null)` is only something the
+ * real `LodgeSelect` ever reports when it has no options left. With two lodges
+ * in the list the old version of this mock was driving a state the component
+ * cannot produce, so the test that used it was pinning nothing reachable.
  */
-vi.mock("@/components/lodge-select", () => ({
-  LodgeSelect: ({ onChange }: { onChange: (value: string | null) => void }) => (
-    <div>
-      <button type="button" onClick={() => onChange("lodge-2")}>
-        Pick lodge two
-      </button>
-      <button type="button" onClick={() => onChange(null)}>
-        Report no lodge
-      </button>
-    </div>
-  ),
-  useLodgeOptions: () => ({
-    lodges: [
-      { id: "lodge-1", name: "Test Lodge" },
-      { id: "lodge-2", name: "Other Lodge" },
-    ],
-    loading: false,
-  }),
-}));
+vi.mock("@/components/lodge-select", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/components/lodge-select")>();
+  return {
+    ...actual,
+    LodgeSelect: ({
+      onChange,
+    }: {
+      onChange: (value: string | null, source: "user" | "auto") => void;
+    }) => (
+      <div>
+        <button type="button" onClick={() => onChange("lodge-2", "user")}>
+          Pick lodge two
+        </button>
+        <button type="button" onClick={() => onChange(null, "auto")}>
+          Report no lodge
+        </button>
+      </div>
+    ),
+    useLodgeOptions: () => ({
+      lodges: [],
+      loading: false,
+      failed: true,
+      forbidden: false,
+      reload: vi.fn(),
+    }),
+  };
+});
 
 vi.mock("@/components/admin/bed-allocation-removal-dialog", () => ({
   bedAllocationRemovalCategoryForAnchor: () => "MANUAL_DRAFT",
@@ -156,6 +182,11 @@ function buildPayload(): DashboardPayload {
     suggestedUnallocatedGuestNights: [],
     warnings: [],
     focusedBooking: null,
+    // #2701: the board adopts the lodge the server says it scoped to. This
+    // fixture is served for every request, including the ones made after a
+    // deliberate lodge change, so it must agree with the deep link's own lodge
+    // or the adoption would fight the assertions below.
+    scopedLodgeId: "lodge-1",
   } as unknown as DashboardPayload;
 }
 
@@ -218,11 +249,12 @@ describe("bed allocation board — booking scope on the deep link (#2678)", () =
     render(<AdminBedAllocationPage />);
     await screen.findByTestId("room-table");
 
-    // `LodgeSelect` calls `onChange(null)` by itself when `/api/admin/lodges`
-    // fails and it is left with no options — the outage state, not a choice.
-    // Losing the focus there would be the worst possible moment for it: the
-    // server's derivation from `bookingId` is the only thing then keeping the
-    // board off a club-wide read.
+    // `LodgeSelect` calls `onChange(null, "auto")` by itself when
+    // `/api/admin/lodges` fails and it is left with no options — the outage
+    // state this mock now models, not a choice. Losing the focus there would be
+    // the worst possible moment for it: the server's derivation from
+    // `bookingId` is the only thing then keeping the board off a club-wide
+    // read.
     fireEvent.click(screen.getByRole("button", { name: "Report no lodge" }));
 
     await waitFor(() => {

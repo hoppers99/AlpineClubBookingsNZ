@@ -195,6 +195,10 @@ export async function copyBookingToDraft({
     effectiveMemberId: source.memberId,
     isOnBehalf: true,
     sessionUserId: adminMemberId,
+    // A copy stays at the source booking's authoritative lodge. Omitting this
+    // used the create service's legacy default-lodge fallback and silently
+    // moved a copied lodge-B booking to lodge A (#2701 / INV-CAP-034).
+    lodgeId: source.lodgeId,
     checkIn: newCheckIn,
     checkOut: newCheckOut,
     guests,

@@ -296,12 +296,15 @@ no-`lodgeId` cross-lodge mode; editing an existing booking's requested room
 reads the booking-scoped `/api/bookings/[id]/requested-room/options` instead,
 #2664),
 quote, promo validation (`/api/promo-codes/validate`), and booking
-create/draft/waitlist calls. `POST /api/bookings` accepts a validated
-optional `lodgeId`; the create services (`createDraftBooking`,
+create/draft/waitlist calls. Since #2701, `POST /api/bookings` refuses an
+omitted `lodgeId` with `BOOKING_LODGE_REQUIRED` before consulting the default
+lodge; the create services (`createDraftBooking`,
 `createConfirmedBooking`, `createWaitlistedBooking`) take `lodgeId` in
 their shared input, and `resolveBookingLodgeId` enforces the scoping
 contract (active lodge; a requested room must belong to the booking's
-lodge — `BookingLodgeError` → 400). The per-booking max-guests check uses
+lodge — `BookingLodgeError` → 400). Internal production callers name the
+authoritative lodge too: copied bookings keep the source lodge and group-join
+children inherit the organiser's lodge. The per-booking max-guests check uses
 the chosen lodge's capacity. Emails: `prepareEmailMessage`/`sendEmail`
 accept the booking's `lodgeId` and `loadEmailMessageSettingsForLodge`
 overlays the lodge's name, travel note, and door code onto the settings —

@@ -95,6 +95,14 @@ export default function DisplayBuilderPage() {
           .filter((l) => l.active !== false)
           .map((l) => ({ id: l.id, name: l.name }))
       );
+    } else {
+      setLodges([]);
+      setState({
+        status: "error",
+        message:
+          "Could not load the lodge list. The builder is stopped because a preview must have an explicit lodge.",
+      });
+      return;
     }
 
     const templateId = readTemplateId();
@@ -166,8 +174,11 @@ export default function DisplayBuilderPage() {
       {state.status === "loading" && <p className="text-muted-foreground text-sm">Loading…</p>}
 
       {state.status === "error" && (
-        <div className="border-destructive/40 bg-destructive/10 text-destructive rounded-md border p-3 text-sm">
-          {state.message}
+        <div className="border-destructive/40 bg-destructive/10 text-destructive space-y-3 rounded-md border p-3 text-sm">
+          <p>{state.message}</p>
+          <Button type="button" variant="outline" onClick={() => void load()}>
+            Try again
+          </Button>
         </div>
       )}
 

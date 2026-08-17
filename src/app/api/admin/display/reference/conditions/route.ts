@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
-import { prisma } from "@/lib/prisma";
 import { buildDisplayState } from "@/lib/lodge-display-state";
 import {
   evaluateDisplayCondition,
   listDisplayConditions,
 } from "@/lib/lodge-display/conditions";
-import { getDefaultLodgeId } from "@/lib/lodges";
 
 // Live conditions status for the LTV-034 Conditions reference (ADR-003 §3): the
 // server side of the read-only reference screen. It builds the chosen lodge's
@@ -25,8 +23,10 @@ export async function GET(req: NextRequest) {
   const guard = await requireAdmin();
   if (!guard.ok) return guard.response;
 
-  const lodgeId =
-    req.nextUrl.searchParams.get("lodgeId") ?? (await getDefaultLodgeId(prisma));
+  const lodgeId = req.nextUrl.searchParams.get("lodgeId");
+  if (!lodgeId) {
+    return NextResponse.json({ error: "lodgeId is required" }, { status: 400 });
+  }
   const state = await buildDisplayState(lodgeId);
   if (!state) {
     return NextResponse.json({ error: "Lodge not found" }, { status: 404 });

@@ -77,10 +77,24 @@ export async function GET(req: NextRequest) {
       )?.lodgeId
     : undefined;
 
-  const lodgeId = await resolveOptionalActiveLodgeId(
-    prisma,
-    assignmentLodgeId ?? searchParams.get("lodgeId") ?? undefined,
-  );
+  /*
+    #2887 review (F3): the last hut-leader door that defaulted. Passing
+    `undefined` here reaches `getDefaultLodgeId`, so a caller that named no
+    lodge was OFFERED the club default's beds. Not reachable today — both call
+    sites pass a concrete lodge and the writes re-validate against the locked
+    lodge — but it is an offer-vs-write gap, and the argument for closing it is
+    the one `POST /api/bookings` already makes: one gate instead of ten, so the
+    eleventh screen somebody writes next year fails loudly here rather than
+    quietly offering the wrong lodge's beds.
+  */
+  const requestedLodgeId = assignmentLodgeId ?? searchParams.get("lodgeId");
+  if (!requestedLodgeId) {
+    return NextResponse.json(
+      { error: "A valid lodgeId is required." },
+      { status: 400 },
+    );
+  }
+  const lodgeId = await resolveOptionalActiveLodgeId(prisma, requestedLodgeId);
   if (!lodgeId) {
     return NextResponse.json(
       { error: "Lodge not found or not active" },

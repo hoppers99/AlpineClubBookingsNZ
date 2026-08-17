@@ -288,13 +288,76 @@ type BookingCreatePostOptions = NonNullable<
  * merged so an existing scenario header is preserved; only `x-forwarded-for`
  * is deliberately replaced by the registered isolation identity.
  */
-export function postBookingCreate(
+/**
+ * Resolve the lodge this session may book, for a create that did not name one.
+ *
+ * #2701: `POST /api/bookings` no longer fills a missing `lodgeId` with the
+ * club's default lodge, because on a CREATE that is how somebody ends up paid
+ * up at a lodge they were never shown. Every real client now names its lodge,
+ * so these direct creates do too — otherwise the census helper would be the one
+ * caller in the world still exercising a signature the product no longer emits.
+ *
+ * The member-visible endpoint is used deliberately: it returns exactly the
+ * lodges THIS session may book, so a multi-lodge fixture resolves to the
+ * booker's own eligible lodge rather than to whichever row happens to be
+ * marked default.
+ */
+export async function resolveBookableLodgeId(
+  request: APIRequestContext,
+): Promise<string | null> {
+  const response = await request.get("/api/lodges");
+
+  if (!response.ok()) {
+    // `null`, NOT a throw, when the caller has no session. Two specs post here
+    // deliberately unauthenticated — the booking-create rate limiter runs
+    // BEFORE authentication, so proving retry-key isolation requires reaching
+    // the route with no cookies at all. Throwing turned "the route refused
+    // you", which is the measurement, into "the harness exploded", which is
+    // not: the probe never reached `POST /api/bookings` and the shared counter
+    // never moved. A session that may not list lodges cannot create a booking
+    // either, so skipping the fill costs nothing and the create refuses on its
+    // own terms.
+    //
+    // `status()` is read only on this failure path, so a happy-path response
+    // double need not implement it.
+    const status = response.status();
+    if (status === 401 || status === 403) return null;
+    throw new Error(
+      `resolve bookable lodge for a booking create (${status})`,
+    );
+  }
+  const body = (await response.json()) as { lodges?: Array<{ id: string }> };
+  const lodgeId = body.lodges?.[0]?.id;
+  if (!lodgeId) {
+    // Authenticated and still no lodge is a broken fixture, not a refusal.
+    throw new Error(
+      "resolve bookable lodge for a booking create: this session may book no lodge",
+    );
+  }
+  return lodgeId;
+}
+
+export async function postBookingCreate(
   request: APIRequestContext,
   isolation: BookingCreateIsolation,
   options: BookingCreatePostOptions,
 ): Promise<APIResponse> {
+  // A create that already names its lodge is passed through untouched; only the
+  // blank is filled, and it is filled HERE rather than by the server (#2701).
+  const data = options.data as Record<string, unknown> | undefined;
+  const needsLodge =
+    data !== undefined &&
+    typeof data === "object" &&
+    !Array.isArray(data) &&
+    data.lodgeId === undefined;
+  const resolvedLodgeId = needsLodge
+    ? await resolveBookableLodgeId(request)
+    : null;
+  const filled = needsLodge && resolvedLodgeId !== null;
+
   return request.post("/api/bookings", {
     ...options,
+    ...(filled ? { data: { ...data, lodgeId: resolvedLodgeId } } : {}),
     headers: {
       ...options.headers,
       ...isolation.headers,

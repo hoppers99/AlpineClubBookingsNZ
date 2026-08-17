@@ -96,7 +96,13 @@ describe("Lodges page — address field (E3 #1929)", () => {
 
     render(<AdminLodgesPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Add lodge/i }));
+    // #2887: Add lodge is held closed until the lodge list has actually
+    // answered. Creating one against a list that failed to load is how a
+    // duplicate second "first lodge" got made, so the button is disabled while
+    // `loading` and after an error, and the test has to wait like a user does.
+    const addLodge = await screen.findByRole("button", { name: /Add lodge/i });
+    await waitFor(() => expect(addLodge).toBeEnabled());
+    fireEvent.click(addLodge);
 
     const addressField = screen.getByLabelText("Address");
     expect(addressField).toBeInTheDocument();

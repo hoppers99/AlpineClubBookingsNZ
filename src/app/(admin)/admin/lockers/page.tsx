@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Pencil, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -36,6 +36,8 @@ import {
   initialLodgeIdFromLocation,
   useLodgeOptions,
 } from "@/components/lodge-select";
+import { LodgeScopeStatusNotice } from "@/components/admin/lodge-options-status";
+import { deriveSettledLodgeOptionScope } from "@/lib/lodge-option-scope";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
@@ -97,22 +99,67 @@ export default function LockersPage() {
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   // Lodge context for the page; LodgeSelect renders nothing (and reports the
   // sole lodge) while fewer than two lodges exist (ADR-002).
-  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
+  const {
+    lodges,
+    loading: lodgesLoading,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+    reload: reloadLodgeOptions,
+  } = useLodgeOptions("admin");
   // Hub links (ADR-003) land pre-filtered; read synchronously so the first
   // fetch is already lodge-filtered.
   const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation);
   const [bulkCount, setBulkCount] = useState("");
   const [bulkNamePrefix, setBulkNamePrefix] = useState("Locker");
   const [bulkSaving, setBulkSaving] = useState(false);
+  /*
+    #2701: a FAILED lodge list is not "a club with no lodges", but until now the
+    two were the same empty array here. LodgeSelect renders nothing below two
+    options (ADR-002) and normalises the selection to null, and an omitted
+    lodgeId is resolved server-side to the club's DEFAULT lodge — so a lodge
+    nobody chose would get its lockers listed, renamed, bulk-created and
+    allocated to members, with no lodge named anywhere on screen. While that is
+    true this page does no lodge-scoped work at all.
+
+    A `?lodgeId=` hub link is retained through failure/retry, but remains inert
+    until a successful lodge response validates that id. Loading, failure, 403,
+    and a successful empty response are all distinct stopped states.
+  */
+  const lodgeScope = deriveSettledLodgeOptionScope({
+    lodges,
+    selectedLodgeId: lodgeId,
+    loading: lodgesLoading,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+  });
+  const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
+  const activeScopeRef = useRef<string | null>(scopedLodgeId);
+  /*
+    #2887: ownership follows the COMMIT, not the render, and this must stay a
+    LAYOUT effect - a passive one is flushed after paint, leaving a window in
+    which a late lodge-A response still reads A as current. Full reasoning and
+    both mutation proofs live in one place:
+    `src/lib/__tests__/lodge-scope-committed-ownership.test.tsx`.
+  */
+  useLayoutEffect(() => {
+    activeScopeRef.current = scopedLodgeId;
+  }, [scopedLodgeId]);
+  const lodgeScopeReady = scopedLodgeId !== null;
 
   const loadData = useCallback(async (signal?: AbortSignal) => {
+    // #2701: no lodge, no read. Clear what the pre-failure unscoped request
+    // put on screen too — those are some other lodge's lockers.
+    if (!scopedLodgeId) {
+      setMembers([]);
+      setLockers([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
       const response = await fetch(
-        lodgeId
-          ? `/api/admin/lockers?lodgeId=${encodeURIComponent(lodgeId)}`
-          : "/api/admin/lockers",
+        `/api/admin/lockers?lodgeId=${encodeURIComponent(scopedLodgeId)}`,
         { signal },
       );
       const body = await response.json();
@@ -136,7 +183,7 @@ export default function LockersPage() {
     } finally {
       setLoading(false);
     }
-  }, [lodgeId]);
+  }, [scopedLodgeId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -146,6 +193,8 @@ export default function LockersPage() {
 
   async function handleFormSubmit(event: React.FormEvent) {
     event.preventDefault();
+    if (!scopedLodgeId) return;
+    const requestedScope = scopedLodgeId;
     setSaving(true);
     setError("");
 
@@ -156,7 +205,7 @@ export default function LockersPage() {
           allocatedToMemberId === "UNALLOCATED" ? null : allocatedToMemberId,
         // Lodge is set at creation from the page's lodge context and cannot
         // be changed by an update.
-        ...(editingLockerId ? {} : { lodgeId: lodgeId ?? undefined }),
+        ...(editingLockerId ? {} : { lodgeId: scopedLodgeId }),
       };
       const response = editingLockerId
         ? await fetch(`/api/admin/lockers/${editingLockerId}`, {
@@ -184,6 +233,7 @@ export default function LockersPage() {
               : "Failed to create locker"),
         );
       }
+      if (activeScopeRef.current !== requestedScope) return;
 
       if (editingLockerId) {
         setLockers((previous) =>
@@ -213,6 +263,7 @@ export default function LockersPage() {
   }
 
   function beginEdit(locker: LockerRecord) {
+    if (!lodgeScopeReady) return;
     setEditingLockerId(locker.id);
     setName(locker.name);
     setAllocatedToMemberId(locker.allocatedToMemberId ?? "UNALLOCATED");
@@ -228,7 +279,18 @@ export default function LockersPage() {
     setError("");
   }
 
+  function handleLodgeChange(nextLodgeId: string | null) {
+    activeScopeRef.current = nextLodgeId;
+    setLodgeId(nextLodgeId);
+    setMembers([]);
+    setLockers([]);
+    setLoading(true);
+    resetForm();
+  }
+
   async function deleteLocker(locker: LockerRecord) {
+    if (!lodgeScopeReady) return;
+    const requestedScope = scopedLodgeId;
     if (
       !(await confirm({
         title: `Delete locker ${locker.name}?`,
@@ -254,6 +316,7 @@ export default function LockersPage() {
         }
         throw new Error(body?.error || "Failed to delete locker");
       }
+      if (activeScopeRef.current !== requestedScope) return;
 
       setLockers((previous) =>
         previous.filter((current) => current.id !== locker.id),
@@ -273,6 +336,8 @@ export default function LockersPage() {
   }
 
   async function bulkCreateLockers() {
+    if (!scopedLodgeId) return;
+    const requestedScope = scopedLodgeId;
     const count = Number(bulkCount);
     setBulkSaving(true);
     setError("");
@@ -283,7 +348,7 @@ export default function LockersPage() {
         body: JSON.stringify({
           count,
           namePrefix: bulkNamePrefix.trim() || undefined,
-          ...(lodgeId ? { lodgeId } : {}),
+          lodgeId: scopedLodgeId,
         }),
       });
       const body = await response.json();
@@ -294,6 +359,7 @@ export default function LockersPage() {
         }
         throw new Error(body.error || "Failed to create lockers");
       }
+      if (activeScopeRef.current !== requestedScope) return;
       setBulkCount("");
       await loadData();
     } catch (bulkError) {
@@ -363,20 +429,56 @@ export default function LockersPage() {
     </AdminViewOnlySectionBanner>
   );
 
-  return (
-    <div>
-      {viewOnlyBanner}
-      <div className="space-y-6">
+  /*
+    #2701: heading, scope notice and selector are the only things that mean
+    anything with no lodge resolved, so both returns render them.
+
+    An EARLY RETURN, not a ternary around the cards: the locker list carries the
+    shared dataset Reset, and `dataset-reset-contract` requires that control to
+    be unconditional within the view showing the dataset. Two pages, and the one
+    with the table always has its Reset.
+  */
+  const scopeChrome = (
+    <>
       {confirmDialog}
       <AdminPageHeader
         title="Lockers"
         description="Create lockers and optionally allocate them to members."
       />
 
-      <div className="max-w-xs">
-        <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} loading={lodgesLoading} />
-      </div>
+      {/* #2701: say the lodge list failed, above the lodge-scoped content it
+          silently replaced with the default lodge's. */}
+      <LodgeScopeStatusNotice
+        scope={lodgeScope}
+        onRetry={reloadLodgeOptions}
+        what="lockers and their allocations"
+      />
 
+      <div className="max-w-xs">
+        <LodgeSelect lodges={lodges} value={lodgeId} onChange={handleLodgeChange} loading={lodgesLoading}
+            // #2701: an empty list from a FAILED request is not evidence the
+            // caller's lodge is gone, so the ADR-002 normaliser must not wipe a
+            // ?lodgeId= hub link (ADR-003) while the outage lasts.
+            deferDefaultSelection={lodgeOptionsFailed || lodgeOptionsForbidden}
+          />
+      </div>
+    </>
+  );
+
+  if (!lodgeScopeReady) {
+    return (
+      <div>
+        {viewOnlyBanner}
+        <div className="space-y-6">{scopeChrome}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {viewOnlyBanner}
+      <div className="space-y-6">
+      {scopeChrome}
       <Card>
         <CardHeader>
           <CardTitle>{editingLockerId ? "Edit Locker" : "New Locker"}</CardTitle>
@@ -398,6 +500,8 @@ export default function LockersPage() {
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 required
+                // #2701: nothing here is safe to fill in while the lodge the
+                // locker would be created against is unknown.
                 disabled={!canEdit}
                 {...lockerNameHint.fieldProps}
               />
@@ -496,6 +600,8 @@ export default function LockersPage() {
                 max={100}
                 value={bulkCount}
                 onChange={(event) => setBulkCount(event.target.value)}
+                // #2701: a bulk create with no lodgeId seeds the DEFAULT
+                // lodge — up to 100 lockers on the wrong property.
                 disabled={!canEdit}
                 {...bulkCountHint.fieldProps}
               />
@@ -523,7 +629,12 @@ export default function LockersPage() {
                 describeReason={false}
                 type="button"
                 onClick={() => void bulkCreateLockers()}
-                disabled={bulkSaving || !bulkCount || Number(bulkCount) < 1}
+                disabled={
+                  bulkSaving ||
+                  !bulkCount ||
+                  Number(bulkCount) < 1 ||
+                  false
+                }
                 className="w-full sm:w-auto"
               >
                 {bulkSaving ? "Creating..." : "Create Lockers"}

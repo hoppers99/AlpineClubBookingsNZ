@@ -5,6 +5,9 @@ const mocks = vi.hoisted(() => ({
   prisma: {
     lodge: {
       findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
+      // #2887: a named lodgeId is now resolved and checked for `active`
+      // instead of being taken on trust or defaulted.
+      findUnique: vi.fn().mockResolvedValue({ id: "lodge-1", active: true }),
     },
     promoCode: {
       findUnique: vi.fn(),
@@ -62,6 +65,16 @@ function request(body: Record<string, unknown>) {
   });
 }
 
+/**
+ * #2887: a working bee event is lodge-scoped, so the validate route now refuses
+ * a `workPartyEventId` with no `lodgeId` rather than pricing it against the
+ * club's default lodge. Cases that mean to reach the event logic have to say
+ * which lodge; the case that omits it deliberately is below.
+ */
+function workPartyRequest(body: Record<string, unknown>) {
+  return request({ lodgeId: "lodge-1", ...body });
+}
+
 const baseGuests = [
   { ageTier: "ADULT", isMember: true, memberId: "member-1" },
 ];
@@ -93,7 +106,7 @@ describe("POST /api/promo-codes/validate - work party events", () => {
 
   it("rejects a request with both a promo code and a work party event", async () => {
     const res = await POST(
-      request({
+      workPartyRequest({
         code: "SAVE10",
         workPartyEventId: "event-1",
         checkIn: "2026-07-10",
@@ -117,6 +130,24 @@ describe("POST /api/promo-codes/validate - work party events", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toBe("Invalid input");
+  });
+
+  it("refuses a work party event with no lodge rather than pricing it at the default lodge (#2887)", async () => {
+    // Without this the route fell through to `lodge.findFirst`, so a working
+    // bee at Lodge B could discount a booking priced at Lodge A. The refusal
+    // has to happen before the event is even looked up.
+    const res = await POST(
+      request({
+        workPartyEventId: "event-1",
+        checkIn: "2026-07-10",
+        checkOut: "2026-07-11",
+        guests: baseGuests,
+      })
+    );
+
+    expect(res.status).toBe(400);
+    expect(mocks.prisma.workPartyEvent.findUnique).not.toHaveBeenCalled();
+    expect(mocks.prisma.lodge.findFirst).not.toHaveBeenCalled();
   });
 
   it("resolves an active work party event and never exposes its internal code", async () => {
@@ -159,7 +190,7 @@ describe("POST /api/promo-codes/validate - work party events", () => {
     });
 
     const res = await POST(
-      request({
+      workPartyRequest({
         workPartyEventId: "event-1",
         checkIn: "2026-07-10",
         checkOut: "2026-07-11",
@@ -194,7 +225,7 @@ describe("POST /api/promo-codes/validate - work party events", () => {
     });
 
     const res = await POST(
-      request({
+      workPartyRequest({
         workPartyEventId: "event-1",
         checkIn: "2026-07-10",
         checkOut: "2026-07-11",

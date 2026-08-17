@@ -69,9 +69,9 @@ const wholeLodgeRequestSchema = z.object({
     .refine(noCrlf, "Notes cannot contain line breaks")
     .optional()
     .nullable(),
-  // Offered only when a second active lodge exists (ADR-002); omitted means the
-  // club's default lodge.
-  lodgeId: z.string().min(1).optional(),
+  // The control is visually hidden for one lodge, but the client still sends
+  // that sole explicit identity. Unknown scope must never become the default.
+  lodgeId: z.string().min(1),
 });
 
 /**
@@ -138,8 +138,8 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    // A provided lodgeId must name an ACTIVE lodge; omitted means the club's
-    // default lodge, stored as null. Lodge ACTIVITY is configuration, not
+    // The explicit lodgeId must name an ACTIVE lodge. Lodge ACTIVITY is
+    // configuration, not
     // occupancy — it tells the member nothing about who is staying.
     const lodgeId = await assertRequestedLodgeActive(parsed.data.lodgeId);
 

@@ -117,10 +117,10 @@ interface BaseInput {
   // pay it themselves; the organiser settles the group total. Only the
   // group-join path sets this; everyone else leaves it undefined (false).
   organiserSettled?: boolean;
-  // Lodge the booking is for (multi-lodge phase 8). Must name an active
-  // lodge when set; omitted resolves to the club's default lodge, so
-  // single-lodge callers keep working unchanged.
-  lodgeId?: string;
+  // Lodge the booking is for (multi-lodge phase 8). Required at every service
+  // boundary (INV-CAP-034); runtime validation also refuses unchecked JS/`any`
+  // callers before the permissive read resolver can choose a default lodge.
+  lodgeId: string;
   /**
    * Account credit, in integer cents, that the member asked to put towards this
    * booking.

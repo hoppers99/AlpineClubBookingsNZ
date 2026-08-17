@@ -23,9 +23,28 @@ vi.mock("@/lib/auth", () => ({
   auth: mocks.auth,
 }));
 
+/*
+  The route's `permission` option is FORWARDED to the mock. THIS FILE IS ALREADY
+  DONE for #2921 — the repo-wide sweep can skip it.
+
+  It used to be dropped — `evaluateRequireAdminMock()` was called with no
+  arguments — so every per-area gate in this file was inert: a test could not
+  tell a `lodge:view`-gated route from an ungated one, because the mock's
+  absent-options fallback checks `hasAdminPortalAccess`, which the real guard
+  has never had. Any other file mocking `@/lib/session-guards` this way has the
+  same hole, which is what #2921 sweeps.
+
+  Found while proving a lodge-list access change that has since been reverted to
+  #2925, and kept because the vacuity predates that change: the gates here are
+  only real with the options forwarded. Test-only; no product code depends on it.
+*/
 vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: async () =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(),
+  requireAdmin: async (options?: unknown) =>
+    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(
+      options as Parameters<
+        typeof import("./helpers/require-admin-mock").evaluateRequireAdminMock
+      >[0],
+    ),
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
 vi.mock("@/lib/public-content-revalidation", () => ({
@@ -59,7 +78,22 @@ import { GET, POST } from "@/app/api/admin/lodges/route";
 import { PATCH } from "@/app/api/admin/lodges/[id]/route";
 
 const adminSession = {
-  user: { id: "admin-1", role: "ADMIN", accessRoles: ["ADMIN"] },
+  user: {
+    id: "admin-1",
+    role: "ADMIN",
+    accessRoles: ["ADMIN"],
+    // Explicit since #2887: the GET now branches on `lodge:view` to decide
+    // whether the caller may see the door code, so the fixture has to say.
+    adminPermissionMatrix: {
+      overview: "edit",
+      bookings: "edit",
+      membership: "edit",
+      finance: "edit",
+      lodge: "edit",
+      content: "edit",
+      support: "edit",
+    },
+  },
 };
 const memberSession = {
   user: { id: "member-1", role: "USER", accessRoles: ["USER"] },
@@ -100,9 +134,14 @@ function installTransactionMock() {
       lodge: {
         create: mocks.lodgeCreate,
         update: mocks.lodgeUpdate,
+        findUnique: mocks.lodgeFindUnique,
         findFirst: mocks.lodgeFindFirst,
         findMany: mocks.lodgeFindMany,
+        count: mocks.lodgeCount,
       },
+      booking: { count: mocks.bookingCount },
+      hutLeaderAssignment: { count: mocks.hutLeaderAssignmentCount },
+      memberLodgeAccess: { count: mocks.memberLodgeAccessCount },
       auditLog: {
         create: mocks.auditLogCreate,
       },

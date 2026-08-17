@@ -18,6 +18,7 @@ import {
   BoardCell,
 } from "./board-cell";
 import {
+  type AllocationLockReason,
   type BedOption,
   type BedOptionGroup,
   type DashboardAllocation,
@@ -66,6 +67,9 @@ interface RoomTableProps {
   // `!canEdit` idiom below treats that as disabled (the neutral resolving
   // state), so it must never default to `true`.
   canEdit: boolean | undefined;
+  // #2701: set while the board is club-wide, disabling every cell as a drop
+  // target and every chip's move/remove/range action.
+  lockReason?: AllocationLockReason;
 }
 
 export function RoomTable({
@@ -84,6 +88,7 @@ export function RoomTable({
   activeDragDates = new Set(),
   registerScroller,
   canEdit,
+  lockReason,
 }: RoomTableProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const activeBeds = room.beds.filter((bed) => bed.active);
@@ -200,6 +205,7 @@ export function RoomTable({
                     highlightedBookingId={highlightedBookingId}
                     activeDragLane={activeDragDates.has(night)}
                     canEdit={canEdit}
+                    lockReason={lockReason}
                   />
                 );
               })}

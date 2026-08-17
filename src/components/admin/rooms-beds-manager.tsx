@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   BedDouble,
@@ -37,8 +37,10 @@ import {
   type BedTypeValue,
 } from "@/components/admin/bed-type-indicator";
 import { AdminViewOnlyNotice } from "@/components/admin/view-only-action";
+import { LodgeScopeStatusNotice } from "@/components/admin/lodge-options-status";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
 import type { LodgeCapacityStatus } from "@/lib/lodge-capacity";
+import { deriveSettledLodgeOptionScope } from "@/lib/lodge-option-scope";
 
 const BED_TYPE_OPTIONS: Array<{ value: BedTypeValue; label: string }> = [
   { value: "SINGLE", label: "Single" },
@@ -267,6 +269,10 @@ export function RoomsBedsManager({
   // sees a notice plus disabled inputs/buttons instead of writes that would 403.
   const canEdit = permissionMatrix.bookings === "edit";
   const [forbidden, setForbidden] = useState(false);
+  // #2701: renaming, deleting or bulk-creating rooms in a lodge nobody chose is
+  // the sharpest write risk on this page, so every write control gates on
+  // `canWrite` (role AND a known lodge) rather than on `canEdit` alone. Defined
+  // below, once the lodge list state exists.
   const [payload, setPayload] = useState<RoomsBedsPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
@@ -294,10 +300,43 @@ export function RoomsBedsManager({
   const loadSeqRef = useRef(0);
   // Lodge context for the page; LodgeSelect renders nothing (and reports the
   // sole lodge) while fewer than two lodges exist (ADR-002).
-  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
+  //
+  // #2701: a FAILED lodge list used to look exactly like a club with no lodges —
+  // the selector disappeared, the selection normalised to null, and the server
+  // resolved null to the club's DEFAULT lodge. Rooms were then renamed and
+  // deleted in a lodge that was never named on screen. The settled-scope gate
+  // stops loading, failure, 403, and successful-empty states alike.
+  const {
+    lodges,
+    loading: lodgesLoading,
+    failed: lodgesFailed,
+    forbidden: lodgesForbidden,
+    reload: reloadLodges,
+  } = useLodgeOptions("admin");
   // Hub links (ADR-003) land pre-filtered; read synchronously so the first
   // fetch is already lodge-filtered.
   const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation);
+  const lodgeScope = deriveSettledLodgeOptionScope({
+    lodges,
+    selectedLodgeId: lodgeId,
+    loading: lodgesLoading,
+    failed: lodgesFailed,
+    forbidden: lodgesForbidden,
+  });
+  const scopedLodgeId = lodgeScope.kind === "lodge" ? lodgeScope.lodgeId : null;
+  const activeScopeRef = useRef<string | null>(scopedLodgeId);
+  /*
+    #2887: ownership follows the COMMIT, not the render, and this must stay a
+    LAYOUT effect - a passive one is flushed after paint, leaving a window in
+    which a late lodge-A response still reads A as current. Full reasoning and
+    both mutation proofs live in one place:
+    `src/lib/__tests__/lodge-scope-committed-ownership.test.tsx`.
+  */
+  useLayoutEffect(() => {
+    activeScopeRef.current = scopedLodgeId;
+  }, [scopedLodgeId]);
+  const lodgeScopeReady = scopedLodgeId !== null;
+  const canWrite = canEdit && lodgeScopeReady;
   const [bulkRoomCount, setBulkRoomCount] = useState("");
   const [bulkBedsPerRoom, setBulkBedsPerRoom] = useState("4");
   const [bulkNamePrefix, setBulkNamePrefix] = useState("Room");
@@ -339,13 +378,22 @@ export function RoomsBedsManager({
   );
 
   const loadRooms = useCallback(async (signal?: AbortSignal, saved: SavedDraft = null) => {
+    // #2701: with no lodge list there is no lodge context to read against. An
+    // unfiltered request is NOT a safe fallback here — the route resolves a
+    // missing lodgeId to the club's default lodge, so this would quietly show
+    // (and then let the admin edit) one particular lodge's inventory while the
+    // page named no lodge at all. Stop instead, and let the notice explain.
+    if (!scopedLodgeId) {
+      setPayload(null);
+      setLoading(false);
+      return;
+    }
     const seq = ++loadSeqRef.current;
+    const requestedScope = scopedLodgeId;
     setLoading(true);
     try {
       const response = await fetch(
-        lodgeId
-          ? `/api/admin/bed-allocation/rooms?lodgeId=${encodeURIComponent(lodgeId)}`
-          : "/api/admin/bed-allocation/rooms",
+        `/api/admin/bed-allocation/rooms?lodgeId=${encodeURIComponent(scopedLodgeId)}`,
         {
           cache: "no-store",
           signal,
@@ -382,7 +430,10 @@ export function RoomsBedsManager({
       const data = (await response.json()) as RoomsBedsPayload;
       // A newer load started while this one was in flight — drop this (stale)
       // payload so it can't clobber the fresher list/drafts.
-      if (seq !== loadSeqRef.current) return;
+      if (
+        seq !== loadSeqRef.current ||
+        activeScopeRef.current !== requestedScope
+      ) return;
       setPayload(data);
       // Preserve every unsaved draft across the refetch; only the just-saved
       // row and untouched rows re-sync to server state (see mergeRoomEdits).
@@ -414,16 +465,26 @@ export function RoomsBedsManager({
         setLoading(false);
       }
     }
-  }, [lodgeId]);
+  }, [scopedLodgeId]);
 
   useEffect(() => {
     // Skip the bookings-area fetch entirely for a viewer who lacks bookings
     // access; the manager renders nothing for them (below).
     if (!canManageBeds) return;
+    // #2701: the first fetch goes out before the lodge list resolves, so a lodge
+    // list that then FAILS leaves the default lodge's inventory on screen under
+    // a page that names no lodge. Retire it — the effect's own cleanup has
+    // already aborted anything still in flight — so the notice is all that is
+    // left, rather than an editable-looking inventory nobody chose.
+    if (!scopedLodgeId) {
+      setPayload(null);
+      setLoading(false);
+      return;
+    }
     const controller = new AbortController();
     void loadRooms(controller.signal);
     return () => controller.abort();
-  }, [loadRooms, canManageBeds]);
+  }, [loadRooms, canManageBeds, scopedLodgeId]);
 
   // Returns true only when the request succeeded, so callers can clear an
   // add-form draft on success and preserve it on failure.
@@ -438,12 +499,15 @@ export function RoomsBedsManager({
     // render an inline message (bed create/save) also receive the text here.
     onError?: (message: string) => void,
   ): Promise<boolean> {
+    if (!scopedLodgeId) return false;
+    const requestedScope = scopedLodgeId;
     setSaving(label);
     try {
       const response = await request();
       if (!response.ok) {
         throw new Error(await readApiError(response, "Request failed"));
       }
+      if (activeScopeRef.current !== requestedScope) return false;
       toast.success(success);
       await loadRooms(undefined, saved);
       return true;
@@ -455,6 +519,19 @@ export function RoomsBedsManager({
     } finally {
       setSaving(null);
     }
+  }
+
+  function handleLodgeChange(nextLodgeId: string | null) {
+    activeScopeRef.current = nextLodgeId;
+    loadSeqRef.current += 1;
+    setLodgeId(nextLodgeId);
+    setPayload(null);
+    setRoomEdits({});
+    setBedDrafts({});
+    setBedEdits({});
+    setDeleteErrors({});
+    setBedFormErrors({});
+    setBedEditErrors({});
   }
 
   function updateRoomEdit(roomId: string, patch: Partial<RoomDraft>) {
@@ -516,7 +593,7 @@ export function RoomsBedsManager({
             active: roomDraft.active,
             notes: roomDraft.notes || null,
             // Lodge is set at creation from the page's lodge context.
-            ...(lodgeId ? { lodgeId } : {}),
+            lodgeId: scopedLodgeId,
           }),
         }),
       "Room created",
@@ -660,6 +737,7 @@ export function RoomsBedsManager({
   // message itself and stores it per room. The Active toggle stays visible as
   // the steered "deactivate instead" alternative.
   async function deleteRoom(roomId: string) {
+    if (!lodgeScopeReady) return;
     if (
       !(await confirm({
         title: "Delete this room?",
@@ -708,7 +786,7 @@ export function RoomsBedsManager({
             roomCount,
             bedsPerRoom,
             namePrefix: bulkNamePrefix.trim() || undefined,
-            ...(lodgeId ? { lodgeId } : {}),
+            lodgeId: scopedLodgeId,
           }),
         }),
       `Created ${roomCount} room${roomCount === 1 ? "" : "s"}`,
@@ -770,7 +848,7 @@ export function RoomsBedsManager({
         <Button
           variant="outline"
           onClick={() => void loadRooms()}
-          disabled={loading}
+          disabled={loading || !lodgeScopeReady}
           className="gap-2 md:w-auto"
         >
           <LoaderCircle className={loading ? "h-4 w-4 animate-spin" : "hidden"} />
@@ -779,9 +857,25 @@ export function RoomsBedsManager({
       </div>
 
       <div className="max-w-xs">
-        <LodgeSelect lodges={lodges} value={lodgeId} onChange={setLodgeId} loading={lodgesLoading} />
+        <LodgeSelect lodges={lodges} value={lodgeId} onChange={handleLodgeChange} loading={lodgesLoading}
+            // #2701: an empty list from a FAILED request is not evidence the
+            // caller's lodge is gone, so the ADR-002 normaliser must not wipe a
+            // ?lodgeId= hub link (ADR-003) while the outage lasts.
+            deferDefaultSelection={lodgesFailed || lodgesForbidden}
+          />
       </div>
 
+      {/* #2701: says which lodge context is missing, and offers the retry that
+          brings the inventory back. Retrying the lodge list re-runs loadRooms
+          through the effect below, so there is one button, not two. */}
+      <LodgeScopeStatusNotice
+        scope={lodgeScope}
+        onRetry={reloadLodges}
+        what="this lodge's rooms and beds"
+      />
+
+      {lodgeScopeReady ? (
+        <>
       {loading ? (
         <div className="flex items-center gap-2 rounded-md border bg-card p-6 text-sm text-muted-foreground">
           <LoaderCircle className="h-4 w-4 animate-spin" />
@@ -837,7 +931,7 @@ export function RoomsBedsManager({
             </div>
             <Button
               onClick={() => void importFromConfig()}
-              disabled={!canEdit || saving === "import-config"}
+              disabled={!canWrite || saving === "import-config"}
               className="gap-2 md:w-auto"
             >
               <Upload className="h-4 w-4" />
@@ -869,7 +963,7 @@ export function RoomsBedsManager({
                   max="50"
                   aria-label="Rooms"
                   value={bulkRoomCount}
-                  disabled={!canEdit}
+                  disabled={!canWrite}
                   onChange={(event) => setBulkRoomCount(event.target.value)}
                 />
               </div>
@@ -880,7 +974,7 @@ export function RoomsBedsManager({
                   min="0"
                   max="20"
                   value={bulkBedsPerRoom}
-                  disabled={!canEdit}
+                  disabled={!canWrite}
                   onChange={(event) => setBulkBedsPerRoom(event.target.value)}
                 />
               </div>
@@ -888,7 +982,7 @@ export function RoomsBedsManager({
                 <span className="text-xs font-medium text-muted-foreground">Name prefix</span>
                 <Input
                   value={bulkNamePrefix}
-                  disabled={!canEdit}
+                  disabled={!canWrite}
                   onChange={(event) => setBulkNamePrefix(event.target.value)}
                   aria-label="Name prefix"
                   {...bulkNamePrefixHint.fieldProps}
@@ -901,7 +995,7 @@ export function RoomsBedsManager({
                 <Button
                   onClick={() => void bulkCreateRooms()}
                   disabled={
-                    !canEdit ||
+                    !canWrite ||
                     saving === "rooms-bulk" ||
                     !bulkRoomCount ||
                     Number(bulkRoomCount) < 1
@@ -930,7 +1024,7 @@ export function RoomsBedsManager({
               <Input
                 placeholder="Room name"
                 value={roomDraft.name}
-                disabled={!canEdit}
+                disabled={!canWrite}
                 onChange={(event) =>
                   setRoomDraft((current) => ({
                     ...current,
@@ -942,7 +1036,7 @@ export function RoomsBedsManager({
                 type="number"
                 min="0"
                 value={roomDraft.sortOrder}
-                disabled={!canEdit}
+                disabled={!canWrite}
                 onChange={(event) =>
                   setRoomDraft((current) => ({
                     ...current,
@@ -953,7 +1047,7 @@ export function RoomsBedsManager({
               <Textarea
                 placeholder="Notes"
                 value={roomDraft.notes}
-                disabled={!canEdit}
+                disabled={!canWrite}
                 onChange={(event) =>
                   setRoomDraft((current) => ({
                     ...current,
@@ -965,7 +1059,7 @@ export function RoomsBedsManager({
               <label className="flex items-center gap-2 text-sm">
                 <Checkbox
                   checked={roomDraft.active}
-                  disabled={!canEdit}
+                  disabled={!canWrite}
                   onCheckedChange={(checked) =>
                     setRoomDraft((current) => ({
                       ...current,
@@ -977,7 +1071,7 @@ export function RoomsBedsManager({
               </label>
               <Button
                 onClick={() => void createRoom()}
-                disabled={!canEdit || saving === "room-new"}
+                disabled={!canWrite || saving === "room-new"}
                 className="gap-2"
               >
                 <Plus className="h-4 w-4" />
@@ -1022,7 +1116,7 @@ export function RoomsBedsManager({
                       <div className="grid gap-3 md:grid-cols-[2fr_90px_1fr_auto_auto]">
                         <Input
                           value={edit.name}
-                          disabled={!canEdit}
+                          disabled={!canWrite}
                           onChange={(event) =>
                             updateRoomEdit(room.id, { name: event.target.value })
                           }
@@ -1031,7 +1125,7 @@ export function RoomsBedsManager({
                           type="number"
                           min="0"
                           value={edit.sortOrder}
-                          disabled={!canEdit}
+                          disabled={!canWrite}
                           onChange={(event) =>
                             updateRoomEdit(room.id, {
                               sortOrder: event.target.value,
@@ -1040,7 +1134,7 @@ export function RoomsBedsManager({
                         />
                         <Textarea
                           value={edit.notes}
-                          disabled={!canEdit}
+                          disabled={!canWrite}
                           onChange={(event) =>
                             updateRoomEdit(room.id, { notes: event.target.value })
                           }
@@ -1049,7 +1143,7 @@ export function RoomsBedsManager({
                         <label className="flex items-center gap-2 text-sm">
                           <Checkbox
                             checked={edit.active}
-                            disabled={!canEdit}
+                            disabled={!canWrite}
                             onCheckedChange={(checked) =>
                               updateRoomEdit(room.id, {
                                 active: checked === true,
@@ -1076,7 +1170,7 @@ export function RoomsBedsManager({
                           <Button
                             variant="outline"
                             onClick={() => void saveRoom(room.id)}
-                            disabled={!canEdit || saving === `room-${room.id}`}
+                            disabled={!canWrite || saving === `room-${room.id}`}
                             className="gap-2"
                           >
                             <Save className="h-4 w-4" />
@@ -1088,7 +1182,7 @@ export function RoomsBedsManager({
                             aria-label="Delete room"
                             onClick={() => void deleteRoom(room.id)}
                             disabled={
-                              !canEdit || saving === `room-delete-${room.id}`
+                              !canWrite || saving === `room-delete-${room.id}`
                             }
                           >
                             <Trash2 className="h-4 w-4" />
@@ -1117,7 +1211,7 @@ export function RoomsBedsManager({
                           <Input
                             placeholder="Bed name"
                             value={bedDraft.name}
-                            disabled={!canEdit}
+                            disabled={!canWrite}
                             onChange={(event) =>
                               updateBedDraft(room.id, {
                                 name: event.target.value,
@@ -1128,7 +1222,7 @@ export function RoomsBedsManager({
                             type="number"
                             min="0"
                             value={bedDraft.sortOrder}
-                            disabled={!canEdit}
+                            disabled={!canWrite}
                             onChange={(event) =>
                               updateBedDraft(room.id, {
                                 sortOrder: event.target.value,
@@ -1138,7 +1232,7 @@ export function RoomsBedsManager({
                           <select
                             aria-label="Bed type"
                             value={bedDraft.bedType}
-                            disabled={!canEdit}
+                            disabled={!canWrite}
                             onChange={(event) =>
                               updateBedDraft(room.id, {
                                 bedType: event.target.value as BedTypeValue,
@@ -1155,7 +1249,7 @@ export function RoomsBedsManager({
                           <label className="flex items-center gap-2 text-sm">
                             <Checkbox
                               checked={bedDraft.active}
-                              disabled={!canEdit}
+                              disabled={!canWrite}
                               onCheckedChange={(checked) =>
                                 updateBedDraft(room.id, {
                                   active: checked === true,
@@ -1167,7 +1261,7 @@ export function RoomsBedsManager({
                           <Button
                             variant="outline"
                             onClick={() => void createBed(room.id)}
-                            disabled={!canEdit || saving === `bed-new-${room.id}`}
+                            disabled={!canWrite || saving === `bed-new-${room.id}`}
                             className="gap-2"
                           >
                             <Plus className="h-4 w-4" />
@@ -1182,7 +1276,7 @@ export function RoomsBedsManager({
                               aria-label="Bunk group"
                               list={bunkGroupListId}
                               value={bedDraft.bunkGroup}
-                              disabled={!canEdit}
+                              disabled={!canWrite}
                               onChange={(event) =>
                                 updateBedDraft(room.id, {
                                   bunkGroup: event.target.value,
@@ -1248,7 +1342,7 @@ export function RoomsBedsManager({
                                       <div className="space-y-2">
                                         <Input
                                           value={bedEdit.name}
-                                          disabled={!canEdit}
+                                          disabled={!canWrite}
                                           onChange={(event) =>
                                             updateBedEdit(bed.id, {
                                               name: event.target.value,
@@ -1259,7 +1353,7 @@ export function RoomsBedsManager({
                                           <select
                                             aria-label="Bed type"
                                             value={bedEdit.bedType}
-                                            disabled={!canEdit}
+                                            disabled={!canWrite}
                                             onChange={(event) =>
                                               updateBedEdit(bed.id, {
                                                 bedType: event.target
@@ -1283,7 +1377,7 @@ export function RoomsBedsManager({
                                               aria-label="Bunk group"
                                               list={bunkGroupListId}
                                               value={bedEdit.bunkGroup}
-                                              disabled={!canEdit}
+                                              disabled={!canWrite}
                                               onChange={(event) =>
                                                 updateBedEdit(bed.id, {
                                                   bunkGroup: event.target.value,
@@ -1326,7 +1420,7 @@ export function RoomsBedsManager({
                                         type="number"
                                         min="0"
                                         value={bedEdit.sortOrder}
-                                        disabled={!canEdit}
+                                        disabled={!canWrite}
                                         onChange={(event) =>
                                           updateBedEdit(bed.id, {
                                             sortOrder: event.target.value,
@@ -1337,7 +1431,7 @@ export function RoomsBedsManager({
                                     <TableCell>
                                       <Checkbox
                                         checked={bedEdit.active}
-                                        disabled={!canEdit}
+                                        disabled={!canWrite}
                                         onCheckedChange={(checked) =>
                                           updateBedEdit(bed.id, {
                                             active: checked === true,
@@ -1366,7 +1460,7 @@ export function RoomsBedsManager({
                                           variant="outline"
                                           onClick={() => void saveBed(bed.id)}
                                           disabled={
-                                            !canEdit ||
+                                            !canWrite ||
                                             saving === `bed-${bed.id}`
                                           }
                                         >
@@ -1378,7 +1472,7 @@ export function RoomsBedsManager({
                                           aria-label="Delete bed"
                                           onClick={() => void deleteBed(bed.id)}
                                           disabled={
-                                            !canEdit ||
+                                            !canWrite ||
                                             saving === `bed-delete-${bed.id}`
                                           }
                                         >
@@ -1400,6 +1494,8 @@ export function RoomsBedsManager({
             )}
           </CardContent>
         </Card>
+      ) : null}
+        </>
       ) : null}
     </div>
   );

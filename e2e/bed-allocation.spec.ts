@@ -4,6 +4,7 @@ import {
   overrideSingleLodgeAutoAllocation,
   setBedAllocationSettings,
   type BedAllocationSettingsSnapshot,
+  resolveSingleActiveLodgeId,
 } from "./helpers/bed-allocation-settings";
 import { completeMemberDetailsGateIfShown } from "./helpers/booking";
 import { DEMO_BOOKING_WINDOWS, E2E_ADMIN } from "./helpers/fixtures";
@@ -661,9 +662,16 @@ test("pointer, keyboard and menu moves share reviewed scopes and preserve origin
 
       if (placementRestored && originalApprovedAllocationIds.length > 0) {
         try {
+          // #2887: approve names its lodge, always — omitting it used to lock
+          // every lodge plus the global key for rows at one.
           const restoredApproval = await adminContext.request.post(
             "/api/admin/bed-allocation/approve",
-            { data: { allocationIds: originalApprovedAllocationIds } },
+            {
+              data: {
+                allocationIds: originalApprovedAllocationIds,
+                lodgeId: await resolveSingleActiveLodgeId(adminContext.request),
+              },
+            },
           );
           if (!restoredApproval.ok()) {
             throw new Error(
@@ -1051,7 +1059,12 @@ test("staged removal previews an approved booking row and leaves it unallocated"
         if (restoredAllocationIds.length > 0) {
           const restoredApproval = await adminContext.request.post(
             "/api/admin/bed-allocation/approve",
-            { data: { allocationIds: restoredAllocationIds } },
+            {
+              data: {
+                allocationIds: restoredAllocationIds,
+                lodgeId: await resolveSingleActiveLodgeId(adminContext.request),
+              },
+            },
           );
           if (!restoredApproval.ok()) {
             throw new Error(
