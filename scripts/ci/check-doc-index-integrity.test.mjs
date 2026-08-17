@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   BYTE_ORDER_MARK,
@@ -35,6 +35,32 @@ import {
   scanMarkdownFenceLines,
   scannableLines,
 } from "./check-doc-index-integrity.mjs";
+
+/*
+  HEADROOM FOR A WHOLE-REPOSITORY SCAN, not cover for a slow test.
+
+  Thirteen cases here shell out to `git` or initialise a throwaway repository,
+  and the heaviest call `loadTrackedFiles(REPO_ROOT)`, which lists and reads
+  every tracked file — over 4,500 of them. That is the point: the real-repository
+  CLI cases are the strongest thing in this suite, and they are what caught the
+  `synchronize`-payload trap. They need the real tree, not a fixture.
+
+  Under vitest's 5-second default that work does not reliably finish on a busy
+  runner, and a *different* case loses each time. It failed exactly that way on
+  PR #2922, whose diff is documentation and cannot reach the subject of the test
+  that failed — 28.5s for the file against roughly 19s idle (#2923).
+
+  The mechanism was seen before this suite merged and mis-read as Windows load
+  sensitivity that "does not reproduce on CI's Linux runners". The first half was
+  right; the second half was an assumption. Nothing here is Windows-specific —
+  the runner only has to be busy.
+
+  Same treatment, and the same reasoning, as the whole-tree parser scan in
+  `src/lib/__tests__/jsx-text-escape-guard.test.ts`. If a case ever genuinely
+  needs a minute, that is a real regression worth looking at; this only stops the
+  clock deciding which assertion runs.
+*/
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const CHECKER_PATH = path.join(REPO_ROOT, "scripts", "ci", "check-doc-index-integrity.mjs");
