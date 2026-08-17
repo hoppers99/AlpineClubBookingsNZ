@@ -185,7 +185,6 @@ src/components/calendar/event-dialog.tsx 991 domain-module
 src/components/edit-booking-panel.tsx 1834 domain-module
 src/components/website/skifield-whakapapa-widget.tsx 730 domain-module
 src/instrumentation.node.ts 1434 domain-module
-src/lib/admin-bed-allocation.ts 4484 domain-module
 src/lib/admin-bookings-service.ts 1288 domain-module
 src/lib/admin-cron-health.ts 771 domain-module
 src/lib/admin-family-group-requests-service.ts 1574 domain-module
@@ -285,7 +284,7 @@ src/lib/school-booking-request.ts 2497 domain-module
 src/lib/seasonal-membership-assignments.ts 1655 domain-module
 src/lib/setup-readiness.ts 1557 domain-module
 src/lib/stripe-webhook-service.ts 1652 domain-module
-src/lib/stuck-state-dashboard.ts 1111 domain-module
+src/lib/stuck-state-dashboard.ts 1109 domain-module
 src/lib/subscription-lockout-enforcement.ts 805 domain-module
 src/lib/waitlist-cross-lodge.ts 956 domain-module
 src/lib/waitlist.ts 1311 domain-module
