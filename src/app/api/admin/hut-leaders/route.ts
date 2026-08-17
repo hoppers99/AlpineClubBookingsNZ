@@ -3,7 +3,6 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import logger from "@/lib/logger";
-import { calculateOverlapDays } from "@/lib/hut-leader-overlap";
 import { formatDateOnly, isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { sendHutLeaderAssignmentEmail } from "@/lib/email";
 import {
@@ -12,10 +11,10 @@ import {
 } from "@/lib/lodge-pin-session";
 import { hasAccessRole } from "@/lib/access-roles";
 import {
-  lodgeNullTolerantScope,
   resolveOptionalActiveLodgeId,
 } from "@/lib/lodges";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
+import { findHutLeaderOverlapRefusal } from "@/lib/hut-leader-overlap-guard";
 import { validateCustodianBedHold } from "@/lib/custodian-assignment";
 import { custodianBedHoldErrorResponse } from "@/lib/custodian-assignment-routes";
 import { isMinorAgeTier } from "@/lib/custodian-occupancy";
@@ -162,31 +161,15 @@ export async function POST(req: NextRequest) {
   const newStart = parseDateOnly(parsed.data.startDate);
   const newEnd = parseDateOnly(parsed.data.endDate);
 
-  // Each lodge has its own hut leader, so the overlap check is per lodge;
-  // assignments still missing a lodgeId (expand-release tolerance)
-  // conservatively conflict at every lodge.
-  const potentialOverlaps = await prisma.hutLeaderAssignment.findMany({
-    where: {
-      startDate: { lte: newEnd },
-      endDate: { gte: newStart },
-      ...lodgeNullTolerantScope(lodgeId),
-    },
-    include: {
-      member: { select: { firstName: true, lastName: true } },
-    },
+  // The cheap pre-lock ask, through the SAME predicate the locked re-read
+  // below uses, so the two can never disagree about what an overlap is.
+  const earlyOverlap = await findHutLeaderOverlapRefusal(prisma, {
+    lodgeId,
+    startDate: newStart,
+    endDate: newEnd,
   });
-
-  for (const existing of potentialOverlaps) {
-    const overlapDays = calculateOverlapDays(newStart, newEnd, existing.startDate, existing.endDate);
-    if (overlapDays > 1) {
-      const name = `${existing.member.firstName} ${existing.member.lastName}`;
-      const start = formatDateOnly(existing.startDate);
-      const end = formatDateOnly(existing.endDate);
-      return NextResponse.json(
-        { error: `Assignment overlaps with ${name}'s assignment (${start} to ${end}) by ${overlapDays} days. Maximum 1 day overlap is allowed for handover.` },
-        { status: 409 }
-      );
-    }
+  if (earlyOverlap) {
+    return NextResponse.json({ error: earlyOverlap.error }, { status: 409 });
   }
 
   // Custodian bed hold (#2286): a bed can only mean anything while the
@@ -241,30 +224,12 @@ export async function POST(req: NextRequest) {
         throw new Error("LOCKED_MEMBER_NOT_ELIGIBLE");
       }
 
-      const lockedOverlaps = await tx.hutLeaderAssignment.findMany({
-        where: {
-          startDate: { lte: newEnd },
-          endDate: { gte: newStart },
-          ...lodgeNullTolerantScope(lockedLodgeId),
-        },
-        include: {
-          member: { select: { firstName: true, lastName: true } },
-        },
+      const lockedOverlap = await findHutLeaderOverlapRefusal(tx, {
+        lodgeId: lockedLodgeId,
+        startDate: newStart,
+        endDate: newEnd,
       });
-      for (const existing of lockedOverlaps) {
-        const overlapDays = calculateOverlapDays(
-          newStart,
-          newEnd,
-          existing.startDate,
-          existing.endDate,
-        );
-        if (overlapDays > 1) {
-          const name = `${existing.member.firstName} ${existing.member.lastName}`;
-          throw new HutLeaderOverlapError(
-            `Assignment overlaps with ${name}'s assignment (${formatDateOnly(existing.startDate)} to ${formatDateOnly(existing.endDate)}) by ${overlapDays} days. Maximum 1 day overlap is allowed for handover.`,
-          );
-        }
-      }
+      if (lockedOverlap) throw new HutLeaderOverlapError(lockedOverlap.error);
 
       if (bedId) {
           await validateCustodianBedHold({

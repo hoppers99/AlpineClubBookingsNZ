@@ -1,9 +1,9 @@
 import { prisma } from "./prisma";
 import { eachDayOfInterval, addDays } from "date-fns";
-import { calculateOverlapDays } from "./hut-leader-overlap";
 import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "./lodges";
 import { acquireLodgeCapacityLock } from "./lodge-capacity-lock";
+import { findHutLeaderOverlapRefusal } from "./hut-leader-overlap-guard";
 import { loadHutLeaderLookaheadDays } from "./lodge-settings";
 import { loadEffectiveModuleFlags } from "./module-settings";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
@@ -188,22 +188,12 @@ export async function autoAssignHutLeaders(): Promise<{
         });
         if (lockedAssigned) return false;
 
-        const potentialOverlaps = await tx.hutLeaderAssignment.findMany({
-          where: {
-            startDate: { lte: member.checkOut },
-            endDate: { gte: member.checkIn },
-            ...lodgeNullTolerantScope(lodgeId),
-          },
+        const overlap = await findHutLeaderOverlapRefusal(tx, {
+          lodgeId,
+          startDate: member.checkIn,
+          endDate: member.checkOut,
         });
-        for (const existing of potentialOverlaps) {
-          const overlapDays = calculateOverlapDays(
-            member.checkIn,
-            member.checkOut,
-            existing.startDate,
-            existing.endDate
-          );
-          if (overlapDays > 1) return false;
-        }
+        if (overlap) return false;
 
         await tx.hutLeaderAssignment.create({
           data: {

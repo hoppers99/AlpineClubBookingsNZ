@@ -108,7 +108,7 @@ describe("lodge admission and assignment lock topology (#2701)", () => {
     expectOrdered(put, [
       "await prisma.$transaction(async (tx) => {",
       "await acquireLodgeCapacityLock(tx, intendedLodgeId);",
-      "const potentialOverlaps = await tx.hutLeaderAssignment.findMany(",
+      "await findHutLeaderOverlapRefusal(tx, {",
       "await tx.hutLeaderAssignment.update(",
     ]);
     // …and no unlocked writer or unlocked overlap read survives beside it.
@@ -119,7 +119,7 @@ describe("lodge admission and assignment lock topology (#2701)", () => {
     expectOrdered(cron, [
       "await prisma.$transaction(async (tx) => {",
       "await acquireLodgeCapacityLock(tx, lodgeId);",
-      "const potentialOverlaps = await tx.hutLeaderAssignment.findMany(",
+      "await findHutLeaderOverlapRefusal(tx, {",
       "await tx.hutLeaderAssignment.create(",
     ]);
     expect(cron).not.toContain("await prisma.hutLeaderAssignment.create(");
@@ -145,7 +145,7 @@ describe("lodge admission and assignment lock topology (#2701)", () => {
     }
     // Every lodge-scoped read in the job carries the scope; a club-wide one
     // suppressed valid auto-assignments at other lodges and raced the routes.
-    expect(cron.match(/lodgeNullTolerantScope\(lodgeId\)/g) ?? []).toHaveLength(3);
+    expect(cron.match(/lodgeNullTolerantScope\(lodgeId\)/g) ?? []).toHaveLength(2);
     // And the per-lodge decision replaced the club-wide adult count.
     expect(cron).toContain("if (lodgeAdults.length !== 1) continue;");
   });
@@ -190,6 +190,26 @@ describe("lodge admission and assignment lock topology (#2701)", () => {
       "src/lib/school-booking-request.ts",
     ].sort());
 
+    // The three overlap-deciding writers share ONE predicate now, so the rule
+    // cannot drift between copies (#2887 review).
+    for (const caller of [
+      "src/app/api/admin/hut-leaders/route.ts",
+      "src/app/api/admin/hut-leaders/[id]/route.ts",
+      "src/lib/cron-hut-leader-auto-assign.ts",
+    ]) {
+      expect(source(caller), `${caller} stopped using the shared overlap guard`)
+        .toContain("findHutLeaderOverlapRefusal(tx, {");
+      // No caller keeps its own overlap read — pre-lock or post-lock. (The
+      // GET list route's own `findMany` is a listing, not the predicate, and
+      // lives behind `where: { lodgeId }` rather than the overlap window.)
+      expect(
+        source(caller),
+        `${caller} kept its own copy of the overlap read`,
+      ).not.toContain("tx.hutLeaderAssignment.findMany(");
+    }
+    // The guard is the only place the >1-day rule lives.
+    expect(source("src/lib/hut-leader-overlap-guard.ts")).toContain("overlapDays > 1");
+
     // The school writer holds the lodge key even though it runs no overlap
     // read, so it still serializes against the three that do.
     expect(source("src/lib/school-booking-request.ts")).toContain(
@@ -229,7 +249,7 @@ describe("lodge admission and assignment lock topology (#2701)", () => {
       "await acquireLodgeCapacityLock(tx, parsed.data.lodgeId);",
       "const lockedLodgeId = await resolveOptionalActiveLodgeId(",
       "const lockedMember = await tx.member.findUnique(",
-      "const lockedOverlaps = await tx.hutLeaderAssignment.findMany(",
+      "await findHutLeaderOverlapRefusal(tx, {",
       "if (bedId) {",
       "await validateCustodianBedHold(",
       "const assignment = await tx.hutLeaderAssignment.create(",

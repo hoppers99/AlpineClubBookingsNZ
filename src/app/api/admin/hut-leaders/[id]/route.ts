@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
-import { formatDateOnly, isDateOnlyString, parseDateOnly } from "@/lib/date-only";
+import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import logger from "@/lib/logger";
-import { calculateOverlapDays } from "@/lib/hut-leader-overlap";
-import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
+import { findHutLeaderOverlapRefusal } from "@/lib/hut-leader-overlap-guard";
 import { validateCustodianBedHold } from "@/lib/custodian-assignment";
 import { custodianBedHoldErrorResponse } from "@/lib/custodian-assignment-routes";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
@@ -95,36 +94,21 @@ export async function PUT(
   }
 
   /*
-    Everything below is derived from the row read UNDER THE LOCK, not from the
-    pre-lock `existing` (#2887 review).
+    Everything the locked decision rests on is re-derived from the row read
+    UNDER the lock, not from the pre-lock `existing` (#2887 review).
 
-    The pre-lock read stays, because it gives the cheap 404 and the lock KEY to
-    take. But every value the locked decision rests on - the final dates, the
-    final lodge, and whether a bed hold survives this edit - is re-derived
-    inside the transaction. Deriving them out here and only re-reading the
-    overlap set inside looked locked and was not:
-
-      (a) A sends {bedId:"bed-7"}, B sends new dates. Both read bedId:null. A
-          commits the hold; B's stale `nextBedId` is null, so custodian
-          validation never runs and B moves the row onto dates where bed-7 is
-          taken - the exact state validateCustodianBedHold exists to refuse.
-      (b) A sends {lodgeId:"L2"} and locks L2; B sends dates only, derives the
-          key from the stale row and locks L1. Different advisory keys, so no
-          mutual exclusion at all, and B validates against L1's roster for a
-          row that ends up at L2.
-      (c) A sends a startDate, B an endDate; each applies its field to a stale
-          span and the result is a range neither validated.
-
-    Re-deriving under the lock closes (a) and (c). (b) additionally needs the
-    key check below, because by then the lock is already taken on the wrong
-    lodge - the same shape as `booking-create.ts`'s locked-lodge fence.
+    The pre-lock read stays for the cheap 404 and to supply the lock KEY. But
+    deriving the dates, the lodge and the surviving bed hold out here and only
+    re-reading the overlap set inside looked locked and was not — three
+    interleavings, each now a named case in
+    `custodian-hut-leaders-route.test.ts`: a bed hold that only exists in the
+    locked row skipping validation, two requests locking DIFFERENT keys because
+    one derived its key from a stale lodge, and two partial-field edits
+    composing into a span neither validated.
   */
   // Validate start <= end against the pre-lock row, so an obviously inverted
   // range is refused without paying for a lock. Re-checked under it.
-  if (
-    (updateData.startDate ?? existing.startDate) >
-    (updateData.endDate ?? existing.endDate)
-  ) {
+  if ((updateData.startDate ?? existing.startDate) > (updateData.endDate ?? existing.endDate)) {
     return NextResponse.json(
       { error: "startDate must be before or equal to endDate" },
       { status: 400 }
@@ -163,20 +147,9 @@ export async function PUT(
   try {
     /*
       EVERY edit runs under the target lodge's capacity key (#2887), not just a
-      bed-holding one.
-
-      #2286 locked only the bed path, reasoning that clearing a bed or never
-      having one moves no capacity. True of capacity, false of the OVERLAP
-      predicate — and this route decides that predicate too. The overlap read
-      used to run on `prisma`, outside any transaction, and the role-only branch
-      then wrote with a bare `prisma.update`, so two concurrent edits (or an
-      edit racing a POST) could each read a clean overlap set and both commit,
-      leaving one lodge two hut leaders for a night. Nothing behind it: there is
-      no unique constraint on the range. A bedless edit can still MOVE DATES,
-      which is exactly how it creates an overlap.
-
-      So: take the key, re-read the overlap set under it, re-validate any
-      surviving hold against the FINAL dates and lodge, then write.
+      bed-holding one. #2286 locked only the bed path, reasoning that clearing a
+      bed moves no capacity — true of capacity, false of the OVERLAP predicate
+      this route also decides, which a bedless edit breaks by MOVING DATES.
     */
     const refusal = await prisma.$transaction(async (tx) => {
       await acquireLodgeCapacityLock(tx, intendedLodgeId);
@@ -207,38 +180,13 @@ export async function PUT(
       }
       const nextBedId = bedIdProvided ? parsed.data.bedId : locked.bedId;
 
-      // Excluding self — 1 day overlap allowed for handover, 2+ rejected. Each
-      // lodge has its own hut leader, so the check is per lodge; a row still
-      // missing a lodgeId (expand-release tolerance) conservatively conflicts
-      // at every lodge.
-      const potentialOverlaps = await tx.hutLeaderAssignment.findMany({
-        where: {
-          id: { not: id },
-          startDate: { lte: finalEnd },
-          endDate: { gte: finalStart },
-          ...lodgeNullTolerantScope(finalLodgeId),
-        },
-        include: {
-          member: { select: { firstName: true, lastName: true } },
-        },
+      const overlap = await findHutLeaderOverlapRefusal(tx, {
+        lodgeId: finalLodgeId,
+        startDate: finalStart,
+        endDate: finalEnd,
+        excludeAssignmentId: id,
       });
-      for (const other of potentialOverlaps) {
-        const overlapDays = calculateOverlapDays(
-          finalStart,
-          finalEnd,
-          other.startDate,
-          other.endDate,
-        );
-        if (overlapDays > 1) {
-          const name = `${other.member.firstName} ${other.member.lastName}`;
-          const start = formatDateOnly(other.startDate);
-          const end = formatDateOnly(other.endDate);
-          return {
-            status: 409,
-            error: `Assignment overlaps with ${name}'s assignment (${start} to ${end}) by ${overlapDays} days. Maximum 1 day overlap is allowed for handover.`,
-          };
-        }
-      }
+      if (overlap) return { status: 409, error: overlap.error };
 
       if (nextBedId) {
         await validateCustodianBedHold({
