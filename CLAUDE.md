@@ -24,9 +24,19 @@ validation, review, public writing, merge gates, and completion.
 
 ## Claude model routing
 
-Use Sonnet or local tooling for routine searches, mechanical edits, and bounded
-checks. Follow the imported risk escalation for gated work, including Opus at
-`xhigh` for security and the universal `xhigh` ceiling.
+Decide the model when you dispatch, from the lineup you have then — this file
+names no default, because the one written down goes stale and gets followed
+anyway. Reach for a deterministic tool first (`Grep`, a focused test,
+`npm run agent:context`) whenever the answer is exact and checkable; a model's
+answer you then have to verify costs more than the command you skipped. When a
+model is needed, pick the cheapest tier you would trust unsupervised on that
+task, and raise reasoning effort before reaching for a larger model.
+
+An `Agent` launch without an explicit `model` **inherits this session's**, so
+name the model and effort at launch or the orchestrator's tier silently wins.
+Follow the imported risk escalation for gated work, including the strongest
+generally-capable model at `xhigh` for security and the universal `xhigh`
+ceiling.
 
 ## Claude interaction boundaries
 
