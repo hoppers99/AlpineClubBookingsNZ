@@ -341,6 +341,21 @@ const FIGURES = {
   leafFiles: 22,
   /** Components that render an `AdminViewOnlySectionBanner`. */
   bannerComponents: 84,
+  /**
+   * Admin files that render an `AdminViewOnlyNotice` and NO
+   * `ViewOnlyActionButton` — the first of the three cases in which the older
+   * per-section Notice is deliberately retained. With no gated control there is
+   * nothing for the banner to head, so there is nothing for the rollout to
+   * convert.
+   *
+   * Added by #2720. The `ViewOnlyActionButton` JSDoc published this as a
+   * hand-counted "seven files today" and it had drifted to eight by the time
+   * anybody re-measured — the same failure the figures above already exist to
+   * prevent, in the one bullet nothing was measuring. Re-measured 17 Aug 2026
+   * and pinned here, so the number moves only when the tree does and the prose
+   * has to move with it.
+   */
+  noticeOnlyFiles: 8,
 } as const;
 
 const WIZARD_SHELL = "IntegrationWizard";
@@ -1074,6 +1089,14 @@ describe("view-only section banner coverage (#2160)", () => {
       bannerComponents: astFiles.filter(
         (f) => (bannersByFile.get(f.file) ?? []).length > 0,
       ).length,
+      // #2720: the retained-Notice case the JSDoc publishes. Counted off the
+      // AST for the same reason as everything else here — a `<AdminViewOnlyNotice`
+      // written in prose is not a JsxElement, so it cannot inflate the total.
+      noticeOnlyFiles: astFiles.filter(
+        (f) =>
+          jsxTags(f.ast, NOTICE).length > 0 &&
+          jsxTags(f.ast, "ViewOnlyActionButton").length === 0,
+      ).length,
     }).toEqual({
       /*
         The delta chain from upstream, so the figures reconcile rather than
@@ -1399,6 +1422,7 @@ describe("view-only section banner coverage (#2160)", () => {
       exceptions: FIGURES.exceptions,
       exceptionFiles: FIGURES.exceptionFiles,
       bannerComponents: FIGURES.bannerComponents,
+      noticeOnlyFiles: FIGURES.noticeOnlyFiles,
     });
 
     // The vouched total splits by RULE, and the docs publish that split. Keeping
@@ -1519,6 +1543,10 @@ describe("view-only section banner coverage (#2160)", () => {
         `${f.renderSiteVouchedOptOuts} vouched at a JSX render site (#2168) and ${f.shellVouchedOptOuts}`,
         `${f.optOuts} opt-outs in total`,
         `counts ${f.leafControls} controls here`,
+        // #2720. This bullet carried a hand-counted "seven files today" that had
+        // drifted to eight; it is measured above now, so the prose is pinned to
+        // the measurement like every other figure in this list.
+        `this banner to head (${f.noticeOnlyFiles} files today, measured by the census test)`,
       ],
     };
     /*
