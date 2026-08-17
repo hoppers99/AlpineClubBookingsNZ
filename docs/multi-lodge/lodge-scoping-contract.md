@@ -260,7 +260,27 @@ operational documents (which may carry door/emergency access details).
     `FINANCE_USER` and `ADMIN_MEMBERSHIP` all get a permanent 403 on the lodge
     list.
 
-  They are fixed differently, and the difference is the point.
+  **The root cause is fixed too (#2887, owner decision).** `GET
+  /api/admin/lodges` is readable by ANY authenticated admin now, because that
+  list is the vocabulary every admin screen needs in order to say which lodge
+  it is talking about, and gating a UI-wide lookup behind the `lodge` feature
+  area is what produced the blank pages. Deliberately that endpoint alone: the
+  other seventeen `lodge:view` reads and all twenty-five `lodge:edit` writes are
+  unchanged, and no role preset was widened — adding `lodge:view` to the two
+  presets would have handed them all eighteen endpoints on upgrade.
+
+  The PAYLOAD narrows instead of the access. `lodgeSelect` carries `doorCode`,
+  which this codebase already treats as a physical-access secret it keeps out of
+  audit metadata, plus the street address and travel notes. A caller without
+  `lodge:view` gets id, name, slug and active — nothing else.
+
+  `forbidden` therefore stops being reachable for the two shipped presets, but
+  the state and its handling stay: a deployment with a custom role matrix can
+  still produce it, and removing the branch would make the next occurrence a
+  blank page again.
+
+  They are also fixed at the surface, and the difference between the two is the
+  point.
 
   The booking-requests badge no longer consults the lodge list at all. ADR-002's
   count rule is applied SERVER-side — `serializeBookingRequestForAdmin` takes

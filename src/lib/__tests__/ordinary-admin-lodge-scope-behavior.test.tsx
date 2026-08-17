@@ -155,6 +155,17 @@ const UNSETTLED_STATES = [
     state: { lodges: LODGES, loading: false, failed: true, forbidden: false },
   },
   {
+    /*
+      #2887 (owner decision): still a real state, and deliberately still
+      covered — but no longer reachable by any SHIPPED preset. `GET
+      /api/admin/lodges` was relaxed to any authenticated admin, so
+      `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` no longer 403 on it.
+
+      A deployment with a custom role matrix can still produce `forbidden`, and
+      deleting this case would make the next occurrence a blank page again —
+      which is the whole defect. `admin-lodges-route.test.ts` proves the two
+      shipped presets can now read the list.
+    */
     name: "forbidden",
     state: { lodges: LODGES, loading: false, failed: false, forbidden: true },
   },
