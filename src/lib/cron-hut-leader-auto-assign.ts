@@ -157,8 +157,9 @@ export async function autoAssignHutLeaders(): Promise<{
       // an assignment at another lodge is not a conflict here. Asked through
       // the SHARED predicate all four deciding call sites use (#2887), so the
       // cheap answer here and the authoritative one under the lock below cannot
-      // disagree about what an overlap is — and so school-teacher records are
-      // excluded in one place rather than three.
+      // disagree about what an overlap is. The predicate is role-blind today —
+      // school-teacher records DO block here; excluding them is #2926, and the
+      // single predicate is what makes that a one-line change.
       const earlyOverlap = await findHutLeaderOverlapRefusal(prisma, {
         lodgeId: lodge.id,
         startDate: member.checkIn,

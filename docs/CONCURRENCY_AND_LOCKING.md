@@ -169,8 +169,9 @@ overlap predicate, and those three take this per-lodge key and re-read overlap
 under it. The guarantee that buys is narrower than "one lodge cannot end up
 with two overlapping hut leaders", and the narrower statement is the true one:
 
-> No two **independently created** hut-leader assignments overlap by more than
-> one day at one lodge.
+> No two hut-leader assignments overlap by more than one day at one lodge,
+> **except assignments created by the school-approval path**, which does not
+> decide the predicate at all.
 
 There is no unique constraint on the range behind the application check, so
 that holds only for as long as all three keep deciding under the key:
@@ -198,11 +199,19 @@ The other three writers, and why the guarantee is worded the way it is:
 
 - `school-booking-request.ts` creates one assignment **per teacher** when a
   school request is approved — same dates, same lodge, deliberately overlapping
-  each other, because several teachers do supervise one group together. It
-  holds the lodge key (it is inside the approval transaction) but runs no
-  overlap read, and must not: adding one would refuse the club's own school
-  bookings. This is why the rule above says "independently created" rather than
-  simply "no two overlapping assignments".
+  each other, because several teachers do supervise one group together. It holds
+  the lodge key (it is inside the approval transaction) but runs no overlap read,
+  and must not: adding one would refuse the club's own school bookings.
+
+  This is the exemption in the rule above, and it covers TWO cases, which is why
+  the wording names the PATH rather than the relationship between the rows. The
+  first is the teachers of one approval overlapping each other, by design. The
+  second is easy to miss: nothing forbids two separately approved school bookings
+  at the same lodge on overlapping dates, and neither approval transaction reads
+  overlap, so their teacher assignments overlap too. An earlier wording said "no
+  two **independently created** assignments overlap", which reads as covering the
+  second case and does not — those two approvals are as independent as any two
+  writes in the system.
 - `[id]/pin/route.ts` rotates a PIN and `[id]/route.ts`'s DELETE removes a row.
   Both write on the base client outside any lock. Neither can create an overlap
   — one changes no dates and no lodge, the other only ever removes a row — so

@@ -189,7 +189,7 @@ describe("lodge admission and assignment lock topology (#2701)", () => {
       "src/app/api/admin/hut-leaders/route.ts", // POST
       "src/lib/cron-hut-leader-auto-assign.ts",
       // Creates one row PER TEACHER, deliberately overlapping, under the key
-      // but with no overlap read - the "independently created" carve-out.
+      // but with no overlap read - the school-approval-path carve-out.
       "src/lib/school-booking-request.ts",
     ].sort());
 

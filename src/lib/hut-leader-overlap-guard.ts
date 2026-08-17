@@ -16,8 +16,14 @@ import type { Prisma } from "@prisma/client";
  * a read, so it is only authoritative under that key — outside it the answer is
  * a guess that a concurrent insert can invalidate before the caller writes.
  *
- * A row still missing a lodgeId (expand-release tolerance) conservatively
- * conflicts at every lodge, which is what `lodgeNullTolerantScope` encodes.
+ * `lodgeNullTolerantScope` is a STRICT per-lodge match, despite the name. The
+ * name is a leftover from the expand-release phase when `lodgeId` was nullable;
+ * `HutLeaderAssignment.lodgeId` is NOT NULL now (`prisma/schema.prisma`) and the
+ * helper returns a plain `{ lodgeId }` — see its own comment in `lodges.ts`.
+ * There are no null-lodge rows to tolerate, and if one somehow existed it would
+ * be EXCLUDED from this read rather than treated as conflicting everywhere.
+ * (This docblock claimed the opposite on both counts, inherited from the PUT
+ * comment it was extracted from, where it was already wrong.)
  *
  * School-teacher records are NOT excluded, and that asymmetry is deliberate for
  * now rather than settled: approving a school booking creates one assignment
