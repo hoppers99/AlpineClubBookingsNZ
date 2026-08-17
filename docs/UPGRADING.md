@@ -6,7 +6,7 @@ live deployment from one public release to the next safely.
 
 It complements the two documents next to it and does not repeat them:
 
-- `docs/ONGOING_DEVELOPMENT_WORKFLOW.md` covers the **git** side — how a private
+- `docs/adopters/upstream-contributions.md` covers the **git** side — how a private
   fork keeps its history in sync with the public upstream. Read it for branching
   and merge hygiene.
 - This file covers the **operational** side — how to take the code you have
@@ -71,7 +71,7 @@ as a red flag and check the release notes before deploying.
 ## Generic upgrade procedure
 
 1. Sync the code to the target release tag (see
-   `docs/ONGOING_DEVELOPMENT_WORKFLOW.md`).
+   `docs/adopters/upstream-contributions.md`).
 2. Read this release's `CHANGELOG.md` section end to end, especially its
    Migration/deployment notes, and cross-check the pending migrations against
    `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`.
