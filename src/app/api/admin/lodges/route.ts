@@ -14,7 +14,6 @@ import {
 } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
-import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import { revalidatePublicPageContent } from "@/lib/public-content-revalidation";
 import { invalidatePublicClubIdentity } from "@/lib/public-layout-cache";
 import { primeClubIdentitySync } from "@/lib/club-identity-settings";
@@ -31,28 +30,27 @@ const createSchema = z
   .strict();
 
 /*
-  Readable by ANY authenticated admin (#2887, owner decision).
+  `lodge:view`, inferred from the request path (#2925).
 
-  This list is the vocabulary every admin screen needs in order to say which
-  lodge it is talking about — id, name, active — and gating that behind the
-  `lodge` feature area is what produced blank pages. `ADMIN_MEMBERSHIP` and
-  `FINANCE_ADMIN` hold no `lodge` entry, so this endpoint 403'd for them
-  permanently, and surfaces that only ever needed the NAMES lost their content.
+  `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold no `lodge` entry, so this 403s for
+  them permanently, and the admin surfaces that need only the lodge NAMES lose
+  their content as a result. That is a real defect and it is tracked in #2925,
+  not fixed here.
 
-  Deliberately this endpoint alone. The other seventeen `lodge:view` reads and
-  all twenty-five `lodge:edit` writes are untouched, and no role preset changed
-  — widening the presets would have handed those two roles every one of those
-  endpoints on upgrade.
-
-  THE PAYLOAD NARROWS INSTEAD OF THE ACCESS. `lodgeSelect` carries `doorCode`,
-  which this codebase already treats as a physical-access secret (see
-  `redactLodgeForAudit`: it must never even reach audit metadata), plus the
-  street address and travel notes. A finance admin has no business with the
-  door code, so a caller without `lodge:view` gets identity only. The
-  `/admin/lodges` management page, which does hold `lodge:view`, is unaffected.
+  It was attempted in this PR and reverted, because the attempt was INERT and
+  the revert is the honest state. `requireAdmin()` with no options does not mean
+  "any admin": `inferAdminAccessRequirement` reads the `x-pathname` and
+  `x-request-method` headers that `proxy.ts` sets for this route and resolves
+  them through `getAdminRouteRequirement`, which maps `/api/admin/lodges` to
+  `area: "lodge"`. Dropping the explicit `permission` therefore changed nothing
+  at all — the same requirement came back by inference — while the tests written
+  for it passed against a mock whose absent-options fallback used
+  `hasAdminPortalAccess`, which the real guard has never had.
 */
 export async function GET() {
-  const guard = await requireAdmin();
+  const guard = await requireAdmin({
+    permission: { area: "lodge", level: "view" },
+  });
   if (!guard.ok) return guard.response;
 
   const lodges = await prisma.lodge.findMany({
@@ -60,23 +58,7 @@ export async function GET() {
     select: lodgeSelect,
   });
 
-  const mayReadLodgeDetail = hasAdminAreaAccess(
-    { adminPermissionMatrix: guard.session.user.adminPermissionMatrix },
-    { area: "lodge", level: "view" },
-  );
-
-  return NextResponse.json({
-    lodges: lodges.map((lodge) =>
-      mayReadLodgeDetail
-        ? serializeLodge(lodge)
-        : {
-            id: lodge.id,
-            name: lodge.name,
-            slug: lodge.slug,
-            active: lodge.active,
-          },
-    ),
-  });
+  return NextResponse.json({ lodges: lodges.map(serializeLodge) });
 }
 
 export async function POST(request: Request) {

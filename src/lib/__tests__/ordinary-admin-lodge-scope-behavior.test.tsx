@@ -149,15 +149,17 @@ const UNSETTLED_STATES = [
   },
   {
     /*
-      #2887 (owner decision): still a real state, and deliberately still
-      covered — but no longer reachable by any SHIPPED preset. `GET
-      /api/admin/lodges` was relaxed to any authenticated admin, so
-      `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` no longer 403 on it.
+      LIVE behaviour, not a hypothetical. `GET /api/admin/lodges` requires
+      `lodge:view`, and `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold no `lodge`
+      entry, so a 403 here is their permanent answer and every editor below must
+      stop cleanly rather than act on an empty list. Relaxing that route was
+      attempted in this PR and reverted — the attempt was inert, since
+      `requireAdmin()` re-infers `lodge:view` from the request path — and the
+      real fix is tracked as #2925.
 
-      A deployment with a custom role matrix can still produce `forbidden`, and
-      deleting this case would make the next occurrence a blank page again —
-      which is the whole defect. `admin-lodges-route.test.ts` proves the two
-      shipped presets can now read the list.
+      `lodges: []` because that is what the hook produces on a 403
+      (`lodge-select.tsx`), and asserting it with two lodges present would hide
+      the promo/work-party restriction control still rendering.
     */
     name: "forbidden",
     state: { lodges: [], loading: false, failed: false, forbidden: true },
@@ -211,6 +213,43 @@ describe("ordinary admin editors fail closed until lodge scope settles (#2701, #
     expect(fetch).not.toHaveBeenCalled()
     expect(screen.queryByRole("button", { name: action })).not.toBeInTheDocument()
   })
+
+  it.each(EDITORS)(
+    "$name explains a 403 as a role fact, with no retry that could only 403 again",
+    async ({ render: renderEditor }) => {
+      /*
+        `forbidden` is LIVE behaviour for `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN`
+        (see the state above), so the operator-facing copy is pinned rather than
+        left to the gate. The cases above prove these editors stop; this proves
+        they say WHY, and say it honestly:
+
+          - an info explanation naming the role, not an error;
+          - and NO "Try again", because the retry would 403 forever. `failed`
+            gets one and `forbidden` must not — collapsing the two states is the
+            defect this distinction exists to prevent.
+      */
+      lodgeOptions = {
+        lodges: [],
+        loading: false,
+        failed: false,
+        forbidden: true,
+        reload: vi.fn(),
+      }
+      render(
+        <ClubIdentityProvider value={clubIdentity}>
+          {renderEditor()}
+        </ClubIdentityProvider>,
+      )
+      await act(async () => {})
+
+      expect(
+        screen.getByText(/your role cannot choose a lodge/i),
+      ).toBeInTheDocument()
+      expect(
+        screen.queryByRole("button", { name: /^try again$/i }),
+      ).not.toBeInTheDocument()
+    },
+  )
 
   it.each(EDITORS)("$name exposes its real action after a concrete lodge settles", async ({ render: renderEditor, action }) => {
     lodgeOptions = {

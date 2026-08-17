@@ -260,24 +260,30 @@ operational documents (which may carry door/emergency access details).
     `FINANCE_USER` and `ADMIN_MEMBERSHIP` all get a permanent 403 on the lodge
     list.
 
-  **The root cause is fixed too (#2887, owner decision).** `GET
-  /api/admin/lodges` is readable by ANY authenticated admin now, because that
-  list is the vocabulary every admin screen needs in order to say which lodge
-  it is talking about, and gating a UI-wide lookup behind the `lodge` feature
-  area is what produced the blank pages. Deliberately that endpoint alone: the
-  other seventeen `lodge:view` reads and all twenty-five `lodge:edit` writes are
-  unchanged, and no role preset was widened — adding `lodge:view` to the two
-  presets would have handed them all eighteen endpoints on upgrade.
+  **The root cause is NOT fixed here — it is #2925.** `GET /api/admin/lodges`
+  requires `lodge:view`, and `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold no
+  `lodge` entry, so a 403 is their permanent answer and every admin surface that
+  needs only the lodge NAMES loses content it does not need permission for. The
+  right fix is at the route, where one gate serves all twenty-two consumers.
 
-  The PAYLOAD narrows instead of the access. `lodgeSelect` carries `doorCode`,
-  which this codebase already treats as a physical-access secret it keeps out of
-  audit metadata, plus the street address and travel notes. A caller without
-  `lodge:view` gets id, name, slug and active — nothing else.
+  Relaxing it was attempted in this PR and reverted, and the reason is worth
+  recording because it is a trap for the next attempt: dropping the explicit
+  `permission` from `requireAdmin()` does NOT open the route.
+  `inferAdminAccessRequirement` reads the `x-pathname` and `x-request-method`
+  headers `proxy.ts` sets for it and resolves them through
+  `getAdminRouteRequirement`, which maps `/api/admin/lodges` to `area: "lodge"`
+  — so the same requirement returns by inference and nothing changes. The tests
+  written for the attempt passed anyway, because the shared `requireAdmin` mock
+  fell back to `hasAdminPortalAccess` when given no options, which the real
+  guard has never done. #2925 must change the mapping or the route's stated
+  requirement, not the call site, and must not be believed until a test drives
+  the real inference path.
 
-  `forbidden` therefore stops being reachable for the two shipped presets, but
-  the state and its handling stay: a deployment with a custom role matrix can
-  still produce it, and removing the branch would make the next occurrence a
-  blank page again.
+  Any #2925 fix also has to narrow the PAYLOAD, not just the access:
+  `lodgeSelect` carries `doorCode`, which this codebase already treats as a
+  physical-access secret kept out of audit metadata, plus the street address and
+  travel notes. A finance or membership admin needs id, name and active — and
+  nothing else.
 
   They are also fixed at the surface, and the difference between the two is the
   point.

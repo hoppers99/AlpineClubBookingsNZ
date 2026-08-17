@@ -27,11 +27,12 @@ vi.mock("@/lib/auth", () => ({
   #2887: the route's `permission` option is FORWARDED to the mock.
 
   It used to be dropped — `evaluateRequireAdminMock()` was called with no
-  arguments — so every per-area gate in this file was inert and a test could not
-  tell a `lodge:view`-gated route from an ungated one. That made the new
-  "any authenticated admin may read the list" case vacuous: planting the old
-  gate back left it green (proof M25). Forwarding the options is what makes the
-  gate observable.
+  arguments — so every per-area gate in this file was inert: a test could not
+  tell a `lodge:view`-gated route from an ungated one, because the mock's
+  absent-options fallback checks `hasAdminPortalAccess`, which the real guard
+  has never had. Found while proving an access change that has since been
+  reverted to #2925; the fix is kept because the vacuity predates it and the
+  gates in this file are only real with the options forwarded.
 */
 vi.mock("@/lib/session-guards", () => ({
   requireAdmin: async (options?: unknown) =>
@@ -166,80 +167,6 @@ describe("GET /api/admin/lodges", () => {
     mocks.auth.mockResolvedValue(memberSession);
     const response = await GET();
     expect(response.status).toBe(403);
-  });
-
-  /*
-    #2887 (owner decision): the lodge LIST is readable by any authenticated
-    admin, because it is the vocabulary every admin screen needs in order to
-    say which lodge it is talking about. No role preset changed, and no other
-    `lodge:view` endpoint was relaxed — widening the presets instead would have
-    handed these two roles all eighteen of them on upgrade.
-  */
-  const financeAdminSession = {
-    user: {
-      id: "finance-1",
-      role: "ADMIN",
-      accessRoles: ["FINANCE_ADMIN"],
-      adminPermissionMatrix: {
-        overview: "view",
-        bookings: "view",
-        membership: "view",
-        finance: "edit",
-        lodge: "none",
-        content: "none",
-        support: "view",
-      },
-    },
-  };
-  const membershipAdminSession = {
-    user: {
-      id: "membership-1",
-      role: "ADMIN",
-      accessRoles: ["ADMIN_MEMBERSHIP"],
-      adminPermissionMatrix: {
-        overview: "view",
-        bookings: "view",
-        membership: "edit",
-        finance: "none",
-        lodge: "none",
-        content: "none",
-        support: "view",
-      },
-    },
-  };
-
-  it.each([
-    ["FINANCE_ADMIN", () => financeAdminSession],
-    ["ADMIN_MEMBERSHIP", () => membershipAdminSession],
-  ])("lets %s read the list, with identity only and no door code", async (_n, make) => {
-    mocks.auth.mockResolvedValue(make());
-    mocks.lodgeFindMany.mockResolvedValue([
-      lodgeRecord({ doorCode: "1234", address: "12 Alpine Rd", travelNote: "Turn left" }),
-    ]);
-
-    const response = await GET();
-    expect(response.status).toBe(200);
-    const data = await response.json();
-    expect(data.lodges[0]).toEqual({
-      id: "lodge-1",
-      name: "Alpine Lodge",
-      slug: "alpine-lodge",
-      active: true,
-    });
-    // The payload narrows, not the access. `doorCode` is a physical-access
-    // secret this codebase already keeps out of audit metadata; a finance or
-    // membership admin has no business with it, nor with the street address.
-    expect(data.lodges[0]).not.toHaveProperty("doorCode");
-    expect(data.lodges[0]).not.toHaveProperty("address");
-    expect(data.lodges[0]).not.toHaveProperty("travelNote");
-    expect(JSON.stringify(data)).not.toContain("1234");
-  });
-
-  it("still gives a lodge:view admin the full record", async () => {
-    mocks.lodgeFindMany.mockResolvedValue([lodgeRecord({ doorCode: "1234" })]);
-    const response = await GET();
-    const data = await response.json();
-    expect(data.lodges[0]).toMatchObject({ doorCode: "1234" });
   });
 
   it("returns serialized lodges for admins", async () => {

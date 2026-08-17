@@ -48,9 +48,13 @@ export function deriveSettledLodgeOptionScope(input: {
     `forbidden` alone does not help either, because `forbidden` empties the list
     by the same code path.
 
-    The blank page the reversal targeted is fixed at its root instead:
-    `GET /api/admin/lodges` is readable by any authenticated admin now, so
-    `forbidden` is unreachable for `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN`.
+    The blank page the reversal targeted is REAL and is not fixed here.
+    `GET /api/admin/lodges` still requires `lodge:view`, which
+    `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` do not have, so `forbidden` is a
+    permanent answer for them and those two surfaces still stop. That is tracked
+    as #2925 and belongs at the route, where one gate serves every consumer —
+    not here, where widening the derivation trades a blank page for a silently
+    mis-scoped write.
 
     `empty` stays ahead of `all` deliberately. A club with no active lodge can
     scope nothing, so offering an unrestricted create there is vacuous at best;
