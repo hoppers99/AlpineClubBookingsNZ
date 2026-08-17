@@ -22,15 +22,37 @@ export function deriveSettledLodgeOptionScope(input: {
   explicitAllLodgesValue?: string
 }): SettledLodgeOptionScope {
   if (input.loading) return { kind: "loading" }
-  if (input.failed) return { kind: "failed" }
-  if (input.forbidden) return { kind: "forbidden" }
-  if (input.lodges.length === 0) return { kind: "empty" }
+
+  /*
+    #2887 review (F1): the DELIBERATE club-wide answer is decided before the
+    list's failure modes, and that ordering is load-bearing.
+
+    A caller that pins `selectedLodgeId` to its own `explicitAllLodgesValue` is
+    saying "this surface is club-wide by construction" — promo codes and work
+    parties are the two, and both hard-code it. Their answer cannot depend on
+    the lodge list, so a `failed`, `forbidden` or `empty` list must not take it
+    away from them.
+
+    Testing `forbidden` first did exactly that. `GET /api/admin/lodges` needs
+    `lodge:view`, and two shipped presets — `ADMIN_MEMBERSHIP` and
+    `FINANCE_ADMIN` — have no `lodge` entry at all, so their 403 is PERMANENT
+    and the retry can only 403 again. A `FINANCE_ADMIN` clicking Promo Codes in
+    the sidebar got a header, no Add button, no promo codes and an alert saying
+    nothing had failed. Before this branch that click listed every promo code.
+
+    `loading` still wins, because "not yet" is not an outcome and resolves on
+    its own in a moment.
+  */
   if (
     input.explicitAllLodgesValue !== undefined &&
     input.selectedLodgeId === input.explicitAllLodgesValue
   ) {
     return { kind: "all" }
   }
+
+  if (input.failed) return { kind: "failed" }
+  if (input.forbidden) return { kind: "forbidden" }
+  if (input.lodges.length === 0) return { kind: "empty" }
   const lodge = input.lodges.find(
     (option) => option.id === input.selectedLodgeId,
   )
