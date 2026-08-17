@@ -1,18 +1,20 @@
 import {
+  adminDuplicateCaptureRefundTemplate,
   adminLateCaptureAutoRefundTemplate,
   adminLateCaptureHandBackConflictTemplate,
-  adminPaymentFailureTemplate,
-  adminDuplicateCaptureRefundTemplate,
-  adminManualSettlementConflictTemplate,
   adminManualRefundTaskTemplate,
-  adminXeroSyncErrorTemplate,
-  adminXeroRepeatedFailureTemplate,
-  adminXeroReconciliationReportTemplate,
-  adminCreditSyncDriftTemplate,
+  adminManualSettlementConflictTemplate,
+  adminPaymentFailureTemplate,
   adminRefundRequestTemplate,
-  type XeroReconciliationReportEmail,
+  adminXeroRepeatedFailureTemplate,
+  adminXeroSyncErrorTemplate,
+} from "@/lib/email-templates/admin-finance";
+import {
+  adminCreditSyncDriftTemplate,
+  adminXeroReconciliationReportTemplate,
   type CreditSyncDriftReportEmail,
-} from "../email-templates";
+  type XeroReconciliationReportEmail,
+} from "@/lib/email-templates/admin-xero-reports";
 import {
   composeOptionalEmailLine,
   duplicateCaptureRefundOutcomeParagraph,

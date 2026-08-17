@@ -42,7 +42,8 @@ const { mockPrisma, mockAuth, mockFlags, mockLookahead } = vi.hoisted(() => ({
     choreAssignment: { findMany: vi.fn(), groupBy: vi.fn() },
     hutLeaderAssignment: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn() },
     member: { findUnique: vi.fn() },
-    lodge: { findFirst: vi.fn() },
+    // findMany: the hut-leader auto-assign cron iterates active lodges (#2915).
+    lodge: { findFirst: vi.fn(), findMany: vi.fn() },
     auditLog: { create: vi.fn() },
   },
   mockAuth: vi.fn(),
@@ -152,6 +153,7 @@ beforeEach(() => {
   mockPrisma.choreTemplate.findMany.mockResolvedValue([]);
   mockPrisma.choreAssignment.findMany.mockResolvedValue([]);
   mockPrisma.choreAssignment.groupBy.mockResolvedValue([]);
+  mockPrisma.lodge.findMany.mockResolvedValue([{ id: "lodge-1" }]);
   mockPrisma.hutLeaderAssignment.findFirst.mockResolvedValue(null);
   mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([]);
   mockPrisma.lodge.findFirst.mockResolvedValue({ id: "lodge-1" });

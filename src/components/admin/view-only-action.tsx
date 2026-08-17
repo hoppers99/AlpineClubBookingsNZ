@@ -262,7 +262,7 @@ export const ADMIN_VIEW_ONLY_SECTION_HEADING =
  *
  *  - surfaces that state view-only access WITHOUT gating a control through
  *    {@link ViewOnlyActionButton} — with no gated control there is nothing for
- *    this banner to head (seven files today);
+ *    this banner to head (8 files today, measured by the census test);
  *  - a section whose Notice is CONDITIONAL on no ancestor covering it.
  *    `member-lodge-access-card`, `member-committee-assignments-card` and
  *    `member-seasonal-membership-card` each render their Notice only when

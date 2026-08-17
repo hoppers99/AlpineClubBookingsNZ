@@ -1550,7 +1550,7 @@ describe("checkAgeUpMembers", () => {
 
 describe("ageUpInvitationTemplate", () => {
   it("should generate HTML with member name and reset URL", async () => {
-    const { ageUpInvitationTemplate } = await import("../email-templates");
+    const { ageUpInvitationTemplate } = await import("@/lib/email-templates/membership");
 
     const html = ageUpInvitationTemplate("Alice", "https://example.com/reset?token=abc");
 
@@ -1561,7 +1561,7 @@ describe("ageUpInvitationTemplate", () => {
   });
 
   it("should use the configured target age tier label", async () => {
-    const { ageUpInvitationTemplate } = await import("../email-templates");
+    const { ageUpInvitationTemplate } = await import("@/lib/email-templates/membership");
 
     const html = ageUpInvitationTemplate(
       "Alice",
@@ -1574,7 +1574,7 @@ describe("ageUpInvitationTemplate", () => {
   });
 
   it("should escape HTML in firstName", async () => {
-    const { ageUpInvitationTemplate } = await import("../email-templates");
+    const { ageUpInvitationTemplate } = await import("@/lib/email-templates/membership");
 
     const html = ageUpInvitationTemplate("<script>alert('xss')</script>", "https://example.com");
 
@@ -1585,7 +1585,7 @@ describe("ageUpInvitationTemplate", () => {
 
 describe("ageUpParentEmailHandoffTemplate", () => {
   it("generates a tokenless handoff message and escapes member data", async () => {
-    const { ageUpParentEmailHandoffTemplate } = await import("../email-templates");
+    const { ageUpParentEmailHandoffTemplate } = await import("@/lib/email-templates/membership");
 
     const html = ageUpParentEmailHandoffTemplate({
       recipientName: "Pat Parent",

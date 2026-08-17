@@ -1,5 +1,5 @@
 import { clubConfig } from "@/config/club";
-import { escapeHtml } from "@/lib/email-templates";
+import { escapeHtml } from "@/lib/email-templates/escape";
 import { lodgeOrderBy } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 
@@ -26,7 +26,7 @@ const FALLBACK_PUBLIC_URL = "http://localhost:3000";
 export const EMAIL_DEFAULT_LODGE_NAME = `${clubConfig.name} Lodge`;
 
 // STABLE SEARCH-REPLACE KEY (E3 #1929 / C6 #1985): the outbound email FROM-name
-// baked into the HTML template `<title>` (email-templates.ts). Like
+// baked into the HTML template `<title>` (email-templates/layout.ts). Like
 // EMAIL_DEFAULT_LODGE_NAME it is the config-derived default that
 // applyEmailMessageSettingsToHtml replaces with the live
 // EmailMessageSetting.emailFromName at send time, so it MUST equal

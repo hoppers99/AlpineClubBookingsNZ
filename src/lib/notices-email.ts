@@ -3,7 +3,7 @@ import "server-only";
 import { getAppBaseUrl } from "@/lib/app-url";
 import { createAuditLog } from "@/lib/audit";
 import { sendEmail } from "@/lib/email";
-import { noticePublishedTemplate } from "@/lib/email-templates";
+import { noticePublishedTemplate } from "@/lib/email-templates/communications";
 import logger from "@/lib/logger";
 import {
   resolveNoticeAudienceMembers,

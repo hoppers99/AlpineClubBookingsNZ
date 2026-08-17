@@ -18,7 +18,7 @@ const NO_MATCH = -1;
 
 /**
  * Strip the query/hash and any single trailing slash. A local copy of
- * `contextual-help.ts`'s `normalisePath` so this module stays free of that
+ * `contextual-help/index.ts`'s `normalisePath` so this module stays free of that
  * (admin-corpus-bearing) import; pinned identical by the C1 corpus tests.
  */
 export function normaliseHelpPath(pathname: string | null | undefined): string {

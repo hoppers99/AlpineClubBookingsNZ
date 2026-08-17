@@ -18,6 +18,7 @@ import {
 import { PaymentSource, PaymentTransactionKind } from "@prisma/client";
 import { prisma } from "./prisma";
 import logger from "@/lib/logger";
+import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { getStayNights } from "./pricing";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
@@ -460,13 +461,14 @@ export async function createXeroInvoiceForBooking(
   const checkOut = new Date(booking.checkOut);
   const nights = getStayNights(checkIn, checkOut).length;
 
-  // Determine season type from check-in date for item code mapping
+  // Season type for item-code mapping, from the booking's own lodge (#2913).
   let bookingSeasonType: string | null = null;
   const season = await prisma.season.findFirst({
     where: {
       startDate: { lte: checkIn },
       endDate: { gte: checkIn },
       active: true,
+      ...lodgeNullTolerantScope(booking.lodgeId),
     },
     select: { type: true },
   });
@@ -1084,6 +1086,7 @@ export async function updateXeroBookingInvoiceForBooking(
       startDate: { lte: checkIn },
       endDate: { gte: checkIn },
       active: true,
+      ...lodgeNullTolerantScope(booking.lodgeId),
     },
     select: { type: true },
   });

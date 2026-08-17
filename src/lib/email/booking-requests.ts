@@ -1,12 +1,12 @@
 import {
-  bookingRequestVerificationTemplate,
   bookingRequestApprovedTemplate,
-  bookingRequestQuoteTemplate,
   bookingRequestDeclinedTemplate,
   bookingRequestPaymentExpiredTemplate,
+  bookingRequestQuoteTemplate,
+  bookingRequestVerificationTemplate,
   schoolAttendeeConfirmationTemplate,
   splitGuestPaymentLinkTemplate,
-} from "../email-templates";
+} from "@/lib/email-templates/booking-requests";
 import {
   composeOptionalEmailLine,
 } from "../email-message-notes";

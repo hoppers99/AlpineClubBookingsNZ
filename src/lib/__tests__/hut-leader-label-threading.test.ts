@@ -15,7 +15,7 @@ vi.mock("@/lib/email/core", () => ({
 
 import { CLUB_HUT_LEADER_LABEL } from "@/config/club-identity";
 import { sendEmail } from "@/lib/email/core";
-import { hutLeaderAssignmentTemplate } from "../email-templates";
+import { hutLeaderAssignmentTemplate } from "@/lib/email-templates/chores";
 import { sendHutLeaderAssignmentEmail } from "../email/chores";
 
 const mockedSendEmail = vi.mocked(sendEmail);

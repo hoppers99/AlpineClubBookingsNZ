@@ -41,15 +41,19 @@ vi.mock("@/lib/xero-link-short-code", () => ({
   getXeroOrgShortCode: h.getXeroOrgShortCode,
 }));
 
-vi.mock("@/lib/email-templates", () => ({
-  adminPaymentFailureTemplate: vi.fn(() => "<html></html>"),
-  adminDuplicateCaptureRefundTemplate: vi.fn(() => "<html></html>"),
+// Derived from the module's own exports (#2689 review), so a new template
+// cannot arrive here as `undefined`.
+vi.mock("@/lib/email-templates/admin-finance", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   adminManualSettlementConflictTemplate: h.settlementTemplate,
-  adminManualRefundTaskTemplate: vi.fn(() => "<html></html>"),
-  adminXeroSyncErrorTemplate: vi.fn(() => "<html></html>"),
   adminXeroRepeatedFailureTemplate: h.repeatedFailureTemplate,
+}));
+
+// The two scheduled reports live in their own module (#2689), so they need
+// their own factory: a factory only replaces the module it names.
+vi.mock("@/lib/email-templates/admin-xero-reports", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   adminXeroReconciliationReportTemplate: h.reconciliationTemplate,
-  adminRefundRequestTemplate: vi.fn(() => "<html></html>"),
 }));
 
 import {

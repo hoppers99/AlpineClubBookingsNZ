@@ -114,8 +114,8 @@ const nextConfig: NextConfig = {
    * `KNOWLEDGE_BUNDLE_RELATIVE_PATH`; not imported because Next's config loader
    * does not apply the tsconfig path mapping (see the rewrites note below). The
    * Dockerfile also copies `.artifacts/` into the runner as a guaranteed
-   * placement; this trace is the framework-native mechanism the diagnostics
-   * route (#2378) will key to directly.
+   * placement; this trace is the framework-native mechanism the shipped
+   * diagnostics route (#2378) keys to directly.
    */
   outputFileTracingIncludes: {
     "/**": [".artifacts/diagnostics/knowledge-bundle.json"],

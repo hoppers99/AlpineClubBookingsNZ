@@ -468,8 +468,8 @@ const RESERVED_ARGUMENT_KEYS: readonly string[] = [
  *    and returned `{"filters":{"status":"open"}}` — so the canonical hash of the
  *    ACCEPTED arguments was byte-identical to the same call without the key, which is
  *    exactly the audit-integrity defect this guard exists to remove, reproduced one
- *    level down. A `filters` object is not a hypothetical shape either: it is the one
- *    the later tool packs (AID-6B/6C) need. Scanning everything also means an author
+ *    level down. A `filters` object was the concrete nested shape considered for the
+ *    AID-6B/6C packs. Scanning everything also means an author
  *    adding a nested or record-shaped argument inherits the guarantee without having
  *    to know it exists.
  *  - `Object.getOwnPropertyNames`, not `for…in`: it sees a non-enumerable own

@@ -14,6 +14,7 @@ import {
   finalizeBookingEmailHtml,
   hasBookingDetailHref,
 } from "@/lib/booking-email-html";
+import { adminEmailDeliveryFailedTemplate } from "@/lib/email-templates/admin-ops";
 
 const MAX_ATTEMPTS = 3;
 const RETRY_FAILURE_ALERT_TEMPLATE = "admin-email-failure";
@@ -451,7 +452,11 @@ export async function retryFailedEmails(): Promise<{
             await sendEmail({
               to: adminEmail,
               subject: "Email delivery permanently failed",
-              html: `<p>Email to ${emailLog.to} (template: ${emailLog.templateName}) has failed after ${newAttempts} attempts and will not be retried.</p>`,
+              html: adminEmailDeliveryFailedTemplate({
+                recipient: emailLog.to,
+                templateName: emailLog.templateName,
+                attemptCount: newAttempts,
+              }),
               // Admin failure alert: never withheld by a booking flag (#2258).
               bookingContext: "none",
               templateName: RETRY_FAILURE_ALERT_TEMPLATE,

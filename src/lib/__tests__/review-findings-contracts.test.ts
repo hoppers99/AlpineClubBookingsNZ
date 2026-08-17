@@ -17,6 +17,15 @@ import {
   MIGRATION_GATE_TIMEOUT_MS,
   MIGRATION_GATE_TREE_TIMEOUT_MS,
 } from "./helpers/migration-gate-timeouts";
+// #2886 — the migration-safety gates are bash scripts, so every fixture path
+// handed to them crosses a shell boundary. Read that helper before changing how
+// one of these paths is built: the shell on a Windows developer machine cannot
+// open a drive-letter path at all, and the fix is not a separator flip.
+import {
+  bashFixtureEnv,
+  bashFixturePath,
+  bashGateArgs,
+} from "./helpers/bash-fixture-path";
 
 function readRepoFile(relativePath: string) {
   // Test helper: reads a fixed repo file under process.cwd(); relativePath is test-controlled, not user input.
@@ -196,46 +205,30 @@ function writeRollbackScript(migrationPath: string) {
   );
 }
 
-// The migration-safety gates are bash scripts, so every fixture path handed to
-// them crosses a shell boundary. On Windows that shell is MSYS/Git-Bash, which
-// strips the backslashes out of an argv element ("C:\Users\x" arrives as
-// "C:Usersx") and then reports the fixture as missing — every one of these
-// shell-out tests failed locally for that reason alone, which is a false red on
-// a developer machine and hides real regressions. Forward slashes are accepted
-// by both shells and by Node on Windows. On Linux/CI `path` already produces
-// forward slashes, so this is a no-op there.
-function toShellPath(value: string) {
-  return value.replace(/\\/g, "/");
-}
-
-function toShellEnv(env: Record<string, string>) {
-  return Object.fromEntries(
-    Object.entries(env).map(([key, value]) => [
-      key,
-      value.includes("\\") ? toShellPath(value) : value,
-    ])
-  );
-}
-
 const MIGRATION_SAFETY_VALIDATOR_SCRIPT =
   "scripts/validate-blue-green-migrations.sh";
 
 function migrationSafetyValidatorEnv(
   ledgerPath: string,
   env: Record<string, string>
-) {
+): Record<string, string> {
   return {
-    ...process.env,
-    MIGRATION_SAFETY_LEDGER: toShellPath(ledgerPath),
+    MIGRATION_SAFETY_LEDGER: bashFixturePath(ledgerPath),
     // Fixtures that already opt into a reviewed window model the operator's
     // separate stopped-runtime acknowledgement too. Tests for a missing
     // acknowledgement override this explicitly with "0".
     BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED:
       env.ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS === "1" ? "1" : "0",
-    ...toShellEnv(env),
+    ...bashFixtureEnv(env),
   };
 }
 
+// #2886 — the gate's variables are inlined into the bash command rather than
+// handed to `spawnSync`'s `env`, because the Windows `bash` (WSL) does not
+// forward Win32 environment variables: the script saw every one of them UNSET
+// and quietly fell back to the REAL `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`
+// instead of the fixture ledger. `process.env` is still inherited for
+// everything else. See ./helpers/bash-fixture-path.
 function runMigrationSafetyValidator(
   migrationPath: string,
   ledgerPath: string,
@@ -243,10 +236,14 @@ function runMigrationSafetyValidator(
 ) {
   return spawnSync(
     "bash",
-    [MIGRATION_SAFETY_VALIDATOR_SCRIPT, toShellPath(migrationPath)],
+    bashGateArgs(
+      MIGRATION_SAFETY_VALIDATOR_SCRIPT,
+      [bashFixturePath(migrationPath)],
+      migrationSafetyValidatorEnv(ledgerPath, env)
+    ),
     {
       cwd: process.cwd(),
-      env: migrationSafetyValidatorEnv(ledgerPath, env),
+      env: process.env,
       encoding: "utf8",
     }
   );
@@ -283,10 +280,14 @@ function startMigrationSafetyValidator(
   return new Promise((resolve, reject) => {
     execFile(
       "bash",
-      [MIGRATION_SAFETY_VALIDATOR_SCRIPT, toShellPath(migrationPath)],
+      bashGateArgs(
+        MIGRATION_SAFETY_VALIDATOR_SCRIPT,
+        [bashFixturePath(migrationPath)],
+        migrationSafetyValidatorEnv(ledgerPath, env)
+      ),
       {
         cwd: process.cwd(),
-        env: migrationSafetyValidatorEnv(ledgerPath, env),
+        env: process.env,
         encoding: "utf8",
         // Fixtures against the committed tree print every matching SQL line;
         // stay well clear of the 1 MB default so a truncated pipe can never
@@ -338,14 +339,19 @@ function createTempMigrationsTree(
 function runMigrationSafetyCoverage(
   env: Record<string, string> = {}
 ) {
-  return spawnSync("bash", ["scripts/check-migration-safety-coverage.sh"], {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      ...toShellEnv(env),
-    },
-    encoding: "utf8",
-  });
+  return spawnSync(
+    "bash",
+    bashGateArgs(
+      "scripts/check-migration-safety-coverage.sh",
+      [],
+      bashFixtureEnv(env)
+    ),
+    {
+      cwd: process.cwd(),
+      env: process.env,
+      encoding: "utf8",
+    }
+  );
 }
 
 /**
@@ -1318,11 +1324,15 @@ describe("review finding source/schema contracts", () => {
   });
 
   it("renders NZ-local expiry timestamps in email verification and email-change templates", () => {
-    const source = readRepoFile("src/lib/email-templates.ts");
+    // #2689 moved both templates out of the monolith into the account family.
+    // The slice end moved with them: `nominationRequestTemplate` is membership
+    // business and now lives in another module, so the block that follows the
+    // verification template here is the email-change one.
+    const source = readRepoFile("src/lib/email-templates/account.ts");
     const verificationTemplateBlock = sliceFrom(
       source,
       "export function emailVerificationTemplate",
-      "export function nominationRequestTemplate"
+      "export function emailChangeVerificationTemplate"
     );
     const emailChangeTemplateBlock = sliceFrom(
       source,
@@ -3663,10 +3673,17 @@ describe("review finding source/schema contracts", () => {
   });
 
   it("surfaces the booking status glossary and cancellation schedule to members (F28)", () => {
-    const contextualHelp = readRepoFile("src/lib/contextual-help.ts");
-    expect(contextualHelp).toContain("export const BOOKING_STATUS_GLOSSARY");
+    // #2689 moved the glossary to its own leaf module, so a member page can
+    // render eleven strings without importing the whole admin help corpus.
+    const glossary = readRepoFile(
+      "src/lib/contextual-help/booking-status-glossary.ts",
+    );
+    expect(glossary).toContain("export const BOOKING_STATUS_GLOSSARY");
     // Admin help still renders the same shared glossary (no divergent copy).
-    expect(contextualHelp).toContain("details: BOOKING_STATUS_GLOSSARY,");
+    const adminBookingsHelp = readRepoFile(
+      "src/lib/contextual-help/admin/bookings-and-beds.ts",
+    );
+    expect(adminBookingsHelp).toContain("details: BOOKING_STATUS_GLOSSARY,");
 
     // Epic #2094 C2 retired the BookingHelpDialog: the same four blocks now feed
     // the global help widget via this render-null extras leaf. The PR #1389

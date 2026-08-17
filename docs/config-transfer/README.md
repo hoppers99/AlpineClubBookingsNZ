@@ -528,8 +528,8 @@ Intentionally excluded / deferred:
 
 ## Decision records
 
-- [ADR-001 — Interchange format and identity strategy](decisions/ADR-001-interchange-format-and-identity-strategy.md)
-- [ADR-002 — Import semantics and safety model](decisions/ADR-002-import-semantics-and-safety.md)
+- [ADR-001 — Interchange format and identity strategy](decisions/ADR-001-interchange-format-and-identity-strategy.md) (implemented, M1/M2)
+- [ADR-002 — Import semantics and safety model](decisions/ADR-002-import-semantics-and-safety.md) (implemented, M3)
 - [ADR-003 — Install-time bootstrap integration](decisions/ADR-003-install-seed-integration.md) (implemented, #1988)
 
 ## Implementation notes

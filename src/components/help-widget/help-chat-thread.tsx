@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { BookOpen } from "lucide-react";
-import type { HelpQuestion } from "@/lib/contextual-help";
+import { type HelpQuestion } from "@/lib/contextual-help/types";
 import { TRUNCATED_NOTE, type HelpChatMessage } from "./use-help-chat";
 
 /**

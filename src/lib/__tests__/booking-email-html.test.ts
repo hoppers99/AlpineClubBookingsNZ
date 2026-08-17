@@ -4,7 +4,9 @@ import {
   finalizeBookingEmailHtml,
   hasBookingDetailHref,
 } from "@/lib/booking-email-html";
-import { bookingPolicyExceptionApprovedTemplate } from "@/lib/email-templates";
+import {
+  bookingPolicyExceptionApprovedTemplate,
+} from "@/lib/email-templates/booking-exceptions";
 import { BOOKING_URL_TEMPLATE_NAMES } from "@/lib/booking-email-template-contract";
 import { ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES } from "@/lib/booking-email-suppression";
 

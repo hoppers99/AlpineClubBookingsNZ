@@ -1456,7 +1456,7 @@ describe("status colors include waitlist statuses", () => {
 
 describe("waitlist email templates", () => {
   it("waitlistConfirmationTemplate renders correctly", async () => {
-    const { waitlistConfirmationTemplate } = await import("@/lib/email-templates");
+    const { waitlistConfirmationTemplate } = await import("@/lib/email-templates/waitlist");
 
     const html = waitlistConfirmationTemplate(
       "John",
@@ -1472,7 +1472,7 @@ describe("waitlist email templates", () => {
   });
 
   it("waitlistOfferTemplate renders correctly", async () => {
-    const { waitlistOfferTemplate } = await import("@/lib/email-templates");
+    const { waitlistOfferTemplate } = await import("@/lib/email-templates/waitlist");
 
     const html = waitlistOfferTemplate(
       "Jane",
@@ -1490,7 +1490,7 @@ describe("waitlist email templates", () => {
   });
 
   it("waitlistOfferExpiredTemplate renders correctly", async () => {
-    const { waitlistOfferExpiredTemplate } = await import("@/lib/email-templates");
+    const { waitlistOfferExpiredTemplate } = await import("@/lib/email-templates/waitlist");
 
     const html = waitlistOfferExpiredTemplate(
       "Mike",
@@ -1505,7 +1505,7 @@ describe("waitlist email templates", () => {
   });
 
   it("adminWaitlistOfferTemplate renders correctly", async () => {
-    const { adminWaitlistOfferTemplate } = await import("@/lib/email-templates");
+    const { adminWaitlistOfferTemplate } = await import("@/lib/email-templates/admin-booking");
 
     const html = adminWaitlistOfferTemplate({
       memberName: "John Doe",

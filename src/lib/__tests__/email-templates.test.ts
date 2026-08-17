@@ -1,28 +1,42 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
+import { passwordResetTemplate } from "@/lib/email-templates/account";
 import {
-  passwordResetTemplate,
-  bookingConfirmedTemplate,
-  bookingPendingTemplate,
+  adminPendingDeadlineTemplate,
+  adminSplitSettlementCancelledTemplate,
+  adminSplitSettlementUnpaidTemplate,
+} from "@/lib/email-templates/admin-booking";
+import {
+  adminDuplicateCaptureRefundTemplate,
+  adminRefundRequestTemplate,
+} from "@/lib/email-templates/admin-finance";
+import {
+  adminDailyDigestTemplate,
+  adminIssueReportTemplate,
+} from "@/lib/email-templates/admin-ops";
+import {
   bookingBumpedTemplate,
   bookingCancelledTemplate,
+  bookingConfirmedTemplate,
+  bookingPendingTemplate,
+  setupIntentFailedTemplate,
+  splitGuestPortionCancelledTemplate,
+} from "@/lib/email-templates/booking";
+import {
+  bookingPolicyExceptionRefusedTemplate,
+} from "@/lib/email-templates/booking-exceptions";
+import {
+  preArrivalReminderTemplate,
+} from "@/lib/email-templates/booking-reminders";
+import {
   choreRosterTemplate,
   formatChoreRosterDate,
-  setupIntentFailedTemplate,
   hutLeaderAssignmentTemplate,
-  adminDailyDigestTemplate,
-  adminPendingDeadlineTemplate,
-  adminIssueReportTemplate,
-  adminRefundRequestTemplate,
-  adminDuplicateCaptureRefundTemplate,
-  preArrivalReminderTemplate,
-  waitlistOfferTemplate,
+} from "@/lib/email-templates/chores";
+import {
   waitlistOfferExpiredTemplate,
+  waitlistOfferTemplate,
   waitlistPlaceRestoredTemplate,
-  adminSplitSettlementUnpaidTemplate,
-  adminSplitSettlementCancelledTemplate,
-  splitGuestPortionCancelledTemplate,
-  bookingPolicyExceptionRefusedTemplate,
-} from "../email-templates";
+} from "@/lib/email-templates/waitlist";
 import { checkoutDayChoreNote } from "../email-message-notes";
 import { getAppBaseUrl } from "../app-url";
 import { formatNZDateTime } from "../nzst-date";
@@ -779,7 +793,7 @@ describe("email-templates", () => {
 
       const [{ accountDeletionApprovedTemplate }, { clubConfig }] =
         await Promise.all([
-          import("../email-templates"),
+          import("@/lib/email-templates/account"),
           import("@/config/club"),
         ]);
       const html = accountDeletionApprovedTemplate("Alice");

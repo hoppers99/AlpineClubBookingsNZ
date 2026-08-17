@@ -26,6 +26,49 @@ the full local gate.
   `src/lib/email-delivery.ts` refuses to build a transport without them
   (nodemailer is mocked, so nothing is ever sent).
 
+## Which project typechecks a test
+
+`npm run typecheck` runs two TypeScript projects, and between them they must
+read every tracked `.ts`, `.tsx`, `.mts` and `.cts` file in the repository
+except `.semgrep/tests/acb-client-server-boundary.tsx` and
+`.semgrep/tests/acb-unsafe-raw-sql.ts`. Those two files are deliberately broken
+samples read only by Semgrep's `--test` runner; typechecking them would defeat
+their purpose:
+
+- **`tsconfig.json`** — the app. It excludes Vitest test/spec files under
+  `src/` and `scripts/`, plus everything under `__tests__/`, so that test code
+  stays out of the app's type surface.
+- **`tsconfig.test.json`** — the Vitest project under `src/` and `scripts/`.
+  Its broad test/spec patterns deliberately cover TypeScript's `.ts`, `.tsx`,
+  `.mts` and `.cts` forms, and it supplies `vitest/globals`.
+
+Vitest also collects JavaScript test/spec forms. The existing `.js`, `.jsx`,
+`.mjs` and `.cjs` files are loaded by `tsconfig.test.json` while `allowJs`
+remains on, but `checkJs` is explicitly off: they execute in Vitest, but this
+document does **not** claim TypeScript statically checks their bodies. MEP-E1
+(#2693) owns converting the remaining JavaScript dependencies, setting
+`allowJs: false`, and giving Playwright its deliberate long-term project.
+
+Put a supported new Vitest test under `src/` or `scripts/` and the existing
+patterns cover it; put one somewhere else and you must add the pattern.
+`src/lib/__tests__/typecheck-project-coverage.test.ts` fails if any other
+tracked TypeScript file ends up in neither project. It also pins Vitest's actual
+default extension glob, requires every supported Vitest file in the test
+project, and refuses compound JSX extensions that Vitest would collect but
+TypeScript cannot load. It asks TypeScript itself which files each project
+resolves rather than reimplementing tsconfig's glob rules.
+
+That guard exists because the gap was real and silent (#2875): `tsconfig.json`
+excluded the test files and `tsconfig.test.json` re-included only the `src/`
+half, so everything under `scripts/__tests__/` was typechecked by neither
+project. Deliberate `const x: number = "string"` errors planted in those files
+produced a completely green `npm run typecheck`.
+
+Playwright specs under `e2e/` are not Vitest and are not in that project. They
+remain in the app project because the Vitest exclusions are scoped to `src/`
+and `scripts/`, leaving `e2e/` untouched. That home is still incidental rather
+than deliberate; choosing the long-term Playwright project is MEP-E1 (#2693).
+
 ## The frozen test clock
 
 Plain English: tests are not allowed to know what today's real date is. Every
@@ -423,18 +466,55 @@ Two traps make the restore less reliable than it looks:
   no-op against — a different checkout. Use absolute paths, and assert the
   mutated text actually differs before you run the suite.
 
-## A suite can time out on a tree that is fine
+## A shell-out suite fails on Windows for a reason that is not load
 
-`review-findings-contracts.test.ts` shells out over the whole migration tree, so
-it is load-sensitive: started while other lanes are installing or compiling, it
-times out on a branch with nothing wrong with it.
+Four suites prove a real `bash` gate by running it against a throwaway fixture:
+`review-findings-contracts.test.ts`, `blue-green-ledger-lint.test.ts`,
+`data-migration-verification-gate.test.ts` and
+`adult-member-hosting-coverage-migration.test.ts`.
 
-Raising the timeout from the command line does not help. Its per-test timeouts
-are written **inline in the file**, as the third argument to each `it(...)`, and
-an inline timeout wins over `--testTimeout`. Re-run the suite **alone** before
-believing a failure from it, and never report it as clean when it is not — say
-what failed and why it is not yours. `AGENTS.md` lists it alongside the other
-known-environmental suites.
+For a long time this section said the first of those was **load-sensitive** and
+told you to re-run it alone. That was wrong, and it is worth knowing why,
+because a wrong diagnosis that suggests an action is more expensive than no
+diagnosis at all: three separate lanes in one session each re-established that
+the red suite was not theirs, and each threw the reasoning away. Re-running can
+never help, because load was never involved.
+
+The measured cause (#2886) is that on Windows `bash` is
+`C:\Windows\System32\bash.exe` — **WSL**, not Git Bash — and two things then
+fail deterministically, on a clean tree, with the suite run alone:
+
+1. A drive-letter fixture path does not exist inside WSL's filesystem
+   namespace, so the gate reported `Migration SQL file not found: C:/Users/…`.
+   Flipping the separators does not help; only a path **relative to the `cwd`
+   the script is spawned with** resolves under both WSL and Git Bash.
+2. Variables put on `spawnSync`'s `env` option do not cross into WSL at all.
+   The gate saw them unset and fell back to its production defaults — so a test
+   pointing the validator at a fixture ledger was silently running it against
+   the repository's real `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`. That one failed
+   without any error message, which is the more dangerous of the two.
+
+Both are fixed centrally in `src/lib/__tests__/helpers/bash-fixture-path.ts`,
+which carries the measurements. **Use `bashFixturePath` and `bashGateArgs` for
+gate scripts, and `bashToolArgs` for a POSIX tool**. A same-volume Windows path
+becomes relative; a cross-volume one is translated by the selected shell's
+`wslpath` or `cygpath` and fails clearly if neither exists. On Linux and CI the
+gate invocation is equivalent to what these suites did before, which was checked
+by running both shapes over the same fixtures inside `node:24-bookworm` and
+comparing status, stdout and stderr.
+
+Two things this does *not* cover, so that the list stays honest:
+
+- A POSIX tool must run through `bashToolArgs`, not as a native Windows command.
+  The awk/TypeScript splitter-agreement case does exactly that: stock Windows
+  has no `awk.exe`, but its WSL bash has `/usr/bin/awk`, so the comparison stays
+  mandatory on Windows, Linux and CI. A missing shell-side tool is a real red,
+  never a capability skip or a `status: null` that a weak assertion could miss.
+- These suites do carry generous **inline** per-test timeouts, written as the
+  third argument to each `it(...)`, and an inline timeout does win over
+  `--testTimeout`. That is a real fact about editing them
+  (`./helpers/migration-gate-timeouts.ts` holds the budgets and the reasoning) —
+  it was simply never the reason they were failing.
 
 ## Census tests and the merge hazard
 

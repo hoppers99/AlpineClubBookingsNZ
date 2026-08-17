@@ -183,7 +183,7 @@ describe("check-in reminder guest list (#2307)", () => {
     // collapses the whole block away instead of leaving a stray blank paragraph.
     const { sendCheckinReminderEmail } = await import("../email/booking");
     const { renderTemplateString } = await import("../email-message-renderer");
-    const { plainTextEmailTemplate } = await import("../email-templates");
+    const { plainTextEmailTemplate } = await import("@/lib/email-templates/layout");
     const savedOverrideBody =
       "Check-in Reminder\n\nGuest list:\n\n{{guestFirstName}} {{guestLastName}}\n\nSee you there.";
 
