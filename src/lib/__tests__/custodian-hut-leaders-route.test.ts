@@ -42,6 +42,7 @@ const mocks = vi.hoisted(() => ({
   assignmentFindUnique: vi.fn(),
   assignmentUpdate: vi.fn(),
   lodgeFindUnique: vi.fn(),
+  txAssignmentFindUnique: vi.fn(),
   txAssignmentCreate: vi.fn(),
   txAssignmentUpdate: vi.fn(),
 }));
@@ -153,6 +154,13 @@ beforeEach(() => {
     endDate: new Date("2026-07-05T00:00:00.000Z"),
   });
   mocks.assignmentUpdate.mockResolvedValue({ id: "a1" });
+  // The locked re-read sees the same row unless a case says otherwise.
+  mocks.txAssignmentFindUnique.mockImplementation(async () => {
+    callOrder.push("readRow");
+    return mocks.assignmentFindUnique.mock.results.length
+      ? await mocks.assignmentFindUnique()
+      : null;
+  });
   mocks.sendHutLeaderAssignmentEmail.mockResolvedValue(undefined);
 
   mocks.acquireLodgeCapacityLock.mockImplementation(async () => {
@@ -189,6 +197,10 @@ beforeEach(() => {
     const result = await run({
       member: { findUnique: mocks.memberFindUnique },
       hutLeaderAssignment: {
+        // #2887 review: the PUT re-reads the ROW under the lock too, not just
+        // the overlap set, because its dates, its lodge (the lock key) and
+        // whether a bed hold survives were all derived from a pre-lock read.
+        findUnique: mocks.txAssignmentFindUnique,
         findMany: mocks.assignmentFindMany,
         create: mocks.txAssignmentCreate,
         update: mocks.txAssignmentUpdate,
@@ -393,9 +405,12 @@ describe("PUT /api/admin/hut-leaders/[id] — three-state bedId", () => {
     // can move dates, so it is serialized on the lodge key like every other.
     // #2286 left this branch unlocked on the capacity argument alone, which is
     // how two concurrent edits could each read a clean overlap set and commit.
+    // Lock, then the authoritative ROW re-read, then the overlap set, then the
+    // write. Nothing the decision rests on is read before the key is held.
     expect(callOrder).toEqual([
       "txBegin",
       "lock",
+      "readRow",
       "readOverlaps",
       "update",
       "txEnd",
@@ -444,6 +459,108 @@ describe("PUT /api/admin/hut-leaders/[id] — three-state bedId", () => {
     });
   });
 
+  /*
+    #2887 review, HIGH 1: the three interleavings that a locked overlap read
+    could not see, because the values it locked around were derived from the
+    PRE-lock row. Each case commits a concurrent change between the two reads
+    by making the locked re-read return something different from the first.
+  */
+  it("(a) validates a bed hold that only exists in the locked row", async () => {
+    // A set bed-7 and committed while this request (dates only) was in flight.
+    // The stale view said bedId:null, so custodian validation would not have
+    // run and the row would have moved onto dates where bed-7 is taken.
+    mocks.txAssignmentFindUnique.mockImplementation(async () => {
+      callOrder.push("readRow");
+      return {
+        id: "a1",
+        lodgeId: LODGE,
+        bedId: "bed-7",
+        startDate: new Date("2026-07-01T00:00:00.000Z"),
+        endDate: new Date("2026-07-05T00:00:00.000Z"),
+      };
+    });
+    mocks.assignmentFindUnique.mockResolvedValue({
+      id: "a1",
+      lodgeId: LODGE,
+      bedId: null,
+      startDate: new Date("2026-07-01T00:00:00.000Z"),
+      endDate: new Date("2026-07-05T00:00:00.000Z"),
+    });
+
+    const res = await PUT(putRequest({ endDate: "2026-07-09" }), { params });
+    expect(res.status).toBe(200);
+    // The hold it inherited IS re-validated, against the FINAL dates.
+    expect(mocks.validateCustodianBedHold).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bedId: "bed-7",
+        endDate: new Date("2026-07-09T00:00:00.000Z"),
+      }),
+    );
+  });
+
+  it("(b) refuses when the row moved lodges between the two reads", async () => {
+    // We hold L1's key; the row is now at L2. Validating L1's roster and
+    // writing a row that lives at L2 is the one outcome that must not happen.
+    mocks.txAssignmentFindUnique.mockImplementation(async () => {
+      callOrder.push("readRow");
+      return {
+        id: "a1",
+        lodgeId: "lodge-moved",
+        bedId: null,
+        startDate: new Date("2026-07-01T00:00:00.000Z"),
+        endDate: new Date("2026-07-05T00:00:00.000Z"),
+      };
+    });
+
+    const res = await PUT(putRequest({ endDate: "2026-07-09" }), { params });
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringMatching(/moved to a different lodge/i),
+    });
+    expect(mocks.txAssignmentUpdate).not.toHaveBeenCalled();
+    // The overlap set was never even consulted: the key is wrong, so no answer
+    // read under it would mean anything.
+    expect(callOrder).not.toContain("readOverlaps");
+  });
+
+  it("(c) applies a partial-field edit to the locked span, not a stale one", async () => {
+    // A moved the start to 05 Aug and committed. This request only sets an end
+    // date; applying it to the STALE 01 Jul start would produce a span nobody
+    // validated. It must compose with the locked row.
+    mocks.txAssignmentFindUnique.mockImplementation(async () => {
+      callOrder.push("readRow");
+      return {
+        id: "a1",
+        lodgeId: LODGE,
+        bedId: null,
+        startDate: new Date("2026-08-05T00:00:00.000Z"),
+        endDate: new Date("2026-08-06T00:00:00.000Z"),
+      };
+    });
+
+    const res = await PUT(putRequest({ endDate: "2026-08-30" }), { params });
+    expect(res.status).toBe(200);
+    // The overlap question asked is the one about the range that will exist.
+    expect(mocks.assignmentFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          startDate: { lte: new Date("2026-08-30T00:00:00.000Z") },
+          endDate: { gte: new Date("2026-08-05T00:00:00.000Z") },
+        }),
+      }),
+    );
+  });
+
+  it("404s when the row is deleted between the two reads", async () => {
+    mocks.txAssignmentFindUnique.mockImplementation(async () => {
+      callOrder.push("readRow");
+      return null;
+    });
+    const res = await PUT(putRequest({ endDate: "2026-07-09" }), { params });
+    expect(res.status).toBe(404);
+    expect(mocks.txAssignmentUpdate).not.toHaveBeenCalled();
+  });
+
   it("still refuses to SET a bed with the module off", async () => {
     mocks.isEffectiveModuleEnabled.mockResolvedValue(false);
 
@@ -467,6 +584,7 @@ describe("PUT /api/admin/hut-leaders/[id] — three-state bedId", () => {
     expect(callOrder).toEqual([
       "txBegin",
       "lock",
+      "readRow",
       "readOverlaps",
       "validate",
       "update",

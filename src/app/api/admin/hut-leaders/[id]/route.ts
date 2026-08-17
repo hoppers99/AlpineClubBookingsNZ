@@ -94,17 +94,46 @@ export async function PUT(
     updateData.lodgeId = lodge.id;
   }
 
-  // Validate start <= end
-  const finalStart = updateData.startDate ?? existing.startDate;
-  const finalEnd = updateData.endDate ?? existing.endDate;
-  if (finalStart > finalEnd) {
+  /*
+    Everything below is derived from the row read UNDER THE LOCK, not from the
+    pre-lock `existing` (#2887 review).
+
+    The pre-lock read stays, because it gives the cheap 404 and the lock KEY to
+    take. But every value the locked decision rests on - the final dates, the
+    final lodge, and whether a bed hold survives this edit - is re-derived
+    inside the transaction. Deriving them out here and only re-reading the
+    overlap set inside looked locked and was not:
+
+      (a) A sends {bedId:"bed-7"}, B sends new dates. Both read bedId:null. A
+          commits the hold; B's stale `nextBedId` is null, so custodian
+          validation never runs and B moves the row onto dates where bed-7 is
+          taken - the exact state validateCustodianBedHold exists to refuse.
+      (b) A sends {lodgeId:"L2"} and locks L2; B sends dates only, derives the
+          key from the stale row and locks L1. Different advisory keys, so no
+          mutual exclusion at all, and B validates against L1's roster for a
+          row that ends up at L2.
+      (c) A sends a startDate, B an endDate; each applies its field to a stale
+          span and the result is a range neither validated.
+
+    Re-deriving under the lock closes (a) and (c). (b) additionally needs the
+    key check below, because by then the lock is already taken on the wrong
+    lodge - the same shape as `booking-create.ts`'s locked-lodge fence.
+  */
+  // Validate start <= end against the pre-lock row, so an obviously inverted
+  // range is refused without paying for a lock. Re-checked under it.
+  if (
+    (updateData.startDate ?? existing.startDate) >
+    (updateData.endDate ?? existing.endDate)
+  ) {
     return NextResponse.json(
       { error: "startDate must be before or equal to endDate" },
       { status: 400 }
     );
   }
 
-  const finalLodgeId = updateData.lodgeId ?? existing.lodgeId;
+  // The lock KEY. A concurrent move can make this stale; the locked re-read
+  // below detects that and refuses rather than acting under the wrong key.
+  const intendedLodgeId = updateData.lodgeId ?? existing.lodgeId;
 
   // Custodian bed hold (#2286). Three-state: absent leaves the hold alone,
   // explicit null clears it, a string sets it. `bedIdProvided` is the only way
@@ -114,11 +143,13 @@ export async function PUT(
   // the three intents: undefined = key absent, null = explicit clear, string =
   // set. No separate "was the key present" probe is needed or wanted.
   const bedIdProvided = parsed.data.bedId !== undefined;
-  const nextBedId = bedIdProvided ? parsed.data.bedId : existing.bedId;
   if (bedIdProvided) {
     updateData.bedId = parsed.data.bedId ?? null;
   }
-  if (nextBedId && !(await isEffectiveModuleEnabled("bedAllocation"))) {
+  // Module gate on the pre-lock view: this is a feature-availability refusal
+  // aimed at what the operator ASKED for, not a capacity decision.
+  const requestedBedId = bedIdProvided ? parsed.data.bedId : existing.bedId;
+  if (requestedBedId && !(await isEffectiveModuleEnabled("bedAllocation"))) {
     return NextResponse.json(
       {
         error:
@@ -148,7 +179,33 @@ export async function PUT(
       surviving hold against the FINAL dates and lodge, then write.
     */
     const refusal = await prisma.$transaction(async (tx) => {
-      await acquireLodgeCapacityLock(tx, finalLodgeId);
+      await acquireLodgeCapacityLock(tx, intendedLodgeId);
+
+      // The authoritative row. Everything the decision rests on comes from
+      // HERE, under the key, not from the pre-lock read.
+      const locked = await tx.hutLeaderAssignment.findUnique({ where: { id } });
+      if (!locked) return { status: 404, error: "Assignment not found" };
+
+      const finalLodgeId = updateData.lodgeId ?? locked.lodgeId;
+      if (finalLodgeId !== intendedLodgeId) {
+        // The row moved lodges between the two reads, so the key we hold is
+        // not the key that governs it. Refuse rather than validate one lodge's
+        // roster and write to another's.
+        return {
+          status: 409,
+          error:
+            "This assignment moved to a different lodge while you were editing it. Reload and try again.",
+        };
+      }
+      const finalStart = updateData.startDate ?? locked.startDate;
+      const finalEnd = updateData.endDate ?? locked.endDate;
+      if (finalStart > finalEnd) {
+        return {
+          status: 400,
+          error: "startDate must be before or equal to endDate",
+        };
+      }
+      const nextBedId = bedIdProvided ? parsed.data.bedId : locked.bedId;
 
       // Excluding self — 1 day overlap allowed for handover, 2+ rejected. Each
       // lodge has its own hut leader, so the check is per lodge; a row still

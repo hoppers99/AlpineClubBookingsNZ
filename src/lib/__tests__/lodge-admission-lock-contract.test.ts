@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -50,10 +50,15 @@ function transactionSlices(body: string, starts: readonly string[]): string[] {
 describe("lodge admission and assignment lock topology (#2701)", () => {
   it("keeps every booking admission path behind the lodge key and post-lock scope reads", () => {
     const body = source("src/lib/booking-create.ts");
-    const lock = "await acquireLodgeCapacityLock(tx, lodgeId);";
+    // #2887 (L1): count the CALL, not one spelling of its argument. Keyed on
+    // the literal `acquireLodgeCapacityLock(tx, lodgeId)`, a fourth admission
+    // transaction written `acquireLodgeCapacityLock(tx, bookingLodgeId)` would
+    // have left the count passing and been invisible to every assertion here.
+    const LOCK_CALL = /await acquireLodgeCapacityLock\(\s*tx\s*,/g;
+    const lock = "await acquireLodgeCapacityLock(tx,";
     const resolve = "const bookingLodgeId = await resolveBookingLodgeId(";
 
-    expect(body.split(lock)).toHaveLength(4);
+    expect(body.match(LOCK_CALL) ?? []).toHaveLength(3);
     expect(body.split(resolve)).toHaveLength(3);
 
     const slices = transactionSlices(body, [
@@ -102,7 +107,7 @@ describe("lodge admission and assignment lock topology (#2701)", () => {
     const put = source("src/app/api/admin/hut-leaders/[id]/route.ts");
     expectOrdered(put, [
       "await prisma.$transaction(async (tx) => {",
-      "await acquireLodgeCapacityLock(tx, finalLodgeId);",
+      "await acquireLodgeCapacityLock(tx, intendedLodgeId);",
       "const potentialOverlaps = await tx.hutLeaderAssignment.findMany(",
       "await tx.hutLeaderAssignment.update(",
     ]);
@@ -118,10 +123,78 @@ describe("lodge admission and assignment lock topology (#2701)", () => {
       "await tx.hutLeaderAssignment.create(",
     ]);
     expect(cron).not.toContain("await prisma.hutLeaderAssignment.create(");
-    expect(cron).not.toContain("await prisma.hutLeaderAssignment.findMany(");
-    // The cron's overlap read used to scan every lodge, which both raced the
-    // interactive routes and suppressed valid auto-assignments elsewhere.
-    expect(cron).toContain("...lodgeNullTolerantScope(lodgeId),");
+    // #2887: `findMany` alone was too narrow — the club-wide gate that made the
+    // lodge scoping below it unreachable was a `findFirst`, and this census
+    // walked straight past it. Every unlocked READ of the table is refused now,
+    // except the deliberate cheap pre-checks, which must name a lodge.
+    for (const unlocked of [
+      "await prisma.hutLeaderAssignment.findMany(",
+      "await prisma.hutLeaderAssignment.update(",
+      "await prisma.hutLeaderAssignment.delete(",
+    ]) {
+      expect(cron, `cron performs an unlocked ${unlocked}`).not.toContain(unlocked);
+    }
+    // The one permitted pre-lock read is the cheap already-assigned probe, and
+    // it is lodge-scoped like everything else.
+    const cheapProbe = cron.indexOf("await prisma.hutLeaderAssignment.findFirst(");
+    if (cheapProbe !== -1) {
+      expect(
+        cron.slice(cheapProbe, cheapProbe + 400),
+        "the cron's pre-lock already-assigned probe must name a lodge",
+      ).toContain("lodgeNullTolerantScope(lodgeId)");
+    }
+    // Every lodge-scoped read in the job carries the scope; a club-wide one
+    // suppressed valid auto-assignments at other lodges and raced the routes.
+    expect(cron.match(/lodgeNullTolerantScope\(lodgeId\)/g) ?? []).toHaveLength(3);
+    // And the per-lodge decision replaced the club-wide adult count.
+    expect(cron).toContain("if (lodgeAdults.length !== 1) continue;");
+  });
+
+  it("keeps the HutLeaderAssignment writer census exhaustive at six (#2887)", () => {
+    /*
+      The doc's guarantee is only as true as this census. It was written as
+      "every writer takes the key… all three of them" and there are SIX, so the
+      sentence was checkable and false. Enumerated here by scanning src/ so a
+      seventh cannot appear unnoticed and quietly widen the claim.
+    */
+    // Built fresh per file on purpose: a shared /g literal carries `lastIndex`
+    // between calls, and one reused across ~2000 files does not report what
+    // you think it does.
+    const writes = (body: string) =>
+      body.match(
+        /(?:prisma|tx)\.hutLeaderAssignment\.(?:create|createMany|update|updateMany|upsert|delete|deleteMany)\(/g,
+      ) ?? [];
+    const found: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(join(process.cwd(), dir), { withFileTypes: true })) {
+        const rel = `${dir}/${entry.name}`;
+        if (entry.isDirectory()) {
+          if (entry.name !== "__tests__") walk(rel);
+        } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+          const body = readFileSync(join(process.cwd(), rel), "utf8");
+          for (let i = writes(body).length; i > 0; i -= 1) found.push(rel);
+        }
+      }
+    };
+    walk("src");
+
+    expect(found.sort()).toEqual([
+      // Decide overlap -> must hold the key and re-read under it.
+      "src/app/api/admin/hut-leaders/[id]/route.ts", // PUT
+      "src/app/api/admin/hut-leaders/[id]/route.ts", // DELETE (removes only)
+      "src/app/api/admin/hut-leaders/[id]/pin/route.ts", // PIN rotate only
+      "src/app/api/admin/hut-leaders/route.ts", // POST
+      "src/lib/cron-hut-leader-auto-assign.ts",
+      // Creates one row PER TEACHER, deliberately overlapping, under the key
+      // but with no overlap read - the "independently created" carve-out.
+      "src/lib/school-booking-request.ts",
+    ].sort());
+
+    // The school writer holds the lodge key even though it runs no overlap
+    // read, so it still serializes against the three that do.
+    expect(source("src/lib/school-booking-request.ts")).toContain(
+      "acquireLodgeCapacityLock(",
+    );
   });
 
   it("asks the deactivation predicate the same question before and under the lock", () => {
