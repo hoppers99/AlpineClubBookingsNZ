@@ -224,7 +224,8 @@ export function BookingRequestForm({ club }: { club: ClubIdentity }) {
           <p className="text-sm text-muted-foreground">
             We&apos;ve sent a confirmation email to {contactEmail}. Please click the link inside
             to confirm your email address — once confirmed, your request will join our review
-            queue and {club.lodgeName} will be in touch with pricing and a payment link.
+            queue and {selectedLodge?.name ?? club.lodgeName} will be in touch with pricing and
+            a payment link.
           </p>
         </CardContent>
       </Card>

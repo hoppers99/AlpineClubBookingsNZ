@@ -182,9 +182,14 @@ that holds only for as long as all three keep deciding under the key:
   branch on the reasoning that releasing capacity is safe, which is true of
   capacity and false of the overlap predicate a bedless edit can still break by
   MOVING DATES.
-- `cron-hut-leader-auto-assign` — #2887 also brought this under the key, and
-  lodge-scoped its overlap read, which previously scanned every lodge and so
-  suppressed valid auto-assignments as well as racing the interactive routes.
+- `cron-hut-leader-auto-assign` — two changes, from two PRs, and both are
+  needed. #2915 restructured the job to iterate active lodges and decide every
+  question per (lodge, night): one lodge's leader used to silence every other
+  lodge for that night, and two lodges with one eligible adult each summed to
+  two so neither got one. #2887 then put the create inside a transaction
+  holding that lodge's key, with the already-covered and overlap questions
+  re-asked under it — scoping alone still let the cron race an admin, or a
+  second cron container, into two overlapping leaders at one lodge.
 
 Different lodges retain independent keys. Confirmation email is sent only after
 commit and outside the transaction.

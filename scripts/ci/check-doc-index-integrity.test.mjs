@@ -75,6 +75,36 @@ function commitFiles(repoRoot, message, files) {
   return git(repoRoot, "rev-parse", "HEAD");
 }
 
+/**
+ * Resolve a revision in THIS repository, failing with the reason rather than a
+ * raw git error.
+ *
+ * The CLI tests below build a real `pull_request` payload out of this
+ * repository's own commits, so they need history — `HEAD^1` and `origin/main`.
+ * `ci.yml` checks out with `fetch-depth: 0` and has it; a default
+ * `actions/checkout` is depth 1 and does not. That asymmetry once put `main`
+ * red on the clock canary while `verify` stayed green, and the symptom was
+ * `fatal: ambiguous argument 'HEAD^1'` four frames deep in a helper, which says
+ * nothing about the cause (#2907).
+ *
+ * Deliberately throws rather than skipping. A test that quietly disappears in
+ * one workflow is how this class of gap hides in the first place.
+ */
+function repoRevision(revision) {
+  try {
+    return git(REPO_ROOT, "rev-parse", revision);
+  } catch (cause) {
+    throw new Error(
+      `Could not resolve ${revision} in this repository. This test drives the ` +
+        "doc-index CLI against real commits, so it needs git history: a " +
+        "shallow clone has neither HEAD^1 nor origin/main. Every workflow that " +
+        "runs the unit suite must check out with `fetch-depth: 0` (ci.yml and " +
+        "clock-rollover-canary.yml both do). Locally, run `git fetch --unshallow`.",
+      { cause },
+    );
+  }
+}
+
 function checkerEnv(overrides = {}) {
   return {
     ...process.env,
@@ -1757,12 +1787,12 @@ describe("doc-index CLI baseline wiring", () => {
       const eventPath = path.join(eventRoot, "event.json");
       const event = {
         action: "synchronize",
-        after: git(REPO_ROOT, "rev-parse", "HEAD"),
-        before: git(REPO_ROOT, "rev-parse", "HEAD^1"),
+        after: repoRevision("HEAD"),
+        before: repoRevision("HEAD^1"),
         number: 2891,
         pull_request: {
-          base: { ref: "main", sha: git(REPO_ROOT, "rev-parse", "origin/main") },
-          head: { sha: git(REPO_ROOT, "rev-parse", "HEAD") },
+          base: { ref: "main", sha: repoRevision("origin/main") },
+          head: { sha: repoRevision("HEAD") },
         },
       };
       writeFileSync(eventPath, `${JSON.stringify(event)}\n`, "utf8");
@@ -1829,7 +1859,7 @@ describe("doc-index CLI baseline wiring", () => {
         DOC_INDEX_BASE_REF: "HEAD",
         GITHUB_BASE_REF: "main",
         GITHUB_EVENT_NAME: "pull_request",
-        PR_BASE_SHA: git(REPO_ROOT, "rev-parse", "origin/main"),
+        PR_BASE_SHA: repoRevision("origin/main"),
       }),
     });
 

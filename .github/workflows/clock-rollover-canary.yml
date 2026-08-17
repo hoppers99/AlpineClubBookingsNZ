@@ -91,6 +91,14 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          # Full history, matching ci.yml. This job runs the whole unit suite,
+          # and part of that suite drives the doc-index CLI against this
+          # repository's own commits — it resolves HEAD^1 and origin/main to
+          # build a real pull_request payload. On the default depth-1 clone
+          # neither exists, so those tests failed here while passing in
+          # `verify`, which already checks out in full (#2907).
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v7.0.0

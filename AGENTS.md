@@ -225,14 +225,22 @@ validation gates.
   files under `.artifacts/agent-context/` are ignored, local, bounded context —
   never committed, pasted wholesale into a prompt, or injected automatically by
   a hook. Clear issue-specific context before switching lanes.
-- **Spend models, tools, and subagents in proportion to risk.** Routine searches,
-  mechanical edits and bounded tests use local tools and cost-efficient models
-  (Codex Terra/Luna; Claude Sonnet). Prefer repository commands over an MCP or
-  browser round trip when they answer the same question. Delegate only a
-  sizeable independent track whose payoff exceeds re-establishing its context,
-  and give it the smallest relevant artifact and file set. Gated areas retain
-  the strongest-model high/xhigh rules in the orchestration model below;
-  security stays on Opus at `xhigh`, and `xhigh` remains the ceiling.
+- **Spend models, tools, and subagents in proportion to risk.** Decide the spend
+  when you dispatch, from the lineup and the task in front of you — this file
+  names the decision, not the model, because the tiers change faster than it
+  does. Ask first whether a deterministic command already answers the question
+  exactly: a grep, a focused test, a typecheck or `npm run agent:context`
+  returns a checkable fact, where a model returns a claim you then have to
+  verify. That test, not a list of "routine" task types, is what makes local
+  tooling the cheaper answer. When a model is warranted, dispatch the cheapest
+  tier you would trust to be right on this task *without re-reading its work*,
+  and escalate on evidence — a wrong answer, a refusal, a task that proves
+  reasoning-bound — rather than on a hunch that bigger is safer. Prefer
+  repository commands over an MCP or browser round trip when they answer the
+  same question. Delegate only a sizeable independent track whose payoff exceeds
+  re-establishing its context, and give it the smallest relevant artifact and
+  file set. Gated areas retain the strongest-model high/xhigh rules in the
+  orchestration model below, and `xhigh` remains the ceiling.
 - **Gate the blueprint by risk.** A narrow Low/Medium issue with complete scope
   needs only a concise working plan. Before implementing High/Critical work,
   record a blueprint that names the affected invariants, counterpart writers,
@@ -666,24 +674,48 @@ handed an epic-with-children or asked to run several related issues at once.
 
 ### 4. Model selection
 
-- **Default routine and mechanical work to the cost-efficient tier.** Use Codex
-  Terra/Luna, Claude Sonnet, or local tooling for bounded searches, edits and
-  checks. Gated work keeps the strongest generally-capable model at the high or
-  `xhigh` effort required above. Reserve the top Mythos-class tier (Fable) for
-  tasks genuinely at the reasoning frontier — deep
-  Xero-idempotency/frozen-reference contracts, immutable-charge backfill
-  correctness, or irreversible member-merge + DMMF-completeness reasoning.
-  Scale model *and* reasoning effort to the task; do not use the top tier
-  blanket for everything labelled "Critical".
-- **Never route security work to the top tier — keep it on Opus at `xhigh`
-  reasoning effort.** Fable's safety classifiers target cyber content, so a
-  security review or exploit analysis can come back *refused* rather than
-  answered. The refusal arrives as `stop_reason: "refusal"` on an HTTP 200, not
-  as an error — an unwary orchestrator reads the empty or truncated result as a
-  clean pass. Fable's bug-finding gains also explicitly exclude security-focused
-  analysis, so the escalation buys nothing here even when it does answer. Opus
-  refuses far less on this material and falls back rather than stopping outright,
-  which is why an uncertain security blocker escalates in *effort*, not in tier.
+- **Choose the tier at dispatch, from the lineup you actually have.** This
+  section deliberately does not name a default model: the lineup changes faster
+  than this file, and a stale name gets followed literally long after it stops
+  being the right answer. You know the task and the current models at the moment
+  you dispatch; decide there. Work down three questions in order. *Can a
+  deterministic command answer this exactly?* Then run it — a grep, a focused
+  test, a typecheck, `npm run agent:context` — and spend no model at all.
+  *If not, what is the cheapest tier I would trust to be right here without
+  checking its work?* Dispatch that one. *Is this bounded by reasoning or by
+  context?* Raise reasoning effort before reaching for a larger model, since the
+  two are separate dials and effort is usually the one that was actually short.
+  Escalate on evidence — a wrong answer, a refusal, a task that proves harder
+  than it read — never on a hunch that bigger is safer. Bounded searches,
+  mechanical edits and routine Low/Medium implementation rarely need the top of
+  the lineup; money, schema, auth, capacity, lifecycle and provider work almost
+  always need the strongest generally-capable tier at high or `xhigh`.
+- **State the model explicitly when you dispatch a subagent.** A subagent
+  launched without one **inherits the orchestrator's model**, so an unstated
+  choice is not a cheap default — it is the orchestrator's tier, silently. Name
+  the model and the effort in the launch, and put one line in the brief saying
+  why that tier fits the task. That line is what makes a wrong routing visible
+  in review instead of invisible in a bill.
+- **Reserve the top Mythos-class tier for genuine reasoning-frontier work** —
+  deep Xero-idempotency/frozen-reference contracts, immutable-charge backfill
+  correctness, or irreversible member-merge + DMMF-completeness reasoning. Do
+  not use it blanket for everything labelled "Critical"; scale model *and*
+  reasoning effort to the task.
+- **Never route security work to the top Mythos-class tier — keep it on the
+  strongest generally-capable model at `xhigh` reasoning effort.** At the time
+  of writing that means Fable is excluded and Opus is the right choice, but the
+  rule is the shape, not the names. The top tier's safety classifiers target
+  cyber content, so a security review or exploit analysis can come back
+  *refused* rather than answered. The refusal arrives as
+  `stop_reason: "refusal"` on an HTTP 200, not as an error — an unwary
+  orchestrator reads the empty or truncated result as a clean pass. Its
+  bug-finding gains also explicitly exclude security-focused analysis, so the
+  escalation buys nothing here even when it does answer. The strongest
+  generally-capable tier refuses far less on this material and falls back rather
+  than stopping outright, which is why an uncertain security blocker escalates
+  in *effort*, not in tier. Before routing security work to any tier you have
+  not used for it before, check that a refusal would be visible to you as a
+  failure rather than as a pass.
 - **`xhigh` is the effort ceiling — never use `max`, on any lane** (owner
   directive, 10 Aug 2026). At `max` the model overthinks and the outcome gets
   *worse*, not better; `xhigh` is sufficient for the hardest security and

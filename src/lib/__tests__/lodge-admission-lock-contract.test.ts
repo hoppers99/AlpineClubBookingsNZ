@@ -118,7 +118,7 @@ describe("lodge admission and assignment lock topology (#2701)", () => {
     const cron = source("src/lib/cron-hut-leader-auto-assign.ts");
     expectOrdered(cron, [
       "await prisma.$transaction(async (tx) => {",
-      "await acquireLodgeCapacityLock(tx, lodgeId);",
+      "await acquireLodgeCapacityLock(tx, lodge.id);",
       "await findHutLeaderOverlapRefusal(tx, {",
       "await tx.hutLeaderAssignment.create(",
     ]);
@@ -141,13 +141,16 @@ describe("lodge admission and assignment lock topology (#2701)", () => {
       expect(
         cron.slice(cheapProbe, cheapProbe + 400),
         "the cron's pre-lock already-assigned probe must name a lodge",
-      ).toContain("lodgeNullTolerantScope(lodgeId)");
+      ).toContain("lodgeNullTolerantScope(lodge.id)");
     }
     // Every lodge-scoped read in the job carries the scope; a club-wide one
     // suppressed valid auto-assignments at other lodges and raced the routes.
-    expect(cron.match(/lodgeNullTolerantScope\(lodgeId\)/g) ?? []).toHaveLength(2);
+    expect(cron.match(/lodgeNullTolerantScope\(lodge\.id\)/g) ?? []).toHaveLength(3);
     // And the per-lodge decision replaced the club-wide adult count.
-    expect(cron).toContain("if (lodgeAdults.length !== 1) continue;");
+    // #2915's loop decides per (lodge, night); the count is per lodge because
+    // the booking read above it is scoped to `lodge.id`.
+    expect(cron).toContain("for (const lodge of activeLodges)");
+    expect(cron).toContain("if (adultMembers.size !== 1) continue;");
   });
 
   it("keeps the HutLeaderAssignment writer census exhaustive at six (#2887)", () => {

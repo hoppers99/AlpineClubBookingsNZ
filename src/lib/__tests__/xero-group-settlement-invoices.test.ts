@@ -160,6 +160,9 @@ describe("createXeroInvoiceForGroupSettlement cancellation fence", () => {
       {
         id: "child-1",
         status: BookingStatus.CONFIRMED,
+        // Booking.lodgeId is NOT NULL; the per-child season read that picks the
+        // hut-fee item code is scoped to it.
+        lodgeId: "lodge-1",
         checkIn: new Date("2026-07-01"),
         checkOut: new Date("2026-07-02"),
         guests: [],
@@ -351,6 +354,46 @@ describe("createXeroInvoiceForGroupSettlement cancellation fence", () => {
 
     expect(mocks.accountingApi.emailInvoice).toHaveBeenCalledTimes(1);
     expect(mocks.enqueueVoid).not.toHaveBeenCalled();
+  });
+
+  it("resolves each child's item-code season from that child's own lodge", async () => {
+    // Lodges may run different season windows, so an unscoped season read can
+    // match another lodge's row — and Season.type picks the hut-fee item code,
+    // and therefore the GL account.
+    mocks.settlementFindUnique
+      .mockResolvedValueOnce(settlement(GroupBookingStatus.OPEN))
+      .mockResolvedValueOnce({
+        groupBooking: {
+          status: GroupBookingStatus.OPEN,
+          organiserBookingId: "organiser-booking-1",
+          organiserBooking: {
+            noEmails: false,
+            member: { email: "organiser@example.test" },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        groupBooking: {
+          status: GroupBookingStatus.OPEN,
+          organiserBookingId: "organiser-booking-1",
+          organiserBooking: {
+            noEmails: false,
+            member: { email: "organiser@example.test" },
+          },
+        },
+      });
+
+    await expect(
+      createXeroInvoiceForGroupSettlement("settle-1", {
+        syncOperationId: "op-1",
+      })
+    ).resolves.toBe("inv-1");
+
+    expect(prisma.season.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ lodgeId: "lodge-1" }),
+      }),
+    );
   });
 
   // #2258 semantics: the settlement invoice is ONE combined bill addressed to

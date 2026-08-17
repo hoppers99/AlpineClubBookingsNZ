@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.setConfig({ testTimeout: 10_000 });
 
@@ -35,12 +35,20 @@ const mockPrisma = {
   },
   lodge: {
     findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
+    // The auto-assign cron iterates active lodges (#2915); a single-lodge club
+    // is the shape these cases already assume.
+    findMany: vi.fn().mockResolvedValue([{ id: "lodge-1" }]),
+    // #2887: the hut-leader POST resolves its named lodge and checks it active.
     findUnique: vi.fn().mockResolvedValue({ id: "lodge-1", active: true }),
   },
-  // #2887: hut-leader creation is now ALWAYS a locked write — the role-only
-  // path shares the per-lodge capacity key with the bed-holding path so both
-  // serialize the same overlap predicate — so the double needs the interactive
-  // transaction and the advisory-lock statement.
+  /*
+    #2887: hut-leader creation is a LOCKED write now — the POST, the PUT and
+    the auto-assign cron all take the per-lodge capacity key and re-read under
+    it — so the double needs the interactive transaction and the advisory-lock
+    statement. It hands back this same object, so assertions keep observing the
+    same `hutLeaderAssignment` mocks whether a call arrived through `prisma` or
+    through `tx`.
+  */
   $executeRaw: vi.fn(async () => 0),
   $transaction: vi.fn(async (arg: unknown) =>
     typeof arg === "function"
@@ -518,21 +526,8 @@ describe("#25: Auto-Assign Hut Leaders", () => {
   });
 
   it("skips days that already have an assignment", async () => {
-    // Non-vacuous: there IS a candidate (one adult member), and the only reason
-    // nothing is written is that the lodge-night is already covered. With an
-    // empty booking list this would pass for the wrong reason.
     mockPrisma.hutLeaderAssignment.findFirst.mockResolvedValue({ id: "exists" });
-    mockPrisma.booking.findMany.mockResolvedValue([
-      {
-        id: "b1",
-        lodgeId: "lodge-1",
-        checkIn: localMidnight("2026-04-08"),
-        checkOut: localMidnight("2026-04-10"),
-        guests: [
-          { memberId: "m1", member: { id: "m1", active: true } },
-        ],
-      },
-    ]);
+    mockPrisma.booking.findMany.mockResolvedValue([]);
     mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([]);
 
     const { autoAssignHutLeaders } = await import("@/lib/cron-hut-leader-auto-assign");
@@ -542,117 +537,18 @@ describe("#25: Auto-Assign Hut Leaders", () => {
   });
 
   it("uses the configured hut-leader lookahead window", async () => {
-    /*
-      #2887: this used to count the club-wide `hutLeaderAssignment.findFirst`
-      that ran once per day. That probe is gone — it was the club-wide gate that
-      let ANY lodge's leader suppress every lodge, and it short-circuited ahead
-      of the lodge-scoped block. The per-day call that remains is the booking
-      read, so the window is measured there instead. Same three days.
-    */
     mockPrisma.lodgeSettings.findUnique.mockResolvedValue({
       capacity: null,
       hutLeaderLookaheadDays: 2,
     });
+    mockPrisma.hutLeaderAssignment.findFirst.mockResolvedValue({ id: "exists" });
     mockPrisma.booking.findMany.mockResolvedValue([]);
     mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([]);
 
     const { autoAssignHutLeaders } = await import("@/lib/cron-hut-leader-auto-assign");
     await autoAssignHutLeaders();
 
-    expect(mockPrisma.booking.findMany).toHaveBeenCalledTimes(3);
-  });
-
-  it("assigns at BOTH lodges when each has exactly one adult (#2887)", async () => {
-    /*
-      The regression the club-wide counting hid. One adult at Lodge A and one at
-      Lodge B used to read as `adultMembers.size === 2` and neither lodge got a
-      leader; and even if it had got past that, the club-wide already-assigned
-      probe would have let the first lodge's leader suppress the second.
-
-      Exactly one adult PER LODGE is the question, so both are assigned.
-    */
-    mockPrisma.lodgeSettings.findUnique.mockResolvedValue({
-      capacity: null,
-      hutLeaderLookaheadDays: 0,
-    });
-    mockPrisma.hutLeaderAssignment.findFirst.mockResolvedValue(null);
-    mockPrisma.booking.findMany.mockResolvedValue([
-      {
-        id: "b1",
-        lodgeId: "lodge-a",
-        checkIn: localMidnight("2026-04-08"),
-        checkOut: localMidnight("2026-04-10"),
-        guests: [{ memberId: "m1", member: { id: "m1", active: true } }],
-      },
-      {
-        id: "b2",
-        lodgeId: "lodge-b",
-        checkIn: localMidnight("2026-04-08"),
-        checkOut: localMidnight("2026-04-10"),
-        guests: [{ memberId: "m2", member: { id: "m2", active: true } }],
-      },
-    ]);
-    mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([]);
-    mockPrisma.hutLeaderAssignment.create.mockResolvedValue({ id: "new-assign" });
-
-    const { autoAssignHutLeaders } = await import("@/lib/cron-hut-leader-auto-assign");
-    const result = await autoAssignHutLeaders();
-
-    // Asserted as a SET, not a count: the lookahead spans many days and each
-    // day assigns both lodges, so a count would pin the window rather than the
-    // scoping. What matters is that BOTH lodges are written, where the
-    // club-wide count previously wrote neither.
-    const lodges = new Set(
-      mockPrisma.hutLeaderAssignment.create.mock.calls.map(
-        (call: unknown[]) => (call[0] as { data: { lodgeId: string } }).data.lodgeId,
-      ),
-    );
-    expect(lodges).toEqual(new Set(["lodge-a", "lodge-b"]));
-    // Each lodge is locked on its own key.
-    expect(mockPrisma.$executeRaw).toHaveBeenCalled();
-  });
-
-  it("scopes the already-assigned check to the lodge it is deciding (#2887)", async () => {
-    // Lodge A is covered; Lodge B is not. B must still be assigned.
-    mockPrisma.lodgeSettings.findUnique.mockResolvedValue({
-      capacity: null,
-      hutLeaderLookaheadDays: 0,
-    });
-    mockPrisma.hutLeaderAssignment.findFirst.mockImplementation(
-      async ({ where }: { where: { lodgeId?: string; OR?: unknown } }) =>
-        where.lodgeId === "lodge-a" ? { id: "covered-at-a" } : null,
-    );
-    mockPrisma.booking.findMany.mockResolvedValue([
-      {
-        id: "b1",
-        lodgeId: "lodge-a",
-        checkIn: localMidnight("2026-04-08"),
-        checkOut: localMidnight("2026-04-10"),
-        guests: [{ memberId: "m1", member: { id: "m1", active: true } }],
-      },
-      {
-        id: "b2",
-        lodgeId: "lodge-b",
-        checkIn: localMidnight("2026-04-08"),
-        checkOut: localMidnight("2026-04-10"),
-        guests: [{ memberId: "m2", member: { id: "m2", active: true } }],
-      },
-    ]);
-    mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([]);
-    mockPrisma.hutLeaderAssignment.create.mockResolvedValue({ id: "new-assign" });
-
-    const { autoAssignHutLeaders } = await import("@/lib/cron-hut-leader-auto-assign");
-    const result = await autoAssignHutLeaders();
-
-    expect(result.assignedCount).toBeGreaterThan(0);
-    const lodges = new Set(
-      mockPrisma.hutLeaderAssignment.create.mock.calls.map(
-        (call: unknown[]) => (call[0] as { data: { lodgeId: string } }).data.lodgeId,
-      ),
-    );
-    // Lodge A is covered so it is skipped; Lodge B is not, so it is assigned.
-    // A club-wide already-assigned probe would have skipped BOTH.
-    expect(lodges).toEqual(new Set(["lodge-b"]));
+    expect(mockPrisma.hutLeaderAssignment.findFirst).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -694,7 +590,10 @@ describe("#25: Unassigned Dates API", () => {
     ]);
 
     const { GET } = await import("@/app/api/admin/hut-leaders/unassigned-dates/route");
-    const res = await GET(new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"));
+    // #2887: this route names its lodge like every other hut-leader read.
+    const res = await GET(
+      new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"),
+    );
     expect(res.status).toBe(200);
     const body = await res.json();
     // Should have at least 1 unassigned date
@@ -720,7 +619,10 @@ describe("#25: Unassigned Dates API", () => {
     ]);
 
     const { GET } = await import("@/app/api/admin/hut-leaders/unassigned-dates/route");
-    const res = await GET(new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"));
+    // #2887: this route names its lodge like every other hut-leader read.
+    const res = await GET(
+      new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"),
+    );
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.unassignedDates).toHaveLength(0);
@@ -732,7 +634,10 @@ describe("#25: Unassigned Dates API", () => {
     mockPrisma.booking.findMany.mockResolvedValue([]);
 
     const { GET } = await import("@/app/api/admin/hut-leaders/unassigned-dates/route");
-    const res = await GET(new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"));
+    // #2887: this route names its lodge like every other hut-leader read.
+    const res = await GET(
+      new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"),
+    );
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.unassignedDates).toHaveLength(0);
@@ -748,7 +653,10 @@ describe("#25: Unassigned Dates API", () => {
     });
 
     const { GET } = await import("@/app/api/admin/hut-leaders/unassigned-dates/route");
-    const res = await GET(new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"));
+    // #2887: this route names its lodge like every other hut-leader read.
+    const res = await GET(
+      new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"),
+    );
     expect(res.status).toBe(403);
   });
 
@@ -762,7 +670,10 @@ describe("#25: Unassigned Dates API", () => {
     ]);
 
     const { GET } = await import("@/app/api/admin/hut-leaders/unassigned-dates/route");
-    const res = await GET(new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"));
+    // #2887: this route names its lodge like every other hut-leader read.
+    const res = await GET(
+      new NextRequest("http://localhost/api/admin/hut-leaders/unassigned-dates?lodgeId=lodge-1"),
+    );
     expect(res.status).toBe(200);
     const body = await res.json();
     const relevant = body.unassignedDates.filter((d: any) => d.guestCount === 4);

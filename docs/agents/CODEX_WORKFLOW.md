@@ -36,9 +36,12 @@ conditions. Planning mode must not edit app logic.
 
 The shared quota, context, risk-tiered blueprint, proportional-validation and
 two-attempt failure controls live once in root `AGENTS.md`. Apply them before
-expanding a plan or delegating work. In Codex, use Luna/Terra and local
-repository tools for routine or mechanical work, preserve the strongest-model
-high/xhigh handling for gated areas, keep subagent prompts bounded, and clear
+expanding a plan or delegating work. In Codex, pick the tier at dispatch rather
+than from a name written here: run a local repository tool when it answers the
+question exactly, otherwise take the cheapest tier you would trust without
+re-checking its work, and raise reasoning effort before reaching for a larger
+model. Preserve the strongest-model high/xhigh handling for gated areas, state
+the model and effort when you delegate, keep subagent prompts bounded, and clear
 issue-specific context before switching lanes.
 
 When the routed docs are known but the code neighbourhood is not, generate the

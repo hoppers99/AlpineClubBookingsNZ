@@ -42,7 +42,8 @@ const { mockPrisma, mockAuth, mockFlags, mockLookahead } = vi.hoisted(() => ({
     choreAssignment: { findMany: vi.fn(), groupBy: vi.fn() },
     hutLeaderAssignment: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn() },
     member: { findUnique: vi.fn() },
-    lodge: { findFirst: vi.fn(), findUnique: vi.fn() },
+    // findMany: the hut-leader auto-assign cron iterates active lodges (#2915).
+    lodge: { findFirst: vi.fn(), findUnique: vi.fn(), findMany: vi.fn() },
     auditLog: { create: vi.fn() },
     // #2887: the auto-assign cron now does its overlap read and its insert as
     // ONE serialized decision under the per-lodge capacity key, so the double
@@ -160,6 +161,9 @@ beforeEach(() => {
   mockPrisma.choreTemplate.findMany.mockResolvedValue([]);
   mockPrisma.choreAssignment.findMany.mockResolvedValue([]);
   mockPrisma.choreAssignment.groupBy.mockResolvedValue([]);
+  // Both sides of the #2915/#2887 merge are needed: the cron iterates active
+  // lodges AND its create runs in a locked transaction.
+  mockPrisma.lodge.findMany.mockResolvedValue([{ id: "lodge-1" }]);
   mockPrisma.$transaction.mockImplementation(async (arg: unknown) =>
     typeof arg === "function"
       ? (arg as (tx: typeof mockPrisma) => unknown)(mockPrisma)

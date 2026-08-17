@@ -43,9 +43,52 @@ describe("repository agent workflow contract", () => {
     expect(agents).toContain("Gate the blueprint by risk");
     expect(agents).toContain("Validate coherent batches");
     expect(agents).toContain("Two identical failures trip a circuit breaker");
-    expect(agents).toContain("Codex Terra/Luna; Claude Sonnet");
-    expect(agents).toContain("security stays on Opus at `xhigh`");
     expect(agents).toContain("`xhigh` remains the ceiling");
+
+    // #2910: model routing states the decision, not the model. A named default
+    // goes stale faster than this file changes and then gets followed
+    // literally, so the guidance has to prompt the orchestrator's judgement at
+    // dispatch instead of answering it here. Product names survive only as a
+    // dated example attached to the security floor below.
+    expect(agents).toContain("Choose the tier at dispatch");
+    expect(agents).toContain("State the model explicitly when you dispatch a subagent");
+    expect(agentsNormalized).toContain("inherits the orchestrator's model");
+    expect(agentsNormalized).toContain("Can a deterministic command answer this exactly?");
+    expect(agentsNormalized).toContain(
+      "Raise reasoning effort before reaching for a larger model",
+    );
+    for (const instruction of [
+      "cost-efficient models (Codex Terra/Luna; Claude Sonnet)",
+      "Use Codex Terra/Luna, Claude Sonnet, or local tooling",
+      "security stays on Opus at `xhigh`",
+      "Default subagents to the strongest generally-capable model (Opus)",
+      "Default routine and mechanical work to the cost-efficient tier",
+    ]) {
+      expect(agents).not.toContain(instruction);
+    }
+
+    // The safety floors stay concrete: they are failure modes, not preferences.
+    expect(agents).toContain(
+      "Never route security work to the top Mythos-class tier",
+    );
+    expect(agentsNormalized).toContain(
+      "strongest generally-capable model at `xhigh` reasoning effort",
+    );
+    expect(agents).toContain('`stop_reason: "refusal"` on an HTTP 200');
+    expect(agents).toContain("never use `max`, on any lane");
+
+    // A model product name may survive in AGENTS.md only as the dated example
+    // on that security floor — one line, explicitly marked "at the time of
+    // writing". Anywhere else and the name has become the instruction again,
+    // which is what #2910 removed. Counting lines rather than banning the words
+    // keeps the floor's concrete example legal without reopening the door.
+    const modelNameLines = agents
+      .split(/\r?\n/)
+      .filter((line) => /\b(?:Sonnet|Haiku|Opus|Fable|Terra|Luna)\b/.test(line));
+    expect(modelNameLines).toHaveLength(1);
+    expect(agentsNormalized).toContain(
+      "At the time of writing that means Fable is excluded and Opus is the right choice, but the rule is the shape, not the names.",
+    );
 
     // #2691: the merge gate's only human check is an on-repo owner comment, and
     // every agent here drives `gh` as the owner's account — so the rules that
@@ -89,7 +132,14 @@ describe("repository agent workflow contract", () => {
     expect(claude).toContain("/mcp");
     expect(claude).toContain("/hooks");
     expect(claude).toContain("/clear");
-    expect(claude).toContain("Use Sonnet or local tooling");
+    // #2910: the Claude adapter names no default model either, and it carries
+    // the interface-specific half of the inheritance rule.
+    expect(claude).toContain("Decide the model when you dispatch");
+    expect(claude).toContain("inherits this session's");
+    expect(claude).not.toContain("Use Sonnet or local tooling");
+    for (const model of ["Sonnet", "Haiku", "Opus", "Fable", "Terra", "Luna"]) {
+      expect(claude).not.toContain(model);
+    }
     expect(claude).not.toContain("## Completion and Merge");
     expect(claude).not.toContain("## Local validation");
     expect(claude).not.toContain("changelog.d/<pr-number>-<slug>.md");
@@ -109,7 +159,13 @@ describe("repository agent workflow contract", () => {
     expect(codex).toContain("### 5. Split fast local evidence from full CI gates");
     expect(codex).toContain("GitHub Actions owns the full");
     expect(codexNormalized).toContain("Run a full suite locally only to diagnose");
-    expect(codex).toContain("Luna/Terra");
+    expect(codex).not.toContain("Luna/Terra");
+    expect(codexNormalized).toContain("pick the tier at dispatch");
+    expect(codexNormalized).toContain("state the model and effort when you delegate");
+    expect(subagentsNormalized).toContain(
+      "State the model and reasoning effort in every launch",
+    );
+    expect(subagentsNormalized).toContain("inherits the orchestrator's");
     expect(codexNormalized).toContain("clear issue-specific context");
     expect(codexNormalized).toContain("Prefer `rg`, Git and repository scripts");
 
