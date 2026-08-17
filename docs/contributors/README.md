@@ -45,8 +45,9 @@ in. Cite rules by id, never by line number.
   [subscription lockout pricing](../invariants/subscription-lockout-pricing.md),
   [public content](../invariants/public-content.md),
   [analytics and privacy](../invariants/analytics-and-privacy.md),
-  [integrations](../invariants/integrations.md), and
-  [operations](../invariants/operations.md).
+  [integrations](../invariants/integrations.md),
+  [operations](../invariants/operations.md), and
+  [product configuration](../invariants/product-configuration.md).
 - [`../invariants/SCHEME.md`](../invariants/SCHEME.md) — how invariant ids are
   allocated and what an entry must contain.
 - [`../invariants/_FOLLOW_UPS.md`](../invariants/_FOLLOW_UPS.md) — invariant work

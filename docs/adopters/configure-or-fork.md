@@ -93,7 +93,9 @@ Reach for code when the behaviour genuinely is not expressible through the
 generic model: a new capability, a new admin surface, a new integration, a fix.
 
 When you do, build the configuration surface at the same time. The rule the
-product holds itself to:
+product holds itself to is
+[`INV-CONFIG-001`](../invariants/product-configuration.md#inv-config-001), which
+is its binding home; in plain terms:
 
 - A new value or feature a club could reasonably want differently gets an
   explicit configuration surface — a module, a setting, or a seed default.
