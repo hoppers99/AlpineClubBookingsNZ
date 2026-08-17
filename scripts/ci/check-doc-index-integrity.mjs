@@ -198,6 +198,45 @@ export const REACHABILITY_ROOTS = [
 export const UNREACHABLE_ALLOWLIST = new Set([]);
 
 /**
+ * The domain `##` headings `docs/DOMAIN_INVARIANTS.md` keeps VERBATIM.
+ *
+ * `SCHEME.md` §4.1 and §6.1 promise that the index retains the ten domain
+ * headings of the pre-split document byte-identical, so an anchor written
+ * before the split still resolves. Until #2720 nothing checked that, and the
+ * prose beside it also claimed "many inbound anchors" target them — a number
+ * this repository cannot support. Measured on 17 Aug 2026: **zero** tracked
+ * files link to an anchor inside the index; every reference is to the bare
+ * path. So every anchor the promise is about lives outside this repository —
+ * in a fork, a merged commit, a closed issue, a shipped release — and is
+ * therefore unmeasurable here and permanently unfixable once it breaks.
+ *
+ * That is the argument for pinning the property instead of editing the number:
+ * an anchor nobody can enumerate is exactly the anchor that must never move.
+ * A heading renamed here fails loudly, at the moment of the edit, in the one
+ * place that can still do something about it.
+ *
+ * This is an ALLOWLIST OF SURVIVORS, not a census. The index may grow new
+ * sections freely — `Product Configuration` is one, added by #2720 — and a new
+ * section carries no pre-split anchors, so nothing about it is promised. What is
+ * forbidden is renaming, re-casing or removing one of the ten.
+ */
+export const STABLE_INDEX_HEADINGS = [
+  "Public authoritative content",
+  "Money",
+  "Booking Dates And Capacity",
+  "Payment And Settlement",
+  "Member-Guest Consent",
+  "Booking Modifications",
+  "Analytics And Privacy",
+  "Membership Lifecycle",
+  "Integrations",
+  "Operations",
+];
+
+/** A top-level section heading in the index, with its exact text. */
+const INDEX_SECTION_HEADING_PATTERN = /^ {0,3}##\s+(.+?)\s*#*\s*$/;
+
+/**
  * Where the routing table lives, and how its section is found.
  *
  * Anchored on the heading rather than on a line range so the audit survives
@@ -1437,6 +1476,53 @@ export function auditIndexRows(files) {
 }
 
 /**
+ * Every heading named in {@link STABLE_INDEX_HEADINGS} is still a `##` heading
+ * of the index, spelled exactly the same way.
+ *
+ * Opt-in rather than unconditional, the same shape as
+ * {@link auditPermanentInvariantIds}: the expectation is a fact about THIS
+ * repository's index, and hard-wiring it into the pure audit would force every
+ * in-memory fixture to carry ten production heading names it has no other use
+ * for. `main` supplies the list; a test asserts that wiring, and a planted
+ * rename was run through the real CLI to prove the message fires.
+ */
+export function auditStableIndexHeadings(files, stableHeadings) {
+  if (!Array.isArray(stableHeadings) || stableHeadings.length === 0) {
+    return [
+      "auditStableIndexHeadings was given no headings to pin. An empty list " +
+        "makes this audit vacuous, which is worse than not having it: it " +
+        "reports a pass it has not earned. Restore STABLE_INDEX_HEADINGS.",
+    ];
+  }
+
+  const indexText = files.get(INVARIANT_INDEX);
+  if (indexText === undefined) return []; // reported by the linked-files audit
+
+  const present = new Set();
+  for (const { text: line } of scannableLines(indexText)) {
+    const match = line.match(INDEX_SECTION_HEADING_PATTERN);
+    if (match) present.add(match[1]);
+  }
+
+  const problems = [];
+  for (const heading of stableHeadings) {
+    if (present.has(heading)) continue;
+    problems.push(
+      `${INVARIANT_INDEX} no longer has the "## ${heading}" heading. It is one ` +
+        "of the ten pre-split domain headings the index keeps verbatim so that " +
+        "anchors written before the split still resolve. Those anchors live " +
+        "OUTSIDE this repository — in a fork, a merged commit, a closed issue, " +
+        "a shipped release — so nothing here can find them and nothing can fix " +
+        "them once they break. Restore the heading exactly, including its " +
+        "capitalisation and hyphenation; if the section's content genuinely " +
+        "moved, keep the heading and put a pointer under it. Adding NEW " +
+        "sections is free and needs no change here.",
+    );
+  }
+  return problems;
+}
+
+/**
  * The rows of the `AGENTS.md` routing table, as `{ number, text }`.
  *
  * Separator rows are dropped; the header row is kept and simply contributes
@@ -1825,7 +1911,11 @@ export function auditPermanentInvariantIds(
  */
 export function auditDocs(
   files,
-  { baselineFiles = null, baselineLabel = "the base revision" } = {},
+  {
+    baselineFiles = null,
+    baselineLabel = "the base revision",
+    stableIndexHeadings = null,
+  } = {},
 ) {
   return [
     ...auditDefinitionHeadingShapes(files),
@@ -1839,6 +1929,9 @@ export function auditDocs(
     ...auditNumberSequences(files),
     ...(baselineFiles
       ? auditPermanentInvariantIds(files, baselineFiles, baselineLabel)
+      : []),
+    ...(stableIndexHeadings
+      ? auditStableIndexHeadings(files, stableIndexHeadings)
       : []),
   ];
 }
@@ -2098,6 +2191,7 @@ if (invokedPath === import.meta.url) {
     const problems = auditDocs(files, {
       baselineFiles,
       baselineLabel: baselineRef.slice(0, 12),
+      stableIndexHeadings: STABLE_INDEX_HEADINGS,
     });
 
     if (problems.length > 0) {
@@ -2114,7 +2208,8 @@ if (invokedPath === import.meta.url) {
           `${prefixes.size} prefix(es), each numbering densely from 001 so the next id in ` +
           "a prefix can only be max + 1, every citation resolves, every id is indexed, " +
           `every id present at base ${baselineRef.slice(0, 12)} is still defined, ` +
-          `every docs/ page is reachable, ${routedRows} routing row(s) resolve, no line ` +
+          `every docs/ page is reachable, ${routedRows} routing row(s) resolve, all ` +
+          `${STABLE_INDEX_HEADINGS.length} pre-split index headings are intact, no line ` +
           "number is cited into the invariants, and no file is BOM'd or double-encoded. " +
           `Scanned ${files.size} tracked file(s).`,
       );

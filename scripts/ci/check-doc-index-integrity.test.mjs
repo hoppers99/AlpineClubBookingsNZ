@@ -32,8 +32,10 @@ import {
   loadInvariantFilesAtRef,
   resolveInvariantBaselineRef,
   routingTableRows,
+  auditStableIndexHeadings,
   scanMarkdownFenceLines,
   scannableLines,
+  STABLE_INDEX_HEADINGS,
 } from "./check-doc-index-integrity.mjs";
 
 /*
@@ -2135,6 +2137,102 @@ describe("auditRoutingTable", () => {
 
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("No routing table found");
+  });
+});
+
+describe("auditStableIndexHeadings", () => {
+  /** An index carrying two pinned sections and one that is not pinned. */
+  function indexWith(headings) {
+    return repo({
+      "docs/DOMAIN_INVARIANTS.md": [
+        "# Domain Invariants",
+        "",
+        "File: [`money.md`](invariants/money.md).",
+        "",
+        ...headings.flatMap((heading) => [`## ${heading}`, "", "Text.", ""]),
+        "| ID | Covers |",
+        "| --- | --- |",
+        "| `INV-MONEY-001` | Store and calculate money as integer cents |",
+        "",
+      ].join("\n"),
+    });
+  }
+
+  it("passes when every pinned heading is present, verbatim", () => {
+    expect(
+      auditStableIndexHeadings(indexWith(["Money", "Operations"]), [
+        "Money",
+        "Operations",
+      ]),
+    ).toEqual([]);
+  });
+
+  it("lets the index add new sections that are not pinned", () => {
+    expect(
+      auditStableIndexHeadings(
+        indexWith(["Money", "Operations", "Product Configuration"]),
+        ["Money", "Operations"],
+      ),
+    ).toEqual([]);
+  });
+
+  it("fails a renamed heading, which is what silently breaks an outside anchor", () => {
+    const problems = auditStableIndexHeadings(
+      indexWith(["Money and cents", "Operations"]),
+      ["Money", "Operations"],
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('"## Money"');
+    expect(problems[0]).toContain("pre-split domain headings");
+  });
+
+  it("fails a heading whose only change is its capitalisation", () => {
+    // GitHub's anchor slugs are case-folded, so `#money` still resolves here —
+    // but `Member-Guest Consent` -> `Member-guest consent` does move the slug,
+    // and no rule distinguishes the two safely. Byte-identical is the promise.
+    const problems = auditStableIndexHeadings(indexWith(["money"]), ["Money"]);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('"## Money"');
+  });
+
+  it("refuses an empty pin list rather than reporting a pass it has not earned", () => {
+    const problems = auditStableIndexHeadings(indexWith(["Money"]), []);
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("vacuous");
+  });
+
+  it("is opt-in through auditDocs, and fires when the option is supplied", () => {
+    // Both directions, because a conditional audit that main() forgets to wire
+    // is exactly as useless as no audit.
+    expect(auditDocs(indexWith(["Money and cents"]))).toEqual([]);
+    expect(
+      auditDocs(indexWith(["Money and cents"]), {
+        stableIndexHeadings: ["Money"],
+      }),
+    ).toHaveLength(1);
+  });
+
+  it("pins ten headings that the real index really has", () => {
+    // The constant is only worth anything while it describes the tree. A
+    // heading dropped from the list AND from the index would otherwise agree
+    // with itself.
+    const files = loadTrackedFiles(REPO_ROOT);
+
+    expect(STABLE_INDEX_HEADINGS).toHaveLength(10);
+    expect(auditStableIndexHeadings(files, STABLE_INDEX_HEADINGS)).toEqual([]);
+  });
+
+  it("wires the pin into the CLI, not just into the exported audit", () => {
+    // The CLI is the only caller that runs in `verify`. Asserted against the
+    // source because `main()` resolves its own repo root and cannot be pointed
+    // at a fixture; a planted rename was run through the real CLI by hand and
+    // failed with the message above (#2720).
+    const checker = readFileSync(CHECKER_PATH, "utf8");
+
+    expect(checker).toContain("stableIndexHeadings: STABLE_INDEX_HEADINGS");
   });
 });
 
