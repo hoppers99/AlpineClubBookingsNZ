@@ -260,10 +260,26 @@ operational documents (which may carry door/emergency access details).
     `FINANCE_USER` and `ADMIN_MEMBERSHIP` all get a permanent 403 on the lodge
     list.
 
-  Both now fail OPEN on identity: unknown plurality shows the lodge badge and
-  labels the scope, and identity is withheld only when the list actually came
-  back saying one lodge. ADR-002's "no lodge copy in a single-lodge club" still
-  holds, because that is now decided on evidence rather than on its absence.
+  They are fixed differently, and the difference is the point.
+
+  The booking-requests badge no longer consults the lodge list at all. ADR-002's
+  count rule is applied SERVER-side — `serializeBookingRequestForAdmin` takes
+  the active-lodge count and nulls `lodgeName` below two — and the panel renders
+  whatever name it is handed. A client cannot honestly apply a count rule using
+  a list it may be forbidden to read, and counting client-side was wrong in both
+  directions: too closed for the two presets above, and too open once this PR
+  made the whole-lodge form always send the sole lodge id, which gives new
+  single-lodge rows a real name.
+
+  `reports` still decides client-side and fails OPEN on `failed`/`forbidden`
+  only, labelling the occupancy scope "All lodges" when it cannot tell. Two
+  honest limits on that: while the list is still LOADING the qualifier is
+  absent, which is transient and read-only; and on a genuinely single-lodge club
+  whose list is forbidden it says "All lodges" where ADR-002 would say nothing —
+  accurate about the data, since the API does return all-lodge figures, but more
+  verbose than the rule prefers. Fixing it properly needs a plurality signal on
+  the reports payload, the same shape as the booking-requests fix. Recorded
+  rather than guessed at.
 
   The census is exact, not “roughly twenty”. There are eighteen production
   `useLodgeOptions` call sites in the admin tree; the shared policy selector is

@@ -164,11 +164,16 @@ dependencies. Consequently a create cannot validate an active lodge and commit
 after its deactivation, while two attempts to deactivate the last two lodges
 cannot both validate the other's stale active state.
 
-**Every** writer of `HutLeaderAssignment` takes this per-lodge key, and each
-one's overlap read is an authoritative post-lock read. That is what makes
-"one lodge cannot end up with two overlapping hut leaders" true, and it has to
-be all three of them, because there is no unique constraint on the range behind
-the application check:
+There are **six** writers of `HutLeaderAssignment`. Three of them decide the
+overlap predicate, and those three take this per-lodge key and re-read overlap
+under it. The guarantee that buys is narrower than "one lodge cannot end up
+with two overlapping hut leaders", and the narrower statement is the true one:
+
+> No two **independently created** hut-leader assignments overlap by more than
+> one day at one lodge.
+
+There is no unique constraint on the range behind the application check, so
+that holds only for as long as all three keep deciding under the key:
 
 - `POST /api/admin/hut-leaders` — role-only and bed-holding alike. Member,
   overlap and optional bed-availability checks all re-run under the key.
@@ -183,6 +188,32 @@ the application check:
 
 Different lodges retain independent keys. Confirmation email is sent only after
 commit and outside the transaction.
+
+The other three writers, and why the guarantee is worded the way it is:
+
+- `school-booking-request.ts` creates one assignment **per teacher** when a
+  school request is approved — same dates, same lodge, deliberately overlapping
+  each other, because several teachers do supervise one group together. It
+  holds the lodge key (it is inside the approval transaction) but runs no
+  overlap read, and must not: adding one would refuse the club's own school
+  bookings. This is the "independently created" carve-out above, and it is the
+  reason the sentence cannot simply say "no two overlapping assignments".
+- `[id]/pin/route.ts` rotates a PIN and `[id]/route.ts`'s DELETE removes a row.
+  Both write on the base client outside any lock. Neither can create an overlap
+  — one changes no dates and no lodge, the other only ever removes a row — so
+  neither needs the key.
+
+**One asymmetry is recorded here rather than resolved, because it is a product
+question and not a concurrency one.** The overlap predicate matches on dates
+and lodge with no role or source filter
+(`hut-leaders/route.ts`, `[id]/route.ts`, `cron-hut-leader-auto-assign.ts`), so
+teacher rows **block** a later manual or cron assignment for those nights while
+never being blocked themselves. Blocking looks deliberate — a club hut leader
+is redundant on nights a school group's own teachers are supervising — but
+nothing states it, and the alternative (a role/source filter, so teacher
+records sit outside the rule entirely) would need a discriminator the predicate
+does not currently read. Flagged for the owner; the wording above is true under
+either answer.
 
 ### Composition: roster-date writers (#2586)
 

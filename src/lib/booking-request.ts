@@ -2751,7 +2751,22 @@ export function serializeBookingRequestForAdmin(
   request: BookingRequest & {
     lodge?: { name: string } | null;
     otherLodge?: { name: string } | null;
-  }
+  },
+  /*
+    #2887 review (F2): how many lodges the club actually has, so the ADR-002
+    presentation rule is applied HERE rather than re-derived by each client.
+
+    The public serialiser has always applied it (`resolvePublicRequestLodgeName`
+    nulls the name below two active lodges); the admin one emitted it raw and
+    left the count rule to the panel. That was survivable while single-lodge
+    submissions stored `lodgeId: null` — but this PR makes the whole-lodge form
+    always send the sole lodge id, so new single-lodge rows carry a real name
+    and a single-lodge club would show a permanent lodge badge.
+
+    Omitted means "caller has not said", and the name passes through unchanged
+    — the pre-existing behaviour for the callers that do not care.
+  */
+  activeLodgeCount?: number,
 ) {
   // #2342: an admin READ never dies on one malformed historical row. This is
   // the single serialiser behind BOTH the queue list
@@ -2776,7 +2791,10 @@ export function serializeBookingRequestForAdmin(
     // single-lodge submissions); lodgeName is only present when the caller
     // included the lodge relation.
     lodgeId: request.lodgeId,
-    lodgeName: request.lodge?.name ?? null,
+    lodgeName:
+      activeLodgeCount !== undefined && activeLodgeCount < 2
+        ? null
+        : (request.lodge?.name ?? null),
     // Other/partner lodge the requester said they belong to (#2749). Null
     // otherLodgeId means "No"; otherLodgeName is present only when the caller
     // included the otherLodge relation.

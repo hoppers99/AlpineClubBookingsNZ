@@ -33,7 +33,6 @@ const EXPECTED_HOOK_CONSUMERS = [
   "src/app/(admin)/admin/work-parties/page.tsx",
   "src/app/(authenticated)/book/_hooks/use-booking-wizard.ts",
   "src/components/admin/booking-policies/policy-scope-select.tsx",
-  "src/components/admin/booking-requests/public-booking-requests-panel.tsx",
   "src/components/admin/lodge-capacity-card.tsx",
   "src/components/admin/rooms-beds-manager.tsx",
 ] as const;

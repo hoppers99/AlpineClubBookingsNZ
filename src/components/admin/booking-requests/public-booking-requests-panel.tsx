@@ -31,7 +31,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useLodgeOptions } from "@/components/lodge-select";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
@@ -396,33 +395,24 @@ export function PublicBookingRequestsPanel({
   const initialFilter = searchParams.get("status");
   const requestId = searchParams.get("requestId");
   /*
-    Lodge badge only renders for multi-lodge clubs (ADR-002 presentation rule);
-    a single-lodge club sees no lodge copy in the queue.
+    #2887: the lodge badge follows `request.lodgeName` and nothing else.
 
-    #2887: "fewer than two lodges came back" is not the same fact as "this club
-    has one lodge". A FAILED or FORBIDDEN lodge list also returns an empty
-    array, and this panel then rendered a multi-lodge club's officer queue
-    exactly like a single-lodge club's — while `lodgeName` sat unused in the
-    payload it had already been given.
+    ADR-002's "no lodge copy in a single-lodge club" rule is applied SERVER-side
+    now (`serializeBookingRequestForAdmin` takes the active-lodge count and
+    nulls the name below two), which is the only place it can be applied
+    honestly. This panel counted the lodge-options hook's list instead, and that
+    was wrong in both directions:
 
-    It is not only an outage case. `/admin/booking-requests` is in the BOOKINGS
-    area, and `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold `bookings: "view"`
-    with no `lodge` entry, so for those two shipped presets `/api/admin/lodges`
-    is a permanent 403 and the badge was permanently absent. An officer prices
-    and approves a stay with no lodge on screen — on a MUTATION screen, which
-    is the defect #2887 exists to remove.
+      - too closed: `/api/admin/lodges` needs `lodge:view`, and
+        `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold `bookings: "view"` with no
+        `lodge` entry at all, so their 403 is permanent and a multi-lodge club's
+        officer queue rendered with no lodge on screen — on a MUTATION surface;
+      - too open: once this PR made the whole-lodge form always send the sole
+        lodge id, new single-lodge rows carry a real name, so a genuine
+        single-lodge club would have shown a permanent badge.
 
-    So the badge fails OPEN when plurality is unknown and closed only when the
-    list actually came back saying one lodge. Identity is withheld only on
-    evidence, never on the absence of it.
+    One rule, one place, and the client stops guessing.
   */
-  const {
-    lodges: activeLodges,
-    failed: lodgeOptionsFailed,
-    forbidden: lodgeOptionsForbidden,
-  } = useLodgeOptions("admin");
-  const lodgeCountUnknown = lodgeOptionsFailed || lodgeOptionsForbidden;
-  const showLodgeContext = activeLodges.length >= 2 || lodgeCountUnknown;
   const [requests, setRequests] = useState<PublicBookingRequestData[]>([]);
   const [filter, setFilter] = useState<PublicRequestFilter>(
     isPublicRequestFilter(initialFilter) ? initialFilter : "QUEUE"
@@ -1311,7 +1301,7 @@ export function PublicBookingRequestsPanel({
                       </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
-                      {showLodgeContext && request.lodgeName ? (
+                      {request.lodgeName ? (
                         <Badge
                           variant="outline"
                           className="border-info-6 bg-info-3 text-info-11"

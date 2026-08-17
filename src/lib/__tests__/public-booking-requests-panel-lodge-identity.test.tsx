@@ -5,33 +5,9 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicBookingRequestsPanel } from "@/components/admin/booking-requests/public-booking-requests-panel";
 
-/*
- * #2887: the per-row lodge badge is this panel's ONLY lodge identity — it has
- * no lodge picker at all. It was gated on `activeLodges.length >= 2`, which is
- * equally false for a multi-lodge club whose lodge list FAILED or is FORBIDDEN,
- * so an officer priced and approved a stay with no lodge on screen.
- *
- * `/admin/booking-requests` is in the BOOKINGS area, and `ADMIN_MEMBERSHIP` and
- * `FINANCE_ADMIN` hold `bookings: "view"` with no `lodge` entry, so for those
- * two shipped presets `/api/admin/lodges` is a permanent 403 — this was not
- * only an outage case.
- */
-let lodgeOptions: {
-  lodges: Array<{ id: string; name: string }>;
-  loading: boolean;
-  failed: boolean;
-  forbidden: boolean;
-  reload: () => void;
-};
-vi.mock("@/components/lodge-select", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/components/lodge-select")>()),
-  useLodgeOptions: () => lodgeOptions,
-}));
-
-// next/navigation: the panel replaces the URL in an effect and reads search params.
-const replace = vi.fn();
+// next/navigation: the panel replaces the URL in an effect and reads params.
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace, push: vi.fn() }),
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
   useSearchParams: () => ({ get: () => null }),
 }));
 
@@ -110,48 +86,39 @@ const heldRequest = {
 };
 
 describe("PublicBookingRequestsPanel lodge identity (#2887)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    lodgeOptions = {
-      lodges: [
-        { id: "lodge-1", name: "Lodge One" },
-        { id: "lodge-2", name: "Lodge Two" },
-      ],
-      loading: false,
-      failed: false,
-      forbidden: false,
-      reload: vi.fn(),
-    };
+  /*
+    The badge follows `request.lodgeName` and nothing else, because ADR-002's
+    single-lodge rule is applied SERVER-side now
+    (`serializeBookingRequestForAdmin` nulls the name below two active lodges).
+
+    That matters in both directions. This panel used to count
+    `useLodgeOptions().lodges`, which is empty for a FAILED or FORBIDDEN list as
+    well as for a real single-lodge club — and `/api/admin/lodges` needs
+    `lodge:view`, which `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` do not have, so
+    their 403 is permanent. A multi-lodge club's officer priced and approved
+    with no lodge on screen. Counting client-side also went wrong the other way
+    once this PR made the whole-lodge form always send the sole lodge id: new
+    single-lodge rows carry a real name, so a single-lodge club would have shown
+    a permanent badge.
+  */
+  function renderWith(lodgeName: string | null) {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ data: [heldRequest] }),
+      json: async () => ({ data: [{ ...heldRequest, lodgeName }] }),
     }) as unknown as typeof fetch;
-  });
-
-  it("shows the lodge badge for a multi-lodge club", async () => {
     render(<PublicBookingRequestsPanel />);
+  }
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it("shows the lodge the server named, whatever the officer may read", async () => {
+    renderWith("Lodge Two");
     expect(await screen.findByText(/ada@example\.com/)).toBeTruthy();
     expect(screen.getByText("Lodge Two")).toBeTruthy();
   });
 
-  it("keeps the badge when the lodge list FAILED — plurality unknown is not one lodge", async () => {
-    lodgeOptions = { ...lodgeOptions, lodges: [], failed: true };
-    render(<PublicBookingRequestsPanel />);
-    expect(await screen.findByText(/ada@example\.com/)).toBeTruthy();
-    expect(screen.getByText("Lodge Two")).toBeTruthy();
-  });
-
-  it("keeps the badge when the lodge list is FORBIDDEN — the permanent case for two shipped presets", async () => {
-    lodgeOptions = { ...lodgeOptions, lodges: [], forbidden: true };
-    render(<PublicBookingRequestsPanel />);
-    expect(await screen.findByText(/ada@example\.com/)).toBeTruthy();
-    expect(screen.getByText("Lodge Two")).toBeTruthy();
-  });
-
-  it("still hides it for a club the list says really has one lodge (ADR-002)", async () => {
-    // Identity is withheld on EVIDENCE, never on the absence of it.
-    lodgeOptions = { ...lodgeOptions, lodges: [{ id: "lodge-1", name: "Lodge One" }] };
-    render(<PublicBookingRequestsPanel />);
+  it("shows nothing when the server withheld the name (ADR-002 single lodge)", async () => {
+    renderWith(null);
     expect(await screen.findByText(/ada@example\.com/)).toBeTruthy();
     expect(screen.queryByText("Lodge Two")).toBeNull();
   });
