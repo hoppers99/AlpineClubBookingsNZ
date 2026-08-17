@@ -24,35 +24,47 @@ export function deriveSettledLodgeOptionScope(input: {
   if (input.loading) return { kind: "loading" }
 
   /*
-    #2887 review (F1): the DELIBERATE club-wide answer is decided before the
-    list's failure modes, and that ordering is load-bearing.
+    A list OUTCOME always wins over the deliberate club-wide answer (#2887
+    review). This order was briefly reversed and the reversal is reverted here;
+    the reasoning is worth keeping because the reversal looked obviously right.
 
-    A caller that pins `selectedLodgeId` to its own `explicitAllLodgesValue` is
-    saying "this surface is club-wide by construction" — promo codes and work
-    parties are the two, and both hard-code it. Their answer cannot depend on
-    the lodge list, so a `failed`, `forbidden` or `empty` list must not take it
-    away from them.
+    Promo codes and work parties pin `selectedLodgeId` to their own
+    `explicitAllLodgesValue`, so they are club-wide by construction and their
+    CONTENT does not depend on the lodge list. The inference was that a
+    `failed`, `forbidden` or `empty` list should therefore not blank them. It is
+    the wrong inference, because those pages need the list for a second thing:
+    both gate their lodge-RESTRICTION control on `lodges.length > 1`, and
+    `useLodgeOptions` sets `lodges: []` on a 403 AND on any other failure
+    (`lodge-select.tsx`). Returning `all` there unlocks the create while the
+    control that scopes it is hidden, so:
 
-    Testing `forbidden` first did exactly that. `GET /api/admin/lodges` needs
-    `lodge:view`, and two shipped presets — `ADMIN_MEMBERSHIP` and
-    `FINANCE_ADMIN` — have no `lodge` entry at all, so their 403 is PERMANENT
-    and the retry can only 403 again. A `FINANCE_ADMIN` clicking Promo Codes in
-    the sidebar got a header, no Add button, no promo codes and an alert saying
-    nothing had failed. Before this branch that click listed every promo code.
+      - a promo code saves with `lodgeIds` omitted entirely — redeemable at
+        every lodge, when the admin meant one;
+      - a work party saves `lodgeId: null` — an event at every lodge, which is
+        the exact defect #2701 fixed on that page.
 
-    `loading` still wins, because "not yet" is not an outcome and resolves on
-    its own in a moment.
+    That is worse than the blank page it was meant to cure: a blank page refuses
+    to act, and this acts wrongly and silently. Restricting the reversal to
+    `forbidden` alone does not help either, because `forbidden` empties the list
+    by the same code path.
+
+    The blank page the reversal targeted is fixed at its root instead:
+    `GET /api/admin/lodges` is readable by any authenticated admin now, so
+    `forbidden` is unreachable for `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN`.
+
+    `empty` stays ahead of `all` deliberately. A club with no active lodge can
+    scope nothing, so offering an unrestricted create there is vacuous at best;
+    the empty notice is the honest answer.
   */
+  if (input.failed) return { kind: "failed" }
+  if (input.forbidden) return { kind: "forbidden" }
+  if (input.lodges.length === 0) return { kind: "empty" }
   if (
     input.explicitAllLodgesValue !== undefined &&
     input.selectedLodgeId === input.explicitAllLodgesValue
   ) {
     return { kind: "all" }
   }
-
-  if (input.failed) return { kind: "failed" }
-  if (input.forbidden) return { kind: "forbidden" }
-  if (input.lodges.length === 0) return { kind: "empty" }
   const lodge = input.lodges.find(
     (option) => option.id === input.selectedLodgeId,
   )

@@ -110,19 +110,6 @@ const EDITORS: Array<{
   name: string
   render: () => ReactElement
   action: RegExp
-  /*
-    #2887 review (F1): this surface is club-wide BY CONSTRUCTION — it pins
-    `selectedLodgeId` to its own `explicitAllLodgesValue` and never asks for a
-    per-lodge answer. Its content therefore does not depend on the lodge list,
-    and a failed/forbidden/empty list must NOT blank it.
-
-    This flag exists because the negative cases below previously applied to all
-    ten editors and so pinned the regression as correct: `GET /api/admin/lodges`
-    needs `lodge:view`, `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` have no `lodge`
-    entry, and their 403 is permanent — so /admin/promo-codes (in the sidebar)
-    and /admin/work-parties were permanently blank for both presets.
-  */
-  clubWide?: true
 }> = [
   { name: "seasons", render: () => <SeasonsPage />, action: /^edit window$/i },
   { name: "chores", render: () => <ChoresPage />, action: /add chore|create chore|update chore/i },
@@ -136,12 +123,11 @@ const EDITORS: Array<{
     action: /add room|bulk create|import rooms/i,
   },
   { name: "lodge capacity", render: () => <LodgeCapacityCard />, action: /^save$/i },
-  { name: "work parties", render: () => <AdminWorkPartiesPage />, action: /^new event$/i, clubWide: true },
+  { name: "work parties", render: () => <AdminWorkPartiesPage />, action: /^new event$/i },
   {
     name: "promo codes",
     render: () => <PromoCodesPageClient permissionMatrix={PERMISSION_MATRIX} />,
     action: /^add promo code$/i,
-    clubWide: true,
   },
 ]
 
@@ -151,8 +137,15 @@ const UNSETTLED_STATES = [
     state: { lodges: LODGES, loading: true, failed: false, forbidden: false },
   },
   {
+    /*
+      `lodges: []`, not `LODGES` (#2887 review). `useLodgeOptions` clears the
+      list on any non-403 failure, so a fixture that keeps two lodges tests a
+      state the hook never produces — and it hid real damage: with two lodges
+      present the promo/work-party lodge-restriction control still renders, so
+      the form looks healthy exactly where it is not.
+    */
     name: "failed",
-    state: { lodges: LODGES, loading: false, failed: true, forbidden: false },
+    state: { lodges: [], loading: false, failed: true, forbidden: false },
   },
   {
     /*
@@ -167,7 +160,7 @@ const UNSETTLED_STATES = [
       shipped presets can now read the list.
     */
     name: "forbidden",
-    state: { lodges: LODGES, loading: false, failed: false, forbidden: true },
+    state: { lodges: [], loading: false, failed: false, forbidden: true },
   },
   {
     name: "successful empty",
@@ -195,7 +188,7 @@ describe("ordinary admin editors fail closed until lodge scope settles (#2701, #
     vi.clearAllMocks()
   })
 
-  const cases = EDITORS.filter((editor) => !editor.clubWide).flatMap((editor) =>
+  const cases = EDITORS.flatMap((editor) =>
     UNSETTLED_STATES.map((scope) => ({
       editorName: editor.name,
       stateName: scope.name,
@@ -218,56 +211,6 @@ describe("ordinary admin editors fail closed until lodge scope settles (#2701, #
     expect(fetch).not.toHaveBeenCalled()
     expect(screen.queryByRole("button", { name: action })).not.toBeInTheDocument()
   })
-
-  const clubWideCases = EDITORS.filter((editor) => editor.clubWide).flatMap((editor) =>
-    UNSETTLED_STATES.filter((scope) => scope.name !== "delayed loading").map((scope) => ({
-      editorName: editor.name,
-      stateName: scope.name,
-      render: editor.render,
-      action: editor.action,
-      state: scope.state,
-    })),
-  )
-
-  it.each(clubWideCases)(
-    "$editorName still works with no usable lodge list, because it never needed one — scope is $stateName",
-    async ({ render: renderEditor, action, state }) => {
-      /*
-        The counterpart to the negative cases above, and the reason they are no
-        longer applied to these two editors.
-
-        `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold no `lodge` permission, so
-        `/api/admin/lodges` 403s for them forever. These surfaces are club-wide
-        by construction, so that 403 tells them nothing they needed to know —
-        and blanking them turned a permission they DO have (finance/membership)
-        into a page they cannot use. "delayed loading" is excluded because
-        "not yet" is a real transient state that resolves on its own.
-      */
-      lodgeOptions = { ...state, reload: vi.fn() }
-      // The shapes these two pages actually parse; a bare [] makes them throw
-      // on load, which would fail this case for a reason that is not the gate.
-      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input)
-        const json = async () => {
-          if (url.includes("/api/admin/work-parties")) return { events: [] }
-          if (url.includes("/api/admin/promo-codes")) return []
-          if (url.includes("/api/admin/membership-types")) return { membershipTypes: [] }
-          if (url.includes("/api/admin/age-tier-settings")) return { settings: [] }
-          return []
-        }
-        return { ok: true, status: 200, json } as Response
-      }))
-
-      render(
-        <ClubIdentityProvider value={clubIdentity}>
-          {renderEditor()}
-        </ClubIdentityProvider>,
-      )
-
-      expect(await screen.findByRole("button", { name: action })).toBeInTheDocument()
-      expect(fetch).toHaveBeenCalled()
-    },
-  )
 
   it.each(EDITORS)("$name exposes its real action after a concrete lodge settles", async ({ render: renderEditor, action }) => {
     lodgeOptions = {
