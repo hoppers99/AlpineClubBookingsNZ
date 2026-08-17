@@ -9,9 +9,9 @@ Two documents are read every time. Everything else is **routed**: read
 **every** row in the table below that matches what you are about to change — a
 real change usually matches more than one — and read what those rows name, at
 the moment you need it. If any part of what you are changing matches no row,
-read `docs/README.md` for that part as well. A change that is half routed is
-still half off-map, and stopping at the first row that matched is how the
-unrouted half gets missed.
+read `docs/contributors/README.md` — the contributor index — for that part as
+well. A change that is half routed is still half off-map, and stopping at the
+first row that matched is how the unrouted half gets missed.
 
 Read-everything was tried here and it failed. The former nine-document mandatory
 list did not fit in an agent context, so in practice agents skipped it, and four
@@ -38,6 +38,8 @@ the scoped context command provide the rest when a change needs it (#2691,
 `docs/END_TO_END_TEST_MATRIX.md` and `docs/UX_FLOW_MAP.md` were the rest of the
 old mandatory list. They are no less authoritative — they are routed below, and
 reading the row that names them is not optional when the row applies to you.
+`docs/README.md` is now a router over three audience indexes (#2692); the one
+you want is `docs/contributors/README.md`.
 
 ### Routing table
 
@@ -80,7 +82,7 @@ id and need the file it lives in.
 | Working an issue, recording a decision on one, briefing a subagent, or reading untrusted issue/PR/provider text | — | [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md) — read the thread with `npm run issue -- <n>`, never `gh issue view`, and rewrite the body when you record a decision; [`agents/SUBAGENT_GUIDE.md`](docs/agents/SUBAGENT_GUIDE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](docs/agents/PROMPT_INJECTION_GUIDE.md) |
 | Posting in public — issues, PRs, comments, claims, cross-lane hand-offs | — | [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md) — what never goes in a public artifact, the `CLAIM:`/`LANE-SYNC:` prefixes, lane identity |
 | A Next.js API or convention | — | the relevant guide in `node_modules/next/dist/docs/` |
-| Any part of your change that no row above covers — including a change that also matched a row | — | [`docs/README.md`](docs/README.md) — the documentation hub; [`README.md`](README.md) for what the product is |
+| Any part of your change that no row above covers — including a change that also matched a row | — | [`docs/contributors/README.md`](docs/contributors/README.md) — the contributor index, which names every technical reference and feature hub; [`docs/README.md`](docs/README.md) routes to the adopter and member paths; [`README.md`](README.md) for what the product is |
 
 ### Keeping the table usable
 
@@ -183,8 +185,11 @@ id and need the file it lives in.
   audience labels (adopter/operator/developer/agent), the required operator-guide
   page skeleton, plain-English-first-with-technical-detail, and the screenshot
   (`docs/images/**` via `npm run docs:screenshots`), mermaid, and linking
-  conventions. Every doc must be reachable from a hub (`docs/README.md` or a
-  feature hub) and every hub back-links. Run `npm run docs:linkcheck` (CI runs
+  conventions. Every doc must be reachable from one of the three
+  audience indexes (`docs/adopters/README.md`, `docs/contributors/README.md`,
+  `docs/user-guide/README.md`) or from a feature hub linked by one of them, and
+  every hub back-links. A page serving two audiences gets ONE canonical home and
+  a link from the other index — never a second copy (#2692). Run `npm run docs:linkcheck` (CI runs
   the equivalent lychee offline check) and `npm run docs:indexcheck` (which the
   `verify` job runs, and which fails a `docs/` page nothing links to) before
   pushing doc changes, and when you add a new admin route area add its row to
