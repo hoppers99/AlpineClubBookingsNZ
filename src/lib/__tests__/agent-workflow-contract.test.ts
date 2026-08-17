@@ -120,6 +120,54 @@ describe("repository agent workflow contract", () => {
     expect(issueWorkflow).toContain("### `LANE-SYNC:`");
     expect(issueWorkflow).toContain("## Writing in the open");
 
+    /*
+      #2720. Five owner-decided rules that shape how an agent DECIDES, so they
+      earn a place in the always-read core rather than a routed page — and are
+      pinned here for the same reason the merge-gate sentences above are: each
+      one exists because its absence produced a real, dated failure, and a
+      quiet deletion would leave nothing behind saying so.
+
+      The routed halves are pinned too. A core rule whose detail link goes
+      nowhere is a rule with no content, which reads as complete.
+    */
+    expect(agents).toContain(
+      "This repository is the generic product, not one club's site.",
+    );
+    expect(agentsNormalized).toContain(
+      "would a different club answer this differently?",
+    );
+    expect(agentsNormalized).toContain(
+      "module toggle, a setting or a seed default",
+    );
+    // The template rule must not read as runtime multi-tenancy: one deployment
+    // still serves exactly one club, and only what the CODE encodes is generic.
+    expect(agentsNormalized).toContain("Each deployed instance serves exactly one club");
+    expect(agentsNormalized).toContain("not about runtime tenancy");
+    expect(agents).toContain("INV-CONFIG-001");
+    expect(agentsNormalized).toContain(
+      "The same applies to any claim about an issue's state",
+    );
+    expect(agentsNormalized).toContain(
+      "Read every reply before putting options to the owner, including from anyone outside this repository",
+    );
+    expect(agentsNormalized).toContain(
+      "Where a reviewer and the owner conflict, the owner decides",
+    );
+    expect(agentsNormalized).toContain(
+      "Remove `needs-decision` in the same action",
+    );
+    expect(issueWorkflow).toContain("## External and fork review");
+    expect(issueWorkflow).toContain("## Writing a blocker");
+    // The third-party-name rule binds NEW writing. Both carve-outs are decided
+    // and both are load-bearing: reading the rule too broadly once left an
+    // external reviewer unanswered for a day, and a retroactive sweep would
+    // erase genuine attribution.
+    expect(issueWorkflow).toContain(
+      "A public GitHub handle is not a private real name.",
+    );
+    expect(issueWorkflow).toContain("The rule binds new writing only.");
+    expect(issueWorkflow).toContain("Do not sweep them.");
+
     // #2903: Claude imports the shared authority once. Its adapter is bounded
     // and carries only interface-specific controls; removed normative rules
     // survive in AGENTS.md rather than being copied into two homes again.
@@ -201,6 +249,40 @@ describe("repository agent workflow contract", () => {
     expect(lockGuard).toContain("a writer doing both takes global");
     expect(lockGuard).not.toContain("legacy club-wide pg_advisory_xact_lock(1)");
     expect(lockGuard).not.toContain("prefer a domain-keyed hashtext lock");
+  });
+
+  it("keeps the always-read core inside its measured budget", () => {
+    /*
+      #2691 established that a core an agent cannot afford to read is a core
+      agents skip — and four consecutive PRs re-fixed a rule that was already
+      written down correctly, because nobody reached it. #2720 then added five
+      rules to that same file, which is exactly the pressure this budget exists
+      to make visible.
+
+      Measured rather than asserted from memory. At the time of writing
+      `AGENTS.md` is 9,859 words; the ceiling leaves a few hundred words of
+      genuine headroom — roughly six more routing rows — and no more.
+
+      WHEN THIS FAILS, THE FIX IS NOT A BIGGER NUMBER. The core is a fixed
+      budget: something has to be routed out to a page the routing table already
+      names before something else comes in. Raising the ceiling is a decision
+      about how much context every agent pays on every task, so it belongs in a
+      pull request that says what it removed and why the trade is worth it —
+      not in a one-line edit made to get a suite green.
+
+      `CLAUDE.md` carries its own smaller ceiling above (#2903); this is the
+      same discipline applied to the file that actually holds the rules.
+    */
+    const agents = readRepoFile("AGENTS.md");
+    const words = agents.trim().split(/\s+/).length;
+
+    expect(
+      words,
+      `AGENTS.md is ${words} words. It is read in full on every task by every ` +
+        "agent, so its size is a cost paid thousands of times. Route a section " +
+        "out to the document its routing row already names, rather than raising " +
+        "this ceiling.",
+    ).toBeLessThanOrEqual(10_200);
   });
 
   it("requires every PR to declare concurrency and merge-gate evidence", () => {
