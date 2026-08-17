@@ -1,9 +1,21 @@
-# ADR-002: Import Semantics and Safety Model
+# ADR-002: Import Semantics and Safety Model (implemented)
 
 ## Status
 
-Proposed (owner-reviewed direction, 2026-07-08; to be Accepted with the first
-implementing PR). Feature issue: hoppers99/AlpineClubBookingsNZ#22.
+**Implemented.** Delivered by the config-transfer M3 milestone: the import
+engine's dry-run plan and apply, with the pre-apply backup, the resolution
+model for ambiguous matches, and the allowlist/DMMF type checks. Feature issue:
+hoppers99/AlpineClubBookingsNZ#22.
+
+Implementation: `src/lib/config-transfer/import.ts`,
+`src/lib/config-transfer/apply.ts`, the `plan`, `apply` and `reseal` routes
+under `src/app/api/admin/config-transfer/`, and `e2e/config-transfer.spec.ts`.
+Reference: [Configuration Export & Import](../README.md).
+
+The header said "Proposed … to be Accepted with the first implementing PR" long
+after that PR landed, so two accepted decisions read as provisional and invited
+somebody to reopen a settled question. #2720 corrected the status only — nothing
+in the decision below is reopened or changed.
 
 ## Context
 

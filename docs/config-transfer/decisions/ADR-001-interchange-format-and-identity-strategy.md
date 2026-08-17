@@ -1,9 +1,22 @@
-# ADR-001: Interchange Format and Identity Strategy
+# ADR-001: Interchange Format and Identity Strategy (implemented)
 
 ## Status
 
-Proposed (owner-reviewed direction, 2026-07-08; to be Accepted with the first
-implementing PR). Feature issue: hoppers99/AlpineClubBookingsNZ#22.
+**Implemented.** Delivered by the config-transfer M1 and M2 milestones: the
+bundle format core (manifest, zip codec, entity registry), the tolerant CSV
+codec, and the export orchestrator. Feature issue:
+hoppers99/AlpineClubBookingsNZ#22.
+
+Implementation: `src/lib/config-transfer/manifest.ts`,
+`src/lib/config-transfer/bundle.ts`, `src/lib/config-transfer/registry.ts`,
+`src/lib/config-transfer/csv.ts`, `src/lib/config-transfer/export.ts`, and the
+four routes under `src/app/api/admin/config-transfer/`. Reference:
+[Configuration Export & Import](../README.md).
+
+The header said "Proposed … to be Accepted with the first implementing PR" long
+after that PR landed, so two accepted decisions read as provisional and invited
+somebody to reopen a settled question. #2720 corrected the status only — nothing
+in the decision below is reopened or changed.
 
 ## Context
 

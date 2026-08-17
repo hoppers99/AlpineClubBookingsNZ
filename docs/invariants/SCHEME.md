@@ -353,8 +353,15 @@ dropped wholesale rather than altered.
 
 The index stays at `docs/DOMAIN_INVARIANTS.md` (§6) and keeps the ten `##`
 domain headings of the pre-split document with byte-identical text, so **every
-anchor written before the split still resolves.** Resolving is not the same as
-landing on the rule, and the two are now distinguished:
+anchor written before the split still resolves.** That is now a checked
+contract rather than an intention: `npm run docs:indexcheck` fails a rename,
+re-casing or removal of any of the ten (`STABLE_INDEX_HEADINGS` in
+`scripts/ci/check-doc-index-integrity.mjs`, #2720). Adding a NEW `##` section is
+free — a section that did not exist before the split carries no pre-split
+anchors — so the list is an allowlist of survivors, not a census of the index.
+
+Resolving is not the same as landing on the rule, and the two are now
+distinguished:
 
 | A link that means… | Points at |
 | --- | --- |
@@ -503,12 +510,23 @@ without opening more than one other file".
 ## 6. The index
 
 **The index is `docs/DOMAIN_INVARIANTS.md`.** It is not in this directory, and
-there is deliberately no `docs/invariants/README.md`: many entry-point docs,
-guides, source files and agent helper scripts already point at that path, and
-many inbound anchors target headings the index keeps verbatim. Moving it would
-turn a free migration into widespread edits and a permanent fork-compatibility
-break, and would gain nothing a reader can feel. `npm run docs:indexcheck` treats
-`docs/DOMAIN_INVARIANTS.md` as the root of the invariants tree.
+there is deliberately no `docs/invariants/README.md`: entry-point docs, guides,
+source files and agent helper scripts already point at that path in quantity.
+Moving it would turn a free migration into widespread edits and a permanent
+fork-compatibility break, and would gain nothing a reader can feel.
+`npm run docs:indexcheck` treats `docs/DOMAIN_INVARIANTS.md` as the root of the
+invariants tree.
+
+This section used to add that "many inbound anchors" target the headings the
+index keeps verbatim. That claim could not be reconciled with the repository and
+is withdrawn: measured on 17 Aug 2026, **no tracked file links to an index
+anchor at all** — every reference is to the bare path. The promise in §4.1 is
+therefore about anchors held somewhere this repository cannot see: a fork, a
+merged commit, a closed issue, a shipped release. Unmeasurable is not the same
+as absent, and it is the stronger reason to pin the headings mechanically rather
+than to count the links: a heading rename would break them silently and
+permanently, and the pin is what makes the breakage loud at the moment of the
+edit instead.
 
 ### 6.1 What the index contains
 
@@ -517,9 +535,11 @@ break, and would gain nothing a reader can feel. `npm run docs:indexcheck` treat
 - **How IDs work**: the operative rules from this file in about twenty lines,
   with a link here for the rest.
 - The **ten domain `##` headings** of the pre-split document, byte-identical, so
-  every pre-split anchor still resolves. Under each: one sentence of what it
-  covers, the file(s) it lives in with their prefixes, and a table of every ID
-  with a one-line (**≤ 12 words**) description.
+  every pre-split anchor still resolves — pinned by the docs-integrity check
+  (§4.1). Under each: one sentence of what it covers, the file(s) it lives in
+  with their prefixes, and a table of every ID with a one-line (**≤ 12 words**)
+  description. Sections added since the split sit alongside them and are not
+  part of that promise.
 
 A domain whose content is split across several files lists each file under the
 same `##` heading, so the inbound anchor still lands on something that routes
