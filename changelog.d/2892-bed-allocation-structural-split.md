@@ -13,6 +13,13 @@
   saving at once were verified to be the same statements, in the same order, in
   the same database transactions as before.
 
+  Those automated guards were also tightened while the code was being moved.
+  Each place that writes a bed allocation is now checked individually, in the
+  order it does things, rather than by looking for the right words somewhere in
+  the file — and the inventory of write points now counts them, so a second one
+  added to a file that is already on the list is noticed instead of being
+  assumed covered by the first.
+
   The one file that was deliberately left alone is the allocation algorithm
   itself. It is also large, but it is one continuous piece of reasoning about
   who gets which bed, and breaking it up would have made it harder to follow
