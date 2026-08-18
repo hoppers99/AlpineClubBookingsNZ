@@ -36,6 +36,7 @@ const modulesOn: FeatureFlags = {
   eventsCalendar: true,
   memberGuests: false,
   aiDiagnostics: false,
+  alpineCentralServer: false,
 };
 
 function emptyEmailResponses() {

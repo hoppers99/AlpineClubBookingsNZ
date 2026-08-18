@@ -96,8 +96,8 @@ describe("uploadOtherClubsToServer", () => {
       otherLodgesLastUploadAt: "2026-07-01T00:00:00.000Z",
     });
     mockFindMany.mockResolvedValue([
-      { name: "Aorangi Ski Club", updatedAt: older, ...remoteLodge("x") },
-      { name: "Arlberg Ski Club", updatedAt: newer, ...remoteLodge("y") },
+      { ...remoteLodge("Aorangi Ski Club"), updatedAt: older },
+      { ...remoteLodge("Arlberg Ski Club"), updatedAt: newer },
     ]);
     mockUploadOtherLodges.mockResolvedValue({
       created: 1,
