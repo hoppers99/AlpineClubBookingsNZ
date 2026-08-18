@@ -182,7 +182,7 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
             </div>
           </div>
 
-          <div className="rounded-md border bg-muted/40 p-3 text-sm">
+          <div className="rounded-md border border-border bg-muted p-3 text-sm">
             <div className="flex items-center justify-between gap-2">
               <span>
                 No account yet? Request a connection on the central server, then
