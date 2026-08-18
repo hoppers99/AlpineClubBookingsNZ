@@ -1,4 +1,11 @@
-import { Bot, CreditCard, DatabaseBackup, KeyRound, Plug } from "lucide-react";
+import {
+  Bot,
+  CreditCard,
+  DatabaseBackup,
+  KeyRound,
+  Plug,
+  Server,
+} from "lucide-react";
 import {
   AdminHubPage,
   type AdminHubSection,
@@ -44,6 +51,13 @@ const sections: AdminHubSection[] = [
     description:
       "Enter your Anthropic API key, set a monthly spend cap, and review AI usage. Hidden until the AI assistant module is enabled.",
     icon: Bot,
+  },
+  {
+    href: "/admin/alpine_server/setup",
+    title: "Alpine Central Server",
+    description:
+      "Connect to the Alpine Central Server (ServerNZ): request a connection, store your API key, and upload/download shared data such as the Other Clubs registry.",
+    icon: Server,
   },
 ];
 
