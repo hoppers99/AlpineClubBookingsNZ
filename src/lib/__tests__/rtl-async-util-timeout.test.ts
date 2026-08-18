@@ -3,7 +3,7 @@
 /*
   Reads back the repo-wide RTL async window set in `vitest.setup.ts` (#2944).
 
-  The setting is invisible by nature: the 219 suites that depend on it do so by
+  The setting is invisible by nature: the 219 test files that depend on it do so by
   NOT failing, so dropping it would silently restore the 1000ms default and with
   it the original symptom — a `TestingLibraryElementError: Unable to find …` that
   reads as a missing element and lands on a different suite each run — while

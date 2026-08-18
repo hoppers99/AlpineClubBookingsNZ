@@ -81,11 +81,13 @@ process.env.AWS_SES_SECRET_ACCESS_KEY ??= "test-ses-secret-access-key";
   clicks, and its synchronous assertions stay synchronous.
 
   Configured here rather than per file because the exposure is broad, not
-  incidental: 219 of the 313 test files that import `@testing-library/react` or
-  `@testing-library/dom` use at least one of these utilities (132 use `findBy*`,
-  199 use `waitFor`, none use `waitForElementToBeRemoved`). Nothing in the tree
-  calls `configure()` itself, passes a per-call `{ timeout }`, or asserts that
-  one of these utilities rejects, so this ceiling is the only one in play.
+  incidental: 219 of the 314 test files that import `@testing-library/react` or
+  `@testing-library/dom` use at least one of these utilities — 131 use `findBy*`
+  or `findAllBy*`, 199 use `waitFor`, none use `waitForElementToBeRemoved` — and
+  they are spread across the tree rather than clustered (82 under `src/lib`, 69
+  under `src/components`, 66 under `src/app`, 2 under `src/hooks`). Nothing in the
+  tree calls `configure()` itself, passes a per-call `{ timeout }`, or asserts
+  that one of these utilities rejects, so this ceiling is the only one in play.
 
   Imported dynamically and only under jsdom: `vitest.config.ts` sets the default
   environment to `node`, and the several hundred node-environment suites have no

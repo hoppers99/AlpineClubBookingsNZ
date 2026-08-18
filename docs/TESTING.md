@@ -56,7 +56,14 @@ So the default is not a comfortable ceiling load occasionally grazes; a busy
 runner goes straight through it, and because scheduling decides which wait loses,
 a **different** suite fails each run. `vitest.setup.ts` therefore configures
 4,000ms repo-wide, and `src/lib/__tests__/rtl-async-util-timeout.test.ts` reads
-the value back so it cannot be dropped silently. The measurements, and why the
+the value back so it cannot be dropped silently.
+
+The exposure is repo-wide rather than confined to the handful of suites that had
+gone red, which is why the setting is not per file: of the 314 test files that
+import `@testing-library/react` or `@testing-library/dom`, **219** use at least
+one async utility (131 `findBy*`/`findAllBy*`, 199 `waitFor`, none
+`waitForElementToBeRemoved`), spread across 82 files under `src/lib`, 69 under
+`src/components`, 66 under `src/app` and 2 under `src/hooks`. The measurements, and why the
 value is 4,000ms rather than 5,000ms (it has to stay below `testTimeout`, or
 vitest's opaque "Test timed out in 5000ms" replaces RTL's message naming the
 query), are stated in full beside the setting.
