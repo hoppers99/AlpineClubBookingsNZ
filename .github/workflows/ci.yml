@@ -40,6 +40,61 @@ jobs:
       - name: Audit dependency graph
         run: npm audit --audit-level=high --package-lock-only
 
+  # #2946: THE DEPENDENCY AUDIT IS A JOB OF ITS OWN, AND IT MUST STAY ONE.
+  #
+  # It used to be a step near the front of `verify`. On 17 August a high-severity
+  # advisory was published for a package this repository reaches only through
+  # `prisma` (#2945) — nobody here changed anything. The step failed, and because
+  # Actions skips every LATER step in a job once one fails, `verify` stopped
+  # running lint, the file-size ratchet, `prisma generate`, typecheck, knip,
+  # `npm test` and the build, on every branch, while the other required checks
+  # stayed green. A pull request in that window read as "one unrelated dependency
+  # thing is red, everything else passed"; in fact the suite had not run at all.
+  # When #2947 restored the gate, the very first real run of the suite failed
+  # immediately on a defect (#2944) that had accumulated behind it unnoticed.
+  #
+  # So do not fold this back into `verify`, and do not give it a `needs:`. A
+  # dependent job SKIPS when its upstream fails, and GitHub counts a skipped
+  # required check as SATISFYING branch protection — which turns the merge button
+  # on. For the same reason there is no job-level `if:` here: any condition
+  # belongs on a STEP, where a skip still leaves the job a real pass or a real
+  # failure. See AGENTS.md -> "Completion and Merge".
+  #
+  # The audit stays BLOCKING (owner decision, 19 Aug 2026, on #2946). A new
+  # advisory is a supply-chain decision a human should make — upgrade, override
+  # or accept — not a report nobody reads.
+  #
+  # There is deliberately no `npm ci` here. Measured on npm 11.16.0 / Node 24:
+  # `npm audit --audit-level=high` builds its tree from `package-lock.json` and
+  # returns the same verdict with and without `node_modules` present — exit 0 on
+  # this lock either way, exit 1 either way with the deepmerge-ts advisory planted
+  # back into the lock. The command is unchanged from the one `verify` ran, and
+  # skipping the install keeps this gate from reddening for anything except an
+  # advisory, which is the entire point of separating it.
+  #
+  # This does NOT duplicate the `dependency-review` job above, and neither
+  # replaces the other. That one is pull-request-only — it carries a job-level
+  # `if:`, which is exactly why it can never be a required check — and it is
+  # advisory. This one is required and also runs on pushes to `main`.
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      # No `cache: npm`: nothing here installs, so there is no npm cache to hit.
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
   static-analysis:
     name: Static analysis gate
     runs-on: ubuntu-latest
@@ -365,9 +420,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit dependencies
-        run: npm audit --audit-level=high
-
+      # `Audit dependencies` used to sit here, between the install and the lint.
+      # It is now the separate `dependency-audit` job above (#2946) — read the
+      # comment there before moving it back. Nothing in this job may depend on
+      # the audit's outcome.
       - name: Lint
         run: npm run lint
 
