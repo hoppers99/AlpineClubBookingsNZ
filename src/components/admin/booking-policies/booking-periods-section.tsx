@@ -1,10 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState, useCallback } from "react"
-import {
-  cancellationRuleSetsEqual,
-  normalizeCancellationRule,
-} from "@/lib/cancellation-rules"
+import { normalizeCancellationRule } from "@/lib/cancellation-rules"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -15,7 +12,11 @@ import { Badge } from "@/components/ui/badge"
 import { CancellationRulesEditor } from "./cancellation-rules-editor"
 import { PolicyPreview } from "./policy-preview"
 import { PolicyFeedback } from "./policy-feedback"
-import { PolicyScopeSelect, usePolicyScopeLodgeName } from "./policy-scope-select"
+import {
+  isPolicyScopeReady,
+  PolicyScopeSelect,
+  usePolicyScopeOptions,
+} from "./policy-scope-select"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
 import {
   ForbiddenSaveError,
@@ -25,81 +26,15 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
-import { dateOnlyFromIsoString, parseDateOnly } from "@/lib/date-only"
-import { formatNZDate } from "@/lib/nzst-date"
+import {
+  draftsEqual,
+  formatPeriodDate,
+  NEW_PERIOD_DRAFT,
+  toDraft,
+  UNLOADED_SCOPE,
+  type PeriodDraft,
+} from "./booking-period-draft"
 import type { BookingPeriod, PolicyRule } from "./types"
-
-/**
- * A period boundary is an NZ date-only lodge date (#2264). It reaches the
- * browser as the JSON form of a Prisma `@db.Date`, i.e. a full ISO timestamp at
- * UTC midnight, so the calendar day is taken from the string and handed over as
- * UTC midnight rather than parsed in the viewer's own zone — a local parse
- * slides the day for anyone at UTC+13/+14. The NaN guard keeps a malformed
- * value from throwing out of `Intl` and taking the whole panel down.
- */
-function formatPeriodDate(value: string): string {
-  const parsed = parseDateOnly(dateOnlyFromIsoString(value))
-  return Number.isNaN(parsed.getTime()) ? value : formatNZDate(parsed)
-}
-
-const NEW_PERIOD_RULES: PolicyRule[] = [
-  { daysBeforeStay: 21, refundPercentage: 100, creditRefundPercentage: 100, fixedFeeCents: 0, creditFixedFeeCents: 0 },
-  { daysBeforeStay: 14, refundPercentage: 50, creditRefundPercentage: 50, fixedFeeCents: 0, creditFixedFeeCents: 0 },
-  { daysBeforeStay: 0, refundPercentage: 0, creditRefundPercentage: 0, fixedFeeCents: 0, creditFixedFeeCents: 0 },
-]
-
-/**
- * One open period editor's draft. This section's snapshot is a LIST, so the
- * draft/snapshot pair that `useSectionEditState` owns is scoped to the ROW
- * being edited, not to the section: the form below mounts one hook instance per
- * open editor (keyed on the row id) and the list itself stays plain state.
- */
-interface PeriodDraft {
-  name: string
-  startDate: string
-  endDate: string
-  holdEnabled: boolean
-  holdDays: number
-  rules: PolicyRule[]
-}
-
-/**
- * The scope of a list that was never loaded (#2142 review). Club-wide scope is
- * `null`, so `null` cannot double as "unknown" — see the identical sentinel in
- * `default-cancellation-policy-section.tsx`.
- */
-const UNLOADED_SCOPE = "__unloaded__"
-
-const NEW_PERIOD_DRAFT: PeriodDraft = {
-  name: "",
-  startDate: "",
-  endDate: "",
-  holdEnabled: true,
-  holdDays: 5,
-  rules: NEW_PERIOD_RULES,
-}
-
-function toDraft(period: BookingPeriod): PeriodDraft {
-  return {
-    name: period.name,
-    startDate: dateOnlyFromIsoString(period.startDate),
-    endDate: dateOnlyFromIsoString(period.endDate),
-    holdEnabled: period.nonMemberHoldEnabled ?? true,
-    holdDays: period.nonMemberHoldDays,
-    rules: period.cancellationRules.map((rule) => normalizeCancellationRule(rule)),
-  }
-}
-
-function draftsEqual(a: PeriodDraft, b: PeriodDraft) {
-  return (
-    a.name === b.name &&
-    a.startDate === b.startDate &&
-    a.endDate === b.endDate &&
-    a.holdEnabled === b.holdEnabled &&
-    a.holdDays === b.holdDays &&
-    cancellationRuleSetsEqual(a.rules, b.rules)
-  )
-}
 
 function PeriodForm({
   periodId,
@@ -260,7 +195,10 @@ export function BookingPeriodsSection() {
   // club-wide periods; a lodge lists its override set, which replaces the
   // club-wide set entirely at runtime. Hidden with fewer than two lodges.
   const [scopeLodgeId, setScopeLodgeId] = useState<string | null>(null)
-  const scopeLodgeName = usePolicyScopeLodgeName(scopeLodgeId)
+  const policyScope = usePolicyScopeOptions(scopeLodgeId)
+  const policyScopeReady = isPolicyScopeReady(policyScope)
+  const scopeLodgeName =
+    policyScope.state.kind === "lodge" ? policyScope.state.lodgeName : null
   const [periods, setPeriods] = useState<BookingPeriod[]>([])
   /**
    * The scope `periods` was actually loaded FOR (#2142 review).
@@ -310,6 +248,10 @@ export function BookingPeriodsSection() {
     async (options: { signal?: AbortSignal; scopeLoad?: boolean } = {}) => {
       const { signal, scopeLoad = false } = options
       const scope = scopeLodgeId
+      if (!policyScopeReady) {
+        if (scopeLoad) setLoadingPeriods(false)
+        return
+      }
       if (scopeLoad) setLoadingPeriods(true)
       try {
         const res = await fetch(
@@ -336,7 +278,7 @@ export function BookingPeriodsSection() {
         if (scopeLoad && scopeRef.current === scope) setLoadingPeriods(false)
       }
     },
-    [scopeLodgeId],
+    [policyScopeReady, scopeLodgeId],
   )
 
   useEffect(() => {
@@ -364,6 +306,7 @@ export function BookingPeriodsSection() {
   }
 
   function startAddPeriod() {
+    if (!policyScopeReady) return
     setEditingPeriodId(null)
     setEditingDraft(NEW_PERIOD_DRAFT)
     setEditorInstance((n) => n + 1)
@@ -371,6 +314,7 @@ export function BookingPeriodsSection() {
   }
 
   function startEditPeriod(period: BookingPeriod) {
+    if (!policyScopeReady) return
     setEditingPeriodId(period.id)
     setEditingDraft(toDraft(period))
     setEditorInstance((n) => n + 1)
@@ -384,6 +328,9 @@ export function BookingPeriodsSection() {
    */
   const submitPeriod = useCallback(
     async (draft: PeriodDraft): Promise<PeriodDraft> => {
+      if (!policyScopeReady) {
+        throw new Error("Choose an available policy scope before saving")
+      }
       setError("")
       setSuccess("")
       const url = editingPeriodId
@@ -443,10 +390,11 @@ export function BookingPeriodsSection() {
       setSuccess(wasEditing ? "Period updated" : "Period created")
       return reseeded
     },
-    [editingPeriodId, scopeLodgeId, fetchPeriods],
+    [editingPeriodId, scopeLodgeId, fetchPeriods, policyScopeReady],
   )
 
   async function handleDeletePeriod(id: string) {
+    if (!policyScopeReady) return
     if (!confirm("Delete this booking period?")) return
     try {
       const res = await fetch(`/api/admin/booking-policies/periods/${id}`, { method: "DELETE" })
@@ -477,7 +425,7 @@ export function BookingPeriodsSection() {
   const [togglingId, setTogglingId] = useState<string | null>(null)
 
   async function handleTogglePeriod(period: BookingPeriod) {
-    if (togglingRef.current) return
+    if (!policyScopeReady || togglingRef.current) return
     togglingRef.current = true
     setTogglingId(period.id)
     try {
@@ -498,6 +446,7 @@ export function BookingPeriodsSection() {
 
   /** Re-run the current scope's load in place, without leaving the section. */
   function retryLoad() {
+    if (!policyScopeReady) return
     setError("")
     void fetchPeriods({ scopeLoad: true })
   }
@@ -552,16 +501,17 @@ export function BookingPeriodsSection() {
       />
       <div className="space-y-6">
         <PolicyScopeSelect
+          options={policyScope}
           value={scopeLodgeId}
           onChange={setScopeLodgeId}
           id="periods-scope"
         />
 
-        {loadingPeriods ? (
+        {policyScopeReady && loadingPeriods ? (
           <div className="text-center py-8">Loading...</div>
         ) : null}
 
-        {!loadingPeriods && !scopeKnown ? (
+        {policyScopeReady && !loadingPeriods && !scopeKnown ? (
           <Card>
             <CardHeader>
               <CardTitle>
@@ -584,7 +534,7 @@ export function BookingPeriodsSection() {
           </Card>
         ) : null}
 
-        {!loadingPeriods && scopeKnown ? (
+        {policyScopeReady && !loadingPeriods && scopeKnown ? (
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">

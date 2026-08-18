@@ -1608,6 +1608,102 @@ move, never a capacity or double-booking violation.
   transaction finite, and is **refused at, never silently truncated to** — as is
   every board window the admin types.
 
+### INV-CAP-033
+
+- **The bed-allocation board never offers a bed choice without a concrete lodge,
+  and every club-wide board says why it is club-wide (#2701):** the board's
+  lodge scope is one of five named states — `lodge`, `all`, `empty`,
+  `resolving`, `unavailable` — never a single nullable value standing for
+  several of them, and **the set is total**: every combination of selection,
+  permission, failure, loading and option count lands on exactly one, with no
+  fall-through. A club with zero active lodges is `empty` and says so; before
+  that state existed it fell through to `resolving` and sat on a spinner for
+  ever.
+  `all` carries the REASON it was reached — `chosen` from the selector (the only
+  page that offers the option), or `no-lodge-permission` for a role that may
+  open this board and may not read the lodge list, which the shipped
+  `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` presets both are. Both are honest
+  club-wide views, both are read-only, and each says which it is; neither is an
+  outage wearing a club-wide costume. A `?lodgeId=` naming the sentinel also
+  reaches `chosen`, which is the same deliberate act by another route.
+  `resolving` fetches no dashboard at all, so a direct visit cannot render a
+  club-wide board on its way to a real lodge; `unavailable` (a `/api/admin/lodges`
+  failure that is **not** a 403) is an error with a retry, and is distinguishable
+  from `all` **by construction** — with no options there is nothing that could
+  have been chosen — rather than by a message.
+  Without a concrete lodge, every
+  allocation control that needs one is disabled with its reason on screen: the
+  bucket's Select bed and Allocate, the chip's Move to bed, drag-and-drop onto a
+  cell, Assign range, Run Auto Allocation, Approve Visible (which otherwise
+  approves the whole club's visible window), Reset allocations, Remove
+  allocation, and the per-lodge preferences section. This is a rule about what
+  the operator is OFFERED. It layers on top of, and never replaces, the
+  writer-side refusals — `assertGuestAndBedForAllocation` and
+  `LODGE_MISMATCH` in `bed-allocation-move.ts` — which stay exactly as they
+  were and remain the thing that protects the data. A read-side backstop mirrors
+  them: `GET /api/admin/bed-allocation` refuses a `lodgeId` contradicting a
+  named `bookingId` with a 409 `LODGE_MISMATCH`, and an unresolvable `bookingId`
+  never triggers it.
+  **What keeps that 409 off honest navigation is a single rule: while a booking
+  is focused, its lodge is authoritative and the selector's ADR-002 default must
+  not write at all.** That default fires whenever fewer than two ACTIVE lodges
+  are offered — including when it renders nothing — so left running it
+  overwrites the lodge the server derived, which both re-fires the request in a
+  loop and pairs the wrong lodge with the booking. A booking at a DEACTIVATED
+  lodge is the reachable case: the lodge is filtered out of the options, so the
+  default would substitute the surviving one and refuse a link the product
+  itself built.
+
+### INV-CAP-034
+
+- **A booking names its lodge, and the server never fills the blank (#2701):**
+  `POST /api/bookings` refuses a create carrying no `lodgeId` with a 400 and
+  `code: "BOOKING_LODGE_REQUIRED"`, checked BEFORE any lodge resolution so the
+  club's default lodge is not merely unused but unreached. It is not enough to
+  fix the screens: this is one gate instead of one guard per surface, so the
+  next booking screen somebody writes fails loudly here rather than writing
+  quietly to the wrong lodge.
+  The path that made it worth doing was not a hand-crafted request. When the
+  lodge list fails, `useLodgeOptions` returns an empty list, `LodgeSelect`
+  renders nothing at all below two lodges (ADR-002) and normalises the selection
+  to `null`, and both booking wizards then posted no lodge — which
+  `resolveOptionalActiveLodgeId` answered with the default lodge. In a
+  multi-lodge club that stamped a real, paid booking with a lodge nobody had
+  shown the member, and the member's review step suppressed its own "Lodge:"
+  line in exactly that state.
+  Four consequences are load-bearing:
+  - **The shared resolver stays permissive.** `resolveOptionalActiveLodgeId`
+    still defaults for READS, where an omitted lodge legitimately means the
+    whole club — the mode `INV-INT-016` retains for consumers outside this
+    repository. The strictness belongs on the write, not in the helper, because
+    an unscoped create is not a question anybody can answer.
+  - **A member is always shown the lodge they are booking**, on every booking
+    including in a single-lodge club. The line used to be conditional on there
+    being more than one lodge, which is precisely why an outage was
+    indistinguishable from a one-lodge club, and why the screen looked normal in
+    the one state where it was lying.
+  - **A member cannot complete a booking whose lodge is unknown; an admin
+    booking on someone's behalf may continue**, with the lodge named on screen
+    before anything is written. An admin will notice a wrong lodge name and
+    knows how to correct it; a member paying online will not.
+    The member Dates step is the transport boundary as well as the visual one:
+    loading, failed, forbidden and successful-empty lodge lists mount no
+    availability calendar and issue no lodge-dependent room, availability,
+    policy, quote, create, waitlist, draft or exception-request call. A retry
+    returns to Dates, reloads the options and waits for a selected id validated
+    by that successful response.
+  - **Every booking-create service requires the authoritative lodge, including
+    callers that bypass the HTTP route.** Copying a booking carries the source
+    booking's `lodgeId`; a member joining a group carries the organiser
+    booking's resolved lodge. The shared TypeScript input makes `lodgeId`
+    required, and every public create service runtime-refuses a missing, blank
+    or unchecked value before it can call the permissive read resolver. The
+    exact production call-site census in
+    `booking-create-requires-lodge.test.ts` fails on insertion/deletion drift,
+    indirect argument objects and an explicit `undefined`, `null` or `void`
+    value. Required types catch ordinary aliases/wrappers and the runtime guard
+    catches unchecked JavaScript or `any` callers.
+
 ### INV-LIFE-062
 
 A `HutLeaderAssignment` may additionally hold ONE bed (`bedId`), which makes it
@@ -1617,6 +1713,12 @@ a **custodian occupancy** (#2286). The invariants:
   capacity effect — the pre-#2286 behaviour, and what every
   `hut-leader-auto-assign` cron row is. Only a bed-holding assignment reaches a
   capacity or allocation consumer.
+- **One explicit lodge owns the interactive workflow.** The hut-leader admin
+  assignment list, uncovered dates, occupancy overlay, eligible guests/owners,
+  existing coverage and create all carry the same validated lodge id. The create
+  refuses an omitted lodge before member lookup. Club-wide dashboard coverage is
+  still valid, but its caller must opt into an explicit `all` scope rather than
+  obtaining it by omission.
 - **Inclusive night semantics.** The hold covers the night of every date from
   `startDate` to `endDate` **inclusive**, never the half-open booking envelope.
   The bed is bookable again for the night after `endDate`. (This is the

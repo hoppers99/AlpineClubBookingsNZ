@@ -29,6 +29,24 @@ const createSchema = z
   })
   .strict();
 
+/*
+  `lodge:view`, inferred from the request path (#2925).
+
+  `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold no `lodge` entry, so this 403s for
+  them permanently, and the admin surfaces that need only the lodge NAMES lose
+  their content as a result. That is a real defect and it is tracked in #2925,
+  not fixed here.
+
+  It was attempted in this PR and reverted, because the attempt was INERT and
+  the revert is the honest state. `requireAdmin()` with no options does not mean
+  "any admin": `inferAdminAccessRequirement` reads the `x-pathname` and
+  `x-request-method` headers that `proxy.ts` sets for this route and resolves
+  them through `getAdminRouteRequirement`, which maps `/api/admin/lodges` to
+  `area: "lodge"`. Dropping the explicit `permission` therefore changed nothing
+  at all — the same requirement came back by inference — while the tests written
+  for it passed against a mock whose absent-options fallback used
+  `hasAdminPortalAccess`, which the real guard has never had.
+*/
 export async function GET() {
   const guard = await requireAdmin({
     permission: { area: "lodge", level: "view" },

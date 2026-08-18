@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -37,6 +37,8 @@ type Lodge = { id: string; name: string };
 export function WholeLodgeRequestForm() {
   const [lodges, setLodges] = useState<Lodge[]>([]);
   const [lodgeId, setLodgeId] = useState<string>("");
+  const [lodgesLoading, setLodgesLoading] = useState(true);
+  const [lodgesError, setLodgesError] = useState(false);
   const [checkIn, setCheckIn] = useState("");
   const [checkOut, setCheckOut] = useState("");
   const [headcount, setHeadcount] = useState("");
@@ -50,28 +52,46 @@ export function WholeLodgeRequestForm() {
   const groupHint = useFieldHint();
   const notesHint = useFieldHint();
 
-  useEffect(() => {
+  const loadLodges = useCallback(() => {
     let cancelled = false;
+    setLodgesLoading(true);
+    setLodgesError(false);
+    setLodgeId("");
     fetch("/api/lodges")
-      .then((response) => (response.ok ? response.json() : { lodges: [] }))
+      .then((response) => {
+        if (!response.ok) throw new Error("lodge-list-failed");
+        return response.json();
+      })
       .then((data: { lodges?: Lodge[] }) => {
         if (cancelled) return;
         const list = data.lodges ?? [];
         setLodges(list);
-        // ADR-002 presentation rule: a single-lodge club never sees lodge copy.
-        if (list.length > 1) setLodgeId(list[0].id);
+        setLodgeId(list[0]?.id ?? "");
       })
       .catch(() => {
-        // The picker is only ever offered for a multi-lodge club; failing to
-        // load it just means the request goes to the club's default lodge.
+        if (!cancelled) {
+          setLodges([]);
+          setLodgesError(true);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLodgesLoading(false);
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
+  useEffect(() => {
+    return loadLodges();
+  }, [loadLodges]);
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
+    if (!lodgeId) {
+      setError("Choose a lodge before sending this request.");
+      return;
+    }
     setError(null);
     setSubmitting(true);
     try {
@@ -84,7 +104,7 @@ export function WholeLodgeRequestForm() {
           headcount: Number(headcount),
           groupDescription,
           notes: notes.trim() ? notes : undefined,
-          ...(lodges.length > 1 && lodgeId ? { lodgeId } : {}),
+          lodgeId,
         }),
       });
       if (!response.ok) {
@@ -137,6 +157,28 @@ export function WholeLodgeRequestForm() {
           {error && (
             <Alert variant="error">{error}</Alert>
           )}
+
+          {lodgesError ? (
+            <Alert variant="error">
+              <p className="mb-3">
+                The lodge list could not be loaded. No request can be sent
+                until its lodge is known.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  loadLodges();
+                }}
+              >
+                Try again
+              </Button>
+            </Alert>
+          ) : lodgesLoading ? (
+            <p className="text-sm text-muted-foreground">Loading lodges...</p>
+          ) : lodges.length === 0 ? (
+            <Alert variant="error">No active lodge is available for this request.</Alert>
+          ) : null}
 
           {lodges.length > 1 && (
             <div className="space-y-2">
@@ -240,7 +282,10 @@ export function WholeLodgeRequestForm() {
           </p>
 
           <div className="flex flex-wrap gap-3">
-            <Button type="submit" disabled={submitting}>
+            <Button
+              type="submit"
+              disabled={submitting || lodgesLoading || lodgesError || !lodgeId}
+            >
               {submitting ? "Sending..." : "Send request"}
             </Button>
             {/* No `type` here: asChild renders the Link's anchor, and `type` on

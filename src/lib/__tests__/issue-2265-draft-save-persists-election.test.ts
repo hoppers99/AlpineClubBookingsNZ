@@ -119,6 +119,7 @@ function draftInput(overrides: Record<string, unknown> = {}) {
     checkIn: new Date("2026-08-14"),
     checkOut: new Date("2026-08-16"),
     guests: GUESTS,
+    lodgeId: "lodge-1",
     ...overrides,
   };
 }
@@ -203,6 +204,7 @@ describe("#2265 a booking held for admin review keeps the election", () => {
       status: "PAYMENT_PENDING" as const,
       shouldBePending: false,
       holdDays: 0,
+      lodgeId: "lodge-1",
       ...overrides,
     };
   }

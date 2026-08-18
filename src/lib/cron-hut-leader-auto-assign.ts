@@ -1,8 +1,9 @@
 import { prisma } from "./prisma";
 import { eachDayOfInterval, addDays } from "date-fns";
-import { calculateOverlapDays } from "./hut-leader-overlap";
 import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
 import { lodgeNullTolerantScope } from "./lodges";
+import { acquireLodgeCapacityLock } from "./lodge-capacity-lock";
+import { findHutLeaderOverlapRefusal } from "./hut-leader-overlap-guard";
 import { loadHutLeaderLookaheadDays } from "./lodge-settings";
 import { loadEffectiveModuleFlags } from "./module-settings";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
@@ -22,6 +23,14 @@ import logger from "./logger";
  * under-assigns: one lodge's leader used to silence every other lodge for that
  * night, and two lodges each with exactly one eligible adult summed to two, so
  * neither of them got a leader.
+ *
+ * #2887 adds the SERIALIZATION on top of that scoping. Deciding per lodge is
+ * not enough on its own: the overlap read and the insert are one decision, and
+ * run unlocked they race an admin (or a second cron container) into two
+ * overlapping leaders at one lodge, which no database constraint prevents. The
+ * create therefore runs inside a transaction holding that lodge's capacity key,
+ * with the already-covered and overlap questions re-asked under it. The cheap
+ * asks above the lock stay: they skip most nights without paying for one.
  */
 export async function autoAssignHutLeaders(): Promise<{
   assignedCount: number;
@@ -145,44 +154,58 @@ export async function autoAssignHutLeaders(): Promise<{
       const [, member] = [...adultMembers.entries()][0];
 
       // Overlap validation, per lodge for the same reason the admin route is:
-      // an assignment at another lodge is not a conflict here.
-      const potentialOverlaps = await prisma.hutLeaderAssignment.findMany({
-        where: {
-          startDate: { lte: member.checkOut },
-          endDate: { gte: member.checkIn },
-          ...lodgeNullTolerantScope(lodge.id),
-        },
+      // an assignment at another lodge is not a conflict here. Asked through
+      // the SHARED predicate all four deciding call sites use (#2887), so the
+      // cheap answer here and the authoritative one under the lock below cannot
+      // disagree about what an overlap is. The predicate is role-blind today —
+      // school-teacher records DO block here; excluding them is #2926, and the
+      // single predicate is what makes that a one-line change.
+      const earlyOverlap = await findHutLeaderOverlapRefusal(prisma, {
+        lodgeId: lodge.id,
+        startDate: member.checkIn,
+        endDate: member.checkOut,
       });
-
-      let hasInvalidOverlap = false;
-      for (const existing of potentialOverlaps) {
-        const overlapDays = calculateOverlapDays(
-          member.checkIn,
-          member.checkOut,
-          existing.startDate,
-          existing.endDate
-        );
-        if (overlapDays > 1) {
-          hasInvalidOverlap = true;
-          break;
-        }
-      }
-
-      if (hasInvalidOverlap) continue;
+      if (earlyOverlap) continue;
 
       // Create the assignment against the lodge this iteration decided for. The
       // booking read above is scoped to it, so `member.lodgeId` is this lodge —
       // using `lodge.id` states that directly instead of re-deriving it, and
       // removes the default-lodge fallback that a club-wide loop needed.
       try {
-        await prisma.hutLeaderAssignment.create({
-          data: {
-            memberId: member.id,
+        const created = await prisma.$transaction(async (tx) => {
+          await acquireLodgeCapacityLock(tx, lodge.id);
+
+          // Both questions re-asked under the key. Another container or an
+          // admin may have covered this lodge-night since the cheap asks.
+          const lockedAssigned = await tx.hutLeaderAssignment.findFirst({
+            where: {
+              startDate: { lte: day },
+              endDate: { gte: day },
+              ...lodgeNullTolerantScope(lodge.id),
+            },
+            select: { id: true },
+          });
+          if (lockedAssigned) return false;
+
+          const lockedOverlap = await findHutLeaderOverlapRefusal(tx, {
+            lodgeId: lodge.id,
             startDate: member.checkIn,
             endDate: member.checkOut,
-            lodgeId: lodge.id,
-          },
+          });
+          if (lockedOverlap) return false;
+
+          await tx.hutLeaderAssignment.create({
+            data: {
+              memberId: member.id,
+              startDate: member.checkIn,
+              endDate: member.checkOut,
+              lodgeId: lodge.id,
+            },
+          });
+          return true;
         });
+
+        if (!created) continue;
 
         const dateStr = formatDateOnly(day);
         assignedDates.push(dateStr);
@@ -191,7 +214,7 @@ export async function autoAssignHutLeaders(): Promise<{
           "Auto-assigned hut leader"
         );
       } catch (err) {
-        logger.error({ err, memberId: member.id }, "Failed to auto-assign hut leader");
+        logger.error({ err, memberId: member.id, lodgeId: lodge.id }, "Failed to auto-assign hut leader");
       }
     }
     }

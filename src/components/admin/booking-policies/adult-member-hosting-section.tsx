@@ -22,7 +22,11 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
 import { PolicyFeedback } from "./policy-feedback"
-import { PolicyScopeSelect, usePolicyScopeLodgeName } from "./policy-scope-select"
+import {
+  isPolicyScopeReady,
+  PolicyScopeSelect,
+  usePolicyScopeOptions,
+} from "./policy-scope-select"
 import type {
   AdultMemberHostingModeValue,
   AdultMemberHostingPolicy,
@@ -167,7 +171,10 @@ export function AdultMemberHostingSection() {
   // bookings:edit; a bookings:view admin sees this read-only (#1940).
   const canEdit = useAdminAreaEditAccess("bookings")
   const [scopeLodgeId, setScopeLodgeId] = useState<string | null>(null)
-  const scopeLodgeName = usePolicyScopeLodgeName(scopeLodgeId)
+  const policyScope = usePolicyScopeOptions(scopeLodgeId)
+  const policyScopeReady = isPolicyScopeReady(policyScope)
+  const scopeLodgeName =
+    policyScope.state.kind === "lodge" ? policyScope.state.lodgeName : null
   const [loadedScope, setLoadedScope] = useState<string | null>(UNLOADED_SCOPE)
   /**
    * The server's resolved view of this scope (#2569 §16). Held beside the draft
@@ -200,6 +207,9 @@ export function AdultMemberHostingSection() {
 
   const section = useSectionEditState<HostingDraft>({
     load: async (signal) => {
+      if (!policyScopeReady) {
+        throw new DOMException("Policy scope is unresolved", "AbortError")
+      }
       const scope = scopeRef.current
       const res = await fetch(
         scope ? `${ENDPOINT}?lodgeId=${encodeURIComponent(scope)}` : ENDPOINT,
@@ -220,6 +230,9 @@ export function AdultMemberHostingSection() {
       return toDraft(policy)
     },
     save: async (draft) => {
+      if (!policyScopeReady) {
+        throw new Error("Choose an available policy scope before saving")
+      }
       const scope = scopeRef.current
       const res = await fetch(ENDPOINT, {
         method: "PUT",
@@ -287,18 +300,21 @@ export function AdultMemberHostingSection() {
   // The hook already loads once on mount, so the mount run is skipped rather
   // than fetching the club-wide row twice on first paint.
   const mountedRef = useRef(false)
+  const policyScopeReadyOnFirstRender = useRef(policyScopeReady)
   useEffect(() => {
+    if (!policyScopeReady) return
     if (!mountedRef.current) {
       mountedRef.current = true
-      return
+      if (policyScopeReadyOnFirstRender.current) return
     }
     setLoadedScope(UNLOADED_SCOPE)
     void reloadRef.current()
-  }, [scopeLodgeId])
+  }, [policyScopeReady, scopeLodgeId])
 
   const retryLoad = useCallback(() => {
+    if (!policyScopeReady) return
     void reloadRef.current()
-  }, [])
+  }, [policyScopeReady])
 
   const viewOnlyBanner = (
     <AdminViewOnlySectionBanner canEdit={canEdit} className="mb-6">
@@ -321,16 +337,17 @@ export function AdultMemberHostingSection() {
       />
       <div className="space-y-6">
         <PolicyScopeSelect
+          options={policyScope}
           value={scopeLodgeId}
           onChange={setScopeLodgeId}
           id="adult-member-hosting-scope"
         />
 
-        {section.loading ? (
+        {policyScopeReady && section.loading ? (
           <div className="text-center py-8">Loading...</div>
         ) : null}
 
-        {!section.loading && (!scopeKnown || !draft) ? (
+        {policyScopeReady && !section.loading && (!scopeKnown || !draft) ? (
           <Card>
             <CardHeader>
               <CardTitle>
@@ -352,7 +369,7 @@ export function AdultMemberHostingSection() {
           </Card>
         ) : null}
 
-        {!section.loading && scopeKnown && draft ? (
+        {policyScopeReady && !section.loading && scopeKnown && draft ? (
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <div>

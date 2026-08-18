@@ -119,7 +119,7 @@ export async function getAdminPendingCounts(): Promise<AdminPendingCounts> {
     }),
     getPendingMemberDeleteReviewCount(),
     prisma.issueReport.count({ where: { resolvedAt: null } }),
-    getUnassignedHutLeaderDates(),
+    getUnassignedHutLeaderDates({ scope: { kind: "all" } }),
   ]);
 
   return {

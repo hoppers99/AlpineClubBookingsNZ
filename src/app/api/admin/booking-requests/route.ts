@@ -105,6 +105,12 @@ export async function GET(req: NextRequest) {
   const distinctLodgeIds = Array.from(
     new Set(requests.map((request) => request.lodgeId))
   );
+  // #2887 (F2): ADR-002's presentation rule is decided ONCE here, server-side,
+  // so the queue cannot re-derive it from a lodge list the officer may not be
+  // allowed to read. Two shipped presets get a permanent 403 on
+  // `/api/admin/lodges`, which is exactly why the client must not be the one
+  // counting.
+  const activeLodgeCount = await prisma.lodge.count({ where: { active: true } });
   const softCapByLodgeId = new Map(
     await Promise.all(
       distinctLodgeIds.map(
@@ -168,7 +174,7 @@ export async function GET(req: NextRequest) {
       ? readBookingRequestQuoteOptionsForDisplay(quote.options)
       : null;
     return {
-      ...serializeBookingRequestForAdmin(request),
+      ...serializeBookingRequestForAdmin(request, activeLodgeCount),
       schoolGroupSoftCap: softCapByLodgeId.get(request.lodgeId)!,
       pricedByMemberName: request.pricedByMemberId
         ? reviewerNames.get(request.pricedByMemberId) ?? null

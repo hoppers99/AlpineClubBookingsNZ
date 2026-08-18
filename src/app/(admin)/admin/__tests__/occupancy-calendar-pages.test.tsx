@@ -57,13 +57,16 @@ vi.mock("@/components/admin/occupancy-calendar", () => ({
 function stubFetch() {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
+    if (url === "/api/admin/lodges") {
+      return { ok: true, status: 200, json: async () => ({ lodges: [{ id: "lodge-1", name: "Lodge One" }] }) };
+    }
     if (url.startsWith("/api/admin/hut-leaders/eligible-members")) {
       return { ok: true, json: async () => ({ members: [] }) };
     }
-    if (url === "/api/admin/hut-leaders/unassigned-dates") {
+    if (url.startsWith("/api/admin/hut-leaders/unassigned-dates?lodgeId=")) {
       return { ok: true, json: async () => ({ unassignedDates: [] }) };
     }
-    if (url === "/api/admin/hut-leaders") {
+    if (url.startsWith("/api/admin/hut-leaders?lodgeId=")) {
       return { ok: true, json: async () => ({ assignments: [] }) };
     }
     if (url.startsWith("/api/admin/roster/")) {
@@ -104,7 +107,7 @@ describe("occupancy calendar page integration", () => {
     expect(screen.getByLabelText("End Date")).toHaveValue("2099-07-12");
     await waitFor(() =>
       expect(global.fetch).toHaveBeenCalledWith(
-        "/api/admin/hut-leaders/eligible-members?startDate=2099-07-10&endDate=2099-07-12",
+        expect.stringContaining("/api/admin/hut-leaders/eligible-members?startDate=2099-07-10&endDate=2099-07-12&lodgeId="),
       ),
     );
   });
@@ -117,15 +120,18 @@ describe("occupancy calendar page integration", () => {
     fireEvent.click(await screen.findByRole("button", { name: /pick single/i }));
 
     expect(screen.getByLabelText("Date")).toHaveValue("2099-07-11");
-    // Multi-lodge phase 8: the roster URL now carries `?lodgeId=` when a lodge
-    // is selected, but this test has no `?lodgeId=` in the page location and
-    // no lodges loaded (stubFetch does not stub /api/admin/lodges), so the
-    // page's lodgeId state stays null and the query string is empty. The
-    // fetch call also carries an AbortSignal (pre-existing abort-on-date-change
-    // pattern, unrelated to lodge scoping).
+    // #2701: the roster URL always carries `?lodgeId=`, because the page now
+    // fetches nothing until a lodge is settled — `stubFetch` answers
+    // `/api/admin/lodges` with a single lodge, the selector adopts it
+    // (ADR-002), and every roster read is scoped to it. This comment used to
+    // say the opposite: that the lodge list was unstubbed and the query string
+    // empty. That stopped being true when the stub was added, and the
+    // assertion below already expected `?lodgeId=lodge-1`. The fetch also
+    // carries an AbortSignal (pre-existing abort-on-date-change pattern,
+    // unrelated to lodge scoping).
     await waitFor(() =>
       expect(global.fetch).toHaveBeenCalledWith(
-        "/api/admin/roster/2099-07-11",
+        "/api/admin/roster/2099-07-11?lodgeId=lodge-1",
         expect.anything(),
       ),
     );

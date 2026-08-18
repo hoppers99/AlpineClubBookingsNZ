@@ -4,6 +4,9 @@ import { NextRequest } from "next/server";
 const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
   prisma: {
+    lodge: {
+      findUnique: vi.fn(),
+    },
     booking: {
       findMany: vi.fn(),
     },
@@ -57,11 +60,12 @@ describe("GET /api/admin/occupancy", () => {
       session: { user: { id: "admin-1" } },
     });
     mocks.prisma.booking.findMany.mockResolvedValue([]);
+    mocks.prisma.lodge.findUnique.mockResolvedValue({ id: "lodge-1", active: true });
   });
 
   it("requires bookings-area view access", async () => {
     const { GET } = await import("@/app/api/admin/occupancy/route");
-    await GET(new NextRequest("http://localhost/api/admin/occupancy?month=2026-07"));
+    await GET(new NextRequest("http://localhost/api/admin/occupancy?month=2026-07&lodgeId=lodge-1"));
 
     expect(mocks.requireAdmin).toHaveBeenCalledWith({
       permission: { area: "bookings", level: "view" },
@@ -70,7 +74,7 @@ describe("GET /api/admin/occupancy", () => {
 
   it("rejects invalid month parameters", async () => {
     const { GET } = await import("@/app/api/admin/occupancy/route");
-    const res = await GET(new NextRequest("http://localhost/api/admin/occupancy?month=2026-13"));
+    const res = await GET(new NextRequest("http://localhost/api/admin/occupancy?month=2026-13&lodgeId=lodge-1"));
 
     expect(res.status).toBe(400);
     expect(mocks.prisma.booking.findMany).not.toHaveBeenCalled();
@@ -103,7 +107,7 @@ describe("GET /api/admin/occupancy", () => {
     ]);
 
     const { GET } = await import("@/app/api/admin/occupancy/route");
-    const res = await GET(new NextRequest("http://localhost/api/admin/occupancy?month=2026-07"));
+    const res = await GET(new NextRequest("http://localhost/api/admin/occupancy?month=2026-07&lodgeId=lodge-1"));
     const body = await res.json();
 
     expect(res.status).toBe(200);
@@ -155,7 +159,7 @@ describe("GET /api/admin/occupancy", () => {
     ]);
 
     const { GET } = await import("@/app/api/admin/occupancy/route");
-    const res = await GET(new NextRequest("http://localhost/api/admin/occupancy?month=2026-07"));
+    const res = await GET(new NextRequest("http://localhost/api/admin/occupancy?month=2026-07&lodgeId=lodge-1"));
     const body = await res.json();
 
     expect(body.nights.find((night: { date: string }) => night.date === "2026-07-10").guestCount).toBe(1);

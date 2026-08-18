@@ -149,7 +149,7 @@ describe("POST /api/admin/display/preview-grant — draft preview (ADR-004 §7)"
       cssOverrides: "",
       footerHtml: "",
     };
-    const res = await POST(await jsonRequest({ draft: brokenDraft }));
+    const res = await POST(await jsonRequest({ draft: brokenDraft, previewLodge: "lodge-b" }));
     expect(res.status).toBe(422);
     const body = (await res.json()) as { ok: boolean; errors: { message: string }[] };
     expect(body.ok).toBe(false);

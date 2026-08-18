@@ -172,7 +172,71 @@ export interface DashboardPayload {
   // Stay window of a deep-linked focused booking (?bookingId=…) when it is out
   // of the current range; lets the board snap Date In / Date Out onto it (#1302).
   focusedBooking: { id: string; checkIn: string; checkOut: string } | null;
+  // #2701: the lodge this payload was ACTUALLY scoped to — derived from the
+  // focused booking when one is named, otherwise the requested lodge, and null
+  // for a deliberate club-wide read. The board adopts it so the selector, the
+  // data and the focused booking cannot disagree. Optional on the wire for the
+  // same reason `custodianHolds` is read tolerantly: during a deploy drain a
+  // new-colour bundle can be served an old-colour payload that has no such
+  // field, and an absent value must read as "the server did not say" (no
+  // adoption), never as a club-wide answer.
+  scopedLodgeId?: string | null;
 }
+
+/**
+ * Why every lodge-dependent allocation control on the board is disabled, or
+ * `undefined` when they are live (#2701).
+ *
+ * Threaded down beside `canEdit` rather than folded into it: the two are
+ * different refusals with different fixes — a view-only role cannot be fixed
+ * from this screen, a club-wide board is fixed by choosing a lodge — and
+ * collapsing them would put the wrong explanation on the control.
+ */
+export type AllocationLockReason = string | undefined;
+
+/**
+ * The club-wide board is a read-only overview, not an allocation workspace
+ * (#2701 owner decision 4). One sentence, shown once at the top of the board
+ * and reused as the tooltip on each control it disables, rather than scattering
+ * unexplained disabled states.
+ */
+export const ALL_LODGES_ALLOCATION_LOCK_REASON =
+  "Allocation changes need one lodge selected. This board is showing every lodge, so it is read-only.";
+
+/**
+ * The other state with no concrete lodge (#2701): the board has data — because
+ * a deep-linked booking scoped it server-side — but has not been told which
+ * lodge that was yet, or the lodge list failed and there is nothing to select.
+ *
+ * Distinct from the club-wide reason on purpose: nobody chose this, so telling
+ * the admin to "choose a lodge instead" would be wrong. It exists because
+ * "Remove allocation" is otherwise a clickable silent no-op in exactly this
+ * state (owner decision 6) — its handler needs a lodge and simply returns.
+ */
+export const UNSCOPED_ALLOCATION_LOCK_REASON =
+  "The board is still settling on this booking's lodge. Allocation changes become available once it has.";
+
+/**
+ * A role that may open this board but may not read the lodge list — shipped
+ * `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` both hold `bookings: "view"` and no
+ * `lodge` entry. Club-wide read-only is the only view they can have, and it is
+ * the view they had before #2701; saying "choose a lodge" to someone who has no
+ * way to choose one would be worse than saying nothing.
+ */
+export const NO_LODGE_PERMISSION_ALLOCATION_LOCK_REASON =
+  "Your admin role cannot choose a lodge, so this board shows every lodge and is read-only.";
+
+/**
+ * The lodge list genuinely failed. Distinct from the club-wide reasons because
+ * a retry can fix it, and distinct from the settling reason because this one
+ * does NOT clear by itself (PR #2885 review, LOW).
+ */
+export const LODGE_LIST_FAILED_ALLOCATION_LOCK_REASON =
+  "The lodge list could not be loaded, so allocation changes are unavailable until it is.";
+
+/** The list loaded and the club has no active lodge to allocate against. */
+export const NO_ACTIVE_LODGE_ALLOCATION_LOCK_REASON =
+  "This club has no active lodge, so there is nothing to allocate beds in.";
 
 export interface BedOption {
   id: string;

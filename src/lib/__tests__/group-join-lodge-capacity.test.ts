@@ -357,5 +357,12 @@ describe("joinGroupBookingAsMember caps against the group's lodge", () => {
       message: HOSTING_COVERAGE_RETRY_MESSAGE,
       code: HOSTING_COVERAGE_RETRY_CODE,
     });
+
+    // The same authoritative lodge used by the checks above must reach the
+    // writer. Without this property a lodge-B group child silently defaults to
+    // lodge A even though its policy and capacity were evaluated at B.
+    expect(mocks.createConfirmedBooking).toHaveBeenCalledWith(
+      expect.objectContaining({ lodgeId: LODGE_B }),
+    );
   });
 });

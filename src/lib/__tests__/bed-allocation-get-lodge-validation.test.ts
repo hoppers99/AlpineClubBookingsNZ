@@ -160,9 +160,15 @@ describe("GET /api/admin/bed-allocation booking-scoped lodge (#2678)", () => {
     );
   });
 
-  it("ignores a lodgeId a caller tries to smuggle in past a named booking", async () => {
-    // The same property `requested-room/options` pins by that name (#2673). The
-    // booking's lodge wins; the query string is not consulted for scope at all.
+  it("refuses a lodgeId that contradicts a named booking with a 409 (#2701)", async () => {
+    // This USED to be ignored, matching `requested-room/options` (#2673). The
+    // board is different in one way that matters: it renders the focused
+    // booking and a lodge selector side by side, so serving lodge one's board
+    // for a lodge-two request is an internally contradictory SCREEN rather than
+    // a redundant parameter. The refusal is affordable because no honest
+    // navigation can produce the pair any more — proved in
+    // `bed-allocation-board-lodge-scope.test.tsx`, which drives the board
+    // against this same predicate.
     mockBookingFindUnique.mockResolvedValue({ lodgeId: "lodge-1" });
 
     const { GET } = await import("@/app/api/admin/bed-allocation/route");
@@ -172,13 +178,77 @@ describe("GET /api/admin/bed-allocation booking-scoped lodge (#2678)", () => {
       ),
     );
 
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: "LODGE_MISMATCH" });
+    // No board is built for a request that cannot be answered coherently.
+    expect(mockGetBedAllocationDashboard).not.toHaveBeenCalled();
+    // The contradicting value is not validated either: "lodge not found" would
+    // report the wrong fault entirely.
+    expect(mockLodgeFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("serves a lodgeId that AGREES with the named booking (#2701)", async () => {
+    // The shape both real deep links send — `AdminBookingToolsCard` and the
+    // booking page's bed panel both pass `booking.lodgeId` beside `bookingId`.
+    // The 409 above must not catch them.
+    mockBookingFindUnique.mockResolvedValue({ lodgeId: "lodge-1" });
+
+    const { GET } = await import("@/app/api/admin/bed-allocation/route");
+    const res = await GET(
+      new NextRequest(
+        "http://localhost/api/admin/bed-allocation?from=2026-04-01&to=2026-04-14&bookingId=booking-1&lodgeId=lodge-1",
+      ),
+    );
+
     expect(res.status).toBe(200);
     expect(mockGetBedAllocationDashboard).toHaveBeenCalledWith(
       expect.objectContaining({ lodgeId: "lodge-1" }),
     );
-    // The overridden value is never validated either: reporting a fault in a
-    // value we ignore would be a new failure mode for no gain.
-    expect(mockLodgeFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("echoes the lodge it actually scoped to, so the board's selector can adopt it (#2701)", async () => {
+    // The whole fix for a deep link that names only a booking: the server is
+    // the only party that knows the booking's lodge, so it says so. Without
+    // this the board's selector defaults to the first lodge while the data
+    // below it belongs to another.
+    mockBookingFindUnique.mockResolvedValue({ lodgeId: "lodge-3" });
+
+    const { GET } = await import("@/app/api/admin/bed-allocation/route");
+    const res = await GET(
+      new NextRequest(
+        "http://localhost/api/admin/bed-allocation?from=2026-04-01&to=2026-04-14&bookingId=booking-1",
+      ),
+    );
+
+    expect(await res.json()).toMatchObject({ scopedLodgeId: "lodge-3" });
+  });
+
+  it("echoes a null scope for a deliberate club-wide read (#2701)", async () => {
+    const { GET } = await import("@/app/api/admin/bed-allocation/route");
+    const res = await GET(
+      new NextRequest(
+        "http://localhost/api/admin/bed-allocation?from=2026-04-01&to=2026-04-14",
+      ),
+    );
+
+    expect(await res.json()).toMatchObject({ scopedLodgeId: null });
+  });
+
+  it("does not refuse when the bookingId resolves to nothing, however wrong the lodgeId looks", async () => {
+    // A stale deep link must not turn a valid board load into a refusal: with
+    // no booking lodge there is nothing for the caller's lodge to contradict,
+    // and the ordinary active-lodge validation applies instead.
+    mockBookingFindUnique.mockResolvedValue(null);
+    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: true });
+
+    const { GET } = await import("@/app/api/admin/bed-allocation/route");
+    const res = await GET(
+      new NextRequest(
+        "http://localhost/api/admin/bed-allocation?from=2026-04-01&to=2026-04-14&bookingId=gone&lodgeId=lodge-2",
+      ),
+    );
+
+    expect(res.status).toBe(200);
   });
 
   it("falls back to the caller's own scope when the bookingId resolves to nothing", async () => {

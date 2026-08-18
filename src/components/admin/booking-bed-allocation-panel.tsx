@@ -353,9 +353,12 @@ export function BookingBedAllocationPanel({
         from: fromDate,
         to: toDate,
         bookingId,
-        // #2678: the server derives the scope from `bookingId` and ignores this,
-        // so it is a hint the two agree rather than the thing that scopes the
-        // read. Sent unconditionally now that the prop cannot be null.
+        // #2678: the server derives the scope from `bookingId`, so this is a
+        // statement that the two agree rather than the thing that scopes the
+        // read. Sent unconditionally now that the prop cannot be null. Since
+        // #2701 a lodgeId CONTRADICTING the booking is refused with a 409
+        // rather than ignored, which this caller can never trigger: it is the
+        // booking's own `Booking.lodgeId`, passed straight through.
         lodgeId,
       });
       const response = await fetch(
@@ -679,7 +682,7 @@ export function BookingBedAllocationPanel({
          * a bed nobody was shown. Scoped, Confirm can only ever approve what
          * the officer could see.
          */
-        body: JSON.stringify({ bookingId, ...(lodgeId ? { lodgeId } : {}) }),
+        body: JSON.stringify({ bookingId, lodgeId }),
       });
       if (!response.ok) {
         toast.error(await readApiError(response, "Failed to confirm beds"));

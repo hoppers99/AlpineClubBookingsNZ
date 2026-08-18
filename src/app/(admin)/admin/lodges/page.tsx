@@ -251,7 +251,7 @@ export default function AdminLodgesPage() {
             change once a second active lodge exists.
           </p>
         </div>
-        <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={startCreate} disabled={saving || showForm}>
+        <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={startCreate} disabled={saving || showForm || loading || error !== null}>
           <Plus className="mr-2 h-4 w-4" />
           Add lodge
         </ViewOnlyActionButton>
@@ -351,7 +351,7 @@ export default function AdminLodgesPage() {
         <CardContent>
           {loading ? (
             <p className="text-sm text-muted-foreground">Loading lodges...</p>
-          ) : lodges.length === 0 ? (
+          ) : error ? null : lodges.length === 0 ? (
             <p className="text-sm text-muted-foreground">No lodges found.</p>
           ) : (
             <ul className="divide-y">

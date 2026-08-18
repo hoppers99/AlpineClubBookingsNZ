@@ -26,6 +26,7 @@ import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 import { formatNZDate } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/pricing";
 import { useLodgeOptions } from "@/components/lodge-select";
+import { LodgeScopeStatusNotice } from "@/components/admin/lodge-options-status";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
   AdminViewOnlySectionBanner,
@@ -33,6 +34,7 @@ import {
 } from "@/components/admin/view-only-action";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
 import { MONEY_INPUT_PROPS, parseDecimalDollarsToCents } from "@/lib/money-input";
+import { deriveSettledLodgeOptionScope } from "@/lib/lodge-option-scope";
 import { PromoRedemptionsPanel } from "./promo-redemptions-panel";
 
 interface RedemptionsPromoSummary {
@@ -221,7 +223,30 @@ export function PromoCodesPageClient({
   // Optional per-lodge restriction (no selection = redeemable at every
   // lodge). The whole control is hidden while fewer than two lodges exist
   // (ADR-002 presentation rule).
-  const { lodges } = useLodgeOptions("admin");
+  //
+  // #2701: "no selection" is a real product difference, not a blank field — the
+  // code becomes redeemable at EVERY lodge, including lodges added later. A
+  // failed lodge list left `lodges` empty, which reads here as a single-lodge
+  // club: the restriction control vanished and the next code created was
+  // club-wide, silently. Creating and editing codes stops until the list
+  // returns. Loading, failure, 403, and a successful empty response are all
+  // stopped states rather than an implicit club-wide choice.
+  const {
+    lodges,
+    loading: lodgesLoading,
+    failed: lodgesFailed,
+    forbidden: lodgesForbidden,
+    reload: reloadLodges,
+  } = useLodgeOptions("admin");
+  const lodgeScope = deriveSettledLodgeOptionScope({
+    lodges,
+    selectedLodgeId: "__all_lodges__",
+    loading: lodgesLoading,
+    failed: lodgesFailed,
+    forbidden: lodgesForbidden,
+    explicitAllLodgesValue: "__all_lodges__",
+  });
+  const lodgeScopeReady = lodgeScope.kind === "all";
   const multiLodge = lodges.length > 1;
   const [restrictedLodgeIds, setRestrictedLodgeIds] = useState<string[]>([]);
 
@@ -238,6 +263,11 @@ export function PromoCodesPageClient({
   const [xeroDataError, setXeroDataError] = useState("");
 
   const fetchPromoCodes = useCallback(async () => {
+    if (!lodgeScopeReady) {
+      setPromoCodes([]);
+      setLoading(false);
+      return;
+    }
     try {
       const res = await fetch("/api/admin/promo-codes");
       if (!res.ok) throw new Error("Failed to fetch promo codes");
@@ -248,9 +278,13 @@ export function PromoCodesPageClient({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [lodgeScopeReady]);
 
   const fetchArchivedCodes = useCallback(async () => {
+    if (!lodgeScopeReady) {
+      setArchivedCodes([]);
+      return;
+    }
     try {
       const res = await fetch("/api/admin/promo-codes?archived=true");
       if (!res.ok) throw new Error("Failed to fetch archived codes");
@@ -259,7 +293,7 @@ export function PromoCodesPageClient({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
     }
-  }, []);
+  }, [lodgeScopeReady]);
 
   useEffect(() => {
     fetchPromoCodes();
@@ -272,6 +306,7 @@ export function PromoCodesPageClient({
   }, [showArchived, fetchArchivedCodes]);
 
   const fetchXeroReferenceData = useCallback(async () => {
+    if (!lodgeScopeReady) return;
     if (xeroDataLoaded || xeroDataLoading) return;
     // Skip the finance-area fetch entirely for a viewer without finance access;
     // the form's manual code inputs remain the fallback, with no error banner.
@@ -322,7 +357,7 @@ export function PromoCodesPageClient({
     } finally {
       setXeroDataLoading(false);
     }
-  }, [xeroDataLoaded, xeroDataLoading, canFinance]);
+  }, [xeroDataLoaded, xeroDataLoading, canFinance, lodgeScopeReady]);
 
   useEffect(() => {
     if (showForm) {
@@ -345,6 +380,7 @@ export function PromoCodesPageClient({
   }, [fixedNightlyGroupCapable, editingId, assignmentScopeTouched]);
 
   async function searchMembers(query: string) {
+    if (!lodgeScopeReady) return;
     setMemberSearch(query);
     if (query.length < 2) {
       setMemberResults([]);
@@ -424,6 +460,7 @@ export function PromoCodesPageClient({
   }
 
   function startEdit(promo: PromoCode) {
+    if (!lodgeScopeReady) return;
     setEditingId(promo.id);
     setCode(promo.code);
     setDescription(promo.description || "");
@@ -481,6 +518,18 @@ export function PromoCodesPageClient({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    /*
+      #2701 backstop for the disabled Save button — pressing Enter in any text
+      field still submits a form. Without the lodge list the payload below omits
+      `lodgeIds` entirely, which on a NEW code means "redeemable at every lodge",
+      the widest setting there is, chosen by nobody.
+    */
+    if (!lodgeScopeReady) {
+      raiseError(
+        "The lodge list could not be loaded, so this code cannot be saved yet — its lodge restriction is part of what is being saved. Retry the lodge list above, then save.",
+      );
+      return;
+    }
     setSaving(true);
     setError("");
 
@@ -604,6 +653,7 @@ export function PromoCodesPageClient({
   }
 
   async function handleDelete(promo: PromoCode) {
+    if (!lodgeScopeReady) return;
     // Applications, not beneficial uses: a code that was applied to a booking
     // is always archived rather than deleted, even if it gave nobody anything
     // (#2299) — the server refuses the hard delete for the same reason.
@@ -633,6 +683,7 @@ export function PromoCodesPageClient({
   }
 
   async function handleRestore(id: string) {
+    if (!lodgeScopeReady) return;
     try {
       const res = await fetch(`/api/admin/promo-codes/${id}`, {
         method: "PATCH",
@@ -652,6 +703,7 @@ export function PromoCodesPageClient({
   }
 
   async function handleToggleActive(promo: PromoCode) {
+    if (!lodgeScopeReady) return;
     try {
       const res = await fetch(`/api/admin/promo-codes/${promo.id}`, {
         method: "PUT",
@@ -786,6 +838,12 @@ export function PromoCodesPageClient({
                     variant="outline"
                     size="sm"
                     onClick={() => startEdit(promo)}
+                    // #2701: editing a code whose lodge restriction cannot be
+                    // rendered is how a restriction becomes unrevocable — the
+                    // form would show no lodge boxes and the save would leave
+                    // whatever is stored untouched, with nothing on screen
+                    // saying so.
+                    disabled={lodgesFailed}
                   >
                     Edit
                   </ViewOnlyActionButton>
@@ -884,7 +942,11 @@ export function PromoCodesPageClient({
             {promo.memberGuestsOnly && (
               <Badge variant="outline">Member guests only</Badge>
             )}
-            {multiLodge && (promo.lodgeIds?.length ?? 0) > 0 && (
+            {/* #2701: still shown when the lodge list FAILED, with the ids
+                standing in for the names it could not load. A code that is
+                restricted must never look unrestricted — that is the reading
+                an admin would act on. */}
+            {(multiLodge || lodgesFailed) && (promo.lodgeIds?.length ?? 0) > 0 && (
               <Badge variant="outline">
                 Lodges:{" "}
                 {promo.lodgeIds
@@ -968,22 +1030,37 @@ export function PromoCodesPageClient({
             Create and manage discount codes and vouchers
           </p>
         </div>
-        {!showForm && (
-          <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={() => setShowForm(true)}>
+        {lodgeScopeReady && !showForm && (
+          <ViewOnlyActionButton
+            canEdit={canEdit}
+            describeReason={false}
+            onClick={() => setShowForm(true)}
+            // #2701: `canEdit` keeps carrying the ROLE reason; a missing lodge
+            // list disables creating a code separately, explained by the notice
+            // below.
+          >
             Add Promo Code
           </ViewOnlyActionButton>
         )}
       </div>
 
-      <FocusedActionError
+      <LodgeScopeStatusNotice
+        scope={lodgeScope}
+        onRetry={reloadLodges}
+        what="lodge-restricted promo codes"
+      />
+
+      {lodgeScopeReady ? <FocusedActionError
         id="promo-codes-error"
         error={error}
         attentionKey={errorAttention}
         className="scroll-mt-20"
-      />
+      /> : null}
 
+      {lodgeScopeReady ? (
+        <>
 
-      {showForm && (
+      {lodgeScopeReady && showForm && (
         <Card>
           <CardHeader>
             <CardTitle>
@@ -1656,6 +1733,8 @@ export function PromoCodesPageClient({
           </div>
         )}
       </div>
+        </>
+      ) : null}
       </div>
     </div>
   );

@@ -112,11 +112,20 @@ describe("GET/POST /api/admin/display/devices", () => {
     expect(JSON.stringify(body)).not.toContain("hash");
   });
 
-  it("creates in the unpaired state, defaulting to the club's default lodge (AC2)", async () => {
+  it("requires an explicit lodge and creates in the unpaired state (AC2, #2887)", async () => {
     const { POST } = await import("@/app/api/admin/display/devices/route");
+    const missingScope = await POST(
+      await jsonRequest("http://localhost/api/admin/display/devices", "POST", {
+        name: "Foyer TV",
+      })
+    );
+    expect(missingScope.status).toBe(400);
+    expect(mockPrisma.lodgeDisplayDevice.create).not.toHaveBeenCalled();
+
     const res = await POST(
       await jsonRequest("http://localhost/api/admin/display/devices", "POST", {
         name: "Foyer TV",
+        lodgeId: "lodge-default",
       })
     );
     expect(res.status).toBe(201);

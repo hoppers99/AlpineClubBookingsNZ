@@ -116,14 +116,26 @@ describe("custom hut-leader label reaches lower-priority prose (#1320)", () => {
     const originalFetch = global.fetch;
 
     beforeEach(() => {
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          capacity: 20,
-          hutLeaderLookaheadDays: 14,
-          clubConfigCapacity: 24,
-        }),
-      }) as unknown as typeof fetch;
+      global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/api/admin/lodges") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              lodges: [{ id: "lodge-1", name: "Example Lodge" }],
+            }),
+          } as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            capacity: 20,
+            hutLeaderLookaheadDays: 14,
+            clubConfigCapacity: 24,
+          }),
+        } as Response;
+      });
     });
 
     afterEach(() => {
@@ -131,7 +143,7 @@ describe("custom hut-leader label reaches lower-priority prose (#1320)", () => {
       vi.clearAllMocks();
     });
 
-    it("uses the custom label in the lookahead description and field label", () => {
+    it("uses the custom label in the lookahead description and field label", async () => {
       render(
         <ClubIdentityProvider value={wardenIdentity}>
           <LodgeCapacityCard />
@@ -141,7 +153,7 @@ describe("custom hut-leader label reaches lower-priority prose (#1320)", () => {
       expect(
         screen.getByText(/how far ahead warden coverage is checked/i),
       ).toBeTruthy();
-      expect(screen.getByText(/warden lookahead \(days\)/i)).toBeTruthy();
+      expect(await screen.findByText(/warden lookahead \(days\)/i)).toBeTruthy();
       expect(document.body.textContent?.toLowerCase()).not.toContain(
         "hut-leader",
       );

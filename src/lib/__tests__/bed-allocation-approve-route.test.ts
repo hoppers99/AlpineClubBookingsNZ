@@ -39,7 +39,12 @@ vi.mock("@/lib/bed-allocation-approval", async () => {
       mockApproveBedAllocations(...args),
   };
 });
-vi.mock("@/lib/prisma", () => ({ prisma: {} }));
+// #2887: the route now resolves a named lodgeId and checks it is ACTIVE, the
+// same treatment the `auto-allocate` sibling gives it.
+const mockLodgeFindUnique = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/prisma", () => ({
+  prisma: { lodge: { findUnique: (...args: unknown[]) => mockLodgeFindUnique(...args) } },
+}));
 vi.mock("@/lib/lodge-capacity", () => ({
   getLodgeCapacityStatus: vi.fn(),
   getLodgePartnerSharedCapacityStatus: vi.fn(),
@@ -60,6 +65,7 @@ function post(body: unknown) {
 
 describe("POST /api/admin/bed-allocation/approve", () => {
   beforeEach(() => {
+  mockLodgeFindUnique.mockResolvedValue({ id: "lodge-1", active: true });
     vi.clearAllMocks();
     mockRequireAdmin.mockResolvedValue({
       ok: true,
@@ -70,7 +76,7 @@ describe("POST /api/admin/bed-allocation/approve", () => {
   });
 
   it("accepts { bookingId } on its own and never turns it into a window approval", async () => {
-    const response = await post({ bookingId: "booking-1" });
+    const response = await post({ bookingId: "booking-1", lodgeId: "lodge-1" });
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ approvedCount: 4 });
@@ -111,7 +117,7 @@ describe("POST /api/admin/bed-allocation/approve", () => {
   });
 
   it("still accepts an explicit allocation id list", async () => {
-    await post({ allocationIds: ["alloc-1", "alloc-2"] });
+    await post({ allocationIds: ["alloc-1", "alloc-2"], lodgeId: "lodge-1" });
 
     expect(mockApproveBedAllocations.mock.calls[0][0]).toMatchObject({
       allocationIds: ["alloc-1", "alloc-2"],
@@ -147,6 +153,52 @@ describe("POST /api/admin/bed-allocation/approve", () => {
 
     const response = await post({});
     expect(response.status).toBe(400);
+  });
+
+  it.each([
+    ["a date-window sweep", { from: "2026-06-01", to: "2026-06-08" }],
+    ["an id list", { allocationIds: ["alloc-1", "alloc-2"] }],
+    ["a booking selector", { bookingId: "booking-1" }],
+  ])(
+    "refuses %s that names no lodge (#2887, owner decision 7)",
+    async (_name, body) => {
+      /*
+        EVERY selector, not just the broad one. The id selectors enumerate
+        their own rows so a lodge adds no AUTHORIZATION safety — but absent a
+        lodge the service locks every lodge plus the global key, so two row ids
+        in a hand-made body stop the whole club's booking and allocation
+        writers. Contention is the reason, and it costs callers nothing.
+      */
+      const response = await post(body);
+      expect(response.status).toBe(400);
+      expect(mockApproveBedAllocations).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts every selector once it names its lodge", async () => {
+    mockApproveBedAllocations.mockResolvedValue({ count: 2 });
+    for (const body of [
+      { from: "2026-06-01", to: "2026-06-08", lodgeId: "lodge-1" },
+      { allocationIds: ["alloc-1", "alloc-2"], lodgeId: "lodge-1" },
+      { bookingId: "booking-1", lodgeId: "lodge-1" },
+    ]) {
+      const response = await post(body);
+      expect(response.status, JSON.stringify(body)).toBe(200);
+    }
+  });
+
+  it("refuses a named lodge that is not active (#2887)", async () => {
+    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-1", active: false });
+    const response = await post({
+      from: "2026-06-01",
+      to: "2026-06-08",
+      lodgeId: "lodge-1",
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Lodge not found or not active",
+    });
+    expect(mockApproveBedAllocations).not.toHaveBeenCalled();
   });
 
   it("404s when the bed allocation module is off", async () => {

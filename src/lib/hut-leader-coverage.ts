@@ -19,11 +19,13 @@ export interface UnassignedHutLeaderDate {
 }
 
 type HutLeaderBooking = {
+  lodgeId: string | null;
   checkIn: Date;
   checkOut: Date;
   guests?: Array<{
     stayStart?: Date | null;
     stayEnd?: Date | null;
+    nights?: Array<{ stayDate: Date }> | null;
   }> | null;
   _count?: {
     guests?: number;
@@ -35,11 +37,17 @@ type HutLeaderCoverageDb = LodgeSettingsReader & {
     findMany(args: unknown): Promise<HutLeaderBooking[]>;
   };
   hutLeaderAssignment: {
-    findMany(args: unknown): Promise<Array<{ startDate: Date; endDate: Date }>>;
+    findMany(args: unknown): Promise<
+      Array<{ lodgeId: string | null; startDate: Date; endDate: Date }>
+    >;
   };
 };
 
-export async function getUnassignedHutLeaderDates(input?: {
+export type HutLeaderCoverageScope =
+  | { kind: "lodge"; lodgeId: string }
+  | { kind: "all" };
+
+export async function getUnassignedHutLeaderDates(input: {
   db?: HutLeaderCoverageDb;
   lookAheadDays?: number;
   today?: Date;
@@ -48,11 +56,14 @@ export async function getUnassignedHutLeaderDates(input?: {
   // past nights for history). When absent, behaviour is exactly as before.
   from?: Date;
   to?: Date;
+  // Interactive pages must name one lodge. Club dashboards opt into `all`
+  // explicitly, so omission can never widen a lodge read by accident.
+  scope: HutLeaderCoverageScope;
 }): Promise<UnassignedHutLeaderDate[]> {
-  const db = input?.db ?? (prisma as unknown as HutLeaderCoverageDb);
-  const today = input?.today ?? getTodayDateOnly();
+  const db = input.db ?? (prisma as unknown as HutLeaderCoverageDb);
+  const today = input.today ?? getTodayDateOnly();
 
-  const hasWindow = input?.from != null && input?.to != null;
+  const hasWindow = input.from != null && input.to != null;
   let windowStart: Date;
   let endDate: Date;
   if (hasWindow) {
@@ -60,7 +71,7 @@ export async function getUnassignedHutLeaderDates(input?: {
     endDate = input!.to!;
   } else {
     const lookAheadDays =
-      input?.lookAheadDays ?? (await loadHutLeaderLookaheadDays(db));
+      input.lookAheadDays ?? (await loadHutLeaderLookaheadDays(db));
     windowStart = today;
     endDate = addDaysDateOnly(
       today,
@@ -71,34 +82,43 @@ export async function getUnassignedHutLeaderDates(input?: {
   const [assignments, bookings] = await Promise.all([
     db.hutLeaderAssignment.findMany({
       where: {
+        ...(input.scope.kind === "lodge"
+          ? { lodgeId: input.scope.lodgeId }
+          : {}),
         startDate: { lte: endDate },
         endDate: { gte: windowStart },
       },
-      select: { startDate: true, endDate: true },
+      select: { lodgeId: true, startDate: true, endDate: true },
     }),
     db.booking.findMany({
       where: {
+        ...(input.scope.kind === "lodge"
+          ? { lodgeId: input.scope.lodgeId }
+          : {}),
         status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
         deletedAt: null,
         checkIn: { lte: endDate },
         checkOut: { gt: windowStart },
       },
       select: {
+        lodgeId: true,
         checkIn: true,
         checkOut: true,
         guests: {
           select: {
             stayStart: true,
             stayEnd: true,
+            nights: { select: { stayDate: true } },
           },
         },
       },
     }),
   ]);
 
-  function isDateCovered(date: Date): boolean {
+  function isDateCovered(date: Date, lodgeId: string | null): boolean {
     return assignments.some(
       (assignment) =>
+        assignment.lodgeId === lodgeId &&
         assignment.startDate.getTime() <= date.getTime() &&
         assignment.endDate.getTime() >= date.getTime(),
     );
@@ -109,6 +129,9 @@ export async function getUnassignedHutLeaderDates(input?: {
     let guestCount = 0;
 
     for (const booking of bookings) {
+      if (isDateCovered(date, booking.lodgeId)) {
+        continue;
+      }
       if (
         booking.checkIn.getTime() > date.getTime() ||
         booking.checkOut.getTime() <= date.getTime()
@@ -137,7 +160,6 @@ export async function getUnassignedHutLeaderDates(input?: {
     day.getTime() <= endDate.getTime();
     day = addDaysDateOnly(day, 1)
   ) {
-    if (isDateCovered(day)) continue;
     const stats = getBookingStats(day);
     if (stats.bookingCount > 0) {
       unassignedDates.push({

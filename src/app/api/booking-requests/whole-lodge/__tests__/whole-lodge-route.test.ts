@@ -58,6 +58,7 @@ vi.mock("@/lib/logger", () => ({
 import { POST } from "@/app/api/booking-requests/whole-lodge/route";
 
 const VALID_BODY = {
+  lodgeId: "lodge-a",
   checkIn: "2099-08-01",
   checkOut: "2099-08-05",
   headcount: 12,

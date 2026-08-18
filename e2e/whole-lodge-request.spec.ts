@@ -8,6 +8,7 @@ import { loginPersona, storageStatePath } from "./helpers/auth";
 import {
   bookingCreateIsolation,
   postBookingCreate,
+  resolveBookableLodgeId,
 } from "./helpers/booking-create-client-ip";
 import { personas } from "./helpers/personas";
 import {
@@ -409,18 +410,29 @@ test.afterAll(async () => {
   }
 });
 
-/** Submit one whole-lodge request and return the raw status + body BYTES. */
+/**
+ * Submit one whole-lodge request and return the raw status + body BYTES.
+ *
+ * #2701: the route now REQUIRES `lodgeId` — an omitted lodge used to be stored
+ * as the club's default, which is how a member could end up holding a lodge
+ * they never chose. The real form reads the lodge list and sends the id even
+ * when it renders no selector (ADR-002), so this does the same rather than
+ * hardcoding a fixture id that a multi-lodge seed would invalidate.
+ */
 async function submitWholeLodgeRequest(
   context: BrowserContext,
   window: { checkIn: string; checkOut: string },
   clientIp: string,
 ) {
+  const lodgeId = await resolveBookableLodgeId(context.request);
+  expect(lodgeId, "the submitting member must be able to book some lodge").not.toBeNull();
   const response = await context.request.post(
     "/api/booking-requests/whole-lodge",
     {
       headers: { "x-forwarded-for": clientIp },
       data: {
         ...REQUEST_BODY,
+        lodgeId,
         checkIn: window.checkIn,
         checkOut: window.checkOut,
       },

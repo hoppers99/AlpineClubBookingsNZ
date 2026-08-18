@@ -178,6 +178,8 @@ number and prefix, and it is listed at the end of the table below.
 | `INV-CAP-027` | Allocation moves keep their nights, require review, commit atomically |
 | `INV-CAP-028` | Destructive removal is preview-bound, digest-checked, and never replans |
 | `INV-CAP-029` | A range assignment writes all or nothing and audits itself exactly once |
+| `INV-CAP-033` | The board offers no bed choice without a concrete lodge; every club-wide board is read-only and says why |
+| `INV-CAP-034` | A booking names its lodge; the create refuses rather than defaulting, and the member is always shown it |
 | `INV-LIFE-062` | A hut-leader assignment may hold one bed: a custodian occupancy, on inclusive night semantics |
 
 ## Payment And Settlement

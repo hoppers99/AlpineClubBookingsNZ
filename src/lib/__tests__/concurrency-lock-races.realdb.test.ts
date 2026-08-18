@@ -76,6 +76,10 @@ import "./bed-allocation-shared-double.realdb.test";
 // skipped unless RUN_CONCURRENCY_RACE_TESTS=1 and its fixtures are namespaced
 // and cleaned independently.
 import "./roster-checkout-day-races.realdb.test";
+// #2701 shares the same guarded database to prove booking admission versus
+// lodge deactivation, last-two-lodge deactivation, and hut-leader overlap
+// serialization on the production lock helpers.
+import "./lodge-admission-races.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

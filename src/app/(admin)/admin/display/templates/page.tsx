@@ -154,6 +154,7 @@ export default function AdminDisplayTemplatesPage() {
   const [layouts, setLayouts] = useState<LayoutOption[]>([]);
   const [lodges, setLodges] = useState<LodgeOption[]>([]);
   const [previewLodgeId, setPreviewLodgeId] = useState("");
+  const [lodgeLoadError, setLodgeLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   // Why the gallery is empty, when it is (#2247) — see restore-built-ins.tsx.
   const [loadState, setLoadState] = useState<TemplatesLoadState>("loading");
@@ -239,6 +240,15 @@ export default function AdminDisplayTemplatesPage() {
         );
         setLodges(active.map((lodge) => ({ id: lodge.id, name: lodge.name })));
         setPreviewLodgeId((current) => current || active[0]?.id || "");
+        setLodgeLoadError(
+          active.length === 0 ? "No active lodge is available for previews." : null,
+        );
+      } else {
+        setLodges([]);
+        setPreviewLodgeId("");
+        setLodgeLoadError(
+          "The lodge list could not be loaded. Preview is stopped rather than silently using a default lodge.",
+        );
       }
     } finally {
       setLoading(false);
@@ -363,13 +373,15 @@ export default function AdminDisplayTemplatesPage() {
   // admin session. The lodge is passed explicitly so the preview is
   // never a silent default (#64).
   function previewTemplate(item: TemplateListItem) {
+    if (!previewLodgeId) {
+      setMessage("Choose an explicit lodge before opening a preview.");
+      return;
+    }
     const params = new URLSearchParams({
       templateId: item.id,
       templateName: item.name,
     });
-    if (lodges.length > 1 && previewLodgeId) {
-      params.set("previewLodge", previewLodgeId);
-    }
+    params.set("previewLodge", previewLodgeId);
     window.open(
       `/admin/display/preview?${params.toString()}`,
       "_blank",
@@ -580,6 +592,15 @@ export default function AdminDisplayTemplatesPage() {
         {message && <p className="text-sm font-medium">{message}</p>}
       </div>
 
+      {lodgeLoadError ? (
+        <div role="alert" className="space-y-2 text-sm text-destructive">
+          <p>{lodgeLoadError}</p>
+          <Button type="button" variant="outline" onClick={() => void refresh()}>
+            Try again
+          </Button>
+        </div>
+      ) : null}
+
       <Card>
         <CardHeader>
           <CardTitle>Templates</CardTitle>
@@ -629,7 +650,11 @@ export default function AdminDisplayTemplatesPage() {
                       ))}
                     </select>
                   )}
-                  <Button variant="outline" onClick={() => previewTemplate(item)}>
+                  <Button
+                    variant="outline"
+                    disabled={!previewLodgeId || lodgeLoadError !== null}
+                    onClick={() => previewTemplate(item)}
+                  >
                     Preview
                   </Button>
                   <Button

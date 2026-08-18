@@ -129,6 +129,9 @@ export default function BookPage() {
     lodges,
     lodgeId,
     lodgesLoading,
+    lodgeScope,
+    lodgeUnresolved,
+    retryLodgeOptions,
     handleLodgeChange,
     selectedLodge,
     lodgeLabel,
@@ -289,6 +292,19 @@ export default function BookPage() {
       {error && (
         <div role="alert" className="rounded-md bg-danger-3 p-3 text-sm text-danger-11">
           <p>{error}</p>
+          {/*
+            #2701: the booking was refused because no lodge could be determined.
+            The lodge selector is NOT on screen in that state — an empty list
+            makes `LodgeSelect` render nothing — so "try again" needs something
+            to try again with, or it is advice the member cannot act on.
+          */}
+          {lodgeUnresolved && (
+            <div className="mt-3">
+              <Button variant="outline" onClick={retryLodgeOptions}>
+                Try again
+              </Button>
+            </div>
+          )}
           {guestProfileBlocks.length > 0 && (
             <div className="mt-3 space-y-3">
               {guestProfileBlocks.map((block) => {
@@ -544,6 +560,8 @@ export default function BookPage() {
           lodges={lodges}
           lodgeId={lodgeId}
           lodgesLoading={lodgesLoading}
+          lodgeScope={lodgeScope}
+          retryLodgeOptions={retryLodgeOptions}
           handleLodgeChange={handleLodgeChange}
           selectedLodge={selectedLodge}
         />
@@ -589,7 +607,6 @@ export default function BookPage() {
           nights={nights}
           guests={guests}
           priceQuote={priceQuote}
-          lodges={lodges}
           lodgeId={lodgeId}
           selectedLodge={selectedLodge}
           reviewGuestPayload={reviewGuestPayload}

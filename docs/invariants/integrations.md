@@ -229,6 +229,18 @@ Four things follow, and all four are load-bearing:
   corrected. A stale description of a leak reads as a live one, and no lint,
   typecheck or index gate looks at prose. Pinned by the third case in
   `src/app/api/bookings/__tests__/rooms-unscoped-mode-has-no-internal-caller.test.ts`.
+- **This retention covers the DISCOVERY READ, and nothing else** (#2701). It is
+  not a general licence for an omitted `lodgeId`, and specifically it does not
+  extend to `POST /api/bookings`, which now REFUSES a create that names no
+  lodge (`INV-CAP-034`) rather than resolving one. The two are consistent, and
+  the distinction is the same one this entry already draws when it says the
+  named-lodge branch is deliberately not filtered because "naming a lodge is not
+  discovery": an unscoped READ answers a real question — *where could I book?* —
+  whereas an unscoped CREATE answers none, because nobody books "somewhere".
+  Retaining a published read mode for forks costs those forks nothing; filling a
+  blank on a write cost a member a paid booking at a lodge they were never
+  shown. Said here because a reader who arrives holding only this invariant will
+  otherwise read it as blessing both.
 
 History, because the rule reads as obvious once it is written down and was not:
 until #2727 this listing filtered on `Room.active` and booking restrictions but

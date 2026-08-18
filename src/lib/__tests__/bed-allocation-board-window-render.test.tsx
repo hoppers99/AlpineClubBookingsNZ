@@ -51,16 +51,25 @@ vi.mock("@/components/club-identity-provider", () => ({
   useClubIdentity: () => ({ hutLeaderLabel: "Hut Leader" }),
 }));
 
-vi.mock("@/components/lodge-select", () => ({
-  LodgeSelect: ({ onChange }: { onChange: (value: string) => void }) => {
-    useEffect(() => onChange("lodge-1"), [onChange]);
-    return null;
-  },
-  useLodgeOptions: () => ({
-    lodges: [{ id: "lodge-1", name: "Test Lodge" }],
-    loading: false,
-  }),
-}));
+// Partially mocked (#2701): the board reads this module's own `ALL_LODGES`
+// constant, so replacing the whole module breaks it at import.
+vi.mock("@/components/lodge-select", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/components/lodge-select")>();
+  return {
+    ...actual,
+    LodgeSelect: ({ onChange }: { onChange: (value: string) => void }) => {
+      useEffect(() => onChange("lodge-1"), [onChange]);
+      return null;
+    },
+    useLodgeOptions: () => ({
+      lodges: [{ id: "lodge-1", name: "Test Lodge" }],
+      loading: false,
+      failed: false,
+      reload: vi.fn(),
+    }),
+  };
+});
 vi.mock("@/components/admin/bed-allocation-removal-dialog", () => ({
   bedAllocationRemovalCategoryForAnchor: (
     source: "AUTO" | "MANUAL",

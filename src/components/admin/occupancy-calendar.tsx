@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -37,66 +37,28 @@ type OccupancyCalendarResponse = {
   bookings: OccupancyCalendarBooking[];
 };
 
-export type CalendarTone = "red" | "amber" | "orange" | "green" | "violet";
-
-// How prominently an overlay paints its cell. "fill" (default) is the original
-// solid tint; "ring" draws a low-emphasis outline over a white cell so a covered
-// night with no guests reads as quiet history rather than an active state.
-export type CalendarOverlayEmphasis = "fill" | "ring";
-
-export type CalendarOverlayValue = {
-  tone: CalendarTone;
-  label: string;
-  emphasis?: CalendarOverlayEmphasis;
-};
-
-// Static class table so Tailwind sees every class literally (no dynamic class
-// construction, which its JIT would prune). Consumers pass a tone; the calendar
-// never builds these strings at runtime. `ringCell` is the low-emphasis variant
-// used when an overlay sets emphasis: "ring".
-//
-// "Restrained Alpine" (epic #1800, #1815): each tone now renders on the shared
-// dark-adapting semantic tokens (#1801/#1804 success/warning/info/danger + the
-// neutral muted pair) instead of hardcoded Tailwind hues, so overlays adapt in
-// dark mode. The keys stay the original COLOUR NAMES to preserve the tone-string
-// API that callers (roster + hut-leaders) already pass — so a key's name no
-// longer implies its rendered hue (e.g. `orange` renders `info`, `violet`
-// renders neutral). Meaning is always carried by the overlay's text label too,
-// never colour alone. Roster severity order (needs-roster > suggested >
-// needs-attention > confirmed) maps onto danger > warning > info > success.
-const CALENDAR_TONE_CLASSES: Record<
+// Re-exported so no caller import changes when the tone vocabulary moved out.
+// `CalendarOverlayEmphasis` is deliberately NOT re-exported: nothing imports it
+// from here, and knip counts a re-export nobody consumes as dead surface.
+export type {
   CalendarTone,
-  { cell: string; ringCell: string; badge: string }
-> = {
-  red: {
-    cell: "border-danger/40 bg-danger-muted text-foreground hover:shadow-sm",
-    ringCell: "ring-1 ring-inset ring-danger/50 bg-card text-foreground hover:shadow-sm",
-    badge: "bg-danger-muted text-danger",
-  },
-  amber: {
-    cell: "border-warning/40 bg-warning-muted text-foreground hover:shadow-sm",
-    ringCell: "ring-1 ring-inset ring-warning/50 bg-card text-foreground hover:shadow-sm",
-    badge: "bg-warning-muted text-warning",
-  },
-  orange: {
-    cell: "border-info/40 bg-info-muted text-foreground hover:shadow-sm",
-    ringCell: "ring-1 ring-inset ring-info/50 bg-card text-foreground hover:shadow-sm",
-    badge: "bg-info-muted text-info",
-  },
-  green: {
-    cell: "border-success/40 bg-success-muted text-foreground hover:shadow-sm",
-    ringCell: "ring-1 ring-inset ring-success/50 bg-card text-foreground hover:shadow-sm",
-    badge: "bg-success-muted text-success",
-  },
-  violet: {
-    cell: "border-border bg-muted text-foreground hover:shadow-sm",
-    ringCell: "ring-1 ring-inset ring-border bg-card text-foreground hover:bg-muted",
-    badge: "bg-muted text-foreground",
-  },
-};
+  CalendarOverlayValue,
+} from "./occupancy-calendar-tones";
+import type {
+  CalendarTone,
+  CalendarOverlayValue,
+} from "./occupancy-calendar-tones";
+import { CALENDAR_TONE_CLASSES } from "./occupancy-calendar-tones";
 
 type OccupancyCalendarProps = {
   mode: OccupancyCalendarMode;
+  /**
+   * The lodge whose occupancy this shows (#2887). REQUIRED, not
+   * optional-with-a-default: the route refuses a lodgeless request (400), so
+   * omitting it yields a permanently dead heat-map. Required makes that a
+   * compile error. Both callers render only once their scope has settled.
+   */
+  lodgeId: string;
   selectedStartDate?: string;
   selectedEndDate?: string;
   onSelectionChange: (selection: { startDate: string; endDate: string }) => void;
@@ -191,6 +153,7 @@ function formatDisplayDate(dateString: string) {
 
 export function OccupancyCalendar({
   mode,
+  lodgeId,
   selectedStartDate,
   selectedEndDate,
   onSelectionChange,
@@ -212,6 +175,39 @@ export function OccupancyCalendar({
   const requestedMonthKeys = useRef(new Set<string>());
   const visibleMonthKey = monthKey(visibleMonth);
 
+  /*
+    #2887: the month caches below are keyed by month alone, so they belong to
+    ONE lodge. The ownership ref moves in the COMMIT — same rule and reasoning
+    as every other lodge-scope fence here; see
+    `src/lib/__tests__/lodge-scope-committed-ownership.test.tsx`.
+  */
+  const activeLodgeRef = useRef(lodgeId);
+  useLayoutEffect(() => {
+    activeLodgeRef.current = lodgeId;
+  }, [lodgeId]);
+
+  /*
+    …and the caches are dropped when the lodge CHANGES, so Lodge A's heat-map
+    cannot sit under Lodge B's heading. Declared BEFORE the month-loading
+    effects: effects flush in declaration order, so this clears first.
+
+    The `previousLodgeRef` guard is load-bearing. Without it this fires on MOUNT
+    too, and `setOccupancyByMonth({})` returns a fresh object identity, re-running
+    the month-loading effect whose cleanup cancels the first request and starts a
+    second — a double fetch on every mount, and in test it swallowed the failure
+    state (the cancelled attempt's `.catch` is a no-op and the retry succeeded).
+  */
+  const previousLodgeRef = useRef(lodgeId);
+  useEffect(() => {
+    if (previousLodgeRef.current === lodgeId) return;
+    previousLodgeRef.current = lodgeId;
+    requestedMonthKeys.current.clear();
+    setOccupancyByMonth({});
+    setLoadingMonthKeys([]);
+    setFailedMonthKeys([]);
+    setLoadError("");
+  }, [lodgeId]);
+
   useEffect(() => {
     onVisibleMonthChange?.(visibleMonthKey);
   }, [visibleMonthKey, onVisibleMonthChange]);
@@ -228,6 +224,10 @@ export function OccupancyCalendar({
     if (requestedMonthKeys.current.has(month)) {
       return undefined;
     }
+    // #2887: no lodge, no read. The route refuses a lodgeless request, so
+    // firing one only paints the failure banner over an empty grid.
+    const requestedLodgeId = lodgeId;
+    if (!requestedLodgeId) return undefined;
 
     let cancelled = false;
     requestedMonthKeys.current.add(month);
@@ -237,13 +237,17 @@ export function OccupancyCalendar({
     setFailedMonthKeys((current) => current.filter((key) => key !== month));
     setLoadError("");
 
-    fetch(`/api/admin/occupancy?month=${month}`)
+    fetch(
+      `/api/admin/occupancy?month=${month}&lodgeId=${encodeURIComponent(requestedLodgeId)}`,
+    )
       .then((res) => {
         if (!res.ok) throw new Error("Failed to load occupancy");
         return res.json() as Promise<OccupancyCalendarResponse>;
       })
       .then((data) => {
-        if (!cancelled) {
+        // The month caches are keyed by month alone, so a response that
+        // outlived its lodge must not land in them.
+        if (!cancelled && activeLodgeRef.current === requestedLodgeId) {
           setOccupancyByMonth((current) => ({
             ...current,
             [month]: data,
@@ -252,7 +256,7 @@ export function OccupancyCalendar({
         }
       })
       .catch(() => {
-        if (!cancelled) {
+        if (!cancelled && activeLodgeRef.current === requestedLodgeId) {
           setFailedMonthKeys((current) =>
             current.includes(month) ? current : [...current, month],
           );
@@ -260,8 +264,14 @@ export function OccupancyCalendar({
         }
       })
       .finally(() => {
-        requestedMonthKeys.current.delete(month);
-        if (!cancelled) {
+        // #2887 review (F6): guarded like the other three callbacks. Deleting
+        // the in-flight marker unconditionally let a late Lodge-A response
+        // clear Lodge-B's marker, so B's month looked unrequested and a re-run
+        // fetched it twice. Data-safe, but a wasted request.
+        if (activeLodgeRef.current === requestedLodgeId) {
+          requestedMonthKeys.current.delete(month);
+        }
+        if (!cancelled && activeLodgeRef.current === requestedLodgeId) {
           setLoadingMonthKeys((current) => current.filter((key) => key !== month));
         }
       });
@@ -270,7 +280,7 @@ export function OccupancyCalendar({
       cancelled = true;
       requestedMonthKeys.current.delete(month);
     };
-  }, []);
+  }, [lodgeId]);
 
   useEffect(() => {
     if (!occupancyByMonth[visibleMonthKey]) {
