@@ -101,6 +101,16 @@ export const MODEL_LEVEL_EXCLUSIONS: Record<string, string> = {
     "is an operational spend control a source club must never silently reset on a " +
     "target — enabling paid diagnostics is a per-deployment decision, so a fresh " +
     "import keeps the target's own cap — instance-local",
+  ServerNzSettings:
+    "this install's own Alpine Central Server connection: a base URL bound to the " +
+    "server THIS club was issued a key for (the key itself lives in the encrypted " +
+    "credential store and never travels), plus the opt-in flag for outward Other " +
+    "Clubs sharing and the upload watermark / download cursor that track what THIS " +
+    "install has already exchanged. Importing any of it would either point a target " +
+    "club at a server it has no key for, enrol it in a data-sharing arrangement it " +
+    "never agreed to, or hand it a foreign sync position that silently skips rows " +
+    "it has never sent — a fresh import keeps the target's own connection, and a " +
+    "target with none stays disconnected (fail-closed) — instance-local",
 };
 
 /**
