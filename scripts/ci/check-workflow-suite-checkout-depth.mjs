@@ -277,16 +277,16 @@ function readBlockScalar(state, keyIndent, header) {
   while (collected.length > 0 && collected.at(-1) === "") collected.pop();
   if (!folded) return collected.join("\n");
 
-  let folded_text = "";
+  let foldedText = "";
   for (const line of collected) {
     if (line === "") {
-      folded_text += "\n";
+      foldedText += "\n";
       continue;
     }
-    folded_text +=
-      folded_text === "" || folded_text.endsWith("\n") ? line : ` ${line}`;
+    foldedText +=
+      foldedText === "" || foldedText.endsWith("\n") ? line : ` ${line}`;
   }
-  return folded_text;
+  return foldedText;
 }
 
 /** Strip an unquoted trailing `# comment`, then unquote. */
