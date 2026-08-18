@@ -1249,7 +1249,11 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         "the reason a general reclassification gate is not available, and " +
         "`bed-allocation-audit-category-backfill.test.ts` quotes them again. Update " +
         "both, in the same pull request as this line (INV-OPS-012).",
-    ).toEqual({ pinned: 127, unpinned: 308 });
+    // 308 -> 312 (Alpine Central Server, PR #21): the four new write sites are
+    // categorised at the site but named in none of the four per-site maps, so
+    // they land unpinned. `pinned` is unchanged, which is the point — no
+    // existing classification moved.
+    ).toEqual({ pinned: 127, unpinned: 312 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

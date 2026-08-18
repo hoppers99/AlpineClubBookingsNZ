@@ -150,7 +150,7 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
     <div className="space-y-6">
       {message ? (
         <p
-          className={`text-sm ${message.kind === "ok" ? "text-green-600" : "text-destructive"}`}
+          className={`text-sm ${message.kind === "ok" ? "text-success-11" : "text-destructive"}`}
           role="status"
         >
           {message.text}
