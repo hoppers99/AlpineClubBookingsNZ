@@ -24,7 +24,87 @@ the full local gate.
   environment) so server-side modules can be imported at all;
 - supply fake email-delivery environment values, because
   `src/lib/email-delivery.ts` refuses to build a transport without them
-  (nodemailer is mocked, so nothing is ever sent).
+  (nodemailer is mocked, so nothing is ever sent);
+- **set React Testing Library's async window to 4,000ms** under jsdom — the
+  section below.
+
+## The RTL async window is 4,000ms, not the 1,000ms default
+
+RTL's async utilities — `findBy*`, `findAllBy*`, `waitFor`,
+`waitForElementToBeRemoved` — run on their **own** clock, `asyncUtilTimeout`,
+entirely separate from vitest's `testTimeout`. It defaults to 1,000ms, and when
+it expires RTL throws
+
+```
+TestingLibraryElementError: Unable to find role="button" and name "Any member"
+```
+
+which reads like a missing element. **It is a timeout.** Written off as flake
+three times on this repository before #2944 named it.
+
+Measured for #2944 by instrumenting RTL's `asyncWrapper` over one pass of
+`src/app/(admin)` — 73 files, 546 tests, 558 async waits:
+
+| Runner | Slowest single wait | Margin against the 1,000ms default |
+| --- | --- | --- |
+| Idle developer machine | 470ms | 2.1x |
+| Same box, 12 competing CPU burners | 1,144ms | none — 3 of 558 waits blew the window |
+
+CI runs a suite roughly 1.7x slower than an idle developer machine (measured in
+#2923), which puts that idle 470ms at ~800ms before another job shares the box.
+So the default is not a comfortable ceiling load occasionally grazes; a busy
+runner goes straight through it, and because scheduling decides which wait loses,
+a **different** suite fails each run. `vitest.setup.ts` therefore configures
+4,000ms repo-wide, and `src/lib/__tests__/rtl-async-util-timeout.test.ts` reads
+the value back so it cannot be dropped silently. The measurements, and why the
+value is 4,000ms rather than 5,000ms (it has to stay below `testTimeout`, or
+vitest's opaque "Test timed out in 5000ms" replaces RTL's message naming the
+query), are stated in full beside the setting.
+
+**A wider window is not a licence to wait instead of think.** A test that
+interacts with a page before that page has settled has an ordering bug, and a
+wider window converts it into a slow pass rather than fixing it. The next section
+is the worked example.
+
+## Settle before you interact with a mocked child component
+
+```ts
+import { settleLodgeScopedPage } from "@/lib/__tests__/helpers/lodge-scope-settle";
+
+render(<HutLeadersPage />);
+await settleLodgeScopedPage("/api/admin/hut-leaders?lodgeId=");
+fireEvent.click(screen.getByRole("button", { name: /pick range/i }));
+expect(screen.getByLabelText("Start Date")).toHaveValue("2099-07-10");
+```
+
+`/admin/hut-leaders` and `/admin/roster` render their date controls and their
+occupancy calendar together behind one `lodgeScopeReady` gate, and both reset
+workspace state in a `useEffect` keyed on the settled lodge. In a browser those
+two cannot collide, because React flushes pending passive effects before
+dispatching a discrete input event.
+
+In a suite that **mocks the calendar** they can. The mock's button is in the DOM
+on the commit that first renders the gated form, so `findByRole` can resolve on a
+commit whose passive effects have not run and `fireEvent` dispatches immediately.
+The page applies the picked range, the pending reset effect fires straight after,
+and the date inputs go back to empty — failing a *synchronous* assertion that no
+window can reach. On `/admin/hut-leaders` step 2 of the form only renders once
+dates are chosen, so the same loss presents as `Unable to find role="button" and
+name "Any member"` instead.
+
+Measured for #2944 on `occupancy-calendar-pages.test.tsx` under 12 CPU burners:
+with the window already at 4,000ms and `testTimeout` at 60,000ms, **1 failure in
+30 runs** on the synchronous assertion; with the settle and the window back at
+its 1,000ms default, **30/30 green**. That pair is the whole argument for keeping
+these two fixes separate.
+
+This is test-only. Both pages gate the real date inputs behind nested
+`lodgeScopeReady` checks — a probe against the real page with a deferred lodges
+API showed the pre-settle DOM is 563 characters, header and notice only (#2885).
+
+**Do not** "simplify" a settle back to an immediate click, and **do not** wrap the
+synchronous expectations in `waitFor` to make them retry. The first restores the
+bug; the second hides it behind a slow pass.
 
 ## Which project typechecks a test
 
