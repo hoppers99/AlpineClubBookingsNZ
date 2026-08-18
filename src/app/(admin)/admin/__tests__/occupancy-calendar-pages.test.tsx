@@ -4,6 +4,8 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { settleLodgeScopedPage } from "@/lib/__tests__/helpers/lodge-scope-settle";
+
 // #1940: the Hut Leader / Roster pages read the session permission matrix for
 // view-only gating; provide an edit-level admin session so the calendar-sync
 // cases keep working.
@@ -100,8 +102,21 @@ describe("occupancy calendar page integration", () => {
     const HutLeadersPage = (await import("@/app/(admin)/admin/hut-leaders/page")).default;
 
     render(<HutLeadersPage />);
-    // Calendar-first: the range picker is visible without opening a form.
-    fireEvent.click(await screen.findByRole("button", { name: /pick range/i }));
+    // Settle BEFORE interacting, and note what this is and is not (#2944).
+    // The calendar is mocked, so its button is in the DOM on the commit that
+    // first renders the lodge-scoped form — before that commit's passive
+    // effects have run, one of which resets the picked range. Clicking into
+    // that gap sets the range and then has it wiped, and the SYNCHRONOUS
+    // assertion below fails with an empty value. That is an ordering bug, not a
+    // slow query: it reproduces with the RTL async window at 4,000ms and
+    // `testTimeout` at 60,000ms, and no wider window can fix it. Do not
+    // "simplify" this back to an immediate click, and do not wrap the
+    // synchronous expectations in `waitFor` — that would convert the bug into a
+    // slow pass. Full mechanism in the helper.
+    await settleLodgeScopedPage("/api/admin/hut-leaders?lodgeId=");
+    // Calendar-first: the range picker is visible without opening a form, and
+    // by now it must already be there — hence `getByRole`, not `findByRole`.
+    fireEvent.click(screen.getByRole("button", { name: /pick range/i }));
 
     expect(screen.getByLabelText("Start Date")).toHaveValue("2099-07-10");
     expect(screen.getByLabelText("End Date")).toHaveValue("2099-07-12");
@@ -117,7 +132,13 @@ describe("occupancy calendar page integration", () => {
     const RosterPage = (await import("@/app/(admin)/admin/roster/page")).default;
 
     render(<RosterPage />);
-    fireEvent.click(await screen.findByRole("button", { name: /pick single/i }));
+    // Same settle-before-interact as the Hut Leader case above (#2944): this
+    // page gates its date control and its calendar behind one `lodgeScopeReady`
+    // check too, so the mocked button is clickable a commit before the page has
+    // finished loading. The roster's settled read is the roster itself, for
+    // today's (frozen) date.
+    await settleLodgeScopedPage("/api/admin/roster/");
+    fireEvent.click(screen.getByRole("button", { name: /pick single/i }));
 
     expect(screen.getByLabelText("Date")).toHaveValue("2099-07-11");
     // #2701: the roster URL always carries `?lodgeId=`, because the page now

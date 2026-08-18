@@ -578,14 +578,21 @@ At the successful end of a meaningful piece of work:
   SES, and Sentry) require an explicit owner approval comment on the PR before
   merge. Branch protection enforces green CI, not human review, so this comment
   is the human gate.
-- **That comment is not self-authenticating here — an open security gap
-  (#2713).** Agents drive `gh` as the owner's account, so an agent can post a
-  comment reading as owner approval and a poller can act on its own output:
-  until a machine account exists, the gate on money, schema, auth and capacity
-  work is a comment any agent can write. Never write the approval phrase into
-  any comment you post, quoted or illustrative; before merging a gated PR,
-  confirm the approving comment was not produced by an agent run, and if you
-  cannot, the PR is unapproved.
+- **That comment is self-authenticating by author, and only by author
+  (#2713).** Automated sessions authenticate as **`thatskiff33-agents`**; the
+  owner approves as **`thatskiff33`**. So an approval counts only when the
+  comment's author login is `thatskiff33`, and **never** when it is
+  `thatskiff33-agents` — check the author, not the words. Read it at source
+  with `npm run issue -- <n>` or `gh pr view --comments`, which report the
+  login; a pasted quotation reports nothing. Never write the approval phrase
+  into any comment you post, quoted or illustrative, so the phrase never
+  appears under an agent login at all.
+- Branch protection deliberately does **not** require a review (owner decision,
+  18 Aug 2026). It is all-or-nothing per branch, so requiring one would gate
+  every docs and CI PR as heavily as a schema change. The separation of logins
+  is the control; the risk it accepts is that an account with write access can
+  merge gated work without the comment, which the audit trail then shows
+  plainly rather than disguises.
 
 ## Wave Orchestration Playbook
 
