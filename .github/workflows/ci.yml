@@ -362,6 +362,18 @@ jobs:
           PUSH_BASE_SHA: ${{ github.event.before }}
         run: node scripts/ci/check-doc-index-integrity.mjs
 
+      # #2909: every workflow job that runs the unit suite must check out full
+      # git history, because part of that suite drives git against this
+      # repository's own commits (HEAD^1, origin/main). The canary once ran the
+      # suite on a depth-1 clone while this job checked out in full, so the
+      # breakage passed all eight required checks, merged, and reddened `main`
+      # (#2907) — the canary has no `pull_request` trigger and a developer's
+      # clone has full history, so nothing else can see that divergence. Reads
+      # `.github/workflows/*.yml` and nothing else, so it sits here with the
+      # other pre-install gates and fails in under a second.
+      - name: Check workflows that run the suite check out full history
+        run: node scripts/ci/check-workflow-suite-checkout-depth.mjs
+
       - name: Install dependencies
         run: npm ci
 

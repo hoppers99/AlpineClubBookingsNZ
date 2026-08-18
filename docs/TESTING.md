@@ -342,6 +342,43 @@ FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '+366d' \
   npm test -- --testTimeout=30000 --hookTimeout=30000 --retry=2
 ```
 
+### Any workflow that runs the suite must check out full git history
+
+Part of the unit suite shells out to `git` against **this repository's own
+commits**. `scripts/ci/check-doc-index-integrity.test.mjs` is the clearest case:
+it builds a real `pull_request` payload out of `HEAD^1` and `origin/main` so the
+doc-index CLI is exercised against commits that exist rather than against a
+fixture. `actions/checkout` clones at depth 1 by default, and a depth-1 clone has
+neither — no second commit, and no remote-tracking `origin/main`.
+
+When that happens the tests fail with a raw
+`fatal: ambiguous argument 'HEAD^1': unknown revision or path not in the working
+tree`, several frames inside a helper, naming nothing that points at the
+checkout. So the failure reads as a bug in whatever commit triggered it.
+
+It has happened. The canary ran the suite on a depth-1 clone while `verify`
+checked out in full, so the breakage passed all eight required checks, merged,
+and reddened `main` — once per clock offset in the matrix (#2907). Nothing then
+stopped the two diverging again, and the divergence is invisible everywhere
+anyone would look: the canary has no `pull_request` trigger, so no PR check sees
+it, and a developer's clone has full history exactly like `ci.yml`, so a local
+run cannot see it either.
+
+`npm run ci:workflowcheck` (`scripts/ci/check-workflow-suite-checkout-depth.mjs`,
+a step in the `verify` job) is what keeps them matched. It parses
+`.github/workflows/*.yml`, works out from the parsed shell command which jobs run
+the **whole** suite — wrapped invocations included, which is why the canary's
+`faketime -f '${{ matrix.offset }}' npm test -- …` counts — and fails when such a
+job has no `actions/checkout` step with `fetch-depth: 0`. A job that runs only
+**targeted** files (`npx vitest run <path>`) needs full history only when one of
+those files reads the repository's own history, which is why `migration-drift`
+and `data-migration-verification` are correct checking out shallow.
+
+The fix when it fails is `fetch-depth: 0` on that job's checkout step. It is
+**not** making the test skip when history is missing: a test that quietly
+disappears in one workflow is how this whole class of gap hides, and the
+surviving workflow's green then certifies nothing about it (#2907, #2909).
+
 ### Moving the frozen instant locally
 
 Separately from the canary, two environment variables move the **frozen** instant

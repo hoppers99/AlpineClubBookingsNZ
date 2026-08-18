@@ -35,6 +35,7 @@
     "agent:context": "tsx scripts/agent-context.ts",
     "issue": "node scripts/issue-thread.mjs",
     "pr:check": "node scripts/ci/check-pr-body.mjs",
+    "ci:workflowcheck": "node scripts/ci/check-workflow-suite-checkout-depth.mjs",
     "test": "vitest run",
     "test:related": "vitest related --run",
     "test:policy": "vitest run src/lib/policies/__tests__",

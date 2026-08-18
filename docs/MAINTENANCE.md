@@ -20,6 +20,7 @@ npm run knip                 # when files or exports change
 npm run docs:linkcheck       # when docs change
 npm run docs:indexcheck      # when docs change or INV-* ids are cited
 npm run quality:budget
+npm run ci:workflowcheck     # when .github/workflows/ changes
 git diff --check
 ```
 
