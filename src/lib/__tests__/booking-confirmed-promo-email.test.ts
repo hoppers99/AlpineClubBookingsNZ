@@ -41,7 +41,7 @@ vi.mock("@/lib/email-message-settings", () => ({
 }));
 
 import { getEmailTemplateDefinition } from "@/lib/email-message-registry";
-import { plainTextEmailTemplate } from "@/lib/email-templates";
+import { plainTextEmailTemplate } from "@/lib/email-templates/layout";
 import {
   renderTemplateString,
   validateEmailTemplateContent,

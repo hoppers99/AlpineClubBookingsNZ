@@ -35,6 +35,7 @@ description, so you can find the right file without opening more than one.
 | [`membership-lifecycle.md`](invariants/membership-lifecycle.md) | `INV-LIFE` (except `INV-LIFE-062`) | applications and nomination, cancellation, archive and deletion, roles and the admin lock-out guards, seasonal membership type and age tier, family groups, partner and parent/dependant links, email inheritance, inductions, member merge |
 | [`integrations.md`](invariants/integrations.md) | `INV-INT` | webhooks, cron idempotency, provider callbacks, Xero member grouping |
 | [`operations.md`](invariants/operations.md) | `INV-OPS`, `INV-LOCK` | raw SQL, advisory or row locking, which lock tier a writer takes, deployment, dropping a column, changing what a value already stored in a column means (an audit `category`, a status string) so the rows already written no longer match the code, what may be used as test input |
+| [`product-configuration.md`](invariants/product-configuration.md) | `INV-CONFIG` | adding a value or feature a club could answer differently, a new setting existing deployments will not have, or a default an upgrade must fall back to |
 
 Two supporting files sit beside them: the full id scheme in
 [`SCHEME.md`](invariants/SCHEME.md), and the imperfections found
@@ -177,6 +178,8 @@ number and prefix, and it is listed at the end of the table below.
 | `INV-CAP-027` | Allocation moves keep their nights, require review, commit atomically |
 | `INV-CAP-028` | Destructive removal is preview-bound, digest-checked, and never replans |
 | `INV-CAP-029` | A range assignment writes all or nothing and audits itself exactly once |
+| `INV-CAP-033` | The board offers no bed choice without a concrete lodge; every club-wide board is read-only and says why |
+| `INV-CAP-034` | A booking names its lodge; the create refuses rather than defaulting, and the member is always shown it |
 | `INV-LIFE-062` | A hut-leader assignment may hold one bed: a custodian occupancy, on inclusive night semantics |
 
 ## Payment And Settlement
@@ -725,3 +728,17 @@ the row-locking rules it is the sibling of.
 | `INV-OPS-011` | The dropped column's stored values were meaningless rather than frozen |
 | `INV-OPS-003` | Public CI and local validation must use test/demo credentials or placeholders |
 | `INV-OPS-004` | Production data, backups, live provider accounts and live webhooks are not valid test inputs |
+
+## Product Configuration
+
+What varies between clubs gets a configuration surface rather than a constant,
+an upgrade that adds one falls back safely, and an unconfigured state is visible
+where an operator must act.
+File:
+[`invariants/product-configuration.md`](invariants/product-configuration.md).
+Prefix `INV-CONFIG`. Added by #2720; it is not one of the ten pre-split domain
+headings the index keeps verbatim.
+
+| ID | Covers |
+| --- | --- |
+| `INV-CONFIG-001` | Club-varying values get a configuration surface; upgrades fall back safely and visibly |

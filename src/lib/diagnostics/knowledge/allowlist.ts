@@ -4,7 +4,7 @@
  * an include glob, matches no exclude glob, and has a text-like extension. A
  * file that matches nothing is silently excluded — the safe default.
  *
- * DEFAULT SCOPE (owner decision pending on #2370 — see the report): docs, the
+ * DEFAULT SCOPE (owner-approved on PR #2531): docs, the
  * top-level project docs, and `prisma/schema.prisma`. These are exactly the
  * things the runtime image EXCLUDES today (`.dockerignore` drops `docs/` and
  * `*.md`), so bundling them is the whole point — Diagnostics can then answer

@@ -145,6 +145,22 @@ type LodgeResolutionDb = Parameters<typeof resolveOptionalActiveLodgeId>[0] & {
 };
 
 /**
+ * Refuse unchecked JavaScript/`any` callers at the public service boundary.
+ * The type contract makes omissions a compile error; this runtime half keeps
+ * an alias, wrapper, or stale compiled caller from reaching the read-oriented
+ * resolver, where `undefined` deliberately means "use the default lodge".
+ */
+function requireBookingLodgeId(requestedLodgeId: unknown): string {
+  if (
+    typeof requestedLodgeId !== "string" ||
+    requestedLodgeId.trim().length === 0
+  ) {
+    throw new BookingLodgeError("lodgeId is required");
+  }
+  return requestedLodgeId;
+}
+
+/**
  * Resolve the lodge a new booking belongs to and enforce the lodge-scoping
  * contract: an explicit lodgeId must name an active lodge, and a requested
  * room must belong to that lodge (rooms without a lodgeId — expand-release
@@ -152,7 +168,7 @@ type LodgeResolutionDb = Parameters<typeof resolveOptionalActiveLodgeId>[0] & {
  */
 async function resolveBookingLodgeId(
   db: LodgeResolutionDb,
-  requestedLodgeId: string | undefined,
+  requestedLodgeId: string,
   requestedRoomId: string | undefined,
 ): Promise<string> {
   const lodgeId = await resolveOptionalActiveLodgeId(db, requestedLodgeId);
@@ -217,6 +233,7 @@ export async function resolveWaitlistAlternateLodgeIds(
  * validation.
  */
 export async function createDraftBooking(input: DraftBookingInput): Promise<BookingWithGuests> {
+  const lodgeId = requireBookingLodgeId(input.lodgeId);
   const {
     effectiveMemberId,
     isOnBehalf,
@@ -235,7 +252,6 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
     groupDiscount,
     memberReviewJustification,
     adultMemberHostingReason,
-    lodgeId,
   } = input;
   // #2364: null for every member-created booking, so their hazard opens PENDING.
   const adultMemberHostingDecision = resolveAdultMemberHostingDecision({
@@ -266,6 +282,10 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
 
   const newBooking = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    // The explicit lodge id is the immutable lock key.  Take the capacity lock
+    // before trusting active/access/room state so lodge deactivation cannot
+    // commit between validation and the booking write (INV-LOCK-002).
+    await acquireLodgeCapacityLock(tx, lodgeId);
     const bookingLodgeId = await resolveBookingLodgeId(
       tx,
       lodgeId,
@@ -276,7 +296,6 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
       lodgeId: bookingLodgeId,
       isOnBehalf,
     });
-    await acquireLodgeCapacityLock(tx, bookingLodgeId);
     // Duplicate member nights (upstream #80cbdf4c): a member cannot hold
     // two bookings covering the same night, regardless of lodge.
     await assertNoBookingMemberNightConflicts(tx, {
@@ -524,6 +543,7 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
  * the 409 capacity-exceeded response and can offer the waitlist option.
  */
 export async function createConfirmedBooking(input: ConfirmedBookingInput): Promise<ConfirmedBookingOutcome> {
+  const lodgeId = requireBookingLodgeId(input.lodgeId);
   const {
     effectiveMemberId,
     isOnBehalf,
@@ -550,7 +570,6 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
     reviewedMemberProposal,
     parentBookingId,
     organiserSettled,
-    lodgeId,
     groupJoin,
     duplicateStayGuard,
   } = input;
@@ -712,6 +731,9 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
       if (!input.tx) {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       }
+      // The caller-provided id is also the immutable capacity-lock key.  The
+      // authoritative active/access/requested-room reads belong after it.
+      await acquireLodgeCapacityLock(tx, lodgeId);
       const bookingLodgeId = await resolveBookingLodgeId(
         tx,
         lodgeId,
@@ -722,7 +744,6 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         lodgeId: bookingLodgeId,
         isOnBehalf,
       });
-      await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
       // Cross-lodge duplicate-stay guard, in-transaction layer (#1587 item 2).
       // Only the cross-lodge waitlist confirm sets duplicateStayGuard; every
@@ -1528,6 +1549,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
  * promoted off the waitlist.
  */
 export async function createWaitlistedBooking(input: WaitlistedBookingInput): Promise<WaitlistedBookingResult> {
+  const lodgeId = requireBookingLodgeId(input.lodgeId);
   const {
     effectiveMemberId,
     isOnBehalf,
@@ -1545,7 +1567,6 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
     groupDiscount,
     memberReviewJustification,
     adultMemberHostingReason,
-    lodgeId,
   } = input;
   // #2364: null for every member-created booking, so their hazard opens PENDING.
   const adultMemberHostingDecision = resolveAdultMemberHostingDecision({
@@ -1680,7 +1701,22 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
   const hasNonMembers = guests.some((g) => !g.isMember);
 
   const { newBooking, position } = await prisma.$transaction(async (tx) => {
-    await acquireLodgeCapacityLock(tx, waitlistLodgeId);
+    await acquireLodgeCapacityLock(tx, lodgeId);
+    // The preflight above is only for pricing/error quality.  Re-establish the
+    // authoritative scope after the lock immediately before persisting.
+    const lockedLodgeId = await resolveBookingLodgeId(
+      tx,
+      lodgeId,
+      requestedRoomId,
+    );
+    await assertMemberMayBookLodge(tx, {
+      memberId: effectiveMemberId,
+      lodgeId: lockedLodgeId,
+      isOnBehalf,
+    });
+    if (lockedLodgeId !== waitlistLodgeId) {
+      throw new BookingLodgeError("Booking lodge changed during creation");
+    }
     // Duplicate member nights (upstream #80cbdf4c): waitlist entries also
     // may not overlap the member's existing booked nights.
     await assertNoBookingMemberNightConflicts(tx, {
@@ -1750,6 +1786,7 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
       (await tx.booking.count({
         where: {
           status: BookingStatus.WAITLISTED,
+          lodgeId: waitlistLodgeId,
           checkIn: { lt: createdBooking.checkOut },
           checkOut: { gt: createdBooking.checkIn },
           createdAt: { lt: createdBooking.createdAt },

@@ -11,6 +11,14 @@
  * small always-read core plus a routing table. Both halves of that only work
  * while these properties hold, and none of them is self-maintaining:
  *
+ *  - **A prefix's numbers are dense.** They run from `001` to that prefix's
+ *    highest with no holes, which is the whole reason "take the next number" is
+ *    mechanical rather than a matter of looking carefully. See
+ *    {@link auditNumberSequences}.
+ *  - **Merged ids are append-only.** Density alone cannot see the highest id
+ *    being deleted, or a whole prefix disappearing. The current definitions are
+ *    therefore also compared with the base revision. See
+ *    {@link auditPermanentInvariantIds}.
  *  - **Every cited id resolves.** An id is cited from places this repository
  *    cannot rewrite — merged commits, closed issues, lint strings shipped in a
  *    release, test names in a fork. A citation that resolves to nothing is the
@@ -49,16 +57,25 @@
  *
  * ## Scanning rules
  *
- * Fenced code blocks are skipped for every pattern, so a document may show an
- * example id without the checker treating it as real. Inline backticks are
- * **not** skipped — most real citations in prose are written `` `INV-CAP-021` ``
- * and skipping them would make the check blind to the common case.
+ * Definitions, ordinary citations and malformed shapes skip Markdown literal
+ * regions, so a document may show placeholders and fixture ids without treating
+ * them as definitions. One bounded CommonMark block pass classifies fenced and
+ * indented code, raw HTML, paragraphs, and ATX/Setext headings while retaining
+ * blockquote/list containers. A second, narrower pass does inspect the literal
+ * view: a
+ * well-formed id under a prefix the repository really declares must resolve
+ * there too. That catches an invented live-prefix example while leaving
+ * `INV-<PREFIX>-<NNN>` placeholders, reserved invoice numbers and custom fixture
+ * prefixes alone.
+ * Inline backticks are **not** skipped — most real citations in prose are
+ * written `` `INV-CAP-021` `` and skipping them would make the check blind to
+ * the common case.
  *
  * Anchor-style citations (`…#inv-cap-021`) are deliberately not handled here.
  * `npm run docs:linkcheck` already validates fragments against real headings, and
  * duplicating it would give two places to disagree.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -70,6 +87,9 @@ export const INVARIANT_INDEX = "docs/DOMAIN_INVARIANTS.md";
 /** Where invariant definitions live. Nothing outside it may define an id. */
 export const INVARIANT_DIR = "docs/invariants/";
 
+/** The scheme's illustrative fences must never look like live invariant ids. */
+export const INVARIANT_SCHEME = "docs/invariants/SCHEME.md";
+
 /**
  * A DEFINITION is a heading whose entire text is the id. A citation is never a
  * whole heading line, so the two patterns cannot be confused in either
@@ -77,6 +97,15 @@ export const INVARIANT_DIR = "docs/invariants/";
  * nearest structural heading, and a file with no subsections has one level less.
  */
 export const DEFINITION_PATTERN = /^#{2,4} (INV-[A-Z][A-Z0-9]*-\d{3})\s*$/;
+
+/** A numeric invariant-shaped token, used to recognise Setext headings too. */
+export const INVARIANT_SHAPED_TOKEN_PATTERN =
+  /\bINV-[A-Z][A-Z0-9]*-\d+/i;
+
+/** The underline that turns the active paragraph into a Setext heading. */
+export const SETEXT_HEADING_UNDERLINE_PATTERN = /^ {0,3}(?:=+|-+)[ \t]*$/;
+const THEMATIC_BREAK_PATTERN =
+  /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 
 /** A CITATION is the id anywhere in a line of any tracked text file. */
 export const CITATION_PATTERN = /\bINV-[A-Z][A-Z0-9]*-\d{3}\b/g;
@@ -86,7 +115,7 @@ export const CITATION_PATTERN = /\bINV-[A-Z][A-Z0-9]*-\d{3}\b/g;
  * row rather than any mention is what lets the index's own prose use a real id
  * as an illustration without counting as a second catalogue entry.
  */
-export const INDEX_ROW_PATTERN = /^\|\s*`(INV-[A-Z][A-Z0-9]*-\d{3})`\s*\|/;
+export const INDEX_ROW_PATTERN = /^ {0,3}\|\s*`(INV-[A-Z][A-Z0-9]*-\d{3})`\s*\|/;
 
 /**
  * Prefixes that belong to Xero invoice-number fixtures, not to invariants, and
@@ -144,22 +173,6 @@ export const CITATION_EXEMPT_FILES = new Set([
   "scripts/ci/check-doc-index-integrity.test.mjs",
 ]);
 
-/** Tracked text files scanned for citations. */
-export const SCANNED_EXTENSIONS = new Set([
-  ".md",
-  ".ts",
-  ".tsx",
-  ".js",
-  ".jsx",
-  ".mjs",
-  ".cjs",
-  ".prisma",
-  ".sql",
-  ".yml",
-  ".yaml",
-  ".json",
-]);
-
 /**
  * The repository's front doors, for the reachability walk.
  *
@@ -183,6 +196,45 @@ export const REACHABILITY_ROOTS = [
  * here.
  */
 export const UNREACHABLE_ALLOWLIST = new Set([]);
+
+/**
+ * The domain `##` headings `docs/DOMAIN_INVARIANTS.md` keeps VERBATIM.
+ *
+ * `SCHEME.md` §4.1 and §6.1 promise that the index retains the ten domain
+ * headings of the pre-split document byte-identical, so an anchor written
+ * before the split still resolves. Until #2720 nothing checked that, and the
+ * prose beside it also claimed "many inbound anchors" target them — a number
+ * this repository cannot support. Measured on 17 Aug 2026: **zero** tracked
+ * files link to an anchor inside the index; every reference is to the bare
+ * path. So every anchor the promise is about lives outside this repository —
+ * in a fork, a merged commit, a closed issue, a shipped release — and is
+ * therefore unmeasurable here and permanently unfixable once it breaks.
+ *
+ * That is the argument for pinning the property instead of editing the number:
+ * an anchor nobody can enumerate is exactly the anchor that must never move.
+ * A heading renamed here fails loudly, at the moment of the edit, in the one
+ * place that can still do something about it.
+ *
+ * This is an ALLOWLIST OF SURVIVORS, not a census. The index may grow new
+ * sections freely — `Product Configuration` is one, added by #2720 — and a new
+ * section carries no pre-split anchors, so nothing about it is promised. What is
+ * forbidden is renaming, re-casing or removing one of the ten.
+ */
+export const STABLE_INDEX_HEADINGS = [
+  "Public authoritative content",
+  "Money",
+  "Booking Dates And Capacity",
+  "Payment And Settlement",
+  "Member-Guest Consent",
+  "Booking Modifications",
+  "Analytics And Privacy",
+  "Membership Lifecycle",
+  "Integrations",
+  "Operations",
+];
+
+/** A top-level section heading in the index, with its exact text. */
+const INDEX_SECTION_HEADING_PATTERN = /^ {0,3}##\s+(.+?)\s*#*\s*$/;
 
 /**
  * Where the routing table lives, and how its section is found.
@@ -277,27 +329,614 @@ const INLINE_LINK = /!?\[[^\]]*\]\(\s*(<[^>]+>|[^)\s]+)/g;
 // Reference definitions at line start: [label]: target
 const REF_DEF = /^\s*\[[^\]]+\]:\s*(\S+)/;
 
-/**
- * Split a file into the lines a pattern may match, dropping fenced code blocks.
- *
- * Returns `{ number, text }` pairs so a problem can name the line it is on.
- */
-export function scannableLines(text) {
-  const out = [];
-  let inFence = false;
-  text.split(/\r?\n/).forEach((line, index) => {
-    if (/^\s*(```|~~~)/.test(line)) {
-      inFence = !inFence;
-      return;
+const FENCE_OPENER_PATTERN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+const FENCE_CLOSER_PATTERN = /^ {0,3}(`+|~+)[ \t]*$/;
+const BLOCKQUOTE_PREFIX_PATTERN = /^ {0,3}> ?/;
+const LIST_MARKER_PATTERN =
+  /^( {0,3})([*+-]|([0-9]{1,9})[.)])(?:( +)(?=\S|$)|$)/;
+const HTML_BLOCK_TAGS =
+  "address|article|aside|base|basefont|blockquote|body|caption|center|col|" +
+  "colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|" +
+  "footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|" +
+  "li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|" +
+  "search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul";
+const HTML_BLOCK_TAG_PATTERN = new RegExp(
+  `^ {0,3}</?(?:${HTML_BLOCK_TAGS})(?:[ \\t]|/?>|$)`,
+  "i",
+);
+// Upper bound on the inline-tag stripping loop in stripInlineHtmlTags. Each pass
+// must strip at least one `<...>` to continue, so a heading cannot need more
+// passes than it has characters; this only caps pathological input.
+const MAX_INLINE_HTML_STRIP_PASSES = 100;
+
+// The unquoted attribute value excludes TAB as well as space. CommonMark defines
+// it as "a nonempty string of characters not including whitespace, ", ', =, <, >,
+// or `" — and whitespace is both. Letting it swallow tabs was not only wrong, it
+// made the value overlap the `[ \t]+` that separates the next attribute, so the
+// outer `(...)*` could re-split the same tabs an exponential number of ways.
+// Measured before the fix: a line of `<a` followed by 22 repetitions of "\t\t:=!"
+// took 337ms, and each further repetition doubled it — a ~200-character line in
+// any tracked Markdown file would have hung this gate forever. Now linear.
+const COMPLETE_HTML_TAG_PATTERN =
+  /^ {0,3}(?:<\/[A-Za-z][A-Za-z0-9-]*[ \t]*>|<[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[A-Za-z_:][A-Za-z0-9_.:-]*(?:[ \t]*=[ \t]*(?:[^ \t"'=<>`]+|'[^']*'|"[^"]*"))?)*[ \t]*\/?>)[ \t]*$/;
+
+function indentationColumns(text, initialColumn = 0) {
+  let column = initialColumn;
+  for (const character of text) {
+    column = character === "\t" ? column + (4 - (column % 4)) : column + 1;
+  }
+  return column;
+}
+
+/** Expand tabs into the virtual columns CommonMark slices for block structure. */
+function expandMarkdownTabs(text) {
+  let column = 0;
+  let expanded = "";
+  for (const character of text) {
+    if (character === "\t") {
+      const width = 4 - (column % 4);
+      expanded += " ".repeat(width);
+      column += width;
+    } else {
+      expanded += character;
+      column += 1;
     }
-    if (!inFence) out.push({ number: index + 1, text: line });
+  }
+  return expanded;
+}
+
+/** Resolve CommonMark list padding while retaining any four-column code indent. */
+function listPrefix(line) {
+  const match = line.match(LIST_MARKER_PATTERN);
+  if (!match) return null;
+
+  const marker = `${match[1]}${match[2]}`;
+  const markerColumn = indentationColumns(marker);
+  const whitespace = match[4] ?? "";
+  const hasContent = marker.length + whitespace.length < line.length;
+  if (!hasContent) {
+    return {
+      consumedLength: marker.length + whitespace.length,
+      delimiter: match[3] === undefined ? match[2] : match[2].at(-1),
+      orderedDigits: match[3],
+      width: markerColumn + 1,
+    };
+  }
+
+  const paddingColumns =
+    indentationColumns(whitespace, markerColumn) - markerColumn;
+  const consumedWhitespace =
+    paddingColumns <= 4 ? whitespace : whitespace.slice(0, 1);
+
+  return {
+    consumedLength: marker.length + consumedWhitespace.length,
+    delimiter: match[3] === undefined ? match[2] : match[2].at(-1),
+    orderedDigits: match[3],
+    width: markerColumn + consumedWhitespace.length,
+  };
+}
+
+/** Strip quote/list markers from a possible container-block opener. */
+function stripOpeningContainers(line, { interruptingParagraph = false } = {}) {
+  const containers = [];
+  let text = line;
+  while (true) {
+    const blockquote = text.match(BLOCKQUOTE_PREFIX_PATTERN);
+    if (blockquote) {
+      containers.push({ type: "blockquote" });
+      text = text.slice(blockquote[0].length);
+      interruptingParagraph = false;
+      continue;
+    }
+
+    // CommonMark gives a thematic break precedence over the list marker that
+    // its first `-` or `*` could otherwise resemble.  Do this after stripping
+    // any blockquote prefix, but before consuming a list marker, so spaced
+    // forms such as `- - -` retain the same precedence inside a quote too.
+    if (THEMATIC_BREAK_PATTERN.test(text)) {
+      return { containers, text };
+    }
+
+    const list = listPrefix(text);
+    if (list) {
+      const itemText = text.slice(list.consumedLength);
+      const orderedStart =
+        list.orderedDigits === undefined ? null : Number(list.orderedDigits);
+      if (
+        interruptingParagraph &&
+        (itemText.trim() === "" || (orderedStart !== null && orderedStart !== 1))
+      ) {
+        return { containers, text };
+      }
+      containers.push({
+        delimiter: list.delimiter,
+        ordered: list.orderedDigits !== undefined,
+        type: "list",
+        width: list.width,
+      });
+      text = itemText;
+      interruptingParagraph = false;
+      continue;
+    }
+    return { containers, text };
+  }
+}
+
+/** Consume at least the indentation columns that keep a line in one list item. */
+function stripIndentation(text, requiredColumns) {
+  let column = 0;
+  let index = 0;
+  while (index < text.length && column < requiredColumns) {
+    if (text[index] === " ") column += 1;
+    else if (text[index] === "\t") column += 4 - (column % 4);
+    else return null;
+    index += 1;
+  }
+  return column >= requiredColumns ? text.slice(index) : null;
+}
+
+/** Strip the exact container stack that owned an open literal block. */
+function stripExpectedContainers(line, containers) {
+  if (line.trim() === "") return "";
+  let text = line;
+  for (const container of containers) {
+    if (container.type === "blockquote") {
+      const blockquote = text.match(BLOCKQUOTE_PREFIX_PATTERN);
+      if (!blockquote) return null;
+      text = text.slice(blockquote[0].length);
+      continue;
+    }
+
+    text = stripIndentation(text, container.width);
+    if (text === null) return null;
+  }
+  return text;
+}
+
+/**
+ * Return the terminator for a CommonMark raw HTML block whose contents may
+ * legally contain fence markers. `null` means ordinary Markdown.
+ *
+ * Types 1-5 have explicit terminators. Types 6-7 (the standard block-tag list
+ * and a complete open/close tag) end at the next blank line. The latter is
+ * deliberately recognised only as a complete tag, so ordinary prose beginning
+ * with an angle bracket cannot hide the rest of a document from the audit.
+ */
+/**
+ * A terminator that ends on a literal string, which is what CommonMark actually
+ * specifies for HTML block types 2 to 5: the block ends on the line *containing*
+ * `-->`, `?>`, `]]>` or `>`. Four of the five end conditions are substring
+ * searches, not patterns, and saying so in the code is both clearer and more
+ * accurate than four regexes that only look like matchers.
+ *
+ * It also removes a standing false positive. Written as `/-->/`, the comment
+ * terminator tripped CodeQL's js/bad-tag-filter, which wants `--!>` accepted
+ * too. That is right for an HTML *sanitizer* and wrong here: browsers accept
+ * `--!>`, CommonMark does not, and widening it would make this scanner disagree
+ * with the renderer GitHub actually uses — text GitHub keeps inside a comment
+ * would start counting as live document. The behaviour below is unchanged from
+ * the regexes it replaces; only the alert, which was never about this code, goes
+ * away. Same interface (`.test`) so callers do not care which they hold.
+ */
+function endsOn(marker) {
+  return { test: (text) => text.includes(marker) };
+}
+
+function rawHtmlBlockTerminator(line) {
+  const rawTag = line.match(
+    /^ {0,3}<(pre|script|style|textarea)(?:[ \t]|>|$)/i,
+  );
+  if (rawTag) {
+    return {
+      canInterruptParagraph: true,
+      end: new RegExp(`</${rawTag[1]}\\s*>`, "i"),
+      type: "explicit",
+    };
+  }
+  if (/^ {0,3}<!--/.test(line)) {
+    return { canInterruptParagraph: true, end: endsOn("-->"), type: "explicit" };
+  }
+  if (/^ {0,3}<\?/.test(line)) {
+    return { canInterruptParagraph: true, end: endsOn("?>"), type: "explicit" };
+  }
+  if (/^ {0,3}<!\[CDATA\[/.test(line)) {
+    return { canInterruptParagraph: true, end: endsOn("]]>"), type: "explicit" };
+  }
+  if (/^ {0,3}<![A-Z]/.test(line)) {
+    return { canInterruptParagraph: true, end: endsOn(">"), type: "explicit" };
+  }
+  if (HTML_BLOCK_TAG_PATTERN.test(line)) {
+    return { canInterruptParagraph: true, type: "blank" };
+  }
+  if (COMPLETE_HTML_TAG_PATTERN.test(line)) {
+    return { canInterruptParagraph: false, type: "blank" };
+  }
+  return null;
+}
+
+function sameContainers(left, right) {
+  return (
+    left.length === right.length &&
+    left.every(
+      (container, index) =>
+        container.type === right[index].type &&
+        (container.type !== "list" ||
+          (container.delimiter === right[index].delimiter &&
+            container.width === right[index].width &&
+            container.ordered === right[index].ordered)),
+    )
+  );
+}
+
+/**
+ * List membership is marker-shaped, not padding-shaped. Marker digit count and
+ * item padding change the continuation width of one item, but not whether the
+ * next marker is its sibling. Delimiter identity remains structural: `.` and
+ * `)` ordered lists (and the three bullet marker characters) are distinct.
+ */
+function sameContainerIdentity(left, right) {
+  return (
+    left.type === right.type &&
+    (left.type !== "list" ||
+      (left.delimiter === right.delimiter && left.ordered === right.ordered))
+  );
+}
+
+/**
+ * Retry a marker as a sibling of any active list depth.
+ *
+ * A fresh `10.` cannot interrupt a paragraph, so the ordinary CommonMark pass
+ * initially leaves it as text. If that paragraph belongs to `9.`, however,
+ * `10.` is a sibling even though its continuation width grew by one column.
+ * Strip each possible ancestor stack exactly, then compare the fresh marker's
+ * structural identity with the active list at that depth. This both preserves
+ * nesting and lets an outer sibling close an inner list.
+ */
+function listSiblingLine(line, activeContainers) {
+  for (let index = activeContainers.length - 1; index >= 0; index -= 1) {
+    const active = activeContainers[index];
+    if (active.type !== "list") continue;
+
+    const ancestors = activeContainers.slice(0, index);
+    const remainder = stripExpectedContainers(line, ancestors);
+    if (remainder === null) continue;
+
+    const sibling = stripOpeningContainers(remainder);
+    if (
+      sibling.containers.length > 0 &&
+      sameContainerIdentity(sibling.containers[0], active)
+    ) {
+      return {
+        containers: [...ancestors, ...sibling.containers],
+        text: sibling.text,
+      };
+    }
+  }
+  return null;
+}
+
+/** Resolve a line against active or blank-retained containers, or fresh openers. */
+function structuralLine(line, paragraph, retainedContainers = null) {
+  const expectedContainers = paragraph?.containers ?? retainedContainers;
+  if (expectedContainers?.length > 0) {
+    const continuation = stripExpectedContainers(line, expectedContainers);
+    if (continuation !== null) {
+      const nested = stripOpeningContainers(continuation, {
+        interruptingParagraph: paragraph !== null,
+      });
+      return {
+        containers: [...expectedContainers, ...nested.containers],
+        opensContainer: nested.containers.length > 0,
+        text: nested.text,
+      };
+    }
+  }
+  let fresh = stripOpeningContainers(line, {
+    interruptingParagraph: paragraph !== null,
   });
-  return out;
+
+  // A top-level ordered marker greater than one cannot interrupt an unrelated
+  // paragraph, but it can be the next sibling of an already-open ordered list.
+  // The same retry admits an empty sibling marker in either list kind. Compare
+  // marker identity at an active list depth rather than continuation width, so
+  // `9.` -> `10.` and padding changes remain siblings without turning `2.` into
+  // an interrupting nested or unrelated list.
+  if (paragraph?.containers.length > 0 && fresh.containers.length === 0) {
+    fresh = listSiblingLine(line, paragraph.containers) ?? fresh;
+  }
+  return {
+    ...fresh,
+    lazyContinuation:
+      paragraph?.containers.length > 0 &&
+      fresh.containers.length === 0 &&
+      !THEMATIC_BREAK_PATTERN.test(fresh.text),
+    opensContainer: fresh.containers.length > 0,
+  };
+}
+
+function leadingIndentColumns(text) {
+  return indentationColumns(text.match(/^[ \t]*/)?.[0] ?? "");
+}
+
+const ATX_HEADING_PATTERN = /^ {0,3}#{1,6}(?:[ \t]+|$)/;
+
+/**
+ * One bounded CommonMark block pass for every invariant audit.
+ *
+ * It retains the paragraph/container state that makes type-7 HTML, indented
+ * code, multiline Setext headings and container-owned ATX headings meaningful.
+ */
+function scanMarkdownBlocks(text) {
+  const scannable = [];
+  const fenced = [];
+  const fenceOpeners = [];
+  const headings = [];
+  let literal = null;
+  let paragraph = null;
+  let retainedListContainers = null;
+
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
+    const numberedLine = { number: index + 1, text: line };
+    const structuralText = expandMarkdownTabs(line);
+    let reprocess = true;
+    while (reprocess) {
+      reprocess = false;
+
+      if (literal) {
+        const content = stripExpectedContainers(structuralText, literal.containers);
+        if (content === null) {
+          literal = null;
+          reprocess = true;
+          continue;
+        }
+
+        if (literal.type === "indented") {
+          if (content.trim() === "" || leadingIndentColumns(content) >= 4) {
+            fenced.push(numberedLine);
+            continue;
+          }
+          literal = null;
+          reprocess = true;
+          continue;
+        }
+
+        if (literal.type === "html") {
+          if (literal.terminator.type === "blank" && content.trim() === "") {
+            literal = null;
+            scannable.push(numberedLine);
+            paragraph = null;
+            continue;
+          }
+          fenced.push(numberedLine);
+          if (
+            literal.terminator.type === "explicit" &&
+            literal.terminator.end.test(content)
+          ) {
+            literal = null;
+          }
+          continue;
+        }
+
+        const closer = content.match(FENCE_CLOSER_PATTERN);
+        if (
+          closer &&
+          closer[1][0] === literal.marker &&
+          closer[1].length >= literal.length
+        ) {
+          literal = null;
+        } else {
+          fenced.push(numberedLine);
+        }
+        continue;
+      }
+
+      const outside = structuralLine(
+        structuralText,
+        paragraph,
+        retainedListContainers,
+      );
+      const continuesParagraph =
+        paragraph !== null &&
+        !outside.opensContainer &&
+        (sameContainers(outside.containers, paragraph.containers) ||
+          outside.lazyContinuation);
+
+      if (outside.text.trim() === "") {
+        scannable.push(numberedLine);
+        const blankContainers = outside.opensContainer
+          ? outside.containers
+          : paragraph?.containers;
+        if (blankContainers?.some((container) => container.type === "list")) {
+          retainedListContainers = blankContainers;
+        }
+        paragraph = null;
+        continue;
+      }
+      retainedListContainers = null;
+
+      if (
+        continuesParagraph &&
+        !outside.lazyContinuation &&
+        SETEXT_HEADING_UNDERLINE_PATTERN.test(outside.text)
+      ) {
+        headings.push({
+          containerDepth: paragraph.containers.length,
+          kind: "setext",
+          lineNumbers: [
+            ...paragraph.lines.map((entry) => entry.number),
+            numberedLine.number,
+          ],
+          number: paragraph.lines[0].number,
+          text: paragraph.lines.map((entry) => entry.text).join(" "),
+        });
+        scannable.push(numberedLine);
+        paragraph = null;
+        continue;
+      }
+
+      if (THEMATIC_BREAK_PATTERN.test(outside.text)) {
+        scannable.push(numberedLine);
+        paragraph = null;
+        continue;
+      }
+
+      const htmlTerminator = rawHtmlBlockTerminator(outside.text);
+      if (
+        htmlTerminator &&
+        (htmlTerminator.canInterruptParagraph ||
+          paragraph === null ||
+          outside.opensContainer)
+      ) {
+        fenced.push(numberedLine);
+        paragraph = null;
+        if (
+          htmlTerminator.type === "blank" ||
+          !htmlTerminator.end.test(outside.text)
+        ) {
+          literal = {
+            containers: outside.containers,
+            terminator: htmlTerminator,
+            type: "html",
+          };
+        }
+        continue;
+      }
+
+      const candidate = outside.text.match(FENCE_OPENER_PATTERN);
+      const markerRun = candidate?.[1];
+      const info = candidate?.[2] ?? "";
+      const isValidOpener =
+        markerRun && (markerRun[0] === "~" || !info.includes("`"));
+      if (isValidOpener) {
+        paragraph = null;
+        fenceOpeners.push(numberedLine);
+        literal = {
+          containers: outside.containers,
+          length: markerRun.length,
+          marker: markerRun[0],
+          type: "fence",
+        };
+        continue;
+      }
+
+      if (
+        (paragraph === null || outside.opensContainer) &&
+        leadingIndentColumns(outside.text) >= 4
+      ) {
+        paragraph = null;
+        fenced.push(numberedLine);
+        literal = { containers: outside.containers, type: "indented" };
+        continue;
+      }
+
+      if (ATX_HEADING_PATTERN.test(outside.text)) {
+        headings.push({
+          containerDepth: outside.containers.length,
+          kind: "atx",
+          lineNumbers: [numberedLine.number],
+          number: numberedLine.number,
+          text: outside.text,
+        });
+        scannable.push(numberedLine);
+        paragraph = null;
+        continue;
+      }
+
+      scannable.push(numberedLine);
+      if (continuesParagraph) {
+        paragraph.lines.push({ number: numberedLine.number, text: outside.text });
+      } else {
+        paragraph = {
+          containers: outside.containers,
+          lines: [{ number: numberedLine.number, text: outside.text }],
+        };
+      }
+    }
+  }
+
+  return {
+    fenced,
+    headings,
+    literalAudit: [...fenced, ...fenceOpeners].sort((left, right) => left.number - right.number),
+    scannable,
+  };
+}
+
+/**
+ * Classify Markdown lines with one bounded CommonMark literal-block state.
+ *
+ * A closer uses the opener's marker and at least its length. A shorter run, the
+ * other marker, or a candidate closer carrying non-whitespace is literal
+ * content. Blockquote/list containers are retained until they end; the first
+ * non-container line is reprocessed outside the block. Explicitly terminated
+ * raw HTML blocks ignore fence markers until their terminator. Backtick info
+ * strings may not themselves contain a backtick. Fence opener/closer lines
+ * belong to neither output; raw HTML and indented-code boundary lines belong
+ * to the literal view.
+ */
+export function scanMarkdownFenceLines(text) {
+  const { fenced, scannable } = scanMarkdownBlocks(text);
+  return { fenced, scannable };
+}
+
+/** Lines outside Markdown literal blocks, with their original line numbers. */
+export function scannableLines(text) {
+  return scanMarkdownFenceLines(text).scannable;
+}
+
+/**
+ * Lines inside fenced code, indented code or raw HTML literal blocks, with their
+ * original line numbers.
+ *
+ * This is deliberately separate from {@link scannableLines}: most audits must
+ * ignore examples, while the narrow live-prefix citation audit below must see
+ * enough of them to reject an invented id under a real prefix.
+ */
+export function fencedLines(text) {
+  return scanMarkdownFenceLines(text).fenced;
+}
+
+/** Literal lines inspected by the narrow live-prefix audit, including fence openers. */
+export function literalAuditLines(text) {
+  return scanMarkdownBlocks(text).literalAudit;
+}
+
+/** Every physical line in a non-Markdown source file, with its original number. */
+function sourceLines(text) {
+  return text.split(/\r?\n/).map((line, index) => ({ number: index + 1, text: line }));
+}
+
+/** Markdown hides examples structurally; every other scanned format is linewise source. */
+function ordinaryAuditLines(rel, text) {
+  return rel.endsWith(".md") ? scannableLines(text) : sourceLines(text);
 }
 
 /** The prefix half of an id: `INV-CAP-021` -> `CAP`. */
 export function prefixOf(id) {
   return id.split("-")[1];
+}
+
+/** The number half of an id, as a number: `INV-CAP-021` -> `21`. */
+export function numberOf(id) {
+  return Number(id.slice(id.lastIndexOf("-") + 1));
+}
+
+/**
+ * A sorted ascending list of numbers as zero-padded runs: `033-041, 050`.
+ *
+ * Runs rather than a bare list because a mis-numbered id usually skips a block
+ * of numbers at once, and "missing 033-041" is a sentence a reader acts on where
+ * nine comma-separated numbers is a wall.
+ */
+function formatNumberRuns(numbers) {
+  const pad = (n) => String(n).padStart(3, "0");
+  const runs = [];
+  for (const n of numbers) {
+    const last = runs.at(-1);
+    if (last && n === last[1] + 1) last[1] = n;
+    else runs.push([n, n]);
+  }
+  return runs.map(([from, to]) => (from === to ? pad(from) : `${pad(from)}-${pad(to)}`)).join(", ");
 }
 
 /** Relative Markdown links a file makes, resolved to repo-relative paths. */
@@ -349,12 +988,202 @@ export function collectDefinitions(files) {
   return definitions;
 }
 
+/**
+ * A conservative GFM inline-link shape used only by the invariant-heading
+ * sentinel. It retains the rendered label and removes a destination that is
+ * syntactically bounded on this line. The destination accepts an angle form or
+ * a whitespace-free form with one balanced-parentheses level, plus an optional
+ * quoted/parenthesised title. Images are deliberately excluded: alt text is not
+ * a visibly contiguous heading token.
+ */
+const HEADING_INLINE_LINK_PATTERN =
+  /(?<!!)\[([^\]\r\n]+)\]\(\s*(?:<[^<>\r\n]*>|(?:\\[^\r\n]|[^\\()\s\r\n]|\([^()\r\n]*\))+)(?:[ \t]+(?:"[^"\r\n]*"|'[^'\r\n]*'|\([^()\r\n]*\)))?[ \t]*\)/g;
+
+/**
+ * Full/collapsed reference-link labels, followed by shortcut-link labels.
+ * Resolving a shortcut requires definitions elsewhere in the document, so the
+ * sentinel conservatively unwraps bracketed labels whenever doing so reveals
+ * an invariant-shaped heading. Literal brackets around a would-be invariant ID
+ * are decoration too and cannot be a canonical definition.
+ */
+const HEADING_REFERENCE_LINK_PATTERN = /(?<!!)\[([^\]\r\n]+)\][ \t]*\[[^\]\r\n]*\]/g;
+const HEADING_SHORTCUT_LINK_PATTERN = /(?<!!)\[([^\]\r\n]+)\]/g;
+
+/** Decode bounded numeric character references without importing an HTML parser. */
+function decodeNumericCharacterReferences(text) {
+  return text.replace(
+    /&#(?:([0-9]{1,7})|[xX]([0-9A-Fa-f]{1,6}));/g,
+    (reference, decimal, hexadecimal) => {
+      const codePoint = Number.parseInt(decimal ?? hexadecimal, decimal ? 10 : 16);
+      if (
+        !Number.isInteger(codePoint) ||
+        codePoint === 0 ||
+        codePoint > 0x10ffff ||
+        (codePoint >= 0xd800 && codePoint <= 0xdfff)
+      ) {
+        return reference;
+      }
+      return String.fromCodePoint(codePoint);
+    },
+  );
+}
+
+/**
+ * Approximate the visible heading text only as far as the invariant sentinel
+ * needs. This is intentionally not a Markdown renderer: it unwraps bounded
+ * inline links, decodes numeric references, and removes inline decoration
+ * delimiters/tags that can split an otherwise canonical-looking token.
+ */
+function headingInvariantShapeText(line) {
+  return foldInvariantLookalikes(
+    stripInlineHtmlTags(
+      decodeNumericCharacterReferences(
+        line
+          .replace(HEADING_INLINE_LINK_PATTERN, "$1")
+          .replace(HEADING_REFERENCE_LINK_PATTERN, "$1")
+          .replace(HEADING_SHORTCUT_LINK_PATTERN, "$1"),
+      ).replace(/[*_~`]/g, ""),
+    ),
+  );
+}
+
+/**
+ * Fold the characters that *look* like an invariant id but are not one.
+ *
+ * Every other defence in this function works on ASCII `INV-[A-Z]-\d`, so a
+ * single lookalike codepoint used to walk through all of them at once: the
+ * heading, `collectDefinitions`, `CITATION_PATTERN` and `INDEX_ROW_PATTERN`
+ * would all miss a heading whose hyphen is U+2011 rather than hyphen-minus,
+ * while GitHub rendered it as an ordinary, correct-looking id. A reviewer saw a
+ * normal new invariant that had skipped nine numbers, and CI was green — the
+ * exact outcome this check exists to make impossible.
+ *
+ * No literal id is written in this comment on purpose. This file is scanned for
+ * citations like any other, so an illustrative id here would either have to
+ * resolve or be excused — and an invented one under a live prefix is precisely
+ * the grep bait #2889 exists to remove. Describe the shape; do not spell it.
+ *
+ * Two steps, because they catch different things. NFKC settles the
+ * compatibility forms (full-width letters and digits). The dash class then
+ * folds the hyphen lookalikes NFKC deliberately leaves alone, since U+2011 and
+ * U+2013 are distinct characters rather than compatibility variants of `-`.
+ *
+ * Letter homoglyphs from other scripts — Cyrillic `А` for `A` — are not
+ * foldable this way and are handled instead by the ASCII-only rule in
+ * `auditDefinitionHeadingShapes`: an invariant heading is pure ASCII by
+ * construction, so anything else in it is worth failing on.
+ */
+function foldInvariantLookalikes(text) {
+  return text
+    .normalize("NFKC")
+    .replace(/[­‐-―−﹘﹣－]/g, "-");
+}
+
+/**
+ * Remove inline HTML tags, repeatedly, until the text stops changing.
+ *
+ * A single pass is not enough: removing the inner tag from `<scr<span>ipt>`
+ * splices its neighbours into a *new* tag, so one pass leaves behind markup a
+ * reader never sees. That matters here because this text is what decides
+ * whether a heading carries an invariant token — residue can split an
+ * otherwise canonical id and make a real definition invisible to the
+ * catalogue, which is the failure this whole check exists to prevent.
+ * (CodeQL js/incomplete-multi-character-sanitization flagged the single pass.)
+ *
+ * The loop is bounded: each pass must shorten the string to continue, so it
+ * terminates in at most one iteration per character even on adversarial input.
+ */
+function stripInlineHtmlTags(text) {
+  let current = text;
+  for (let pass = 0; pass < MAX_INLINE_HTML_STRIP_PASSES; pass += 1) {
+    const next = current.replace(/<\/?[A-Za-z][^>]*>/g, "");
+    if (next === current) return current;
+    current = next;
+  }
+  return current;
+}
+
+/**
+ * Fail headings under the invariant directory that contain a numeric invariant
+ * token but are not canonical definitions. Without this, a lower-cased,
+ * backticked or decorated heading can be mistaken for a citation (or ignored
+ * entirely) while the rule it appears to define stays invisible to catalogue
+ * and sequence checks.
+ */
+/**
+ * Report a non-ASCII character sitting inside something that reads as an
+ * invariant id, or `null` when the heading is clean.
+ *
+ * `foldInvariantLookalikes` handles the dash and compatibility families, but it
+ * cannot help with letter homoglyphs: Cyrillic `А` (U+0410) is a different
+ * letter from `A` and folding it would be wrong everywhere else. The workable
+ * rule is the structural one. An invariant id is ASCII by construction, so a
+ * word-run that contains `INV` and also contains a non-ASCII character is
+ * either a lookalike or a typo, and both deserve to fail rather than to be
+ * silently skipped by every scan in this file.
+ *
+ * Scoped to word-runs containing `INV` so ordinary prose in a heading — an em
+ * dash, a macron, a te reo Māori word — is untouched.
+ */
+function nonAsciiInsideInvariantWord(line) {
+  for (const run of line.split(/[^\p{L}\p{N}\p{Pd}_&#;]+/u)) {
+    if (!/INV/i.test(run.normalize("NFKC")) || !/[^\x20-\x7e]/.test(run)) {
+      continue;
+    }
+    const offender = [...run].find((ch) => !/[\x20-\x7e]/.test(ch));
+    const codePoint = offender.codePointAt(0).toString(16).toUpperCase();
+    return {
+      description: `U+${codePoint.padStart(4, "0")} (${JSON.stringify(offender)})`,
+    };
+  }
+  return null;
+}
+
+export function auditDefinitionHeadingShapes(files) {
+  const problems = [];
+  for (const [rel, text] of files) {
+    if (!rel.startsWith(INVARIANT_DIR) || !rel.endsWith(".md")) continue;
+    for (const heading of scanMarkdownBlocks(text).headings) {
+      const { number, text: line } = heading;
+      const lookalike = nonAsciiInsideInvariantWord(line);
+      if (lookalike) {
+        problems.push(
+          `${rel}:${number} writes ${lookalike.description} inside what reads as an ` +
+            "invariant id. An invariant id is pure ASCII, so this heading is invisible to " +
+            "every audit here — the definition scan, the citation scan and the index-row " +
+            "scan all miss it — while GitHub renders it as an ordinary id. That is how a " +
+            "wrong number reaches a reviewer looking correct and merges permanently. " +
+            "Retype the id with ASCII letters, digits and hyphen-minus. A smart-punctuation " +
+            "editor, or a paste from a document or chat transcript, is the usual cause.",
+        );
+        continue;
+      }
+      if (
+        INVARIANT_SHAPED_TOKEN_PATTERN.test(headingInvariantShapeText(line)) &&
+        (heading.kind !== "atx" ||
+          heading.containerDepth > 0 ||
+          !DEFINITION_PATTERN.test(line))
+      ) {
+        problems.push(
+          `${rel}:${number} looks like an invariant definition heading but is not in ` +
+            "the canonical top-level `##`-to-`#### INV-<PREFIX>-<NNN>` shape with an uppercase " +
+            "prefix, exactly three digits, no identifier suffix and no decoration. Only " +
+            "that canonical heading defines a rule, even when an embedded existing ID " +
+            "resolves as a citation. Make this heading canonical, or give a narrative " +
+            "heading ordinary topic text and put the invariant citation in its body.",
+        );
+      }
+    }
+  }
+  return problems;
+}
+
 /** Every citation in every scanned file, with where it was written. */
 export function collectCitations(files) {
   const citations = [];
   for (const [rel, text] of files) {
     if (CITATION_EXEMPT_FILES.has(rel)) continue;
-    for (const { number, text: line } of scannableLines(text)) {
+    for (const { number, text: line } of ordinaryAuditLines(rel, text)) {
       for (const match of line.matchAll(CITATION_PATTERN)) {
         citations.push({ id: match[0], at: `${rel}:${number}` });
       }
@@ -364,9 +1193,10 @@ export function collectCitations(files) {
 }
 
 /**
- * Assertions 1–4 of the scheme: no duplicate definition, every citation under a
- * declared prefix resolves, every unrecognised prefix is either reserved or a
- * failure, and every near-miss under a declared prefix has exactly three digits.
+ * Invariant citation assertions: no duplicate definition, every citation under
+ * a declared prefix resolves (including the narrow fenced pass), every
+ * unrecognised ordinary prefix is either reserved or a failure, and every
+ * near-miss under a declared prefix has exactly three digits.
  */
 export function auditInvariantIds(files) {
   const problems = [];
@@ -411,6 +1241,80 @@ export function auditInvariantIds(files) {
     );
   }
 
+  // Literal source may carry placeholders, invoice-number fixtures, custom
+  // prefixes and real citations. A numeric token under a declared prefix must
+  // resolve and use the canonical width. SCHEME's illustrative literal blocks
+  // are stricter: they use placeholders/custom prefixes exclusively, because a
+  // live-looking example is the grep trap this issue exists to remove.
+  const unresolvedFenced = new Map();
+  const malformedFenced = [];
+  const schemeLiteralLiveIds = [];
+
+  // Built only from declared prefixes, so placeholders, reserved invoice
+  // numbers and custom fixture prefixes never enter this audit.
+  const livePrefixNumericPattern =
+    declaredPrefixes.size > 0
+      ? new RegExp(
+          `\\bINV-(?:${[...declaredPrefixes].sort().join("|")})-[0-9]+\\b(?!\\.[0-9]|-[A-Za-z0-9_])`,
+          // A dotted numeric continuation is owned by the identifier audit
+          // below; do not also truncate it to a plausible unresolved ID.
+          "g",
+        )
+      : null;
+
+  if (livePrefixNumericPattern) {
+    for (const [rel, text] of files) {
+      if (CITATION_EXEMPT_FILES.has(rel) || !rel.endsWith(".md")) continue;
+      for (const { number, text: line } of literalAuditLines(text)) {
+        for (const match of line.matchAll(livePrefixNumericPattern)) {
+          const id = match[0];
+          const digits = id.slice(id.lastIndexOf("-") + 1);
+          if (digits.length !== 3) {
+            malformedFenced.push({
+              id,
+              digits: digits.length,
+              at: `${rel}:${number}`,
+            });
+          } else if (!definitions.has(id)) {
+            if (!unresolvedFenced.has(id)) unresolvedFenced.set(id, []);
+            unresolvedFenced.get(id).push(`${rel}:${number}`);
+          } else if (rel === INVARIANT_SCHEME) {
+            schemeLiteralLiveIds.push({ at: `${rel}:${number}`, id });
+          }
+        }
+      }
+    }
+  }
+
+  for (const { id, digits, at } of malformedFenced) {
+    problems.push(
+      `${id} at ${at} uses ${digits} digit(s) inside a Markdown literal block or fence opener. Invariant ` +
+        "numbers under a live prefix are exactly three, zero-padded, even in examples. " +
+        "Use a placeholder such as `INV-<PREFIX>-<NNN>` when the example must not " +
+        "claim a real invariant id.",
+    );
+  }
+
+  for (const [id, places] of unresolvedFenced) {
+    problems.push(
+      `${id} appears inside a Markdown literal block or fence opener at ${places.join(", ")} but no ` +
+        `file under ${INVARIANT_DIR} defines it. A fence may use ` +
+        "`INV-<PREFIX>-<NNN>`, a reserved invoice number, a custom fixture prefix, " +
+        "or a real citation that resolves; it may not invent a number under a live " +
+        "invariant prefix, because that reads as a real maximum to repository searches.",
+    );
+  }
+
+  for (const { at, id } of schemeLiteralLiveIds) {
+    problems.push(
+      `${id} at ${at} is a live invariant id inside an illustrative literal block in ` +
+        `${INVARIANT_SCHEME}. That file teaches allocation and is the source of the ` +
+        "#2889 grep trap, so its examples use `INV-<PREFIX>-<NNN>` placeholders or a " +
+        "custom non-live prefix instead of anything a live-id grep can mistake for " +
+        "the current maximum.",
+    );
+  }
+
   for (const [prefix, places] of unrecognised) {
     problems.push(
       `INV-${prefix}-… is not a declared invariant prefix and is not on the reserved ` +
@@ -427,15 +1331,11 @@ export function auditInvariantIds(files) {
   // resolves to nothing while being reported as nothing. Scoped to declared
   // prefixes rather than to `INV-` generally, because a generic shape guard
   // flags every Xero invoice fixture in the test suite.
-  if (declaredPrefixes.size > 0) {
-    const shapeGuard = new RegExp(
-      `\\bINV-(?:${[...declaredPrefixes].sort().join("|")})-[0-9]+\\b`,
-      "g",
-    );
+  if (livePrefixNumericPattern) {
     for (const [rel, text] of files) {
       if (SHAPE_GUARD_EXEMPT_FILES.has(rel) || CITATION_EXEMPT_FILES.has(rel)) continue;
-      for (const { number, text: line } of scannableLines(text)) {
-        for (const match of line.matchAll(shapeGuard)) {
+      for (const { number, text: line } of ordinaryAuditLines(rel, text)) {
+        for (const match of line.matchAll(livePrefixNumericPattern)) {
           const digits = match[0].slice(match[0].lastIndexOf("-") + 1);
           if (digits.length !== 3) {
             problems.push(
@@ -450,11 +1350,48 @@ export function auditInvariantIds(files) {
     }
   }
 
+  const prefixAlternation = [...declaredPrefixes].sort().join("|");
+  const livePrefixIdentifierContinuationPattern =
+    prefixAlternation.length > 0
+      ? new RegExp(
+          `\\bINV-(?:${prefixAlternation})-([0-9]+)((?:[A-Za-z_]|-[A-Za-z0-9_]|\\.(?=[0-9]))[A-Za-z0-9_.-]*)(?=$|[^A-Za-z0-9_.-])`,
+          "g",
+        )
+      : null;
+
+  if (livePrefixIdentifierContinuationPattern) {
+    for (const [rel, text] of files) {
+      if (CITATION_EXEMPT_FILES.has(rel)) continue;
+      const markdown = rel.endsWith(".md") ? scanMarkdownBlocks(text) : null;
+      const headingLines = new Set(
+        markdown?.headings.flatMap((heading) => heading.lineNumbers) ?? [],
+      );
+      const ordinaryLines = SHAPE_GUARD_EXEMPT_FILES.has(rel)
+        ? []
+        : ordinaryAuditLines(rel, text).filter(({ number }) => !headingLines.has(number));
+      const identifierAuditLines = markdown
+        ? [...ordinaryLines, ...markdown.literalAudit].sort(
+            (left, right) => left.number - right.number,
+          )
+        : ordinaryLines;
+      for (const { number, text: line } of identifierAuditLines) {
+        for (const match of line.matchAll(livePrefixIdentifierContinuationPattern)) {
+          problems.push(
+            `${match[0]} at ${rel}:${number} extends an invariant id with the identifier ` +
+              `continuation ${match[2]}. Invariant ids end after exactly three digits; ` +
+              "use punctuation or whitespace after the id, and put any explanatory " +
+              "word outside the identifier.",
+          );
+        }
+      }
+    }
+  }
+
   return problems;
 }
 
 /**
- * Assertion 5: every file under {@link INVARIANT_DIR} is linked from the index.
+ * Every file under {@link INVARIANT_DIR} is linked from the index.
  *
  * Stricter than general reachability on purpose — reaching an invariant file
  * through some other document is not good enough, because the index is what a
@@ -485,7 +1422,7 @@ export function auditInvariantFilesLinkedFromIndex(files) {
 }
 
 /**
- * Assertion 6: every defined id has exactly one catalogue row in the index, and
+ * Every defined id has exactly one catalogue row in the index, and
  * every catalogue row names a defined id.
  *
  * This is what stops the index rotting, which is the part the issue's own
@@ -539,6 +1476,53 @@ export function auditIndexRows(files) {
 }
 
 /**
+ * Every heading named in {@link STABLE_INDEX_HEADINGS} is still a `##` heading
+ * of the index, spelled exactly the same way.
+ *
+ * Opt-in rather than unconditional, the same shape as
+ * {@link auditPermanentInvariantIds}: the expectation is a fact about THIS
+ * repository's index, and hard-wiring it into the pure audit would force every
+ * in-memory fixture to carry ten production heading names it has no other use
+ * for. `main` supplies the list; a test asserts that wiring, and a planted
+ * rename was run through the real CLI to prove the message fires.
+ */
+export function auditStableIndexHeadings(files, stableHeadings) {
+  if (!Array.isArray(stableHeadings) || stableHeadings.length === 0) {
+    return [
+      "auditStableIndexHeadings was given no headings to pin. An empty list " +
+        "makes this audit vacuous, which is worse than not having it: it " +
+        "reports a pass it has not earned. Restore STABLE_INDEX_HEADINGS.",
+    ];
+  }
+
+  const indexText = files.get(INVARIANT_INDEX);
+  if (indexText === undefined) return []; // reported by the linked-files audit
+
+  const present = new Set();
+  for (const { text: line } of scannableLines(indexText)) {
+    const match = line.match(INDEX_SECTION_HEADING_PATTERN);
+    if (match) present.add(match[1]);
+  }
+
+  const problems = [];
+  for (const heading of stableHeadings) {
+    if (present.has(heading)) continue;
+    problems.push(
+      `${INVARIANT_INDEX} no longer has the "## ${heading}" heading. It is one ` +
+        "of the ten pre-split domain headings the index keeps verbatim so that " +
+        "anchors written before the split still resolve. Those anchors live " +
+        "OUTSIDE this repository — in a fork, a merged commit, a closed issue, " +
+        "a shipped release — so nothing here can find them and nothing can fix " +
+        "them once they break. Restore the heading exactly, including its " +
+        "capitalisation and hyphenation; if the section's content genuinely " +
+        "moved, keep the heading and put a pointer under it. Adding NEW " +
+        "sections is free and needs no change here.",
+    );
+  }
+  return problems;
+}
+
+/**
  * The rows of the `AGENTS.md` routing table, as `{ number, text }`.
  *
  * Separator rows are dropped; the header row is kept and simply contributes
@@ -562,7 +1546,7 @@ export function routingTableRows(agentsText) {
 }
 
 /**
- * Assertion 7: the routing table resolves.
+ * The routing table resolves.
  *
  * Three directions, all of them cheap and none of them needing an exemption:
  *
@@ -645,7 +1629,7 @@ export function auditRoutingTable(files) {
 }
 
 /**
- * Assertion 8: nobody cites a line number into the invariants. No exceptions.
+ * Nobody cites a line number into the invariants. No exceptions.
  *
  * A line reference into a domain file is stale the next time somebody edits
  * above it, and it fails silently — the reader lands on unrelated text and
@@ -661,7 +1645,7 @@ export function auditLineNumberCitations(files) {
 
   for (const rel of [...files.keys()].sort()) {
     if (CITATION_EXEMPT_FILES.has(rel)) continue;
-    for (const { number, text: line } of scannableLines(files.get(rel))) {
+    for (const { number, text: line } of ordinaryAuditLines(rel, files.get(rel))) {
       for (const match of line.matchAll(INVARIANT_LINE_CITATION_PATTERN)) {
         problems.push(
           `${rel}:${number} cites ${match[1]}:${match[2]} — an invariants document by ` +
@@ -678,7 +1662,7 @@ export function auditLineNumberCitations(files) {
 }
 
 /**
- * Assertion 9: no tracked text file is double-encoded or carries a byte-order
+ * No tracked text file is double-encoded or carries a byte-order
  * mark.
  *
  * `docs/invariants/member-guest-consent.md` was once committed with a UTF-8 BOM
@@ -775,13 +1759,166 @@ export function auditDocReachability(files) {
 }
 
 /**
+ * Every prefix's numbers run from `001` to its highest with no
+ * gaps (issue #2889).
+ *
+ * ## Why contiguity is the property, and why it is enough
+ *
+ * `SCHEME.md` §1.3 allocates a new invariant `max + 1`. Nothing used to check
+ * the arithmetic, and a wrong number is irreversible: §1.4 makes an id permanent
+ * the moment it merges, so a skipped block of numbers is a hole this repository
+ * keeps forever.
+ *
+ * Density is what makes `max + 1` *forced* rather than merely instructed. Every
+ * number below the maximum is taken, and no id may be defined twice (the
+ * duplicate-definition audit), so the only number a new invariant can have is
+ * one more than the highest.
+ * Any other choice is either a duplicate — caught there — or a hole, caught
+ * here. Between the two, the allocation rule is mechanical.
+ *
+ * It also catches an interior deletion. Deleting the highest id or every id in
+ * a prefix leaves no hole; {@link auditPermanentInvariantIds} closes those two
+ * revision-shaped gaps instead.
+ *
+ * ## Why there is no allowlist
+ *
+ * `main` needed none when this was turned on, so nothing had to be closed or
+ * excused first. The live totals are printed by the check rather than repeated
+ * here, where concurrent invariant additions would make them stale.
+ *
+ * Nor is there a legitimate gap to allow. An id is never deleted — a superseded
+ * rule keeps its heading and gains a status line, a retired one keeps its
+ * heading and gains a reason — so a hole has exactly two causes, a wrong number
+ * and a forbidden deletion, and both are things to fix rather than to register.
+ * A register would only ever be the mechanism by which a wrong number becomes
+ * permanent, which is the failure this assertion exists to prevent.
+ *
+ * If a prefix ever genuinely wants a reserved range, the answer is a new prefix.
+ * Reserving numbers inside an existing one gives away the density that makes
+ * `max + 1` forced, and buys nothing an id's location-independence (§1.4) does
+ * not already give for free.
+ */
+export function auditNumberSequences(files) {
+  const byPrefix = new Map();
+  for (const [id, places] of collectDefinitions(files)) {
+    const prefix = prefixOf(id);
+    if (!byPrefix.has(prefix)) byPrefix.set(prefix, []);
+    byPrefix.get(prefix).push({ id, number: numberOf(id), at: places[0] });
+  }
+
+  const problems = [];
+  for (const prefix of [...byPrefix.keys()].sort()) {
+    const ids = byPrefix.get(prefix).sort((a, b) => a.number - b.number);
+    const lowest = ids[0];
+    const highest = ids.at(-1);
+
+    if (lowest.number !== 1) {
+      problems.push(
+        `INV-${prefix} starts at ${lowest.id} (${lowest.at}), not 001. A prefix numbers ` +
+          "from 001 — the first rule of a new family is 001, not whatever number was next " +
+          "in the file it was copied from. Renumber it down, which is free until the id " +
+          `merges (${INVARIANT_DIR}SCHEME.md §1.3), and fix its row in ${INVARIANT_INDEX}.`,
+      );
+    }
+
+    const taken = new Set(ids.map((entry) => entry.number));
+    const missing = [];
+    for (let n = lowest.number + 1; n < highest.number; n += 1) {
+      if (!taken.has(n)) missing.push(n);
+    }
+
+    if (missing.length > 0) {
+      problems.push(
+        `INV-${prefix} is missing ${formatNumberRuns(missing)}. It defines ${ids.length} ` +
+          `id(s) but its highest is ${highest.id} (${highest.at}), so the numbering has a ` +
+          "hole. A prefix's numbers are dense from 001, and that is what makes the next " +
+          "number mechanical: every number below the maximum is taken and no id may be " +
+          "defined twice, so max + 1 is the only number a new invariant can have. Two " +
+          "causes, both worth a look. Either a new id took the wrong number, in which case " +
+          `renumber it to INV-${prefix}-${formatNumberRuns([missing[0]])} and fix its row ` +
+          `in ${INVARIANT_INDEX} — free until it merges, never afterwards. The usual reason ` +
+          "is reading the maximum off a repo-wide grep, which returns illustrative ids from " +
+          "prose, from fenced examples and from this check's own test fixtures alongside the " +
+          `real definitions; read it off the prefix's tables in ${INVARIANT_INDEX} instead. ` +
+          "Or a rule was deleted, which the scheme forbids: a superseded or retired rule " +
+          "keeps its heading so an old citation still lands on an explanation. Restore it.",
+      );
+    }
+  }
+
+  return problems;
+}
+
+/**
+ * Merged invariant ids are append-only: every definition present in the base
+ * revision must still be defined in the current tree.
+ *
+ * The density audit cannot prove this on its own. Removing the highest number
+ * leaves the remaining sequence dense, and removing every id in a prefix makes
+ * the prefix disappear from the census altogether. Comparing revisions closes
+ * both holes without trying to infer history from the current snapshot.
+ */
+export function auditPermanentInvariantIds(
+  files,
+  baselineFiles,
+  baselineLabel = "the base revision",
+) {
+  const current = collectDefinitions(files);
+  const baseline = collectDefinitions(baselineFiles);
+  const missingByPrefix = new Map();
+
+  for (const [id, places] of baseline) {
+    if (current.has(id)) continue;
+    const prefix = prefixOf(id);
+    if (!missingByPrefix.has(prefix)) missingByPrefix.set(prefix, []);
+    missingByPrefix.get(prefix).push({ id, number: numberOf(id), at: places[0] });
+  }
+
+  const currentPrefixes = new Set([...current.keys()].map(prefixOf));
+  const problems = [];
+  for (const prefix of [...missingByPrefix.keys()].sort()) {
+    const missing = missingByPrefix.get(prefix).sort((a, b) => a.number - b.number);
+    const ids = missing.map((entry) => entry.id).join(", ");
+    const places = missing.map((entry) => entry.at).join(", ");
+    if (!currentPrefixes.has(prefix)) {
+      problems.push(
+        `The entire INV-${prefix} prefix disappeared relative to ${baselineLabel}: ` +
+          `${ids} were defined at ${places}. Merged invariant ids are permanent and ` +
+          "append-only. Restore every heading; a superseded rule keeps its heading and " +
+          "gains a `Superseded by` line, and a retired rule keeps its heading and gains " +
+          "a reason.",
+      );
+      continue;
+    }
+
+    problems.push(
+      `${ids} disappeared relative to ${baselineLabel} (previously ${places}). Merged ` +
+        "invariant ids are permanent and append-only. Density cannot detect removal of " +
+        "the highest number in a prefix, so the base revision is the authority here. " +
+        "Restore each heading and supersede or retire the rule in place instead of " +
+        "deleting it.",
+    );
+  }
+
+  return problems;
+}
+
+/**
  * The whole check, over an in-memory map of repo-relative path -> file text.
  *
  * Pure, so the rules are testable without a repository. Returns a list of
  * plain-English problems; an empty list is a pass.
  */
-export function auditDocs(files) {
+export function auditDocs(
+  files,
+  {
+    baselineFiles = null,
+    baselineLabel = "the base revision",
+    stableIndexHeadings = null,
+  } = {},
+) {
   return [
+    ...auditDefinitionHeadingShapes(files),
     ...auditInvariantIds(files),
     ...auditInvariantFilesLinkedFromIndex(files),
     ...auditIndexRows(files),
@@ -789,23 +1926,47 @@ export function auditDocs(files) {
     ...auditLineNumberCitations(files),
     ...auditDocReachability(files),
     ...auditEncoding(files),
+    ...auditNumberSequences(files),
+    ...(baselineFiles
+      ? auditPermanentInvariantIds(files, baselineFiles, baselineLabel)
+      : []),
+    ...(stableIndexHeadings
+      ? auditStableIndexHeadings(files, stableIndexHeadings)
+      : []),
   ];
 }
 
-/** Read every tracked file this check scans, keyed by repo-relative path. */
+/**
+ * Read every nonempty tracked text file, keyed by repo-relative path.
+ *
+ * Git owns both halves of that classification: its index supplies the tracked
+ * tree, and `grep -I` applies Git's binary/text rules instead of a file-extension
+ * allowlist that inevitably omits a new source or configuration form. Empty
+ * files are absent because grep has no line to return; they cannot contain an
+ * invariant token, a byte-order mark, mojibake, a link or a definition.
+ */
 export function loadTrackedFiles(repoRoot) {
-  const listed = execFileSync("git", ["ls-files", "-z"], {
+  const listed = spawnSync("git", ["grep", "-Il", "-z", "-e", "", "--"], {
     cwd: repoRoot,
     encoding: "utf8",
     maxBuffer: 1 << 28,
-  })
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (listed.error) throw listed.error;
+  if (listed.status !== 0 && listed.status !== 1) {
+    throw new Error(
+      `git grep could not classify tracked text files (status ${listed.status}): ` +
+        listed.stderr.trim(),
+    );
+  }
+
+  const trackedText = listed.stdout
     .split("\0")
     .filter(Boolean);
 
   const files = new Map();
-  for (const entry of listed) {
+  for (const entry of trackedText) {
     const rel = entry.replace(/\\/g, "/");
-    if (!SCANNED_EXTENSIONS.has(path.extname(rel).toLowerCase())) continue;
     const absolute = path.join(repoRoot, rel);
     // A tracked-but-deleted path in a dirty working tree is not this check's
     // business; git status reports it and reading it would throw here.
@@ -815,13 +1976,223 @@ export function loadTrackedFiles(repoRoot) {
   return files;
 }
 
+/** Resolve a git ref to a commit, returning null when it does not exist. */
+function tryResolveCommit(repoRoot, ref) {
+  try {
+    return execFileSync("git", ["rev-parse", "--verify", `${ref}^{commit}`], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve a required baseline ref, failing instead of silently weakening scope. */
+function resolveRequiredCommit(repoRoot, ref, source) {
+  const resolved = tryResolveCommit(repoRoot, ref);
+  if (!resolved) {
+    throw new Error(`${source} ${ref} does not resolve to a commit`);
+  }
+  return resolved;
+}
+
+/** Find the immutable branch point for a local feature branch. */
+function tryMergeBase(repoRoot, left, right) {
+  try {
+    return execFileSync("git", ["merge-base", left, right], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pick the revision whose already-merged ids the current tree must retain.
+ *
+ * Pull requests compare with the immutable base SHA from their event. Main
+ * pushes compare with the event's immutable pre-push SHA. Local feature
+ * branches compare with their merge-base against `origin/main` (or `main`).
+ * Every event/explicit ref fails closed when missing; `HEAD^1` is not a safe
+ * feature-branch fallback because it may be a feature commit made after a
+ * forbidden deletion.
+ */
+export function resolveInvariantBaselineRef(repoRoot, env = process.env) {
+  const explicit = env.DOC_INDEX_BASE_REF?.trim();
+  const head = tryResolveCommit(repoRoot, "HEAD");
+  if (!head) throw new Error("HEAD does not resolve to a commit");
+
+  const eventName = env.GITHUB_EVENT_NAME?.trim();
+  const prBase = env.PR_BASE_SHA?.trim();
+  const pushBase = env.PUSH_BASE_SHA?.trim();
+
+  // The webhook kind is the event identity. A pull-request `synchronize`
+  // payload also has a top-level `before` field, so the workflow's immutable
+  // PUSH_BASE_SHA mapping is populated even though that SHA is the previous PR
+  // head, not a push baseline. Never infer a second event from an unrelated
+  // payload field when GitHub has already named the event.
+  if (eventName === "pull_request") {
+    if (explicit) {
+      throw new Error(
+        "DOC_INDEX_BASE_REF cannot be set for a pull-request event; PR_BASE_SHA is " +
+          "authoritative and an inherited diagnostic override must not replace it",
+      );
+    }
+    if (!prBase) {
+      throw new Error(
+        "PR_BASE_SHA is required for a pull-request invariant baseline; a branch name " +
+          "can drift after the event and is not an exact substitute",
+      );
+    }
+    return resolveRequiredCommit(repoRoot, prBase, "PR_BASE_SHA");
+  }
+
+  if (eventName === "push") {
+    const isMainRef =
+      env.GITHUB_REF === "refs/heads/main" || env.GITHUB_REF_NAME === "main";
+    if (!isMainRef) {
+      throw new Error(
+        "Invariant push baselines are supported only for pushes to main; refusing " +
+          "to interpret PUSH_BASE_SHA for a different ref",
+      );
+    }
+    if (explicit) {
+      throw new Error(
+        "DOC_INDEX_BASE_REF cannot be set for a main-push event; PUSH_BASE_SHA is " +
+          "authoritative and an inherited diagnostic override must not replace it",
+      );
+    }
+    if (!pushBase) {
+      throw new Error(
+        "PUSH_BASE_SHA is required for a main-push invariant baseline; HEAD^1 can " +
+          "postdate a deletion when one push contains several commits",
+      );
+    }
+    return resolveRequiredCommit(repoRoot, pushBase, "PUSH_BASE_SHA");
+  }
+
+  if (eventName) {
+    // Fail closed rather than guess — but note what that costs if the workflow's
+    // triggers change. This matches `.github/workflows/ci.yml`'s triggers exactly
+    // as they stand. Adding `merge_group` (which GitHub merge queues require) or
+    // `workflow_dispatch` there without also giving that event a baseline here
+    // would make `verify` — a required check — fail on every run with the message
+    // below. If you add a trigger, add its baseline in the same PR. Relevant
+    // because #2686 put branch protection on `main`.
+    throw new Error(
+      `Unsupported GitHub event ${eventName}; refusing to infer an invariant ` +
+        "baseline from environment fields that belong to another event shape",
+    );
+  }
+
+  const isPullRequest =
+    Boolean(env.GITHUB_BASE_REF?.trim()) ||
+    Boolean(prBase);
+  const isMainPush =
+    Boolean(pushBase) ||
+    env.GITHUB_REF === "refs/heads/main" ||
+    env.GITHUB_REF_NAME === "main";
+
+  if (isPullRequest && isMainPush) {
+    throw new Error(
+      "Conflicting pull-request and push baseline identity; refusing to choose one",
+    );
+  }
+
+  if (isPullRequest) {
+    if (explicit) {
+      throw new Error(
+        "DOC_INDEX_BASE_REF cannot be set for a pull-request event; PR_BASE_SHA is " +
+          "authoritative and an inherited diagnostic override must not replace it",
+      );
+    }
+    if (!prBase) {
+      throw new Error(
+        "PR_BASE_SHA is required for a pull-request invariant baseline; a branch name " +
+          "can drift after the event and is not an exact substitute",
+      );
+    }
+    return resolveRequiredCommit(repoRoot, prBase, "PR_BASE_SHA");
+  }
+
+  if (isMainPush) {
+    if (explicit) {
+      throw new Error(
+        "DOC_INDEX_BASE_REF cannot be set for a main-push event; PUSH_BASE_SHA is " +
+          "authoritative and an inherited diagnostic override must not replace it",
+      );
+    }
+    if (!pushBase) {
+      throw new Error(
+        "PUSH_BASE_SHA is required for a main-push invariant baseline; HEAD^1 can " +
+          "postdate a deletion when one push contains several commits",
+      );
+    }
+    return resolveRequiredCommit(repoRoot, pushBase, "PUSH_BASE_SHA");
+  }
+
+  if (explicit) {
+    return resolveRequiredCommit(repoRoot, explicit, "DOC_INDEX_BASE_REF");
+  }
+
+  for (const candidate of ["origin/main", "main"]) {
+    if (!tryResolveCommit(repoRoot, candidate)) continue;
+    const mergeBase = tryMergeBase(repoRoot, head, candidate);
+    if (mergeBase) return mergeBase;
+  }
+
+  throw new Error(
+    "Cannot resolve an invariant-id baseline. Fetch origin/main or set " +
+      "DOC_INDEX_BASE_REF; HEAD^1 is deliberately not a feature-branch fallback.",
+  );
+}
+
+/** Read invariant Markdown exactly as stored at a git revision. */
+export function loadInvariantFilesAtRef(repoRoot, ref) {
+  const resolved = resolveRequiredCommit(repoRoot, ref, "Invariant baseline ref");
+  const listed = execFileSync(
+    "git",
+    ["ls-tree", "-r", "-z", "--name-only", resolved, "--", INVARIANT_DIR],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      maxBuffer: 1 << 24,
+    },
+  )
+    .split("\0")
+    .filter((entry) => entry.endsWith(".md"));
+
+  const files = new Map();
+  for (const rel of listed) {
+    files.set(
+      rel,
+      execFileSync("git", ["show", `${resolved}:${rel}`], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        maxBuffer: 1 << 24,
+      }),
+    );
+  }
+  return files;
+}
+
 const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
 if (invokedPath === import.meta.url) {
   const repoRoot = path.resolve(path.join(import.meta.dirname, "..", ".."));
   try {
     const files = loadTrackedFiles(repoRoot);
+    const baselineRef = resolveInvariantBaselineRef(repoRoot);
+    const baselineFiles = loadInvariantFilesAtRef(repoRoot, baselineRef);
     const definitions = collectDefinitions(files);
-    const problems = auditDocs(files);
+    const problems = auditDocs(files, {
+      baselineFiles,
+      baselineLabel: baselineRef.slice(0, 12),
+      stableIndexHeadings: STABLE_INDEX_HEADINGS,
+    });
 
     if (problems.length > 0) {
       console.error(
@@ -834,8 +2205,11 @@ if (invokedPath === import.meta.url) {
       const routedRows = routingTableRows(files.get(ROUTING_TABLE_FILE) ?? "").length;
       console.log(
         `Doc index check passed: ${definitions.size} invariant id(s) across ` +
-          `${prefixes.size} prefix(es), every citation resolves, every id is indexed, ` +
-          `every docs/ page is reachable, ${routedRows} routing row(s) resolve, no line ` +
+          `${prefixes.size} prefix(es), each numbering densely from 001 so the next id in ` +
+          "a prefix can only be max + 1, every citation resolves, every id is indexed, " +
+          `every id present at base ${baselineRef.slice(0, 12)} is still defined, ` +
+          `every docs/ page is reachable, ${routedRows} routing row(s) resolve, all ` +
+          `${STABLE_INDEX_HEADINGS.length} pre-split index headings are intact, no line ` +
           "number is cited into the invariants, and no file is BOM'd or double-encoded. " +
           `Scanned ${files.size} tracked file(s).`,
       );

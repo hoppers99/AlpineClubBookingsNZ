@@ -4,6 +4,7 @@ import {
   overrideSingleLodgeAutoAllocation,
   setBedAllocationSettings,
   type BedAllocationSettingsSnapshot,
+  resolveSingleActiveLodgeId,
 } from "./helpers/bed-allocation-settings";
 import { completeMemberDetailsGateIfShown } from "./helpers/booking";
 import { DEMO_BOOKING_WINDOWS, E2E_ADMIN } from "./helpers/fixtures";
@@ -535,12 +536,33 @@ test("pointer, keyboard and menu moves share reviewed scopes and preserve origin
       );
     }
 
+    // Start a keyboard drag only once the previous one has actually ended.
+    //
+    // `preview()` is filtered by the DESTINATION's own text, and the settle loop
+    // above returns the moment it matches. If the previous drag's card is still
+    // mounted — it reached the destination, so it carries exactly that text —
+    // the loop matches the STALE card and returns before a single arrow key has
+    // moved anything. `Space` then drops the drag where it still is, on the
+    // SOURCE bed, and the dialog opens naming the wrong bed. Waiting on the card
+    // to unmount is the ordering guarantee that makes that impossible; a longer
+    // timeout would only narrow the window, and still drop on the wrong bed when
+    // it lost. `dragCard()` is the right signal because the DragOverlay mounts it
+    // only while a drag is live (#2905).
+    async function startKeyboardDrag() {
+      await expect(dragCard()).toBeHidden();
+      await dragHandle().focus();
+      await page.keyboard.press("Space");
+    }
+
     // Keyboard preview + cancel: pickup and navigation are real key events.
-    await dragHandle().focus();
-    await page.keyboard.press("Space");
+    await startKeyboardDrag();
     await moveKeyboardFocusToDestination();
     await expect(preview()).toBeVisible();
     await page.keyboard.press("Escape");
+    // Not a synchronisation point: `moveRequests` is already 1 from the pointer
+    // phase, so this passes instantly. It is here as the assertion that cancel
+    // sent no PATCH, and the `toBeHidden` in startKeyboardDrag is what actually
+    // sequences the next drag behind this one.
     await expect.poll(() => moveRequests.length).toBe(1);
     persisted = await readPersisted();
     expect(
@@ -549,8 +571,7 @@ test("pointer, keyboard and menu moves share reviewed scopes and preserve origin
 
     // Keyboard drop opens the same reviewed seam, still without a PATCH. Cancel
     // and prove focus returns to the originating drag handle.
-    await dragHandle().focus();
-    await page.keyboard.press("Space");
+    await startKeyboardDrag();
     await moveKeyboardFocusToDestination();
     await page.keyboard.press("Space");
     await expect(moveDialog).toBeVisible();
@@ -641,9 +662,16 @@ test("pointer, keyboard and menu moves share reviewed scopes and preserve origin
 
       if (placementRestored && originalApprovedAllocationIds.length > 0) {
         try {
+          // #2887: approve names its lodge, always — omitting it used to lock
+          // every lodge plus the global key for rows at one.
           const restoredApproval = await adminContext.request.post(
             "/api/admin/bed-allocation/approve",
-            { data: { allocationIds: originalApprovedAllocationIds } },
+            {
+              data: {
+                allocationIds: originalApprovedAllocationIds,
+                lodgeId: await resolveSingleActiveLodgeId(adminContext.request),
+              },
+            },
           );
           if (!restoredApproval.ok()) {
             throw new Error(
@@ -1031,7 +1059,12 @@ test("staged removal previews an approved booking row and leaves it unallocated"
         if (restoredAllocationIds.length > 0) {
           const restoredApproval = await adminContext.request.post(
             "/api/admin/bed-allocation/approve",
-            { data: { allocationIds: restoredAllocationIds } },
+            {
+              data: {
+                allocationIds: restoredAllocationIds,
+                lodgeId: await resolveSingleActiveLodgeId(adminContext.request),
+              },
+            },
           );
           if (!restoredApproval.ok()) {
             throw new Error(

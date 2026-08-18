@@ -1,7 +1,7 @@
 "use client";
 
 import type { AgeTier } from "@prisma/client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { BookingCalendar } from "@/components/booking-calendar";
@@ -21,6 +21,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
+import { LodgeOptionsUnavailableNotice } from "@/components/admin/lodge-options-status";
 import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { TimePicker } from "@/components/time-picker";
 import { MemberPicker } from "@/components/admin/member-picker";
@@ -91,8 +92,34 @@ export default function AdminBookPage() {
   // Lodge being booked (multi-lodge phase 8). Admin scope lists every active
   // lodge — booking on behalf is the audited path that bypasses member
   // booking restrictions. Hidden with fewer than two lodges (ADR-002).
-  const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
+  const {
+    lodges,
+    loading: lodgesLoading,
+    failed: lodgesFailed,
+    forbidden: lodgesForbidden,
+    reload: reloadLodges,
+  } = useLodgeOptions("admin");
   const [lodgeId, setLodgeId] = useState<string | null>(null);
+  const activeLodgeIdRef = useRef<string | null>(lodgeId);
+  const dateSelectionSequenceRef = useRef(0);
+  const dateSelectionAbortRef = useRef<AbortController | null>(null);
+  const quoteSequenceRef = useRef(0);
+  const quoteAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    activeLodgeIdRef.current = lodgeId;
+  }, [lodgeId]);
+  useEffect(
+    () => () => {
+      dateSelectionAbortRef.current?.abort();
+      quoteAbortRef.current?.abort();
+    },
+    [],
+  );
+  // #2701: the lodge this booking will be written against, named on screen
+  // before anything is written. Null means the page cannot say — and the create
+  // is refused server-side rather than defaulted, so it is never a silent
+  // choice.
+  const selectedLodge = lodges.find((lodge) => lodge.id === lodgeId) ?? null;
   // Lodge nights are NZ date-only `yyyy-MM-dd` strings end-to-end (#2474).
   const [checkIn, setCheckIn] = useState<string | null>(null);
   const [checkOut, setCheckOut] = useState<string | null>(null);
@@ -187,7 +214,26 @@ export default function AdminBookPage() {
     };
   }, [selectedMember]);
 
+  function invalidatePendingDateSelection(
+    nextLodgeId = activeLodgeIdRef.current,
+  ) {
+    activeLodgeIdRef.current = nextLodgeId;
+    dateSelectionSequenceRef.current += 1;
+    const pendingRequest = dateSelectionAbortRef.current;
+    dateSelectionAbortRef.current = null;
+    pendingRequest?.abort();
+  }
+
+  function invalidatePendingQuote() {
+    quoteSequenceRef.current += 1;
+    quoteAbortRef.current?.abort();
+    quoteAbortRef.current = null;
+    setPriceLoading(false);
+  }
+
   function handleMemberSelect(member: SelectedMember) {
+    invalidatePendingDateSelection();
+    invalidatePendingQuote();
     setSelectedMember(member);
     setFamilyMembers([]);
     setStep("dates");
@@ -203,6 +249,8 @@ export default function AdminBookPage() {
     setError("");
     setAllowPastDates(false);
     setOverCapacityNights(null);
+    setAvailableBeds(lodgeCapacity);
+    setResolvedCapacity(lodgeCapacity);
   }
 
   // An inline-created / picked non-login non-member owner (#1935) proceeds
@@ -220,6 +268,8 @@ export default function AdminBookPage() {
   }
 
   function handleMemberClear() {
+    invalidatePendingDateSelection();
+    invalidatePendingQuote();
     setSelectedMember(null);
     setStep("member");
     setCheckIn(null);
@@ -234,6 +284,8 @@ export default function AdminBookPage() {
     setFamilyMembers([]);
     setAllowPastDates(false);
     setOverCapacityNights(null);
+    setAvailableBeds(lodgeCapacity);
+    setResolvedCapacity(lodgeCapacity);
   }
 
   function addFamilyMemberAsGuest(fm: FamilyMember) {
@@ -257,6 +309,12 @@ export default function AdminBookPage() {
   function handleLodgeChange(nextLodgeId: string | null) {
     if (nextLodgeId === lodgeId) return;
     const hadLodge = lodgeId !== null;
+    // Invalidate a pending Lodge A availability request synchronously. Waiting
+    // for React's next effect leaves a small window where its response can
+    // advance Lodge B's wizard or install Lodge A's capacity under Lodge B's
+    // selector.
+    invalidatePendingDateSelection(nextLodgeId);
+    invalidatePendingQuote();
     setLodgeId(nextLodgeId);
     if (!hadLodge) return;
     // Availability, pricing, and promos are all per lodge: switching lodges
@@ -270,11 +328,20 @@ export default function AdminBookPage() {
     setError("");
     setAllowPastDates(false);
     setOverCapacityNights(null);
+    setAvailableBeds(lodgeCapacity);
     // The next date selection re-resolves the new lodge's capacity.
     setResolvedCapacity(lodgeCapacity);
   }
 
   async function handleDateSelect(ci: string, co: string) {
+    const requestedLodgeId = lodgeId;
+    const sequence = (dateSelectionSequenceRef.current += 1);
+    dateSelectionAbortRef.current?.abort();
+    const controller = new AbortController();
+    dateSelectionAbortRef.current = controller;
+    const ownsCurrentLodge = () =>
+      sequence === dateSelectionSequenceRef.current &&
+      activeLodgeIdRef.current === requestedLodgeId;
     setCheckIn(ci);
     setCheckOut(co);
     setError("");
@@ -284,26 +351,48 @@ export default function AdminBookPage() {
     const ciStr = ci;
     const coStr = co;
 
-    const res = await fetch(
-      `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}${
-        lodgeId ? `&lodgeId=${encodeURIComponent(lodgeId)}` : ""
-      }`
-    );
-    if (res.ok) {
-      const data = await res.json();
-      setAvailableBeds(data.minAvailable);
-      const night = Array.isArray(data.nightDetails) ? data.nightDetails[0] : null;
+    try {
+      const res = await fetch(
+        `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}${
+          requestedLodgeId
+            ? `&lodgeId=${encodeURIComponent(requestedLodgeId)}`
+            : ""
+        }`,
+        { signal: controller.signal },
+      );
+      if (!ownsCurrentLodge()) return;
+      if (res.ok) {
+        const data = await res.json();
+        if (!ownsCurrentLodge()) return;
+        setAvailableBeds(data.minAvailable);
+        const night = Array.isArray(data.nightDetails)
+          ? data.nightDetails[0]
+          : null;
+        if (
+          night &&
+          typeof night.occupiedBeds === "number" &&
+          typeof night.availableBeds === "number"
+        ) {
+          setResolvedCapacity(night.occupiedBeds + night.availableBeds);
+        }
+      }
+
+      if (!ownsCurrentLodge()) return;
+      // Admin bypasses minimum stay — skip policy check
+      setStep("guests");
+    } catch (requestError) {
       if (
-        night &&
-        typeof night.occupiedBeds === "number" &&
-        typeof night.availableBeds === "number"
+        requestError instanceof DOMException &&
+        requestError.name === "AbortError"
       ) {
-        setResolvedCapacity(night.occupiedBeds + night.availableBeds);
+        return;
+      }
+      throw requestError;
+    } finally {
+      if (dateSelectionAbortRef.current === controller) {
+        dateSelectionAbortRef.current = null;
       }
     }
-
-    // Admin bypasses minimum stay — skip policy check
-    setStep("guests");
   }
 
   async function handleGuestsDone() {
@@ -329,35 +418,64 @@ export default function AdminBookPage() {
     setHostingConfirmMessage(null);
     setAdultMemberHostingReason("");
     setError("");
+    const requestedLodgeId = lodgeId;
+    if (!requestedLodgeId || !checkIn || !checkOut || !selectedMember) {
+      /*
+        #2887 review (F4): name only the controls that are actually on screen.
+        With a failed or forbidden lodge list the selector is not rendered, so
+        "Choose a lodge" pointed at nothing and read as operator error.
+      */
+      setError(
+        requestedLodgeId
+          ? "Choose dates and a booking owner before continuing"
+          : "The lodge list could not be loaded, so this booking cannot say which lodge it is for. Retry above, then choose dates and a booking owner.",
+      );
+      return;
+    }
+    const requestedMemberId = selectedMember.id;
+    const sequence = ++quoteSequenceRef.current;
+    quoteAbortRef.current?.abort();
+    const controller = new AbortController();
+    quoteAbortRef.current = controller;
+    const ownsQuote = () =>
+      sequence === quoteSequenceRef.current &&
+      activeLodgeIdRef.current === requestedLodgeId;
     setPriceLoading(true);
     const checkInStr = checkIn!;
     const checkOutStr = checkOut!;
 
-    const res = await fetch("/api/bookings/quote", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        checkIn: checkInStr,
-        checkOut: checkOutStr,
-        lodgeId: lodgeId ?? undefined,
-        guests: guests.map((g) => ({
-          ageTier: g.ageTier,
-          isMember: g.isMember,
-          memberId: g.memberId,
-        })),
-        forMemberId: selectedMember!.id,
-      }),
-    });
-
-    if (res.ok) {
+    try {
+      const res = await fetch("/api/bookings/quote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          checkIn: checkInStr,
+          checkOut: checkOutStr,
+          lodgeId: requestedLodgeId,
+          guests: guests.map((g) => ({
+            ageTier: g.ageTier,
+            isMember: g.isMember,
+            memberId: g.memberId,
+          })),
+          forMemberId: requestedMemberId,
+        }),
+      });
       const data = await res.json();
-      setPriceQuote(data);
-      setStep("review");
-    } else {
-      const data = await res.json();
-      setError(data.error || "Failed to calculate price");
+      if (!ownsQuote()) return;
+      if (res.ok) {
+        setPriceQuote(data);
+        setStep("review");
+      } else {
+        setError(data.error || "Failed to calculate price");
+      }
+    } catch (quoteError) {
+      if (quoteError instanceof DOMException && quoteError.name === "AbortError") return;
+      if (ownsQuote()) setError("Failed to calculate price");
+    } finally {
+      if (ownsQuote()) setPriceLoading(false);
+      if (quoteAbortRef.current === controller) quoteAbortRef.current = null;
     }
-    setPriceLoading(false);
   }
 
   const requiresAdminReviewLocal = (() => {
@@ -419,7 +537,7 @@ export default function AdminBookPage() {
         promoGuestIndexes: appliedPromo?.selectedGuestIndexes,
         expectedArrivalTime: expectedArrivalTime || undefined,
         applyCreditCents: appliedCreditCents > 0 ? appliedCreditCents : undefined,
-        lodgeId: lodgeId ?? undefined,
+        lodgeId,
         forMemberId: selectedMember!.id,
         paymentMethod:
           showPaymentMethodChoice && paymentMethod === "internet_banking"
@@ -498,7 +616,7 @@ export default function AdminBookPage() {
         promoGuestIndexes: appliedPromo?.selectedGuestIndexes,
         expectedArrivalTime: expectedArrivalTime || undefined,
         applyCreditCents: appliedCreditCents > 0 ? appliedCreditCents : undefined,
-        lodgeId: lodgeId ?? undefined,
+        lodgeId,
         draft: true,
         forMemberId: selectedMember!.id,
         memberReviewJustification: requiresAdminReviewLocal
@@ -684,6 +802,24 @@ export default function AdminBookPage() {
             <CardTitle>Select Dates</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {/*
+              #2701, owner decision 1: the admin is TOLD the lodge list failed,
+              rather than being shown a silently-defaulted lodge, and the lodge
+              is named on screen before anything is written.
+
+              The wording here used to say they "may CONTINUE" with a failed
+              list. They may not, and have not since this branch: the quote and
+              the create both hard-refuse without a resolved lodge (see
+              `startQuote` above). The notice explains the outage; it does not
+              offer a way past it.
+            */}
+            <LodgeOptionsUnavailableNotice
+              failed={lodgesFailed}
+              forbidden={lodgesForbidden}
+              onRetry={reloadLodges}
+              what="the lodge this booking is for"
+              className="mb-4"
+            />
             <div className="max-w-xs">
               <LodgeSelect
                 lodges={lodges}
@@ -692,6 +828,18 @@ export default function AdminBookPage() {
                 loading={lodgesLoading}
               />
             </div>
+            {/*
+              Always shown, never only in a multi-lodge club: an admin creating a
+              booking for somebody else must be able to read back which lodge it
+              lands at, and the state where that is unknown is exactly the state
+              where the screen used to look normal (#2701).
+            */}
+            <p className="text-sm" data-testid="admin-book-lodge">
+              <span className="text-muted-foreground">Booking at:</span>{" "}
+              <span className="font-medium">
+                {selectedLodge?.name ?? "not yet known — choose a lodge before booking"}
+              </span>
+            </p>
             <div className="rounded-md border border-border bg-muted p-3">
               <label className="flex items-start gap-2 text-sm text-foreground cursor-pointer">
                 <input
@@ -752,7 +900,7 @@ export default function AdminBookPage() {
               <div className="rounded-md bg-warning-3 p-3 text-sm text-warning-11">
                 This booking exceeds the {availableBeds} bed
                 {availableBeds === 1 ? "" : "s"} available for these dates.
-                You can still create it \u2014 you will confirm the over-capacity
+                You can still create it — you will confirm the over-capacity
                 override at the final step.
               </div>
             )}
@@ -824,7 +972,13 @@ export default function AdminBookPage() {
               maxGuests={resolvedCapacity}
             />
             <div className="flex justify-between pt-4">
-              <Button variant="outline" onClick={() => setStep("dates")}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  invalidatePendingQuote();
+                  setStep("dates");
+                }}
+              >
                 Back
               </Button>
               <Button
@@ -1196,7 +1350,13 @@ export default function AdminBookPage() {
           </div>
 
           <div className="flex justify-between">
-            <Button variant="outline" onClick={() => setStep("guests")}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                invalidatePendingQuote();
+                setStep("guests");
+              }}
+            >
               Back
             </Button>
             <div className="flex gap-3">

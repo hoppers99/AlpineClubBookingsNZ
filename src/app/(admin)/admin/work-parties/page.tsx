@@ -27,6 +27,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { useLodgeOptions } from "@/components/lodge-select";
+import { LodgeScopeStatusNotice } from "@/components/admin/lodge-options-status";
+import { deriveSettledLodgeOptionScope } from "@/lib/lodge-option-scope";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
@@ -117,9 +119,43 @@ export default function AdminWorkPartiesPage() {
   const [details, setDetails] = useState<Record<string, EventDetail>>({});
   // Lodge options for the form's lodge field and per-event lodge labels; the
   // field and labels only render once a second lodge exists (ADR-002).
-  const { lodges } = useLodgeOptions("admin");
+  const {
+    lodges,
+    loading: lodgeOptionsLoading,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+    reload: reloadLodgeOptions,
+  } = useLodgeOptions("admin");
+  /*
+    #2701: a FAILED lodge list is not "a club with no lodges", but until now the
+    two were the same empty array here, and this page keys BOTH its lodge field
+    and its per-event lodge labels on `lodges.length > 1`. So a multi-lodge club
+    whose list failed read exactly like a single-lodge one: no "Lodge" field, no
+    lodge named on any event, and `form.lodgeId` stuck at "" — which the POST
+    route stores as a CLUB-WIDE event, a discount applied at every lodge that
+    nobody chose. (Unlike the other lodge-scoped pages, a work party is not
+    silently pushed onto the default lodge; it is silently pushed onto all of
+    them.)
+
+    The events list itself is club-wide, but it is held too: a successful lodge
+    response is what makes the form's deliberate "All lodges" choice meaningful.
+  */
+  const lodgeScope = deriveSettledLodgeOptionScope({
+    lodges,
+    selectedLodgeId: "__all_lodges__",
+    loading: lodgeOptionsLoading,
+    failed: lodgeOptionsFailed,
+    forbidden: lodgeOptionsForbidden,
+    explicitAllLodgesValue: "__all_lodges__",
+  });
+  const lodgeScopeReady = lodgeScope.kind === "all";
 
   const fetchEvents = useCallback(async () => {
+    if (!lodgeScopeReady) {
+      setEvents([]);
+      setLoading(false);
+      return;
+    }
     try {
       const res = await fetch("/api/admin/work-parties");
       const data = await res.json();
@@ -133,13 +169,14 @@ export default function AdminWorkPartiesPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [lodgeScopeReady]);
 
   useEffect(() => {
     fetchEvents();
   }, [fetchEvents]);
 
   function startCreate() {
+    if (!lodgeScopeReady) return;
     setEditingId(null);
     setForm(emptyForm);
     setShowForm(true);
@@ -147,6 +184,7 @@ export default function AdminWorkPartiesPage() {
   }
 
   function startEdit(event: WorkPartyEventRow) {
+    if (!lodgeScopeReady) return;
     setEditingId(event.id);
     setForm({
       name: event.name,
@@ -162,6 +200,7 @@ export default function AdminWorkPartiesPage() {
   }
 
   async function handleSave() {
+    if (!lodgeScopeReady) return;
     const discountPercent = Number(form.discountPercent);
     if (!form.name.trim()) {
       setError("Name is required");
@@ -217,6 +256,7 @@ export default function AdminWorkPartiesPage() {
   }
 
   async function toggleActive(event: WorkPartyEventRow) {
+    if (!lodgeScopeReady) return;
     setError("");
     const res = await fetch(`/api/admin/work-parties/${event.id}`, {
       method: "PUT",
@@ -244,6 +284,7 @@ export default function AdminWorkPartiesPage() {
   }
 
   async function handleDelete(event: WorkPartyEventRow) {
+    if (!lodgeScopeReady) return;
     if (!confirm(`Delete work party event "${event.name}"?`)) return;
     setError("");
     const res = await fetch(`/api/admin/work-parties/${event.id}`, {
@@ -262,6 +303,7 @@ export default function AdminWorkPartiesPage() {
   }
 
   async function toggleDetail(eventId: string) {
+    if (!lodgeScopeReady) return;
     if (expandedId === eventId) {
       setExpandedId(null);
       return;
@@ -305,19 +347,26 @@ export default function AdminWorkPartiesPage() {
       <AdminPageHeader
         title="Work Parties"
         description="Working bee events with an automatic discount for attending bookings"
-        actions={
+        actions={lodgeScopeReady ?
           <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={startCreate}>
             New Event
-          </ViewOnlyActionButton>
+          </ViewOnlyActionButton> : null
         }
       />
 
+      {/* #2701: say the lodge list failed, above the form whose "Lodge" field
+          it silently removed. */}
+      <LodgeScopeStatusNotice
+        scope={lodgeScope}
+        onRetry={reloadLodgeOptions}
+        what="work parties for a particular lodge"
+      />
 
-      {error && (
+      {lodgeScopeReady && error && (
         <div className="rounded-md border border-danger/20 bg-danger-muted p-3 text-sm text-danger">{error}</div>
       )}
 
-      {showForm && (
+      {lodgeScopeReady && showForm && (
         <Card>
           <CardHeader>
             <CardTitle>{editingId ? "Edit Event" : "New Event"}</CardTitle>
@@ -409,6 +458,10 @@ export default function AdminWorkPartiesPage() {
               Active (members can select this event when booking)
             </label>
             <div className="flex gap-2">
+              {/* #2701: an edit would PUT back the lodge the event already has,
+                  but the admin cannot SEE which lodge that is while the list is
+                  down — and a create would silently go club-wide. Both save
+                  through this one button, so it stays shut for both. */}
               <ViewOnlyActionButton canEdit={canEdit} describeReason={false} onClick={handleSave} disabled={saving}>
                 {saving ? "Saving..." : editingId ? "Save Changes" : "Create Event"}
               </ViewOnlyActionButton>
@@ -426,7 +479,7 @@ export default function AdminWorkPartiesPage() {
         </Card>
       )}
 
-      {loading ? (
+      {!lodgeScopeReady ? null : loading ? (
         <div className="flex justify-center py-8">
           <Spinner label="Loading work party events…" />
         </div>

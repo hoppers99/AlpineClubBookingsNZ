@@ -289,8 +289,9 @@
   .neutralbox b { color:var(--app-foreground); }
 
   /* the edit panel's own idiom: a dashed sibling block per add route
-     (`rounded-md border border-dashed p-3` in edit-booking-panel.tsx). The MG3
-     pack never drew one, because the wizard has no such block. */
+     (`rounded-md border border-dashed p-3`, in edit-booking/edit-guests-card.tsx
+     since the #2690 split; it was edit-booking-panel.tsx when this was drawn).
+     The MG3 pack never drew one, because the wizard has no such block. */
   .dashblock { border:1px dashed var(--app-border); border-radius:var(--radius-sm); padding:12px; }
   .dashblock + .dashblock { margin-top:8px; }
   .dashblock > * + * { margin-top:8px; }

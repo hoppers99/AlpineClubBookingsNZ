@@ -26,7 +26,7 @@ and [`docs/diagnostics/KNOWLEDGE_BUNDLE.md`](../../diagnostics/KNOWLEDGE_BUNDLE.
 AlpineClubBookingsNZ is open-source and forked per club; a private production
 deployment (Tokoroa) tracks the public repo. Two rules already shape this
 codebase: public code must never mandate a private deployment's paths or contents
-(`docs/ONGOING_DEVELOPMENT_WORKFLOW.md`), and secrets/config are deployment-local
+(`docs/adopters/upstream-contributions.md`), and secrets/config are deployment-local
 rather than travelling in the config-transfer bundle
 (`docs/config-transfer/README.md` deliberately keeps credentials out). Diagnostics
 adds a third-party model provider and an optional private knowledge overlay, so
@@ -132,6 +132,6 @@ Page help).
 - ADR-003 (overlay content is untrusted evidence)
 - ADR-004 (retention; what the provider posture governs)
 - ADR-005 (the budget/limits this ADR says are deployment-local)
-- [`docs/ONGOING_DEVELOPMENT_WORKFLOW.md`](../../ONGOING_DEVELOPMENT_WORKFLOW.md)
+- [`docs/adopters/upstream-contributions.md`](../../adopters/upstream-contributions.md)
 - [`docs/config-transfer/README.md`](../../config-transfer/README.md)
 - [Threat model](../threat-model.md) — "Deployment / fork" trust boundary.

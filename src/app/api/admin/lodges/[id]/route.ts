@@ -11,15 +11,14 @@ import {
   redactLodgeForAudit,
   serializeLodge,
 } from "@/lib/lodges";
-import { getTodayDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
-import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking-status";
-import { BookingStatus } from "@prisma/client";
 import { revalidatePublicPageContent } from "@/lib/public-content-revalidation";
 import { invalidatePublicClubIdentity } from "@/lib/public-layout-cache";
 import { primeClubIdentitySync } from "@/lib/club-identity-settings";
 import { acquireConfigImportLock } from "@/lib/config-transfer-lock";
+import { acquireLodgeCapacityLock } from "@/lib/lodge-capacity-lock";
+import { findLodgeDeactivationRefusal } from "@/lib/lodge-deactivation-guard";
 
 const paramsSchema = z.object({
   id: z.string().min(1),
@@ -76,73 +75,16 @@ export async function PATCH(
     return NextResponse.json({ error: "Lodge not found" }, { status: 404 });
   }
 
-  // Every deployment keeps at least one active lodge: booking flows and the
-  // ADR-002 presentation rule both assume one exists.
-  if (parsed.data.active === false && existing.active) {
-    const otherActive = await prisma.lodge.count({
-      where: { active: true, id: { not: existing.id } },
-    });
-    if (otherActive === 0) {
-      return NextResponse.json(
-        { error: "At least one lodge must remain active." },
-        { status: 409 },
-      );
-    }
-  }
-
-  // Deactivation stops NEW bookings but does not touch existing dependencies.
-  // Surface them so an admin cannot silently strand future bookings, waitlist
-  // entries, hut-leader assignments, or a bound kiosk account; require an
-  // explicit force to proceed. (What deactivation ultimately means for existing
-  // bookings is an open operational decision — see docs/multi-lodge.)
-  if (parsed.data.active === false && existing.active && !parsed.data.force) {
-    // checkOut and hutLeaderAssignment.endDate are @db.Date (NZ calendar date at
-    // UTC midnight). Compare against the date-only "today" so a stay or hut-leader
-    // term ending today still registers as a live dependency for the whole NZ
-    // day, not just the first ~13h under the TZ=Pacific/Auckland pin (F32, #1888).
-    const today = getTodayDateOnly();
-    const [futureBookings, waitlistEntries, hutLeaderAssignments, kioskBindings] =
-      await Promise.all([
-        prisma.booking.count({
-          where: {
-            lodgeId: existing.id,
-            status: { in: [...ACTIVE_BOOKING_STATUSES] },
-            checkOut: { gte: today },
-          },
-        }),
-        prisma.booking.count({
-          where: {
-            lodgeId: existing.id,
-            status: {
-              in: [BookingStatus.WAITLISTED, BookingStatus.WAITLIST_OFFERED],
-            },
-          },
-        }),
-        prisma.hutLeaderAssignment.count({
-          where: { lodgeId: existing.id, endDate: { gte: today } },
-        }),
-        prisma.memberLodgeAccess.count({
-          where: { lodgeId: existing.id, kind: "STAFF" },
-        }),
-      ]);
-    const total =
-      futureBookings + waitlistEntries + hutLeaderAssignments + kioskBindings;
-    if (total > 0) {
-      return NextResponse.json(
-        {
-          error:
-            "This lodge still has active dependencies. Deactivating stops new bookings but leaves these in place. Confirm to proceed.",
-          code: "LODGE_HAS_DEPENDENCIES",
-          dependencies: {
-            futureBookings,
-            waitlistEntries,
-            hutLeaderAssignments,
-            kioskBindings,
-          },
-        },
-        { status: 409 },
-      );
-    }
+  // The same predicate the locked re-read below runs, asked cheaply first so
+  // the common refusals cost no lock. Only the locked answer is authoritative.
+  const earlyRefusal = await findLodgeDeactivationRefusal(prisma, {
+    lodgeId: existing.id,
+    lodgeIsActive: existing.active,
+    requestedActive: parsed.data.active,
+    force: parsed.data.force,
+  });
+  if (earlyRefusal) {
+    return NextResponse.json(earlyRefusal.body, { status: earlyRefusal.status });
   }
 
   const data: {
@@ -175,10 +117,58 @@ export async function PATCH(
     return NextResponse.json({ lodge: serializeLodge(existing) });
   }
 
+  // NAME THIS `updated`, not `outcome`. The audit-writer census identifies
+  // every write site by its enclosing symbol chain, so this variable's name is
+  // part of `lodges/[id]/route.ts::PATCH.updated#0` — one of the fifteen
+  // lodge-gated sites pinned as a reviewed KEEP (INV-PRIV-013). Renaming the
+  // variable reads to that gate as the writer having MOVED, which demands a
+  // readership decision and a backfill answer for a change that is neither.
   const updated = await prisma.$transaction(async (tx) => {
+    // Lodge identity mutations share the config-import singleton first and
+    // then the immutable per-lodge capacity key. Booking creation takes the
+    // same capacity key before its active/access/room reads, so neither side
+    // can validate against a state the other is about to invalidate.
     await acquireConfigImportLock(tx);
-    if (nameChanges) {
-      data.slug = await buildUniqueLodgeSlug(tx, data.name!, existing.id);
+    await acquireLodgeCapacityLock(tx, parsedParams.data.id);
+
+    const lockedExisting = await tx.lodge.findUnique({
+      where: { id: parsedParams.data.id },
+      select: lodgeSelect,
+    });
+    if (!lockedExisting) {
+      return {
+        kind: "error" as const,
+        status: 404,
+        body: { error: "Lodge not found" },
+      };
+    }
+
+    // The authoritative ask: same predicate, now serialized behind the lodge
+    // key and reading the row this transaction re-read, so a dependency
+    // created since the early ask cannot slip past.
+    const lockedRefusal = await findLodgeDeactivationRefusal(tx, {
+      lodgeId: lockedExisting.id,
+      lodgeIsActive: lockedExisting.active,
+      requestedActive: parsed.data.active,
+      force: parsed.data.force,
+    });
+    if (lockedRefusal) {
+      return {
+        kind: "error" as const,
+        status: lockedRefusal.status,
+        body: lockedRefusal.body,
+      };
+    }
+
+    const lockedNameChanges =
+      parsed.data.name !== undefined &&
+      parsed.data.name !== lockedExisting.name;
+    if (lockedNameChanges) {
+      data.slug = await buildUniqueLodgeSlug(
+        tx,
+        data.name!,
+        lockedExisting.id,
+      );
     }
     const lodge = await tx.lodge.update({
       where: { id: existing.id },
@@ -207,7 +197,7 @@ export async function PATCH(
               : "Lodge deactivated",
         metadata: {
           changedFields: Object.keys(data),
-          previousLodge: redactLodgeForAudit(serializeLodge(existing)),
+          previousLodge: redactLodgeForAudit(serializeLodge(lockedExisting)),
           newLodge: redactLodgeForAudit(serializeLodge(lodge)),
           forcedDeactivation:
             data.active === false && parsed.data.force === true,
@@ -216,8 +206,13 @@ export async function PATCH(
       }),
     );
 
-    return lodge;
+    return { kind: "updated" as const, lodge };
   });
+
+  if (updated.kind === "error") {
+    return NextResponse.json(updated.body, { status: updated.status });
+  }
+  const updatedLodge = updated.lodge;
 
   revalidatePublicPageContent();
   // The default lodge's name feeds DB-first club identity (E3 #1929); refresh
@@ -225,5 +220,5 @@ export async function PATCH(
   invalidatePublicClubIdentity();
   await primeClubIdentitySync();
 
-  return NextResponse.json({ lodge: serializeLodge(updated) });
+  return NextResponse.json({ lodge: serializeLodge(updatedLodge) });
 }

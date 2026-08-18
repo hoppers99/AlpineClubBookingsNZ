@@ -6,6 +6,7 @@ import { useClubIdentity } from "@/components/club-identity-provider";
 import { cn } from "@/lib/utils";
 import { AllocationChip } from "./allocation-chip";
 import {
+  type AllocationLockReason,
   type BedOption,
   type BedOptionGroup,
   type DashboardAllocation,
@@ -69,6 +70,10 @@ interface BoardCellProps {
   // Tri-state (#2065): `undefined` while the client session resolves; the
   // `!canEdit` idiom treats that as disabled, so no truthy default here.
   canEdit: boolean | undefined;
+  // #2701: set while the board is club-wide. The cell stops being a drop
+  // target for the same reason a custodian-held night does — the write cannot
+  // succeed — and the chip's own actions are disabled with the reason shown.
+  lockReason?: AllocationLockReason;
 }
 
 export function BoardCell({
@@ -87,6 +92,7 @@ export function BoardCell({
   highlightedBookingId,
   activeDragLane,
   canEdit,
+  lockReason,
 }: BoardCellProps) {
   // Admin copy uses the club's own word for the role (#2286 review M8).
   const { hutLeaderLabel } = useClubIdentity();
@@ -95,8 +101,9 @@ export function BoardCell({
     data: { type: "cell", bedId, roomId, stayDate },
     // #2286: a custodian-held bed-night is not a drop target at all, so the
     // drag never even highlights it. The server 409s the write in any case —
-    // this only spares the admin a pointless refusal.
-    disabled: !canEdit || Boolean(custodianHold),
+    // this only spares the admin a pointless refusal. #2701 adds the club-wide
+    // board on the same footing.
+    disabled: !canEdit || Boolean(custodianHold) || lockReason !== undefined,
   });
 
   const highlighted = allocations.some(
@@ -191,6 +198,7 @@ export function BoardCell({
                 onAssignRange={() => onAssignRange(allocation)}
                 pending={pendingAllocationIds.has(allocation.id)}
                 canEdit={canEdit}
+                lockReason={lockReason}
               />
             </div>
           ))}

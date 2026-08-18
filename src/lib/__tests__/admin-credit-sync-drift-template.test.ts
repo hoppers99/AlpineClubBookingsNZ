@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   adminCreditSyncDriftTemplate,
   type CreditSyncDriftReportEmail,
-} from "@/lib/email-templates";
+} from "@/lib/email-templates/admin-xero-reports";
 
 describe("adminCreditSyncDriftTemplate", () => {
   const report: CreditSyncDriftReportEmail = {

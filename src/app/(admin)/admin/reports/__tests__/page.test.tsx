@@ -2,7 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next/dynamic", () => ({
   default: () => () => null,
@@ -12,15 +12,27 @@ vi.mock("@/components/club-identity-provider", () => ({
   useClubIdentity: () => ({ name: "Test Club", bookingsName: "Bookings" }),
 }));
 
+let lodgeOptions: {
+  lodges: Array<{ id: string; name: string }>;
+  loading: boolean;
+  failed?: boolean;
+  forbidden?: boolean;
+};
 vi.mock("@/components/lodge-select", () => ({
-  useLodgeOptions: () => ({
+  useLodgeOptions: () => lodgeOptions,
+}));
+
+beforeEach(() => {
+  lodgeOptions = {
     lodges: [
       { id: "lodge-1", name: "Lodge One" },
       { id: "lodge-2", name: "Lodge Two" },
     ],
     loading: false,
-  }),
-}));
+    failed: false,
+    forbidden: false,
+  };
+});
 
 vi.mock("@/lib/date-only", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/date-only")>();
@@ -314,5 +326,54 @@ describe("stale responses never own the screen (#2378 fix round)", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(bookingsCard?.textContent).toContain("1");
     expect(bookingsCard?.textContent).not.toContain("4");
+  });
+});
+
+describe("occupancy scope label survives a lost lodge list (#2887)", () => {
+  /*
+    `/admin/reports` is in the FINANCE area. `FINANCE_ADMIN`, `FINANCE_USER` and
+    `ADMIN_MEMBERSHIP` hold no `lodge` entry, so `/api/admin/lodges` is a
+    permanent 403 for them — `lodges` comes back empty and `lodges.length > 1`
+    is false for exactly the same reason a single-lodge club is false. The
+    qualifier then vanished from the occupancy stat card and the chart title,
+    and a club-wide figure became indistinguishable from one lodge's.
+  */
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function renderReports() {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, json: async () => EMPTY_REPORT })),
+    );
+    render(<ReportsPage />);
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+  }
+
+  it("labels the scope when the lodge list is FORBIDDEN", async () => {
+    lodgeOptions = { lodges: [], loading: false, failed: false, forbidden: true };
+    await renderReports();
+    await waitFor(() =>
+      expect(screen.getAllByText(/All lodges/i).length).toBeGreaterThan(0),
+    );
+  });
+
+  it("labels the scope when the lodge list FAILED", async () => {
+    lodgeOptions = { lodges: [], loading: false, failed: true, forbidden: false };
+    await renderReports();
+    await waitFor(() =>
+      expect(screen.getAllByText(/All lodges/i).length).toBeGreaterThan(0),
+    );
+  });
+
+  it("stays unqualified for a club that really has one lodge (ADR-002)", async () => {
+    lodgeOptions = {
+      lodges: [{ id: "lodge-1", name: "Lodge One" }],
+      loading: false,
+      failed: false,
+      forbidden: false,
+    };
+    await renderReports();
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+    expect(screen.queryByText(/All lodges/i)).toBeNull();
   });
 });

@@ -9,7 +9,11 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { PolicyFeedback } from "./policy-feedback"
-import { PolicyScopeSelect, usePolicyScopeLodgeName } from "./policy-scope-select"
+import {
+  isPolicyScopeReady,
+  PolicyScopeSelect,
+  usePolicyScopeOptions,
+} from "./policy-scope-select"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
 import {
   ForbiddenSaveError,
@@ -310,7 +314,10 @@ export function MinimumNightStaySection() {
   // club-wide policies; a lodge lists its override set, which replaces the
   // club-wide set entirely at runtime. Hidden with fewer than two lodges.
   const [scopeLodgeId, setScopeLodgeId] = useState<string | null>(null)
-  const scopeLodgeName = usePolicyScopeLodgeName(scopeLodgeId)
+  const policyScope = usePolicyScopeOptions(scopeLodgeId)
+  const policyScopeReady = isPolicyScopeReady(policyScope)
+  const scopeLodgeName =
+    policyScope.state.kind === "lodge" ? policyScope.state.lodgeName : null
   const [minStayPolicies, setMinStayPolicies] = useState<MinStayPolicy[]>([])
   /**
    * The scope `minStayPolicies` was actually loaded FOR (#2142 review).
@@ -362,6 +369,10 @@ export function MinimumNightStaySection() {
     ): Promise<boolean> => {
       const { signal, scopeLoad = false } = options
       const scope = scopeLodgeId
+      if (!policyScopeReady) {
+        if (scopeLoad) setLoadingMinStay(false)
+        return false
+      }
       if (scopeLoad) setLoadingMinStay(true)
       try {
         const res = await fetch(
@@ -397,7 +408,7 @@ export function MinimumNightStaySection() {
         if (scopeLoad && scopeRef.current === scope) setLoadingMinStay(false)
       }
     },
-    [scopeLodgeId],
+    [policyScopeReady, scopeLodgeId],
   )
 
   useEffect(() => {
@@ -425,6 +436,7 @@ export function MinimumNightStaySection() {
   }
 
   function startAddMinStay() {
+    if (!policyScopeReady) return
     setEditingMinStayId(null)
     setEditingDraft(NEW_MIN_STAY_DRAFT)
     setEditorInstance((n) => n + 1)
@@ -432,6 +444,7 @@ export function MinimumNightStaySection() {
   }
 
   function startEditMinStay(policy: MinStayPolicy) {
+    if (!policyScopeReady) return
     setEditingMinStayId(policy.id)
     setEditingDraft(toDraft(policy))
     setEditorInstance((n) => n + 1)
@@ -458,13 +471,13 @@ export function MinimumNightStaySection() {
    * a successful write whose response body cannot be read.
    */
   const refreshAfterMutation = useCallback(async (): Promise<boolean> => {
-    if (scopeRef.current !== scopeLodgeId) return false
+    if (!policyScopeReady || scopeRef.current !== scopeLodgeId) return false
     setLoadedScope(UNLOADED_SCOPE)
     setShowMinStayForm(false)
     setEditingMinStayId(null)
     setEditingDraft(NEW_MIN_STAY_DRAFT)
     return fetchMinStay({ scopeLoad: true })
-  }, [fetchMinStay, scopeLodgeId])
+  }, [fetchMinStay, policyScopeReady, scopeLodgeId])
 
   /**
    * The open editor's transport. Ordinary failures throw so
@@ -473,6 +486,9 @@ export function MinimumNightStaySection() {
    */
   const submitMinStay = useCallback(
     async (draft: MinStayDraft): Promise<MinStayDraft> => {
+      if (!policyScopeReady) {
+        throw new Error("Choose an available policy scope before saving")
+      }
       setError("")
       setSuccess("")
       const url = editingMinStayId
@@ -524,6 +540,7 @@ export function MinimumNightStaySection() {
       editingMinStayId,
       scopeLodgeId,
       applyServerPolicy,
+      policyScopeReady,
       refreshAfterMutation,
     ],
   )
@@ -535,7 +552,7 @@ export function MinimumNightStaySection() {
   const [rowActionId, setRowActionId] = useState<string | null>(null)
 
   async function handleDeleteMinStay(policy: MinStayPolicy) {
-    if (rowActionRef.current) return
+    if (!policyScopeReady || rowActionRef.current) return
     if (
       !confirm(
         "Delete this minimum stay policy? It stops applying immediately and stays listed as inactive, so the change is auditable.",
@@ -600,7 +617,7 @@ export function MinimumNightStaySection() {
    * it stays disabled until the row it re-reads is on screen.
    */
   async function handleToggleMinStay(policy: MinStayPolicy) {
-    if (rowActionRef.current) return
+    if (!policyScopeReady || rowActionRef.current) return
     rowActionRef.current = true
     setRowActionId(policy.id)
     try {
@@ -638,6 +655,7 @@ export function MinimumNightStaySection() {
 
   /** Re-run the current scope's load in place, without leaving the section. */
   function retryLoad() {
+    if (!policyScopeReady) return
     setError("")
     void fetchMinStay({ scopeLoad: true })
   }
@@ -683,16 +701,17 @@ export function MinimumNightStaySection() {
       />
       <div className="space-y-6">
         <PolicyScopeSelect
+          options={policyScope}
           value={scopeLodgeId}
           onChange={setScopeLodgeId}
           id="min-stay-scope"
         />
 
-        {loadingMinStay ? (
+        {policyScopeReady && loadingMinStay ? (
           <div className="text-center py-8">Loading...</div>
         ) : null}
 
-        {!loadingMinStay && !scopeKnown ? (
+        {policyScopeReady && !loadingMinStay && !scopeKnown ? (
           <Card>
             <CardHeader>
               <CardTitle>
@@ -715,7 +734,7 @@ export function MinimumNightStaySection() {
           </Card>
         ) : null}
 
-        {!loadingMinStay && scopeKnown ? (
+        {policyScopeReady && !loadingMinStay && scopeKnown ? (
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">

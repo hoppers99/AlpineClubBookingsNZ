@@ -93,6 +93,11 @@ function stubFetch(opts: {
 }) {
   const fetchMock = vi.fn(async (url: string, init?: { method?: string }) => {
     const u = String(url);
+    if (u.includes("/api/lodges")) {
+      return jsonResponse({
+        lodges: [{ id: "lodge-1", name: "Alpine Lodge", active: true }],
+      });
+    }
     if (u.includes("/api/group-bookings")) {
       if (opts.groupCreateRejects) {
         throw new Error("network down");

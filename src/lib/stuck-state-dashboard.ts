@@ -734,6 +734,7 @@ async function addLodgeItems(
   ]);
   const unassignedDates = await deps.getUnassignedHutLeaderDates({
     lookAheadDays: hutLeaderLookaheadDays,
+    scope: { kind: "all" },
   });
 
   addItem(items, {

@@ -75,7 +75,19 @@ following:
   name the branch instead.
 - **Third-party names** — reviewers, club contacts, fork maintainers, members.
   Describe the role ("the reviewer on the calendar PR", "a club contact"), never
-  the person.
+  the person. Two carve-outs, both decided on #2720 and both load-bearing:
+  - **A public GitHub handle is not a private real name.** Tagging somebody's
+    handle to answer their review is correct and expected; it is the real name
+    that must not appear. Reading this rule too broadly once left an external
+    reviewer's direct question unanswered for a day, while their feedback held a
+    live defect and a better answer than the options being drafted.
+  - **The rule binds new writing only.** Occurrences already published on `main`
+    — fork issue links, and the credit in `src/lib/integration-crypto.ts` to
+    somebody who corrected the key-derivation design — stay as historical
+    record. They have been public for months, the credit is a genuine
+    acknowledgement, and rewriting decision records after the fact makes them
+    less trustworthy. **Do not sweep them.** The accepted cost is that the rule
+    reads as selectively enforced.
 - **Secrets and provider identifiers** — API keys, tokens, webhook signing
   secrets, Stripe/Xero account or object ids, and ones that merely look
   redacted. A partially masked identifier is still an identifier.
@@ -114,6 +126,64 @@ stale half — read the named comment before you plan anything, brief anybody, o
 put a question to the owner. Detection is pattern-matching over prose, so treat
 it as a smoke alarm rather than a verdict; the full thread is printed either way
 and you still do the reading.
+
+## External and fork review
+
+Review from somebody running this code somewhere else is a **first-class input**,
+not background reading. It is not hypothetical either: a downstream fork
+maintainer's pull requests merge into this repository's `main`.
+
+- **Read every reply before putting options to the owner.** A fork maintainer
+  sees constraints this repository cannot: consumers we do not control, a
+  signature that is load-bearing elsewhere, a state the code cannot actually
+  reach. On #2678 that review sat unread for a day while options were drafted
+  for #2701 it had already improved on. It carried a live defect nobody else had
+  found, and its "make *All lodges* an explicit selector option" — offered
+  modestly as a follow-up rather than a change — became the decision, over all
+  three options prepared without it. Their review keeps finding that the
+  *framing* is wrong, not just the answer, which is exactly what an outside
+  reader is for and is worthless after the decision.
+- **An open question from a reviewer is a finding, not a comment.** "Happy to be
+  corrected if you still see A as right" is answered before the thread is
+  treated as settled. It does not expire by being ignored.
+- **A reviewer's "follow-up, not a change to this decision" still has to be
+  filed.** `AGENTS.md` requires every follow-up named anywhere to exist as a
+  filed issue before its PR merges, and that binds a suggestion in a review
+  comment as much as one you wrote yourself. Somebody offering a good idea
+  modestly is the most likely to be dropped.
+- **Reply using the public handle.** A GitHub handle is a public identity and
+  tagging it to close the loop is correct — see "Writing in the open" above.
+- **Where a reviewer and the repository owner conflict, the owner decides** —
+  and say so on the thread, naming which point the decision overrides. A
+  reviewer who is overruled has still been answered; one who is ignored has not.
+- **A durable constraint an adopter or fork surfaces belongs in the invariants,
+  not only in a thread.** The reason is what survives an agent who believes they
+  are tidying up: `INV-INT-016` keeps `GET /api/bookings/rooms`'s no-`lodgeId`
+  mode because forked consumers still call it that way, and that reason lives
+  with the rule rather than in a closed issue nobody will reread.
+
+## Writing a blocker
+
+A `Blocked on` section outranks every other sentence in the body. It is
+structural, it usually carries a checkbox, and it sits under a heading that
+tells an implementor to stop — so a scope bullet further down that contradicts
+it is never reached. #2717 carried both at once: *"make the mapping configurable
+the way the other Xero account mappings are"* under Scope, and *"Blocked on an
+owner input — the Xero account has to be nominated"* above it. The blocker won,
+and it was the wrong half.
+
+Before you write one:
+
+- **It has to be true after reading the rest of the body.** If the body already
+  answers it, you are blocking on a closed question.
+- **A field or value that varies by deployment is presumptively configuration,
+  not a global owner constant** (`INV-CONFIG-001`). A blocker demanding one
+  value that each club would answer differently is the smell.
+- **The blocker and the status at the top must agree with the rest of the
+  issue.** Two statements of state in one body is one too many.
+- **A resolved blocker is removed or rewritten, never left standing above the
+  correct scope** — the same rule as a stale `needs-decision` label, and for the
+  same reason: it is a false claim in the place people look first.
 
 ## Recording a decision: the body must carry the answer
 
@@ -162,10 +232,18 @@ Get the comment's permalink from the thread the reading command above printed �
 every comment is listed with its URL. Then re-run `npm run issue -- <n>` on the
 issue you just edited: if the warning has cleared, the body is true.
 
+**Clear the `needs-decision` label in the same action.** Removing a label is a
+separate act from writing a comment, and in one August 2026 decision round
+nobody did the second one on four issues — so each went on asserting to every
+future reader that it needed something it did not. If the issue is now blocked
+on something else, say which: "decided" and "unblocked" are different states,
+and naming the real dependency is what stops the label being re-applied out of
+doubt.
+
 ## Claiming, and talking between lanes
 
-`AGENTS.md` and `CLAUDE.md` both tell you to post a CLAIM comment "per repo
-convention". This section is that convention.
+`AGENTS.md` tells you to post a CLAIM comment using the repository convention.
+This section is that convention for every agent interface.
 
 Every agent in this repository authenticates to GitHub as the **same account**,
 so GitHub's author field cannot tell two concurrent lanes apart. The comment

@@ -113,6 +113,9 @@ function stubFetch(opts: {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
+    if (url === "/api/admin/lodges") {
+      return { ok: true, status: 200, json: async () => ({ lodges: [{ id: "lodge-1", name: "Lodge One" }] }) };
+    }
     if (url.startsWith("/api/admin/hut-leaders/eligible-members")) {
       return { ok: true, json: async () => ({ members: [] }) };
     }
@@ -125,7 +128,7 @@ function stubFetch(opts: {
             : { unassignedDates: monthRed },
       };
     }
-    if (url === "/api/admin/hut-leaders/unassigned-dates") {
+    if (url.startsWith("/api/admin/hut-leaders/unassigned-dates?lodgeId=")) {
       return { ok: true, json: async () => ({ unassignedDates: [] }) };
     }
     if (url.startsWith("/api/admin/occupancy")) {
@@ -134,7 +137,7 @@ function stubFetch(opts: {
     if (url === "/api/admin/hut-leaders" && method === "POST") {
       return { ok: true, json: async () => ({ id: "new-1", emailSent: true }) };
     }
-    if (url === "/api/admin/hut-leaders") {
+    if (url.startsWith("/api/admin/hut-leaders?lodgeId=")) {
       return { ok: true, json: async () => ({ assignments }) };
     }
     return { ok: true, json: async () => ({}) };
@@ -235,10 +238,10 @@ describe("hut leaders redesign — calendar-painted 3-step flow", () => {
     // The month change fetches the windowed red set and re-fetches assignments.
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/admin/hut-leaders/unassigned-dates?month=2099-07",
+        expect.stringContaining("/api/admin/hut-leaders/unassigned-dates?month=2099-07&lodgeId="),
       ),
     );
-    expect(fetchMock).toHaveBeenCalledWith("/api/admin/hut-leaders");
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/admin/hut-leaders?lodgeId="));
 
     // The page computes and passes a violet (covered) + red (needs-leader) overlay.
     await waitFor(() => {
@@ -281,7 +284,7 @@ describe("hut leaders redesign — calendar-painted 3-step flow", () => {
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/admin/hut-leaders/unassigned-dates?month=2099-07",
+        expect.stringContaining("/api/admin/hut-leaders/unassigned-dates?month=2099-07&lodgeId="),
       ),
     );
 

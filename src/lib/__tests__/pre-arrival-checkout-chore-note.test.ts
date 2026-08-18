@@ -71,7 +71,7 @@ import {
   checkoutDayChoreNote,
   composeOptionalEmailLine,
 } from "../email-message-notes";
-import { plainTextEmailTemplate } from "../email-templates";
+import { plainTextEmailTemplate } from "@/lib/email-templates/layout";
 // Imported statically rather than with `await import(...)` inside the test.
 // `vi.mock` above is hoisted, so the mocks are in place either way — but this
 // module pulls in a large graph, and paying for that inside a 5s test body made

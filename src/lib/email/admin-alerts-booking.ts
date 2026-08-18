@@ -1,22 +1,24 @@
 import {
+  adminBookingBumpedTemplate,
+  adminBookingChangeRequestTemplate,
+  adminBookingRequestHoldCancelledTemplate,
+  adminBookingRequestHoldExpiredTemplate,
+  adminBookingRequestPendingTemplate,
+  adminCapacityWarningTemplate,
   adminMinorsReviewRequiredTemplate,
+  adminNewBookingTemplate,
   adminOwnerSubstitutionTemplate,
   adminPartnerShareSweptTemplate,
-  adminNewBookingTemplate,
   adminPendingDeadlineTemplate,
-  adminBookingBumpedTemplate,
-  adminCapacityWarningTemplate,
-  adminWaitlistOfferTemplate,
-  adminBookingChangeRequestTemplate,
-  adminBookingRequestPendingTemplate,
   adminSchoolManualInvoiceTemplate,
-  adminWholeLodgeManualInvoiceTemplate,
-  adminBookingRequestHoldExpiredTemplate,
-  adminBookingRequestHoldCancelledTemplate,
-  adminSplitSettlementUnpaidTemplate,
   adminSplitSettlementCancelledTemplate,
+  adminSplitSettlementUnpaidTemplate,
+  adminWaitlistOfferTemplate,
+  adminWholeLodgeManualInvoiceTemplate,
+} from "@/lib/email-templates/admin-booking";
+import {
   wholeLodgeManualInvoiceAmountCents,
-} from "../email-templates";
+} from "@/lib/booking-money-lines";
 import {
   adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,

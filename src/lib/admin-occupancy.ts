@@ -66,9 +66,11 @@ export async function getAdminOccupancyMonth(input: {
   month: string;
   startDate: Date;
   endDate: Date;
+  lodgeId: string;
 }): Promise<OccupancyMonth> {
   const bookings = await prisma.booking.findMany({
     where: {
+      lodgeId: input.lodgeId,
       status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
       deletedAt: null,
       checkIn: { lt: input.endDate },

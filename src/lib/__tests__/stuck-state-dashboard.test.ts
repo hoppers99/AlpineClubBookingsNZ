@@ -355,6 +355,7 @@ describe("getStuckStateDashboard", () => {
     expect(dashboard.totals.critical).toBeGreaterThan(0);
     expect(deps.getUnassignedHutLeaderDates).toHaveBeenCalledWith({
       lookAheadDays: 14,
+      scope: { kind: "all" },
     });
   });
 
@@ -378,6 +379,7 @@ describe("getStuckStateDashboard", () => {
 
     expect(getUnassignedHutLeaderDates).toHaveBeenCalledWith({
       lookAheadDays: 21,
+      scope: { kind: "all" },
     });
     expect(
       dashboard.items.find((item) => item.id === "lodge-unassigned-hut-leaders"),

@@ -62,6 +62,8 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+const LODGE = { id: "lodge-1", name: "Lodge One" };
+
 // URL-prefix-routed fetch stub. These are render-only case pairs, so every
 // matched route answers with its canned body regardless of method; unknown
 // URLs throw so a panel can never silently load nothing.
@@ -1102,7 +1104,7 @@ describe("RoomsBedsManager view-only gating (#1940, bookings)", () => {
     // shared stub still needs the lodges + rooms endpoints.
     sessionMatrix = null;
     stubFetchRoutes({
-      "/api/admin/lodges": { lodges: [] },
+      "/api/admin/lodges": { lodges: [LODGE] },
       "/api/admin/bed-allocation/rooms": PAYLOAD,
     });
   });
@@ -1424,7 +1426,7 @@ describe("PromoCodesPageClient view-only gating (#1940, bookings)", () => {
     sessionMatrix = null;
     stubFetchRoutes({
       "/api/admin/promo-codes": [],
-      "/api/admin/lodges": { lodges: [] },
+      "/api/admin/lodges": { lodges: [LODGE] },
     });
   });
   afterEach(() => {
@@ -1542,7 +1544,7 @@ describe("LockersPage view-only gating (#1940, membership)", () => {
     sessionMatrix = null;
     stubFetchRoutes({
       "/api/admin/lockers": { members: [], lockers: [] },
-      "/api/admin/lodges": { lodges: [] },
+      "/api/admin/lodges": { lodges: [LODGE] },
     });
   });
   afterEach(() => {
@@ -1727,7 +1729,13 @@ describe("AdminDisplayTemplatesPage view-only gating (#1940, lodge)", () => {
     stubFetchRoutes({
       "/api/admin/display/templates": { templates: [TEMPLATE] },
       "/api/admin/display/layouts": { layouts: [] },
-      "/api/admin/lodges": { lodges: [] },
+      // #2887: Preview now needs an explicit lodge — with no active lodge the
+      // page refuses rather than previewing the club default, so an empty list
+      // here would disable Preview for an EDIT admin too and the view-only
+      // assertion below would pass for the wrong reason.
+      "/api/admin/lodges": {
+        lodges: [{ id: "lodge-1", name: "Silverpeak Lodge", active: true }],
+      },
       // The token assistant's useDisplayLodgeConfig fetch (#2248). Stubbed
       // deliberately: without this the suite's unstubbed-fetch tripwire fires
       // but is silently absorbed by the hook's own catch — this keeps the
@@ -1791,7 +1799,7 @@ describe("LodgeCapacityCard view-only gating (#1940, lodge)", () => {
         schoolGroupSoftCap: 40,
         clubConfigCapacity: 30,
       },
-      "/api/admin/lodges": { lodges: [] },
+      "/api/admin/lodges": { lodges: [LODGE] },
     });
   });
   afterEach(() => {
@@ -1884,7 +1892,7 @@ describe("ChoresPage view-only gating (#1940, lodge)", () => {
     sessionMatrix = null;
     stubFetchRoutes({
       "/api/admin/chores": [],
-      "/api/admin/lodges": { lodges: [] },
+      "/api/admin/lodges": { lodges: [LODGE] },
     });
   });
   afterEach(() => {
@@ -1919,7 +1927,7 @@ describe("AdminWorkPartiesPage view-only gating (#1940, lodge)", () => {
     sessionMatrix = null;
     stubFetchRoutes({
       "/api/admin/work-parties": { events: [] },
-      "/api/admin/lodges": { lodges: [] },
+      "/api/admin/lodges": { lodges: [LODGE] },
     });
   });
   afterEach(() => {
@@ -2003,7 +2011,7 @@ describe("HutLeadersPage view-only gating (#1940, lodge)", () => {
       "/api/admin/hut-leaders/eligible-members": { members: [] },
       "/api/admin/occupancy": { nights: [] },
       "/api/admin/hut-leaders": { assignments: [ASSIGNMENT] },
-      "/api/admin/lodges": { lodges: [] },
+      "/api/admin/lodges": { lodges: [LODGE] },
     });
   });
   afterEach(() => {
@@ -2111,7 +2119,7 @@ describe("RosterPage view-only gating (#1940, lodge)", () => {
       "/api/admin/roster/status": { month: "2026-07", statuses: [] },
       "/api/admin/roster/": ROSTER,
       "/api/admin/occupancy": { nights: [] },
-      "/api/admin/lodges": { lodges: [] },
+      "/api/admin/lodges": { lodges: [LODGE] },
     });
   });
   afterEach(() => {

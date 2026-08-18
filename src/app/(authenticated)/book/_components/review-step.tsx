@@ -68,7 +68,6 @@ export function ReviewStep({
   nights,
   guests,
   priceQuote,
-  lodges,
   lodgeId,
   selectedLodge,
   reviewGuestPayload,
@@ -135,7 +134,6 @@ export function ReviewStep({
   nights: number;
   guests: GuestData[];
   priceQuote: PriceQuote;
-  lodges: LodgeOption[];
   lodgeId: string | null;
   selectedLodge: LodgeOption | null;
   reviewGuestPayload: GuestData[];
@@ -310,12 +308,26 @@ export function ReviewStep({
           <CardTitle>Booking Summary</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {lodges.length > 1 && selectedLodge ? (
-            <div className="text-sm">
-              <span className="text-muted-foreground">Lodge:</span>{" "}
-              <span className="font-medium">{selectedLodge.name}</span>
-            </div>
-          ) : null}
+          {/*
+            #2701, owner decision: A MEMBER ALWAYS SEES WHICH LODGE THEY ARE
+            BOOKING — on every booking, not only in a multi-lodge club.
+
+            This line used to be conditional on `lodges.length > 1`, and that
+            condition is exactly what made a failed lodge list dangerous: an
+            outage empties the list, so the test went false, the line vanished,
+            and the member confirmed and PAID with nothing on screen naming a
+            lodge — while the server stamped the club's default one on the
+            booking. Showing it unconditionally changes the single-lodge club's
+            review step too, and that is the point: the member is told what they
+            are buying, and the screen can no longer look identical in the one
+            state where it is lying.
+          */}
+          <div className="text-sm">
+            <span className="text-muted-foreground">Lodge:</span>{" "}
+            <span className="font-medium">
+              {selectedLodge?.name ?? "Not yet known"}
+            </span>
+          </div>
           <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
             <div>
               <span className="text-muted-foreground">Check-in:</span>{" "}

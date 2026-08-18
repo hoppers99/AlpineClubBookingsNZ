@@ -10,7 +10,9 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { checkRateLimit, type RateLimitConfig } from "@/lib/rate-limit";
-import { bulkCommunicationTemplate } from "@/lib/email-templates";
+import {
+  bulkCommunicationTemplate,
+} from "@/lib/email-templates/communications";
 import { logAudit } from "@/lib/audit";
 import logger from "@/lib/logger";
 import { MEMBER_LEVEL_ROLE_VALUES } from "@/lib/member-roles";

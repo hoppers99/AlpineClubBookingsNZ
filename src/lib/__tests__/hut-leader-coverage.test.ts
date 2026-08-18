@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/prisma", () => ({ prisma: {} }));
+
 import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
 
 function dateOnly(value: string) {
@@ -8,11 +11,16 @@ function dateOnly(value: string) {
 function buildDb(options: {
   hutLeaderLookaheadDays?: number;
   bookings?: Array<{
+    lodgeId?: string | null;
     checkIn: Date;
     checkOut: Date;
-    guests?: Array<{ stayStart?: Date | null; stayEnd?: Date | null }>;
+    guests?: Array<{
+      stayStart?: Date | null;
+      stayEnd?: Date | null;
+      nights?: Array<{ stayDate: Date }>;
+    }>;
   }>;
-  assignments?: Array<{ startDate: Date; endDate: Date }>;
+  assignments?: Array<{ lodgeId?: string | null; startDate: Date; endDate: Date }>;
 }) {
   return {
     lodgeSettings: {
@@ -22,10 +30,14 @@ function buildDb(options: {
       }),
     },
     booking: {
-      findMany: vi.fn().mockResolvedValue(options.bookings ?? []),
+      findMany: vi.fn().mockResolvedValue(
+        (options.bookings ?? []).map((booking) => ({ lodgeId: "lodge-a", ...booking })),
+      ),
     },
     hutLeaderAssignment: {
-      findMany: vi.fn().mockResolvedValue(options.assignments ?? []),
+      findMany: vi.fn().mockResolvedValue(
+        (options.assignments ?? []).map((assignment) => ({ lodgeId: "lodge-a", ...assignment })),
+      ),
     },
   };
 }
@@ -41,6 +53,7 @@ describe("getUnassignedHutLeaderDates", () => {
 
     await expect(
       getUnassignedHutLeaderDates({
+        scope: { kind: "all" },
         db: buildDb({ hutLeaderLookaheadDays: 3, bookings: [booking] }),
         today,
       }),
@@ -48,6 +61,7 @@ describe("getUnassignedHutLeaderDates", () => {
 
     await expect(
       getUnassignedHutLeaderDates({
+        scope: { kind: "all" },
         db: buildDb({ hutLeaderLookaheadDays: 6, bookings: [booking] }),
         today,
       }),
@@ -76,6 +90,7 @@ describe("getUnassignedHutLeaderDates", () => {
     });
 
     const result = await getUnassignedHutLeaderDates({
+      scope: { kind: "all" },
       db,
       from: dateOnly("2026-03-01"),
       to: dateOnly("2026-03-31"),
@@ -100,6 +115,7 @@ describe("getUnassignedHutLeaderDates", () => {
 
     await expect(
       getUnassignedHutLeaderDates({
+        scope: { kind: "all" },
         db: buildDb({ hutLeaderLookaheadDays: 6, bookings: [booking] }),
         today: dateOnly("2026-04-10"),
         from: dateOnly("2026-03-01"),
@@ -122,6 +138,7 @@ describe("getUnassignedHutLeaderDates", () => {
     });
 
     const result = await getUnassignedHutLeaderDates({
+      scope: { kind: "all" },
       db,
       today: dateOnly("2026-04-10"),
       lookAheadDays: 6,
@@ -129,5 +146,85 @@ describe("getUnassignedHutLeaderDates", () => {
 
     expect(db.lodgeSettings.findUnique).not.toHaveBeenCalled();
     expect(result.map((item) => item.date)).toEqual(["2026-04-15"]);
+  });
+
+  it("binds both assignments and occupied bookings to the selected lodge", async () => {
+    const db = buildDb({
+      bookings: [
+        {
+          checkIn: dateOnly("2026-08-10"),
+          checkOut: dateOnly("2026-08-11"),
+          guests: [{}],
+        },
+      ],
+    });
+
+    await getUnassignedHutLeaderDates({
+      scope: { kind: "lodge", lodgeId: "lodge-b" },
+      db,
+      from: dateOnly("2026-08-10"),
+      to: dateOnly("2026-08-10"),
+    });
+
+    expect(db.hutLeaderAssignment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ lodgeId: "lodge-b" }) }),
+    );
+    expect(db.booking.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ lodgeId: "lodge-b" }) }),
+    );
+  });
+
+  it("keeps lodge identity in all-lodges coverage for the same calendar night", async () => {
+    const night = dateOnly("2026-08-10");
+    const result = await getUnassignedHutLeaderDates({
+      scope: { kind: "all" },
+      db: buildDb({
+        bookings: [
+          { lodgeId: "lodge-a", checkIn: night, checkOut: dateOnly("2026-08-11"), guests: [{}] },
+          { lodgeId: "lodge-b", checkIn: night, checkOut: dateOnly("2026-08-11"), guests: [{}, {}] },
+        ],
+        assignments: [
+          { lodgeId: "lodge-a", startDate: night, endDate: night },
+        ],
+      }),
+      from: night,
+      to: night,
+    });
+
+    expect(result).toEqual([
+      { date: "2026-08-10", bookingCount: 1, guestCount: 2 },
+    ]);
+  });
+
+  it("counts only explicit sparse guest nights and falls back only when none exist", async () => {
+    const result = await getUnassignedHutLeaderDates({
+      scope: { kind: "lodge", lodgeId: "lodge-a" },
+      db: buildDb({
+        bookings: [{
+          lodgeId: "lodge-a",
+          checkIn: dateOnly("2026-08-10"),
+          checkOut: dateOnly("2026-08-13"),
+          guests: [
+            {
+              stayStart: dateOnly("2026-08-10"),
+              stayEnd: dateOnly("2026-08-13"),
+              nights: [
+                { stayDate: dateOnly("2026-08-10") },
+                { stayDate: dateOnly("2026-08-12") },
+              ],
+            },
+            {},
+          ],
+        }],
+      }),
+      from: dateOnly("2026-08-10"),
+      to: dateOnly("2026-08-12"),
+    });
+
+    expect(result).toEqual([
+      { date: "2026-08-10", bookingCount: 1, guestCount: 2 },
+      { date: "2026-08-11", bookingCount: 1, guestCount: 1 },
+      { date: "2026-08-12", bookingCount: 1, guestCount: 2 },
+    ]);
   });
 });

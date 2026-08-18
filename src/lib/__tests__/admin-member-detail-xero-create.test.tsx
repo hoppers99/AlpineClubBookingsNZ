@@ -38,6 +38,11 @@ vi.mock("@/components/member-address-fields", () => ({
   MemberAddressFields: () => <div data-testid="member-address-fields" />,
 }));
 
+vi.mock(
+  "@/app/(admin)/admin/members/[id]/_components/member-lodge-access-card",
+  () => ({ MemberLodgeAccessCard: () => null }),
+);
+
 vi.mock("@/components/ui/dialog", () => ({
   Dialog: ({ children, open }: { children: ReactNode; open?: boolean }) =>
     open ? <div role="dialog">{children}</div> : null,

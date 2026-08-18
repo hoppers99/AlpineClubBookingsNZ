@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Save } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -16,8 +16,9 @@ import {
   type WysiwygEditorHandle,
 } from "@/components/admin/page-content-panel";
 import {
+  isPolicyScopeReady,
   PolicyScopeSelect,
-  usePolicyScopeLodgeName,
+  usePolicyScopeOptions,
 } from "@/components/admin/booking-policies/policy-scope-select";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
@@ -83,7 +84,10 @@ export function LodgeInstructionsPanel() {
   // replaces the club-wide document of that key at that lodge. The scope
   // control renders nothing while fewer than two lodges exist.
   const [scopeLodgeId, setScopeLodgeId] = useState<string | null>(null);
-  const scopeLodgeName = usePolicyScopeLodgeName(scopeLodgeId);
+  const policyScope = usePolicyScopeOptions(scopeLodgeId);
+  const policyScopeReady = isPolicyScopeReady(policyScope);
+  const scopeLodgeName =
+    policyScope.state.kind === "lodge" ? policyScope.state.lodgeName : null;
   // Lodge instructions gate on the LODGE area, not content (#1927).
   const canEdit = useAdminAreaEditAccess("lodge");
   const [loading, setLoading] = useState(true);
@@ -105,19 +109,52 @@ export function LodgeInstructionsPanel() {
   const editorRefs = useRef<KeyedRecord<WysiwygEditorHandle | null>>(
     emptyRecord(null),
   );
+  const activeScopeRef = useRef<string | null>(scopeLodgeId);
+  /*
+    #2887: ownership follows the COMMIT, not the render, and this must stay a
+    LAYOUT effect - a passive one is flushed after paint, leaving a window in
+    which a late lodge-A response still reads A as current. Full reasoning and
+    both mutation proofs live in one place:
+    `src/lib/__tests__/lodge-scope-committed-ownership.test.tsx`.
+  */
+  useLayoutEffect(() => {
+    activeScopeRef.current = scopeLodgeId;
+  }, [scopeLodgeId]);
+  const loadSequenceRef = useRef(0);
+  const loadAbortRef = useRef<AbortController | null>(null);
 
   // Load all three documents of the selected partition for editing.
   const loadDocuments = useCallback(async () => {
+    const requestedScope = scopeLodgeId;
+    const sequence = ++loadSequenceRef.current;
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    if (!policyScopeReady) {
+      setDrafts(emptyRecord(""));
+      setUpdatedAt(emptyRecord(null));
+      setHasOverride(emptyRecord(false));
+      setPendingOverride(emptyRecord(false));
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setLoadError(null);
     try {
-      const res = await fetch(partitionUrl(scopeLodgeId), {
+      const res = await fetch(partitionUrl(requestedScope), {
         credentials: "same-origin",
+        signal: controller.signal,
       });
       if (!res.ok) {
         throw new Error("load-failed");
       }
       const body = (await res.json()) as { documents: ApiDocument[] };
+      if (
+        sequence !== loadSequenceRef.current ||
+        activeScopeRef.current !== requestedScope
+      ) {
+        return;
+      }
       const nextDrafts = emptyRecord("");
       const nextUpdatedAt = emptyRecord<string | null>(null);
       const nextHasOverride = emptyRecord(false);
@@ -130,20 +167,35 @@ export function LodgeInstructionsPanel() {
       setUpdatedAt(nextUpdatedAt);
       setHasOverride(nextHasOverride);
       setPendingOverride(emptyRecord(false));
-    } catch {
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      if (
+        sequence !== loadSequenceRef.current ||
+        activeScopeRef.current !== requestedScope
+      ) {
+        return;
+      }
       setLoadError("Failed to load lodge instructions. Please try again.");
     } finally {
-      setLoading(false);
+      if (
+        sequence === loadSequenceRef.current &&
+        activeScopeRef.current === requestedScope
+      ) {
+        setLoading(false);
+      }
     }
-  }, [scopeLodgeId]);
+  }, [policyScopeReady, scopeLodgeId]);
 
   useEffect(() => {
     loadDocuments();
+    return () => loadAbortRef.current?.abort();
   }, [loadDocuments]);
 
   // Save a single document into the selected partition; content is
   // sanitised again server-side.
   async function saveDocument(key: DocumentKey, title: string) {
+    if (!policyScopeReady) return;
+    const requestedScope = scopeLodgeId;
     const contentHtml = editorRefs.current[key]?.getHtml() ?? drafts[key];
     setSavingKey(key);
     setForbidden(false);
@@ -155,7 +207,7 @@ export function LodgeInstructionsPanel() {
         body: JSON.stringify({
           key,
           contentHtml,
-          ...(scopeLodgeId ? { lodgeId: scopeLodgeId } : {}),
+          ...(requestedScope ? { lodgeId: requestedScope } : {}),
         }),
       });
       if (!res.ok) {
@@ -167,14 +219,15 @@ export function LodgeInstructionsPanel() {
         return;
       }
       const body = (await res.json()) as { document: ApiDocument };
+      if (activeScopeRef.current !== requestedScope) return;
       setDrafts((prev) => ({ ...prev, [key]: body.document.contentHtml }));
       setUpdatedAt((prev) => ({ ...prev, [key]: body.document.updatedAt }));
-      if (scopeLodgeId) {
+      if (requestedScope) {
         setHasOverride((prev) => ({ ...prev, [key]: true }));
         setPendingOverride((prev) => ({ ...prev, [key]: false }));
       }
       toast.success(
-        scopeLodgeId
+        requestedScope
           ? `${title} override saved for ${scopeLodgeName ?? "lodge"}`
           : `${title} saved`,
       );
@@ -188,6 +241,8 @@ export function LodgeInstructionsPanel() {
   // Start a lodge override as a copy of the club-wide document, so the
   // admin adjusts existing content rather than writing from a blank slate.
   async function createOverride(key: DocumentKey, title: string) {
+    if (!policyScopeReady) return;
+    const requestedScope = scopeLodgeId;
     try {
       const res = await fetch(partitionUrl(null), {
         credentials: "same-origin",
@@ -196,6 +251,7 @@ export function LodgeInstructionsPanel() {
         throw new Error("load-failed");
       }
       const body = (await res.json()) as { documents: ApiDocument[] };
+      if (activeScopeRef.current !== requestedScope) return;
       const clubWide = body.documents.find((doc) => doc.key === key);
       setDrafts((prev) => ({ ...prev, [key]: clubWide?.contentHtml ?? "" }));
       setPendingOverride((prev) => ({ ...prev, [key]: true }));
@@ -207,6 +263,8 @@ export function LodgeInstructionsPanel() {
   // Remove a lodge's override row so the lodge reverts to the club-wide
   // document (explicit remove flag; see the admin route).
   async function removeOverride(key: DocumentKey, title: string) {
+    if (!policyScopeReady) return;
+    const requestedScope = scopeLodgeId;
     if (
       !window.confirm(
         `Remove ${scopeLodgeName ?? "this lodge"}'s ${title.toLowerCase()} override? Hut leaders there will see the club-wide document again.`,
@@ -221,7 +279,7 @@ export function LodgeInstructionsPanel() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ key, lodgeId: scopeLodgeId, remove: true }),
+        body: JSON.stringify({ key, lodgeId: requestedScope, remove: true }),
       });
       if (!res.ok) {
         if (res.status === 403) {
@@ -231,6 +289,7 @@ export function LodgeInstructionsPanel() {
         toast.error(body?.error ?? `Failed to remove the ${title} override`);
         return;
       }
+      if (activeScopeRef.current !== requestedScope) return;
       setDrafts((prev) => ({ ...prev, [key]: "" }));
       setUpdatedAt((prev) => ({ ...prev, [key]: null }));
       setHasOverride((prev) => ({ ...prev, [key]: false }));
@@ -263,16 +322,39 @@ export function LodgeInstructionsPanel() {
     </AdminViewOnlySectionBanner>
   );
 
+  const scopeControl = (
+    <PolicyScopeSelect
+      options={policyScope}
+      value={scopeLodgeId}
+      onChange={(nextScope) => {
+        loadAbortRef.current?.abort();
+        loadSequenceRef.current += 1;
+        activeScopeRef.current = nextScope;
+        setDrafts(emptyRecord(""));
+        setUpdatedAt(emptyRecord(null));
+        setHasOverride(emptyRecord(false));
+        setPendingOverride(emptyRecord(false));
+        setScopeLodgeId(nextScope);
+      }}
+      id="lodge-instructions-scope"
+    />
+  );
+
+  if (!policyScopeReady) {
+    return (
+      <div>
+        {viewOnlyBanner}
+        <div className="space-y-6">{scopeControl}</div>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div>
         {viewOnlyBanner}
         <div className="space-y-6">
-        <PolicyScopeSelect
-          value={scopeLodgeId}
-          onChange={setScopeLodgeId}
-          id="lodge-instructions-scope"
-        />
+        {scopeControl}
         <p className="text-sm text-muted-foreground">Loading lodge instructions...</p>
         </div>
       </div>
@@ -284,11 +366,7 @@ export function LodgeInstructionsPanel() {
       <div>
         {viewOnlyBanner}
         <div className="space-y-3">
-        <PolicyScopeSelect
-          value={scopeLodgeId}
-          onChange={setScopeLodgeId}
-          id="lodge-instructions-scope"
-        />
+        {scopeControl}
         <p className="text-sm text-danger-11">{loadError}</p>
         <Button type="button" variant="outline" onClick={loadDocuments}>
           Retry
@@ -302,11 +380,7 @@ export function LodgeInstructionsPanel() {
     <div>
       {viewOnlyBanner}
       <div className="space-y-6">
-      <PolicyScopeSelect
-        value={scopeLodgeId}
-        onChange={setScopeLodgeId}
-        id="lodge-instructions-scope"
-      />
+      {scopeControl}
 
       {forbidden ? <AdminForbiddenSaveNotice /> : null}
 

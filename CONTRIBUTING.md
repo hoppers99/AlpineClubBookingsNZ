@@ -4,6 +4,17 @@ AlpineClubBookingsNZ is a production-shaped reference implementation for a club 
 membership, payment, and finance platform. Contributions should keep the app
 safe for real operational use while remaining understandable for public readers.
 
+This page is the canonical contribution process — setup, standards, and how to
+get a change reviewed and merged. For the wider map of what to read *before*
+changing a given area, start at
+[`docs/contributors/README.md`](docs/contributors/README.md), the contributor
+index: it names the agent contract, the invariants, the architecture and the
+per-area technical references, and it links back here rather than restating any
+of this.
+
+Adopting the platform for a club rather than changing it? That is a different
+path: [`docs/adopters/README.md`](docs/adopters/README.md).
+
 ## Local Setup
 
 These commands assume PostgreSQL is reachable at `DATABASE_URL`. For a

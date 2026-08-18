@@ -42,6 +42,14 @@ vi.mock("@/components/lodge-select", () => ({
 // is not the subject here — the section's reaction to a scope CHANGE is. A
 // plain native select drives the same `onChange` contract.
 vi.mock("../policy-scope-select", () => ({
+  usePolicyScopeOptions: (lodgeId: string | null) => ({
+    state: lodgeId
+      ? { kind: "lodge", lodgeId, lodgeName: LODGES.find((lodge) => lodge.id === lodgeId)?.name ?? null }
+      : { kind: "club-wide" },
+    lodges: LODGES,
+    reload: vi.fn(),
+  }),
+  isPolicyScopeReady: () => true,
   PolicyScopeSelect: ({
     value,
     onChange,
@@ -63,8 +71,6 @@ vi.mock("../policy-scope-select", () => ({
       ))}
     </select>
   ),
-  usePolicyScopeLodgeName: (lodgeId: string | null) =>
-    LODGES.find((lodge) => lodge.id === lodgeId)?.name ?? null,
 }));
 
 import { DefaultCancellationPolicySection } from "../default-cancellation-policy-section";

@@ -22,6 +22,7 @@ import {
 import { cn } from "@/lib/utils";
 import { getBookingAccent } from "./booking-accent";
 import {
+  type AllocationLockReason,
   type BedOption,
   type BedOptionGroup,
   type DashboardAllocation,
@@ -41,6 +42,11 @@ interface AllocationChipProps {
   // Tri-state (#2065): `undefined` while the client session resolves; the
   // `!canEdit` idiom treats that as disabled, so no truthy default here.
   canEdit: boolean | undefined;
+  // #2701: set while the board is club-wide. Every item in the manage menu —
+  // Move to bed, Assign range…, and Remove allocation — needs a concrete
+  // lodge, and "Remove allocation" would otherwise be a clickable silent no-op
+  // (owner decision 6).
+  lockReason?: AllocationLockReason;
 }
 
 export function AllocationChip({
@@ -52,13 +58,19 @@ export function AllocationChip({
   onAssignRange,
   pending,
   canEdit,
+  lockReason,
 }: AllocationChipProps) {
   const manageTriggerRef = useRef<HTMLButtonElement>(null);
+  const locked = lockReason !== undefined;
+  // The view-only reason wins when both apply: it is the restriction the admin
+  // cannot resolve from this screen, and its own banner is already on the page.
+  const disabledReason =
+    canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : lockReason;
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: allocationDraggableId(allocation.id),
       data: { type: "allocation", allocationId: allocation.id },
-      disabled: !canEdit,
+      disabled: !canEdit || locked,
     });
 
   const optionGroups =
@@ -133,8 +145,8 @@ export function AllocationChip({
       <button
         type="button"
         aria-label={`Drag ${allocation.guestName} to another bed; original lodge night ${allocation.stayDate} will be kept`}
-        disabled={!canEdit}
-        title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
+        disabled={!canEdit || locked}
+        title={disabledReason}
         className="cursor-grab touch-none rounded p-0.5 text-muted-foreground hover:bg-accent active:cursor-grabbing"
         {...attributes}
         {...listeners}
@@ -201,7 +213,8 @@ export function AllocationChip({
             className="h-5 w-5 shrink-0"
             aria-label={`Manage allocation for ${allocation.guestName}`}
             data-bed-allocation-focus-id={allocation.id}
-            disabled={pending || canEdit === undefined}
+            title={disabledReason}
+            disabled={pending || canEdit === undefined || locked}
           >
             <X className="h-3 w-3" />
           </Button>

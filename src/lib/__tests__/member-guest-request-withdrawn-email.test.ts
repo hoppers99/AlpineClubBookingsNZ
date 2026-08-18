@@ -50,7 +50,9 @@ import {
   renderTemplateString,
   validateEmailTemplateContent,
 } from "@/lib/email-message-renderer";
-import { memberGuestRequestWithdrawnTemplate } from "@/lib/email-templates";
+import {
+  memberGuestRequestWithdrawnTemplate,
+} from "@/lib/email-templates/member-guest";
 import { composeMemberGuestWithdrawn } from "@/lib/member-guest-email-notes";
 import { sendMemberGuestRequestWithdrawnEmail } from "@/lib/email/member-guest";
 

@@ -202,7 +202,7 @@ async function getStats() {
     prisma.bookingChangeRequest.count({
       where: { status: "REQUESTED" },
     }),
-    getUnassignedHutLeaderDates(),
+    getUnassignedHutLeaderDates({ scope: { kind: "all" } }),
     // Roster Assignment officer card (#2091, D-E2): DAYS in the next 7 days
     // that still need a chore roster. Window-scoped to the roster surface's own
     // needs-roster semantics (days with ≥1 guest in the lodge and no chore

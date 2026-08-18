@@ -2,10 +2,10 @@ import { PaymentSource, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
-import type {
-  AppliedCreditSummary,
-  ConfirmationSettlementMethod,
-} from "@/lib/email-templates";
+import {
+  type AppliedCreditSummary,
+  type ConfirmationSettlementMethod,
+} from "@/lib/booking-money-lines";
 
 /**
  * #2328: the applied-account-credit facts a booking confirmation must state,
@@ -63,7 +63,8 @@ import type {
  *    expected: every send site settles before it sends. Where it would matter
  *    most — a stay fully covered by credit, whose Payment row carries no source
  *    at all — the label is method-neutral anyway ("Nothing more to pay"), by
- *    the same reasoning; see `NOTHING_SETTLED_LABEL` in `email-templates.ts`.
+ *    the same reasoning; see `NOTHING_SETTLED_LABEL` in
+ *    `booking-money-lines.ts`.
  *
  * `expectedTotalCents` is the total the CALLER is about to print. Passing it
  * costs nothing and makes a two-instant read observable: this function reads

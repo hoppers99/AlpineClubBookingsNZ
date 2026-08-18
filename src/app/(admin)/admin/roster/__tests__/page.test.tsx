@@ -9,10 +9,13 @@ vi.mock("@/hooks/use-admin-area-edit-access", () => ({
 }))
 
 vi.mock("@/components/lodge-select", () => ({
-  initialLodgeIdFromLocation: () => null,
+  initialLodgeIdFromLocation: () => "lodge-1",
   useLodgeOptions: () => ({
     lodges: [{ id: "lodge-1", name: "Lodge One" }, { id: "lodge-2", name: "Lodge Two" }],
     loading: false,
+    failed: false,
+    forbidden: false,
+    reload: vi.fn(),
   }),
   LodgeSelect: ({ value, onChange }: { value: string | null; onChange: (value: string | null) => void }) => (
     <select aria-label="Lodge" value={value ?? ""} onChange={(event) => onChange(event.target.value || null)}>
@@ -128,7 +131,7 @@ describe("admin roster page draft transitions", () => {
     const lodge = screen.getByLabelText("Lodge") as HTMLSelectElement
     lodge.focus()
     fireEvent.change(lodge, { target: { value: "lodge-2" } })
-    expect(lodge.value).toBe("")
+    expect(lodge.value).toBe("lodge-1")
     expect(lodge).toBe(document.activeElement)
 
     const regenerate = screen.getByRole("button", { name: "Regenerate Roster" })

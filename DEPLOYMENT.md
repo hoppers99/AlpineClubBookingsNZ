@@ -1283,10 +1283,16 @@ a casual refresh. Rotation drops, all at once:
 - **all 2FA enrolments and recovery-code hashes** — every member is forced back
   through two-factor enrollment on next sign-in. **Admin-lockout risk:** an admin
   who cannot immediately re-enroll (lost authenticator) can be locked out.
-- **all stored provider credentials** (Xero client id/secret/webhook key; Stripe
-  secret/publishable/webhook-signing keys) and the **wrapped Xero token-encryption
-  key** — these fail GCM decryption afterwards and must be re-entered in-app; Xero
-  must be reconnected (re-OAuth) and the Stripe webhook re-verified.
+- **all stored provider credentials, for every provider in the store** — and the
+  **wrapped Xero token-encryption key**. These fail GCM decryption afterwards and
+  must be re-entered in-app; Xero must be reconnected (re-OAuth) and the Stripe
+  webhook re-verified. **This runbook deliberately does not list the providers.**
+  It used to name Xero and Stripe only, and stayed that way while Google, the
+  backup destination and two AI keys joined the same store — an operator planned
+  a rotation for two providers and would have met six mid-rotation. The one
+  current list is
+  [Credentials at rest → the provider list](docs/SECURITY-ATTACK-SURFACE.md#the-provider-list-and-the-one-place-it-lives-2720);
+  read it before you start and budget re-entry for everything on it.
 
 **Safe procedure:**
 

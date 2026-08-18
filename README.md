@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://tokoroa.org.nz">Live club site</a> ·
+  <a href="docs/adopters/README.md">Run it for your club</a> ·
   <a href="docs/README.md">Documentation</a> ·
   <a href="#quickstart">Quickstart</a> ·
   <a href="#see-it-in-action">Screenshots</a> ·
@@ -20,15 +20,38 @@
 </p>
 
 **AlpineClubBookingsNZ** is an open-source booking, membership, payment, and
-lodge-operations platform for small clubs — built for and running
-[Tokoroa Alpine Club](https://tokoroa.org.nz) in production today. It is also
-published as a real-world reference implementation of a production Next.js
-application with payments, accounting, email, scheduled jobs, and Docker-based
-blue/green deployment.
+lodge-operations platform for small clubs. Members book real beds against real
+capacity; admins run the whole club — bookings, membership lifecycle, fees,
+Stripe and bank-transfer payments, Xero accounting, lodge chores, even the TV in
+the lodge lobby — from one app.
 
-Members book real beds against real capacity; admins run the whole club —
-bookings, membership lifecycle, fees, Stripe and bank-transfer payments,
-Xero accounting, lodge chores, even the TV in the lodge lobby — from one app.
+**One deployment serves one club — and this repository is the generic product
+every club deploys, not one club's copy of it.** Nothing here encodes which club
+you are. Your name, capacity, age tiers, integer-cent rates, policies, wording,
+branding, and which capabilities exist at all are values you supply. So the
+normal way to adopt this is **configure, don't fork**, on four levers:
+
+- **Module toggle** — switch a whole capability on or off for your deployment
+  (kiosk, chores, waitlist, Xero, bed allocation, lobby displays, and more).
+  [`docs/guides/modules.md`](docs/guides/modules.md) is the live list, with each
+  module's out-of-the-box default.
+- **Setting** — every club has the capability, each supplies its own value or
+  policy. Edited in the app, stored in the database, live immediately; no
+  redeploy, no `.env` edit. Install-time values live in `config/club.json`.
+- **Seed default** — the value a fresh install starts with. Change it when it is
+  a poor starting point for a *typical* club, and send that upstream.
+- **Code change** — only when the behaviour genuinely is not expressible through
+  the generic model. Build the configuration surface at the same time, and
+  [contribute it upstream](docs/adopters/upstream-contributions.md) rather than
+  carrying it forever in a fork.
+
+The test that picks between them: **would a different club answer this question
+differently?** If yes, it is configuration, not code.
+
+→ **Adopting it?** Start at
+[**Run this for your club**](docs/adopters/README.md), and read
+[Configure, don't fork](docs/adopters/configure-or-fork.md) before you change
+any code.
 
 <p align="center">
   <img src="docs/images/readme/demo-booking.gif" alt="Animated demo of the member booking flow showing stay dates being chosen on the availability calendar and the priced booking summary with payment options" width="90%">
@@ -47,10 +70,11 @@ Xero accounting, lodge chores, even the TV in the lodge lobby — from one app.
 | 📰 **Member notices** — committee-authored news targeted to member audiences (everyone, membership types, lodges, committee roles, or individuals), shown on the dashboard with per-member read and acknowledgement tracking and optional email-on-publish → [guide](docs/guides/member-notices.md) | 📣 **Bulk communications** — one-off admin email to opted-in members with send history and preference/suppression filtering → [guide](docs/guides/communications.md) |
 | 💬 **In-app help everywhere** — a chat-style help widget on every surface answers page-specific questions from a curated corpus and shows a full page guide; with the optional **AI help assistant** module on (a club-supplied Anthropic key + a hard monthly spend cap), authenticated members can also ask free-text questions grounded strictly in that corpus → [configuration](CONFIGURATION.md#ai-help-assistant) | 🐛 **One-click issue reporting** — members and staff capture the current view and report a problem from any page straight into the admin triage queue |
 
-Every feature above ships with an operator guide — 66 of them, nearly all
-illustrated with captured screenshots — plus member-facing
-[user guides](docs/user-guide/README.md), all indexed in the
-[documentation hub](docs/README.md).
+Every feature above ships with an illustrated operator guide, one per admin
+area, plus member-facing [user guides](docs/user-guide/README.md). They are
+indexed under [Run this for your club](docs/adopters/README.md#operating-a-live-club),
+and [`docs/COVERAGE_MATRIX.md`](docs/COVERAGE_MATRIX.md) maps every admin route
+to the guide that covers it.
 
 Concrete-booking emails can link authorized signed-in recipients straight to
 the booking detail, while public bearer actions remain separate.
@@ -64,12 +88,13 @@ the booking detail, while public bearer actions remain separate.
 | [![Reports page showing stay-night Booked Revenue, Net Collected Cash, Outstanding Additions, occupancy, booking trends, and status charts](docs/images/admin/admin-reports.png)](docs/guides/reports.md) *Reports* | [![Public club website home page showing the admin-editable hero and menu](docs/images/public/public-home.png)](docs/guides/page-content.md) *Public club website* |
 
 <details>
-<summary>There are over 80 captured screens across the admin, member, and public surfaces.</summary>
+<summary>Every admin, member, and public surface is captured, and none of it is hand-cropped.</summary>
 
 Apart from the lobby-display design concept above, screenshots are generated
 by a deterministic capture harness against seeded demo data
 (`npm run docs:screenshots`, see [`docs/images/README.md`](docs/images/README.md))
-and embedded throughout the [operator guides](docs/README.md).
+and embedded throughout the
+[operator guides](docs/adopters/README.md#operating-a-live-club).
 </details>
 
 ## Architecture at a glance
@@ -97,9 +122,11 @@ flowchart LR
 TypeScript end to end: Next.js 16 App Router and React 19, PostgreSQL 16 with
 Prisma 7, Auth.js credentials sessions (optional TOTP/email two-factor,
 magic-link, and Google sign-in), Tailwind CSS and Radix UI, Vitest and
-Playwright. The full system design — data model, booking capacity rules,
-integration boundaries, cron, and deployment shape — is in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Playwright. It is also published as a real-world reference implementation of a
+production Next.js application with payments, accounting, email, scheduled jobs,
+and Docker-based blue/green deployment. The full system design — data model,
+booking capacity rules, integration boundaries, cron, and deployment shape — is
+in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Quickstart
 
@@ -127,25 +154,27 @@ docker compose --env-file .env.staging -p tacbookings-staging \
 Then open `http://localhost:3001` and sign in with your `SEED_ADMIN_*`
 credentials.
 
-**Adopting this for your club** is a documented, tested path:
+**Adopting this for your club** is a documented, tested path, and every step is
+configuration:
 
 1. Set your club name, beds, age tiers, and integer-cent rates in
-   `config/club.json`.
+   `config/club.json` (or run `npm run setup:wizard`).
 2. Seed the first admin, then finish the in-app checklist at `/admin/setup`.
 3. Brand it — colours, fonts, and logo at `/admin/site-style`, no redeploy
    needed — and replace the included club branding and copy with your own
    ([`NOTICE.md`](NOTICE.md)).
-4. Toggle optional modules (kiosk, Xero, waitlist, lobby displays, Internet
-   Banking, …) under **Admin → Modules**. Connecting Xero is fully in-app — a
-   guided wizard at **Admin → Xero → Setup** walks you through creating the Xero
-   app, entering its credentials (encrypted at rest), and the OAuth connect, with
-   no `.env` edits or key generation.
+4. Toggle the capabilities you want under **Admin → Modules**. Connecting Xero
+   is fully in-app — a guided wizard at **Admin → Xero → Setup** walks you
+   through creating the Xero app, entering its credentials (encrypted at rest),
+   and the OAuth connect, with no `.env` edits or key generation.
 
-The step-by-step adopter path from clone to first deployment is
+The whole adopter path is indexed at
+[**Run this for your club**](docs/adopters/README.md). The step-by-step walk
+from clone to first deployment is
 [`docs/IMPLEMENTATION_GUIDE.md`](docs/IMPLEMENTATION_GUIDE.md); every
 environment variable and the `config/club.json` schema are in
-[`CONFIGURATION.md`](CONFIGURATION.md); the reference Lightsail + Docker +
-Caddy blue/green production setup is in [`DEPLOYMENT.md`](DEPLOYMENT.md).
+[`CONFIGURATION.md`](CONFIGURATION.md); the reference Docker + reverse-proxy
+blue/green production setup is in [`DEPLOYMENT.md`](DEPLOYMENT.md).
 
 ## Engineering quality
 
@@ -189,27 +218,28 @@ Deploys ship from GHCR images (`alpineclubbookingsnz-app`,
 
 ## Documentation
 
-Start at the [documentation hub](docs/README.md) for recommended reading paths
-by audience. Key entry points:
+The documentation is split by audience into three doors, indexed at the
+[documentation hub](docs/README.md):
 
-| Audience | Where to go |
+| You are… | Go to |
 |---|---|
-| **Club members** | [User guides](docs/user-guide/README.md) — booking a stay, paying, waitlist, family, your account — also on the [project wiki](https://github.com/thatskiff33/AlpineClubBookingsNZ/wiki) |
-| **Adopting clubs** | [`docs/IMPLEMENTATION_GUIDE.md`](docs/IMPLEMENTATION_GUIDE.md) · [`CONFIGURATION.md`](CONFIGURATION.md) · [`DEPLOYMENT.md`](DEPLOYMENT.md) · [`docs/UPGRADING.md`](docs/UPGRADING.md) |
-| **Operators / committee** | [65 illustrated operator guides](docs/README.md) · feature hubs: [finance dashboard](docs/finance-dashboard/README.md), [multi-lodge](docs/multi-lodge/README.md), [lobby display](docs/lobby-display/README.md), [Xero](docs/xero/ARCHITECTURE.md), [config transfer](docs/config-transfer/README.md) · [`docs/CANCELLATIONS.md`](docs/CANCELLATIONS.md) · [`docs/AUTHORITATIVE_FEES.md`](docs/AUTHORITATIVE_FEES.md) |
-| **Developers** | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/DOMAIN_INVARIANTS.md`](docs/DOMAIN_INVARIANTS.md) · [`docs/STATE_MACHINES.md`](docs/STATE_MACHINES.md) · [`docs/UX_FLOW_MAP.md`](docs/UX_FLOW_MAP.md) · [`docs/TESTING.md`](docs/TESTING.md) · [`docs/E2E_PLAYWRIGHT.md`](docs/E2E_PLAYWRIGHT.md) · [`docs/MAINTENANCE.md`](docs/MAINTENANCE.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) |
-| **Maintainers** | [`docs/ONGOING_DEVELOPMENT_WORKFLOW.md`](docs/ONGOING_DEVELOPMENT_WORKFLOW.md) · [`docs/BLUE_GREEN_MIGRATION_POLICY.md`](docs/BLUE_GREEN_MIGRATION_POLICY.md) · [`docs/PRODUCTION_UPGRADE_RUNBOOK.md`](docs/PRODUCTION_UPGRADE_RUNBOOK.md) · [`docs/SECURITY.md`](docs/SECURITY.md) |
+| **Adopting, configuring, deploying or operating** it for a club | [**Run this for your club**](docs/adopters/README.md) — [Configure, don't fork](docs/adopters/configure-or-fork.md) · [`docs/IMPLEMENTATION_GUIDE.md`](docs/IMPLEMENTATION_GUIDE.md) · [`CONFIGURATION.md`](CONFIGURATION.md) · [`DEPLOYMENT.md`](DEPLOYMENT.md) · [operator guides](docs/adopters/README.md#operating-a-live-club) · [`docs/UPGRADING.md`](docs/UPGRADING.md) |
+| **Changing the code** — contributor or automated agent | [**Change the code**](docs/contributors/README.md) — [`AGENTS.md`](AGENTS.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/DOMAIN_INVARIANTS.md`](docs/DOMAIN_INVARIANTS.md) · [`docs/STATE_MACHINES.md`](docs/STATE_MACHINES.md) · [`docs/TESTING.md`](docs/TESTING.md) |
+| **Using** a club that already runs it | [**Member & Guest Guide**](docs/user-guide/README.md) — booking a stay, paying, waitlist, family, your account — also on the [project wiki](https://github.com/thatskiff33/AlpineClubBookingsNZ/wiki) |
 
 ## Community, security, and licence
 
 - Questions and help: [`SUPPORT.md`](SUPPORT.md) · conduct:
   [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
-- Contributions welcome — read [`CONTRIBUTING.md`](CONTRIBUTING.md) first
+- Contributions welcome — read [`CONTRIBUTING.md`](CONTRIBUTING.md) first.
+  Running a fork and want a change maintained for you?
+  [Contribute it upstream](docs/adopters/upstream-contributions.md)
 - Report suspected vulnerabilities **privately** via [`SECURITY.md`](SECURITY.md);
   never post secrets, personal data, or accounting records in public issues
 - MIT licensed ([`LICENSE`](LICENSE)). Club branding, logos, copy, and domains
   are included for context only — replace them before using a fork for another
   organisation ([`NOTICE.md`](NOTICE.md))
 
-Built with ❤️ for [Tokoroa Alpine Club](https://tokoroa.org.nz), and for every
-small club still running its lodge on spreadsheets.
+Built for every small club still running its lodge on spreadsheets. The
+reference deployment is [Tokoroa Alpine Club](https://tokoroa.org.nz), which
+runs it in production; nothing about that club is baked into this repository.

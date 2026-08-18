@@ -5,35 +5,29 @@ Treat this file as the entry point, then follow the linked documents for detail.
 
 ## Read First
 
-Three documents are read every time. Everything else is **routed**: read
+Two documents are read every time. Everything else is **routed**: read
 **every** row in the table below that matches what you are about to change — a
 real change usually matches more than one — and read what those rows name, at
 the moment you need it. If any part of what you are changing matches no row,
-read `docs/README.md` for that part as well. A change that is half routed is
-still half off-map, and stopping at the first row that matched is how the
-unrouted half gets missed.
+read `docs/contributors/README.md` — the contributor index — for that part as
+well. A change that is half routed is still half off-map, and stopping at the
+first row that matched is how the unrouted half gets missed.
 
-Read-everything was tried here and it failed. Measured as `wc -c` over each
-file divided by four — the usual rough characters-per-token ratio for English
-prose, applied identically to both sides — the nine-document list this replaced
-came to roughly **395,000 tokens**, close to twice a 200k context window. It
-does not fit at all, so in practice agents skipped it, and four consecutive PRs
-(#2622, #2630, #2631, #2632) each re-fixed a stay-boundary rule that was already
-written down correctly, in the right place, in strong language. A rule you cannot
-reach at the moment you need it is a rule that does not hold. The core below is
-**27,293 tokens** by that same measure — roughly a fourteenth of the list it
-replaced (#2691). Three other estimators put it lower still: 27,210 by
-code-point characters, 25,983 counting word-and-punctuation pieces, and 21,551
-by words. The most pessimistic number is the one quoted.
+Read-everything was tried here and it failed. The former nine-document mandatory
+list did not fit in an agent context, so in practice agents skipped it, and four
+consecutive PRs (#2622, #2630, #2631, #2632) each re-fixed a stay-boundary rule
+that was already written down correctly, in the right place, in strong language.
+A rule you cannot reach at the moment you need it is a rule that does not hold.
+The core below is deliberately agent-neutral and small; the routing table and
+the scoped context command provide the rest when a change needs it (#2691,
+#2903).
 
 ### The always-read core
 
 1. **`AGENTS.md`** — this file. Safety rules, change discipline, the
    concurrency/lock checklist, the orchestration model, done criteria, and the
    merge gate. Nothing below supersedes it.
-2. **`CLAUDE.md`** — for an interactive Claude Code session. It highlights the
-   parts of this file that matter most in that mode and never overrides it.
-3. **`docs/DOMAIN_INVARIANTS.md`** — the invariant **index**, and the only part of
+2. **`docs/DOMAIN_INVARIANTS.md`** — the invariant **index**, and the only part of
    the invariants anybody reads in full. Every rule the system must never break
    carries a permanent id (`INV-CAP-021`, `INV-MONEY-004`) with a one-line
    description and the file it lives in. Read it so you know which rules exist;
@@ -44,6 +38,8 @@ by words. The most pessimistic number is the one quoted.
 `docs/END_TO_END_TEST_MATRIX.md` and `docs/UX_FLOW_MAP.md` were the rest of the
 old mandatory list. They are no less authoritative — they are routed below, and
 reading the row that names them is not optional when the row applies to you.
+`docs/README.md` is now a router over three audience indexes (#2692); the one
+you want is `docs/contributors/README.md`.
 
 ### Routing table
 
@@ -76,16 +72,18 @@ id and need the file it lives in.
 | A status transition — booking, payment, membership, waitlist, bed allocation, email retry, Xero outbox, cron recovery, sign-in, or any of the two dozen other lifecycles in that file | — | [`STATE_MACHINES.md`](docs/STATE_MACHINES.md) |
 | Where code lives, module boundaries, the admin settings pattern | — | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | An admin settings section, a staged-edit form, or a view-only / permission-gated control — including adding a single toggle, field, row action or button to a settings page | — | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) → "Admin/member layer", which states the canonical settings pattern in full and is binding for new or modified sections |
+| Something a club could want switched off, or answered differently from ours — a new module, setting, seed default, or any value that varies by deployment | `INV-CONFIG` → [`product-configuration.md`](docs/invariants/product-configuration.md) | [`adopters/configure-or-fork.md`](docs/adopters/configure-or-fork.md) — the four levers and which to reach for |
 | Environment variables, secrets, setup, deployment configuration | — | [`CONFIGURATION.md`](CONFIGURATION.md) |
 | A screen, a navigation path, or an admin area's UI | — | [`UX_FLOW_MAP.md`](docs/UX_FLOW_MAP.md), [`COVERAGE_MATRIX.md`](docs/COVERAGE_MATRIX.md) |
 | Tests — conventions, the frozen clock, coverage, E2E | — | [`TESTING.md`](docs/TESTING.md), [`END_TO_END_TEST_MATRIX.md`](docs/END_TO_END_TEST_MATRIX.md), [`E2E_PLAYWRIGHT.md`](docs/E2E_PLAYWRIGHT.md) |
 | Auth, sessions, tokens, permissions — anything security-shaped | — | [`SECURITY.md`](docs/SECURITY.md), [`SECURITY-ATTACK-SURFACE.md`](docs/SECURITY-ATTACK-SURFACE.md), [`TOKEN_HASHING.md`](docs/TOKEN_HASHING.md) |
 | Documentation itself | — | [`STYLE_GUIDE.md`](docs/STYLE_GUIDE.md) |
+| Locating bounded code, import or Prisma context for an agent | — | [`agents/SCOPED_CONTEXT.md`](docs/agents/SCOPED_CONTEXT.md) |
 | Your first `npm` command in a new worktree (Windows runtime + dependency preflight) | — | [`agents/CODEX_WORKFLOW.md`](docs/agents/CODEX_WORKFLOW.md) |
 | Working an issue, recording a decision on one, briefing a subagent, or reading untrusted issue/PR/provider text | — | [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md) — read the thread with `npm run issue -- <n>`, never `gh issue view`, and rewrite the body when you record a decision; [`agents/SUBAGENT_GUIDE.md`](docs/agents/SUBAGENT_GUIDE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](docs/agents/PROMPT_INJECTION_GUIDE.md) |
 | Posting in public — issues, PRs, comments, claims, cross-lane hand-offs | — | [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md) — what never goes in a public artifact, the `CLAIM:`/`LANE-SYNC:` prefixes, lane identity |
 | A Next.js API or convention | — | the relevant guide in `node_modules/next/dist/docs/` |
-| Any part of your change that no row above covers — including a change that also matched a row | — | [`docs/README.md`](docs/README.md) — the documentation hub; [`README.md`](README.md) for what the product is |
+| Any part of your change that no row above covers — including a change that also matched a row | — | [`docs/contributors/README.md`](docs/contributors/README.md) — the contributor index, which names every technical reference and feature hub; [`docs/README.md`](docs/README.md) routes to the adopter and member paths; [`README.md`](README.md) for what the product is |
 
 ### Keeping the table usable
 
@@ -140,6 +138,15 @@ id and need the file it lives in.
   otherwise.
 - Work only inside the issue scope. Stop and ask for human review if the code or
   docs contradict the issue.
+- **This repository is the generic product, not one club's site.** Each deployed
+  instance serves exactly one club; the codebase must never encode which club.
+  That is about what the code hard-codes, not about runtime tenancy. Before
+  asking the owner for a deployment-specific value, ask: **would a different
+  club answer this differently?** If yes it belongs on a module toggle, a
+  setting or a seed default rather than a build-time constant — and a blocker
+  demanding one such value is the smell. `INV-CONFIG-001` is the rule;
+  [`adopters/configure-or-fork.md`](docs/adopters/configure-or-fork.md) is the
+  canonical guide to the levers and is not restated here.
 - Money values must remain integer cents.
 - Booking dates must remain New Zealand date-only lodge nights unless a feature
   explicitly requires time-of-day semantics.
@@ -188,8 +195,11 @@ id and need the file it lives in.
   audience labels (adopter/operator/developer/agent), the required operator-guide
   page skeleton, plain-English-first-with-technical-detail, and the screenshot
   (`docs/images/**` via `npm run docs:screenshots`), mermaid, and linking
-  conventions. Every doc must be reachable from a hub (`docs/README.md` or a
-  feature hub) and every hub back-links. Run `npm run docs:linkcheck` (CI runs
+  conventions. Every doc must be reachable from one of the three
+  audience indexes (`docs/adopters/README.md`, `docs/contributors/README.md`,
+  `docs/user-guide/README.md`) or from a feature hub linked by one of them, and
+  every hub back-links. A page serving two audiences gets ONE canonical home and
+  a link from the other index — never a second copy (#2692). Run `npm run docs:linkcheck` (CI runs
   the equivalent lychee offline check) and `npm run docs:indexcheck` (which the
   `verify` job runs, and which fails a `docs/` page nothing links to) before
   pushing doc changes, and when you add a new admin route area add its row to
@@ -209,6 +219,60 @@ id and need the file it lives in.
 - Security, payment, booking, membership lifecycle, Xero, Stripe, and
   data-integrity work requires high or xhigh reasoning effort and human review
   before merge.
+
+## Context, quota, planning, and failure control
+
+These controls apply equally to Codex, Claude Code, and their subagents. They
+protect the allowance needed to finish a lane without weakening its safety or
+validation gates.
+
+- **Keep a private 25% weekly reserve.** Check the platform's remaining weekly
+  allowance before starting a sizeable lane. Do not start routine or speculative
+  work that would consume the reserve; use it to finish an active safe lane,
+  diagnose a blocking failure, or handle an owner-prioritised task. Never put
+  account balances, reset times, usage screenshots, or other private allowance
+  figures in a public issue, PR, commit or artifact.
+- **Load scoped context, not a repository dump.** Start from the always-read core
+  and every matching routing row. When code shape is still unclear, run
+  `npm run agent:context -- -- --base <ref> --entry <tracked-path> ...`; the contract
+  and supported graph forms live in
+  [`docs/agents/SCOPED_CONTEXT.md`](docs/agents/SCOPED_CONTEXT.md). Generated
+  files under `.artifacts/agent-context/` are ignored, local, bounded context —
+  never committed, pasted wholesale into a prompt, or injected automatically by
+  a hook. Clear issue-specific context before switching lanes.
+- **Spend models, tools, and subagents in proportion to risk.** Decide the spend
+  when you dispatch, from the lineup and the task in front of you — this file
+  names the decision, not the model, because the tiers change faster than it
+  does. Ask first whether a deterministic command already answers the question
+  exactly: a grep, a focused test, a typecheck or `npm run agent:context`
+  returns a checkable fact, where a model returns a claim you then have to
+  verify. That test, not a list of "routine" task types, is what makes local
+  tooling the cheaper answer. When a model is warranted, dispatch the cheapest
+  tier you would trust to be right on this task *without re-reading its work*,
+  and escalate on evidence — a wrong answer, a refusal, a task that proves
+  reasoning-bound — rather than on a hunch that bigger is safer. Prefer
+  repository commands over an MCP or browser round trip when they answer the
+  same question. Delegate only a sizeable independent track whose payoff exceeds
+  re-establishing its context, and give it the smallest relevant artifact and
+  file set. Gated areas retain the strongest-model high/xhigh rules in the
+  orchestration model below, and `xhigh` remains the ceiling.
+- **Gate the blueprint by risk.** A narrow Low/Medium issue with complete scope
+  needs only a concise working plan. Before implementing High/Critical work,
+  record a blueprint that names the affected invariants, counterpart writers,
+  data/rollback or recovery shape, validation, and stop conditions, and obtain
+  the human plan review required by this file. A plan is not permission to widen
+  the issue.
+- **Validate coherent batches.** Run the cheapest relevant check after a
+  meaningful batch or boundary (parser, schema client, route, UI, docs), not
+  after every keystroke and not only at the end. The final local gate remains
+  branch-correct Prisma generation, lint, typecheck, `test:related`, focused
+  touched/adjacent tests, and the routed docs/knip checks; PR CI still owns the
+  full suite and build.
+- **Two identical failures trip a circuit breaker.** After the same command and
+  material error fail twice, do not spend a third attempt on an unchanged
+  strategy. Preserve the exact command and error, inspect the root cause, narrow
+  or change the approach, and escalate when the next step needs authority or
+  external state. A materially different diagnostic is not a blind retry.
 
 ### Concurrency and lock checklist
 
@@ -465,6 +529,17 @@ At the successful end of a meaningful piece of work:
   already settled. `gh issue view <n>` prints the body and stops, so the short,
   obvious command returns the stale half — which is how #2777 was put back to the
   owner as an open question the evening after they answered it.
+- **The same applies to any claim about an issue's state** — a report to the
+  owner, a handoff, a plan, an epic body, a label, a brief. A summary you wrote
+  yourself is still a summary. **Read every reply before putting options to the
+  owner, including from anyone outside this repository:** somebody running a
+  fork sees constraints this repository cannot, and on #2701 an unread fork
+  review held a better answer than all three options drafted without it. An
+  unanswered reviewer question is an open finding, and a reviewer's suggested
+  follow-up is subject to the same filed-follow-up rule as your own. Where a
+  reviewer and the owner conflict, the owner decides. Detail:
+  [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md) → "External and
+  fork review".
 - **A decision is not recorded until the body says so.** When you record an owner
   or orchestrator decision on an issue, rewrite that issue's **body** in the same
   sitting: the decision at the top, the option list struck through, a link to the
@@ -474,7 +549,10 @@ At the successful end of a meaningful piece of work:
   template and a worked example:
   [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md) → "Recording a
   decision: the body must carry the answer", which is the single home for this
-  rule.
+  rule. **Remove `needs-decision` in the same action**, because "decided" and
+  "unblocked" are different states: if something else still blocks the issue,
+  name that dependency rather than leave a label asserting a question nobody
+  has.
 - **Authorisation lives on the repo, and quoting it is not evidence.** It is an
   issue body or an issue/PR comment, read at source
   (`npm run issue -- <n>`) and linked by URL in the PR body — which
@@ -625,21 +703,48 @@ handed an epic-with-children or asked to run several related issues at once.
 
 ### 4. Model selection
 
-- **Default subagents to the strongest generally-capable model (Opus).**
-  Reserve the top Mythos-class tier (Fable) for tasks genuinely at the reasoning
-  frontier — deep Xero-idempotency/frozen-reference contracts, immutable-charge
-  backfill correctness, or irreversible member-merge + DMMF-completeness
-  reasoning. Scale model *and* reasoning effort to the task; do not use the top
-  tier blanket for everything labelled "Critical".
-- **Never route security work to the top tier — keep it on Opus at `xhigh`
-  reasoning effort.** Fable's safety classifiers target cyber content, so a
-  security review or exploit analysis can come back *refused* rather than
-  answered. The refusal arrives as `stop_reason: "refusal"` on an HTTP 200, not
-  as an error — an unwary orchestrator reads the empty or truncated result as a
-  clean pass. Fable's bug-finding gains also explicitly exclude security-focused
-  analysis, so the escalation buys nothing here even when it does answer. Opus
-  refuses far less on this material and falls back rather than stopping outright,
-  which is why an uncertain security blocker escalates in *effort*, not in tier.
+- **Choose the tier at dispatch, from the lineup you actually have.** This
+  section deliberately does not name a default model: the lineup changes faster
+  than this file, and a stale name gets followed literally long after it stops
+  being the right answer. You know the task and the current models at the moment
+  you dispatch; decide there. Work down three questions in order. *Can a
+  deterministic command answer this exactly?* Then run it — a grep, a focused
+  test, a typecheck, `npm run agent:context` — and spend no model at all.
+  *If not, what is the cheapest tier I would trust to be right here without
+  checking its work?* Dispatch that one. *Is this bounded by reasoning or by
+  context?* Raise reasoning effort before reaching for a larger model, since the
+  two are separate dials and effort is usually the one that was actually short.
+  Escalate on evidence — a wrong answer, a refusal, a task that proves harder
+  than it read — never on a hunch that bigger is safer. Bounded searches,
+  mechanical edits and routine Low/Medium implementation rarely need the top of
+  the lineup; money, schema, auth, capacity, lifecycle and provider work almost
+  always need the strongest generally-capable tier at high or `xhigh`.
+- **State the model explicitly when you dispatch a subagent.** A subagent
+  launched without one **inherits the orchestrator's model**, so an unstated
+  choice is not a cheap default — it is the orchestrator's tier, silently. Name
+  the model and the effort in the launch, and put one line in the brief saying
+  why that tier fits the task. That line is what makes a wrong routing visible
+  in review instead of invisible in a bill.
+- **Reserve the top Mythos-class tier for genuine reasoning-frontier work** —
+  deep Xero-idempotency/frozen-reference contracts, immutable-charge backfill
+  correctness, or irreversible member-merge + DMMF-completeness reasoning. Do
+  not use it blanket for everything labelled "Critical"; scale model *and*
+  reasoning effort to the task.
+- **Never route security work to the top Mythos-class tier — keep it on the
+  strongest generally-capable model at `xhigh` reasoning effort.** At the time
+  of writing that means Fable is excluded and Opus is the right choice, but the
+  rule is the shape, not the names. The top tier's safety classifiers target
+  cyber content, so a security review or exploit analysis can come back
+  *refused* rather than answered. The refusal arrives as
+  `stop_reason: "refusal"` on an HTTP 200, not as an error — an unwary
+  orchestrator reads the empty or truncated result as a clean pass. Its
+  bug-finding gains also explicitly exclude security-focused analysis, so the
+  escalation buys nothing here even when it does answer. The strongest
+  generally-capable tier refuses far less on this material and falls back rather
+  than stopping outright, which is why an uncertain security blocker escalates
+  in *effort*, not in tier. Before routing security work to any tier you have
+  not used for it before, check that a refusal would be visible to you as a
+  failure rather than as a pass.
 - **`xhigh` is the effort ceiling — never use `max`, on any lane** (owner
   directive, 10 Aug 2026). At `max` the model overthinks and the outcome gets
   *worse*, not better; `xhigh` is sufficient for the hardest security and
@@ -717,16 +822,21 @@ CI-green → evidence**.
   - **`npm test` does not typecheck, and `tsc --noEmit` without
     `-p tsconfig.test.json` skips every test file.** Run `npm run typecheck`,
     which covers both configs — that is what CI runs.
-  - **Known-environmental failures**, for targeted diagnosis when CI fails:
-    `backup.test.ts`
-    (Windows path separators in `gunzip`/`aws` argument assertions),
-    `page-content-starter-backfill.test.ts` (seed-copy drift), and
-    `review-findings-contracts.test.ts` (load-sensitive timeouts that
-    `--testTimeout` cannot raise, because they are inline; re-run it alone
-    before believing it — `docs/TESTING.md`). Prove non-involvement
+  - **Known-environmental failure**, for targeted diagnosis when CI fails:
+    `page-content-starter-backfill.test.ts` (seed-copy drift). Prove non-involvement
     cheaply and strongly by checking `git diff main --name-only` against those
     suites' imports rather than by re-running on a stashed tree. **Never report
     the suite as clean when it is not** — say what failed and why it is not yours.
+    `backup.test.ts` used to be listed for Windows path-separator assertions and
+    `review-findings-contracts.test.ts` for
+    "load-sensitive timeouts — re-run it alone". That was **wrong**, and wrong in
+    a way that cost several lanes a diagnosis each: those suites failed
+    deterministically on Windows because one asserted POSIX separators while
+    Node correctly constructed native paths, and another handed `bash` a
+    `C:\…` fixture path plus gate variables on `spawnSync`'s `env`. Windows
+    `bash` is WSL, which receives neither those variables nor a drive-letter
+    path. Fixed in #2886 — if a shell-out or backup suite here fails again,
+    investigate it rather than dismissing it as a known environment red.
   - **Mutation-verify every new guard.** Break the thing the guard exists to
     catch, confirm it fails, **then restore the mutation and re-run**; a probe
     left in the tree is a shipped defect wearing a green suite, caught only by

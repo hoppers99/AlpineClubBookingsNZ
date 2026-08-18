@@ -1,16 +1,20 @@
-import type { ContextualHelpContent, HelpQuestion } from "@/lib/contextual-help";
+import {
+  type ContextualHelpContent,
+  type HelpQuestion,
+} from "@/lib/contextual-help/types";
 
 /**
  * The four help surfaces the unified corpus serves. Admin and finance reuse the
  * existing `@/lib/contextual-help` registries; member and public are new corpora
  * in this folder. There is no import cycle: this module only imports *types* from
- * `contextual-help.ts`, and `contextual-help.ts` never imports from here.
+ * `contextual-help/types.ts` — a leaf that imports nothing, so nothing here can
+ * close a cycle with it.
  */
 export type HelpSurface = "public" | "member" | "admin" | "finance";
 
 // Re-export so callers can `import { HelpQuestion } from "@/lib/help/types"`.
-// The concrete shape is owned by contextual-help.ts to keep it cycle-free.
-export type { HelpQuestion } from "@/lib/contextual-help";
+// The concrete shape is owned by contextual-help/types.ts to keep it cycle-free.
+export type { HelpQuestion } from "@/lib/contextual-help/types";
 
 /**
  * Page help content plus the plain-English Q&A distilled for that page. This is

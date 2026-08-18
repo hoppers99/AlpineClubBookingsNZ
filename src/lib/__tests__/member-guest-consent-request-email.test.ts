@@ -50,7 +50,9 @@ import {
   renderTemplateString,
   validateEmailTemplateContent,
 } from "@/lib/email-message-renderer";
-import { memberGuestConsentRequestTemplate } from "@/lib/email-templates";
+import {
+  memberGuestConsentRequestTemplate,
+} from "@/lib/email-templates/member-guest";
 import { sendMemberGuestConsentRequestEmail } from "@/lib/email/member-guest";
 import { buildMemberGuestPartyList } from "@/lib/member-guest-email-notes";
 

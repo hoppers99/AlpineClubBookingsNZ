@@ -188,6 +188,15 @@ function stubFetchWithAugustFailure() {
   return fetchMock as unknown as ReturnType<typeof vi.fn>;
 }
 
+/**
+ * #2887: the heat-map is lodge-scoped and `lodgeId` is a REQUIRED prop, because
+ * `GET /api/admin/occupancy` refuses a request that names no lodge. Every
+ * harness names one, and the URL assertions below pin the lodge in the query
+ * string — this file used to assert the lodgeless URL, which meant it pinned
+ * the broken call and went green while the calendar was dead on both pages.
+ */
+const TEST_LODGE_ID = "lodge-1";
+
 function RangeHarness() {
   const [selection, setSelection] = useState({ startDate: "2099-07-01", endDate: "" });
   return (
@@ -197,6 +206,7 @@ function RangeHarness() {
       </output>
       <OccupancyCalendar
         mode="range"
+        lodgeId={TEST_LODGE_ID}
         selectedStartDate={selection.startDate}
         selectedEndDate={selection.endDate}
         onSelectionChange={setSelection}
@@ -212,6 +222,7 @@ function SingleHarness() {
       <output data-testid="single-output">{selectedDate}</output>
       <OccupancyCalendar
         mode="single"
+        lodgeId={TEST_LODGE_ID}
         selectedStartDate={selectedDate}
         selectedEndDate={selectedDate}
         onSelectionChange={({ startDate }) => setSelectedDate(startDate)}
@@ -229,6 +240,7 @@ function OverlayHarness({
   return (
     <OccupancyCalendar
       mode="single"
+      lodgeId={TEST_LODGE_ID}
       selectedStartDate={selectedDate}
       selectedEndDate={selectedDate}
       onSelectionChange={({ startDate }) => setSelectedDate(startDate)}
@@ -250,6 +262,7 @@ function OperationalDayOverlayHarness() {
   return (
     <OccupancyCalendar
       mode="single"
+      lodgeId={TEST_LODGE_ID}
       selectedStartDate={selectedDate}
       selectedEndDate={selectedDate}
       onSelectionChange={({ startDate }) => setSelectedDate(startDate)}
@@ -267,6 +280,7 @@ function VioletRingHarness() {
   return (
     <OccupancyCalendar
       mode="single"
+      lodgeId={TEST_LODGE_ID}
       selectedStartDate={selectedDate}
       selectedEndDate={selectedDate}
       onSelectionChange={({ startDate }) => setSelectedDate(startDate)}
@@ -284,12 +298,64 @@ afterEach(() => {
 });
 
 describe("OccupancyCalendar", () => {
+  it("asks the route a question it will answer — every read names a lodge (#2887)", async () => {
+    // The seam this file used to miss. `GET /api/admin/occupancy` refuses a
+    // lodgeless request with 400, and the route's own suite only ever calls it
+    // WITH a lodge, so both halves passed while the heat-map was dead on
+    // /admin/roster and Hut Leaders. Assert the shape rather than one literal:
+    // any read that reaches the network must carry a lodge.
+    const fetchMock = stubFetch();
+    render(<RangeHarness />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const reads = (fetchMock.mock.calls as Array<[string]>).map(([url]) => url);
+    expect(reads.length).toBeGreaterThan(0);
+    for (const url of reads) {
+      expect(
+        new URL(url, "http://localhost").searchParams.get("lodgeId"),
+        `occupancy read without a lodge: ${url}`,
+      ).toBe(TEST_LODGE_ID);
+    }
+  });
+
+  it("does not read at all until a lodge is known, and re-reads for a new one (#2887)", async () => {
+    // An empty id is the "scope has not settled" case. Firing then would only
+    // paint "Occupancy could not be loaded." over an empty grid.
+    const fetchMock = stubFetch();
+    const { rerender } = render(
+      <OccupancyCalendar
+        mode="single"
+        lodgeId=""
+        selectedStartDate="2099-07-01"
+        selectedEndDate="2099-07-01"
+        onSelectionChange={() => undefined}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText(/July 2099/i)).toBeInTheDocument());
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    rerender(
+      <OccupancyCalendar
+        mode="single"
+        lodgeId="lodge-b"
+        selectedStartDate="2099-07-01"
+        selectedEndDate="2099-07-01"
+        onSelectionChange={() => undefined}
+      />,
+    );
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/admin/occupancy?month=2099-07&lodgeId=lodge-b",
+      ),
+    );
+  });
+
   it("selects a range and shows bookings for the selected nights", async () => {
     const fetchMock = stubFetch();
     render(<RangeHarness />);
 
     await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith("/api/admin/occupancy?month=2099-07"),
+      expect(fetchMock).toHaveBeenCalledWith(`/api/admin/occupancy?month=2099-07&lodgeId=${TEST_LODGE_ID}`),
     );
 
     fireEvent.click(screen.getByRole("button", { name: /10 Jul.*1 staying overnight/i }));
@@ -310,7 +376,7 @@ describe("OccupancyCalendar", () => {
     render(<RangeHarness />);
 
     await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith("/api/admin/occupancy?month=2099-07"),
+      expect(fetchMock).toHaveBeenCalledWith(`/api/admin/occupancy?month=2099-07&lodgeId=${TEST_LODGE_ID}`),
     );
 
     fireEvent.click(screen.getByRole("button", { name: /31 Jul.*1 staying overnight/i }));
@@ -318,7 +384,7 @@ describe("OccupancyCalendar", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Next month" }));
     await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith("/api/admin/occupancy?month=2099-08"),
+      expect(fetchMock).toHaveBeenCalledWith(`/api/admin/occupancy?month=2099-08&lodgeId=${TEST_LODGE_ID}`),
     );
     fireEvent.click(await screen.findByRole("button", { name: /1 Aug.*1 staying overnight/i }));
 
@@ -346,14 +412,14 @@ describe("OccupancyCalendar", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Next month" }));
     await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith("/api/admin/occupancy?month=2099-08"),
+      expect(fetchMock).toHaveBeenCalledWith(`/api/admin/occupancy?month=2099-08&lodgeId=${TEST_LODGE_ID}`),
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Previous month" }));
     await waitFor(() => {
       expect(
         fetchMock.mock.calls.filter(
-          ([input]) => input === "/api/admin/occupancy?month=2099-07",
+          ([input]) => input === `/api/admin/occupancy?month=2099-07&lodgeId=${TEST_LODGE_ID}`,
         ),
       ).toHaveLength(2);
     });

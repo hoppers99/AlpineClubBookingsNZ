@@ -8,7 +8,13 @@ import {
 } from "@/lib/admin-permissions";
 
 vi.mock("@/components/lodge-select", () => ({
-  useLodgeOptions: () => ({ lodges: [], loading: false }),
+  useLodgeOptions: () => ({
+    lodges: [{ id: "lodge-1", name: "Lodge One" }],
+    loading: false,
+    failed: false,
+    forbidden: false,
+    reload: vi.fn(),
+  }),
 }));
 
 import { PromoCodesPageClient } from "@/app/(admin)/admin/promo-codes/promo-codes-page-client";

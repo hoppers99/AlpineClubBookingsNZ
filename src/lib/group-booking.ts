@@ -920,6 +920,10 @@ export async function joinGroupBookingAsMember(
     effectiveMemberId: sessionUserId,
     isOnBehalf: false,
     sessionUserId,
+    // The child booking belongs to the organiser's already-resolved lodge.
+    // Omitting this made policy/capacity checks use `groupLodgeId` above but
+    // let the booking writer fall back to the club default (#2701).
+    lodgeId: groupLodgeId,
     checkIn,
     checkOut,
     // Map to the booking-create guest shape. v1 joins use the organiser's dates

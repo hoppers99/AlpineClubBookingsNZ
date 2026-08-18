@@ -10,7 +10,10 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { HelpQuestion, HelpSection } from "@/lib/contextual-help";
+import {
+  type HelpQuestion,
+  type HelpSection,
+} from "@/lib/contextual-help/types";
 import type { DiagnosticsAskRequest } from "@/lib/diagnostics/answer/contract";
 
 /**

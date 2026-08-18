@@ -1,9 +1,9 @@
 import {
   waitlistConfirmationTemplate,
-  waitlistOfferTemplate,
   waitlistOfferExpiredTemplate,
+  waitlistOfferTemplate,
   waitlistPlaceRestoredTemplate,
-} from "../email-templates";
+} from "@/lib/email-templates/waitlist";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import {
   formatNZDate,

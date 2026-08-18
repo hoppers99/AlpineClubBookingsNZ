@@ -233,7 +233,8 @@ export function SchoolBookingForm({ club }: { club: ClubIdentity }) {
           <p className="text-sm text-muted-foreground">
             We&apos;ve sent a confirmation email to {contactEmail}. Please click the link inside to
             confirm your email address. Once confirmed, your request will join our review queue and
-            {" "}{club.lodgeName} will send a quote for your school to review.
+            {" "}{selectedLodge?.name ?? club.lodgeName} will send a quote for your school to
+            review.
           </p>
         </CardContent>
       </Card>
@@ -385,9 +386,9 @@ export function SchoolBookingForm({ club }: { club: ClubIdentity }) {
               </span>
             </label>
             <p className="text-xs text-muted-foreground">
-              We&apos;ll do our best, but this is a request — {club.lodgeName} will
-              confirm whether the whole lodge can be reserved for your group when
-              we send your quote.
+              We&apos;ll do our best, but this is a request — {selectedLodge?.name ?? club.lodgeName}
+              will confirm whether the whole lodge can be reserved for your group
+              when we send your quote.
             </p>
           </div>
 

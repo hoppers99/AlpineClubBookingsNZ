@@ -47,6 +47,15 @@ const mockPaymentCreate = vi.fn();
 const mockPaymentUpsert = vi.fn();
 const mockExecuteRaw = vi.fn().mockResolvedValue(undefined);
 const mockTxLodgeFindFirst = vi.fn().mockResolvedValue({ id: "lodge-1" });
+// #2701: a create must NAME its lodge, so the route reads back the id the
+// request carried instead of falling through to the club's default lodge.
+// Every lodge these cases name is an active one, so echo the request back.
+const mockLodgeFindUnique = vi.fn(
+  async ({ where }: { where: { id: string } }) => ({
+    id: where.id,
+    active: true,
+  }),
+);
 const mockTxMemberLodgeAccessFindMany = vi.fn().mockResolvedValue([]);
 const mockValidateMinimumStay = vi.fn();
 
@@ -66,7 +75,7 @@ const mockTx = {
   season: { findMany: mockTxSeasonFindMany },
   payment: { create: mockTxPaymentCreate, upsert: mockPaymentUpsert },
   promoRedemption: { findUnique: vi.fn().mockResolvedValue(null) },
-  lodge: { findFirst: mockTxLodgeFindFirst },
+  lodge: { findFirst: mockTxLodgeFindFirst, findUnique: mockLodgeFindUnique },
   lodgeSettings: { findUnique: async () => ({ capacity: 100 }) },
   memberLodgeAccess: { findMany: mockTxMemberLodgeAccessFindMany },
   // Rate resolver (#1930, E4): pricing is mocked, so the resolver only needs to
@@ -84,7 +93,7 @@ const mockTx = {
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     $transaction: (fn: (tx: unknown) => Promise<unknown>) => mockPrismaTransaction(fn),
-    lodge: { findFirst: mockTxLodgeFindFirst },
+    lodge: { findFirst: mockTxLodgeFindFirst, findUnique: mockLodgeFindUnique },
     lodgeSettings: { findUnique: async () => ({ capacity: 100 }) },
     member: {
       count: (...args: unknown[]) => mockMemberCount(...args),
@@ -249,7 +258,11 @@ describe("Booking Creation Route: zero-dollar handling", () => {
     return new NextRequest("http://localhost/api/bookings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      // #2701: a create must NAME its lodge — the route refuses one that does
+      // not rather than resolving the blank to the club's default lodge. Named
+      // here, once, because every real client now names it; a case that books a
+      // different lodge overrides it.
+      body: JSON.stringify({ lodgeId: "lodge-1", ...body }),
     });
   }
 
@@ -326,7 +339,9 @@ describe("Booking Creation Route: zero-dollar handling", () => {
 
   it("returns the exact frozen minimum-stay review without creating a booking", async () => {
     setupStandardMocks();
-    mockTxLodgeFindFirst.mockResolvedValue({ id: "lodge-b" });
+    // #2701: the booking is at lodge-b because the REQUEST says so (below), not
+    // because lodge-b happens to be the club's default — the create no longer
+    // resolves an unnamed lodge at all.
     const violation = {
       reasonCode: "MINIMUM_STAY",
       policyId: "policy-lodge-b",
@@ -358,6 +373,7 @@ describe("Booking Creation Route: zero-dollar handling", () => {
 
     const res = await POST(
       makeRequest({
+        lodgeId: "lodge-b",
         checkIn: tomorrow,
         checkOut: dayAfterTomorrow,
         guests: [

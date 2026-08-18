@@ -245,7 +245,7 @@ describe("Admin Send Setup Invite API", () => {
 
 describe("Member Setup Invite Email Template", () => {
   it("uses account setup wording and a 7-day expiry", async () => {
-    const { memberSetupInviteTemplate } = await import("@/lib/email-templates");
+    const { memberSetupInviteTemplate } = await import("@/lib/email-templates/account");
 
     const html = memberSetupInviteTemplate(
       "Alice",

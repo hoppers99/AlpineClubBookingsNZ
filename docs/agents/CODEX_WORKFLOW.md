@@ -32,6 +32,32 @@ when deciding how to split work. Planning output should include context files,
 proposed issue splits, risk labels, validation, manual checks, and stop
 conditions. Planning mode must not edit app logic.
 
+## Context and execution economy
+
+The shared quota, context, risk-tiered blueprint, proportional-validation and
+two-attempt failure controls live once in root `AGENTS.md`. Apply them before
+expanding a plan or delegating work. In Codex, pick the tier at dispatch rather
+than from a name written here: run a local repository tool when it answers the
+question exactly, otherwise take the cheapest tier you would trust without
+re-checking its work, and raise reasoning effort before reaching for a larger
+model. Preserve the strongest-model high/xhigh handling for gated areas, state
+the model and effort when you delegate, keep subagent prompts bounded, and clear
+issue-specific context before switching lanes.
+
+When the routed docs are known but the code neighbourhood is not, generate the
+tracked-only locator documented in
+[`SCOPED_CONTEXT.md`](SCOPED_CONTEXT.md):
+
+```text
+npm run agent:context -- -- --base origin/main --entry <tracked-path> [--depth 1|2]
+```
+
+Give a subagent only the relevant section or local artifact path, never a full
+repository dump. Prefer `rg`, Git and repository scripts over a browser or MCP
+round trip when they provide the same evidence. The mapper is shared with
+Claude Code; it does not replace the always-read core, issue thread, routing
+table, or validation gate.
+
 ## Coding Mode
 
 Use coding mode only after scope is clear. Keep the change narrow, follow the

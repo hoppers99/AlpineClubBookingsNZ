@@ -42,8 +42,17 @@ const { mockPrisma, mockAuth, mockFlags, mockLookahead } = vi.hoisted(() => ({
     choreAssignment: { findMany: vi.fn(), groupBy: vi.fn() },
     hutLeaderAssignment: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn() },
     member: { findUnique: vi.fn() },
-    lodge: { findFirst: vi.fn() },
+    // findMany: the hut-leader auto-assign cron iterates active lodges (#2915).
+    lodge: { findFirst: vi.fn(), findUnique: vi.fn(), findMany: vi.fn() },
     auditLog: { create: vi.fn() },
+    // #2887: the auto-assign cron now does its overlap read and its insert as
+    // ONE serialized decision under the per-lodge capacity key, so the double
+    // needs the interactive transaction and the advisory-lock statement. The
+    // transaction hands back THIS same object, so every assertion below still
+    // observes the same `hutLeaderAssignment` mocks whether the call arrived
+    // through `prisma` or through `tx`.
+    $executeRaw: vi.fn(async () => 0),
+    $transaction: vi.fn(),
   },
   mockAuth: vi.fn(),
   mockFlags: vi.fn(),
@@ -152,9 +161,18 @@ beforeEach(() => {
   mockPrisma.choreTemplate.findMany.mockResolvedValue([]);
   mockPrisma.choreAssignment.findMany.mockResolvedValue([]);
   mockPrisma.choreAssignment.groupBy.mockResolvedValue([]);
+  // Both sides of the #2915/#2887 merge are needed: the cron iterates active
+  // lodges AND its create runs in a locked transaction.
+  mockPrisma.lodge.findMany.mockResolvedValue([{ id: "lodge-1" }]);
+  mockPrisma.$transaction.mockImplementation(async (arg: unknown) =>
+    typeof arg === "function"
+      ? (arg as (tx: typeof mockPrisma) => unknown)(mockPrisma)
+      : arg,
+  );
   mockPrisma.hutLeaderAssignment.findFirst.mockResolvedValue(null);
   mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([]);
   mockPrisma.lodge.findFirst.mockResolvedValue({ id: "lodge-1" });
+  mockPrisma.lodge.findUnique.mockResolvedValue({ id: "lodge-1", active: true });
   mockFlags.mockResolvedValue({ hutLeaders: true });
   mockLookahead.mockResolvedValue(1);
 });
@@ -587,7 +605,7 @@ describe("hut leader eligible-members picker (D-12)", () => {
     );
     const res = await GET(
       new Request(
-        "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-10&endDate=2026-07-12",
+        "http://localhost/api/admin/hut-leaders/eligible-members?startDate=2026-07-10&endDate=2026-07-12&lodgeId=lodge-1",
       ) as never,
     );
 

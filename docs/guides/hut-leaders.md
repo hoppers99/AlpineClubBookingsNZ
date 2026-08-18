@@ -28,6 +28,13 @@ lodge **edit** to assign, delete, or reset a PIN. The feature is on by default
 
 ### See what needs cover and assign a leader
 
+The selected lodge scopes the whole workspace: the assignment table, upcoming
+uncovered nights, red/violet occupancy calendar, eligible-member suggestions,
+bed choices and the new assignment all describe that lodge only. Switching
+lodges clears the previous results while the new lodge loads. If the lodge list
+cannot be loaded, the page explains the failure, offers **Try again**, and sends
+no hut-leader request or assignment write until a real lodge returns.
+
 1. Go to **Admin → Lodge Operations → Hut Leaders**. The amber **Upcoming Dates
    Without …** card lists booked nights with no leader; the calendar paints
    **Needs a Hut Leader** (red) and **Has a Hut Leader** (violet) nights.
@@ -114,12 +121,13 @@ row, so you never have to delete an assignment to change its bed:
 | Change bed (bed icon) | Opens the bed picker for that row's own dates | Works on automatically created assignments too, which never come with a bed |
 | Reset kiosk PIN (key icon) | Issues a new kiosk PIN for that leader | Shown once; emailed if delivery works; old PIN is revoked |
 | Delete (trash icon) | Removes the assignment | Frees those nights (they may go red again) |
-| Lodge selector | Which lodge new assignments apply to | Only shown with more than one active lodge |
+| Lodge selector | Which lodge the whole workspace describes | Only shown with more than one active lodge. It scopes reads, bed choices and new assignments together |
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
+| The lodge list could not be loaded | The page cannot prove which lodge its reads or writes belong to | Press **Try again**. Assignment controls remain hidden until a real lodge returns |
 | Hut Leaders is missing from the sidebar / 404s | The `hutLeaders` module is off | Enable it under **Admin → Setup → Modules** — see [`CONFIGURATION.md`](../../CONFIGURATION.md#module-controls-and-admin-modules) |
 | Everything is read-only ("… can view … but cannot change them") | Your admin role has lodge view but not edit | Ask a full admin for **lodge edit** access |
 | "This member overlaps an existing assignment" | The range overlaps another leader's by more than a day | Shorten the range or delete the conflicting assignment |

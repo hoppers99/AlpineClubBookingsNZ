@@ -313,7 +313,7 @@ Admin route subfamilies are:
 | Email/SNS data | Contact, application, admin communications, email templates, SES/SNS webhook. | Rate limits for public senders, template escaping, SNS signature verification, email suppression records. | #616 for SES/SNS topic allowlist and outbound email abuse. |
 | Audit, webhook, cron, and provider logs | `AuditLog`, `WebhookLog`, `CronJobRun`, Xero operation/inbound records. | Structured logging with redaction helpers for known sensitive URL tokens; webhook logs redact error text. | #615/#616 for callback URL and token redaction review; compromised log reader threat below. |
 | CI/deploy secrets | GitHub Actions secrets/vars, `.env`, Compose, GHCR tokens, Sentry token. | CI permission scoping, gitleaks, deployment docs warn not to commit secrets. | #619 for workflow permissions, provenance, and secret-scope review. |
-| Encrypted integration credentials (#2079, #2082, #2087, #2095) | `IntegrationCredential` (Xero client id/secret/webhook key, wrapped Xero token key; Stripe secret/publishable/webhook-signing keys; **Google OAuth client id + secret, plus a non-secret `verified_at` marker**; Backup S3 access key/secret, restore-validation DSN, and non-secret destination/config). | AES-256-GCM under an HKDF-SHA256 key derived from `AUTH_SECRET`/`NEXTAUTH_SECRET`, per-write random IV, AAD context-binding to `(provider,key,labelVersion)`; write-only Full-Admin API; secret values never returned/logged/exported; excluded from config-transfer. The Stripe publishable key is the ONE value delivered to the browser (it is not secret) — at runtime via `GET /api/stripe/publishable-key`, never a secret. Google's client id/secret are resolved server-side into the request-scoped NextAuth config and never leave the server; the resolver **fails open** (a DB/decrypt failure omits the Google provider, never breaking password/magic-link/2FA sign-in — #2087). | See "Credentials at rest" and "Backup S3 blast radius" below. |
+| Encrypted integration credentials (#2079, #2082, #2087, #2095, #2211, #2371) | `IntegrationCredential` — six provider namespaces, enumerated once under "Credentials at rest" below and not re-listed anywhere else (#2720): `xero`, `stripe`, `google`, `backup`, `anthropic`, `anthropic-diagnostics`. | AES-256-GCM under an HKDF-SHA256 key derived from `AUTH_SECRET`/`NEXTAUTH_SECRET`, per-write random IV, AAD context-binding to `(provider,key,labelVersion)`; write-only Full-Admin API; secret values never returned/logged/exported; excluded from config-transfer. The Stripe publishable key is the ONE value delivered to the browser (it is not secret) — at runtime via `GET /api/stripe/publishable-key`, never a secret. Google's client id/secret are resolved server-side into the request-scoped NextAuth config and never leave the server; the resolver **fails open** (a DB/decrypt failure omits the Google provider, never breaking password/magic-link/2FA sign-in — #2087). | See "Credentials at rest" and "Backup S3 blast radius" below. |
 | Backup S3 destination + credentials (#2095) | `IntegrationCredential` provider `backup`; consumed by `src/lib/backup.ts` (pg_dump → gzip → `aws s3 cp`) and the `/admin/backups` surface. | S3 access key/secret and the restore-validation DSN are write-only Full-Admin secrets (never returned/logged); the destination (bucket/region) is ALSO Full-Admin-only to write even though it is not secret (see below); the S3 secrets ride the child process env (`AWS_*`), never argv, and the Postgres password rides `PGPASSWORD`, never argv; bucket/region are strictly format-validated before any CLI call. | See "Backup S3 blast radius" below. |
 
 ## Credentials at rest (#2079)
@@ -322,6 +322,31 @@ Provider credentials are stored encrypted in `IntegrationCredential` and
 decrypted with a key derived from the app auth secret
 (`AUTH_SECRET`/`NEXTAUTH_SECRET`) via HKDF-SHA256. This concentrates trust in
 that single secret:
+
+### The provider list, and the one place it lives (#2720)
+
+**This is the canonical list of provider namespaces in the encrypted store.**
+Every other document points here rather than keeping its own copy; that rule
+exists because `DEPLOYMENT.md`'s rotation runbook did keep one, named two
+providers, and fell four behind as the rest landed. Anything that turns on
+"which credentials does rotating the auth secret strand" answers from this list.
+
+- `xero` — client id, client secret, webhook key, and the wrapped Xero
+  token-encryption key (#2079).
+- `stripe` — secret key, publishable key, webhook signing secret (#2082).
+- `google` — OAuth client id and secret, plus a non-secret `verified_at`
+  marker (#2087).
+- `backup` — S3 access key and secret, the restore-validation DSN, and the
+  non-secret destination/config (#2095).
+- `anthropic` — the AI help assistant's API key (#2211).
+- `anthropic-diagnostics` — the AI Diagnostics API key, deliberately a
+  **separate** namespace so the two are never shared or confused (#2371).
+
+The authority is `WRITABLE_CREDENTIALS` in
+`src/app/api/admin/integrations/credentials/route.ts`, which is the allowlist
+the write endpoint enforces. A provider added there without being added here
+fails `credential-blast-radius-docs-contract.test.ts`, so this list cannot fall
+behind the code again the way the runbook did.
 
 - **A database backup + the auth secret decrypts everything.** Anyone who holds
   both a DB dump (or replica) and the auth-secret value can recover every stored
@@ -332,10 +357,12 @@ that single secret:
   every credential and enter the "needs re-entry (encryption key changed)"
   state — that is the correct, safe outcome, not a bug. If a clone shared prod's
   secret it would silently hold live, decryptable credentials.
-- **Rotation blast radius.** Rotating the auth secret strands all stored
-  credentials (and the wrapped Xero token key), on top of dropping sessions and
-  all 2FA enrolments/recovery codes. See the auth-secret rotation runbook in
-  `DEPLOYMENT.md`.
+- **Rotation blast radius.** Rotating the auth secret strands the credentials of
+  **every** provider in the list above — all six namespaces, not just the two an
+  operator is likely to be thinking about — plus the wrapped Xero token key, on
+  top of dropping sessions and all 2FA enrolments/recovery codes. See the
+  auth-secret rotation runbook in `DEPLOYMENT.md`, which sequences the re-entry
+  and points back here for what has to be re-entered.
 - **Decrypt-before-verify on webhook paths.** Both the Xero webhook route
   (`getOperationalXeroWebhookKey`) and the Stripe webhook route
   (`getOperationalStripeWebhookSecret`, #2082) resolve their signing secret from

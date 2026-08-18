@@ -376,6 +376,10 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
   }
 
   async function startPreview() {
+    if (!previewLodgeId) {
+      setMessage("An explicit active lodge is required before previewing.");
+      return;
+    }
     setPreviewing(true);
     setErrors([]);
     setPreviewSrc(null);
@@ -386,7 +390,7 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          ...(previewLodgeId ? { previewLodge: previewLodgeId } : {}),
+          previewLodge: previewLodgeId,
           draft: {
             bodyHtml: layout.bodyHtml,
             defaultCss: layout.defaultCss,
@@ -678,7 +682,11 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
               ))}
             </select>
           )}
-          <Button variant="outline" onClick={() => void startPreview()} disabled={previewing}>
+          <Button
+            variant="outline"
+            onClick={() => void startPreview()}
+            disabled={previewing || !previewLodgeId}
+          >
             {previewing ? "Starting…" : "Live preview"}
           </Button>
         </div>

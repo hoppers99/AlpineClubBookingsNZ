@@ -4,11 +4,21 @@ import { prisma } from "@/lib/prisma";
 import { addDaysDateOnly, formatDateOnly, isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
+import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
+import { getGuestBedNightKeys } from "@/lib/booking-guest-stay-ranges";
+
+type MemberStay = {
+  checkIn: Date;
+  checkOut: Date;
+  stayStart?: Date | null;
+  stayEnd?: Date | null;
+  nights?: Array<{ stayDate: Date }> | null;
+};
 
 /**
- * GET /api/admin/hut-leaders/eligible-members?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+ * GET /api/admin/hut-leaders/eligible-members?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&lodgeId=...
  * Returns adult members who have paid/operational bookings overlapping the given date range,
- * along with their booking dates and suggested assignment dates.
+ * at the required lodge, along with their booking dates and suggested assignment dates.
  */
 export async function GET(req: NextRequest) {
   const guard = await requireAdmin();
@@ -16,6 +26,13 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const startDate = searchParams.get("startDate");
   const endDate = searchParams.get("endDate");
+  const requestedLodgeId = searchParams.get("lodgeId");
+  const lodgeId = requestedLodgeId
+    ? await resolveOptionalActiveLodgeId(prisma, requestedLodgeId)
+    : null;
+  if (!lodgeId) {
+    return NextResponse.json({ error: "A valid lodgeId is required." }, { status: 400 });
+  }
 
   if (!startDate || !endDate || !/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
     return NextResponse.json({ error: "startDate and endDate are required (YYYY-MM-DD)" }, { status: 400 });
@@ -46,6 +63,7 @@ export async function GET(req: NextRequest) {
       // unaffected — a booker is never a consent subject on their own booking.
       ...OPERATIONALLY_PRESENT_GUEST_WHERE,
       booking: {
+        lodgeId,
         status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
         checkIn: { lte: rangeEnd },
         checkOut: { gt: rangeStart },
@@ -59,6 +77,7 @@ export async function GET(req: NextRequest) {
       memberId: true,
       stayStart: true,
       stayEnd: true,
+      nights: { select: { stayDate: true } },
       member: {
         select: {
           id: true,
@@ -84,18 +103,29 @@ export async function GET(req: NextRequest) {
     email: string;
     hutLeaderEligible: boolean;
     hutLeaderEligibleAt: Date | null;
-    bookings: { checkIn: Date; checkOut: Date }[];
+    bookings: MemberStay[];
   }>();
 
   for (const g of guests) {
     if (!g.memberId || !g.member || !g.member.active) continue;
-    const guestStayStart = g.stayStart ?? g.booking.checkIn;
-    const guestStayEnd = g.stayEnd ?? g.booking.checkOut;
+    const guestStay: MemberStay = {
+      checkIn: g.booking.checkIn,
+      checkOut: g.booking.checkOut,
+      stayStart: g.stayStart,
+      stayEnd: g.stayEnd,
+      nights: g.nights,
+    };
+    const guestNightKey = getGuestBedNightKeys(guestStay, guestStay).join(",");
     const existing = memberBookings.get(g.memberId);
     if (existing) {
       // Avoid duplicate booking entries
-      if (!existing.bookings.some((b) => b.checkIn.getTime() === guestStayStart.getTime())) {
-        existing.bookings.push({ checkIn: guestStayStart, checkOut: guestStayEnd });
+      if (
+        !existing.bookings.some(
+          (booking) =>
+            getGuestBedNightKeys(booking, booking).join(",") === guestNightKey,
+        )
+      ) {
+        existing.bookings.push(guestStay);
       }
     } else {
       memberBookings.set(g.memberId, {
@@ -105,7 +135,7 @@ export async function GET(req: NextRequest) {
         email: g.member.email,
         hutLeaderEligible: Boolean(g.member.hutLeaderEligible),
         hutLeaderEligibleAt: g.member.hutLeaderEligibleAt ?? null,
-        bookings: [{ checkIn: guestStayStart, checkOut: guestStayEnd }],
+        bookings: [guestStay],
       });
     }
   }
@@ -113,6 +143,7 @@ export async function GET(req: NextRequest) {
   // Also include booking owners who are adults
   const bookings = await prisma.booking.findMany({
     where: {
+      lodgeId,
       status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
       checkIn: { lte: rangeEnd },
       checkOut: { gt: rangeStart },
@@ -125,6 +156,14 @@ export async function GET(req: NextRequest) {
     select: {
       checkIn: true,
       checkOut: true,
+      guests: {
+        select: {
+          memberId: true,
+          stayStart: true,
+          stayEnd: true,
+          nights: { select: { stayDate: true } },
+        },
+      },
       member: {
         select: {
           id: true,
@@ -142,10 +181,24 @@ export async function GET(req: NextRequest) {
 
   for (const b of bookings) {
     if (!b.member.active || b.member.ageTier !== "ADULT") continue;
+    const ownerGuest = b.guests.find((guest) => guest.memberId === b.member.id);
+    const ownerStay: MemberStay = {
+      checkIn: b.checkIn,
+      checkOut: b.checkOut,
+      stayStart: ownerGuest?.stayStart,
+      stayEnd: ownerGuest?.stayEnd,
+      nights: ownerGuest?.nights,
+    };
+    const ownerNightKey = getGuestBedNightKeys(ownerStay, ownerStay).join(",");
     const existing = memberBookings.get(b.member.id);
     if (existing) {
-      if (!existing.bookings.some((bk) => bk.checkIn.getTime() === b.checkIn.getTime())) {
-        existing.bookings.push({ checkIn: b.checkIn, checkOut: b.checkOut });
+      if (
+        !existing.bookings.some(
+          (booking) =>
+            getGuestBedNightKeys(booking, booking).join(",") === ownerNightKey,
+        )
+      ) {
+        existing.bookings.push(ownerStay);
       }
     } else {
       memberBookings.set(b.member.id, {
@@ -155,7 +208,7 @@ export async function GET(req: NextRequest) {
         email: b.member.email,
         hutLeaderEligible: Boolean(b.member.hutLeaderEligible),
         hutLeaderEligibleAt: b.member.hutLeaderEligibleAt ?? null,
-        bookings: [{ checkIn: b.checkIn, checkOut: b.checkOut }],
+        bookings: [ownerStay],
       });
     }
   }
@@ -191,7 +244,7 @@ export async function GET(req: NextRequest) {
   // by more than the 1-day handover boundary the POST route already allows), so
   // they are always safely POST-able.
   const coverageAssignments = await prisma.hutLeaderAssignment.findMany({
-    where: { startDate: { lte: coverageWindowEnd }, endDate: { gte: coverageWindowStart } },
+    where: { lodgeId, startDate: { lte: coverageWindowEnd }, endDate: { gte: coverageWindowStart } },
     select: { startDate: true, endDate: true },
   });
 
@@ -216,11 +269,8 @@ export async function GET(req: NextRequest) {
       // Only real stay nights count — gap nights between two disjoint bookings do not.
       const stayNightsByTime = new Map<number, Date>();
       for (const b of m.bookings) {
-        for (
-          let d = b.checkIn;
-          d.getTime() < b.checkOut.getTime();
-          d = addDaysDateOnly(d, 1)
-        ) {
+        for (const key of getGuestBedNightKeys(b, b)) {
+          const d = parseDateOnly(key);
           stayNightsByTime.set(d.getTime(), d);
         }
       }

@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
-import { formatDateOnly, isDateOnlyString, parseDateOnly } from "@/lib/date-only";
+import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import logger from "@/lib/logger";
-import { calculateOverlapDays } from "@/lib/hut-leader-overlap";
-import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
+import { findHutLeaderOverlapRefusal } from "@/lib/hut-leader-overlap-guard";
 import { validateCustodianBedHold } from "@/lib/custodian-assignment";
 import { custodianBedHoldErrorResponse } from "@/lib/custodian-assignment-routes";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
@@ -94,45 +93,31 @@ export async function PUT(
     updateData.lodgeId = lodge.id;
   }
 
-  // Validate start <= end
-  const finalStart = updateData.startDate ?? existing.startDate;
-  const finalEnd = updateData.endDate ?? existing.endDate;
-  if (finalStart > finalEnd) {
+  /*
+    Everything the locked decision rests on is re-derived from the row read
+    UNDER the lock, not from the pre-lock `existing` (#2887 review).
+
+    The pre-lock read stays for the cheap 404 and to supply the lock KEY. But
+    deriving the dates, the lodge and the surviving bed hold out here and only
+    re-reading the overlap set inside looked locked and was not — three
+    interleavings, each now a named case in
+    `custodian-hut-leaders-route.test.ts`: a bed hold that only exists in the
+    locked row skipping validation, two requests locking DIFFERENT keys because
+    one derived its key from a stale lodge, and two partial-field edits
+    composing into a span neither validated.
+  */
+  // Validate start <= end against the pre-lock row, so an obviously inverted
+  // range is refused without paying for a lock. Re-checked under it.
+  if ((updateData.startDate ?? existing.startDate) > (updateData.endDate ?? existing.endDate)) {
     return NextResponse.json(
       { error: "startDate must be before or equal to endDate" },
       { status: 400 }
     );
   }
 
-  // Check for overlapping assignments (excluding self) — 1 day overlap
-  // allowed, 2+ rejected. Each lodge has its own hut leader, so the check is
-  // per lodge; an assignment still missing a lodgeId (expand-release
-  // tolerance) conservatively conflicts at every lodge.
-  const finalLodgeId = updateData.lodgeId ?? existing.lodgeId;
-  const potentialOverlaps = await prisma.hutLeaderAssignment.findMany({
-    where: {
-      id: { not: id },
-      startDate: { lte: finalEnd },
-      endDate: { gte: finalStart },
-      ...(finalLodgeId ? lodgeNullTolerantScope(finalLodgeId) : {}),
-    },
-    include: {
-      member: { select: { firstName: true, lastName: true } },
-    },
-  });
-
-  for (const existing of potentialOverlaps) {
-    const overlapDays = calculateOverlapDays(finalStart, finalEnd, existing.startDate, existing.endDate);
-    if (overlapDays > 1) {
-      const name = `${existing.member.firstName} ${existing.member.lastName}`;
-      const start = formatDateOnly(existing.startDate);
-      const end = formatDateOnly(existing.endDate);
-      return NextResponse.json(
-        { error: `Assignment overlaps with ${name}'s assignment (${start} to ${end}) by ${overlapDays} days. Maximum 1 day overlap is allowed for handover.` },
-        { status: 409 }
-      );
-    }
-  }
+  // The lock KEY. A concurrent move can make this stale; the locked re-read
+  // below detects that and refuses rather than acting under the wrong key.
+  const intendedLodgeId = updateData.lodgeId ?? existing.lodgeId;
 
   // Custodian bed hold (#2286). Three-state: absent leaves the hold alone,
   // explicit null clears it, a string sets it. `bedIdProvided` is the only way
@@ -142,11 +127,13 @@ export async function PUT(
   // the three intents: undefined = key absent, null = explicit clear, string =
   // set. No separate "was the key present" probe is needed or wanted.
   const bedIdProvided = parsed.data.bedId !== undefined;
-  const nextBedId = bedIdProvided ? parsed.data.bedId : existing.bedId;
   if (bedIdProvided) {
     updateData.bedId = parsed.data.bedId ?? null;
   }
-  if (nextBedId && !(await isEffectiveModuleEnabled("bedAllocation"))) {
+  // Module gate on the pre-lock view: this is a feature-availability refusal
+  // aimed at what the operator ASKED for, not a capacity decision.
+  const requestedBedId = bedIdProvided ? parsed.data.bedId : existing.bedId;
+  if (requestedBedId && !(await isEffectiveModuleEnabled("bedAllocation"))) {
     return NextResponse.json(
       {
         error:
@@ -158,13 +145,50 @@ export async function PUT(
   }
 
   try {
-    // A hold that still exists after this edit is re-validated against the
-    // FINAL dates and lodge, under the lodge lock — shortening, extending or
-    // moving lodges can all invalidate a bed that was fine before. Clearing the
-    // bed (or never having one) needs no lock: it only ever frees capacity.
-    if (nextBedId) {
-      await prisma.$transaction(async (tx) => {
-        await acquireLodgeCapacityLock(tx, finalLodgeId);
+    /*
+      EVERY edit runs under the target lodge's capacity key (#2887), not just a
+      bed-holding one. #2286 locked only the bed path, reasoning that clearing a
+      bed moves no capacity — true of capacity, false of the OVERLAP predicate
+      this route also decides, which a bedless edit breaks by MOVING DATES.
+    */
+    const refusal = await prisma.$transaction(async (tx) => {
+      await acquireLodgeCapacityLock(tx, intendedLodgeId);
+
+      // The authoritative row. Everything the decision rests on comes from
+      // HERE, under the key, not from the pre-lock read.
+      const locked = await tx.hutLeaderAssignment.findUnique({ where: { id } });
+      if (!locked) return { status: 404, error: "Assignment not found" };
+
+      const finalLodgeId = updateData.lodgeId ?? locked.lodgeId;
+      if (finalLodgeId !== intendedLodgeId) {
+        // The row moved lodges between the two reads, so the key we hold is
+        // not the key that governs it. Refuse rather than validate one lodge's
+        // roster and write to another's.
+        return {
+          status: 409,
+          error:
+            "This assignment moved to a different lodge while you were editing it. Reload and try again.",
+        };
+      }
+      const finalStart = updateData.startDate ?? locked.startDate;
+      const finalEnd = updateData.endDate ?? locked.endDate;
+      if (finalStart > finalEnd) {
+        return {
+          status: 400,
+          error: "startDate must be before or equal to endDate",
+        };
+      }
+      const nextBedId = bedIdProvided ? parsed.data.bedId : locked.bedId;
+
+      const overlap = await findHutLeaderOverlapRefusal(tx, {
+        lodgeId: finalLodgeId,
+        startDate: finalStart,
+        endDate: finalEnd,
+        excludeAssignmentId: id,
+      });
+      if (overlap) return { status: 409, error: overlap.error };
+
+      if (nextBedId) {
         await validateCustodianBedHold({
           bedId: nextBedId,
           lodgeId: finalLodgeId,
@@ -174,15 +198,17 @@ export async function PUT(
           confirmOverCapacity: parsed.data.confirmOverCapacity,
           db: tx,
         });
-        await tx.hutLeaderAssignment.update({ where: { id }, data: updateData });
-      });
-    } else {
-      await prisma.hutLeaderAssignment.update({
-        where: { id },
-        data: updateData,
-      });
-    }
+      }
+      await tx.hutLeaderAssignment.update({ where: { id }, data: updateData });
+      return null;
+    });
 
+    if (refusal) {
+      return NextResponse.json(
+        { error: refusal.error },
+        { status: refusal.status },
+      );
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     const custodianResponse = custodianBedHoldErrorResponse(err);

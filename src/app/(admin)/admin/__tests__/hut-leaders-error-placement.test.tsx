@@ -76,17 +76,20 @@ function stubFetch() {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
+    if (url === "/api/admin/lodges") {
+      return { ok: true, status: 200, json: async () => ({ lodges: [{ id: "lodge-1", name: "Lodge One" }] }) };
+    }
     if (url.startsWith("/api/admin/hut-leaders/eligible-members")) {
       return { ok: true, json: async () => ({ members: [eligibleMember] }) };
     }
-    if (url === "/api/admin/hut-leaders/unassigned-dates") {
+    if (url.startsWith("/api/admin/hut-leaders/unassigned-dates?lodgeId=")) {
       return { ok: true, json: async () => ({ unassignedDates: [] }) };
     }
     // The Confirm click POSTs the assignment; simulate a 409 overlap conflict.
     if (url === "/api/admin/hut-leaders" && method === "POST") {
       return { ok: false, json: async () => ({ error: OVERLAP_ERROR }) };
     }
-    if (url === "/api/admin/hut-leaders") {
+    if (url.startsWith("/api/admin/hut-leaders?lodgeId=")) {
       return { ok: true, json: async () => ({ assignments: [] }) };
     }
     return { ok: true, json: async () => ({}) };
@@ -183,6 +186,9 @@ describe("custodian bed hold controls (#2286)", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/admin/lodges") {
+        return { ok: true, status: 200, json: async () => ({ lodges: [{ id: "lodge-1", name: "Lodge One" }] }) };
+      }
       calls.push({
         url,
         method,
@@ -194,7 +200,7 @@ describe("custodian bed hold controls (#2286)", () => {
       if (url.startsWith("/api/admin/hut-leaders/eligible-members")) {
         return { ok: true, json: async () => ({ members: [] }) };
       }
-      if (url === "/api/admin/hut-leaders/unassigned-dates") {
+      if (url.startsWith("/api/admin/hut-leaders/unassigned-dates?lodgeId=")) {
         return { ok: true, json: async () => ({ unassignedDates: [] }) };
       }
       if (url === "/api/admin/hut-leaders/a1" && method === "PUT") {
@@ -204,7 +210,7 @@ describe("custodian bed hold controls (#2286)", () => {
           json: async () => putResponse.body,
         };
       }
-      if (url === "/api/admin/hut-leaders") {
+      if (url.startsWith("/api/admin/hut-leaders?lodgeId=")) {
         return {
           ok: true,
           json: async () => ({ assignments: [ASSIGNMENT_WITH_BED] }),

@@ -58,6 +58,12 @@ type MemberTab = "staying" | "any";
 
 interface AssignmentFormProps {
   hutLeaderLabel: string;
+  /**
+   * #2887: the occupancy heat-map in step 1 is lodge-scoped, so the form has to
+   * name the lodge it is assigning at. The parent renders this form only once
+   * its own scope has settled.
+   */
+  lodgeId: string;
   selectedStartDate: string;
   selectedEndDate: string;
   // Step 1: the operator picked new nights (calendar tap or date input). The
@@ -101,6 +107,7 @@ interface AssignmentFormProps {
 
 export function AssignmentForm({
   hutLeaderLabel,
+  lodgeId,
   selectedStartDate,
   selectedEndDate,
   onPickNights,
@@ -202,6 +209,7 @@ export function AssignmentForm({
           </div>
           <OccupancyCalendar
             mode="range"
+            lodgeId={lodgeId}
             selectedStartDate={selectedStartDate}
             selectedEndDate={selectedEndDate}
             onSelectionChange={onPickNights}

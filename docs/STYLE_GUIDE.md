@@ -215,14 +215,21 @@ template.
 
 ## Linking rules
 
-The docs form a navigable graph, not a flat folder. Two invariants:
+The docs form a navigable graph, not a flat folder. Three invariants:
 
-1. **Every doc is reachable from a hub.** A new doc must be linked from
-   `docs/README.md` (the top audience-first hub) directly, or from a feature hub
-   (a `README.md` inside a feature subdirectory such as `finance-dashboard/`,
-   `multi-lodge/`, `lobby-display/`, `xero/`) that is itself linked from
-   `docs/README.md`. No orphan pages.
-2. **Every hub back-links.** A feature hub links back up to `docs/README.md` (a
+1. **Every doc is reachable from a hub.** A new doc must be linked from one of
+   the three audience indexes — [`adopters/README.md`](adopters/README.md),
+   [`contributors/README.md`](contributors/README.md), or
+   [`user-guide/README.md`](user-guide/README.md) — or from a feature hub (a
+   `README.md` inside a feature subdirectory such as `finance-dashboard/`,
+   `multi-lodge/`, `lobby-display/`, `xero/`) that is itself linked from one of
+   them. `docs/README.md` is the router above all three and lists the doors, not
+   the pages. No orphan pages.
+2. **One canonical home per page** (#2692). A page that serves two audiences
+   still belongs to exactly one index; the other index links to it. Never write
+   a second, parallel version of the same guidance under the other audience's
+   path — that is how two homes drift apart.
+3. **Every hub back-links.** A feature hub links back up to `docs/README.md` (a
    short "Part of the [documentation hub](../README.md)" line), and every
    operator guide's "Related links" points back to its hub. Navigation works in
    both directions.

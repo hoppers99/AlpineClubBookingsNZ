@@ -26,7 +26,7 @@ import {
   memberGuestConsentOutcomeTemplate,
   memberGuestConsentRequestTemplate,
   memberGuestRequestWithdrawnTemplate,
-} from "../email-templates";
+} from "@/lib/email-templates/member-guest";
 import { formatNZDate } from "../nzst-date";
 import { sendEmail, type EmailSendOutcome } from "./core";
 import type { BookingEmailRecipient } from "@/lib/booking-email-contract";

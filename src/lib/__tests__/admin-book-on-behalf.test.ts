@@ -9,7 +9,12 @@ vi.mock("@/lib/prisma", () => ({
     // #2364: the hosting review is reconciled inside the booking write, and the
     // on-behalf create path evaluates the submitted party before it.
     adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
-    lodge: { findFirst: vi.fn() },
+    // #2701: the create resolves the lodge the request NAMED (`findUnique`),
+    // instead of falling through to the club default (`findFirst`).
+    lodge: {
+      findFirst: vi.fn(),
+      findUnique: vi.fn().mockResolvedValue({ id: "lodge-1", active: true }),
+    },
     // #1982: default lodge capacity is a self-healed DB override, not a
     // club.json runtime fallback.
     lodgeSettings: { findUnique: async () => ({ capacity: 20 }) },
@@ -138,7 +143,10 @@ const mockedCalcPrice = vi.mocked(calculateBookingPrice);
 function makeRequest(body: Record<string, unknown>) {
   return new NextRequest("http://localhost/api/bookings", {
     method: "POST",
-    body: JSON.stringify(body),
+    // #2701: a create must NAME its lodge — the route refuses one that does not
+    // rather than resolving the blank to the club's default lodge. Named here,
+    // once, because every real client now names it; a case may still override.
+    body: JSON.stringify({ lodgeId: "lodge-1", ...body }),
     headers: { "Content-Type": "application/json" },
   });
 }

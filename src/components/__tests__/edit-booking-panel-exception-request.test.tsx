@@ -4,10 +4,12 @@ import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  EditBookingPanel,
-  exceptionRequestPayloadFromModification,
-} from "@/components/edit-booking-panel";
+import { EditBookingPanel } from "@/components/edit-booking-panel";
+// #2690: imported from the module that owns the narrowing rather than through a
+// re-export on the panel. The panel is a shell now; a symbol re-exported from it
+// solely so a test can reach it is the compatibility facade the split was
+// supposed to remove.
+import { exceptionRequestPayloadFromModification } from "@/components/edit-booking/exception-request-payload";
 
 /**
  * #2562 — the modification half of the member-facing exception workflow.

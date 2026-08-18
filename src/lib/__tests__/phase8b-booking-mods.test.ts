@@ -2814,7 +2814,7 @@ describe("DELETE /api/bookings/[id]/guests/[guestId]", () => {
 
 describe("bookingModifiedTemplate", () => {
   it("renders date change template", async () => {
-    const { bookingModifiedTemplate } = await import("@/lib/email-templates");
+    const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
       firstName: "Alice",
       modificationType: "DATE_CHANGE",
@@ -2838,7 +2838,7 @@ describe("bookingModifiedTemplate", () => {
   });
 
   it("renders guest add template", async () => {
-    const { bookingModifiedTemplate } = await import("@/lib/email-templates");
+    const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
       firstName: "Bob",
       modificationType: "GUEST_ADD",
@@ -2861,7 +2861,7 @@ describe("bookingModifiedTemplate", () => {
   });
 
   it("renders guest remove with refund", async () => {
-    const { bookingModifiedTemplate } = await import("@/lib/email-templates");
+    const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
       firstName: "Carol",
       modificationType: "GUEST_REMOVE",
@@ -2883,7 +2883,7 @@ describe("bookingModifiedTemplate", () => {
   });
 
   it("shows change fee when present", async () => {
-    const { bookingModifiedTemplate } = await import("@/lib/email-templates");
+    const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
       firstName: "Dave",
       modificationType: "DATE_CHANGE",
@@ -2905,7 +2905,7 @@ describe("bookingModifiedTemplate", () => {
   });
 
   it("renders Internet Banking additional payment context", async () => {
-    const { bookingModifiedTemplate } = await import("@/lib/email-templates");
+    const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
       firstName: "Eve",
       modificationType: "DATE_CHANGE",
@@ -2932,7 +2932,7 @@ describe("bookingModifiedTemplate", () => {
   });
 
   it("escapes HTML in firstName", async () => {
-    const { bookingModifiedTemplate } = await import("@/lib/email-templates");
+    const { bookingModifiedTemplate } = await import("@/lib/email-templates/booking");
     const html = bookingModifiedTemplate({
       firstName: "<script>alert('xss')</script>",
       modificationType: "DATE_CHANGE",

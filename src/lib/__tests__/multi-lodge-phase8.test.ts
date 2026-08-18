@@ -29,6 +29,8 @@ import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 import { loadEmailMessageSettingsForLodge } from "@/lib/email-message-settings";
 import {
   BookingLodgeError,
+  createConfirmedBooking,
+  createDraftBooking,
   createWaitlistedBooking,
   type WaitlistedBookingInput,
 } from "@/lib/booking-create";
@@ -242,11 +244,27 @@ describe("booking creation lodge integrity", () => {
         isMember: true,
       },
     ],
+    lodgeId: "lodge-1",
   } as unknown as WaitlistedBookingInput;
 
   beforeEach(() => {
     vi.clearAllMocks();
   });
+
+  it.each([
+    ["draft", createDraftBooking],
+    ["confirmed", createConfirmedBooking],
+    ["waitlisted", createWaitlistedBooking],
+  ])(
+    "rejects an unchecked %s caller with no lodge before resolving a default",
+    async (_name, create) => {
+      await expect(
+        create({ ...baseInput, lodgeId: undefined } as never),
+      ).rejects.toThrow("lodgeId is required");
+      expect(mocks.lodgeFindFirst).not.toHaveBeenCalled();
+      expect(mocks.lodgeFindUnique).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects an unknown or inactive lodge before writing anything", async () => {
     mocks.lodgeFindUnique.mockResolvedValue(null);
