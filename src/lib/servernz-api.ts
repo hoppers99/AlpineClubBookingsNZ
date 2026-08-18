@@ -69,8 +69,9 @@ const distributedLodgeSchema = z.object({
   bedCapacity: z.number().nullable(),
   updatedAt: z.string(),
 });
-export type DistributedLodge = z.infer<typeof distributedLodgeSchema>;
 
+// No exported alias for a single distributed lodge: nothing names one on its
+// own, and callers reach them through `OtherLodgesPullResult["lodges"]`.
 const pullResultSchema = z.object({
   lodges: z.array(distributedLodgeSchema),
   cursor: z.string().nullable(),
