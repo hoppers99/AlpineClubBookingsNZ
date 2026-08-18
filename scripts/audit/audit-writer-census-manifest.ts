@@ -290,7 +290,14 @@ export const AUDIT_CENSUS_TOTALS = {
   // (`member.email-inheritance-source.changed`), one `createStructuredAuditLog`
   // inside the reconciler, category `family`. It records a real routing change,
   // so it is a categorised writer, not an `UNCATEGORISED_AUDIT_WRITERS` entry.
-  writeSites: 435,
+  // 435 -> 439 (Alpine Central Server, PR #21): the four write sites the
+  // integration adds, all `createAuditLog`, all categorised at the site so none
+  // joins `UNCATEGORISED_AUDIT_WRITERS`. Three are `lodge` — the manual Other
+  // Clubs upload and download, plus the shared failure row in
+  // `alpine_server/sync-response.ts` that records a sync that could not run —
+  // and one is `admin`, the connection-settings save. Re-measured with
+  // `npm run audit:census` on the merged tree, not by adding branch deltas.
+  writeSites: 439,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -355,7 +362,10 @@ export const AUDIT_CENSUS_TOTALS = {
     // only because the `uncategorised` half of the same line differed (11 vs 0).
     // Had this change been a pure re-form with no category attached, the total
     // would have merged silently two short. The merged truth is 108, measured.
-    createAuditLog: { total: 108, uncategorised: 0 },
+    // 108 -> 112 (Alpine Central Server, PR #21): all four of that change's new
+    // write sites reach the sink through `createAuditLog`, matching the routes
+    // around them rather than introducing another form.
+    createAuditLog: { total: 112, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -537,7 +547,14 @@ export const AUDIT_CENSUS_TOTALS = {
     // readable with support:view alone, so this widens the weakest-gate set by
     // three (the derived support:view total moves 120 -> 123) — the officers who
     // curate the Other Lodges registry, not a new class of reader.
-    admin: 101,
+    // 101 -> 102 (Alpine Central Server, PR #21): saving the central-server
+    // connection settings. `admin` is readable with support:view alone, so the
+    // derived weakest-gate total moves 123 -> 124 — by one operator-facing
+    // configuration row, not a new class of reader. The API key itself is never
+    // in an audit row (see docs/SECURITY-ATTACK-SURFACE.md), so this widens what
+    // a support-only operator can correlate by the fact of a connection change,
+    // never by its secret.
+    admin: 102,
     // 16 -> 19 (#2581 child 2): `member.password-reset-sent` and
     // `member.setup-invite-sent` (decision 3 — the affected domain is the
     // CREDENTIAL, not the mailing), plus the `member.bulk-set-role` branch
@@ -568,7 +585,12 @@ export const AUDIT_CENSUS_TOTALS = {
     // `admin` above for the readership and retention consequences. Bed
     // allocation is now wholly `lodge`: 28 sites, one gate, no action name
     // written into two.
-    lodge: 52,
+    // 52 -> 55 (Alpine Central Server, PR #21): the manual Other Clubs upload
+    // and download, plus the shared failure row that records a sync which could
+    // not run. They sit beside the Other Lodges CRUD writers they distribute, on
+    // the same `support` + `lodge` gate, so no reader gains anything they could
+    // not already see about that registry.
+    lodge: 55,
     // 19 -> 34 (#2581 child 2): the fifteen Xero settings, mapping, replay and
     // retry writers. `xero` is `support` plus `finance`.
     xero: 34,

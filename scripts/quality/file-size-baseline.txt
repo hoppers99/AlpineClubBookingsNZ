@@ -101,7 +101,7 @@ src/app/api/admin/bookings/[id]/mark-paid/route.ts 251 route-handler
 src/app/api/admin/bookings/[id]/return-to-waitlist/route.ts 410 route-handler
 src/app/api/admin/bookings/[id]/review/route.ts 330 route-handler
 src/app/api/admin/bookings/search/route.ts 258 route-handler
-src/app/api/admin/committee/assignments/[id]/route.ts 255 route-handler
+src/app/api/admin/committee/assignments/[id]/route.ts 264 route-handler
 src/app/api/admin/deletion-requests/[id]/route.ts 1275 route-handler
 src/app/api/admin/email-templates/route.ts 578 route-handler
 src/app/api/admin/family-groups/[id]/login-holder/route.ts 442 route-handler
@@ -111,7 +111,7 @@ src/app/api/admin/hut-leaders/eligible-members/route.ts 327 route-handler
 src/app/api/admin/hut-leaders/route.ts 317 route-handler
 src/app/api/admin/image-manager/directories/route.ts 255 route-handler
 src/app/api/admin/induction-templates/[id]/route.ts 253 route-handler
-src/app/api/admin/integrations/credentials/route.ts 279 route-handler
+src/app/api/admin/integrations/credentials/route.ts 288 route-handler
 src/app/api/admin/issue-reports/[id]/route.ts 259 route-handler
 src/app/api/admin/lodge/route.ts 454 route-handler
 src/app/api/admin/member-guest-settings/route.ts 262 route-handler
@@ -185,14 +185,14 @@ src/components/book/member-guest-find-panel.tsx 713 domain-module
 src/components/calendar/event-dialog.tsx 991 domain-module
 src/components/edit-booking-panel.tsx 1834 domain-module
 src/components/website/skifield-whakapapa-widget.tsx 730 domain-module
-src/instrumentation.node.ts 1434 domain-module
+src/instrumentation.node.ts 1511 domain-module
 src/lib/admin-bed-allocation.ts 4484 domain-module
 src/lib/admin-bookings-service.ts 1288 domain-module
-src/lib/admin-cron-health.ts 771 domain-module
+src/lib/admin-cron-health.ts 787 domain-module
 src/lib/admin-family-group-requests-service.ts 1574 domain-module
 src/lib/admin-member-detail-service.ts 1657 domain-module
 src/lib/admin-members-service.ts 1726 domain-module
-src/lib/admin-permissions.ts 749 domain-module
+src/lib/admin-permissions.ts 754 domain-module
 src/lib/admin-roster-service.ts 837 domain-module
 src/lib/adult-member-hosting-review.ts 3020 domain-module
 src/lib/audit-query.ts 1170 domain-module
@@ -221,7 +221,7 @@ src/lib/booking-request.ts 2851 domain-module
 src/lib/capacity.ts 1045 domain-module
 src/lib/club-theme-schema.ts 947 domain-module
 src/lib/config-transfer/bootstrap-import.ts 719 domain-module
-src/lib/config-transfer/categories/club-settings.ts 1093 domain-module
+src/lib/config-transfer/categories/club-settings.ts 1104 domain-module
 src/lib/config-transfer/categories/lodge-config.ts 1008 domain-module
 src/lib/config-transfer/categories/membership-fees.ts 1076 domain-module
 src/lib/config-transfer/categories/site-content.ts 953 domain-module
@@ -264,7 +264,7 @@ src/lib/member-family-tree.ts 1216 domain-module
 src/lib/member-guest-consent-service.ts 1141 domain-module
 src/lib/member-guest-email-notes.ts 793 domain-module
 src/lib/member-lifecycle-actions.ts 1737 domain-module
-src/lib/member-merge.ts 3708 domain-module
+src/lib/member-merge.ts 3714 domain-module
 src/lib/member-partner-link.ts 1397 domain-module
 src/lib/membership-cancellation-admin.ts 1143 domain-module
 src/lib/membership-cancellation-requests.ts 1316 domain-module
