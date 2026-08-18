@@ -51,6 +51,42 @@ function balancedFrom(
   return text.slice(openIndex);
 }
 
+/**
+ * Exactly one function's body, braces balanced from its own opening `{`.
+ *
+ * Every writer below used to be sliced out of the 4,484-line
+ * `admin-bed-allocation.ts` by "from this signature to the next symbol's name",
+ * and #2688 put each one at the END of its own small module — where that idiom
+ * degenerates into "to end of file" and anything appended below the function can
+ * satisfy an ordering chain on its behalf (#2688 review F2, measured on
+ * `runAutoBedAllocation`). A balanced body needs no next-symbol anchor and
+ * cannot be widened by anything outside the function.
+ *
+ * The parameter list is balanced first, then the return type is stepped over by
+ * tracking angle brackets, so a `Promise<{ … }>` annotation is not mistaken for
+ * the body.
+ */
+function functionBody(source: string, signature: string): string {
+  const at = source.indexOf(signature);
+  expect(at, `${signature} is not in this file`).toBeGreaterThanOrEqual(0);
+  const parensAt = source.indexOf("(", at);
+  const params = balancedFrom(source, parensAt, "(", ")");
+
+  let angle = 0;
+  let bodyAt = -1;
+  for (let i = parensAt + params.length; i < source.length; i += 1) {
+    const char = source[i];
+    if (char === "<") angle += 1;
+    else if (char === ">") angle = Math.max(0, angle - 1);
+    else if (char === "{" && angle === 0) {
+      bodyAt = i;
+      break;
+    }
+  }
+  expect(bodyAt, `${signature} has no body`).toBeGreaterThan(parensAt);
+  return balancedFrom(source, bodyAt, "{", "}");
+}
+
 function between(text: string, start: string, end: string): string {
   const startIndex = text.indexOf(start);
   const endIndex = text.indexOf(end, startIndex + start.length);
@@ -81,8 +117,9 @@ describe("bed allocation lock topology", () => {
     expect(selector).toContain(
       "if (input.lodgeId) where.room = lodgeNullTolerantScope(input.lodgeId)",
     );
-    const approval = text.slice(
-      text.indexOf("export async function approveBedAllocations(input"),
+    const approval = functionBody(
+      text,
+      "export async function approveBedAllocations(input",
     );
     expectInOrder(approval, [
       "const lockWhere = buildApproveBedAllocationsWhere(input)",
@@ -101,8 +138,9 @@ describe("bed allocation lock topology", () => {
 
   it("serializes reviewed removal global then actual sorted lodges then rows", () => {
     const text = source("src/lib/bed-allocation-removal.ts");
-    const apply = text.slice(
-      text.indexOf("export async function applyBedAllocationRemoval"),
+    const apply = functionBody(
+      text,
+      "export async function applyBedAllocationRemoval",
     );
     expectInOrder(apply, [
       "resolveImmutableLodgeKeys",
@@ -131,8 +169,9 @@ describe("bed allocation lock topology", () => {
 
   it("serializes reviewed moves global then sorted lodges, member families, and allocation rows", () => {
     const text = source("src/lib/bed-allocation-move.ts");
-    const apply = text.slice(
-      text.indexOf("export async function applyBedAllocationMove"),
+    const apply = functionBody(
+      text,
+      "export async function applyBedAllocationMove",
     );
     expectInOrder(apply, [
       "pg_advisory_xact_lock(1)",
@@ -149,7 +188,11 @@ describe("bed allocation lock topology", () => {
       "updateReviewedMoveRows",
       "BED_ALLOCATION_MOVE_APPLIED",
     ]);
-    expect(apply).not.toContain("lockMemberNights");
+    // Asserted over the WHOLE module, not just this body: bounding the slice
+    // above (#2688 review F2) would otherwise have narrowed this negative claim,
+    // and "nowhere in the move writer" is what it means. There is no occurrence
+    // in the file today.
+    expect(text).not.toContain("lockMemberNights");
     expect(text).toContain('ORDER BY "bedId", "stayDate", "isSecondOccupant", "id"');
     expect(apply).toContain("{ timeout: 30_000, maxWait: 10_000 }");
     const guardedUpdate = between(
@@ -198,15 +241,15 @@ describe("bed allocation lock topology", () => {
   });
 
   it("rebuilds the board auto-allocation plan only after global then lodge", () => {
-    // #2688: `runAutoBedAllocation` is now the whole of its own module, so the
-    // slice runs to the end of the file rather than to the next symbol — the
-    // same function text, with nothing outside it able to satisfy the order.
-    const source_ = source("src/lib/bed-allocation-auto-allocate.ts");
-    const autoRunAt = source_.indexOf(
+    // #2688: `runAutoBedAllocation` is now the whole of its own module. The
+    // slice ran to end of file on that basis, which is true today and enforced
+    // by nothing — anything appended below the function could satisfy the order
+    // on its behalf (#2688 review F2). Brace-balanced from the function's own
+    // body instead, so only this function can.
+    const autoRun = functionBody(
+      source("src/lib/bed-allocation-auto-allocate.ts"),
       "export async function runAutoBedAllocation(",
     );
-    expect(autoRunAt).toBeGreaterThanOrEqual(0);
-    const autoRun = source_.slice(autoRunAt);
     expectInOrder(autoRun, [
       "pg_advisory_xact_lock(1)",
       "acquireLodgeCapacityLock(tx, lodgeId)",

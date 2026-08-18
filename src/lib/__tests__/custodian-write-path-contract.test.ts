@@ -306,6 +306,142 @@ function placementStatementCounts(): Map<string, number> {
   return counts;
 }
 
+/**
+ * Exactly one function's body, braces balanced from its own opening `{`.
+ *
+ * The alternative — slice from this signature to the next symbol's name, or to
+ * end of file — is what made the lock assertions below vacuous (#2688 review
+ * F1/F2). A whole-file `toContain` is satisfied by the IMPORT line; an
+ * end-of-file slice is satisfied by anything appended after the function. A
+ * balanced body can be satisfied only by the function itself, and it needs no
+ * hard-coded "next symbol" string to stay bounded when the module is
+ * reorganised.
+ *
+ * The parameter list is balanced first, then the return type is stepped over by
+ * tracking angle brackets, so `Promise<{ … }>` cannot be mistaken for the body.
+ */
+function functionBody(source: string, signature: string): string {
+  const at = source.indexOf(signature);
+  expect(at, `${signature} is not in this file`).toBeGreaterThanOrEqual(0);
+  const parensAt = source.indexOf("(", at);
+  const params = balancedFrom(source, parensAt, "(", ")");
+
+  let angle = 0;
+  let bodyAt = -1;
+  for (let i = parensAt + params.length; i < source.length; i += 1) {
+    const char = source[i];
+    if (char === "<") angle += 1;
+    else if (char === ">") angle = Math.max(0, angle - 1);
+    else if (char === "{" && angle === 0) {
+      bodyAt = i;
+      break;
+    }
+  }
+  expect(bodyAt, `${signature} has no body`).toBeGreaterThan(parensAt);
+  return balancedFrom(source, bodyAt, "{", "}");
+}
+
+/** Every token in `tokens`, in this order, within `text`. */
+function expectInOrder(text: string, tokens: readonly string[]): void {
+  let cursor = -1;
+  for (const token of tokens) {
+    const next = text.indexOf(token, cursor + 1);
+    expect(next, `Expected ${token} after offset ${cursor}`).toBeGreaterThan(
+      cursor,
+    );
+    cursor = next;
+  }
+}
+
+/**
+ * Every board writer that opens its OWN transaction and takes its own locks.
+ *
+ * The lock-held implementations are not here: they are handed a client that
+ * already holds both keys, which is what their `WithLocksHeld` name promises.
+ * These five are the ones where the keys are actually acquired, so these five
+ * are where `INV-LOCK-002` — global `pg_advisory_xact_lock(1)` BEFORE the
+ * per-lodge capacity key — is either honoured or lost.
+ *
+ * `chain` is asserted as an ORDER, not as a set of things present. That
+ * distinction is the entire finding (#2688 review F1): the assertion this
+ * replaces was a whole-file `toContain("acquireLodgeCapacityLock")`, which the
+ * module's IMPORT line satisfies on its own. Measured: deleting every
+ * `acquireLodgeCapacityLock(...)` CALL from `assignBedRange`,
+ * `manuallyAllocateBed` or `manuallyAllocateBedForNights` left the suite green,
+ * so all three could silently lose the lodge tier that makes the #2286
+ * custodian-hold exclusion non-racy on exactly the paths it protects.
+ */
+const SELF_WRAPPED_WRITERS: ReadonlyArray<{
+  file: string;
+  signature: string;
+  chain: readonly string[];
+}> = [
+  {
+    file: "src/lib/bed-allocation-manual-writes.ts",
+    signature: "export async function manuallyAllocateBed(",
+    chain: [
+      "resolveBedLodgeIdForLock(input.bedId, prisma)",
+      "prisma.$transaction",
+      "pg_advisory_xact_lock(1)",
+      "acquireLodgeCapacityLock(tx, lockLodgeId)",
+      "manuallyAllocateBedWithLocksHeld({ ...input, db: tx })",
+    ],
+  },
+  {
+    file: "src/lib/bed-allocation-manual-writes.ts",
+    signature: "export async function moveBedAllocationsSameDate(",
+    chain: [
+      "resolveBedLodgeIdForLock(input.bedId, prisma)",
+      "prisma.$transaction",
+      "pg_advisory_xact_lock(1)",
+      "acquireLodgeCapacityLock(tx, lockLodgeId)",
+      "moveBedAllocationsSameDateWithLocksHeld({ ...input, db: tx })",
+    ],
+  },
+  {
+    file: "src/lib/bed-allocation-manual-writes.ts",
+    signature: "export async function manuallyAllocateBedForNights(",
+    chain: [
+      "resolveBedLodgeIdForLock(input.bedId, prisma)",
+      "prisma.$transaction",
+      "pg_advisory_xact_lock(1)",
+      "acquireLodgeCapacityLock(tx, lockLodgeId)",
+      "manuallyAllocateBedForNightsWithLocksHeld({",
+    ],
+  },
+  {
+    // The one writer that does NOT use `resolveBedLodgeIdForLock`: a delete is
+    // identified by allocation id, not by destination bed, so its lodge key
+    // comes from the row itself — read INSIDE the transaction, after the global
+    // lock, which is why the order below has the read between the two keys.
+    file: "src/lib/bed-allocation-manual-writes.ts",
+    signature: "export async function deleteBedAllocation(",
+    chain: [
+      "prisma.$transaction",
+      "pg_advisory_xact_lock(1)",
+      "tx.bedAllocation.findUnique",
+      "acquireLodgeCapacityLock(tx, allocationKey.room.lodgeId)",
+      "deleteBedAllocationWithLocksHeld({ ...input, db: tx })",
+    ],
+  },
+  {
+    file: "src/lib/bed-allocation-range-assign.ts",
+    signature: "export async function assignBedRange(",
+    chain: [
+      "resolveBedLodgeIdForLock(input.bedId, prisma)",
+      "prisma.$transaction",
+      "pg_advisory_xact_lock(1)",
+      "acquireLodgeCapacityLock(tx, lockLodgeId)",
+      "assignBedRangeWithLocksHeld({ ...input, db: tx })",
+    ],
+  },
+];
+
+/** The modules the table above covers. */
+const SELF_WRAPPED_WRITER_FILES = [
+  ...new Set(SELF_WRAPPED_WRITERS.map((writer) => writer.file)),
+];
+
 describe("custodian write-path contract (#2286)", () => {
   it("covers every BedAllocation write site that places a guest on a bed", () => {
     // Rebuild the enumeration from the WHOLE source tree rather than trusting
@@ -411,18 +547,16 @@ describe("custodian write-path contract (#2286)", () => {
 
   it("keeps the manual funnel guarded BEFORE it resolves sharing or upserts", () => {
     // #2688: the funnel and its single-night caller now live in different
-    // modules. The slice still covers exactly `allocateBedNightWithLocksHeld`'s body — the
-    // next symbol in the placement module is `resolveBedLodgeIdForLock`.
-    const source = readRepoFile("src/lib/bed-allocation-placement.ts");
-    const funnel = source.slice(
-      source.indexOf("export async function allocateBedNightWithLocksHeld("),
-      source.indexOf("async function resolveBedLodgeIdForLock("),
+    // modules. The body is brace-balanced rather than sliced to the next
+    // symbol's name, so reordering the module cannot quietly widen or empty it.
+    const funnel = functionBody(
+      readRepoFile("src/lib/bed-allocation-placement.ts"),
+      "export async function allocateBedNightWithLocksHeld(",
     );
-    const guardAt = funnel.indexOf("assertBedNightsFreeOfCustodianHold");
-    const upsertAt = funnel.indexOf("bedAllocation.upsert");
-    expect(guardAt).toBeGreaterThan(-1);
-    expect(upsertAt).toBeGreaterThan(-1);
-    expect(guardAt).toBeLessThan(upsertAt);
+    expectInOrder(funnel, [
+      "assertBedNightsFreeOfCustodianHold",
+      "bedAllocation.upsert",
+    ]);
   });
 
   it("keeps utilisation reporting deliberately custodian-FREE, with the reason at the loop", () => {
@@ -448,28 +582,79 @@ describe("custodian write-path contract (#2286)", () => {
     expect(capacity).toContain("buildLodgeCustodianNightCounter");
   });
 
-  it("takes the per-lodge advisory lock in every self-wrapped placement transaction", () => {
-    // #2688: the self-wrapped placement writers are `bed-allocation-manual-writes.ts`
-    // and `bed-allocation-range-assign.ts`; both derive the key with the shared
-    // `resolveBedLodgeIdForLock` from `bed-allocation-placement.ts`.
-    for (const writer of [
-      "src/lib/bed-allocation-manual-writes.ts",
-      "src/lib/bed-allocation-range-assign.ts",
-    ]) {
+  it.each(SELF_WRAPPED_WRITERS.map((writer) => [writer.signature, writer] as const))(
+    "takes global then the per-lodge advisory lock, in order, in %s",
+    (_signature, writer) => {
       // The guard's read and the write must sit inside the SAME lock the
-      // custodian-hold writer takes, or the exclusion is racy by construction.
-      const writerSource = readRepoFile(writer);
-      expect(writerSource).toContain("acquireLodgeCapacityLock");
-      expect(writerSource).toContain("resolveBedLodgeIdForLock");
+      // custodian-hold writer takes, or the exclusion is racy by construction —
+      // and per FUNCTION, because these five each open their own transaction.
+      // The body is brace-balanced, so neither the import line nor a helper
+      // added elsewhere in the module can satisfy this on the function's behalf.
+      const body = functionBody(readRepoFile(writer.file), writer.signature);
+      expectInOrder(body, writer.chain);
+    },
+  );
+
+  it("leaves no self-wrapped writer in those modules undeclared", () => {
+    // Derived from the source, so a SIXTH writer added next to the five above
+    // has to be declared here rather than inheriting their assurance. Every
+    // exported function in these modules that opens its own `prisma.$transaction`
+    // is acquiring the keys itself and therefore owes the order above.
+    for (const file of SELF_WRAPPED_WRITER_FILES) {
+      const source = readRepoFile(file);
+      const declared = SELF_WRAPPED_WRITERS.filter(
+        (writer) => writer.file === file,
+      ).map((writer) => writer.signature);
+
+      const selfWrapped: string[] = [];
+      for (const match of source.matchAll(/export async function (\w+)\(/g)) {
+        const signature = `export async function ${match[1]}(`;
+        if (functionBody(source, signature).includes("prisma.$transaction")) {
+          selfWrapped.push(signature);
+        }
+      }
+
+      expect(
+        selfWrapped.sort(),
+        `${file} has an exported function that opens its own transaction and is ` +
+          "not in SELF_WRAPPED_WRITERS. It acquires the locks itself, so declare " +
+          "its global -> lodge order there (INV-LOCK-002).",
+      ).toEqual([...declared].sort());
     }
-    // runAutoBedAllocation was transaction-free and lock-free before #2286. It
-    // is now the whole of its own module, so the slice runs to end of file.
-    const source = readRepoFile("src/lib/bed-allocation-auto-allocate.ts");
-    const autoRun = source.slice(
-      source.indexOf("export async function runAutoBedAllocation("),
+  });
+
+  it("keeps the lodge lock key derived in exactly the declared modules", () => {
+    // `resolveBedLodgeIdForLock` is the OUTSIDE-the-transaction read that mints
+    // the per-lodge key. A third module calling it is a third writer deriving a
+    // lock key, and the table above would not cover it.
+    const callers = allSourceFiles()
+      .filter((file) => /\bresolveBedLodgeIdForLock\(/.test(readRepoFile(file)))
+      .filter((file) => file !== "src/lib/bed-allocation-placement.ts");
+
+    expect(
+      callers.sort(),
+      "A module outside SELF_WRAPPED_WRITERS derives the per-lodge capacity " +
+        "lock key. Declare its writers there so their lock order is checked too.",
+    ).toEqual([...SELF_WRAPPED_WRITER_FILES].sort());
+  });
+
+  it("rebuilds and writes the auto-allocation plan only under global then lodge", () => {
+    // runAutoBedAllocation was transaction-free and lock-free before #2286. The
+    // slice used to run to end of file, justified by "it is now the whole of its
+    // own module" — true today, enforced by nothing: stripping the locks out of
+    // the function and appending a plausible helper BELOW it left this green
+    // (#2688 review F2). The body is brace-balanced instead, so only this
+    // function can satisfy it.
+    const body = functionBody(
+      readRepoFile("src/lib/bed-allocation-auto-allocate.ts"),
+      "export async function runAutoBedAllocation(",
     );
-    expect(autoRun).toContain("acquireLodgeCapacityLock(tx, lodgeId)");
-    expect(autoRun).toContain("prisma.$transaction");
+    expectInOrder(body, [
+      "pg_advisory_xact_lock(1)",
+      "acquireLodgeCapacityLock(tx, lodgeId)",
+      "bedAllocation.createMany",
+      "prisma.$transaction",
+    ]);
   });
 
   it("keeps existing-allocation moves global-then-destination locked, date-preserving and on the guarded manual funnel", () => {
