@@ -65,6 +65,18 @@ function allSourceFiles(): string[] {
 const GUARDED_WRITE_SITES: Array<{
   file: string;
   statement: string;
+  /**
+   * How many such statements this file is allowed to contain.
+   *
+   * Declared rather than inferred, and this is the whole point of the field
+   * (#2688 review F3). The enumeration below compares a SET of
+   * `file::statement` keys, so a second, entirely unguarded
+   * `bedAllocation.createMany` dropped into a file already on this list — every
+   * one of which is a real write path — used to be absorbed by the first
+   * entry's key and never seen. `guest-stay-expansion-census.test.ts` records
+   * the same lesson for its own table; this is that fix applied here.
+   */
+  occurrences: number;
   mechanism: string;
   /**
    * A string that must appear in the file for the mechanism to be real.
@@ -80,6 +92,7 @@ const GUARDED_WRITE_SITES: Array<{
   {
     file: "src/lib/bed-allocation-placement.ts",
     statement: "bedAllocation.upsert",
+    occurrences: 1,
     mechanism:
       "allocateBedNightWithLocksHeld calls assertBedNightsFreeOfCustodianHold before the upsert; every manual placement (single night, bulk drop, board move) funnels through it.",
     evidence: "await assertBedNightsFreeOfCustodianHold({",
@@ -87,6 +100,7 @@ const GUARDED_WRITE_SITES: Array<{
   {
     file: "src/lib/bed-allocation-auto-allocate.ts",
     statement: "bedAllocation.createMany",
+    occurrences: 1,
     mechanism:
       "runAutoBedAllocation re-filters its suggestions against custodianHeldBedNightKeys inside its locked transaction.",
     evidence: "custodianHeldBedNightKeys(",
@@ -94,6 +108,7 @@ const GUARDED_WRITE_SITES: Array<{
   {
     file: "src/lib/bed-allocation-range-assign.ts",
     statement: "bedAllocation.createMany",
+    occurrences: 1,
     mechanism:
       "runAssignBedRangeAttempt classifies held nights as the CUSTODIAN_HOLD refusal category before writing anything.",
     evidence: 'category: "CUSTODIAN_HOLD"',
@@ -101,6 +116,7 @@ const GUARDED_WRITE_SITES: Array<{
   {
     file: "src/lib/bed-allocation-range-assign.ts",
     statement: "bedAllocation.updateMany",
+    occurrences: 1,
     mechanism:
       "The range path's batched updateMany only ever runs for targetNights with no refusal, and CUSTODIAN_HOLD is one of the refusal categories.",
     evidence: 'category: "CUSTODIAN_HOLD"',
@@ -124,6 +140,7 @@ const GUARDED_WRITE_SITES: Array<{
     // `guest-stay-expansion-census.test.ts` records for its own table.
     file: "src/lib/bed-allocation-beds.ts",
     statement: "bedAllocation.updateMany",
+    occurrences: 1,
     mechanism:
       "updateBedAllocationBedWithLocksHeld rewrites only the denormalized bedType on rows already sitting on that bed; bedId is a selector here, never written, so no occupant is introduced or moved.",
     evidence: "data: { bedType: input.bedType },",
@@ -131,6 +148,7 @@ const GUARDED_WRITE_SITES: Array<{
   {
     file: "src/lib/bed-allocation-lifecycle.ts",
     statement: "bedAllocation.createMany",
+    occurrences: 2,
     mechanism:
       "autoAllocateMissingBedNights feeds custodian holds to the planner as #1768 unknown-occupant rows (blocking, never evictable), AND re-filters the payload against the live holds on the writing client immediately before both createManys — the reconcile is routinely called post-commit and unlocked, so the plan-time read alone would let a hold created in between be written over.",
     evidence: "dropRowsOnCustodianHeldBedNights(client, rows",
@@ -138,6 +156,7 @@ const GUARDED_WRITE_SITES: Array<{
   {
     file: "src/lib/bed-allocation-lifecycle.ts",
     statement: "bedAllocation.updateMany",
+    occurrences: 1,
     mechanism:
       "The displacement MOVE writes `bedId: displacement.toBedId`, and every displacement comes from the same planner run that was fed the custodian holds as never-evictable unknown occupants — so a MOVE can never target a held bed-night either.",
     evidence:
@@ -146,6 +165,7 @@ const GUARDED_WRITE_SITES: Array<{
   {
     file: "prisma/demo-seed.ts",
     statement: "bedAllocation.create",
+    occurrences: 1,
     mechanism:
       "The demo seed builds a fresh demo database from nothing: it creates its own rooms, beds and bookings and creates NO HutLeaderAssignment with a bedId, so there is no hold for it to write over. Listed rather than excluded so that adding a seeded custodian hold later forces whoever does it to re-read this entry and order the seed correctly.",
     evidence: "bedAllocation.create({",
@@ -153,6 +173,7 @@ const GUARDED_WRITE_SITES: Array<{
   {
     file: "src/lib/bed-allocation.ts",
     statement: "bedAllocation.createMany",
+    occurrences: 1,
     mechanism:
       "replaceBedAllocationsForBooking is a DORMANT test seam with no production caller. It is listed so it can never be revived unguarded: reviving it means giving it a guard and updating this entry.",
     evidence: "// test seam",
@@ -216,34 +237,85 @@ function containsEvidence(source: string, evidence: string): boolean {
   return squash(source).includes(squash(evidence));
 }
 
+/**
+ * The balanced `open`..`close` region starting at `openIndex`.
+ *
+ * The same helper `bed-allocation-lock-topology-contract.test.ts` uses, and for
+ * the same reason: a fixed-width window is not a call. The detector below used
+ * a 400-character lazy window, and four of the nine declared sites are longer
+ * than that — including `bedAllocation.upsert`, which is THE manual-placement
+ * funnel this whole contract is about. Those four were invisible to the scan
+ * that claims to enumerate the tree (#2688 review F3). Balancing the call's own
+ * parentheses reaches all nine, whatever their size.
+ */
+function balancedFrom(
+  text: string,
+  openIndex: number,
+  open: string,
+  close: string,
+): string {
+  let depth = 0;
+  for (let i = openIndex; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === open) depth += 1;
+    else if (char === close) {
+      depth -= 1;
+      if (depth === 0) return text.slice(openIndex, i + 1);
+    }
+  }
+  return text.slice(openIndex);
+}
+
+/**
+ * How many bed-PLACING `bedAllocation.*` statements of each kind a file holds,
+ * keyed `file::bedAllocation.<statement>`.
+ *
+ * `updateMany` on approval flags, `bedType` or `isSecondOccupant` is not a
+ * placement, so only an `updateMany` whose call names a bed is counted — the
+ * same rule as before, applied to the whole balanced call rather than to its
+ * first 400 characters.
+ */
+function countPlacementStatements(
+  file: string,
+  source: string,
+  into: Map<string, number>,
+): void {
+  const call = /bedAllocation\.(create|createMany|upsert|updateMany)\s*\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = call.exec(source)) !== null) {
+    const statement = match[1];
+    const args = balancedFrom(
+      source,
+      source.indexOf("(", match.index),
+      "(",
+      ")",
+    );
+    const placesABed = statement !== "updateMany" ? true : /bedId:/.test(args);
+    if (!placesABed) continue;
+    const key = `${file}::bedAllocation.${statement}`;
+    into.set(key, (into.get(key) ?? 0) + 1);
+  }
+}
+
+/** The whole tree's placement statements, counted per site. */
+function placementStatementCounts(): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const file of allSourceFiles()) {
+    countPlacementStatements(file, readRepoFile(file), counts);
+  }
+  return counts;
+}
+
 describe("custodian write-path contract (#2286)", () => {
   it("covers every BedAllocation write site that places a guest on a bed", () => {
     // Rebuild the enumeration from the WHOLE source tree rather than trusting
     // the list above — or a hand-picked list of three files.
-    const files = allSourceFiles();
-    const found = new Set<string>();
-    for (const file of files) {
-      const source = readRepoFile(file);
-      for (const statement of ["create", "createMany", "upsert", "updateMany"]) {
-        // `updateMany` on isSecondOccupant / bedType / approval fields is not a
-        // placement; only count an updateMany whose data names a bed.
-        const pattern = new RegExp(
-          `bedAllocation\\.${statement}\\(\\{([\\s\\S]{0,400}?)\\n\\s*\\}\\)`,
-          "g",
-        );
-        for (const match of source.matchAll(pattern)) {
-          const body = match[1];
-          const placesABed =
-            statement !== "updateMany" ? true : /bedId:/.test(body);
-          if (placesABed) found.add(`${file}::bedAllocation.${statement}`);
-        }
-      }
-    }
+    const found = placementStatementCounts();
 
     const declared = new Set(
       GUARDED_WRITE_SITES.map((site) => `${site.file}::${site.statement}`),
     );
-    const undeclared = [...found].filter((key) => !declared.has(key)).sort();
+    const undeclared = [...found.keys()].filter((key) => !declared.has(key)).sort();
 
     expect(
       undeclared,
@@ -252,6 +324,61 @@ describe("custodian write-path contract (#2286)", () => {
         "database constraint behind it. Add the guard, then list the site in " +
         "GUARDED_WRITE_SITES with the mechanism that protects it.",
     ).toEqual([]);
+  });
+
+  it("counts them per SITE, so a second write in a declared file fails too", () => {
+    // The gap this closes (#2688 review F3): the test above compares a SET of
+    // `file::statement` keys, so a brand-new, entirely unguarded
+    // `bedAllocation.createMany` added to `bed-allocation-range-assign.ts` — or
+    // an unguarded `upsert` added to `bed-allocation-placement.ts` — was
+    // absorbed by the existing key for that file and never reported. Both were
+    // measured green before this test existed. Every file on the list is a real
+    // write path, so "already declared" is precisely the wrong reason to trust
+    // the next statement in it.
+    const found = placementStatementCounts();
+
+    const perSite = GUARDED_WRITE_SITES.map((site) => ({
+      site: `${site.file}::${site.statement}`,
+      occurrences: found.get(`${site.file}::${site.statement}`) ?? 0,
+    }));
+
+    expect(
+      perSite,
+      "The number of bed-placing statements in a declared file changed. A new " +
+        "one needs its own custodian guard and its own accounting here; a " +
+        "removed one needs the count lowered. Do not raise the number to make " +
+        "this pass.",
+    ).toEqual(
+      GUARDED_WRITE_SITES.map((site) => ({
+        site: `${site.file}::${site.statement}`,
+        occurrences: site.occurrences,
+      })),
+    );
+  });
+
+  it("MUTATION PROBE: the detector sees a second statement and a long one", () => {
+    // Pins the two properties the fix depends on, so a later "simplification"
+    // back to a fixed-width window or a set-valued scan fails here rather than
+    // silently reopening the hole.
+    const twoWrites = [
+      "await db.bedAllocation.createMany({ data: rows });",
+      "await db.bedAllocation.createMany({ data: more });",
+    ].join("\n");
+    const long = `await db.bedAllocation.upsert({\n${"  // padding\n".repeat(60)}  where: { id },\n});`;
+    const notAPlacement =
+      "await db.bedAllocation.updateMany({ where: { id }, data: { approvedAt: null } });";
+
+    const counts = new Map<string, number>();
+    countPlacementStatements("probe.ts", twoWrites, counts);
+    expect(counts.get("probe.ts::bedAllocation.createMany")).toBe(2);
+
+    const longCounts = new Map<string, number>();
+    countPlacementStatements("probe.ts", long, longCounts);
+    expect(longCounts.get("probe.ts::bedAllocation.upsert")).toBe(1);
+
+    const ignored = new Map<string, number>();
+    countPlacementStatements("probe.ts", notAPlacement, ignored);
+    expect(ignored.size).toBe(0);
   });
 
   it("keeps each declared mechanism actually present in its file", () => {
