@@ -114,7 +114,19 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
       bedCapacity: lodge.bedCapacity,
     };
     if (!existing) {
-      await prisma.otherLodge.create({ data: { name: lodge.name, ...data } });
+      // Upsert, not create: `name` is unique and this read-then-write is not
+      // atomic, so a concurrent writer (an admin pressing Download while the
+      // 03:00 cron runs, or the two directions of a manual double-click) can
+      // insert the same name in the gap and turn a plain create into a P2002
+      // that aborts the whole merge part-way — after some rows were written and
+      // before the cursor advanced, so the next run re-fetches from the old
+      // cursor. The upsert lets the loser of that race fall through to the same
+      // update it would have made, and stays correct when it wins.
+      await prisma.otherLodge.upsert({
+        where: { name: lodge.name },
+        create: { name: lodge.name, ...data },
+        update: data,
+      });
       created++;
     } else if (
       existing.location !== data.location ||
