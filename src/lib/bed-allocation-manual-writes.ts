@@ -26,7 +26,7 @@ import {
 } from "@/lib/bed-allocation-admin-contract";
 import { MAX_BED_ALLOCATION_RANGE_NIGHTS } from "@/lib/bed-allocation-date-range";
 import {
-  allocateBedNight,
+  allocateBedNightWithLocksHeld,
   assertGuestAndBedForAllocation,
   assertManualAllocationInput,
   guestIsStayingOn,
@@ -56,7 +56,7 @@ export async function manuallyAllocateBedWithLocksHeld(
   });
 
   try {
-    return await allocateBedNight({ guest, bed, stayDate, db });
+    return await allocateBedNightWithLocksHeld({ guest, bed, stayDate, db });
   } catch (error) {
     // #2286: the custodian guard's own error carries the held nights; the
     // single-night path answers it as a plain 409 like any other bed clash.
@@ -384,7 +384,7 @@ export async function manuallyAllocateBedForNightsWithLocksHeld(
       // wrap it in its own transaction when no client is injected (so one night's
       // rollback never undoes an already-committed night), or run inline on an
       // injected transactional client. Mirrors the single-night self-wrap (#1750).
-      const { allocation, promotedPartner } = await allocateBedNight({
+      const { allocation, promotedPartner } = await allocateBedNightWithLocksHeld({
         guest,
         bed,
         stayDate,

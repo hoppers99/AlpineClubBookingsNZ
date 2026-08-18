@@ -8,6 +8,27 @@
  * through here, which is why the custodian-hold guard, the whole-lodge-hold
  * refusal (ADR-001) and the consent refusal (D-12, #2307) are enforced at this
  * level rather than once per caller.
+ *
+ * ## Locking precondition — the acquire is in another module now
+ *
+ * `allocateBedNightWithLocksHeld` and the two assertions it composes read and
+ * write bed-nights, and what makes the custodian/whole-lodge guards non-racy is
+ * the global `pg_advisory_xact_lock(1)` then `acquireLodgeCapacityLock` pair
+ * (`INV-LOCK-002`). Neither lock is taken here. Before #2688 the acquire and
+ * the funnel were the same file; now the acquire lives in
+ * `bed-allocation-manual-writes.ts` and `bed-allocation-range-assign.ts`, so
+ * the precondition has to be written down rather than seen. Every export in
+ * this module except `resolveBedLodgeIdForLock` must be called with BOTH locks
+ * already held, on the transaction client that holds them — which is what the
+ * `WithLocksHeld` suffix means everywhere else in this family, and why the
+ * funnel now carries it.
+ *
+ * `resolveBedLodgeIdForLock` is the deliberate exception: it derives the lodge
+ * key and therefore runs OUTSIDE the transaction, before either lock exists.
+ *
+ * `custodian-write-path-contract.test.ts` machine-checks the order at each of
+ * the five self-wrapped writers, so a caller that drops the lodge tier fails
+ * CI rather than becoming a race nobody can see from here.
  */
 import type { BedAllocation, BedType } from "@prisma/client";
 import { addDaysDateOnly, formatDateOnly } from "@/lib/date-only";
@@ -303,7 +324,7 @@ async function promoteVacatedOldBedNight(input: {
 // @@unique([bedId, stayDate, isSecondOccupant]) collision can occur (the move
 // vacates the old bed-night before the partner is flipped). Throws P2002 on a
 // taken bed-night for the caller to classify (409 vs bulk conflict).
-export async function allocateBedNight(input: {
+export async function allocateBedNightWithLocksHeld(input: {
   guest: { id: string; bookingId: string; memberId: string | null };
   bed: { id: string; roomId: string; bedType: BedType };
   stayDate: Date;

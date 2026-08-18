@@ -1747,7 +1747,7 @@ a **custodian occupancy** (#2286). The invariants:
   1. **Every** `BedAllocation` write path that places a guest on a bed re-reads
      the live holds **on the same client, immediately before the write**, and
      refuses or drops what would land on one: the manual funnel
-     `allocateBedNight`, the range assign's `CUSTODIAN_HOLD` classification,
+     `allocateBedNightWithLocksHeld`, the range assign's `CUSTODIAN_HOLD` classification,
      `runAutoBedAllocation`'s in-transaction re-filter, and the lifecycle
      reconcile's write-time re-filter (`dropRowsOnCustodianHeldBedNights`). A
      read at plan time alone is NOT enough — a reconcile is routinely called

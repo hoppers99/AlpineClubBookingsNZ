@@ -341,7 +341,7 @@ export class CustodianHoldConflictError extends Error {
 /**
  * Refuse to place anything on a bed-night a custodian holds.
  *
- * THE guard, called from `allocateBedNight` — the single upsert funnel every
+ * THE guard, called from `allocateBedNightWithLocksHeld` — the single upsert funnel every
  * manual placement (single-night, bulk, board move, range assign) reaches. Its
  * callers hold the per-lodge advisory lock, so a hold created concurrently
  * either commits before this read (and is seen) or waits behind it (and sees

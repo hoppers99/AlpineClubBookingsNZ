@@ -81,7 +81,7 @@ const GUARDED_WRITE_SITES: Array<{
     file: "src/lib/bed-allocation-placement.ts",
     statement: "bedAllocation.upsert",
     mechanism:
-      "allocateBedNight calls assertBedNightsFreeOfCustodianHold before the upsert; every manual placement (single night, bulk drop, board move) funnels through it.",
+      "allocateBedNightWithLocksHeld calls assertBedNightsFreeOfCustodianHold before the upsert; every manual placement (single night, bulk drop, board move) funnels through it.",
     evidence: "await assertBedNightsFreeOfCustodianHold({",
   },
   {
@@ -284,11 +284,11 @@ describe("custodian write-path contract (#2286)", () => {
 
   it("keeps the manual funnel guarded BEFORE it resolves sharing or upserts", () => {
     // #2688: the funnel and its single-night caller now live in different
-    // modules. The slice still covers exactly `allocateBedNight`'s body — the
+    // modules. The slice still covers exactly `allocateBedNightWithLocksHeld`'s body — the
     // next symbol in the placement module is `resolveBedLodgeIdForLock`.
     const source = readRepoFile("src/lib/bed-allocation-placement.ts");
     const funnel = source.slice(
-      source.indexOf("export async function allocateBedNight("),
+      source.indexOf("export async function allocateBedNightWithLocksHeld("),
       source.indexOf("async function resolveBedLodgeIdForLock("),
     );
     const guardAt = funnel.indexOf("assertBedNightsFreeOfCustodianHold");

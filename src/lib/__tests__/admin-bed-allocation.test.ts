@@ -563,7 +563,7 @@ describe("manuallyAllocateBedForNights", () => {
       lodgeBed: {
         findUnique: vi.fn().mockResolvedValue(input.bed),
       },
-      // #2286: allocateBedNight refuses a custodian-held bed-night. No holds in
+      // #2286: allocateBedNightWithLocksHeld refuses a custodian-held bed-night. No holds in
       // these cases, so every assertion below reads as it did before.
       hutLeaderAssignment: {
         findMany: vi.fn().mockResolvedValue([]),
@@ -604,7 +604,7 @@ describe("manuallyAllocateBedForNights", () => {
         // #1701: resolveSecondOccupant checks the target bed-night's existing
         // occupants; default to empty (a free bed-night → primary allocation).
         findMany: input.existingOccupants ?? vi.fn().mockResolvedValue([]),
-        // #1750: allocateBedNight reads the guest's pre-move row (null = fresh
+        // #1750: allocateBedNightWithLocksHeld reads the guest's pre-move row (null = fresh
         // CREATE, so no old bed-night to repair) and the orphan-promote helper
         // looks up + flips a surviving partner. Defaults leave promotion inert.
         findUnique: input.previous ?? vi.fn().mockResolvedValue(null),
@@ -4080,7 +4080,7 @@ describe("bed allocation lock semantics are two-way (#2252)", () => {
         update: vi.fn(),
         upsert,
       },
-      // #2286: allocateBedNight refuses a custodian-held bed-night. No holds
+      // #2286: allocateBedNightWithLocksHeld refuses a custodian-held bed-night. No holds
       // here, so the move behaves exactly as before.
       hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
     };
