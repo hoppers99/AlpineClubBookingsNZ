@@ -134,7 +134,8 @@
     "postcss": "^8.5.26",
     "next-auth": {
       "nodemailer": "$nodemailer"
-    }
+    },
+    "deepmerge-ts": "^8.0.1"
   },
   "devDependencies": {
     "@eslint/compat": "^2.1.0",
