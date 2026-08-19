@@ -14,7 +14,7 @@ import {
 } from "@/lib/servernz-settings";
 import { clearServerNzApiKey } from "@/lib/servernz-config";
 
-// POST /api/admin/alpine_server/settings — save the NON-secret ServerNZ
+// POST /api/admin/alpine-server/settings — save the NON-secret ServerNZ
 // connection settings (base URL and per-shared-item enable flags). The API key
 // itself goes through the encrypted-credential route, not here.
 //

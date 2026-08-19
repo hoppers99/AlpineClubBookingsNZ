@@ -104,10 +104,10 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/access-roles/[id]": "support",
   "/api/admin/age-tier-settings": "bookings",
   // Alpine Central Server (ServerNZ) integration lives on the Integrations hub
-  // (finance), matching the "/api/admin/alpine_server" prefix in admin-permissions.
-  "/api/admin/alpine_server/other-lodges/download": "finance",
-  "/api/admin/alpine_server/other-lodges/upload": "finance",
-  "/api/admin/alpine_server/settings": "finance",
+  // (finance), matching the "/api/admin/alpine-server" prefix in admin-permissions.
+  "/api/admin/alpine-server/other-lodges/download": "finance",
+  "/api/admin/alpine-server/other-lodges/upload": "finance",
+  "/api/admin/alpine-server/settings": "finance",
   "/api/admin/ai-assistant/settings": "support",
   "/api/admin/ai-assistant/usage": "support",
   // AI Diagnostics (AID-2, #2371): a separate admin-only paid capability. Its

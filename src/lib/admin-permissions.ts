@@ -148,8 +148,8 @@ const ROUTE_AREA_PREFIXES: Array<{
       // Alpine Central Server (ServerNZ) integration lives on the Integrations
       // hub (finance), like Xero/Stripe/Google. NOT feature-gated so setup +
       // API-key entry stay reachable while the module is still off.
-      "/admin/alpine_server",
-      "/api/admin/alpine_server",
+      "/admin/alpine-server",
+      "/api/admin/alpine-server",
       "/admin/payments",
       "/admin/internet-banking",
       "/admin/refund-requests",
