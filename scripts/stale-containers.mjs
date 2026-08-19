@@ -497,14 +497,19 @@ function listContainersFromDocker() {
 }
 
 export function parseArguments(argv) {
-  const unknown = argv.filter((arg) => arg !== "--json");
+  // A literal `--` is skipped so one documented command works in every shell.
+  // PowerShell eats npm's separator, which is why other scripts here are
+  // invoked as `npm run x -- -- --flag`; tolerating the token means nobody has
+  // to remember which shell needs how many.
+  const args = argv.filter((arg) => arg !== "--");
+  const unknown = args.filter((arg) => arg !== "--json");
   if (unknown.length > 0) {
     throw new Error(
       `Unrecognised argument(s): ${unknown.join(" ")}. This command reports and takes ` +
         "only --json. It has no removal mode, deliberately (#2794).",
     );
   }
-  return { json: argv.includes("--json") };
+  return { json: args.includes("--json") };
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;

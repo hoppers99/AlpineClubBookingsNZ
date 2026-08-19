@@ -382,6 +382,13 @@ describe("parseArguments", () => {
     expect(parseArguments(["--json"])).toEqual({ json: true });
   });
 
+  it("skips a literal -- so one documented command works in every shell", () => {
+    // PowerShell eats npm's separator; bash does not. Without this, the single
+    // documented invocation is wrong in one shell or the other.
+    expect(parseArguments(["--", "--json"])).toEqual({ json: true });
+    expect(parseArguments(["--", "--"])).toEqual({ json: false });
+  });
+
   it("refuses anything that looks like a removal mode", () => {
     // There is no destructive mode, deliberately. A typo must fail loudly rather
     // than be ignored, so nobody believes they asked for one and got it.
