@@ -843,12 +843,15 @@ describe("finance dashboard page model", () => {
         })
       );
       // Scoped to one lodge there is nothing to disambiguate, so the header
-      // keeps the dates-only wording it has always had. The season name is
-      // still on the model for the Forward demand card's own footnote.
+      // keeps the dates-only wording it has always had — while the Forward
+      // demand card's footnote still names the season, exactly as before, and
+      // without a lodge name it has no use for.
       expect(model.selectionLabels.forwardWindow).toBe(
         "15 Jul 2026 to 30 Sept 2026"
       );
-      expect(model.selection.forwardWindow.seasonName).toBe("Bravo Winter");
+      expect(model.selection.forwardWindow.label).toBe(
+        "Bravo Winter: 15 Jul 2026 to 30 Sept 2026"
+      );
       expect(model.selection.forwardWindow.to).toBe("2026-09-30");
     });
 
