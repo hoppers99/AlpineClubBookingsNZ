@@ -15,6 +15,7 @@ import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import { formatNZDate } from "../nzst-date";
 import { sendEmail } from "./core";
 import type { BookingScopedEmailContext } from "@/lib/booking-email-contract";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 // #1285: the "Chore Roster" notification preference is honored by the caller
 // (`admin-roster-service.ts` via `shouldSendChoreRoster`), before a chore
@@ -41,7 +42,7 @@ export async function sendChoreRosterEmail(
   await sendEmail({
     to: email,
     subject: `Your chore roster for ${formattedDate} - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: choreRosterTemplate(guestName, date, chores, choreLink),
+    html: await renderEmailHtml(() => choreRosterTemplate(guestName, date, chores, choreLink)),
     bookingContext,
     templateName: "chore-roster",
     templateData: {
@@ -87,7 +88,7 @@ export async function sendHutLeaderAssignmentEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Your ${CLUB_NAME} ${CLUB_HUT_LEADER_LABEL.toLowerCase()} assignment`,
-    html: hutLeaderAssignmentTemplate(params),
+    html: await renderEmailHtml(() => hutLeaderAssignmentTemplate(params)),
     // Not booking-scoped: a hut-leader assignment is a roster duty spanning a
     // date range, not a message about anyone's booking (#2258).
     bookingContext: "none",

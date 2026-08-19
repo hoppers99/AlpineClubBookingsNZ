@@ -32,6 +32,10 @@ import {
 // template layer in, so this adds no failure mode to the alert that reports a
 // failure (#2689).
 import { adminEmailWithheldTemplate } from "@/lib/email-templates/admin-ops";
+import {
+  ensureEmailPaletteReady,
+  renderEmailHtml,
+} from "@/lib/email-theme";
 
 export type EmailSendOutcome =
   | {
@@ -147,10 +151,10 @@ async function alertAdminsOfFailClosedWithhold(params: {
 
   const { getAdminEmails } = await import("./admin-alerts-shared");
   const admins = await getAdminEmails();
-  const html = adminEmailWithheldTemplate({
+  const html = await renderEmailHtml(() => adminEmailWithheldTemplate({
     templateName: params.templateName,
     bookingId: params.bookingId,
-  });
+  }));
   for (const admin of admins) {
     await sendEmail({
       to: admin,
@@ -219,6 +223,15 @@ export async function sendEmail({
   // thread the real id wherever one exists.
   bookingContext: EmailBookingContext;
 }): Promise<EmailSendOutcome> {
+  // Backstop for the render gate (#2900). Callers build `html` inside
+  // `renderEmailHtml()`, so the palette is normally loaded before this line —
+  // this await then costs nothing. It still matters for the renders that happen
+  // BELOW it: `prepareEmailMessage` re-renders the whole shell when a stored
+  // body override applies, and `alertAdminsOfFailClosedWithhold` builds a
+  // template of its own. It also means a cron retry replaying HTML rendered by
+  // an older process still warms this process's palette for the next message.
+  await ensureEmailPaletteReady();
+
   const bookingLink =
     bookingContext === "none"
       ? null

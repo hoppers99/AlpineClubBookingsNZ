@@ -24,6 +24,7 @@ import {
   EMAIL_VERIFICATION_TTL_MS,
 } from "@/lib/verification-tokens";
 import { sendEmail } from "./core";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 export async function sendPasswordResetEmail(email: string, token: string) {
   const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
@@ -32,7 +33,7 @@ export async function sendPasswordResetEmail(email: string, token: string) {
   await sendEmail({
     to: email,
     subject: `Reset your ${CLUB_NAME} password`,
-    html: passwordResetTemplate(resetUrl),
+    html: await renderEmailHtml(() => passwordResetTemplate(resetUrl)),
     // Account/security mail is never booking-scoped, and must NEVER be
     // suppressible by a booking flag (#2258): withholding a two-factor code,
     // password reset, magic link or email-change notice is account lockout.
@@ -49,7 +50,7 @@ export async function sendMagicLinkEmail(email: string, token: string) {
   await sendEmail({
     to: email,
     subject: `Your ${CLUB_NAME} sign-in link`,
-    html: magicLinkLoginTemplate(loginUrl),
+    html: await renderEmailHtml(() => magicLinkLoginTemplate(loginUrl)),
     // Account/security mail is never booking-scoped, and must NEVER be
     // suppressible by a booking flag (#2258): withholding a two-factor code,
     // password reset, magic link or email-change notice is account lockout.
@@ -70,7 +71,7 @@ export async function sendAdminPasswordResetEmail(
   await sendEmail({
     to: email,
     subject: `Reset your ${CLUB_NAME} password`,
-    html: adminPasswordResetTemplate(resetUrl, expiryLabel),
+    html: await renderEmailHtml(() => adminPasswordResetTemplate(resetUrl, expiryLabel)),
     // Account/security mail is never booking-scoped, and must NEVER be
     // suppressible by a booking flag (#2258): withholding a two-factor code,
     // password reset, magic link or email-change notice is account lockout.
@@ -91,7 +92,7 @@ export async function sendMemberSetupInviteEmail(
   await sendEmail({
     to: email,
     subject: `Set up your ${CLUB_NAME} account (${MEMBER_SETUP_INVITE_TTL_DAYS}-day link)`,
-    html: memberSetupInviteTemplate(firstName, resetUrl),
+    html: await renderEmailHtml(() => memberSetupInviteTemplate(firstName, resetUrl)),
     // Account/security mail is never booking-scoped, and must NEVER be
     // suppressible by a booking flag (#2258): withholding a two-factor code,
     // password reset, magic link or email-change notice is account lockout.
@@ -115,7 +116,7 @@ export async function sendTwoFactorCodeEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Your ${CLUB_NAME} two-factor code`,
-    html: twoFactorCodeTemplate(params),
+    html: await renderEmailHtml(() => twoFactorCodeTemplate(params)),
     // Account/security mail is never booking-scoped, and must NEVER be
     // suppressible by a booking flag (#2258): withholding a two-factor code,
     // password reset, magic link or email-change notice is account lockout.
@@ -141,7 +142,7 @@ export async function sendVerificationEmail(
   await sendEmail({
     to: email,
     subject: `Verify your email — ${CLUB_BOOKINGS_NAME}`,
-    html: emailVerificationTemplate(firstName, verifyUrl, expiresAt),
+    html: await renderEmailHtml(() => emailVerificationTemplate(firstName, verifyUrl, expiresAt)),
     // Account/security mail is never booking-scoped, and must NEVER be
     // suppressible by a booking flag (#2258): withholding a two-factor code,
     // password reset, magic link or email-change notice is account lockout.
@@ -167,7 +168,7 @@ export async function sendEmailChangeVerification(
   await sendEmail({
     to: newEmail,
     subject: `Confirm your new email — ${CLUB_BOOKINGS_NAME}`,
-    html: emailChangeVerificationTemplate(newEmail, verifyUrl, expiresAt),
+    html: await renderEmailHtml(() => emailChangeVerificationTemplate(newEmail, verifyUrl, expiresAt)),
     // Account/security mail is never booking-scoped, and must NEVER be
     // suppressible by a booking flag (#2258): withholding a two-factor code,
     // password reset, magic link or email-change notice is account lockout.
@@ -189,7 +190,7 @@ export async function sendEmailChangeNotification(
   await sendEmail({
     to: oldEmail,
     subject: `Email change requested — ${CLUB_BOOKINGS_NAME}`,
-    html: emailChangeNotificationTemplate(newEmail),
+    html: await renderEmailHtml(() => emailChangeNotificationTemplate(newEmail)),
     // Account/security mail is never booking-scoped, and must NEVER be
     // suppressible by a booking flag (#2258): withholding a two-factor code,
     // password reset, magic link or email-change notice is account lockout.
@@ -207,7 +208,7 @@ export async function sendAccountDeletionApprovedEmail(
   await sendEmail({
     to: email,
     subject: "Your Account Deletion Request Has Been Processed",
-    html: accountDeletionApprovedTemplate(firstName),
+    html: await renderEmailHtml(() => accountDeletionApprovedTemplate(firstName)),
     // Account/security mail is never booking-scoped, and must NEVER be
     // suppressible by a booking flag (#2258): withholding a two-factor code,
     // password reset, magic link or email-change notice is account lockout.
@@ -226,7 +227,7 @@ export async function sendAccountDeletionRejectedEmail(
   await sendEmail({
     to: email,
     subject: "Update on Your Account Deletion Request",
-    html: accountDeletionRejectedTemplate(firstName, adminNote),
+    html: await renderEmailHtml(() => accountDeletionRejectedTemplate(firstName, adminNote)),
     // Account/security mail is never booking-scoped, and must NEVER be
     // suppressible by a booking flag (#2258): withholding a two-factor code,
     // password reset, magic link or email-change notice is account lockout.

@@ -55,7 +55,7 @@
  *
  * ## When it installs, and why that matters
  *
- * `vitest.clock-setup.ts` — the FIRST entry in `vitest.config.ts`'s
+ * `vitest.clock-setup.ts` — the FIRST entry in `vitest.config.mts`'s
  * `setupFiles`, ahead of `vitest.setup.ts` — installs this during its own module
  * evaluation, not in a `beforeAll`. Both halves matter. A `beforeAll` runs only
  * after every module in the file's graph has been evaluated, so it leaves
@@ -85,7 +85,7 @@
  * A suite that just wants a DIFFERENT fixed instant does not opt out: it pins
  * its own with `vi.setSystemTime(...)` (or the `vi.mock("@/lib/date-only", …)`
  * idiom) in its own `beforeAll`/`beforeEach`, which runs after the freeze is
- * already installed and therefore wins. `vitest.config.ts` pins
+ * already installed and therefore wins. `vitest.config.mts` pins
  * `sequence.hooks: "stack"` so the `afterAll` restore stays last too.
  *
  * One sharp edge to know about: the re-freeze below restores the DEFAULT

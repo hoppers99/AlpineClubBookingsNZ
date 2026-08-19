@@ -50,6 +50,7 @@ import { loadEmailMessageSettingsForLodge } from "@/lib/email-message-settings";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { sendEmail } from "./core";
 import { bookingOwnerEmailContext } from "@/lib/booking-email-contract";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 /**
  * #2328 (review): what the confirmation renders when the applied-credit read
@@ -337,7 +338,7 @@ export async function sendBookingConfirmedEmail(
   return await sendEmail({
     to: email,
     subject: `Booking Confirmed - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: bookingConfirmedTemplate(
+    html: await renderEmailHtml(() => bookingConfirmedTemplate(
       firstName,
       checkIn,
       checkOut,
@@ -352,7 +353,7 @@ export async function sendBookingConfirmedEmail(
         // handed to the hand-built HTML so both render the shared rows.
         appliedCredit,
       },
-    ),
+    )),
     bookingContext: bookingOwnerEmailContext(
       bookingContext.bookingId,
       bookingContext.recipientMemberId,
@@ -446,13 +447,13 @@ export async function sendBookingPendingEmail(
   await sendEmail({
     to: email,
     subject: `Booking Pending - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: bookingPendingTemplate(
+    html: await renderEmailHtml(() => bookingPendingTemplate(
       firstName,
       checkIn,
       checkOut,
       guestCount,
       holdUntil,
-    ),
+    )),
     bookingContext: bookingOwnerEmailContext(bookingContext.bookingId, bookingContext.recipientMemberId),
     templateName: "booking-pending",
     templateData: {
@@ -516,14 +517,14 @@ export async function sendBookingPolicyExceptionApprovedEmail(
   await sendEmail({
     to: email,
     subject: `Your Request Was Approved - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: bookingPolicyExceptionApprovedTemplate({
+    html: await renderEmailHtml(() => bookingPolicyExceptionApprovedTemplate({
       firstName: args.firstName,
       checkIn: args.checkIn,
       checkOut: args.checkOut,
       guestCount: args.guestCount,
       paymentNote,
       adminNotesLine,
-    }),
+    })),
     bookingContext: bookingOwnerEmailContext(
       bookingContext.bookingId,
       bookingContext.recipientMemberId,
@@ -602,14 +603,14 @@ export async function sendBookingPolicyExceptionRefusedEmail(params: {
   return sendEmail({
     to: params.email,
     subject: `Your request was not approved - ${settings.lodgeName}`,
-    html: bookingPolicyExceptionRefusedTemplate({
+    html: await renderEmailHtml(() => bookingPolicyExceptionRefusedTemplate({
       firstName: params.firstName,
       lodgeName: settings.lodgeName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
       reasonLine,
       askDescription,
-    }),
+    })),
     bookingContext:
       params.bookingContext === "none"
         ? "none"
@@ -665,13 +666,13 @@ export async function sendBookingBumpedEmail(
     // context is #2473's recipient-authority resolution. Neither replaces the
     // other, and in particular this must not route a non-login recipient to an
     // authenticated booking-detail link — see the coordination thread on #2466.
-    html: bookingBumpedTemplate(
+    html: await renderEmailHtml(() => bookingBumpedTemplate(
       firstName,
       checkIn,
       checkOut,
       guestCount,
       recipientCanBookOnline,
-    ),
+    )),
     bookingContext: bookingOwnerEmailContext(
       bookingContext.bookingId,
       bookingContext.recipientMemberId,
@@ -704,7 +705,7 @@ export async function sendBookingGuestsCancelledEmail(
   await sendEmail({
     to: email,
     subject: `Booking Cancelled - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: bookingGuestsCancelledTemplate(firstName, checkIn, checkOut),
+    html: await renderEmailHtml(() => bookingGuestsCancelledTemplate(firstName, checkIn, checkOut)),
     bookingContext: bookingOwnerEmailContext(bookingContext.bookingId, bookingContext.recipientMemberId),
     templateName: "booking-guests-cancelled",
     templateData: {
@@ -733,14 +734,14 @@ export async function sendBookingCancelledEmail(
   await sendEmail({
     to: email,
     subject: `Booking Cancelled - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: bookingCancelledTemplate(
+    html: await renderEmailHtml(() => bookingCancelledTemplate(
       firstName,
       checkIn,
       checkOut,
       refundCents,
       refundMethod,
       creditRestoredCents,
-    ),
+    )),
     bookingContext: bookingOwnerEmailContext(bookingContext.bookingId, bookingContext.recipientMemberId),
     templateName: "booking-cancelled",
     templateData: {
@@ -793,13 +794,13 @@ export async function sendSplitGuestPortionCancelledEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Your guests' provisional place was cancelled — ${CLUB_NAME}`,
-    html: splitGuestPortionCancelledTemplate({
+    html: await renderEmailHtml(() => splitGuestPortionCancelledTemplate({
       firstName: params.firstName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
       parentConfirmed: params.parentConfirmed,
       parentBookingReference: params.parentBookingReference ?? null,
-    }),
+    })),
     bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "split-guest-portion-cancelled",
     templateData: {
@@ -840,13 +841,13 @@ export async function sendBookingReviewApprovedEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Your booking has been approved - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: bookingReviewApprovedTemplate(
+    html: await renderEmailHtml(() => bookingReviewApprovedTemplate(
       params.firstName,
       params.checkIn,
       params.checkOut,
       params.adminNotes,
       params.bookingId,
-    ),
+    )),
     bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "booking-review-approved",
     lodgeId: params.lodgeId,
@@ -882,12 +883,12 @@ export async function sendBookingReviewRejectedEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Your booking could not be approved - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: bookingReviewRejectedTemplate(
+    html: await renderEmailHtml(() => bookingReviewRejectedTemplate(
       params.firstName,
       params.checkIn,
       params.checkOut,
       params.adminNotes,
-    ),
+    )),
     bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "booking-review-rejected",
     lodgeId: params.lodgeId,
@@ -927,7 +928,7 @@ export async function sendCheckinReminderEmail(
   await sendEmail({
     to: email,
     subject: `Check-in Reminder - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: checkinReminderTemplate(firstName, checkIn, checkOut, guests, chores),
+    html: await renderEmailHtml(() => checkinReminderTemplate(firstName, checkIn, checkOut, guests, chores)),
     bookingContext: bookingOwnerEmailContext(bookingContext.bookingId, bookingContext.recipientMemberId),
     templateName: "checkin-reminder",
     templateData: {
@@ -1038,12 +1039,12 @@ export async function sendPreArrivalReminderEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Pre-arrival Information - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: preArrivalReminderTemplate({
+    html: await renderEmailHtml(() => preArrivalReminderTemplate({
       ...params,
       lodgeTravelNote: settings.lodgeTravelNote,
       doorCode: settings.doorCode,
       checkoutChoreNote: checkoutChoreSentence,
-    }),
+    })),
     bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "pre-arrival-reminder",
     templateData: {
@@ -1129,7 +1130,7 @@ export async function sendWholeLodgeGuestNamesReminderEmail(params: {
     subject: isFinal
       ? `Last chance: tell us who is coming — ${CLUB_NAME}`
       : `Who is coming with you? — ${CLUB_NAME}`,
-    html: wholeLodgeGuestNamesReminderTemplate({
+    html: await renderEmailHtml(() => wholeLodgeGuestNamesReminderTemplate({
       firstName: params.firstName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
@@ -1137,7 +1138,7 @@ export async function sendWholeLodgeGuestNamesReminderEmail(params: {
       unnamedGuestCount: params.unnamedGuestCount,
       isFinal,
       urgencyNote,
-    }),
+    })),
     bookingContext: bookingOwnerEmailContext(
       params.bookingId,
       params.recipientMemberId,
@@ -1181,7 +1182,7 @@ export async function sendAdditionalPaymentReminderEmail(params: {
   return sendEmail({
     to: params.email,
     subject: `Payment Still Needed - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: additionalPaymentReminderTemplate(params),
+    html: await renderEmailHtml(() => additionalPaymentReminderTemplate(params)),
     bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "additional-payment-reminder",
     templateData: {
@@ -1255,7 +1256,7 @@ export async function sendBookingModifiedEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Booking Modified - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: bookingModifiedTemplate(params),
+    html: await renderEmailHtml(() => bookingModifiedTemplate(params)),
     bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "booking-modified",
     templateData: {
@@ -1318,13 +1319,13 @@ export async function sendPolicyExceptionRequestExpiredEmail(params: {
   return sendEmail({
     to: params.email,
     subject: `Your exception request has lapsed - ${settings.lodgeName}`,
-    html: policyExceptionRequestExpiredTemplate({
+    html: await renderEmailHtml(() => policyExceptionRequestExpiredTemplate({
       firstName: params.firstName,
       lodgeName: settings.lodgeName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
       expiresAt: params.expiresAt,
-    }),
+    })),
     bookingContext: bookingOwnerEmailContext(
       params.bookingId,
       params.recipientMemberId,
@@ -1377,13 +1378,13 @@ export async function sendHostingCoverageLostEmail(params: {
   return sendEmail({
     to: params.email,
     subject: `Your booking needs adult member cover - ${settings.lodgeName}`,
-    html: hostingCoverageLostTemplate({
+    html: await renderEmailHtml(() => hostingCoverageLostTemplate({
       firstName: params.firstName,
       lodgeName: settings.lodgeName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
       uncoveredNights: params.uncoveredNights,
-    }),
+    })),
     bookingContext: bookingOwnerEmailContext(
       params.bookingId,
       params.recipientMemberId,
@@ -1413,7 +1414,7 @@ export async function sendSetupIntentFailedEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Card Setup Failed - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: setupIntentFailedTemplate(params),
+    html: await renderEmailHtml(() => setupIntentFailedTemplate(params)),
     bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "setup-intent-failed",
     templateData: {
