@@ -1,5 +1,10 @@
+import { readdirSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { pageSlugFromPathname } from "@/components/website-footer-shell";
+import {
+  PUBLIC_GROUP_DYNAMIC_ROUTES,
+  pageSlugFromPathname,
+} from "@/components/website-footer-shell";
 import { PER_REQUEST_WEBSITE_ROUTES } from "@/lib/public-website-paths";
 
 /**
@@ -25,9 +30,10 @@ import { PER_REQUEST_WEBSITE_ROUTES } from "@/lib/public-website-paths";
 const TOKEN = "9f3a".repeat(16);
 
 /** The census entries that actually have a value to leak. */
-const DYNAMIC_ROUTES = PER_REQUEST_WEBSITE_ROUTES.filter((route) =>
-  route.includes("["),
-);
+const DYNAMIC_ROUTES = [
+  ...PER_REQUEST_WEBSITE_ROUTES,
+  ...PUBLIC_GROUP_DYNAMIC_ROUTES,
+].filter((route) => route.includes("["));
 
 /** `/a/[token]` with each dynamic segment filled in with `value`. */
 function addressFor(route: string, value: string): string {
@@ -91,6 +97,15 @@ describe("data-page-slug never contains a dynamic segment's value (#2818)", () =
     expect(pageSlugFromPathname("/school-bookings")).toBe("school-bookings");
   });
 
+  it("strips the PAYMENT token, on the payment page itself (#2827)", () => {
+    // The one that matters most, called out on its own so a future edit to the
+    // route lists cannot quietly drop it while the parameterised cases above
+    // still pass over whatever is left. `/pay/[token]` is where the group-join
+    // flow hands the visitor off, and its segment IS the payment bearer
+    // credential.
+    expect(pageSlugFromPathname(`/pay/${TOKEN}`)).toBe("pay/[token]");
+  });
+
   it("matches on segment COUNT, exactly as the route table does", () => {
     // `/join/verify` is two segments, so it is not the three-segment
     // `/join/verify/[token]` route — Next serves it from `/join/[code]` with
@@ -100,5 +115,70 @@ describe("data-page-slug never contains a dynamic segment's value (#2818)", () =
     // Four segments match nothing in the census and fall through to the
     // catch-all, which is where the raw path is the honest answer.
     expect(pageSlugFromPathname("/join/verify/a/b")).toBe("join/verify/a/b");
+  });
+});
+
+/**
+ * The anti-rot half of the #2827 census fix.
+ *
+ * `(website-dynamic)`'s shapes come from a published census that
+ * `check-website-render-modes.mjs` keeps equal to the route tree. The `(public)`
+ * group has no such census, so its list in `website-footer-shell.tsx` is written
+ * by hand — and a hand-written list of "routes whose segment is a secret" rots in
+ * the dangerous direction: the day someone adds `(public)/something/[token]` and
+ * forgets the list, that token starts being stamped into `data-page-slug` again
+ * and nothing fails.
+ *
+ * So the list is compared against the directory tree on disk instead of trusted.
+ */
+describe("the (public) dynamic-route list matches the real route tree (#2827)", () => {
+  const PUBLIC_GROUP_DIR = path.join(process.cwd(), "src", "app", "(public)");
+
+  /**
+   * Every address under `(public)` that a `page.tsx` serves, as a route pattern —
+   * Next's own rules: `(group)` directories are not path segments, `[param]` ones
+   * are kept verbatim.
+   */
+  function routesUnder(directory: string, prefix: string): string[] {
+    const entries = readdirSync(directory, { withFileTypes: true });
+    const here = entries.some((entry) => entry.isFile() && entry.name === "page.tsx")
+      ? [prefix === "" ? "/" : prefix]
+      : [];
+
+    return entries
+      .filter((entry) => entry.isDirectory())
+      .filter((entry) => entry.name !== "__tests__" && entry.name !== "_components")
+      .flatMap((entry) =>
+        routesUnder(
+          path.join(directory, entry.name),
+          // A route GROUP contributes no segment, which is exactly why
+          // `(public)` itself does not appear in any of these addresses.
+          entry.name.startsWith("(") ? prefix : `${prefix}/${entry.name}`,
+        ),
+      )
+      .concat(here);
+  }
+
+  const dynamicRoutesOnDisk = routesUnder(PUBLIC_GROUP_DIR, "")
+    .filter((route) => route.includes("["))
+    .sort();
+
+  it("finds dynamic routes to check, so this suite cannot pass vacuously", () => {
+    expect(dynamicRoutesOnDisk.length).toBeGreaterThan(0);
+  });
+
+  it("covers every dynamic (public) route, and claims no route that is gone", () => {
+    // Equality in both directions on purpose. A missing entry reopens the oracle;
+    // a stale entry is a shape claimed for an address nothing serves, which would
+    // silently start rewriting a real page's slug if that address were ever reused.
+    expect([...PUBLIC_GROUP_DYNAMIC_ROUTES].sort()).toEqual(dynamicRoutesOnDisk);
+  });
+
+  it("stamps a shape, never the value, for each of them", () => {
+    for (const route of dynamicRoutesOnDisk) {
+      const slug = pageSlugFromPathname(addressFor(route, TOKEN));
+      expect(slug).toBe(route.replace(/^\//, ""));
+      expect(slug).not.toContain(TOKEN.slice(0, 4));
+    }
   });
 });

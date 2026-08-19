@@ -45,7 +45,55 @@ import { PER_REQUEST_WEBSITE_ROUTES } from "@/lib/public-website-paths";
  * real route tree. A hand-written second list here would rot in the dangerous
  * direction: a token route added to the group and forgotten in the mirror would
  * silently start stamping its token again, with nothing failing.
+ *
+ * ## The `(public)` group needs the same treatment (#2827 census)
+ *
+ * `PER_REQUEST_WEBSITE_ROUTES` lists the `(website-dynamic)` group only, and
+ * that is correct for the questions IT answers — the setup gate, the CSP nonce,
+ * the CMS catch-all's territory. It is the wrong boundary for THIS question.
+ *
+ * This footer is rendered by two layouts, `src/components/website/website-chrome.tsx`
+ * for the website groups and `src/app/(public)/layout.tsx` for the `(public)`
+ * group — and that second layout injects the club theme, admin Raw CSS included,
+ * on exactly the same page. So every `(public)` route with a `[token]` segment was
+ * stamping its bearer credential into `data-page-slug` for admin CSS to read,
+ * through the very fix that closed the class next door.
+ *
+ * `/pay/[token]` is the one that matters most: it is the payment page, the token is
+ * the payment bearer credential, and it is where the group-join flow #2827 was
+ * filed about hands the visitor off to. Closing that flow's `<a href>` while the
+ * destination page stamped the same token in an attribute would have moved the
+ * oracle one hop rather than removed it. `/chores/[token]`,
+ * `/family-invite/[token]` and `/membership-cancellation/[token]` are the same
+ * shape and are closed here too.
+ *
+ * Query-string tokens (`/reset-password?token=…`, `/verify-email?token=…`) are NOT
+ * affected: `usePathname()` returns the path without the query, so nothing from
+ * the query reaches this attribute.
+ *
+ * That group has no equivalent published census to drive from, so its dynamic
+ * routes are written down below — and `website-footer-shell-slug.test.tsx` reads
+ * the `(public)` directory tree from disk and fails if a route there has a dynamic
+ * segment this list does not cover. That disk scan is what stops the hand-written
+ * half rotting in the dangerous direction, and it is the reason a second list is
+ * acceptable here at all.
  */
+
+/**
+ * The `(public)` group's dynamic routes, which share this footer and the same
+ * admin Raw CSS (#2827). Every one of them carries a one-time or bearer token in
+ * its path.
+ *
+ * Exported as the seam `website-footer-shell-slug.test.tsx` compares against the
+ * real `src/app/(public)` tree on disk, so adding a route there without adding it
+ * here fails a test rather than silently reopening the oracle.
+ */
+export const PUBLIC_GROUP_DYNAMIC_ROUTES = [
+  "/chores/[token]",
+  "/family-invite/[token]",
+  "/membership-cancellation/[token]",
+  "/pay/[token]",
+] as const;
 
 /**
  * The census's dynamic routes, pre-split into segments, with `null` marking a
@@ -54,16 +102,19 @@ import { PER_REQUEST_WEBSITE_ROUTES } from "@/lib/public-website-paths";
  * Static routes are dropped: they have no value to strip, and leaving them in
  * would make the loop below claim addresses it does not need to.
  */
-const DYNAMIC_ROUTE_SHAPES = PER_REQUEST_WEBSITE_ROUTES.filter((route) =>
-  route.includes("["),
-).map((route) => ({
-  /** The value stamped when this shape matches, e.g. `join/verify/[token]`. */
-  slug: route.replace(/^\//, ""),
-  segments: route
-    .split("/")
-    .filter((segment) => segment.length > 0)
-    .map((segment) => (segment.startsWith("[") ? null : segment)),
-}));
+const DYNAMIC_ROUTE_SHAPES = [
+  ...PER_REQUEST_WEBSITE_ROUTES,
+  ...PUBLIC_GROUP_DYNAMIC_ROUTES,
+]
+  .filter((route) => route.includes("["))
+  .map((route) => ({
+    /** The value stamped when this shape matches, e.g. `join/verify/[token]`. */
+    slug: route.replace(/^\//, ""),
+    segments: route
+      .split("/")
+      .filter((segment) => segment.length > 0)
+      .map((segment) => (segment.startsWith("[") ? null : segment)),
+  }));
 
 /**
  * The slug an admin's CSS may select on: the path with its leading slash
