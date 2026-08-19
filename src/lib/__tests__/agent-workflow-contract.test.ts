@@ -220,6 +220,34 @@ describe("repository agent workflow contract", () => {
     expect(codex).toContain("Refusing unexpected junction target");
     expect(codex).toContain("expected target sentinel is missing");
     expect(codex).toContain("### 5. Split fast local evidence from full CI gates");
+
+    /*
+      #2794. Lane-owned container teardown, pinned for the same reason as the
+      merge-gate sentences above: it exists because its absence produced a dated
+      failure — nine containers from five closed issues blocked #2663's
+      measurement for over a week — and a quiet deletion would leave nothing
+      behind saying so.
+
+      The three properties below are the owner's decision, not implementation
+      detail. Report-only was chosen over a garbage collector, and age-based
+      expiry was explicitly rejected because an active long-running lane must
+      not lose its database to a timer. A later edit that adds a removal mode or
+      an age rule has to change this test deliberately and say why.
+    */
+    expect(codex).toContain("## Lane-owned Docker infrastructure");
+    expect(codexNormalized).toContain("A lane that starts Docker infrastructure owns removing it");
+    expect(codex).toContain("npm run stale-containers");
+    expect(codex).toContain("agent-lane.issue");
+    expect(codex).toContain("agent-lane.shared=true");
+    expect(codexNormalized).toContain("It never removes anything");
+    expect(codexNormalized).toContain(
+      'Failure reads "unknown", never "safe to remove"',
+    );
+    expect(codexNormalized).toContain("must not lose its database because a timer fired");
+    expect(codexNormalized).toContain(
+      "a lane abandoned or replaced, and a failed experiment",
+    );
+    expect(packageJson).toContain('"stale-containers": "node scripts/stale-containers.mjs"');
     expect(codex).toContain("GitHub Actions owns the full");
     expect(codexNormalized).toContain("Run a full suite locally only to diagnose");
     expect(codex).not.toContain("Luna/Terra");
