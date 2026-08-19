@@ -4,6 +4,8 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { settleLodgeScopedPage } from "@/lib/__tests__/helpers/lodge-scope-settle";
+
 // #1940: HutLeadersPage reads the session permission matrix for view-only
 // gating; provide an edit-level admin session so the error-placement cases keep
 // working.
@@ -111,8 +113,14 @@ describe("hut leaders assignment error placement", () => {
 
     render(<HutLeadersPage />);
 
+    // Settle the page's lodge scope before touching the mocked calendar
+    // (#2944): a click that lands before the lodge-reset effect has run is
+    // wiped by it, and step 2 — the member card this case is about — never
+    // renders. Ordering, not a timeout; a wider RTL window does not fix it.
+    // Mechanism and measurements in the helper.
+    await settleLodgeScopedPage("/api/admin/hut-leaders?lodgeId=");
     // Calendar-first: pick a range to trigger the eligible-members fetch.
-    fireEvent.click(await screen.findByRole("button", { name: /pick range/i }));
+    fireEvent.click(screen.getByRole("button", { name: /pick range/i }));
 
     // Wait for the member card to render, then select the member (step 2).
     const nameNode = await screen.findByText("Dana Diaz");

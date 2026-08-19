@@ -4,6 +4,8 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { settleLodgeScopedPage } from "@/lib/__tests__/helpers/lodge-scope-settle";
+
 // Capture the props the page passes to the (mocked) calendar so we can assert on
 // the computed overlay, and drive selection / month-change from the test.
 const calendar = vi.hoisted(() => ({ lastProps: null as Record<string, unknown> | null }));
@@ -171,8 +173,16 @@ describe("hut leaders redesign — calendar-painted 3-step flow", () => {
     const HutLeadersPage = (await import("@/app/(admin)/admin/hut-leaders/page")).default;
     render(<HutLeadersPage />);
 
+    // Settle the page's lodge scope before touching the mocked calendar
+    // (#2944). Step 2 below only renders once dates are picked, so a click that
+    // lands before the lodge-reset effect has run loses the range and takes the
+    // "Any member" tab with it — reported as `Unable to find role="button" and
+    // name "Any member"`, which is what reddened `main`. It is an ordering bug,
+    // not a slow query, and a wider RTL window does not fix it. Mechanism and
+    // measurements in the helper.
+    await settleLodgeScopedPage("/api/admin/hut-leaders?lodgeId=");
     // Step 1: pick 2099-07-10..12, which overlaps Bob's 08–14 block by 3 days.
-    fireEvent.click(await screen.findByRole("button", { name: /pick range/i }));
+    fireEvent.click(screen.getByRole("button", { name: /pick range/i }));
     // Step 2: assign any member (keeps the picked range).
     fireEvent.click(await screen.findByRole("button", { name: "Any member" }));
     fireEvent.click(await screen.findByRole("button", { name: "Pick any member" }));
@@ -188,7 +198,9 @@ describe("hut leaders redesign — calendar-painted 3-step flow", () => {
     const HutLeadersPage = (await import("@/app/(admin)/admin/hut-leaders/page")).default;
     render(<HutLeadersPage />);
 
-    fireEvent.click(await screen.findByRole("button", { name: /pick range/i }));
+    // Settle before interacting — see the first case (#2944).
+    await settleLodgeScopedPage("/api/admin/hut-leaders?lodgeId=");
+    fireEvent.click(screen.getByRole("button", { name: /pick range/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Any member" }));
     fireEvent.click(await screen.findByRole("button", { name: "Pick any member" }));
 
