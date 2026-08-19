@@ -20,6 +20,7 @@ import {
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatNZDateTime } from "../nzst-date";
 import { sendEmail } from "./core";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 // ---- Family group emails ----
 
@@ -34,7 +35,7 @@ export async function sendFamilyGroupInvitationEmail(
   await sendEmail({
     to: email,
     subject: `${inviterName} invited you to join ${groupName} — ${CLUB_BOOKINGS_NAME}`,
-    html: familyGroupInvitationTemplate(inviterName, groupName, profileUrl),
+    html: await renderEmailHtml(() => familyGroupInvitationTemplate(inviterName, groupName, profileUrl)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "family-group-invitation",
@@ -50,7 +51,7 @@ export async function sendFamilyGroupInviteAcceptedEmail(
   await sendEmail({
     to: email,
     subject: `${inviteeName} has joined ${groupName} — ${CLUB_BOOKINGS_NAME}`,
-    html: familyGroupInviteAcceptedTemplate(inviteeName, groupName),
+    html: await renderEmailHtml(() => familyGroupInviteAcceptedTemplate(inviteeName, groupName)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "family-group-invite-accepted",
@@ -67,7 +68,7 @@ export async function sendChildRequestSubmittedEmail(
   await sendEmail({
     to: email,
     subject: `Infant/Child/Youth request submitted — ${CLUB_BOOKINGS_NAME}`,
-    html: childRequestSubmittedTemplate(parentName, childName, groupName),
+    html: await renderEmailHtml(() => childRequestSubmittedTemplate(parentName, childName, groupName)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "child-request-submitted",
@@ -84,7 +85,7 @@ export async function sendChildRequestApprovedEmail(
   await sendEmail({
     to: email,
     subject: `${childName} has been added to ${groupName} — ${CLUB_BOOKINGS_NAME}`,
-    html: childRequestApprovedTemplate(parentName, childName, groupName),
+    html: await renderEmailHtml(() => childRequestApprovedTemplate(parentName, childName, groupName)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "child-request-approved",
@@ -101,7 +102,7 @@ export async function sendChildRequestRejectedEmail(
   await sendEmail({
     to: email,
     subject: `Infant/Child/Youth request update — ${CLUB_BOOKINGS_NAME}`,
-    html: childRequestRejectedTemplate(parentName, childName, reason),
+    html: await renderEmailHtml(() => childRequestRejectedTemplate(parentName, childName, reason)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "child-request-rejected",
@@ -125,7 +126,7 @@ export async function sendJoinRequestConfirmationEmail(
   await sendEmail({
     to: email,
     subject: `Join request submitted — ${CLUB_BOOKINGS_NAME}`,
-    html: joinRequestConfirmationTemplate(requesterName, groupName),
+    html: await renderEmailHtml(() => joinRequestConfirmationTemplate(requesterName, groupName)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "join-request-confirmation",
@@ -143,7 +144,7 @@ export async function sendGroupCreateRequestConfirmationEmail(
   await sendEmail({
     to: email,
     subject: `Family group request submitted — ${CLUB_BOOKINGS_NAME}`,
-    html: groupCreateRequestConfirmationTemplate(requesterName, groupName),
+    html: await renderEmailHtml(() => groupCreateRequestConfirmationTemplate(requesterName, groupName)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "family-group-create-request-confirmation",
@@ -159,7 +160,7 @@ export async function sendGroupCreateApprovedEmail(
   await sendEmail({
     to: email,
     subject: `Your family group ${groupName} has been created — ${CLUB_BOOKINGS_NAME}`,
-    html: groupCreateApprovedTemplate(requesterName, groupName),
+    html: await renderEmailHtml(() => groupCreateApprovedTemplate(requesterName, groupName)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "family-group-create-approved",
@@ -176,7 +177,7 @@ export async function sendGroupCreateRejectedEmail(
   await sendEmail({
     to: email,
     subject: `Family group request update — ${CLUB_BOOKINGS_NAME}`,
-    html: groupCreateRejectedTemplate(requesterName, groupName, reason),
+    html: await renderEmailHtml(() => groupCreateRejectedTemplate(requesterName, groupName, reason)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "family-group-create-rejected",
@@ -205,12 +206,12 @@ export async function sendPartnerInviteEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `${params.inviterName} invited you to join ${params.groupName} — ${CLUB_BOOKINGS_NAME}`,
-    html: partnerInviteTemplate({
+    html: await renderEmailHtml(() => partnerInviteTemplate({
       inviterName: params.inviterName,
       groupName: params.groupName,
       claimUrl,
       expiresAt: params.expiresAt,
-    }),
+    })),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "partner-invite",
@@ -232,7 +233,7 @@ export async function sendPartnerInviteClaimedEmail(
   await sendEmail({
     to: email,
     subject: `You've joined ${groupName} — ${CLUB_BOOKINGS_NAME}`,
-    html: partnerInviteClaimedTemplate(firstName, groupName),
+    html: await renderEmailHtml(() => partnerInviteClaimedTemplate(firstName, groupName)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "partner-invite-claimed",
@@ -252,7 +253,7 @@ export async function sendPartnerLinkRequestEmail(
   await sendEmail({
     to: email,
     subject: `${requesterName} asked to record you as their partner — ${CLUB_BOOKINGS_NAME}`,
-    html: partnerLinkRequestTemplate(requesterName, profileUrl),
+    html: await renderEmailHtml(() => partnerLinkRequestTemplate(requesterName, profileUrl)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "partner-link-request",
@@ -267,7 +268,7 @@ export async function sendPartnerLinkConfirmedEmail(
   await sendEmail({
     to: email,
     subject: `Your partner relationship with ${partnerName} has been recorded — ${CLUB_BOOKINGS_NAME}`,
-    html: partnerLinkConfirmedTemplate(partnerName),
+    html: await renderEmailHtml(() => partnerLinkConfirmedTemplate(partnerName)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "partner-link-confirmed",
@@ -282,7 +283,7 @@ export async function sendPartnerLinkRemovedEmail(
   await sendEmail({
     to: email,
     subject: `Your partner relationship with ${partnerName} has been removed — ${CLUB_BOOKINGS_NAME}`,
-    html: partnerLinkRemovedTemplate(partnerName),
+    html: await renderEmailHtml(() => partnerLinkRemovedTemplate(partnerName)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "partner-link-removed",

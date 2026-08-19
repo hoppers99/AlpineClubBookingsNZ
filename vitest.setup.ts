@@ -28,7 +28,7 @@ process.env.AWS_SES_ACCESS_KEY_ID ??= "test-ses-access-key-id";
 process.env.AWS_SES_SECRET_ACCESS_KEY ??= "test-ses-secret-access-key";
 
 // The frozen test clock (#2481) is installed by `vitest.clock-setup.ts`, which
-// `vitest.config.ts` lists BEFORE this file so that "today" is already pinned
+// `vitest.config.mts` lists BEFORE this file so that "today" is already pinned
 // when this module's own imports evaluate. See that file and
 // `src/lib/__tests__/helpers/clock.ts`.
 
@@ -89,7 +89,7 @@ process.env.AWS_SES_SECRET_ACCESS_KEY ??= "test-ses-secret-access-key";
   tree calls `configure()` itself, passes a per-call `{ timeout }`, or asserts
   that one of these utilities rejects, so this ceiling is the only one in play.
 
-  Imported dynamically and only under jsdom: `vitest.config.ts` sets the default
+  Imported dynamically and only under jsdom: `vitest.config.mts` sets the default
   environment to `node`, and the several hundred node-environment suites have no
   reason to pay for loading the DOM testing library.
 */

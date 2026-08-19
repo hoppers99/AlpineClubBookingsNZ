@@ -8,6 +8,7 @@ import {
 } from "@/lib/email-templates/family-booking";
 import { formatNZDate } from "../nzst-date";
 import { sendEmail, type EmailSendOutcome } from "./core";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 /**
  * The family-scope "you were added to a booking" FYI (#2284, S2).
@@ -90,7 +91,7 @@ export async function sendFamilyMemberBookingAddedEmail(
   return sendEmail({
     to: params.email,
     subject: `${copy.heading} - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: familyMemberBookingAddedTemplate({
+    html: await renderEmailHtml(() => familyMemberBookingAddedTemplate({
       firstName: params.firstName,
       addedHeading: copy.heading,
       addedContextNote: copy.contextNote,
@@ -98,7 +99,7 @@ export async function sendFamilyMemberBookingAddedEmail(
       checkIn: params.checkIn,
       checkOut: params.checkOut,
       removalNote: copy.removalNote,
-    }),
+    })),
     bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "family-member-added",
     templateData: {

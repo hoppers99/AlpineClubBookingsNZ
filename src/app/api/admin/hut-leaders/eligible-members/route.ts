@@ -264,7 +264,7 @@ export async function GET(req: NextRequest) {
       // Build the set of the member's actual stay nights: the union of the
       // half-open [checkIn, checkOut) day range of each booking. checkOut is the
       // departure morning, NOT an occupied night — this matches every occupancy
-      // computation in the repo (getBookingStats / getUnassignedHutLeaderDates,
+      // computation in the repo (getBookingStatsByLodge / getUnassignedHutLeaderDates,
       // which feed the amber "Upcoming Dates Without…" panel on this same page).
       // Only real stay nights count — gap nights between two disjoint bookings do not.
       const stayNightsByTime = new Map<number, Date>();

@@ -16,7 +16,7 @@ the full local gate.
 
 ## Shared setup
 
-`vitest.config.ts` points every test file at two setup files, in order —
+`vitest.config.mts` points every test file at two setup files, in order —
 `vitest.clock-setup.ts` then `vitest.setup.ts`. Between them they:
 
 - **freeze the clock** — the rest of this page;
@@ -27,6 +27,16 @@ the full local gate.
   (nodemailer is mocked, so nothing is ever sent);
 - **set React Testing Library's async window to 4,000ms** under jsdom — the
   section below.
+
+The `.mts` extension is deliberate, not incidental (#2864). Vite reads a plain
+`.ts` config as CommonJS, so from 8.2.1 it warns on every run that this file
+uses ESM syntax, and once `configLoader: "native"` becomes vite's default such a
+file stops loading at all. `.mts` is unambiguously ESM, which the native loader
+reads directly. It is the narrow fix: the alternative — `"type": "module"` in
+`package.json` — would reinterpret every `.js` file in the repository. Because
+the file is now ESM, it has no `__dirname`; the `@` alias is built from
+`import.meta.dirname` instead. If you rename it again, `frozen-test-clock.test.ts`
+reads it from disk by name and will fail loudly rather than silently skip.
 
 ## The RTL async window is 4,000ms, not the 1,000ms default
 
@@ -279,7 +289,7 @@ generalised.
 3. **Need a different fixed instant? Pin it in the file, do not opt out.** A
    suite's own `vi.setSystemTime(...)` in its own `beforeAll`/`beforeEach` wins,
    because the freeze is already installed by the time any hook runs;
-   `vitest.config.ts` pins `sequence.hooks: "stack"` so the setup file's
+   `vitest.config.mts` pins `sequence.hooks: "stack"` so the setup file's
    `afterAll` restore stays last. The `vi.mock("@/lib/date-only", …)` idiom (see
    `site-banners.test.ts`) also still works and is unaffected.
 
