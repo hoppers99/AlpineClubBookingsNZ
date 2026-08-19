@@ -12,6 +12,24 @@ import {
   storageUnavailableMessage,
 } from "@/lib/image-storage";
 
+/**
+ * Read one string field from a parsed JSON body, or "" when it is missing or not
+ * a string. Extracted in #2841: five call sites below repeated the same
+ * seven-line narrowing, and that repetition is what put this file over its size
+ * budget once the path-containment reasoning was written down. `trim` is
+ * per-field on purpose — a directory name is trimmed, a path is not.
+ */
+function readStringField(
+  body: unknown,
+  field: string,
+  options: { trim?: boolean } = {},
+): string {
+  if (body === null || typeof body !== "object" || !(field in body)) return "";
+  const value = (body as Record<string, unknown>)[field];
+  if (typeof value !== "string") return "";
+  return options.trim ? value.trim() : value;
+}
+
 async function collectDirs(absDir: string, relBase: string): Promise<string[]> {
   let entries;
   try {
@@ -25,9 +43,8 @@ async function collectDirs(absDir: string, relBase: string): Promise<string[]> {
       const rel = relBase ? `${relBase}/${entry.name}` : entry.name;
       result.push(rel);
       // absDir is contained under IMAGES_ROOT; entry.name comes from readdir of
-      // that directory, not from request input. Justification and the #2841
-      // triage: docs/SECURITY-ATTACK-SURFACE.md -> "Image Manager path
-      // containment".
+      // that directory, not from request input. #2841 triage:
+      // docs/SECURITY-ATTACK-SURFACE.md -> "Image Manager path containment".
       // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       const children = await collectDirs(path.join(absDir, entry.name), rel);
       result.push(...children);
@@ -62,20 +79,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const name =
-    body !== null &&
-    typeof body === "object" &&
-    "name" in body &&
-    typeof (body as Record<string, unknown>).name === "string"
-      ? (body as Record<string, string>).name.trim()
-      : "";
-  const parent =
-    body !== null &&
-    typeof body === "object" &&
-    "parent" in body &&
-    typeof (body as Record<string, unknown>).parent === "string"
-      ? (body as Record<string, string>).parent
-      : "";
+  const name = readStringField(body, "name", { trim: true });
+  const parent = readStringField(body, "parent");
 
   if (!isSafeDirectoryName(name)) {
     return NextResponse.json(
@@ -90,18 +95,14 @@ export async function POST(request: NextRequest) {
   }
 
   // parentAbs is resolveInImagesRoot-contained and `name` passed
-  // isSafeDirectoryName above; the startsWith check below re-confirms
-  // containment before mkdir. Why this suppression is justified, and the whole
-  // #2841 triage behind it, is recorded once in
+  // isSafeDirectoryName above; the check below re-confirms containment before
+  // mkdir. Why that is enough, and the whole #2841 triage behind it:
   // docs/SECURITY-ATTACK-SURFACE.md -> "Image Manager path containment".
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   const newAbs = path.join(parentAbs, name);
   // Strict: a directory being CREATED is always a child, never the root itself.
-  // This check used to carry a `newAbs !== IMAGES_ROOT &&` escape hatch, which
-  // short-circuited the containment test whenever the target resolved to the
-  // root — so with a nested parent, `name: ".."` walked back up to IMAGES_ROOT
-  // and reached mkdir (#2841). isSafeDirectoryName now stops that name earlier;
-  // dropping the escape hatch means containment no longer depends on it.
+  // A `newAbs !== IMAGES_ROOT &&` escape hatch here is what let `name: ".."`
+  // reach mkdir (#2841) — do not restore it.
   if (!newAbs.startsWith(IMAGES_ROOT + path.sep)) {
     return NextResponse.json({ error: "Invalid path" }, { status: 400 });
   }
@@ -164,20 +165,8 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const rel =
-    body !== null &&
-    typeof body === "object" &&
-    "path" in body &&
-    typeof (body as Record<string, unknown>).path === "string"
-      ? (body as Record<string, string>).path
-      : "";
-  const newName =
-    body !== null &&
-    typeof body === "object" &&
-    "newName" in body &&
-    typeof (body as Record<string, unknown>).newName === "string"
-      ? (body as Record<string, string>).newName.trim()
-      : "";
+  const rel = readStringField(body, "path");
+  const newName = readStringField(body, "newName", { trim: true });
 
   if (!rel) {
     return NextResponse.json(
@@ -198,9 +187,9 @@ export async function PATCH(request: NextRequest) {
   }
 
   // oldAbs is resolveInImagesRoot-contained and `newName` passed
-  // isSafeDirectoryName above; the startsWith check below re-confirms
-  // containment before rename. Justification and the #2841 triage:
-  // docs/SECURITY-ATTACK-SURFACE.md -> "Image Manager path containment".
+  // isSafeDirectoryName above; the check below re-confirms containment before
+  // rename. #2841 triage: docs/SECURITY-ATTACK-SURFACE.md -> "Image Manager
+  // path containment".
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   const newAbs = path.join(path.dirname(oldAbs), newName);
   if (!newAbs.startsWith(IMAGES_ROOT + path.sep)) {
@@ -236,13 +225,7 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const rel =
-    body !== null &&
-    typeof body === "object" &&
-    "path" in body &&
-    typeof (body as Record<string, unknown>).path === "string"
-      ? (body as Record<string, string>).path
-      : "";
+  const rel = readStringField(body, "path");
 
   if (!rel) {
     return NextResponse.json(

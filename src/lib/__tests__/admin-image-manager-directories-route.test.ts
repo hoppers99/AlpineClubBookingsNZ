@@ -50,7 +50,11 @@ vi.mock("fs/promises", () => ({
   readdir: mocks.readdir,
 }));
 
-import { PATCH, POST } from "@/app/api/admin/image-manager/directories/route";
+import {
+  DELETE,
+  PATCH,
+  POST,
+} from "@/app/api/admin/image-manager/directories/route";
 import { IMAGES_ROOT } from "@/lib/image-storage";
 
 const adminSession = {
@@ -71,6 +75,7 @@ beforeEach(() => {
   mocks.requireActiveSessionUser.mockResolvedValue(null);
   mocks.mkdir.mockResolvedValue(undefined);
   mocks.rename.mockResolvedValue(undefined);
+  mocks.rm.mockResolvedValue(undefined);
 });
 
 // #2841, CodeQL js/path-injection alerts 32/33/34. The `name` charset filter
@@ -234,6 +239,36 @@ describe("image-manager directories route: dot-only name containment", () => {
 
       expect(res.status).toBe(400);
       expect(mocks.rename).not.toHaveBeenCalled();
+    });
+  });
+
+  // DELETE takes no name, only a path, so it was never part of the dot-only
+  // defect. It is covered here because #2841 replaced its hand-rolled body
+  // narrowing with the shared `readStringField` helper, and a parsing helper
+  // that quietly returns "" for a field it should have read would turn a real
+  // delete into "Cannot delete the root directory".
+  describe("DELETE (remove)", () => {
+    it("removes a contained directory recursively", async () => {
+      const res = await DELETE(jsonRequest({ path: "trips/winter" }) as never);
+
+      expect(res.status).toBe(200);
+      expect(mocks.rm).toHaveBeenCalledWith(
+        path.join(IMAGES_ROOT, "trips", "winter"),
+        { recursive: true },
+      );
+    });
+
+    it("refuses an empty path, a non-string path and an escaping path", async () => {
+      for (const body of [{}, { path: "" }, { path: 42 }, { path: "../../etc" }]) {
+        vi.clearAllMocks();
+        mocks.auth.mockResolvedValue(adminSession);
+        mocks.requireActiveSessionUser.mockResolvedValue(null);
+
+        const res = await DELETE(jsonRequest(body) as never);
+
+        expect(res.status, JSON.stringify(body)).toBe(400);
+        expect(mocks.rm, JSON.stringify(body)).not.toHaveBeenCalled();
+      }
     });
   });
 

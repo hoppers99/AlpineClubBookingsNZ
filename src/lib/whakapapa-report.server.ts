@@ -265,7 +265,10 @@ function isRedirectStatus(status: number): boolean {
  * served publicly, a redirect to an internal address would be readable rather
  * than blind. Here a 30x is handed back to us, its `Location` is re-validated
  * through the same allowlist, and anything that leaves the allowed hosts throws
- * instead of being fetched (#2841, CodeQL `js/request-forgery`).
+ * instead of being fetched (#2841, CodeQL `js/request-forgery`). Why the alert
+ * itself is a false positive, and why this residual underneath it was not, is
+ * recorded once in docs/SECURITY-ATTACK-SURFACE.md -> "CodeQL And Semgrep Alert
+ * Backlog Triage".
  */
 async function fetchAllowlistedReport(startUrl: string): Promise<Response> {
   let target = startUrl;
