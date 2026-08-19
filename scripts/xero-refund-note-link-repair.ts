@@ -4,20 +4,19 @@
  * pre-#2901 canonical cleanup (and for the local aftermath of voiding the
  * Xero-side duplicate notes the resulting loop created).
  *
- * LOCAL ledger writes only: it reactivates the wrongly deactivated
- * REFUND_CREDIT_NOTE links until active coverage equals the payment's
- * refunded total exactly, and deactivates local mirrors of notes already
- * VOIDED/DELETED in Xero. It makes ZERO provider calls and never voids or
- * deletes a Xero document — Xero-side duplicates are voided by the operator in
- * Xero first (runbook: docs/xero/ARCHITECTURE.md → "Repairing Stripe
- * refund-note links (#2901)").
+ * It never voids or deletes a Xero document — Xero-side duplicates are voided
+ * by the operator in Xero (runbook: docs/xero/ARCHITECTURE.md → "Repairing
+ * Stripe refund-note links (#2901)"). The only provider traffic is READ-ONLY
+ * status fetches (`--record-statuses`, and automatically before `--apply`),
+ * because a note whose live status was never recorded locally is never
+ * reactivated.
  *
  * Dry run by default. SAFE USAGE — review the dry-run report first, keep its
- * output with the change record, then apply:
+ * output with the change record, then apply exactly the reviewed payments:
  *
- *   npx tsx scripts/xero-refund-note-link-repair.ts                # dry run
- *   npx tsx scripts/xero-refund-note-link-repair.ts --payment <id> # scoped dry run
- *   npx tsx scripts/xero-refund-note-link-repair.ts --apply        # repair
+ *   npx tsx scripts/xero-refund-note-link-repair.ts                     # dry run (writes nothing)
+ *   npx tsx scripts/xero-refund-note-link-repair.ts --record-statuses   # fetch + record live note statuses, then dry run
+ *   npx tsx scripts/xero-refund-note-link-repair.ts --apply --payment <id> [--payment <id>...]
  */
 import "dotenv/config";
 import process from "node:process";
@@ -26,26 +25,52 @@ import {
   findStripeRefundNoteLinkRepairs,
   formatStripeRefundNoteLinkRepairReport,
 } from "../src/lib/xero-refund-note-link-repair";
+import {
+  formatStripeRefundNoteStatusRecordResult,
+  recordStripeRefundNoteLinkStatuses,
+} from "../src/lib/xero-refund-note-status-recorder";
 import { prisma } from "../src/lib/prisma";
 
 function printUsage() {
   console.log(`Usage:
-  npx tsx scripts/xero-refund-note-link-repair.ts                 # dry run (default)
-  npx tsx scripts/xero-refund-note-link-repair.ts --dry-run       # explicit dry run
-  npx tsx scripts/xero-refund-note-link-repair.ts --payment <id>  # scope to payment id(s) (repeatable)
-  npx tsx scripts/xero-refund-note-link-repair.ts --apply         # apply the repairable plans
+  npx tsx scripts/xero-refund-note-link-repair.ts                     # dry run (default, writes nothing)
+  npx tsx scripts/xero-refund-note-link-repair.ts --dry-run           # explicit dry run
+  npx tsx scripts/xero-refund-note-link-repair.ts --record-statuses   # fetch live note statuses from Xero (read-only
+                                                                      # at the provider), record them on the local
+                                                                      # links, then print the refreshed dry-run report
+  npx tsx scripts/xero-refund-note-link-repair.ts --payment <id>      # scope to payment id(s) (repeatable)
+  npx tsx scripts/xero-refund-note-link-repair.ts --apply --payment <id> [--payment <id>...]
 
 Options:
-  --apply         Apply the repairable plans, each payment in its own
-                  transaction. Without it (the default) nothing is written.
-  --payment <id>  Restrict to one payment id; repeat for several.
-  --json          Emit machine-readable JSON alongside the report.
-  --help, -h      Show this help.
+  --apply             Apply the reviewed plans, each payment in its own
+                      transaction. REQUIRES at least one --payment id from the
+                      dry-run report you reviewed: apply is bound to what was
+                      reviewed, never to a fresh unscoped scan. Live statuses
+                      are re-recorded first (see --skip-status-check).
+  --record-statuses   Fetch each linked credit note from Xero (GET only) and
+                      merge its live status onto the local links, so voided
+                      notes can never be reactivated and live ones become
+                      eligible. Writes link metadata only (a mirror of a note
+                      reported VOIDED/DELETED lands inactive, exactly as the
+                      inbound webhook would record it).
+  --skip-status-check With --apply: skip the pre-apply status recording. Use
+                      ONLY when Xero is unreachable and statuses were recorded
+                      moments ago; unknown-status links are never reactivated
+                      either way.
+  --payment <id>      Restrict to one payment id; repeat for several.
+  --json              Emit machine-readable JSON alongside the report.
+  --help, -h          Show this help.
 `);
 }
 
 function parseArgs(argv: string[]) {
-  const options = { apply: false, json: false, paymentIds: [] as string[] };
+  const options = {
+    apply: false,
+    json: false,
+    recordStatuses: false,
+    skipStatusCheck: false,
+    paymentIds: [] as string[],
+  };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -59,6 +84,14 @@ function parseArgs(argv: string[]) {
     }
     if (arg === "--dry-run") {
       options.apply = false;
+      continue;
+    }
+    if (arg === "--record-statuses") {
+      options.recordStatuses = true;
+      continue;
+    }
+    if (arg === "--skip-status-check") {
+      options.skipStatusCheck = true;
       continue;
     }
     if (arg === "--json") {
@@ -77,6 +110,12 @@ function parseArgs(argv: string[]) {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
+  if (options.apply && options.paymentIds.length === 0) {
+    throw new Error(
+      "--apply requires the reviewed payment ids: pass --payment <id> for each payment from the dry-run report you reviewed. An unscoped apply could write plans no human has seen."
+    );
+  }
+
   return options;
 }
 
@@ -85,9 +124,16 @@ async function main() {
   const scope =
     args.paymentIds.length > 0 ? { paymentIds: args.paymentIds } : undefined;
 
+  if (args.recordStatuses || (args.apply && !args.skipStatusCheck)) {
+    const recorded = await recordStripeRefundNoteLinkStatuses(scope);
+    console.log(formatStripeRefundNoteStatusRecordResult(recorded));
+    console.log("");
+  }
+
   if (!args.apply) {
     const report = await findStripeRefundNoteLinkRepairs(scope);
-    console.log("DRY RUN — nothing was written.\n");
+    console.log("DRY RUN — no repair was applied.");
+    console.log("");
     console.log(formatStripeRefundNoteLinkRepairReport(report));
     if (args.json) {
       console.log("\n" + JSON.stringify(report, null, 2));
