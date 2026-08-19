@@ -10,6 +10,7 @@ import {
   type ResolvedAudienceMember,
 } from "@/lib/notices";
 import { prisma } from "@/lib/prisma";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 // Throttling mirrors the admin bulk-communication send loop so a large audience
 // never overwhelms SMTP.
@@ -114,7 +115,7 @@ export async function sendNoticePublishedEmails(
       const outcome = await sendEmail({
         to: recipient.email,
         subject: `New notice: ${notice.title}`,
-        html: noticePublishedTemplate(firstName, notice.title, noticeUrl),
+        html: await renderEmailHtml(() => noticePublishedTemplate(firstName, notice.title, noticeUrl)),
         // Member notices are club-wide, not about any booking (#2258).
         bookingContext: "none",
         templateName: "notice-published",
