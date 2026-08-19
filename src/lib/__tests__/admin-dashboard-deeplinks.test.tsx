@@ -21,7 +21,11 @@ vi.mock("@/lib/auth", () => ({
   auth: vi.fn(),
 }));
 
-vi.mock("@/lib/hut-leader-coverage", () => ({
+// Partial mock: only the query is faked. coverageSpansMultipleLodges is a pure
+// function over the rows this suite supplies, so mocking it would only let the
+// suite disagree with production about when a lodge name is shown (#2917).
+vi.mock("@/lib/hut-leader-coverage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/hut-leader-coverage")>()),
   getUnassignedHutLeaderDates: vi.fn(),
 }));
 

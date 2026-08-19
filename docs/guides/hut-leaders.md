@@ -39,6 +39,12 @@ no hut-leader request or assignment write until a real lodge returns.
    Without …** card lists booked nights with no leader; the calendar paints
    **Needs a Hut Leader** (red) and **Has a Hut Leader** (violet) nights.
 
+   A night "needs a leader" **at one lodge**: it has a booking with at least one
+   guest staying, and no assignment covering it at that lodge. Every lodge runs
+   its own leader, so the same night can need one at Lodge A and be covered at
+   Lodge B. This card is scoped to the lodge in the selector above it, so it only
+   ever describes that one lodge.
+
    ![Hut Leader Assignments page showing the pick-the-nights calendar with "Needs leader" nights, the choose-the-leader step, and the assignments table](../images/admin/admin-hut-leaders.png)
 
 2. **Pick the nights to cover** — set the **Start Date** and **End Date**, or click
@@ -128,6 +134,8 @@ row, so you never have to delete an assignment to change its bed:
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | The lodge list could not be loaded | The page cannot prove which lodge its reads or writes belong to | Press **Try again**. Assignment controls remain hidden until a real lodge returns |
+| The dashboard says more uncovered nights than this page lists | Expected on a club with more than one lodge. The dashboard and the sidebar badge count **lodge-nights** across every active lodge — one night with two uncovered lodges is two — while this page shows only the lodge in its selector. The dashboard names the lodge beside each date so you can see where the extra ones are. A club with one lodge sees the same number in both places | Switch lodges here to see the rest, or read the dashboard's dates, which say which lodge each belongs to |
+| The dashboard lists an uncovered night for a lodge you have archived | It should not — a club-wide count reports active lodges only, matching the automatic assignment, which never assigns for an archived lodge | Nothing to do. If you still see one, the lodge is not archived |
 | Hut Leaders is missing from the sidebar / 404s | The `hutLeaders` module is off | Enable it under **Admin → Setup → Modules** — see [`CONFIGURATION.md`](../../CONFIGURATION.md#module-controls-and-admin-modules) |
 | Everything is read-only ("… can view … but cannot change them") | Your admin role has lodge view but not edit | Ask a full admin for **lodge edit** access |
 | "This member overlaps an existing assignment" | The range overlaps another leader's by more than a day | Shorten the range or delete the conflicting assignment |

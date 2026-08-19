@@ -506,7 +506,17 @@ operational documents (which may carry door/emergency access details).
   rows when present, falling back to the legacy contiguous envelope only when
   none exist; a sparse stay on the 10th and 12th neither occupies nor suggests
   the 11th. Club-wide uncovered-night aggregation retains lodge identity, so an
-  assignment at Lodge A does not suppress the same date at Lodge B. Assignment
+  assignment at Lodge A does not suppress the same date at Lodge B.
+  **An uncovered night is one row PER LODGE** (#2917): `getUnassignedHutLeaderDates`
+  returns `{ date, lodgeId, lodgeName, bookingCount, guestCount }` ordered by
+  date then lodge name then id, so a night on which two lodges both lack a
+  leader is two rows with each lodge's own counts, and every club-wide consumer
+  — the dashboard attention card, the officer card, the sidebar badge and the
+  stuck-state tile — counts lodge-nights and can name the lodge. A `{ kind: "all" }`
+  read reports **active lodges only**, matching the per-lodge auto-assign cron
+  (#2915), because an archived lodge can never be covered. A single-lodge club's
+  dates, counts and wording are unchanged; a lodge name is shown only once a
+  result spans more than one lodge, per the Presentation Rule below. Assignment
   creation serializes on the lodge key and repeats member, overlap and optional
   bed checks after acquiring it; overlapping same-lodge role-only/different-bed
   requests cannot both commit, while different lodges remain independent.
