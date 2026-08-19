@@ -134,10 +134,12 @@ on any booking, at any time before the stay starts.
 
 Open the booking, choose **Edit Booking**, and on the Guests card:
 
-1. Tick **Member of Other Lodge**. A **Other Lodge Name** picker appears,
+1. Tick **Member of Other Lodge**. An **Other Lodge Name** picker appears,
    listing the other lodges recorded on
-   [Setup & Configuration → Lodges](lodges.md#other-lodges).
-2. Choose the lodge. The tick boxes beside the guest names come alive.
+   [Setup & Configuration → Lodges](lodges.md#other-lodges), and a column of
+   tick boxes appears to the left of the guest names. Both are hidden again the
+   moment you untick it.
+2. Choose the lodge. The tick boxes come alive.
 3. Tick each person who is a member of that lodge. Their fee is recalculated at
    your club's member rate **for their own age group** — an adult at the adult
    member rate, a child at the child member rate — and the new figure appears
@@ -150,6 +152,10 @@ Things worth knowing:
 
 - **Only non-members get a tick box.** A member of your own club already prices
   at their own membership rate, so their row shows an empty column.
+- **The booking's own page says so afterwards.** Once saved, that person's line
+  in the Guests list reads *Non-member (Other Club Member)* — they are still a
+  non-member of your club, and the note is what explains the member-rate fee
+  beside it.
 - **It changes the price and nothing else.** The person is still a non-member
   everywhere it matters: they still need an adult member staying with them, they
   still count as a non-member for the guest hold, and member-only promotions

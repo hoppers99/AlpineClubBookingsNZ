@@ -230,6 +230,19 @@ describe("Member of Other Lodge — the card and the hook together", () => {
     expect(screen.queryByLabelText("Other Lodge Name")).not.toBeNull();
   });
 
+  it("shows no tick column at all until the header tick is on", () => {
+    render(<Harness booking={makeBooking()} />);
+
+    expect(
+      screen.queryByLabelText("Price Vic Visitor at the other-lodge member rate"),
+    ).toBeNull();
+
+    fireEvent.click(memberOfOtherLodgeTick());
+    expect(
+      screen.queryByLabelText("Price Vic Visitor at the other-lodge member rate"),
+    ).not.toBeNull();
+  });
+
   it("offers a tick to every non-member and to no member", () => {
     render(<Harness booking={makeBooking()} />);
     fireEvent.click(memberOfOtherLodgeTick());
@@ -306,8 +319,12 @@ describe("Member of Other Lodge — the card and the hook together", () => {
 
     fireEvent.click(memberOfOtherLodgeTick());
 
+    // Picker gone, column gone, and the election retracted rather than merely
+    // hidden — a hidden-but-live tick would be saved.
     expect(screen.queryByLabelText("Other Lodge Name")).toBeNull();
-    expect(tickFor("Vic Visitor").checked).toBe(false);
+    expect(
+      screen.queryByLabelText("Price Vic Visitor at the other-lodge member rate"),
+    ).toBeNull();
     expect(capturePayload()).toEqual({
       otherLodgeId: null,
       otherLodgeMemberGuestIds: [],

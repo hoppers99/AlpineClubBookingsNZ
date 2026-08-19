@@ -541,7 +541,14 @@ export function EditGuestsCard({
             onStartLink={() => memberLink.onStartLink(guest.id)}
             onUnlink={() => memberLink.onUnlink(guest.id)}
             otherLodgeRate={
-              otherLodge.available && !mode.overrideEnabled && !mode.isInProgressEdit
+              // The tick COLUMN exists only while "Member of Other Lodge" is
+              // ticked. Off, the rows are exactly what they were before this
+              // feature — no empty column indenting every name for a rate the
+              // officer is not setting.
+              otherLodge.available &&
+              otherLodge.enabled &&
+              !mode.overrideEnabled &&
+              !mode.isInProgressEdit
                 ? {
                     // A tick is offered for NON-MEMBERS only: a member of this
                     // club already prices at their own membership rate, and the

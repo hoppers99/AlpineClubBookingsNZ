@@ -292,6 +292,15 @@ export function BookingEditor({
                   </p>
                   <p className="text-sm text-muted-foreground">
                     {guest.ageTier} &middot; {guest.isMember ? "Member" : "Non-member"}
+                    {/*
+                      Other Lodges epic: a non-member the booking officer has
+                      recognised as a member of the club's partner lodge, and who
+                      is therefore charged this club's member rate. Said here, on
+                      the rate category, because this line is the only thing on
+                      the read view that explains why the fee beside it is not
+                      the non-member one.
+                    */}
+                    {guest.otherLodgeMember ? " (Other Club Member)" : ""}
                   </p>
                   {(guest.stayStart && guest.stayStart !== booking.checkIn) ||
                   (guest.stayEnd && guest.stayEnd !== booking.checkOut) ? (

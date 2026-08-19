@@ -7,12 +7,14 @@
   Open the booking, choose **Edit Booking**, and the Guests card carries a new
   **Member of Other Lodge** tick beside the existing per-guest date switches.
   Ticking it reveals an **Other Lodge Name** picker listing the other lodges
-  recorded on Setup & Configuration → Lodges. Choose the lodge and a tick box
-  comes alive beside every non-member on the booking; tick each person who
-  belongs to that lodge and their fee is recalculated at your club's member rate
-  for their own age group, with the new figure shown beside their name and the
-  old one struck through. Unticking puts them straight back on the non-member
-  rate. Clearing the lodge clears every tick with it. Any difference in the
+  recorded on Setup & Configuration → Lodges, along with a column of tick boxes
+  beside the non-members on the booking. Choose the lodge and those boxes come
+  alive; tick each person who belongs to that lodge and their fee is
+  recalculated at your club's member rate for their own age group, with the new
+  figure shown beside their name and the old one struck through. Afterwards the
+  booking's Guests list shows them as *Non-member (Other Club Member)*, which is
+  what explains the member-rate fee beside the name. Unticking puts them straight
+  back on the non-member rate. Clearing the lodge clears every tick with it. Any difference in the
   total is settled exactly like any other booking change — shown in full before
   you commit, then charged, refunded or credited.
 
