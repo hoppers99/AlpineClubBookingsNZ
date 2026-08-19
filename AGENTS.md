@@ -415,9 +415,11 @@ At the successful end of a meaningful piece of work:
    trace, add a justified `entry` or file-scoped `ignoreIssues` carve-out to
    `knip.jsonc` (see CONTRIBUTING.md "Dead-code gate") rather than deleting live
    code. `main` is branch-protected, and force-pushes and branch deletions are
-   blocked. **Six checks are required today. Three more are pending an owner
-   action** and are marked as such below — this table is the applied
-   configuration plus what is queued, never an aspiration:
+   blocked. **Nine checks are required today**, and the table below is the
+   applied configuration — never an aspiration. It was last reconciled against
+   the API on 19 Aug 2026; **re-read it with the command below rather than
+   trusting it**, because this table has twice asserted a status that was not
+   the live one.
 
    | Required check | Status | Job | What it gates |
    | --- | --- | --- | --- |
@@ -427,34 +429,51 @@ At the successful end of a meaningful piece of work:
    | `Static analysis gate` | applied | `ci.yml` → `static-analysis` | Semgrep: four registry packs **plus** `.semgrep/rules/**` and their fixtures |
    | `Playwright E2E` | applied | `e2e.yml` → `e2e` | the browser suite |
    | `E2E multi-lodge` | applied | `e2e.yml` → `e2e-multi-lodge` | the multi-lodge browser suite |
-   | `Secret scan (gitleaks)` | **PENDING owner action** | `ci.yml` → `secret-scan` | the PR's own commits, `main`'s history including merge commits, and the checked-out tree (#2686) |
-   | `Image security gate (Trivy CRITICAL)` | **PENDING owner action** | `ci.yml` → `docker-image-security` | CRITICAL image vulnerabilities. HIGH stays advisory (#2686) |
-   | `Dependency audit` | **PENDING owner action** | `ci.yml` → `dependency-audit` | `npm audit --audit-level=high`. Split out of `verify` (#2946), where a failing audit skipped lint, the ratchet, `prisma generate`, typecheck, knip, `npm test` and the build on every branch (#2945) |
+   | `Secret scan (gitleaks)` | applied | `ci.yml` → `secret-scan` | the PR's own commits, `main`'s history including merge commits, and the checked-out tree (#2686) |
+   | `Image security gate (Trivy CRITICAL)` | applied | `ci.yml` → `docker-image-security` | CRITICAL image vulnerabilities. HIGH stays advisory (#2686) |
+   | `Dependency audit` | applied | `ci.yml` → `dependency-audit` | `npm audit --audit-level=high`. Split out of `verify` (#2946), where a failing audit skipped lint, the ratchet, `prisma generate`, typecheck, knip, `npm test` and the build on every branch (#2945) |
 
-   **The rollout order for the three pending ones is load-bearing, and adding a
-   context early breaks every open pull request.** Two of them
-   (`Secret scan (gitleaks)`, `Image security gate (Trivy CRITICAL)`) are
-   produced by jobs #2686 RENAMES; the third (`Dependency audit`) is produced by
-   a job #2946 ADDS. Either way a branch that predates the merge produces none of
-   the new context names — and a required check that has never reported sits on
-   "Expected — waiting for status" forever. The order is the same for all three:
+   **Adding a required context is a three-step sequence, and doing it out of
+   order breaks every open pull request.** This applies whenever a job that
+   produces a required context is added or renamed. A branch that predates the
+   merge produces none of the new context names — and a required check that has
+   never reported sits on "Expected — waiting for status" forever:
 
    1. merge the change that adds or renames the job;
    2. then add that job's context to branch protection;
    3. then rebase every open pull request onto the new `main`, oldest first.
 
    **Between step 1 and step 2 the new context is a red check, not a merge
-   block.** For `Dependency audit` that window is a real, accepted supply-chain
-   gap: `verify` has stopped running the audit, so until the context is added a
-   high advisory reddens a check nothing enforces. Close it promptly rather than
-   leaving it queued.
+   block.** When `Dependency audit` was split out (#2946) that window was a real
+   accepted supply-chain gap: `verify` had stopped running the audit, so until
+   the context was added a high advisory reddened a check nothing enforced.
+   Close such a window promptly rather than leaving it queued.
 
-   Confirm the applied list rather than trusting this table:
+   **Read the applied list rather than trusting this table.** An agent session
+   cannot: the machine account holds `push` but not `admin`, so the protection
+   endpoint returns 404 for it, and that 404 means "not permitted", never "not
+   protected". Ask the owner to run:
 
    ```bash
    gh api repos/thatskiff33/AlpineClubBookingsNZ/branches/main/protection \
-     --jq '.required_status_checks.contexts'
+     --jq '{checks: .required_status_checks.contexts,
+            strict: .required_status_checks.strict,
+            approvals: .required_pull_request_reviews.required_approving_review_count,
+            enforce_admins: .enforce_admins.enabled}'
    ```
+
+   Two traps, both already paid for. **A 404 there means "not permitted", never
+   "not protected"** — check `gh api user -q .login` first. And this repository
+   also carries a *ruleset*, "Protect Main Branch", whose enforcement is
+   `disabled`; rulesets are a separate mechanism and never appear at the endpoint
+   above, so editing it changes nothing while appearing to work.
+   `gh api repos/<owner>/<repo>/rules/branches/main` lists what a ruleset really
+   applies — currently `[]`.
+
+   Measured 19 Aug 2026: the nine contexts above, `strict: false` (requiring
+   up-to-date branches serialises the queue behind full re-runs),
+   `required_approving_review_count: 0` (a pull request is required, a human
+   approval is not — #2713/#2948), `enforce_admins: false`.
 
    **Advisory, and deliberately NOT required** — a finding is investigated, but
    it cannot block a merge: `CodeQL`, `Analyze (javascript-typescript)` and
