@@ -1,9 +1,11 @@
 import { JSDOM } from "jsdom";
 import {
   emptyWhakapapaCurlData,
+  resolveWhakapapaRedirectTarget,
   validateWhakapapaSourceUrl,
   WHAKAPAPA_DEFAULT_SELECTORS,
   WHAKAPAPA_DEFAULT_SOURCE_URL,
+  WHAKAPAPA_MAX_REDIRECTS,
   WHAKAPAPA_SELECTOR_KEYS,
   type WhakapapaCondition,
   type WhakapapaCurlData,
@@ -249,20 +251,67 @@ function parseTrailAreas(
   return areas;
 }
 
+function isRedirectStatus(status: number): boolean {
+  return status >= 300 && status <= 399;
+}
+
+/**
+ * Fetch the report, applying the host allowlist to EVERY hop rather than only to
+ * the URL we were handed.
+ *
+ * `redirect: "manual"` is the load-bearing part. With the default
+ * `redirect: "follow"`, `sourceUrl` is checked once and the upstream server then
+ * picks every subsequent destination — and because this response is cached and
+ * served publicly, a redirect to an internal address would be readable rather
+ * than blind. Here a 30x is handed back to us, its `Location` is re-validated
+ * through the same allowlist, and anything that leaves the allowed hosts throws
+ * instead of being fetched (#2841, CodeQL `js/request-forgery`).
+ */
+async function fetchAllowlistedReport(startUrl: string): Promise<Response> {
+  let target = startUrl;
+
+  for (let hop = 0; hop <= WHAKAPAPA_MAX_REDIRECTS; hop += 1) {
+    const response = await fetch(target, {
+      method: "GET",
+      headers: {
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": "AlpineClubBookingsNZ/1.0 (+whakapapa-report)",
+      },
+      cache: "no-store",
+      redirect: "manual",
+    });
+
+    if (!isRedirectStatus(response.status)) {
+      return response;
+    }
+
+    const next = resolveWhakapapaRedirectTarget(
+      response.headers.get("location"),
+      target,
+    );
+    // The redirect body is never read; release the socket rather than leaving it
+    // pinned until GC.
+    response.body?.cancel().catch(() => {});
+
+    if (!next.ok) {
+      throw new Error(`Whakapapa report redirect refused: ${next.error}`);
+    }
+    target = next.url;
+  }
+
+  throw new Error(
+    `Whakapapa report fetch exceeded ${WHAKAPAPA_MAX_REDIRECTS} redirects.`,
+  );
+}
+
 export async function fetchWhakapapaCurlData(
   options: WhakapapaFetchOptions = {},
 ): Promise<WhakapapaCurlData> {
   const sourceUrl = resolveSourceUrl(options.sourceUrl);
   const selectors = options.selectors ?? WHAKAPAPA_DEFAULT_SELECTORS;
 
-  const upstream = await fetch(sourceUrl, {
-    method: "GET",
-    headers: {
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "User-Agent": "AlpineClubBookingsNZ/1.0 (+whakapapa-report)",
-    },
-    cache: "no-store",
-  });
+  const upstream = await fetchAllowlistedReport(sourceUrl);
 
   const html = await upstream.text();
   if (!upstream.ok || html.trim().length === 0) {

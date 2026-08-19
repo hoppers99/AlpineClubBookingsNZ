@@ -127,6 +127,37 @@ function mockFetchHtml(
   );
 }
 
+type MockResponseSpec = {
+  status?: number;
+  html?: string;
+  location?: string;
+};
+
+/**
+ * Queue of upstream responses, so a redirect chain can be exercised hop by hop.
+ * Returns the fetch spy, which is what pins the request options (the SSRF fix
+ * turns on `redirect: "manual"`, so its absence must fail a test).
+ */
+function mockFetchSequence(responses: MockResponseSpec[]) {
+  const queue = [...responses];
+  const fetchMock = vi.fn(async () => {
+    const next = queue.shift();
+    if (!next) {
+      throw new Error("fetch was called more times than the test queued");
+    }
+    const status = next.status ?? 200;
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: new Headers(next.location ? { location: next.location } : {}),
+      text: async () => next.html ?? "",
+      body: null,
+    };
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
 const CANONICAL_SECTIONS: SectionSpec[] = [
   { id: "facilities", label: "Facilities", items: [["Ticket Office", "Open"]] },
   {
@@ -351,6 +382,113 @@ describe("fetchWhakapapaCurlData", () => {
     await expect(fetchWhakapapaCurlData()).rejects.toThrow(
       /Whakapapa report fetch failed/,
     );
+  });
+});
+
+// #2841 (CodeQL js/request-forgery, alert 29). The host allowlist used to be
+// applied to the FIRST url only: `fetch` defaults to `redirect: "follow"`, so
+// after a 30x the upstream server chose the destination. This response is cached
+// and served publicly from /api/skifield-whakapapa, so that is a readable SSRF,
+// not a blind one. Every hop is now re-validated against the same allowlist.
+describe("fetchWhakapapaCurlData redirect handling", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("never lets the upstream follow redirects for us", async () => {
+    const fetchMock = mockFetchSequence([
+      { status: 200, html: buildHtml(CANONICAL_SECTIONS, ["Top of Waterfall"]) },
+    ]);
+
+    await fetchWhakapapaCurlData();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      redirect: "manual",
+    });
+  });
+
+  it("follows a redirect that stays on an allowlisted host", async () => {
+    const fetchMock = mockFetchSequence([
+      { status: 301, location: "https://www.snow.nz/report" },
+      { status: 200, html: buildHtml(CANONICAL_SECTIONS, ["Top of Waterfall"]) },
+    ]);
+
+    const data = await fetchWhakapapaCurlData();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("https://www.snow.nz/report");
+    expect(data.lifts).toEqual([{ name: "Sky Waka", status: "Open" }]);
+  });
+
+  it("resolves a relative redirect against the hop that issued it", async () => {
+    const fetchMock = mockFetchSequence([
+      { status: 302, location: "/report/summer" },
+      { status: 200, html: buildHtml(CANONICAL_SECTIONS, ["Top of Waterfall"]) },
+    ]);
+
+    await fetchWhakapapaCurlData();
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://www.whakapapa.com/report/summer",
+    );
+  });
+
+  it("refuses a redirect to a host outside the allowlist, and does not fetch it", async () => {
+    const fetchMock = mockFetchSequence([
+      { status: 302, location: "http://169.254.169.254/latest/meta-data/" },
+    ]);
+
+    await expect(fetchWhakapapaCurlData()).rejects.toThrow(
+      /redirect refused/i,
+    );
+    // The decisive assertion: the second request never happens.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a protocol-relative redirect that swaps the host", async () => {
+    const fetchMock = mockFetchSequence([
+      { status: 302, location: "//evil.example.com/report" },
+    ]);
+
+    await expect(fetchWhakapapaCurlData()).rejects.toThrow(
+      /redirect refused/i,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a lookalike host that only suffixes an allowlisted one", async () => {
+    const fetchMock = mockFetchSequence([
+      { status: 302, location: "https://evilwhakapapa.com/report" },
+    ]);
+
+    await expect(fetchWhakapapaCurlData()).rejects.toThrow(
+      /redirect refused/i,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a redirect with no Location header", async () => {
+    mockFetchSequence([{ status: 302 }]);
+
+    await expect(fetchWhakapapaCurlData()).rejects.toThrow(
+      /redirect refused/i,
+    );
+  });
+
+  it("gives up on a redirect loop rather than looping forever", async () => {
+    const fetchMock = mockFetchSequence(
+      Array.from({ length: 6 }, () => ({
+        status: 302,
+        location: "https://www.whakapapa.com/report",
+      })),
+    );
+
+    await expect(fetchWhakapapaCurlData()).rejects.toThrow(
+      /exceeded 3 redirects/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 });
 
