@@ -54,6 +54,16 @@ export function ghJson(args) {
  * what an error means. The stale-container reporter has to keep going and mark
  * that container "unknown"; `npm run issue` has to stop. Swallowing the error
  * here would take that choice away from both.
+ *
+ * `url` is returned for a reason, and a caller that treats `state` as the whole
+ * answer has a bug: **`gh issue view <n>` resolves PULL REQUEST numbers too**, and
+ * a closed-unmerged pull request reports `CLOSED` exactly like a closed issue.
+ * Measured against this repository, `gh issue view 2026` returns
+ * `state: "CLOSED"` with url `.../pull/2026` — #2026 is a CI-probe pull request,
+ * not an issue at all. The url is the only field that separates the two
+ * namespaces, so any caller deciding something consequential from `state` must
+ * first require the url to contain `/issues/` (`scripts/stale-containers.mjs`
+ * does).
  */
 export function fetchIssueState(number) {
   const issue = ghJson(["issue", "view", String(number), "--json", "number,state,title,url"]);

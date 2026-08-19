@@ -47,11 +47,24 @@ function container(overrides = {}) {
   };
 }
 
-/** Resolver that answers from a table and throws for anything not in it. */
+/**
+ * Resolver that answers from a table and throws for anything not in it.
+ *
+ * The `url` is not decoration. `gh issue view <n>` resolves pull-request numbers
+ * too, so the reporter requires an `/issues/` URL before it will believe a state
+ * — see "refuses a number that resolves to a pull request" below. A fixture that
+ * omitted the URL would exercise the refusal branch on every test instead of the
+ * behaviour it names.
+ */
 function resolverFor(states) {
   return vi.fn(async (number) => {
     if (!(number in states)) throw new Error(`could not resolve issue ${number}`);
-    return { number, state: states[number], title: `issue ${number}` };
+    return {
+      number,
+      state: states[number],
+      title: `issue ${number}`,
+      url: `https://github.com/example/repo/issues/${number}`,
+    };
   });
 }
 
@@ -227,15 +240,66 @@ describe("buildReport", () => {
     expect(renderReport(report)).not.toContain("belong to closed issues");
   });
 
-  it("treats an unrecognised GitHub state as unknown rather than as not-closed", async () => {
+  it("refuses a number that resolves to a pull request rather than an issue", async () => {
+    /*
+      Measured live against this repository: `gh issue view 2026 --json state,url`
+      returns state CLOSED with url `.../pull/2026`, because `gh issue view`
+      resolves the pull-request namespace too. #2026 is a closed CI-probe PR, so
+      on `state` alone a container named `snapshot-2026` became closed-issue
+      debris with a `docker rm -f` line. The URL is the only field that separates
+      the namespaces.
+    */
+    const report = await buildReport({
+      listContainers: async () => [container({ name: "pg-2026" })],
+      resolveIssueState: async (number) => ({
+        number,
+        state: "CLOSED",
+        title: "a CI probe",
+        url: `https://github.com/example/repo/pull/${number}`,
+      }),
+      now: NOW,
+    });
+
+    expect(report.entries[0]).toMatchObject({
+      issue: 2026,
+      issueState: "UNKNOWN",
+      classification: "unknown",
+      reviewAsStale: false,
+    });
+    expect(report.entries[0].note).toContain("not an issue");
+    expect(report.entries[0].note).toContain("/pull/2026");
+    expect(report.groups).toEqual([]);
+  });
+
+  it("refuses a resolution that carries no issue URL at all", async () => {
+    // Fail closed: an answer that cannot be confirmed to be about an issue is
+    // not an answer, even when it says CLOSED.
     const report = await buildReport({
       listContainers: async () => [container({ name: "pg-2376" })],
-      resolveIssueState: async () => ({ state: "MERGED" }),
+      resolveIssueState: async (number) => ({ number, state: "CLOSED", title: "" }),
       now: NOW,
     });
 
     expect(report.entries[0].classification).toBe("unknown");
     expect(report.entries[0].reviewAsStale).toBe(false);
+    expect(report.entries[0].note).toContain("without an issue URL");
+  });
+
+  it("treats an unrecognised GitHub state as unknown rather than as not-closed", async () => {
+    const report = await buildReport({
+      listContainers: async () => [container({ name: "pg-2376" })],
+      // An `/issues/` URL, so this exercises the unrecognised-STATE branch rather
+      // than passing vacuously through the not-an-issue-URL refusal above.
+      resolveIssueState: async () => ({
+        state: "MERGED",
+        url: "https://github.com/example/repo/issues/2376",
+      }),
+      now: NOW,
+    });
+
+    expect(report.entries[0].classification).toBe("unknown");
+    expect(report.entries[0].reviewAsStale).toBe(false);
+    expect(report.entries[0].note).toContain("unrecognised state");
   });
 
   it("reports Docker being unavailable as unknown, and says so in the rendered output", async () => {

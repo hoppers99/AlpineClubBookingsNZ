@@ -30,8 +30,10 @@
  *
  * Every path that cannot establish BOTH "this is agent-owned per the naming
  * convention" AND "its owning issue is closed" lands in `unknown`. That covers a
- * name with no issue number in it, a name with two, an issue `gh` could not
- * resolve, and `gh` being absent or logged out entirely. If Docker itself cannot
+ * name with no issue number in it, a name with two, a digit run in a name that is
+ * not agent-owned, a number that turns out to be a pull request rather than an
+ * issue, an issue `gh` could not resolve, and `gh` being absent or logged out
+ * entirely. If Docker itself cannot
  * be reached the command exits non-zero rather than printing an empty, clean
  * looking table — silence must never be mistaken for a clean host.
  *
@@ -290,6 +292,26 @@ export async function buildReport({ listContainers, resolveIssueState, now = Dat
     try {
       const resolved = await resolveIssueState(issue);
       const state = String(resolved?.state ?? "").toUpperCase();
+      const url = String(resolved?.url ?? "");
+
+      // `gh issue view <n>` resolves PULL REQUEST numbers too, and a
+      // closed-unmerged pull request is indistinguishable from a closed issue on
+      // `state` alone: measured, #2026 is a closed CI-probe PR that reports
+      // CLOSED, so a container named `snapshot-2026` would be printed as
+      // closed-issue debris. The URL is the only field that tells the two
+      // namespaces apart, so a resolution that is not an issue URL is not an
+      // answer to the question this tool asked, and lands in `unknown` like
+      // every other unresolvable reference.
+      if (!url.includes("/issues/")) {
+        issueStates.set(issue, {
+          state: "UNKNOWN",
+          error: url
+            ? `#${issue} resolves to ${url}, which is not an issue — a pull-request number is not an owning issue`
+            : `#${issue} resolved without an issue URL, so it could not be confirmed to be an issue at all`,
+        });
+        continue;
+      }
+
       issueStates.set(
         issue,
         state === "OPEN" || state === "CLOSED"
