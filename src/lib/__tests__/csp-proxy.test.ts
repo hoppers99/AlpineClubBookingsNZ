@@ -1873,11 +1873,11 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
    *
    * The claim in `isPageShapedPath()`'s docblock — "the proxy never emits a
    * `Set-Cookie` on a response whose `Cache-Control` it has left to another layer" —
-   * needs two things: that `syncSignedInHint()` is gated on that predicate, and that
-   * `syncSignedInHint()` is the proxy's ONLY `Set-Cookie` writer. The first is
-   * mutation-proven by the cases above. The second was documented and enforced by
-   * nothing, and every case in this file asserts on the HINT cookie specifically — so
-   * a second writer added ahead of the header block (a lodge preference, a consent
+   * needs two things: that every cookie writer is gated on that predicate, and that
+   * the census of writers below is the WHOLE census. The first is mutation-proven by
+   * the cases above. The second was documented and enforced by nothing, and every
+   * case in this file asserts on the HINT cookie specifically — so a writer added
+   * outside the census ahead of the header block (a lodge preference, a consent
    * banner, both entirely plausible here) would leave the whole suite green while
    * `GET /branding/logo.png` shipped that cookie beside `send`'s `public, max-age=…`,
    * storable by a shared cache and servable to a stranger. That is the hazard #2578
@@ -1893,7 +1893,7 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
    * this list along with the directive side and the docblocks that claim it.
    *
    * #2827 is the first change to take that route, so the census is now a SET of two
-   * rather than a single name: `stampFamilyInviteReturnAddress()` carries the
+   * rather than a single name: `syncFamilyInviteReturnAddress()` carries the
    * family-invite post-login return address, takes the same `GET` +
    * `isPageShapedPath()` gate, and writes only on `/family-invite/<token>` — a
    * page-shaped, out-of-territory address that always takes the private-only
@@ -1967,7 +1967,7 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
     // catches one deleted or renamed away — so neither half can pass vacuously.
     const ALLOWED_WRITERS = new Set([
       "syncSignedInHint",
-      "stampFamilyInviteReturnAddress",
+      "syncFamilyInviteReturnAddress",
     ]);
 
     expect(

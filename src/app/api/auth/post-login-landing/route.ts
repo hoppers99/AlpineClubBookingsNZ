@@ -25,9 +25,15 @@ export async function GET(req: NextRequest) {
   // #2827: the family-invite return address, carried in an HttpOnly cookie so the
   // invite token never has to be rendered into the sign-in link's href. This route
   // is the TERMINAL consumer for the credential and magic-link flows — the client
-  // navigates to whatever it answers — so it is also the one place in the four
+  // navigates to whatever it answers — and it is the only one of the four
   // resolution sites that can clear the cookie, `cookies()` being writable in a
-  // route handler and not in a server component.
+  // route handler and not in a server component. Which is why it is NOT where the
+  // address is retired on use: the redirect it hands back lands on the invite page,
+  // whose own GET used to restore the value this route had just cleared, and the
+  // Google and 2FA flows never call this route at all. The proxy retires it on the
+  // signed-in GET of the invite page instead (`syncFamilyInviteReturnAddress()`),
+  // which covers all four flows. The clear below is still needed for the one case
+  // that never lands on the page — see the comment on it.
   const privateReturnPath = await readFamilyInviteReturnAddress();
   const path = resolvePostLoginLandingPath({
     explicitCallbackUrl,
@@ -40,10 +46,12 @@ export async function GET(req: NextRequest) {
 
   const response = NextResponse.json({ path });
 
-  // Cleared whenever a valid address was present, not only when it won: an
-  // explicit callbackUrl outranks it, and leaving it behind would then steer the
-  // member's NEXT sign-in somewhere they did not ask for. Expiry is a past-dated
-  // overwrite with the same attributes, never a bare delete.
+  // Cleared whenever a valid address was present, not only when it won — and this
+  // is the case the proxy's retire cannot reach: an explicit callbackUrl outranks
+  // the address, so the member never lands on the invite page, and leaving the
+  // cookie behind would then steer their NEXT sign-in somewhere they did not ask
+  // for. Expiry is a past-dated overwrite with the same attributes, never a bare
+  // delete.
   if (privateReturnPath) {
     response.headers.append(
       "Set-Cookie",

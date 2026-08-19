@@ -4,32 +4,59 @@ import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
  * The server-side post-login return address for a family-group invitation
  * (#2827).
  *
- * ## What problem this exists to solve
+ * ## What problem this exists to solve, stated accurately
  *
- * `/family-invite/[token]` used to offer the signed-out recipient a sign-in link
- * built as `buildLoginPath('/family-invite/<token>')`, so the invite token was
- * rendered into an `href` on a page that carries the club's normal chrome —
- * including admin-authored **Raw CSS**. A CSS attribute selector reads a value
- * one character at a time (`a[href^="/family-invite/9f"]`), which made that link
- * a token oracle for anyone who can edit the site's styling. That is the same
- * class as the group-join payment link and the `data-page-slug` finding closed
- * earlier on this branch, and it is described in
+ * `/family-invite/[token]` used to offer the recipient a sign-in link built as
+ * `buildLoginPath('/family-invite/<token>')`, so the invite token was rendered
+ * into an `href` and then travelled in the visitor's address bar, their browser
+ * history, and any `Referer` the next hop was shown. The sign-in link is now a
+ * plain `/login` and the address travels here instead, so none of those three
+ * carries it.
+ *
+ * **It is worth being exact about what this page did NOT expose, because the
+ * first cut of this fix recorded the opposite as security history and a review
+ * caught it (20 Aug 2026).** This is a `(public)` route, and
+ * `src/app/(public)/layout.tsx` injects `theme.appCss` —
+ * `buildClubThemeAppCss()`, which by design **excludes** admin-authored Raw CSS.
+ * Only `buildClubThemeCss()` appends `rawCss`, and its output reaches a page
+ * document in exactly three places: `src/components/website/website-chrome.tsx`
+ * (the `(website)` and `(website-dynamic)` groups), the lodge display screen and
+ * the setup-in-progress screen. So no admin CSS selector could read this page's
+ * `href` at all; the `a[href^="/family-invite/9f"]` oracle that IS live next door
+ * on `(website-dynamic)` — where #2827 closed the group-join payment link — was
+ * never live here. What this rework removed is the URL/history/`Referer`
+ * exposure, plus the standing hazard that moving this group under the shared
+ * chrome (as #2818 did to `(website-dynamic)`) would have made the CSS oracle
+ * real without anyone revisiting the link. See
  * `docs/SECURITY-ATTACK-SURFACE.md` → "Admin Raw CSS on the public site".
  *
- * The sign-in link is now a plain `/login`, and the return address travels in
- * this cookie instead: **`HttpOnly`, so no CSS selector, no script and no
- * `document.cookie` read can see it**, and never rendered into the page at all.
+ * The address is **`HttpOnly`**, so no CSS selector, no script and no
+ * `document.cookie` read can see it, and it is never rendered into the page.
  *
  * ## Why the cookie value is allowed to contain the token
  *
  * It has to — the return address *is* the invite address. That is acceptable
- * precisely because an `HttpOnly` cookie is invisible to the two readers this
- * fix is about (CSS selectors and page scripts) and is never part of the
- * document, the address bar or a `Referer`. It is also not a new bearer store in
- * the `docs/TOKEN_HASHING.md` sense: nothing is persisted server-side, the value
- * lives only in the recipient's own browser for
+ * precisely because an `HttpOnly` cookie is invisible to the page's readers and
+ * is never part of the document, the address bar or a `Referer`. It is also not a
+ * new bearer store in the `docs/TOKEN_HASHING.md` sense: nothing is persisted
+ * server-side, the value lives only in the recipient's own browser for
  * {@link FAMILY_INVITE_RETURN_MAX_AGE_SECONDS}, and the token it carries is
  * already held hashed-at-rest (`PartnerInviteToken.tokenHash`) exactly as before.
+ *
+ * ## Its whole life, in two conditions
+ *
+ * Both live in `syncFamilyInviteReturnAddress()` (`src/proxy.ts`), and both came
+ * out of the same review:
+ *
+ *  - **Written only on a signed-out, top-level document navigation to the invite
+ *    page** (`Sec-Fetch-Dest: document`). Without that condition a cross-site
+ *    `<img src>` could plant a victim's post-login landing with no interaction —
+ *    `SameSite=Lax` governs whether a cookie is SENT cross-site, never whether a
+ *    cross-site response may STORE one.
+ *  - **Retired by the signed-in GET of that same page.** All four sign-in flows
+ *    terminate there, which is what makes "cleared on use" true for the Google
+ *    and 2FA-detour flows as well; their server components cannot write a cookie,
+ *    so the first cut left the address alive for its full ten minutes after use.
  *
  * ## Why the shape check is this narrow
  *
@@ -44,12 +71,19 @@ import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
  *    pattern means even a *safe internal* path is refused unless it is an invite
  *    page, so a planted cookie cannot be used to steer a member's post-login
  *    landing anywhere else in the application.
- *  - **Cookie planting.** A cookie is attacker-writable in ways a URL parameter is
- *    not (a sibling subdomain, a stale value in a shared browser). The worst a
- *    planted value can do here is land somebody on an invite page — and the page
- *    itself still refuses to let them join, because it re-checks that the
- *    signed-in member's email matches the invited address. That check is defence
- *    in depth and is **not** made redundant by this mechanism.
+ *  - **Cookie planting, and what actually bounds it.** The shape check means a
+ *    planted value can only ever land somebody on an invite page. The obvious
+ *    next sentence — "and the page refuses to let them join unless the signed-in
+ *    member's email matches the invited address" — is TRUE but does **not**
+ *    discharge the case that matters, and the first cut wrongly leaned on it: any
+ *    member may invite an arbitrary address to their own family group, so an
+ *    attacker can invite the victim's OWN email and the match then succeeds.
+ *    What bounds it is the write condition above (a planted value now needs a
+ *    visible top-level navigation to the club's own invite page, which achieves
+ *    no more than emailing the victim the link) together with the fact that
+ *    joining still takes a deliberate click on a page that names the inviter and
+ *    the group. The email check remains load-bearing against a FORWARDED link,
+ *    which is the case it was written for.
  *
  * The 64-hex shape is the action-token format
  * (`ACTION_TOKEN_PATTERN` in `src/lib/action-tokens.ts`). It is duplicated here
@@ -66,11 +100,13 @@ export const FAMILY_INVITE_RETURN_COOKIE = "family-invite-return";
  * type an email and password and clear a 2FA challenge; short enough that a
  * value nobody consumed is gone well before the browser session is.
  *
- * Accuracy does not depend on it being generous. The address is re-stamped on
- * every GET of the invite page (`src/proxy.ts`), the terminal consumer clears it
- * (`src/app/api/auth/post-login-landing/route.ts`), and an absent or expired
- * cookie degrades to the member's ordinary post-login landing rather than to an
- * error — the emailed invite link still works.
+ * Accuracy does not depend on it being generous. The address is written on a
+ * signed-out navigation to the invite page and retired by the signed-in GET of it
+ * (both in `syncFamilyInviteReturnAddress()`, `src/proxy.ts`);
+ * `src/app/api/auth/post-login-landing/route.ts` clears it as well, for the one
+ * case that never reaches the page at all. An absent or expired cookie degrades
+ * to the member's ordinary post-login landing rather than to an error — the
+ * emailed invite link still works.
  */
 export const FAMILY_INVITE_RETURN_MAX_AGE_SECONDS = 10 * 60;
 

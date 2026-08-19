@@ -18,8 +18,20 @@ import type { FeatureFlags } from "@/config/schema";
  *
  * These cases assert the whole of that: the cookie is written, it carries the
  * exact path, it is `HttpOnly` (which is the entire point — a value on the page
- * would be readable by the CSS this fix exists to defend against), and it is
- * written on the invite page and nowhere else.
+ * would be readable by the script and CSS readers this fix exists to keep it away
+ * from), and it is written on the invite page and nowhere else.
+ *
+ * Two conditions came out of the 20 Aug 2026 review and are pinned here too,
+ * because both are behaviour nothing else can see:
+ *
+ *  - **A signed-in GET RETIRES the address rather than writing it.** The visitor
+ *    has arrived, and every one of the four sign-in flows terminates in exactly
+ *    this request — which is what makes "cleared on use" true for the Google and
+ *    2FA flows, whose server components cannot write a cookie at all.
+ *  - **Only a `Sec-Fetch-Dest: document` request writes it.** `SameSite=Lax`
+ *    stops a cookie being SENT cross-site, not being STORED from a cross-site
+ *    response, so without this an `<img src>` on any page could plant a victim's
+ *    post-login landing.
  *
  * The #2578 pairing is asserted in `csp-proxy.test.ts`, which owns that invariant
  * for both of the proxy's cookie writers.
@@ -61,7 +73,31 @@ function returnCookies(headers: Headers): string[] {
 // global one does not type-check here.
 type NextRequestInit = ConstructorParameters<typeof NextRequest>[1];
 
+/**
+ * A request as a BROWSER makes it when the visitor navigates to a page: every
+ * modern engine sets these, and script cannot forge them (they are on the
+ * forbidden-header list). `document` is the value only a top-level navigation
+ * gets — an `<iframe>` reports `iframe`, an `<img>` reports `image` — which is
+ * what the stamp condition turns on. Written as the DEFAULT here so every case
+ * below reads as the real flow, and the cases that drop or change it are visibly
+ * the exceptions.
+ */
+const NAVIGATION_HEADERS = {
+  "sec-fetch-dest": "document",
+  "sec-fetch-mode": "navigate",
+} as const;
+
 async function get(path: string, init?: NextRequestInit) {
+  return proxy(
+    new NextRequest(`https://example.org${path}`, {
+      ...init,
+      headers: { ...NAVIGATION_HEADERS, ...(init?.headers as Record<string, string>) },
+    }),
+  );
+}
+
+/** The same request with no `Sec-Fetch-*` headers at all, or with other values. */
+async function getRaw(path: string, init?: NextRequestInit) {
   return proxy(new NextRequest(`https://example.org${path}`, init));
 }
 
@@ -92,15 +128,86 @@ describe("proxy family-invite return address (#2827)", () => {
     expect(cookie).toContain(`Max-Age=${FAMILY_INVITE_RETURN_MAX_AGE_SECONDS}`);
   });
 
-  it("stamps it for a SIGNED-IN visitor too — the wrong-account branch needs it", async () => {
-    // That branch ("Sign in with a different account") is reached BY a signed-in
-    // visitor, so gating the stamp on the absence of a session cookie would have
-    // dropped the return address for the one case that most needs to come back.
+  it("RETIRES the address for a signed-in visitor, who has arrived", async () => {
+    // The whole of "cleared on use". The first cut wrote it here too, and left the
+    // clearing to /api/auth/post-login-landing — but that route's answer IS a
+    // redirect to this page, so the GET it authorised restored the value it had
+    // just cleared, and the Google and 2FA flows never call that route at all.
+    // Measured consequence on a shared browser: the next person to sign in within
+    // ten minutes landed on the previous visitor's invite page, holding their live
+    // token. Every one of the four flows ends in this request, so retiring here is
+    // what makes the claim true for all four.
     const response = await get(INVITE_PATH, {
       headers: { cookie: "authjs.session-token=abc" },
     });
+    const [cookie, ...rest] = returnCookies(response.headers);
+
+    expect(cookie, "the landing must retire the address").toBeTruthy();
+    expect(rest, "one cookie, not several").toEqual([]);
+    expect(cookie).toContain(`${FAMILY_INVITE_RETURN_COOKIE}=;`);
+    expect(cookie).toContain("Max-Age=0");
+    // The same attributes as the write, so a browser holding the original under
+    // `Path=/` cannot be left with it.
+    expect(cookie).toContain("Path=/");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Lax");
+    expect(cookie).not.toContain(TOKEN);
+  });
+
+  it("retires it whatever the navigation looked like", async () => {
+    // Retiring is always the safe direction, so it is deliberately NOT gated on
+    // the document-navigation condition below: a session-bearing request that
+    // reaches this address clears the value however it got here.
+    for (const dest of ["image", "iframe", "empty"]) {
+      const response = await getRaw(INVITE_PATH, {
+        headers: { cookie: "authjs.session-token=abc", "sec-fetch-dest": dest },
+      });
+
+      expect(returnCookies(response.headers), dest).toHaveLength(1);
+      expect(returnCookies(response.headers)[0], dest).toContain("Max-Age=0");
+    }
+  });
+
+  it("refuses to WRITE it on anything but a top-level document navigation", async () => {
+    // Cookie planting. `SameSite=Lax` decides whether a cookie is SENT
+    // cross-site, not whether a cross-site response may STORE one — so without
+    // this condition `<img src="https://club.example/family-invite/<token>">` on
+    // an attacker's page pre-positioned a victim's post-login landing with no
+    // interaction on the club's site at all. `Sec-Fetch-Dest` is browser-set and
+    // unforgeable from script, and only a navigation the visitor can SEE reports
+    // `document`.
+    for (const dest of ["image", "iframe", "frame", "object", "empty", "script"]) {
+      const response = await getRaw(INVITE_PATH, {
+        headers: { "sec-fetch-dest": dest, "sec-fetch-mode": "no-cors" },
+      });
+
+      expect(returnCookies(response.headers), dest).toEqual([]);
+    }
+  });
+
+  it("degrades to no address when the browser sends no Sec-Fetch-* at all", async () => {
+    // Fail closed, and gracefully: an engine too old to send these headers gets
+    // the member's ordinary post-login landing, exactly as an expired cookie does,
+    // and the page's own copy already tells the recipient to return to the link
+    // once their login is active. Nothing errors, and no token is stored.
+    const response = await getRaw(INVITE_PATH);
+
+    expect(returnCookies(response.headers)).toEqual([]);
+  });
+
+  it("writes it on a cross-site navigation, which is the ORDINARY path", async () => {
+    // Deliberately not narrowed to `Sec-Fetch-Site: same-origin`: the normal way
+    // in is a click on an emailed link, which arrives from a webmail page and is
+    // therefore `cross-site`. Requiring same-origin would have broken the one
+    // flow this feature exists for.
+    const response = await getRaw(INVITE_PATH, {
+      headers: { ...NAVIGATION_HEADERS, "sec-fetch-site": "cross-site" },
+    });
 
     expect(returnCookies(response.headers)).toHaveLength(1);
+    expect(returnCookies(response.headers)[0]).toContain(
+      `${FAMILY_INVITE_RETURN_COOKIE}=${INVITE_PATH};`,
+    );
   });
 
   it("normalises a trailing slash rather than missing the address", async () => {

