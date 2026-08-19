@@ -297,7 +297,11 @@ export const AUDIT_CENSUS_TOTALS = {
   // `alpine_server/sync-response.ts` that records a sync that could not run —
   // and one is `admin`, the connection-settings save. Re-measured with
   // `npm run audit:census` on the merged tree, not by adding branch deltas.
-  writeSites: 439,
+  // 439 -> 440 (PR #2949 review): the settings route now AUDITS a refused
+  // non-Full-Admin attempt to move the central server address, categorised
+  // `security` at the site. A refusal that leaves no trace is the one an
+  // operator cannot investigate, and this is a privilege boundary.
+  writeSites: 440,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -365,7 +369,7 @@ export const AUDIT_CENSUS_TOTALS = {
     // 108 -> 112 (Alpine Central Server, PR #21): all four of that change's new
     // write sites reach the sink through `createAuditLog`, matching the routes
     // around them rather than introducing another form.
-    createAuditLog: { total: 112, uncategorised: 0 },
+    createAuditLog: { total: 113, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -572,7 +576,12 @@ export const AUDIT_CENSUS_TOTALS = {
     // Retention is unchanged: `critical` under both values, because
     // `member.bulk-set-role` normalises to no access-event word, so the
     // `security`-plus-access-event `sensitive_access` branch never applied to it.
-    security: 18,
+    // 18 -> 19 (PR #2949 review): the refused base-URL change. `security` is
+    // readable with support:view alone, like `admin` — so the weakest-gate total
+    // moves 124 -> 125 by one refusal record, which is evidence of an attempt to
+    // cross a privilege boundary and belongs where a support operator can
+    // correlate it.
+    security: 19,
     // 16 -> 18 (#2595): the two reviewed-move writes. `lodge` is the category
     // every other bed-allocation write already uses, and it is not one of the
     // three (`admin`, `security`, `system`) readable with support:view alone —

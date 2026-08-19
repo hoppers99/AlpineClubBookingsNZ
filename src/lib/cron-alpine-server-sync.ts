@@ -7,6 +7,7 @@ import {
 } from "@/lib/servernz-other-lodges-sync";
 import { loadServerNzSettings } from "@/lib/servernz-settings";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
+import { withOtherLodgesSyncClaim } from "@/lib/servernz-sync-claim";
 import { ServerNzNotConfiguredError } from "@/lib/servernz-api";
 import logger from "@/lib/logger";
 
@@ -54,10 +55,20 @@ export async function syncOtherClubsWithServer(): Promise<AlpineServerSyncResult
   }
 
   try {
-    // Upload first so any local edits land centrally before we pull the merged
-    // distributed set back down.
-    const upload = await uploadOtherClubsToServer();
-    const download = await downloadOtherClubsFromServer();
+    // Single-flight across containers and across the cron/admin-button pair. The
+    // in-process boolean in instrumentation.node.ts covers neither.
+    const pass = await withOtherLodgesSyncClaim(async () => {
+      // Upload first so any local edits land centrally before we pull the merged
+      // distributed set back down.
+      const upload = await uploadOtherClubsToServer();
+      const download = await downloadOtherClubsFromServer();
+      return { upload, download };
+    });
+
+    if (!pass) {
+      return { status: "skipped", reason: "sync-already-running" };
+    }
+    const { upload, download } = pass;
     logger.info(
       {
         job: "alpine-server-other-lodges-sync",

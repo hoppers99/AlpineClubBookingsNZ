@@ -7,8 +7,18 @@
  * last-sync timestamps) live in the `ServerNzSettings` singleton — see
  * `servernz-settings.ts`.
  *
- * Exposure contract: the API key is NEVER returned to a client, logged, or put
- * in an audit row. Status surfaces read metadata only (`getServerNzSetupState`).
+ * Exposure contract: THIS CODE never returns the API key to a client, logs it, or
+ * writes it to an audit row. Status surfaces read metadata only
+ * (`getServerNzSetupState`), and no `servernz-*` module is imported by any client
+ * component, so the value cannot reach the browser.
+ *
+ * The one path that is not ours to guarantee, stated rather than implied: a
+ * central server could echo the bearer token back inside its own error text, and
+ * `servernz-sync-response.ts` writes that text into an audit row. Nothing here
+ * can stop a remote saying it. What is bounded is the blast radius —
+ * `readError()` caps that text at 200 characters and strips control characters
+ * before it travels, and `sanitizeAuditDetails` runs over it afterwards. So the
+ * claim above is about what this code does, not a promise about the remote.
  */
 
 import { prisma } from "@/lib/prisma";

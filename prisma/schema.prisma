@@ -4443,6 +4443,16 @@ model ServerNzSettings {
   // Opaque cursor returned by the server's pull endpoint for incremental sync.
   otherLodgesCursor         String?   @db.VarChar(64)
 
+  // Single-flight claim for a sync pass. The nightly cron and the admin
+  // Upload/Download buttons drive the same writers, and the in-process boolean in
+  // instrumentation.node.ts sees neither a second container nor the HTTP cron
+  // route. A status-guarded `updateMany` on this column is the claim (the house
+  // pattern), which needs no advisory lock: a session-scoped lock cannot be used
+  // safely here because Prisma pools connections and the unlock could land on a
+  // different one, and an xact-scoped lock would mean holding a transaction open
+  // across the central server's HTTP calls.
+  otherLodgesSyncStartedAt  DateTime?
+
   updatedByMemberId String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @default(now()) @updatedAt

@@ -332,6 +332,7 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
               <div className="flex flex-wrap items-center gap-2">
                 <ViewOnlyActionButton
                   canEdit={canEdit}
+                  describeReason={false}
                   variant="outline"
                   size="sm"
                   onClick={toggleEnabled}
@@ -341,6 +342,7 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
                 </ViewOnlyActionButton>
                 <ViewOnlyActionButton
                   canEdit={canEdit}
+                  describeReason={false}
                   size="sm"
                   onClick={() => syncOtherLodges("upload")}
                   disabled={busy !== null || !enabled || !connectionReady}
@@ -350,6 +352,7 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
                 </ViewOnlyActionButton>
                 <ViewOnlyActionButton
                   canEdit={canEdit}
+                  describeReason={false}
                   size="sm"
                   variant="secondary"
                   onClick={() => syncOtherLodges("download")}

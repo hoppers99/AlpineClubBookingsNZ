@@ -136,6 +136,18 @@ async function applyBookingOfficerContact(
     : EMPTY_CONTACT;
 
   // Match OtherLodge registry rows to the club's own lodge names.
+  //
+  // KNOWN LIMITATION, stated rather than hidden: this identifies "our own" rows
+  // by free-text name equality, and a `Lodge` is a BUILDING while an
+  // `OtherLodge` is a CLUB. A deployment that happens to name one of its lodges
+  // exactly as another club's registry row would have our booking officer
+  // written into that club's row, and then uploaded. An explicit `isOwnClub`
+  // flag on OtherLodge removes the class outright and is the right fix; it needs
+  // its own migration against a table that already shipped (#2749), which is
+  // more schema surface than this change should carry, so it is left as a
+  // follow-up rather than done badly here. Until then the exposure is bounded by
+  // requiring an EXACT match — no normalisation, no case folding, no fuzzy
+  // matching — so it takes a deliberate collision rather than a near miss.
   const lodges = await db.lodge.findMany({ select: { name: true } });
   const lodgeNames = [...new Set(lodges.map((lodge) => lodge.name))];
   if (lodgeNames.length === 0) {
