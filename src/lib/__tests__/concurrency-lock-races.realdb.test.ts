@@ -99,7 +99,7 @@ import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 let prisma: typeof import("@/lib/prisma")["prisma"];
 let markGroupSettlementIntentFailed: typeof import("@/lib/group-settlement")["markGroupSettlementIntentFailed"];
-let moveBedAllocationsSameDate: typeof import("@/lib/admin-bed-allocation")["moveBedAllocationsSameDate"];
+let moveBedAllocationsSameDate: typeof import("@/lib/bed-allocation-manual-writes")["moveBedAllocationsSameDate"];
 let runInductionBaseline: typeof import("@/lib/induction-baseline")["runInductionBaseline"];
 let InductionBaselinePlanMismatchError: typeof import("@/lib/induction-baseline")["InductionBaselinePlanMismatchError"];
 let inductionBaselineLockSql: string;
@@ -566,7 +566,9 @@ describe("concurrency race DB safety guard (#1881)", () => {
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       ({ markGroupSettlementIntentFailed } = await import("@/lib/group-settlement"));
-      ({ moveBedAllocationsSameDate } = await import("@/lib/admin-bed-allocation"));
+      ({ moveBedAllocationsSameDate } = await import(
+        "@/lib/bed-allocation-manual-writes"
+      ));
       const baseline = await import("@/lib/induction-baseline");
       runInductionBaseline = baseline.runInductionBaseline;
       InductionBaselinePlanMismatchError =

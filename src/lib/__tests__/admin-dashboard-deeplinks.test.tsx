@@ -281,7 +281,7 @@ describe("admin dashboard deep links", () => {
     ]);
 
     // Bed count: allocatable stays overlapping the window, whole-lodge holds
-    // excluded, guest-existence required (admin-bed-allocation.ts semantics).
+    // excluded, guest-existence required (bed-allocation-board.ts semantics).
     const bedCall = vi
       .mocked(prisma.booking.findMany)
       .mock.calls.find(

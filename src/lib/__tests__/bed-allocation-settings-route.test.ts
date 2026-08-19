@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({
   prisma: { lodge: { findUnique: mocks.lodgeFindUnique } },
 }));
-vi.mock("@/lib/admin-bed-allocation", () => ({
+vi.mock("@/lib/bed-allocation-admin-settings", () => ({
   getEffectiveBedAllocationSettings: mocks.getSettings,
   updateBedAllocationSettings: mocks.updateSettings,
 }));

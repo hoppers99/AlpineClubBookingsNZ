@@ -14,8 +14,10 @@ vi.mock("@/lib/admin-bed-allocation-routes", () => ({
   bedAllocationErrorResponse: () =>
     Response.json({ error: "Bed allocation request failed" }, { status: 500 }),
 }));
-vi.mock("@/lib/admin-bed-allocation", () => ({
+vi.mock("@/lib/bed-allocation-date-range", () => ({
   parseBedAllocationDateRange: mocks.parseDateRange,
+}));
+vi.mock("@/lib/bed-allocation-auto-allocate", () => ({
   runAutoBedAllocation: mocks.runAuto,
 }));
 vi.mock("@/lib/api-json", () => ({

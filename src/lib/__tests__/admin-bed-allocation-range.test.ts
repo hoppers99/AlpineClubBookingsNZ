@@ -24,13 +24,21 @@ vi.mock("@/lib/date-only", async () => {
 import { Prisma } from "@prisma/client";
 import {
   BedAllocationAdminError,
-  MAX_AUDITED_RANGE_PARTNER_PROMOTIONS,
-  MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS,
+} from "@/lib/bed-allocation-admin-contract";
+import {
+  manuallyAllocateBedWithLocksHeld as manuallyAllocateBed,
+} from "@/lib/bed-allocation-manual-writes";
+import {
   assignBedRange as assignBedRangePublic,
   assignBedRangeWithLocksHeld as assignBedRange,
-  manuallyAllocateBedWithLocksHeld as manuallyAllocateBed,
+} from "@/lib/bed-allocation-range-assign";
+import {
+  MAX_AUDITED_RANGE_PARTNER_PROMOTIONS,
+} from "@/lib/bed-allocation-range-audit";
+import {
+  MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS,
   summariseNightRuns,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-range-report";
 import { eachDateOnlyInRange, formatDateOnly, parseDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
 

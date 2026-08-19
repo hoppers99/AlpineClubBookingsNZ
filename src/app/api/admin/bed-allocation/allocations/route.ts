@@ -2,9 +2,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
   MAX_BED_ALLOCATION_RANGE_NIGHTS,
+} from "@/lib/bed-allocation-date-range";
+import {
   manuallyAllocateBed,
   moveBedAllocationsSameDate,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-manual-writes";
 import { formatDateOnly } from "@/lib/date-only";
 import {
   bedAllocationErrorResponse,

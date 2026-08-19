@@ -28,10 +28,10 @@ vi.mock("@/lib/admin-modules", () => ({
 vi.mock("@/lib/audit", () => ({
   createAuditLog: (...args: unknown[]) => mockCreateAuditLog(...args),
 }));
-vi.mock("@/lib/admin-bed-allocation", async () => {
+vi.mock("@/lib/bed-allocation-manual-writes", async () => {
   const actual = await vi.importActual<
-    typeof import("@/lib/admin-bed-allocation")
-  >("@/lib/admin-bed-allocation");
+    typeof import("@/lib/bed-allocation-manual-writes")
+  >("@/lib/bed-allocation-manual-writes");
   return {
     ...actual,
     moveBedAllocationsSameDate: (...args: unknown[]) =>

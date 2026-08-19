@@ -3,7 +3,7 @@ import { z } from "zod";
 import {
   getEffectiveBedAllocationSettings,
   updateBedAllocationSettings,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-admin-settings";
 import {
   bedAllocationErrorResponse,
   requireBedAllocationRead,

@@ -84,7 +84,7 @@ import {
 } from "@/lib/booking-status";
 import {
   isBookingBedAllocationLocked,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-approval";
 import { BED_ALLOCATABLE_BOOKING_STATUSES } from "@/lib/bed-allocation-lifecycle";
 import { formatDateOnly } from "@/lib/date-only";
 import {

@@ -27,7 +27,7 @@ import { describe, expect, it } from "vitest";
  * written with `eachDateOnlyInRange` over a `stay*` bound can appear without
  * being declared — and it counts them PER SITE, not per file, so a SECOND
  * expansion added to an already-declared file fails too. That distinction is the
- * whole guard for `src/lib/admin-bed-allocation.ts`, which is declared for an
+ * whole guard for `src/lib/bed-allocation-board.ts`, which is declared for an
  * unrelated whole-lodge booking envelope and is also the file the original
  * `countGuestsAwaitingBed` defect lived in. It matches across line breaks, so
  * wrapping the call over several lines does not hide it, and it treats
@@ -137,7 +137,7 @@ const EXPANSION_SITES = [
     evidence: ["export function expandStayEnvelopeToNightKeys("],
   },
   {
-    file: "src/lib/admin-bed-allocation.ts",
+    file: "src/lib/bed-allocation-board.ts",
     kind: "booking",
     expansions: 1,
     what: "an exclusive whole-lodge hold's own booking envelope, clamped to the board window",
@@ -217,7 +217,7 @@ describe("guest stay expansion census (#2628)", () => {
 
   it("counts them per SITE, so a second copy in a declared file fails too", () => {
     // The gap this closes: the first test compares a SET of file paths, so a
-    // brand-new envelope expansion dropped into `admin-bed-allocation.ts` — the
+    // brand-new envelope expansion dropped into `bed-allocation-board.ts` — the
     // very file `countGuestsAwaitingBed`'s defect lived in, and one that is
     // legitimately on the list for an unrelated BOOKING envelope — used to walk
     // straight back in undetected.
@@ -305,7 +305,7 @@ describe("guest stay expansion census (#2628)", () => {
     // The three that read the envelope and got sparse stays wrong. If any of
     // them re-grows a local expansion, the first test above catches the new
     // call site and this one catches the lost import.
-    expect(readRepoFile("src/lib/admin-bed-allocation.ts")).toContain(
+    expect(readRepoFile("src/lib/bed-allocation-board.ts")).toContain(
       "getExplicitGuestBedNightKeys(guest) ?? []",
     );
     expect(readRepoFile("src/lib/admin-bookings-service.ts")).toContain(

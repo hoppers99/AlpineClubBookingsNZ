@@ -23,7 +23,9 @@ vi.mock("@/lib/capacity", async () => {
 });
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
-import { approveBedAllocations } from "@/lib/admin-bed-allocation";
+import {
+  approveBedAllocations,
+} from "@/lib/bed-allocation-approval";
 
 describe("bed allocation approval transaction", () => {
   beforeEach(() => {

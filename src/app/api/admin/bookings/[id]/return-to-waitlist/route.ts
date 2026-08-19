@@ -37,7 +37,7 @@ import { processWaitlistForDates } from "@/lib/waitlist";
  *
  * So this takes the ADMIN precedent rather than the member one — the same
  * `{ maxWait: 10_000, timeout: 30_000 }` as `assignBedRange`
- * (`admin-bed-allocation.ts`), above `saveClubTheme`'s 10s/15s. The member
+ * (`bed-allocation-range-assign.ts`), above `saveClubTheme`'s 10s/15s. The member
  * budget is tighter on purpose (a member is watching the request); an officer
  * pressing a recovery button can wait out the worst contender, and a repair that
  * fails safely is still a repair that did not happen.

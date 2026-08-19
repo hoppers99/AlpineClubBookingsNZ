@@ -5351,7 +5351,7 @@ describe("pseudo-guest envelope (#2628)", () => {
   //
   // Both real callers feed this planner ONE PSEUDO-GUEST PER NIGHT: one entry
   // per still-unallocated (guest, night) pair, carrying `stayStart = night` and
-  // `stayEnd = night + 1` (`candidateGuestBookings` in `admin-bed-allocation.ts`
+  // `stayEnd = night + 1` (`candidateGuestBookings` in `bed-allocation-board-records.ts`
   // and the `plannerBookings` map in `bed-allocation-lifecycle.ts`). #2628 was
   // about six places expanding a stay into nights and disagreeing, and the
   // obvious-looking repair — "make the envelope branch inclusive so it stops

@@ -52,10 +52,16 @@ vi.mock("@/lib/bed-allocation-lifecycle", async (importOriginal) => {
 
 import {
   BedAllocationAdminError,
-  getBedAllocationDashboard,
-  parseBedAllocationDateRange,
+} from "@/lib/bed-allocation-admin-contract";
+import {
   runAutoBedAllocation,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-auto-allocate";
+import {
+  getBedAllocationDashboard,
+} from "@/lib/bed-allocation-board";
+import {
+  parseBedAllocationDateRange,
+} from "@/lib/bed-allocation-date-range";
 import { BED_ALLOCATION_PRIORITY_VOCABULARY } from "@/lib/bed-allocation-settings";
 
 const LODGE = "lodge-1";

@@ -1152,9 +1152,9 @@ mispricing a booking.
   would be worse than one that is momentarily stale. Where they do disagree the
   edit panel shows the SAVE's sentence before it closes, so the member reads the
   outcome that was actually applied rather than the one that was previewed.
-- `admin-bed-allocation.ts` locks the owning `LodgeRoom` row with `FOR UPDATE`
-  before checking and changing one room's bunk-group membership. This protocol
-  is independent of the booking/capacity/credit lock cluster.
+- `bed-allocation-bunk-pairing.ts` locks the owning `LodgeRoom` row with
+  `FOR UPDATE` before checking and changing one room's bunk-group membership.
+  This protocol is independent of the booking/capacity/credit lock cluster.
 - **Club-theme logo writer** — `src/lib/club-theme.ts` (`saveClubTheme`, #2322):
   the site-style save transaction locks the `ClubTheme` singleton
   (`$executeRaw`SELECT 1 FROM "ClubTheme" WHERE "id" = 'default' FOR UPDATE``)
@@ -2510,8 +2510,9 @@ and they generalise to any compensating transaction in this codebase:
    10s/15s, `assignBedRange` 10s/30s) because a **member** is watching this
    request — two attempts cap the visible wait near 30s. Raising it further would
    buy little: the longest-lived holder of global `lock(1)` in the tree is
-   `assignBedRange` itself (`admin-bed-allocation.ts:4164` takes `lock(1)` inside
-   a `timeout: 30_000` transaction), so a budget that always beat the worst
+   `assignBedRange` itself (`bed-allocation-range-assign.ts`, whose `runAttempt`
+   takes `lock(1)` inside a `timeout: 30_000` transaction), so a budget that
+   always beat the worst
    contender would mean a member waiting a minute for a failure they cannot act
    on. Rules 2 and 3 exist instead of a bigger number.
 2. **Bounded retry, then a guard that cannot throw.** One retry on P2028/P2034,
