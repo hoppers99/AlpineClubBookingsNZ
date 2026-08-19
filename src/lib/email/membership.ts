@@ -23,6 +23,7 @@ import {
 import { formatNZDate, formatNZDateTime } from "../nzst-date";
 import { formatCents } from "@/lib/utils";
 import { sendEmail, type EmailSendOutcome } from "./core";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 export async function sendNominationRequestEmail(params: {
   email: string;
@@ -38,13 +39,13 @@ export async function sendNominationRequestEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Nomination request for ${params.applicantName} — ${CLUB_NAME}`,
-    html: nominationRequestTemplate({
+    html: await renderEmailHtml(() => nominationRequestTemplate({
       nominatorName: params.nominatorName,
       applicantName: params.applicantName,
       reviewUrl,
       familyMemberCount: params.familyMemberCount,
       expiresAt: params.expiresAt,
-    }),
+    })),
     // Membership/subscription mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "nomination-request",
@@ -82,12 +83,12 @@ export async function sendMembershipPaymentRecordedEmail(params: {
   return sendEmail({
     to: params.email,
     subject: `Your ${params.seasonYear} membership payment has been recorded — ${CLUB_NAME}`,
-    html: membershipPaymentRecordedTemplate({
+    html: await renderEmailHtml(() => membershipPaymentRecordedTemplate({
       firstName: params.firstName,
       seasonYear: params.seasonYear,
       amountCents: params.amountCents,
       recordedAt: params.recordedAt,
-    }),
+    })),
     // A membership subscription is not a booking, so there is no booking whose
     // "No emails" switch could apply here (#2258): bookingContext is "none" and
     // the per-booking gate short-circuits. The admin's own per-send choice on
@@ -125,12 +126,12 @@ export async function sendInductionSignOffRequestEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Lodge induction sign-off for ${params.inducteeName} — ${CLUB_NAME}`,
-    html: inductionSignOffRequestTemplate({
+    html: await renderEmailHtml(() => inductionSignOffRequestTemplate({
       signerName: params.signerName,
       inducteeName: params.inducteeName,
       signerRoleLabel: params.signerRoleLabel,
       inductionUrl,
-    }),
+    })),
     // Membership/subscription mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "induction-sign-off-request",
@@ -155,11 +156,11 @@ export async function sendMembershipApplicationApprovedEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Your ${CLUB_NAME} membership has been approved`,
-    html: membershipApplicationApprovedTemplate(
+    html: await renderEmailHtml(() => membershipApplicationApprovedTemplate(
       params.firstName,
       resetUrl,
       params.adminNotes,
-    ),
+    )),
     // Membership/subscription mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "membership-application-approved",
@@ -186,10 +187,10 @@ export async function sendMembershipApplicationRejectedEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Update on your ${CLUB_NAME} membership application`,
-    html: membershipApplicationRejectedTemplate(
+    html: await renderEmailHtml(() => membershipApplicationRejectedTemplate(
       params.firstName,
       params.adminNotes,
-    ),
+    )),
     // Membership/subscription mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "membership-application-rejected",
@@ -217,12 +218,12 @@ export async function sendMembershipCancellationSubmittedEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Membership cancellation request submitted — ${CLUB_BOOKINGS_NAME}`,
-    html: membershipCancellationSubmittedTemplate({
+    html: await renderEmailHtml(() => membershipCancellationSubmittedTemplate({
       firstName: params.firstName,
       participantSummary: params.participantSummary,
       reason: params.reason,
       reviewUrl,
-    }),
+    })),
     // Membership/subscription mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "membership-cancellation-submitted",
@@ -251,13 +252,13 @@ export async function sendMembershipCancellationConfirmationEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Confirm membership cancellation request — ${CLUB_BOOKINGS_NAME}`,
-    html: membershipCancellationConfirmationTemplate({
+    html: await renderEmailHtml(() => membershipCancellationConfirmationTemplate({
       firstName: params.firstName,
       requesterName: params.requesterName,
       participantName: params.participantName,
       confirmationUrl,
       expiresAt: params.expiresAt,
-    }),
+    })),
     // Membership/subscription mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "membership-cancellation-confirmation",
@@ -283,7 +284,7 @@ export async function sendMembershipCancellationApprovedEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Membership cancellation approved — ${CLUB_BOOKINGS_NAME}`,
-    html: membershipCancellationApprovedTemplate(params),
+    html: await renderEmailHtml(() => membershipCancellationApprovedTemplate(params)),
     // Membership/subscription mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "membership-cancellation-approved",
@@ -314,7 +315,7 @@ export async function sendMemberArchiveApprovedEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Membership archive completed — ${CLUB_BOOKINGS_NAME}`,
-    html: memberArchiveApprovedTemplate(params),
+    html: await renderEmailHtml(() => memberArchiveApprovedTemplate(params)),
     // Membership/subscription mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "member-archive-approved",
@@ -340,7 +341,7 @@ export async function sendMemberArchiveRejectedEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Membership archive request update — ${CLUB_BOOKINGS_NAME}`,
-    html: memberArchiveRejectedTemplate(params),
+    html: await renderEmailHtml(() => memberArchiveRejectedTemplate(params)),
     // Membership/subscription mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "member-archive-rejected",
@@ -367,7 +368,7 @@ export async function sendMembershipCancellationRejectedEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Membership cancellation update — ${CLUB_BOOKINGS_NAME}`,
-    html: membershipCancellationRejectedTemplate(params),
+    html: await renderEmailHtml(() => membershipCancellationRejectedTemplate(params)),
     // Membership/subscription mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "membership-cancellation-rejected",
@@ -449,12 +450,12 @@ export async function sendAgeUpParentEmailHandoffEmail(
   await sendEmail({
     to: email,
     subject: `Email address needed for ${memberName}'s ${CLUB_NAME} login`,
-    html: ageUpParentEmailHandoffTemplate({
+    html: await renderEmailHtml(() => ageUpParentEmailHandoffTemplate({
       recipientName: context.recipientName,
       memberFirstName: context.memberFirstName,
       memberLastName: context.memberLastName,
       targetAgeTierLabel,
-    }),
+    })),
     // Membership/subscription mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "age-up-parent-email-handoff",

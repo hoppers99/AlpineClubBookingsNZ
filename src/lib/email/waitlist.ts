@@ -12,6 +12,7 @@ import {
 import { formatCents as formatMoneyCents } from "@/lib/utils";
 import { sendEmail } from "./core";
 import { bookingOwnerEmailContext } from "@/lib/booking-email-contract";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 // ---- Waitlist emails ----
 
@@ -31,13 +32,13 @@ export async function sendWaitlistConfirmationEmail(
   await sendEmail({
     to: email,
     subject: `Waitlist Confirmation - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: waitlistConfirmationTemplate(
+    html: await renderEmailHtml(() => waitlistConfirmationTemplate(
       firstName,
       checkIn,
       checkOut,
       guestCount,
       position,
-    ),
+    )),
     bookingContext: bookingOwnerEmailContext(
       bookingContext.bookingId,
       bookingContext.recipientMemberId,
@@ -87,7 +88,7 @@ export async function sendWaitlistOfferEmail(
   await sendEmail({
     to: email,
     subject: `Spot Available! - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: waitlistOfferTemplate(
+    html: await renderEmailHtml(() => waitlistOfferTemplate(
       firstName,
       checkIn,
       checkOut,
@@ -97,7 +98,7 @@ export async function sendWaitlistOfferEmail(
       priceCents,
       crossLodgeOffer,
       subscriptionMemberRateNotice,
-    ),
+    )),
     bookingContext: bookingOwnerEmailContext(
       bookingContext.bookingId,
       bookingContext.recipientMemberId,
@@ -138,7 +139,7 @@ export async function sendWaitlistOfferExpiredEmail(
   await sendEmail({
     to: email,
     subject: `Waitlist Offer Expired - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: waitlistOfferExpiredTemplate(firstName, checkIn, checkOut, position),
+    html: await renderEmailHtml(() => waitlistOfferExpiredTemplate(firstName, checkIn, checkOut, position)),
     bookingContext: bookingOwnerEmailContext(
       bookingContext.bookingId,
       bookingContext.recipientMemberId,
@@ -179,7 +180,7 @@ export async function sendWaitlistPlaceRestoredEmail(
   await sendEmail({
     to: email,
     subject: `Your Waitlist Place Is Back - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: waitlistPlaceRestoredTemplate(firstName, checkIn, checkOut, position),
+    html: await renderEmailHtml(() => waitlistPlaceRestoredTemplate(firstName, checkIn, checkOut, position)),
     bookingContext: bookingOwnerEmailContext(
       bookingContext.bookingId,
       bookingContext.recipientMemberId,

@@ -27,6 +27,7 @@ import { buildRefundRequestRefundMetadata } from "@/lib/payment-recovery-keys";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatNZDate } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/utils";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 const reviewSchema = z.object({
   status: z.enum(["APPROVED", "REJECTED"]),
@@ -310,13 +311,13 @@ export async function PUT(
       sendEmail({
         to: memberEmail,
         subject: `Refund Appeal Approved — ${CLUB_BOOKINGS_NAME}`,
-        html: refundRequestApprovedTemplate({
+        html: await renderEmailHtml(() => refundRequestApprovedTemplate({
           firstName: refundRequest.member.firstName,
           amountCents: approvedAmountCents,
           adminNotes: adminNotes ?? null,
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
-        }),
+        })),
         // Member-facing and booking-scoped: the per-booking "No emails"
         // switch withholds it (#2258).
         bookingContext: {
@@ -395,12 +396,12 @@ export async function PUT(
       sendEmail({
         to: memberEmail,
         subject: `Refund Appeal Update — ${CLUB_BOOKINGS_NAME}`,
-        html: refundRequestDeclinedTemplate({
+        html: await renderEmailHtml(() => refundRequestDeclinedTemplate({
           firstName: refundRequest.member.firstName,
           adminNotes: adminNotes ?? null,
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
-        }),
+        })),
         // Member-facing and booking-scoped: the per-booking "No emails"
         // switch withholds it (#2258).
         bookingContext: {

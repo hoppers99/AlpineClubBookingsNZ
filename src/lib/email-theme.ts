@@ -347,17 +347,6 @@ export async function renderEmailHtml<T>(build: () => T): Promise<T> {
 }
 
 /**
- * HTML that was rendered in an EARLIER process and retained (today: the
- * `EmailLog` bodies the retry cron replays). It is not being constructed now, so
- * there is nothing for the render gate to colour — the colours are already baked
- * into the stored string. Named rather than inlined so the contract test can see
- * the deliberate, documented bypass instead of an unexplained raw string.
- */
-export function retainedEmailHtml(html: string): string {
-  return html;
-}
-
-/**
  * Await an unconditional refresh of the email palette from the persisted Site
  * Style theme. Unlike the TTL-gated background refresh `emailPalette()` uses,
  * this always reads the current theme and updates the cache, so an explicit warm
