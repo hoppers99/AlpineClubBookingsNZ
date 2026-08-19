@@ -7,6 +7,7 @@ import { websiteContactTemplate } from "@/lib/email-templates/admin-ops";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 import { loadEmailMessageSettings } from "@/lib/email-message-settings";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 const noEmailHeaderCrlf = (value: string) => !/[\r\n]/.test(value);
 
@@ -124,7 +125,7 @@ export async function POST(request: Request) {
     await sendEmail({
       to: toEmail,
       subject: `Website Contact${recipientLabel}: ${escapeHtml(name)}`,
-      html: websiteContactTemplate({ name, email, message }),
+      html: await renderEmailHtml(() => websiteContactTemplate({ name, email, message })),
       // Website contact form: no booking involved (#2258).
       bookingContext: "none",
       templateName: "website-contact",

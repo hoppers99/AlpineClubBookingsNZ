@@ -69,6 +69,13 @@ type FetchCallRecorder = { mock?: { calls?: unknown[][] } };
  * effects in declaration order, so observing the read is proof the reset has
  * already happened and cannot still be queued behind the interaction.
  *
+ * `/admin/bed-allocation` (#2953) leans on the OTHER half of this helper. There
+ * the effect at risk — the #2701 adoption of the lodge the server echoed — runs
+ * on the commit that lands the PAYLOAD, which is after the read, so declaration
+ * order proves nothing and it is the `act` flush below that does the work. Both
+ * call-site shapes are served; do not delete the flush on the assumption that
+ * observing the read is always sufficient by itself.
+ *
  * @param scopedReadUrlPrefix the start of the URL the page fetches once its lodge
  *   is settled — for example `"/api/admin/hut-leaders?lodgeId="`. Matched against
  *   the calls recorded on the suite's `vi.stubGlobal("fetch", …)` mock.

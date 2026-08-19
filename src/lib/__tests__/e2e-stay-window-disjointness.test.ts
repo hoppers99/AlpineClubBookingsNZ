@@ -20,7 +20,7 @@
 // rule is a separate piece of work with its own owner decision; what it does
 // today is make the one spec that states a disjointness claim actually hold it.
 //
-// Lives under src/ because vitest.config.ts excludes `e2e/**` from collection.
+// Lives under src/ because vitest.config.mts excludes `e2e/**` from collection.
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
