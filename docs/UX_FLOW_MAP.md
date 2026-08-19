@@ -839,7 +839,25 @@ shells (#1808, #1851); the occupancy meter follows that accent. HTML emails also
 derive their brand colours from this saved theme (`src/lib/email-theme.ts`);
 because emails render server-side from a cached palette, a Site Style save and
 server boot re-prime that cache so a colour-scheme change reaches emails right
-away rather than only after its TTL lapses (#1912). Semantic
+away rather than only after its TTL lapses (#1912). Priming is an optimisation,
+not the guarantee: every send path builds its HTML inside `renderEmailHtml()`,
+which awaits `ensureEmailPaletteReady()` before a template runs, so the FIRST
+email from a freshly started process or replica is coloured from the saved theme
+rather than the shipped default (#2900), and two messages from one workflow can
+no longer arrive in different brands.
+`src/lib/__tests__/email-render-gate-contract.test.ts` keeps that central by
+reading the source tree: it fails any sending module that calls an
+`email-templates/` render function outside the gate, so a new sender or template
+inherits the guarantee without anybody remembering to. When the theme genuinely
+cannot be read the gate says so instead of caching the default as the club's
+choice — `getWebsiteThemeRenderState()` never throws and returns the DEFAULT
+values with `readFailed: true`, so `readFailed` is treated as a failure: nothing
+is committed, the last-good palette is kept, the readiness result reports
+`built-in-default`, and one throttled warning is logged. Mail still goes out;
+concurrent renders share one read, a waiter gives up after a bounded timeout, and
+a failed attempt suppresses further attempts for a cooldown, so an outage costs
+at most one bounded wait per window across the process rather than one per email.
+Semantic
 success, warning,
 information, danger/error, and waitlist tones remain curated, contrast-locked
 light/dark pairs rather than editable brand fields; public-site Raw CSS is never

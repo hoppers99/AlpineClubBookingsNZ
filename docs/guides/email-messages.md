@@ -374,6 +374,7 @@ between the jobs is one sentence rather than a different message:
 | A line reads "Admin note:" with nothing after it | You wrote your own label in front of a value that was empty for that send | Use the matching pre-composed chip (`{{adminNoteLine}}`, `{{reasonNote}}`, `{{doorCodeNote}}` …) on its own line instead |
 | I want the original wording back | An override is in place | Click **Restore Default** for that template |
 | The change didn't reach a lodge-specific value | Lodge name/travel note/door code are per-lodge now | Set them in [Lodges](../multi-lodge/README.md), not here |
+| An email's colours are the platform default rather than our brand | Colours come from [Site Style](site-style.md), not from this page, and that style could not be read when the message was built | Nothing here needs re-saving. Check the server log for the warning that names the saved style as unreadable, and the database's health — see [Site Style](site-style.md) |
 
 ## Related links
 
