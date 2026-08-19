@@ -49,15 +49,17 @@
  * - Still-executable counterparts: a payment is refused outright while ANY
  *   outbound CREDIT_NOTE operation row that could still drive
  *   `createXeroCreditNote` exists for it — a CREATE in
- *   PENDING/RUNNING/WAITING_PAYMENT (the outbox executor's own lifecycle) OR
- *   in FAILED/PARTIAL (the manual-retry and requeue entry points accept
- *   exactly those two, and the credit-note retry branch performs NO
+ *   PENDING/RUNNING/WAITING_PAYMENT (the outbox executor's own lifecycle,
+ *   which never reads `replayable`) OR a still-`replayable` CREATE in
+ *   FAILED/PARTIAL (the manual-retry and requeue entry points accept
+ *   exactly that combination, and the credit-note retry branch performs NO
  *   claim-first status flip, so it mints while the row still reads
  *   FAILED/PARTIAL), or a REQUEUE row in PENDING/RUNNING (the background
  *   retry drain executes the ORIGINAL operation while the original's own row
- *   never changes status). SUCCEEDED and CANCELLED rows cannot re-execute
- *   and never block. The check is repeated inside the apply transaction
- *   (#2901 review F4, below).
+ *   never changes status). A FAILED/PARTIAL CREATE marked non-replayable is
+ *   terminally dead and does NOT block; SUCCEEDED and CANCELLED rows cannot
+ *   re-execute and never block. The check is repeated inside the apply
+ *   transaction (#2901 review F4, below).
  *
  * Concurrency (#2901 review F4): this writer takes NO advisory lock, and that
  * is a reasoned choice, not an omission. It composes no settlement-money or
@@ -144,8 +146,9 @@ export interface StripeRefundNoteLinkRepairPlan {
   manualReviewReason: string | null;
   /**
    * True when a still-executable outbound CREDIT_NOTE operation blocked the
-   * payment (a CREATE in PENDING/RUNNING/WAITING_PAYMENT/FAILED/PARTIAL, or
-   * a REQUEUE in PENDING/RUNNING — see findBlockingRefundCreditNoteOperationId).
+   * payment (a CREATE in PENDING/RUNNING/WAITING_PAYMENT, a still-replayable
+   * CREATE in FAILED/PARTIAL, or a REQUEUE in PENDING/RUNNING — see
+   * findBlockingRefundCreditNoteOperationId).
    */
   blockedByPendingOperation: boolean;
   links: StripeRefundNoteLinkAssessment[];
@@ -258,8 +261,10 @@ function buildPlan(
     // derives its amounts from a coverage read taken OUTSIDE any
     // transaction, so changing coverage while any of them could still run
     // can race one into minting another duplicate provider note. Refuse the
-    // whole payment; a queued/running state drains, and a FAILED/PARTIAL row
-    // is resolved in the admin Xero panel first.
+    // whole payment; a queued/running state drains, and a still-replayable
+    // FAILED/PARTIAL row is retried to completion or marked non-replayable
+    // in the admin Xero panel first (marking "resolved" alone changes
+    // neither status nor replayability, so it does not clear this).
     for (const link of ordered) {
       assessments.push({
         linkId: link.id,
@@ -282,7 +287,7 @@ function buildPlan(
       activeCoveredCents,
       plannedCoveredCents: activeCoveredCents,
       repairable: false,
-      manualReviewReason: `A Xero credit-note operation (${options.pendingOperationId}) for this payment could still execute — it is queued, running, awaiting payment confirmation, or failed-but-retryable. Every execution path computes its amounts from live coverage, so changing links now could mint a duplicate note. Let the outbox and retry queue drain, or resolve the failed operation in the admin Xero panel, then re-run.`,
+      manualReviewReason: `A Xero credit-note operation (${options.pendingOperationId}) for this payment could still execute — it is queued, running, awaiting payment confirmation, or failed-but-still-retryable. Every execution path computes its amounts from live coverage, so changing links now could mint a duplicate note. Let the outbox and retry queue drain, or retry the failed operation to completion, or mark it non-replayable in the admin Xero panel (marking it "resolved" alone does not clear this), then re-run.`,
       blockedByPendingOperation: true,
       links: assessments,
       reactivateLinkIds,
@@ -421,23 +426,35 @@ const REFUND_NOTE_LINK_WHERE = (paymentId: string) =>
   }) as const;
 
 /**
- * CREATE statuses from which a credit-note operation can still drive
- * `createXeroCreditNote` for this payment:
- * - PENDING/RUNNING/WAITING_PAYMENT — the outbox executor's own lifecycle;
- * - FAILED/PARTIAL — the manual-retry and requeue entry points
- *   (`getXeroOperationRetryMeta` accepts exactly these two), and the
- *   credit-note retry branch performs NO claim-first status flip (unlike the
- *   invoice branch's FAILED→RUNNING claim), so the row still reads
- *   FAILED/PARTIAL during its provider call.
- * SUCCEEDED and CANCELLED rows cannot re-execute and never block.
+ * CREATE statuses the outbox executor's own lifecycle still executes. The
+ * drain claims and runs these REGARDLESS of `replayable` (it never reads the
+ * column), so they block unconditionally.
  */
-const BLOCKING_CREATE_STATUSES = [
+const EXECUTOR_LIFECYCLE_CREATE_STATUSES = [
   "PENDING",
   "RUNNING",
   "WAITING_PAYMENT",
-  "FAILED",
-  "PARTIAL",
 ];
+
+/**
+ * CREATE statuses the manual-retry and requeue entry points accept — but
+ * only while the row is still `replayable: true`: `getXeroOperationRetryMeta`
+ * refuses a non-replayable row before anything else, so a FAILED/PARTIAL
+ * CREATE an operator marked non-replayable is terminally dead and must NOT
+ * block (nothing else ever changes its status, so blocking on it would fence
+ * the payment's link repair forever). The credit-note retry branch performs
+ * NO claim-first status flip (unlike the invoice branch's FAILED→RUNNING
+ * claim), so a retrying row still reads FAILED/PARTIAL during its provider
+ * call — which is why these statuses must block at all. PARTIAL is
+ * conservative rather than a proven mint path: a supported Payment-scoped
+ * PARTIAL retry routes to the follow-up repair, which reuses the existing
+ * note instead of calling `createXeroCreditNote`. `manuallyResolvedAt` is
+ * deliberately NOT mirrored here — resolving gates nothing in the retry
+ * machinery, so a resolved-but-replayable FAILED row can still mint and
+ * still blocks. SUCCEEDED and CANCELLED rows cannot re-execute and never
+ * block.
+ */
+const RETRYABLE_CREATE_STATUSES = ["FAILED", "PARTIAL"];
 
 /**
  * REQUEUE rows (`XERO_OPERATION_REQUEUE_TYPE`, `xero-operation-queue.ts`)
@@ -468,7 +485,15 @@ async function findBlockingRefundCreditNoteOperationId(
       localModel: "Payment",
       localId: paymentId,
       OR: [
-        { operationType: "CREATE", status: { in: BLOCKING_CREATE_STATUSES } },
+        {
+          operationType: "CREATE",
+          status: { in: EXECUTOR_LIFECYCLE_CREATE_STATUSES },
+        },
+        {
+          operationType: "CREATE",
+          status: { in: RETRYABLE_CREATE_STATUSES },
+          replayable: true,
+        },
         {
           operationType: "REQUEUE",
           status: { in: BLOCKING_REQUEUE_STATUSES },

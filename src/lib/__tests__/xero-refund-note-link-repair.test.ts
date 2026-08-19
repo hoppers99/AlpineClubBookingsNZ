@@ -50,6 +50,7 @@ interface FakeOperationRow {
   localId: string;
   xeroObjectId: string | null;
   status: string;
+  replayable: boolean;
   requestPayload: unknown;
   createdAt: Date;
 }
@@ -172,15 +173,24 @@ const fakePrisma = vi.hoisted(() => {
           entityType?: string;
           operationType?: string;
           direction?: string;
-          OR?: Array<{ operationType?: string; status?: { in: string[] } }>;
+          OR?: Array<{
+            operationType?: string;
+            status?: { in: string[] };
+            replayable?: boolean;
+          }>;
         };
       }) => {
         const matchesBranch = (
           row: FakeOperationRow,
-          branch: { operationType?: string; status?: { in: string[] } }
+          branch: {
+            operationType?: string;
+            status?: { in: string[] };
+            replayable?: boolean;
+          }
         ) => {
           if (branch.operationType !== undefined && row.operationType !== branch.operationType) return false;
           if (branch.status?.in && !branch.status.in.includes(row.status)) return false;
+          if (branch.replayable !== undefined && row.replayable !== branch.replayable) return false;
           return true;
         };
         const matches = state.operations
@@ -331,6 +341,7 @@ describe("findStripeRefundNoteLinkRepairs", () => {
         localId: "pay_1",
         xeroObjectId: "cn_legacy",
         status: "SUCCEEDED",
+        replayable: true,
         requestPayload: { allocation: { amount: 0.9 } }, // dollars
         createdAt: new Date("2026-05-01T00:00:00Z"),
       },
@@ -526,6 +537,7 @@ describe("findStripeRefundNoteLinkRepairs", () => {
         localId: "pay_1",
         xeroObjectId: null,
         status: "PENDING",
+        replayable: true,
         requestPayload: { refundAmountCents: 90 },
         createdAt: new Date("2026-05-05T00:00:00Z"),
       },
@@ -573,6 +585,7 @@ describe("findStripeRefundNoteLinkRepairs", () => {
         localId: "pay_1",
         xeroObjectId: "cn_10",
         status: "SUCCEEDED",
+        replayable: true,
         requestPayload: { allocation: { amount: 0.1 } },
         createdAt: new Date("2026-05-02T00:00:00Z"),
       },
@@ -590,6 +603,10 @@ describe("findStripeRefundNoteLinkRepairs", () => {
         localId: "pay_1",
         xeroObjectId: null,
         status: "PENDING",
+        // Requeue rows are created replayable:false (xero-operation-queue.ts)
+        // and must STILL block — the replayable filter is scoped to the
+        // FAILED/PARTIAL CREATE branch, never the whole predicate.
+        replayable: false,
         requestPayload: { originalOperationId: "op_failed_elsewhere" },
         createdAt: new Date("2026-05-05T00:00:00Z"),
       },
@@ -660,6 +677,7 @@ describe("findStripeRefundNoteLinkRepairs", () => {
         localId: "pay_1",
         xeroObjectId: null,
         status: "FAILED",
+        replayable: true,
         requestPayload: { refundAmountCents: 90 },
         createdAt: new Date("2026-05-05T00:00:00Z"),
       },
@@ -672,6 +690,7 @@ describe("findStripeRefundNoteLinkRepairs", () => {
         localId: "pay_2",
         xeroObjectId: null,
         status: "PARTIAL",
+        replayable: true,
         requestPayload: { refundAmountCents: 90 },
         createdAt: new Date("2026-05-05T00:00:00Z"),
       },
@@ -695,6 +714,56 @@ describe("findStripeRefundNoteLinkRepairs", () => {
     expect(apply.appliedPayments).toBe(0);
     expect(state.links.find((link) => link.id === "link_90")?.active).toBe(false);
     expect(state.links.find((link) => link.id === "link_2_90")?.active).toBe(false);
+  });
+
+  it("does not block on a FAILED credit-note CREATE an operator marked non-replayable (#2901 verify round)", async () => {
+    // The trap this pins: delta 1's note SUCCEEDED but its link was damaged
+    // by the pre-fix cleanup (exactly what this tool repairs), while delta
+    // 2's CREATE FAILED and the operator marked it non-replayable. A
+    // non-replayable row is terminally dead — getXeroOperationRetryMeta
+    // refuses it before anything else, and no operator action ever moves it
+    // out of FAILED — so blocking on it would fence this payment's repair
+    // forever.
+    state.links = [
+      makeLink({
+        id: "link_90",
+        xeroObjectId: "cn_90",
+        active: false,
+        metadata: { amountCents: 90, status: "AUTHORISED" },
+      }),
+      makeLink({
+        id: "link_10",
+        xeroObjectId: "cn_10",
+        active: true,
+        metadata: { amountCents: 10 },
+      }),
+    ];
+    state.operations = [
+      {
+        id: "op_dead",
+        direction: "OUTBOUND",
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        localModel: "Payment",
+        localId: "pay_1",
+        xeroObjectId: null,
+        status: "FAILED",
+        replayable: false,
+        requestPayload: { refundAmountCents: 90 },
+        createdAt: new Date("2026-05-05T00:00:00Z"),
+      },
+    ];
+
+    const report = await findStripeRefundNoteLinkRepairs();
+
+    const plan = report.plans[0];
+    expect(plan?.blockedByPendingOperation).toBe(false);
+    expect(plan?.repairable).toBe(true);
+    expect(plan?.reactivateLinkIds).toEqual(["link_90"]);
+
+    const apply = await applyStripeRefundNoteLinkRepairs();
+    expect(apply.appliedPayments).toBe(1);
+    expect(state.links.find((link) => link.id === "link_90")?.active).toBe(true);
   });
 
   it("does not report healthy payments, non-Stripe payments, never-invoiced payments, or unrelated links", async () => {

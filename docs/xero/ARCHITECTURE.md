@@ -571,11 +571,15 @@ document automatically** — that judgement stays with the operator.
    admin panel's manual retry, which execute the same mint. The script
    refuses any payment with a credit-note operation that could still
    execute — a CREATE that is queued, running, awaiting payment
-   confirmation, **or FAILED/PARTIAL** (those two are exactly what manual
-   retry and requeue accept, and the credit-note retry runs while its row
-   still reads FAILED), or a queued/running REQUEUE of one — re-checked
-   inside each transaction. Resolve failed credit-note operations in the
-   admin Xero panel before applying. The apply transactions also re-sum
+   confirmation, **or FAILED/PARTIAL while still marked replayable** (that
+   combination is exactly what manual retry and requeue accept, and the
+   credit-note retry runs while its row still reads FAILED), or a
+   queued/running REQUEUE of one — re-checked inside each transaction. To
+   clear a failed credit-note operation's block, retry it to completion or
+   **mark it non-replayable** in the admin Xero panel; a non-replayable
+   failed operation is terminally dead and does not block (and marking one
+   "resolved" alone changes neither its status nor its replayability, so
+   that by itself clears nothing). The apply transactions also re-sum
    coverage after their claims and roll back on any divergence — but not
    racing the executor at all is the cheap, certain option.
 5. **Apply, bound to the payments you reviewed** (local ledger writes only,
