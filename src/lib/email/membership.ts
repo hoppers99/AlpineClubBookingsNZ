@@ -407,9 +407,9 @@ export async function sendAgeUpInvitationEmail(
   await sendEmail({
     to: email,
     subject: `You're now ${targetAgeTierLabel} — set up your ${CLUB_NAME} account`,
-    html: ageUpInvitationTemplate(firstName, resetUrl, {
+    html: await renderEmailHtml(() => ageUpInvitationTemplate(firstName, resetUrl, {
       targetAgeTierLabel,
-    }),
+    })),
     // Membership/subscription mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "age-up-invitation",

@@ -794,13 +794,13 @@ export async function sendSplitGuestPortionCancelledEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Your guests' provisional place was cancelled — ${CLUB_NAME}`,
-    html: splitGuestPortionCancelledTemplate({
+    html: await renderEmailHtml(() => splitGuestPortionCancelledTemplate({
       firstName: params.firstName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
       parentConfirmed: params.parentConfirmed,
       parentBookingReference: params.parentBookingReference ?? null,
-    }),
+    })),
     bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "split-guest-portion-cancelled",
     templateData: {

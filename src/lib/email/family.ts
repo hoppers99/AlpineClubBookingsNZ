@@ -233,7 +233,7 @@ export async function sendPartnerInviteClaimedEmail(
   await sendEmail({
     to: email,
     subject: `You've joined ${groupName} — ${CLUB_BOOKINGS_NAME}`,
-    html: partnerInviteClaimedTemplate(firstName, groupName),
+    html: await renderEmailHtml(() => partnerInviteClaimedTemplate(firstName, groupName)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "partner-invite-claimed",
@@ -253,7 +253,7 @@ export async function sendPartnerLinkRequestEmail(
   await sendEmail({
     to: email,
     subject: `${requesterName} asked to record you as their partner — ${CLUB_BOOKINGS_NAME}`,
-    html: partnerLinkRequestTemplate(requesterName, profileUrl),
+    html: await renderEmailHtml(() => partnerLinkRequestTemplate(requesterName, profileUrl)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "partner-link-request",
@@ -268,7 +268,7 @@ export async function sendPartnerLinkConfirmedEmail(
   await sendEmail({
     to: email,
     subject: `Your partner relationship with ${partnerName} has been recorded — ${CLUB_BOOKINGS_NAME}`,
-    html: partnerLinkConfirmedTemplate(partnerName),
+    html: await renderEmailHtml(() => partnerLinkConfirmedTemplate(partnerName)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "partner-link-confirmed",
@@ -283,7 +283,7 @@ export async function sendPartnerLinkRemovedEmail(
   await sendEmail({
     to: email,
     subject: `Your partner relationship with ${partnerName} has been removed — ${CLUB_BOOKINGS_NAME}`,
-    html: partnerLinkRemovedTemplate(partnerName),
+    html: await renderEmailHtml(() => partnerLinkRemovedTemplate(partnerName)),
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "partner-link-removed",
