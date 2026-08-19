@@ -138,9 +138,22 @@ type MockResponseSpec = {
  * Returns the fetch spy, which is what pins the request options (the SSRF fix
  * turns on `redirect: "manual"`, so its absence must fail a test).
  */
+// The spy is typed with fetch's real argument tuple (and the stub's own return
+// shape, which is not a full `Response`) so `mock.calls` carries those
+// arguments: the assertions below read calls[n][0] (the URL) and calls[n][1]
+// (the init, which is what carries `redirect: "manual"`). An argument-less mock
+// types every call as an empty tuple and those reads stop compiling.
+type MockFetchImpl = (...args: Parameters<typeof fetch>) => Promise<{
+  ok: boolean;
+  status: number;
+  headers: Headers;
+  text: () => Promise<string>;
+  body: null;
+}>;
+
 function mockFetchSequence(responses: MockResponseSpec[]) {
   const queue = [...responses];
-  const fetchMock = vi.fn(async () => {
+  const fetchMock = vi.fn<MockFetchImpl>(async () => {
     const next = queue.shift();
     if (!next) {
       throw new Error("fetch was called more times than the test queued");
