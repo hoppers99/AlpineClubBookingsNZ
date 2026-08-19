@@ -3014,7 +3014,10 @@ three established pages) and `booking-request-pages-fallback-render.test.tsx` (t
 two form pages). Both deliberately clear or remove the row rather than trusting
 starter data, feed a markup-shaped club identity through it, and assert the markup
 is serialised escaped with no element created. Each file also keeps a positive case
-proving stored CMS header HTML still renders as HTML.
+proving stored CMS header HTML still renders as HTML. The two form pages' assertions
+read the hero element, not the whole page: both forms restate the hero's sentence in
+their own copy, interpolating the same club-set lodge name, so a page-wide "the
+payload is visible as text" read would pass even with the hero's sink restored.
 
 Rendered DOM cannot state the rule exactly, though, and `/contact` is where that
 bites: its fallback interpolates nothing, so a sink handed that sentence produces
@@ -3023,7 +3026,15 @@ assertion can see the difference. The rule itself is therefore pinned over the p
 **source**, for all five heroes at once, in
 `src/app/__tests__/website-hero-header-sink-contract.test.ts`: the expression each
 page hands to `__html` must be the stored field, and may never name the composed
-sentence.
+sentence — which must itself appear in JSX child position on the page, so a hero
+cannot pass the sentence to a helper component where the scan would lose sight of
+what happens to it. Its five-page list is not hand-maintained on trust either: a
+walk of both website route groups must agree with it in both directions, so a sixth
+page composing a fallback cannot quietly skip the contract. And because that scan
+reads a literal `__html:` key, a hero may not spell the key any other way — quoted,
+computed or shorthand — and every `dangerouslySetInnerHTML` attribute on the page
+must have yielded an expression the scan could read, so a second sink cannot hide
+behind a spelling.
 
 `(website)/page.tsx`, `(website)/[...slug]/page.tsx` and the `/404` boundary in
 `src/app/not-found.tsx` compose no fallback at all — they render the stored field

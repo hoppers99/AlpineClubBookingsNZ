@@ -20,9 +20,12 @@ import { describe, expect, it } from "vitest";
  * hand-maintained "this page interpolates identity" flag meant two innocent edits
  * could reopen the #2819 hole with the whole suite green.
  *
- * Matching is on the SINK EXPRESSION — the source text after the `__html`
- * property key — never on a bare substring, so prose and comments may name
- * either identifier freely.
+ * Matching is mostly on the SINK EXPRESSION — the source text after the `__html`
+ * property key — rather than on a bare substring, so prose may discuss either
+ * identifier. Two checks are deliberate exceptions and do match source text: the
+ * composed sentence must appear in JSX CHILD position and must never appear in
+ * JSX PROP position. A comment that spells out `text={fallbackHeaderText}` will
+ * therefore fail this contract — write that example without the braces.
  */
 
 const APP_ROOT = path.join(__dirname, "..");
@@ -42,6 +45,13 @@ const HERO_PAGES = [
 ];
 
 /**
+ * The route groups the walk below covers, which is where every public hero lives.
+ * `HERO_PAGES` is hand-written, and the failure mode of every hand-written list is
+ * a new member nobody adds to it, so the two are reconciled by a test.
+ */
+const WEBSITE_ROUTE_GROUPS = ["(website)", "(website-dynamic)"];
+
+/**
  * The local each page assigns the stored, twice-sanitised field to (or `null`).
  * An allowlist rather than a ban, so a page that acquires a second sink fails
  * here and is triaged by a human, instead of passing because its new expression
@@ -52,8 +62,74 @@ const ALLOWED_SINK_EXPRESSIONS = ["storedHeaderHtml"];
 /** The local holding the composed sentence, which must never reach a sink. */
 const COMPOSED_FALLBACK = "fallbackHeaderText";
 
+/**
+ * The composed sentence in JSX CHILD position — `>{fallbackHeaderText}<`, with the
+ * whitespace and line breaks Prettier puts there in all five files.
+ */
+const CHILD_POSITION = new RegExp(`>\\s*\\{${COMPOSED_FALLBACK}\\}\\s*<`);
+
+/**
+ * The composed sentence in JSX PROP position — `text={fallbackHeaderText}`. Banned
+ * outright; the assertion that uses this says why.
+ */
+const PROP_POSITION = new RegExp(`=\\s*\\{${COMPOSED_FALLBACK}\\}`);
+
+/**
+ * `__html` spelled in any way `sinkExpressions()` cannot read: quoted
+ * (`{ "__html": x }`), computed (`{ ["__html"]: x }`), or ES2015 shorthand
+ * (`{{ __html }}`, where the key is followed by `}` or `,` rather than `:`).
+ */
+const EXOTIC_HTML_KEY = /["'[]__html|__html\s*[,}]/;
+
+/**
+ * Every `dangerouslySetInnerHTML` ATTRIBUTE in a file. The `=` is required: one of
+ * these pages names the attribute in a prose comment explaining that the fallback
+ * must not use it, and that mention must not count as a sink.
+ */
+const SINK_ATTRIBUTES = /dangerouslySetInnerHTML\s*=/g;
+
 async function readAppFile(relative: string) {
   return fs.readFile(path.join(APP_ROOT, relative), "utf8");
+}
+
+/**
+ * Every file in the website route groups that composes a fallback header, found by
+ * walking the tree rather than by trusting `HERO_PAGES`.
+ *
+ * `__tests__` directories are skipped: they hold no pages, and a fixture spelling
+ * the declaration would otherwise fail this as a missing hero.
+ */
+async function findPagesComposingAFallback(): Promise<string[]> {
+  const found: string[] = [];
+
+  async function walk(relative: string) {
+    const entries = await fs.readdir(path.join(APP_ROOT, relative), {
+      withFileTypes: true,
+    });
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (entry.name !== "__tests__") {
+          await walk(`${relative}/${entry.name}`);
+        }
+        continue;
+      }
+      if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".tsx")) {
+        continue;
+      }
+
+      const child = `${relative}/${entry.name}`;
+      if ((await readAppFile(child)).includes(`const ${COMPOSED_FALLBACK} =`)) {
+        found.push(child);
+      }
+    }
+  }
+
+  for (const group of WEBSITE_ROUTE_GROUPS) {
+    await walk(group);
+  }
+
+  return found.sort();
 }
 
 /**
@@ -63,10 +139,14 @@ async function readAppFile(relative: string) {
  * reads the same as a one-liner — Prettier wraps these attributes whenever the
  * class list grows, and that must not read as a new sink.
  *
- * Brace/paren depth is counted naively, so a literal brace inside a string could
- * over-extend a region. That errs toward a LONGER expression — a false positive a
- * human triages — never toward silently missing what a sink was handed. The probe
- * test below pins that this sees the shapes that matter.
+ * Brace/paren depth is counted naively, and a brace inside a STRING counts like any
+ * other. That cuts a region SHORT rather than long: measured, `{ __html: "}" + x }`
+ * stops at that character and reports the expression as `"`. A truncated region no
+ * longer names what the sink was handed, so the ban on the composed sentence passes
+ * VACUOUSLY on that shape — it is the ALLOWLIST that catches it, because `"` is not
+ * `storedHeaderHtml`. That is why both checks run on every expression: the ban
+ * states the rule, and the allowlist is what holds when the extractor is fooled.
+ * The probe test below pins that shape along with the others.
  */
 function sinkExpressions(source: string): string[] {
   const expressions: string[] = [];
@@ -116,10 +196,25 @@ describe("public hero header HTML sink contract (#2819)", () => {
         source,
         `${relative} must compose its fallback into a \`${COMPOSED_FALLBACK}\` local`,
       ).toContain(`const ${COMPOSED_FALLBACK} =`);
+      // Position, not presence. `{fallbackHeaderText}` as a bare substring is also
+      // satisfied by `text={fallbackHeaderText}` — and handing the sentence to a
+      // helper component in ANOTHER file is the one revert shape measured to evade
+      // every other check here, since this scan cannot follow the value across the
+      // file boundary to see what the helper does with it. So the sentence must be
+      // rendered HERE, in child position, and prop position is banned outright.
       expect(
-        source,
-        `${relative} must render the fallback as a JSX text child`,
-      ).toContain(`{${COMPOSED_FALLBACK}}`);
+        CHILD_POSITION.test(source),
+        `${relative} must render \`${COMPOSED_FALLBACK}\` as a JSX text child`,
+      ).toBe(true);
+      expect(
+        PROP_POSITION.test(source),
+        [
+          `${relative} passes \`${COMPOSED_FALLBACK}\` to a JSX prop.`,
+          "The composed sentence must be rendered on this page as an escaped text",
+          "child. Passing it to a component puts it beyond this scan, which cannot",
+          "then tell a text child from an HTML sink on the other side (#2819).",
+        ].join(" "),
+      ).toBe(false);
     },
   );
 
@@ -128,6 +223,23 @@ describe("public hero header HTML sink contract (#2819)", () => {
     async (relative) => {
       const source = await readAppFile(relative);
       const expressions = sinkExpressions(source);
+
+      // `sinkExpressions()` keys on `__html:`, so a sink spelled any other way is
+      // invisible to it, and a page that KEPT its text child while adding one would
+      // satisfy every assertion below. Two checks close that. First, ban the
+      // spellings outright, which gives a precise message.
+      expect(
+        EXOTIC_HTML_KEY.test(source),
+        `${relative} spells an \`__html\` key in a form this scan cannot read — write it as \`__html: <expression>\``,
+      ).toBe(false);
+      // Second, and independent of how the key is spelled: every
+      // `dangerouslySetInnerHTML` attribute on the page must have produced an
+      // expression the scan could read. A computed key defeats the ban above but
+      // not this, because the attribute is still there to be counted.
+      expect(
+        source.match(SINK_ATTRIBUTES)?.length ?? 0,
+        `${relative} has more \`dangerouslySetInnerHTML\` attributes than this scan could read expressions for`,
+      ).toBe(expressions.length);
 
       // Every one of these pages keeps exactly one sink, for the stored header.
       // An empty list would mean the extractor stopped seeing the page at all.
@@ -154,6 +266,24 @@ describe("public hero header HTML sink contract (#2819)", () => {
       }
     },
   );
+
+  /**
+   * The two checks above are `it.each(HERO_PAGES)`, so a sixth hero page that
+   * composed a fallback and was simply never added to that list would skip the
+   * contract entirely, with the whole suite green — the same silent-omission failure
+   * the `PAGES` flag pin in the rendered-DOM suite exists to prevent. So the list is
+   * reconciled with the route tree in both directions: a page the walk finds and the
+   * list omits fails, and a list entry the walk no longer finds (renamed, deleted,
+   * or no longer composing a fallback) fails too and must be re-reasoned here.
+   */
+  it("lists exactly the website pages that compose a fallback header", async () => {
+    const found = await findPagesComposingAFallback();
+
+    expect(
+      found,
+      "HERO_PAGES and the website route tree disagree about which pages compose a fallback header",
+    ).toEqual([...HERO_PAGES].sort());
+  });
 
   // The scan above is only protection if it really sees a restored sink, so its
   // reach is pinned here rather than assumed — the same reason the neutral-200
@@ -190,5 +320,63 @@ describe("public hero header HTML sink contract (#2819)", () => {
         '<div dangerouslySetInnerHTML={{ __html: storedHeaderHtml }} />',
       ),
     ).toEqual(["storedHeaderHtml"]);
+  });
+
+  /**
+   * The three checks that do NOT go through `sinkExpressions()` get the same
+   * treatment, on the shapes each exists to catch. Every string below was measured
+   * against the real extractor first and found invisible to it — that is why these
+   * checks were added, and this test is what keeps them honest.
+   */
+  it("catches the shapes the sink-expression scan cannot see", () => {
+    // A helper in another file, handed the sentence: the stored sink is untouched,
+    // so the scan reports a clean single allowlisted expression.
+    const viaProp = "<HeroFallback text={fallbackHeaderText} />";
+    expect(sinkExpressions(`<div dangerouslySetInnerHTML={{ __html: storedHeaderHtml }} />${viaProp}`)).toEqual([
+      "storedHeaderHtml",
+    ]);
+    expect(PROP_POSITION.test(viaProp)).toBe(true);
+    expect(CHILD_POSITION.test(viaProp)).toBe(false);
+    // Including when the prop is named so as to look like a sink.
+    expect(PROP_POSITION.test("<HeroFallback html={fallbackHeaderText} />")).toBe(
+      true,
+    );
+
+    // The shape this page ships passes both, across the line break Prettier adds.
+    const shipped = ["<p className='mt-4'>", "  {fallbackHeaderText}", "</p>"].join(
+      "\n",
+    );
+    expect(CHILD_POSITION.test(shipped)).toBe(true);
+    expect(PROP_POSITION.test(shipped)).toBe(false);
+
+    // `__html` spelled so the extractor's `__html:` regex misses it. Each of these
+    // returns NO expression, which is precisely why the ban and the attribute count
+    // are needed rather than trusted to the loop above.
+    for (const exotic of [
+      '<span dangerouslySetInnerHTML={{ "__html": fallbackHeaderText }} />',
+      '<span dangerouslySetInnerHTML={{ ["__html"]: fallbackHeaderText }} />',
+      "<span dangerouslySetInnerHTML={{ __html }} />",
+    ]) {
+      expect(sinkExpressions(exotic)).toEqual([]);
+      expect(EXOTIC_HTML_KEY.test(exotic)).toBe(true);
+      expect(exotic.match(SINK_ATTRIBUTES)?.length ?? 0).toBe(1);
+    }
+
+    // A key assembled at runtime defeats the spelling ban — the attribute count is
+    // what stops it, so pin that division of labour rather than implying the ban
+    // covers everything.
+    const computed =
+      '<span dangerouslySetInnerHTML={{ ["__" + "html"]: fallbackHeaderText }} />';
+    expect(sinkExpressions(computed)).toEqual([]);
+    expect(EXOTIC_HTML_KEY.test(computed)).toBe(false);
+    expect(computed.match(SINK_ATTRIBUTES)?.length ?? 0).toBe(1);
+
+    // And the correct shape trips none of the three.
+    const correct =
+      '<div dangerouslySetInnerHTML={{ __html: storedHeaderHtml }} />';
+    expect(EXOTIC_HTML_KEY.test(correct)).toBe(false);
+    expect(correct.match(SINK_ATTRIBUTES)?.length ?? 0).toBe(
+      sinkExpressions(correct).length,
+    );
   });
 });
