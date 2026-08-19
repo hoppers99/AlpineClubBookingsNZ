@@ -2980,6 +2980,19 @@ element is now uniform across all five code-backed pages:
 > that field is empty or the row is missing renders as an ordinary escaped React
 > text child.
 
+**This changed which element the fallback renders in, and nothing else an operator
+can see.** Each page now tests `headerText.trim()` rather than the field's bare
+truthiness, and on every input a deployment can actually produce the two agree:
+`sanitizePageContentHtml()` ends in `.trim()`, the admin write path
+(`src/app/api/admin/page-content/route.ts`) stores that sanitised value, and
+`getPublishedPageContentByPath()` sanitises again on read — so a header of nothing
+but whitespace can be neither saved nor read, and clearing the field stores `""`,
+which fell through to the fallback before this change too. The page-level `.trim()`
+is defence in depth against some future reader that skips that sanitiser
+(`listEditablePageContent()` does not trim), not a behaviour change: no existing
+deployment renders anything differently, and there is no whitespace case for an
+operator to reproduce.
+
 The distinction is not cosmetic. A composed fallback interpolates **club identity**
 (`name`, `lodgeName`), which is free text an admin types into Site Appearance &
 Content and which no sanitiser has ever seen — so the branch that runs when a
@@ -2998,12 +3011,19 @@ admin surface the writer already had.
 
 Pinned by `src/lib/__tests__/website-page-header-fallback-render.test.tsx` (the
 three established pages) and `booking-request-pages-fallback-render.test.tsx` (the
-two form pages). Both deliberately blank or remove the row rather than trusting
+two form pages). Both deliberately clear or remove the row rather than trusting
 starter data, feed a markup-shaped club identity through it, and assert the markup
-is serialised escaped with no element created — plus, for `/contact`, whose
-fallback interpolates nothing, that the element carrying it is the text `<p>` and
-not the sink `<div>`, since escaping alone cannot catch a revert there. Each file
-also keeps a positive case proving stored CMS header HTML still renders as HTML.
+is serialised escaped with no element created. Each file also keeps a positive case
+proving stored CMS header HTML still renders as HTML.
+
+Rendered DOM cannot state the rule exactly, though, and `/contact` is where that
+bites: its fallback interpolates nothing, so a sink handed that sentence produces
+DOM identical to an escaped text child apart from the element tag, and no escaping
+assertion can see the difference. The rule itself is therefore pinned over the page
+**source**, for all five heroes at once, in
+`src/app/__tests__/website-hero-header-sink-contract.test.ts`: the expression each
+page hands to `__html` must be the stored field, and may never name the composed
+sentence.
 
 `(website)/page.tsx`, `(website)/[...slug]/page.tsx` and the `/404` boundary in
 `src/app/not-found.tsx` compose no fallback at all — they render the stored field
