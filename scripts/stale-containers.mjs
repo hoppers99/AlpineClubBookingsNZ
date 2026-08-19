@@ -350,29 +350,107 @@ export async function buildReport({ listContainers, resolveIssueState, now = Dat
  * Compose project, or a standalone container. Printing `docker rm -f x` three
  * times for one stack invites someone to remove the containers and leave the
  * project's network and volumes behind, which is most of what was consuming disk.
+ *
+ * ## Why a project-wide teardown needs the WHOLE project, not just the stale part
+ *
+ * `docker compose -p X down -v --remove-orphans` removes every container in
+ * project X plus its network and named volumes — including containers this same
+ * report classified `shared` or `unknown` and explicitly refused to offer. A
+ * project with one stale member and two unclassified siblings must therefore not
+ * print that command: it would hand the operator a blast radius wider than the
+ * rows they just read, which is the false-deletion class review focus #1 exists
+ * to prevent.
+ *
+ * So the project-wide command is emitted only when EVERY container on the host in
+ * that project is stale and they all name the same owning issue. Otherwise the
+ * stale members are offered individually with `docker rm -f`, and the group
+ * carries a `warning` naming the siblings being left alone and saying why the
+ * project's network and volumes stay behind.
+ *
+ * `entries` is the full entry list, not the stale subset: the stale rows alone
+ * cannot answer "is anything else in this project", and that question is the
+ * whole difference between removing a lane's stack and removing somebody else's.
  */
 export function groupEntries(entries) {
-  const groups = new Map();
-  for (const entry of entries) {
+  const all = [...entries];
+
+  const projectMembers = new Map();
+  for (const entry of all) {
+    if (!entry.project) continue;
+    const members = projectMembers.get(entry.project);
+    if (members) members.push(entry);
+    else projectMembers.set(entry.project, [entry]);
+  }
+
+  const grouped = new Map();
+  for (const entry of all) {
     if (!entry.reviewAsStale) continue;
-    const key = entry.project ?? `container:${entry.name}`;
-    if (!groups.has(key)) {
-      groups.set(key, {
+    const key = entry.project ? `project:${entry.project}` : `container:${entry.name}`;
+    let group = grouped.get(key);
+    if (!group) {
+      group = {
         kind: entry.project ? "compose-project" : "container",
         key: entry.project ?? entry.name,
-        issue: entry.issue,
+        issues: new Set(),
         members: [],
-      });
+      };
+      grouped.set(key, group);
     }
-    groups.get(key).members.push(entry.name);
+    group.issues.add(entry.issue);
+    group.members.push(entry.name);
   }
-  return [...groups.values()].map((group) => ({
-    ...group,
-    teardown:
-      group.kind === "compose-project"
-        ? `docker compose -p ${group.key} down -v --remove-orphans`
-        : `docker rm -f ${group.key}`,
-  }));
+
+  return [...grouped.values()].map(({ issues, ...group }) => {
+    // One owner for the whole group, or none: two different owning issues inside
+    // one Compose project means the project's own ownership is not established.
+    const issue = issues.size === 1 ? [...issues][0] : null;
+    const base = { ...group, issue, retained: [] };
+
+    if (group.kind === "container") {
+      return { ...base, teardown: `docker rm -f ${group.key}`, warning: null };
+    }
+
+    const retained = (projectMembers.get(group.key) ?? [])
+      .filter((entry) => !entry.reviewAsStale)
+      .map((entry) => ({ name: entry.name, classification: entry.classification ?? "unknown" }));
+    const perContainer = `docker rm -f ${group.members.join(" ")}`;
+
+    if (retained.length > 0) {
+      const listed = retained.map((entry) => `${entry.name} — ${entry.classification}`).join(", ");
+      return {
+        ...base,
+        retained,
+        teardown: perContainer,
+        warning:
+          `Compose project "${group.key}" also holds ${retained.length} container(s) that are NOT ` +
+          `removal candidates (${listed}), so no project-wide teardown is offered: ` +
+          `\`docker compose -p ${group.key} down -v\` would take those with it, along with the ` +
+          "project's network and named volumes. Removing only the stale containers deliberately " +
+          "leaves those behind.",
+      };
+    }
+
+    if (issue === null) {
+      const owners = [...issues]
+        .sort((first, second) => first - second)
+        .map((number) => `#${number}`)
+        .join(", ");
+      return {
+        ...base,
+        teardown: perContainer,
+        warning:
+          `Compose project "${group.key}" holds containers naming different owning issues ` +
+          `(${owners}), so the project's own ownership is not established and no project-wide ` +
+          "teardown is offered.",
+      };
+    }
+
+    return {
+      ...base,
+      teardown: `docker compose -p ${group.key} down -v --remove-orphans`,
+      warning: null,
+    };
+  });
 }
 
 const COLUMNS = [
@@ -427,8 +505,12 @@ export function renderReport(report) {
         "read each target, confirm no open lane is using it, then run its teardown deliberately:",
     );
     for (const group of report.groups) {
-      lines.push(`  #${group.issue}  ${group.members.join(", ")}`);
+      const owner = group.issue === null ? "#? (mixed owners)" : `#${group.issue}`;
+      lines.push(`  ${owner}  ${group.members.join(", ")}`);
       lines.push(`         ${group.teardown}`);
+      // The warning is not decoration. It is the only place the report says that
+      // the printed command is narrower than the project, and why.
+      if (group.warning) lines.push(`         ! ${group.warning}`);
     }
   }
 

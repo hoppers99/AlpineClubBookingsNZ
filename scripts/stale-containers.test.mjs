@@ -163,7 +163,15 @@ describe("buildReport", () => {
       reviewAsStale: true,
     });
     expect(report.groups).toEqual([
-      { kind: "container", key: "pg-2376", issue: 2376, members: ["pg-2376"], teardown: "docker rm -f pg-2376" },
+      {
+        kind: "container",
+        key: "pg-2376",
+        issue: 2376,
+        members: ["pg-2376"],
+        retained: [],
+        teardown: "docker rm -f pg-2376",
+        warning: null,
+      },
     ]);
   });
 
@@ -271,9 +279,65 @@ describe("buildReport", () => {
           "tacbookings-e2e2595-postgres-1",
           "tacbookings-e2e2595-mailpit-1",
         ],
+        retained: [],
         teardown: "docker compose -p tacbookings-e2e2595 down -v --remove-orphans",
+        warning: null,
       },
     ]);
+  });
+
+  it("never offers a project-wide teardown for a project holding a shared or unknown sibling", async () => {
+    /*
+      The blocker found by review (#2794): the project-wide command removes every
+      container in the project plus its named volumes, so printing it for a
+      partly-stale project destroys the very siblings the same report has just
+      refused to offer. Measured shape: one lane-labelled member, one unlabelled
+      member, one deliberately-shared member, all in project `devstack`.
+    */
+    const report = await buildReport({
+      listContainers: async () => [
+        container({ name: "devstack-scratch-1", project: "devstack", issueLabel: "2595" }),
+        container({ name: "devstack-redis-1", project: "devstack" }),
+        container({ name: "devstack-minio-1", project: "devstack", sharedLabel: "true" }),
+      ],
+      resolveIssueState: resolverFor({ 2595: "CLOSED" }),
+      now: NOW,
+    });
+
+    expect(report.groups).toHaveLength(1);
+    const [group] = report.groups;
+    expect(group.teardown).toBe("docker rm -f devstack-scratch-1");
+    expect(group.teardown).not.toContain("docker compose");
+    expect(group.retained).toEqual([
+      { name: "devstack-redis-1", classification: "unknown" },
+      { name: "devstack-minio-1", classification: "shared" },
+    ]);
+    expect(group.warning).toContain("NOT removal candidates");
+    expect(group.warning).toContain("devstack-redis-1 — unknown");
+    expect(group.warning).toContain("devstack-minio-1 — shared");
+
+    // The rendered report is what an operator actually copies from, so the
+    // destructive form must not appear there either, and the warning must.
+    const rendered = renderReport(report);
+    expect(rendered).not.toContain("down -v --remove-orphans");
+    expect(rendered).toContain("! Compose project \"devstack\" also holds 2 container(s)");
+  });
+
+  it("refuses a project-wide teardown when one project names two different owners", async () => {
+    const report = await buildReport({
+      listContainers: async () => [
+        container({ name: "devstack-a-1", project: "devstack", issueLabel: "2595" }),
+        container({ name: "devstack-b-1", project: "devstack", issueLabel: "2597" }),
+      ],
+      resolveIssueState: resolverFor({ 2595: "CLOSED", 2597: "CLOSED" }),
+      now: NOW,
+    });
+
+    expect(report.groups).toHaveLength(1);
+    expect(report.groups[0].issue).toBeNull();
+    expect(report.groups[0].teardown).toBe("docker rm -f devstack-a-1 devstack-b-1");
+    expect(report.groups[0].warning).toContain("different owning issues (#2595, #2597)");
+    expect(renderReport(report)).toContain("#? (mixed owners)");
   });
 
   it("reproduces the 19 Aug 2026 host measurement", async () => {
@@ -405,7 +469,32 @@ describe("groupEntries", () => {
         { name: "b", project: null, issue: 2, reviewAsStale: true },
       ]),
     ).toEqual([
-      { kind: "container", key: "b", issue: 2, members: ["b"], teardown: "docker rm -f b" },
+      {
+        kind: "container",
+        key: "b",
+        issue: 2,
+        members: ["b"],
+        retained: [],
+        teardown: "docker rm -f b",
+        warning: null,
+      },
     ]);
+  });
+
+  it("offers the project-wide teardown only when every member of the project is stale", () => {
+    const wholeProject = groupEntries([
+      { name: "p-a-1", project: "p", issue: 5, classification: "stale", reviewAsStale: true },
+      { name: "p-b-1", project: "p", issue: 5, classification: "stale", reviewAsStale: true },
+    ]);
+    expect(wholeProject[0].teardown).toBe("docker compose -p p down -v --remove-orphans");
+    expect(wholeProject[0].warning).toBeNull();
+
+    const partial = groupEntries([
+      { name: "p-a-1", project: "p", issue: 5, classification: "stale", reviewAsStale: true },
+      { name: "p-b-1", project: "p", issue: 5, classification: "active", reviewAsStale: false },
+    ]);
+    expect(partial[0].teardown).toBe("docker rm -f p-a-1");
+    expect(partial[0].retained).toEqual([{ name: "p-b-1", classification: "active" }]);
+    expect(partial[0].warning).toContain("p-b-1 — active");
   });
 });
