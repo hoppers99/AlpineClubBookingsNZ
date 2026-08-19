@@ -1,11 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * #2901 operator repair: reactivates Stripe per-delta refund credit-note links
- * the pre-#2901 canonical cleanup wrongly deactivated, deactivates local
- * mirrors of notes voided in Xero, and refuses everything else. Backed by a
- * small stateful in-memory Prisma fake so the guarded updateMany claims run
- * against real row state rather than canned returns.
+ * #2901 operator repair (as reshaped by the adversarial fix round):
+ *
+ * - deactivating the local mirror of a note voided in Xero is UNCONDITIONAL —
+ *   it applies even when the plan lands short of the refunded total;
+ * - a link whose live Xero status was never recorded locally is NEVER
+ *   reactivated (inbound reconciliation cannot stamp statuses onto inactive
+ *   links, so "unknown" must be treated as "possibly voided");
+ * - a payment with an in-flight outbound CREDIT_NOTE CREATE operation is
+ *   refused outright (the executor prices from live coverage);
+ * - apply re-sums coverage after its claims inside the transaction and rolls
+ *   the payment back on divergence, isolates failures per payment, and
+ *   repoints the scalar off a link it just deactivated.
+ *
+ * Backed by a small stateful in-memory Prisma fake (with transaction rollback
+ * on throw) so the guarded updateMany claims run against real row state.
  */
 
 interface FakeLinkRow {
@@ -26,6 +36,8 @@ interface FakePaymentRow {
   bookingId: string;
   source: string;
   refundedAmountCents: number;
+  xeroInvoiceId: string | null;
+  xeroRefundCreditNoteId: string | null;
   createdAt: Date;
 }
 
@@ -37,6 +49,7 @@ interface FakeOperationRow {
   localModel: string;
   localId: string;
   xeroObjectId: string | null;
+  status: string;
   requestPayload: unknown;
   createdAt: Date;
 }
@@ -68,6 +81,7 @@ const fakePrisma = vi.hoisted(() => {
         where: {
           source?: string;
           refundedAmountCents?: { gt: number };
+          xeroInvoiceId?: { not: null };
           id?: { in: string[] };
         };
       }) =>
@@ -80,6 +94,7 @@ const fakePrisma = vi.hoisted(() => {
             ) {
               return false;
             }
+            if (args.where.xeroInvoiceId && row.xeroInvoiceId === null) return false;
             if (args.where.id?.in && !args.where.id.in.includes(row.id)) return false;
             return true;
           })
@@ -97,21 +112,46 @@ const fakePrisma = vi.hoisted(() => {
           bookingId: row.bookingId,
           source: row.source,
           refundedAmountCents: row.refundedAmountCents,
+          xeroRefundCreditNoteId: row.xeroRefundCreditNoteId,
         };
+      },
+      update: async (args: {
+        where: { id: string };
+        data: Record<string, unknown>;
+      }) => {
+        const row = state.payments.find((payment) => payment.id === args.where.id);
+        if (!row) throw new Error(`payment ${args.where.id} not found`);
+        Object.assign(row, args.data);
+        return { ...row };
       },
     },
     xeroObjectLink: {
-      findMany: async (args: { where: Record<string, unknown> }) =>
-        state.links
-          .filter((row) => matchesLinkWhere(row, args.where))
-          .map((row) => ({
-            id: row.id,
-            xeroObjectId: row.xeroObjectId,
-            xeroObjectNumber: row.xeroObjectNumber,
-            active: row.active,
-            metadata: row.metadata,
-            createdAt: row.createdAt,
-          })),
+      findMany: async (args: {
+        where: Record<string, unknown>;
+        orderBy?: unknown;
+        take?: number;
+      }) => {
+        let rows = state.links.filter((row) => matchesLinkWhere(row, args.where));
+        if (args.orderBy) {
+          // The scalar-repoint query orders createdAt desc, id desc.
+          rows = [...rows].sort(
+            (a, b) =>
+              b.createdAt.getTime() - a.createdAt.getTime() ||
+              b.id.localeCompare(a.id)
+          );
+        }
+        if (typeof args.take === "number") {
+          rows = rows.slice(0, args.take);
+        }
+        return rows.map((row) => ({
+          id: row.id,
+          xeroObjectId: row.xeroObjectId,
+          xeroObjectNumber: row.xeroObjectNumber,
+          active: row.active,
+          metadata: row.metadata,
+          createdAt: row.createdAt,
+        }));
+      },
       updateMany: async (args: {
         where: Record<string, unknown>;
         data: { active: boolean };
@@ -125,20 +165,46 @@ const fakePrisma = vi.hoisted(() => {
     },
     xeroSyncOperation: {
       findFirst: async (args: {
-        where: { localId: string; xeroObjectId: string };
+        where: {
+          localId?: string;
+          xeroObjectId?: string;
+          status?: { in: string[] };
+          entityType?: string;
+          operationType?: string;
+          direction?: string;
+        };
       }) => {
         const matches = state.operations
-          .filter(
-            (row) =>
-              row.localId === args.where.localId &&
-              row.xeroObjectId === args.where.xeroObjectId
-          )
+          .filter((row) => {
+            if (args.where.localId !== undefined && row.localId !== args.where.localId) return false;
+            if (args.where.xeroObjectId !== undefined && row.xeroObjectId !== args.where.xeroObjectId) return false;
+            if (args.where.entityType !== undefined && row.entityType !== args.where.entityType) return false;
+            if (args.where.operationType !== undefined && row.operationType !== args.where.operationType) return false;
+            if (args.where.direction !== undefined && row.direction !== args.where.direction) return false;
+            if (args.where.status?.in && !args.where.status.in.includes(row.status)) return false;
+            return true;
+          })
           .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
         const row = matches[0];
-        return row ? { requestPayload: row.requestPayload } : null;
+        return row ? { id: row.id, requestPayload: row.requestPayload } : null;
       },
     },
-    $transaction: async <T>(fn: (tx: unknown) => Promise<T>) => fn(client),
+    $transaction: async <T>(fn: (tx: unknown) => Promise<T>) => {
+      // Rollback fidelity: snapshot mutable state and restore it on throw, so
+      // the in-transaction guards genuinely undo their claims in these tests.
+      const paymentsSnapshot = state.payments.map((row) => ({ ...row }));
+      const linksSnapshot = state.links.map((row) => ({
+        ...row,
+        metadata: row.metadata ? { ...row.metadata } : row.metadata,
+      }));
+      try {
+        return await fn(client);
+      } catch (error) {
+        state.payments = paymentsSnapshot;
+        state.links = linksSnapshot;
+        throw error;
+      }
+    },
   };
   return client;
 });
@@ -181,6 +247,8 @@ beforeEach(() => {
       bookingId: "book_1",
       source: "STRIPE",
       refundedAmountCents: 100,
+      xeroInvoiceId: "inv_1",
+      xeroRefundCreditNoteId: null,
       createdAt: new Date("2026-05-01T00:00:00Z"),
     },
   ];
@@ -195,7 +263,7 @@ describe("findStripeRefundNoteLinkRepairs", () => {
         id: "link_90",
         xeroObjectId: "cn_90",
         active: false,
-        metadata: { amountCents: 90 },
+        metadata: { amountCents: 90, status: "AUTHORISED" },
         createdAt: new Date("2026-05-01T00:00:00Z"),
       }),
       makeLink({
@@ -215,22 +283,26 @@ describe("findStripeRefundNoteLinkRepairs", () => {
     expect(plan).toMatchObject({
       paymentId: "pay_1",
       refundedAmountCents: 100,
+      coverageTargetCents: 100,
       activeCoveredCents: 10,
       plannedCoveredCents: 100,
       repairable: true,
       manualReviewReason: null,
+      blockedByPendingOperation: false,
       reactivateLinkIds: ["link_90"],
       deactivateLinkIds: [],
     });
   });
 
-  it("recovers a legacy link's amount from the persisted create-operation payload", async () => {
+  it("recovers a legacy link's amount from the persisted create-operation payload once its status is recorded", async () => {
     state.links = [
       makeLink({
         id: "link_legacy_90",
         xeroObjectId: "cn_legacy",
         active: false,
-        metadata: null, // pre-#1162 links carried no amountCents
+        // Pre-#1162 links carried no amountCents; the status recorder merged
+        // the live status in, and the amount comes from the create payload.
+        metadata: { status: "AUTHORISED" },
       }),
       makeLink({
         id: "link_10",
@@ -248,6 +320,7 @@ describe("findStripeRefundNoteLinkRepairs", () => {
         localModel: "Payment",
         localId: "pay_1",
         xeroObjectId: "cn_legacy",
+        status: "SUCCEEDED",
         requestPayload: { allocation: { amount: 0.9 } }, // dollars
         createdAt: new Date("2026-05-01T00:00:00Z"),
       },
@@ -256,13 +329,47 @@ describe("findStripeRefundNoteLinkRepairs", () => {
     const report = await findStripeRefundNoteLinkRepairs();
 
     const plan = report.plans[0];
-    expect(plan.repairable).toBe(true);
-    expect(plan.reactivateLinkIds).toEqual(["link_legacy_90"]);
-    const legacy = plan.links.find((link) => link.linkId === "link_legacy_90");
+    expect(plan?.repairable).toBe(true);
+    expect(plan?.reactivateLinkIds).toEqual(["link_legacy_90"]);
+    const legacy = plan?.links.find((link) => link.linkId === "link_legacy_90");
     expect(legacy?.amountCents).toBe(90);
   });
 
-  it("never reactivates voided, amount-less, or over-covering links, and reports the payment for manual review when coverage cannot land exactly", async () => {
+  it("never reactivates a link whose live Xero status was never recorded, and says so per link", async () => {
+    state.links = [
+      makeLink({
+        id: "link_unknown_90",
+        xeroObjectId: "cn_unknown",
+        active: false,
+        // Amount recorded, status never recorded: inbound reconciliation
+        // cannot stamp statuses onto inactive links, so this note could be
+        // voided in Xero and must be refused until --record-statuses runs.
+        metadata: { amountCents: 90 },
+        createdAt: new Date("2026-05-01T00:00:00Z"),
+      }),
+      makeLink({
+        id: "link_10",
+        xeroObjectId: "cn_10",
+        active: true,
+        metadata: { amountCents: 10 },
+        createdAt: new Date("2026-05-02T00:00:00Z"),
+      }),
+    ];
+
+    const report = await findStripeRefundNoteLinkRepairs();
+
+    const plan = report.plans[0];
+    expect(plan?.repairable).toBe(false);
+    expect(plan?.reactivateLinkIds).toEqual([]);
+    const unknown = plan?.links.find((link) => link.linkId === "link_unknown_90");
+    expect(unknown?.plannedAction).toBe("leave-inactive");
+    expect(unknown?.reason).toContain("--record-statuses");
+    // The unknown status renders visibly, never as if it were fine.
+    const text = formatStripeRefundNoteLinkRepairReport(report);
+    expect(text).toContain("status unknown");
+  });
+
+  it("never reactivates voided, amount-less, or over-covering links, and reports the shortfall honestly", async () => {
     state.links = [
       makeLink({
         id: "link_voided",
@@ -275,14 +382,14 @@ describe("findStripeRefundNoteLinkRepairs", () => {
         id: "link_no_amount",
         xeroObjectId: "cn_mystery",
         active: false,
-        metadata: null,
+        metadata: { status: "AUTHORISED" },
         createdAt: new Date("2026-05-02T00:00:00Z"),
       }),
       makeLink({
         id: "link_too_big",
         xeroObjectId: "cn_big",
         active: false,
-        metadata: { amountCents: 95 },
+        metadata: { amountCents: 95, status: "AUTHORISED" },
         createdAt: new Date("2026-05-03T00:00:00Z"),
       }),
       makeLink({
@@ -297,27 +404,63 @@ describe("findStripeRefundNoteLinkRepairs", () => {
     const report = await findStripeRefundNoteLinkRepairs();
 
     const plan = report.plans[0];
-    expect(plan.repairable).toBe(false);
-    expect(plan.reactivateLinkIds).toEqual([]);
-    expect(plan.manualReviewReason).toContain("exactly on the refunded total");
+    expect(plan?.repairable).toBe(false);
+    expect(plan?.reactivateLinkIds).toEqual([]);
+    // The shortfall message must NOT tell the operator to void more notes —
+    // that was the pre-fix defect. It points at status recording / self-heal.
+    expect(plan?.manualReviewReason).toContain("short of the refunded total");
+    expect(plan?.manualReviewReason).not.toContain("void");
     expect(
-      plan.links.find((link) => link.linkId === "link_voided")?.plannedAction
+      plan?.links.find((link) => link.linkId === "link_voided")?.plannedAction
     ).toBe("leave-inactive");
     expect(
-      plan.links.find((link) => link.linkId === "link_no_amount")?.plannedAction
+      plan?.links.find((link) => link.linkId === "link_no_amount")?.plannedAction
     ).toBe("leave-inactive");
     expect(
-      plan.links.find((link) => link.linkId === "link_too_big")?.plannedAction
+      plan?.links.find((link) => link.linkId === "link_too_big")?.plannedAction
     ).toBe("leave-inactive");
   });
 
-  it("plans deactivation of an active link whose note was voided in Xero, replacing its coverage from inactive siblings", async () => {
+  it("plans deactivation of an active voided-note mirror INDEPENDENTLY of whether the gap can be refilled", async () => {
+    // The case that used to be refused: the voided note leaves a shortfall
+    // and no inactive sibling fills it. Deactivation must still apply — the
+    // phantom coverage is what suppresses the self-heal.
+    state.links = [
+      makeLink({
+        id: "link_90_voided",
+        xeroObjectId: "cn_90_voided",
+        active: true,
+        metadata: { amountCents: 90, status: "VOIDED" },
+        createdAt: new Date("2026-05-01T00:00:00Z"),
+      }),
+      makeLink({
+        id: "link_10",
+        xeroObjectId: "cn_10",
+        active: true,
+        metadata: { amountCents: 10 },
+        createdAt: new Date("2026-05-02T00:00:00Z"),
+      }),
+    ];
+
+    const report = await findStripeRefundNoteLinkRepairs();
+
+    const plan = report.plans[0];
+    expect(plan).toMatchObject({
+      repairable: true,
+      deactivateLinkIds: ["link_90_voided"],
+      reactivateLinkIds: [],
+      plannedCoveredCents: 10,
+    });
+    expect(plan?.manualReviewReason).toContain("self-heal");
+  });
+
+  it("plans deactivation of a voided mirror and replaces its coverage from a recorded inactive sibling", async () => {
     state.links = [
       makeLink({
         id: "link_90_good",
         xeroObjectId: "cn_90_good",
         active: false,
-        metadata: { amountCents: 90 },
+        metadata: { amountCents: 90, status: "AUTHORISED" },
         createdAt: new Date("2026-05-01T00:00:00Z"),
       }),
       makeLink({
@@ -344,17 +487,78 @@ describe("findStripeRefundNoteLinkRepairs", () => {
       deactivateLinkIds: ["link_90_voided"],
       reactivateLinkIds: ["link_90_good"],
       plannedCoveredCents: 100,
+      manualReviewReason: null,
     });
   });
 
-  it("does not report healthy payments, non-Stripe payments, or unrelated links", async () => {
-    state.payments.push({
-      id: "pay_ib",
-      bookingId: "book_ib",
-      source: "INTERNET_BANKING",
-      refundedAmountCents: 100,
-      createdAt: new Date("2026-05-01T00:00:00Z"),
-    });
+  it("refuses the whole payment while a refund credit-note operation is queued or running", async () => {
+    state.links = [
+      makeLink({
+        id: "link_90",
+        xeroObjectId: "cn_90",
+        active: false,
+        metadata: { amountCents: 90, status: "AUTHORISED" },
+      }),
+      makeLink({
+        id: "link_10",
+        xeroObjectId: "cn_10",
+        active: true,
+        metadata: { amountCents: 10 },
+      }),
+    ];
+    state.operations = [
+      {
+        id: "op_pending",
+        direction: "OUTBOUND",
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        localModel: "Payment",
+        localId: "pay_1",
+        xeroObjectId: null,
+        status: "PENDING",
+        requestPayload: { refundAmountCents: 90 },
+        createdAt: new Date("2026-05-05T00:00:00Z"),
+      },
+    ];
+
+    const report = await findStripeRefundNoteLinkRepairs();
+
+    const plan = report.plans[0];
+    expect(plan?.blockedByPendingOperation).toBe(true);
+    expect(plan?.repairable).toBe(false);
+    expect(plan?.reactivateLinkIds).toEqual([]);
+    expect(plan?.deactivateLinkIds).toEqual([]);
+    expect(plan?.manualReviewReason).toContain("op_pending");
+    expect(plan?.manualReviewReason).toContain("PENDING or RUNNING");
+
+    const apply = await applyStripeRefundNoteLinkRepairs();
+    expect(apply.appliedPayments).toBe(0);
+    expect(state.links.find((link) => link.id === "link_90")?.active).toBe(false);
+  });
+
+  it("does not report healthy payments, non-Stripe payments, never-invoiced payments, or unrelated links", async () => {
+    state.payments.push(
+      {
+        id: "pay_ib",
+        bookingId: "book_ib",
+        source: "INTERNET_BANKING",
+        refundedAmountCents: 100,
+        xeroInvoiceId: "inv_ib",
+        xeroRefundCreditNoteId: null,
+        createdAt: new Date("2026-05-01T00:00:00Z"),
+      },
+      {
+        // A Stripe payment never invoiced in Xero expects no credit note —
+        // scanning it produced unbounded manual-review noise (#2901 review).
+        id: "pay_no_invoice",
+        bookingId: "book_no_invoice",
+        source: "STRIPE",
+        refundedAmountCents: 100,
+        xeroInvoiceId: null,
+        xeroRefundCreditNoteId: null,
+        createdAt: new Date("2026-05-01T00:00:00Z"),
+      }
+    );
     state.links = [
       makeLink({
         id: "link_100",
@@ -383,7 +587,7 @@ describe("findStripeRefundNoteLinkRepairs", () => {
         localId: "pay_ib",
         xeroObjectId: "cn_ib",
         active: false,
-        metadata: { amountCents: 100 },
+        metadata: { amountCents: 100, status: "AUTHORISED" },
       }),
     ];
 
@@ -401,7 +605,7 @@ describe("applyStripeRefundNoteLinkRepairs", () => {
         id: "link_90",
         xeroObjectId: "cn_90",
         active: false,
-        metadata: { amountCents: 90 },
+        metadata: { amountCents: 90, status: "AUTHORISED" },
         createdAt: new Date("2026-05-01T00:00:00Z"),
       }),
       makeLink({
@@ -438,13 +642,87 @@ describe("applyStripeRefundNoteLinkRepairs", () => {
     expect(second.deactivatedLinks).toBe(0);
   });
 
+  it("applies a deactivate-only plan on a shortfall, leaving the self-heal to reissue the remainder", async () => {
+    state.links = [
+      makeLink({
+        id: "link_90_voided",
+        xeroObjectId: "cn_90_voided",
+        active: true,
+        metadata: { amountCents: 90, status: "VOIDED" },
+        createdAt: new Date("2026-05-01T00:00:00Z"),
+      }),
+      makeLink({
+        id: "link_10",
+        xeroObjectId: "cn_10",
+        active: true,
+        metadata: { amountCents: 10 },
+        createdAt: new Date("2026-05-02T00:00:00Z"),
+      }),
+    ];
+
+    const result = await applyStripeRefundNoteLinkRepairs();
+
+    expect(result.appliedPayments).toBe(1);
+    expect(result.deactivatedLinks).toBe(1);
+    expect(result.reactivatedLinks).toBe(0);
+    expect(state.links.find((link) => link.id === "link_90_voided")?.active).toBe(false);
+    // Coverage is now honestly 10 of 100; the daily self-heal detector
+    // (`getRefundsMissingXeroCreditNotes`) owns the remainder from here.
+  });
+
+  it("repoints the payment scalar off a link it just deactivated", async () => {
+    state.payments[0]!.xeroRefundCreditNoteId = "cn_90_voided";
+    state.links = [
+      makeLink({
+        id: "link_10",
+        xeroObjectId: "cn_10",
+        active: true,
+        metadata: { amountCents: 10 },
+        createdAt: new Date("2026-05-01T00:00:00Z"),
+      }),
+      makeLink({
+        id: "link_90_voided",
+        xeroObjectId: "cn_90_voided",
+        active: true,
+        metadata: { amountCents: 90, status: "VOIDED" },
+        createdAt: new Date("2026-05-02T00:00:00Z"),
+      }),
+    ];
+
+    const result = await applyStripeRefundNoteLinkRepairs();
+
+    expect(result.appliedPayments).toBe(1);
+    // The scalar now names the newest remaining ACTIVE note, so the report's
+    // "missing active link for the scalar-pointed note" class cannot become
+    // permanent drift, and inbound cannot resolve the voided note through the
+    // scalar and reactivate it.
+    expect(state.payments[0]!.xeroRefundCreditNoteId).toBe("cn_10");
+  });
+
+  it("clears the scalar when deactivation leaves no active note", async () => {
+    state.payments[0]!.xeroRefundCreditNoteId = "cn_90_voided";
+    state.links = [
+      makeLink({
+        id: "link_90_voided",
+        xeroObjectId: "cn_90_voided",
+        active: true,
+        metadata: { amountCents: 90, status: "VOIDED" },
+      }),
+    ];
+
+    const result = await applyStripeRefundNoteLinkRepairs();
+
+    expect(result.appliedPayments).toBe(1);
+    expect(state.payments[0]!.xeroRefundCreditNoteId).toBeNull();
+  });
+
   it("skips a payment whose link state changed between the dry-run plan and the transaction snapshot", async () => {
     state.links = [
       makeLink({
         id: "link_90",
         xeroObjectId: "cn_90",
         active: false,
-        metadata: { amountCents: 90 },
+        metadata: { amountCents: 90, status: "AUTHORISED" },
         createdAt: new Date("2026-05-01T00:00:00Z"),
       }),
       makeLink({
@@ -474,10 +752,84 @@ describe("applyStripeRefundNoteLinkRepairs", () => {
     findUniqueSpy.mockRestore();
     expect(result.appliedPayments).toBe(0);
     expect(result.skippedPayments).toHaveLength(1);
-    expect(result.skippedPayments[0].paymentId).toBe("pay_1");
+    expect(result.skippedPayments[0]?.paymentId).toBe("pay_1");
     // The concurrent activation of link_90 completed the coverage itself, so
     // the fresh in-transaction plan has nothing to do and the apply declines.
     expect(state.links.filter((row) => row.active)).toHaveLength(2);
+  });
+
+  it("rolls the payment back when a link committed by a concurrent writer breaks the coverage promise, and still processes the rest of the run", async () => {
+    state.payments.push({
+      id: "pay_2",
+      bookingId: "book_2",
+      source: "STRIPE",
+      refundedAmountCents: 50,
+      xeroInvoiceId: "inv_2",
+      xeroRefundCreditNoteId: null,
+      createdAt: new Date("2026-05-02T00:00:00Z"),
+    });
+    state.links = [
+      makeLink({
+        id: "link_90",
+        xeroObjectId: "cn_90",
+        active: false,
+        metadata: { amountCents: 90, status: "AUTHORISED" },
+        createdAt: new Date("2026-05-01T00:00:00Z"),
+      }),
+      makeLink({
+        id: "link_10",
+        xeroObjectId: "cn_10",
+        active: true,
+        metadata: { amountCents: 10 },
+        createdAt: new Date("2026-05-02T00:00:00Z"),
+      }),
+      makeLink({
+        id: "link_p2_50",
+        localId: "pay_2",
+        xeroObjectId: "cn_p2_50",
+        active: false,
+        metadata: { amountCents: 50, status: "AUTHORISED" },
+        createdAt: new Date("2026-05-03T00:00:00Z"),
+      }),
+    ];
+
+    // Simulate the outbox executor committing a NEW active 90c note for pay_1
+    // between the in-transaction re-plan and the claims: hook the claim
+    // updateMany to inject the row the executor would have written.
+    const originalUpdateMany = fakePrisma.xeroObjectLink.updateMany;
+    let injected = false;
+    const updateManySpy = vi
+      .spyOn(fakePrisma.xeroObjectLink, "updateMany")
+      .mockImplementation(async (args) => {
+        const result = await originalUpdateMany(args);
+        if (!injected) {
+          injected = true;
+          state.links.push(
+            makeLink({
+              id: "link_executor_new",
+              xeroObjectId: "cn_executor_new",
+              active: true,
+              metadata: { amountCents: 90, watermarkCents: 100 },
+              createdAt: new Date("2026-05-09T00:00:00Z"),
+            })
+          );
+        }
+        return result;
+      });
+
+    const result = await applyStripeRefundNoteLinkRepairs();
+
+    updateManySpy.mockRestore();
+    // pay_1 rolled back: the post-claim re-sum found 190 !== 100.
+    const pay1Skip = result.skippedPayments.find(
+      (skip) => skip.paymentId === "pay_1"
+    );
+    expect(pay1Skip?.reason).toContain("Coverage verification");
+    // The rollback undid the claim: link_90 is inactive again.
+    expect(state.links.find((link) => link.id === "link_90")?.active).toBe(false);
+    // Per-payment isolation: pay_2 still applied cleanly.
+    expect(result.appliedPayments).toBe(1);
+    expect(state.links.find((link) => link.id === "link_p2_50")?.active).toBe(true);
   });
 
   it("reports over-covered payments for manual review and applies nothing", async () => {
@@ -506,20 +858,22 @@ describe("applyStripeRefundNoteLinkRepairs", () => {
 
     expect(result.appliedPayments).toBe(0);
     expect(result.skippedPayments).toHaveLength(1);
-    expect(result.skippedPayments[0].reason).toContain("Void the surplus notes in Xero");
+    expect(result.skippedPayments[0]?.reason).toContain(
+      "void the surplus duplicates THERE"
+    );
     expect(state.links.every((row) => row.active)).toBe(true);
   });
 });
 
 describe("formatStripeRefundNoteLinkRepairReport", () => {
-  it("renders a per-payment, per-link plain-text plan", async () => {
+  it("renders a per-payment, per-link plain-text plan with visible statuses", async () => {
     state.links = [
       makeLink({
         id: "link_90",
         xeroObjectId: "cn_90",
         xeroObjectNumber: "CN-0090",
         active: false,
-        metadata: { amountCents: 90 },
+        metadata: { amountCents: 90, status: "AUTHORISED" },
       }),
       makeLink({
         id: "link_10",
@@ -535,7 +889,8 @@ describe("formatStripeRefundNoteLinkRepairReport", () => {
     expect(text).toContain("1 need repair or review");
     expect(text).toContain("Payment pay_1 (booking book_1)");
     expect(text).toContain("REPAIRABLE");
-    expect(text).toContain("[reactivate] note CN-0090");
-    expect(text).toContain("[keep-active] note cn_10");
+    expect(text).toContain("[reactivate] note CN-0090 (inactive, AUTHORISED, 0.90)");
+    // A never-recorded status renders as "status unknown", never as fine.
+    expect(text).toContain("[keep-active] note cn_10 (active, status unknown, 0.10)");
   });
 });
