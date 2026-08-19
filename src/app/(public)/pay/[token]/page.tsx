@@ -41,6 +41,11 @@ interface PaymentLinkContext {
     expiresAt: string;
   } | null;
   canRequestFreshLink: boolean;
+  /**
+   * The lodge THIS booking is at (#2919). Optional on the wire so a page served
+   * from a cached/older response still renders — the club default stands in.
+   */
+  lodgeName?: string;
 }
 
 type Tone = "success" | "warning" | "info";
@@ -287,7 +292,10 @@ export default function PayByLinkPage() {
             state: "paid",
             headline: "Payment received",
             message: `Thanks ${context.firstName} — your payment is complete.`,
-            nextStep: `Your booking with ${club.lodgeName} is confirmed. We look forward to seeing you.`,
+            // #2919: name the booking's OWN lodge, not the club default. The two
+            // "contact us if this link fails" lines above stay club-level on
+            // purpose — those are about the club, not about a stay.
+            nextStep: `Your booking with ${context.lodgeName ?? club.lodgeName} is confirmed. We look forward to seeing you.`,
           };
     return <NarrativeCard narrative={narrative} tone="success" />;
   }

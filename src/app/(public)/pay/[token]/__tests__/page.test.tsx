@@ -208,3 +208,67 @@ describe("public payment-link captured-payment recovery", () => {
     },
   );
 });
+
+// #2919: the "your booking is confirmed" line named the CLUB DEFAULT lodge,
+// because the payment-link context carried no lodge at all. It must name the
+// lodge this booking is actually at.
+describe("public payment-link confirmation names the booking's lodge", () => {
+  function installAlreadyPaidFetch(context: Record<string, unknown>) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/pay/public-token" && !init?.method) {
+          return { ok: true, json: async () => context } as Response;
+        }
+        if (url === "/api/booking-messages") {
+          return { ok: true, json: async () => ({ messages: {} }) } as Response;
+        }
+        if (
+          url === "/api/pay/public-token/payment-intent" &&
+          init?.method === "POST"
+        ) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ alreadyPaid: true }),
+          } as Response;
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }) as typeof fetch,
+    );
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
+  });
+
+  it("names the booking's own lodge rather than the club default", async () => {
+    installAlreadyPaidFetch({ ...payableContext, lodgeName: "Second Lodge" });
+    render(<PayByLinkPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+
+    expect(
+      await screen.findByText(/Your booking with Second Lodge is confirmed/i),
+    ).toBeInTheDocument();
+    // The mocked club identity ("Test Lodge") is the default-lodge name this
+    // surface used to print for every booking.
+    expect(screen.queryByText(/Test Lodge is confirmed/i)).toBeNull();
+  });
+
+  it("falls back to the club lodge name when the context carries none", async () => {
+    installAlreadyPaidFetch(payableContext);
+    render(<PayByLinkPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+
+    expect(
+      await screen.findByText(/Your booking with Test Lodge is confirmed/i),
+    ).toBeInTheDocument();
+  });
+});
