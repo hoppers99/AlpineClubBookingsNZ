@@ -186,7 +186,7 @@ beforeEach(() => {
 afterEach(() => {
   // Unmount first: the debounce effect's cleanup clears any armed timer, so
   // nothing can be pending when the fake clock is discarded. cleanup() is called
-  // explicitly because vitest.config.ts pins sequence.hooks to "stack", which
+  // explicitly because vitest.config.mts pins sequence.hooks to "stack", which
   // runs after-hooks in REVERSE registration order — Testing Library's automatic
   // unmount would otherwise run after this, not before.
   cleanup();

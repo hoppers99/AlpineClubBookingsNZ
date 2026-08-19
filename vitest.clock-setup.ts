@@ -1,6 +1,6 @@
 // The frozen test clock, installed before anything else in the test run.
 //
-// This is a SEPARATE setup file, listed FIRST in `vitest.config.ts`, and that
+// This is a SEPARATE setup file, listed FIRST in `vitest.config.mts`, and that
 // ordering is the whole point. ES module imports are hoisted and evaluated
 // before any statement in a module's body, so a freeze installed inside
 // `vitest.setup.ts` cannot be in place before `vitest.setup.ts`'s own imports
