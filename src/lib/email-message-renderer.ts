@@ -14,6 +14,7 @@ import {
 } from "@/lib/email-message-registry";
 import { findBracketAnnotations } from "@/lib/email-message-token-contract";
 import { prisma } from "@/lib/prisma";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 type EmailTemplateValue = string | number | boolean | null | undefined;
 export type EmailTemplateData = Record<string, EmailTemplateValue>;
@@ -784,9 +785,12 @@ export async function prepareEmailMessage({
     overrideApplied = true;
   }
 
-  if (override?.bodyText?.trim()) {
-    nextHtml = plainTextEmailTemplate(
-      renderTemplateString(override.bodyText.trim(), data),
+  const overrideBodyText = override?.bodyText?.trim();
+  if (overrideBodyText) {
+    // A stored body override re-renders the whole themed shell, so it goes
+    // through the render gate too (#2900).
+    nextHtml = await renderEmailHtml(() =>
+      plainTextEmailTemplate(renderTemplateString(overrideBodyText, data)),
     );
     overrideApplied = true;
     bodyOverrideApplied = true;
@@ -831,7 +835,9 @@ export async function renderEmailTemplatePreview({
     settings,
   );
   const html = applyEmailMessageSettingsToHtml(
-    plainTextEmailTemplate(renderTemplateString(bodyText, data)),
+    await renderEmailHtml(() =>
+      plainTextEmailTemplate(renderTemplateString(bodyText, data)),
+    ),
     settings,
   );
 

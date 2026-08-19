@@ -40,7 +40,7 @@ src/app/(admin)/admin/bookings/page.tsx 706 route-page-shell
 src/app/(admin)/admin/chores/page.tsx 705 route-page-shell
 src/app/(admin)/admin/committee/page.tsx 796 route-page-shell
 src/app/(admin)/admin/config-transfer/page.tsx 643 route-page-shell
-src/app/(admin)/admin/dashboard/page.tsx 846 route-page-shell
+src/app/(admin)/admin/dashboard/page.tsx 875 route-page-shell
 src/app/(admin)/admin/deletion-requests/deletion-requests-client.tsx 1488 domain-module
 src/app/(admin)/admin/display/builder/display-builder.tsx 1305 domain-module
 src/app/(admin)/admin/display/devices/page.tsx 532 route-page-shell
@@ -50,7 +50,7 @@ src/app/(admin)/admin/display/setup/display-wizard-steps.tsx 1445 domain-module
 src/app/(admin)/admin/display/templates/page.tsx 1133 route-page-shell
 src/app/(admin)/admin/family-groups/page.tsx 863 route-page-shell
 src/app/(admin)/admin/fees/_components/hut-fees-section.tsx 947 domain-module
-src/app/(admin)/admin/hut-leaders/page.tsx 1162 route-page-shell
+src/app/(admin)/admin/hut-leaders/page.tsx 1167 route-page-shell
 src/app/(admin)/admin/image-manager/image-manager-client.tsx 727 domain-module
 src/app/(admin)/admin/lockers/page.tsx 744 route-page-shell
 src/app/(admin)/admin/lodge/page.tsx 559 route-page-shell
@@ -128,7 +128,7 @@ src/app/api/admin/page-content/route.ts 798 route-handler
 src/app/api/admin/promo-codes/[id]/redemptions/route.ts 364 route-handler
 src/app/api/admin/promo-codes/[id]/route.ts 447 route-handler
 src/app/api/admin/promo-codes/route.ts 299 route-handler
-src/app/api/admin/refund-requests/[id]/route.ts 455 route-handler
+src/app/api/admin/refund-requests/[id]/route.ts 456 route-handler
 src/app/api/admin/reports/route.ts 340 route-handler
 src/app/api/admin/subscription-billing/route.ts 318 route-handler
 src/app/api/admin/subscriptions/route.ts 409 route-handler
@@ -185,7 +185,7 @@ src/components/book/member-guest-find-panel.tsx 713 domain-module
 src/components/calendar/event-dialog.tsx 991 domain-module
 src/components/edit-booking-panel.tsx 1878 domain-module
 src/components/website/skifield-whakapapa-widget.tsx 730 domain-module
-src/instrumentation.node.ts 1511 domain-module
+src/instrumentation.node.ts 1436 domain-module
 src/lib/admin-bookings-service.ts 1288 domain-module
 src/lib/admin-cron-health.ts 787 domain-module
 src/lib/admin-family-group-requests-service.ts 1574 domain-module
@@ -241,9 +241,9 @@ src/lib/diagnostics/tools/packs/membership-records.ts 1157 domain-module
 src/lib/diagnostics/tools/provision-role.ts 1132 domain-module
 src/lib/diagnostics/tools/types.ts 733 domain-module
 src/lib/email-message-registry.ts 2001 domain-module
-src/lib/email-message-renderer.ts 842 domain-module
+src/lib/email-message-renderer.ts 848 domain-module
 src/lib/email-message-token-contract.ts 715 domain-module
-src/lib/email/booking.ts 1426 domain-module
+src/lib/email/booking.ts 1427 domain-module
 src/lib/finance-booking-metrics.ts 1281 domain-module
 src/lib/finance-dashboard-page.ts 1653 domain-module
 src/lib/finance-report-mappings.ts 1022 domain-module
@@ -285,7 +285,7 @@ src/lib/school-booking-request.ts 2497 domain-module
 src/lib/seasonal-membership-assignments.ts 1655 domain-module
 src/lib/setup-readiness.ts 1557 domain-module
 src/lib/stripe-webhook-service.ts 1652 domain-module
-src/lib/stuck-state-dashboard.ts 1110 domain-module
+src/lib/stuck-state-dashboard.ts 1138 domain-module
 src/lib/subscription-lockout-enforcement.ts 805 domain-module
 src/lib/waitlist-cross-lodge.ts 956 domain-module
 src/lib/waitlist.ts 1311 domain-module

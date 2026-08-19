@@ -82,6 +82,13 @@ vi.mock("@/lib/email-theme", () => ({
     snow: "#ffffff",
     ridge: "#6b7280",
   }),
+  // The #2900 render gate. This suite pins the palette above, so the gate has
+  // nothing to load and is a pass-through — but it must still be PRESENT: both
+  // `sendEmail` and the body-override re-render inside `prepareEmailMessage`
+  // await it, and a mock missing it throws at the first send rather than
+  // failing an assertion.
+  ensureEmailPaletteReady: async () => ({ source: "club-theme" as const }),
+  renderEmailHtml: async <T,>(build: () => T) => build(),
 }));
 
 vi.mock("@/lib/email-suppression", () => ({

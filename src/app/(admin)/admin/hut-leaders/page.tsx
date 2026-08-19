@@ -69,6 +69,11 @@ interface HutLeaderAssignment {
 
 interface UnassignedDate {
   date: string;
+  // One row per uncovered lodge-night since #2917; here always the selected
+  // lodge, so these are for keying, not display. Optional: an older cached
+  // response must not break the panel.
+  lodgeId?: string | null;
+  lodgeName?: string | null;
   bookingCount: number;
   guestCount: number;
 }
@@ -778,7 +783,7 @@ export default function HutLeadersPage() {
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-3">
               {unassignedDates.map((d) => (
                 <div
-                  key={d.date}
+                  key={`${d.date}|${d.lodgeId ?? ""}`}
                   className="flex items-center justify-between rounded-lg border border-warning/20 bg-card px-3 py-2 text-card-foreground"
                 >
                   <div>
