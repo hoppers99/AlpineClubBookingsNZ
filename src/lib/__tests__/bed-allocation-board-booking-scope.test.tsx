@@ -31,6 +31,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardPayload } from "@/app/(admin)/admin/bed-allocation/_components/types";
+import { settleLodgeScopedPage } from "@/lib/__tests__/helpers/lodge-scope-settle";
 
 const editAccessMock = vi.hoisted(() => vi.fn());
 
@@ -190,6 +191,15 @@ function buildPayload(): DashboardPayload {
   } as unknown as DashboardPayload;
 }
 
+/*
+ * The board's own read, once its lodge scope has settled — the settle signal for
+ * `settleLodgeScopedPage` below. It really is a PREFIX: `fetchDashboard` builds
+ * the query as `from`, then `to`, then `lodgeId`, and `from`/`to` are fixed by
+ * the deep link mocked at the top of this file.
+ */
+const SETTLED_BOARD_READ =
+  "/api/admin/bed-allocation?from=2026-07-01&to=2026-07-08&lodgeId=";
+
 function boardRequests(): URLSearchParams[] {
   return (global.fetch as ReturnType<typeof vi.fn>).mock.calls
     .map((call) => String(call[0]))
@@ -229,6 +239,12 @@ describe("bed allocation board — booking scope on the deep link (#2678)", () =
     render(<AdminBedAllocationPage />);
     await screen.findByTestId("room-table");
 
+    // Settle before interacting — same ordering hazard as the case below
+    // (#2953), which is where the mechanism is written out. The selector is
+    // mocked here, so its buttons are clickable on the commit that first renders
+    // the board, a commit whose passive effects — including the #2701 echo
+    // adoption that writes the lodge selection — have not necessarily run yet.
+    await settleLodgeScopedPage(SETTLED_BOARD_READ);
     fireEvent.click(screen.getByRole("button", { name: "Pick lodge two" }));
 
     // The request that follows asks for lodge two and names NO booking, so the
@@ -255,6 +271,30 @@ describe("bed allocation board — booking scope on the deep link (#2678)", () =
     // the worst possible moment for it: the server's derivation from
     // `bookingId` is the only thing then keeping the board off a club-wide
     // read.
+    //
+    // SETTLE BEFORE INTERACTING, AND NOTE WHAT THIS IS AND IS NOT (#2953). This
+    // suite already carried #2944's wider 4,000ms RTL window and still reddened
+    // `main` — failing here in 4,125ms on CI, reproduced locally at 4,187ms
+    // under 20 competing CPU burners (1 failure in 20 runs). It burned the whole
+    // window and then reported the assertion, which is the signature of an
+    // ordering bug rather than a slow one: no window can reach it.
+    //
+    // The mechanism is this page's own #2701 echo adoption. The first payload
+    // arrives with `scopedLodgeId: "lodge-1"` and an effect adopts it into
+    // `lodgeSelection`. That is a PASSIVE effect, so `findByTestId` above can
+    // resolve on the commit that queued it, before it has run. A click landing
+    // in that gap sets the selection to null and the still-queued adoption
+    // immediately puts "lodge-1" back — so `dashboardScopeKey` round-trips to
+    // the value it already had, `useScopedDashboard` never sees a change, and
+    // the board never issues the unscoped read this case is about. The newest
+    // request stays the FIRST one, which carries `lodgeId`, permanently.
+    // Measured with a probe that clicked deliberately early: exactly one board
+    // request ever recorded, `lodgeId=lodge-1&bookingId=booking-1`.
+    //
+    // So do not "simplify" this settle away, and do not relax or re-wrap the
+    // assertions below to make them retry — the state they are waiting for is
+    // terminal, and retrying it longer only buys a slower failure.
+    await settleLodgeScopedPage(SETTLED_BOARD_READ);
     fireEvent.click(screen.getByRole("button", { name: "Report no lodge" }));
 
     await waitFor(() => {
