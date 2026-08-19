@@ -145,8 +145,10 @@ function makeReq(url: string, method: string, body?: unknown) {
 describe("Admin Family Groups API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRequireAdmin.mockImplementation(async () =>
-      (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock()
+    mockRequireAdmin.mockImplementation(async (options) =>
+      (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(
+        options,
+      )
     );
   });
 

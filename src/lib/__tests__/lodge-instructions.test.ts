@@ -30,9 +30,9 @@ vi.mock("@/lib/auth", () => ({
   auth: mocks.auth,
 }));
 
-vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: async () =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(),
+vi.mock("@/lib/session-guards", async () => ({
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
   // Mirrors the real requireActiveSession 401/403 semantics, delegating to
   // the test's mocked auth() and requireActiveSessionUser().
   requireActiveSession: async () => {
