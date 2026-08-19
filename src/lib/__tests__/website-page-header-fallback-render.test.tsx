@@ -22,6 +22,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * before its content is seeded, and the state a club reaches by clearing the
  * field. The same fix landed on the two newer form pages in #2818; that suite is
  * `booking-request-pages-fallback-render.test.tsx`.
+ *
+ * This file pins rendered BEHAVIOUR, which is the right level for the escaping
+ * and for the branch each input takes. It cannot state the underlying rule
+ * exactly — a sink handed a sentence that interpolates nothing renders the same
+ * DOM as a text child — so the rule itself is pinned over the page SOURCE, for all
+ * five heroes at once, in `src/app/__tests__/website-hero-header-sink-contract.test.ts`.
  */
 
 /**
@@ -116,11 +122,16 @@ function publishedRow(path: string, headerText: string) {
  * The element that actually holds the fallback sentence — the innermost one, so
  * the wrapper `div`s of the hero cannot mask the answer.
  *
- * Its tag is the whole point. An escaped text child sits in the `<p>` this fix
- * introduced; restoring `dangerouslySetInnerHTML` puts the same sentence in a
- * `<div>` instead, which is what makes this assertion catch a revert even on
- * `/contact`, whose fallback interpolates nothing and so cannot be caught by
- * escaping alone.
+ * Its tag is a real signal but a WEAK one, and it is worth being exact about how
+ * weak. An escaped text child sits in the `<p>` this fix introduced, so a revert
+ * that also restores the `<div>` fails here. A revert that keeps the `<p>` and
+ * moves the sentence into an HTML sink on it does not: on the two pages whose
+ * fallback interpolates identity the escaping assertions above catch that anyway,
+ * but on `/contact`, which interpolates nothing, the resulting DOM is identical.
+ * The exact guard for that page is therefore a source-level one,
+ * `src/app/__tests__/website-hero-header-sink-contract.test.ts`, which bans the
+ * composed sentence from a sink expression outright. This assertion stays because
+ * it pins the rendered shape all three pages actually ship.
  */
 function fallbackHolder(container: HTMLElement, snippet: string) {
   return Array.from(container.querySelectorAll("*")).find(
@@ -159,6 +170,27 @@ describe("website hero fallbacks render as escaped text (#2819)", () => {
     cleanup();
   });
 
+  /**
+   * `IDENTITY_PAGES` is what selects the escaping assertions below, and it is
+   * derived from a flag written by hand in `PAGES`. Left unchecked, a later edit
+   * that made the `/contact` sentence name the club — the obvious way to bring it
+   * into line with its two siblings — would leave the flag on `false`, and the
+   * escaping assertions would silently never run for the page whose rendered DOM
+   * cannot betray a restored sink. So the flag is pinned against what each page
+   * actually renders: get it wrong in either direction and this fails.
+   */
+  it.each(PAGES)(
+    "keeps the recorded identity-interpolation of %s honest",
+    async (path, Page, _snippet, interpolates) => {
+      const { container } = render(await Page());
+
+      expect(
+        container.textContent?.includes("<img src=x"),
+        `${path} ${interpolates ? "no longer" : "now"} interpolates the club identity — update its PAGES flag`,
+      ).toBe(interpolates);
+    },
+  );
+
   it.each(IDENTITY_PAGES)(
     "escapes a markup-shaped club name in the %s fallback rather than parsing it",
     async (_path, Page) => {
@@ -188,11 +220,54 @@ describe("website hero fallbacks render as escaped text (#2819)", () => {
     },
   );
 
+  /**
+   * A row that EXISTS but carries no header — the state a club reaches by
+   * clearing the field in Site Appearance & Content, which the admin API accepts
+   * (`headerText: z.string()`, no minimum). Distinct from the missing-row cases
+   * above: the page's other fields come from the row and the body renders, and
+   * only the header falls through. This is the reachable half of the "empty"
+   * branch, and pinning it is what makes the security doc's claim testable.
+   */
   it.each(PAGES)(
-    "falls back on a %s row whose header is only whitespace",
+    "falls back to escaped text on a %s row whose header was cleared",
     async (path, Page, snippet) => {
-      // A blanked header is not a request to render raw HTML — it is an empty
-      // field, so the composed sentence takes over, escaped.
+      mocks.getPublishedPageContentByPath.mockResolvedValue(
+        publishedRow(path, ""),
+      );
+
+      const { container } = render(await Page());
+
+      const holder = fallbackHolder(container, snippet);
+
+      expect(holder, `no element carries the ${path} fallback`).toBeDefined();
+      expect(holder!.tagName).toBe("P");
+      expect(container.querySelector("img")).toBeNull();
+    },
+  );
+
+  /**
+   * The pages guard the sink with `headerText.trim()`, and this is the only test
+   * of the `.trim()` half — so be exact about what it does and does not prove.
+   *
+   * It is NOT a production state. `getPublishedPageContentByPath()` sanitises
+   * `headerText` on read with `sanitizePageContentHtml()`, which ends in
+   * `.trim()`, and the admin write path sanitises with the same function before
+   * storing — so a whitespace-only header can be neither written nor read, and
+   * measured against the real sanitiser `'   '` and `'\t\n '` both become `''`.
+   * A stored `''` was already falsy under the previous `||` guard, so `.trim()`
+   * changes NO rendered output on any reachable input and there is no
+   * operator-visible behaviour change to describe.
+   *
+   * It is kept as defence in depth, against a header value that reaches a page
+   * without passing that sanitiser — `listEditablePageContent()` does not trim,
+   * and a future reader need not either. What it pins is that if such a value
+   * ever arrives, whitespace is treated as empty rather than handed to the sink.
+   * The escaping and text-child properties are pinned on the reachable branches
+   * above; this case only needs to show which branch is taken.
+   */
+  it.each(PAGES)(
+    "treats an untrimmed whitespace-only %s header as empty (defence in depth)",
+    async (path, Page, snippet) => {
       mocks.getPublishedPageContentByPath.mockResolvedValue(
         publishedRow(path, "   "),
       );
@@ -201,22 +276,8 @@ describe("website hero fallbacks render as escaped text (#2819)", () => {
 
       const holder = fallbackHolder(container, snippet);
 
+      expect(holder, `no element carries the ${path} fallback`).toBeDefined();
       expect(holder!.tagName).toBe("P");
-      expect(container.querySelector("img")).toBeNull();
-    },
-  );
-
-  it.each(IDENTITY_PAGES)(
-    "escapes the club name on a %s row whose header is only whitespace",
-    async (path, Page) => {
-      mocks.getPublishedPageContentByPath.mockResolvedValue(
-        publishedRow(path, "   "),
-      );
-
-      const { container } = render(await Page());
-
-      expect(container.innerHTML).toContain("&lt;img src=x");
-      expect(container.innerHTML).not.toContain("<img");
     },
   );
 
