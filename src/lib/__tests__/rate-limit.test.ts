@@ -393,6 +393,16 @@ describe("degraded-mode policy for auth-sensitive limiters (#1142)", () => {
       // Its sibling `memberWholeLodgeWithdraw` is deliberately NOT marked: a
       // member cancelling their own request holds nothing and reveals nothing.
       "memberWholeLodgeRequest",
+      // Maintenance reports (#2780): the two doors a non-member (QR) submission
+      // travels through. `maintenanceReportAnonymous` is the unauthenticated
+      // submit budget and `maintenanceReportToken` the per-token read budget on
+      // the same public surface — both return one uniform failure, so volume is
+      // the only probe and a degraded shared-store fallback must TIGHTEN rather
+      // than multiply the allowance. The member submit limiter
+      // `maintenanceReportMember` is deliberately NOT marked: it sits behind a
+      // session, so it is not a credential-guessing or public-form surface.
+      "maintenanceReportAnonymous",
+      "maintenanceReportToken",
     ].sort();
 
     const marked = Object.entries(rateLimiters)

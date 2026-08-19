@@ -4319,12 +4319,12 @@ model ClubModuleSettings {
   // separately-keyed product is a per-deployment decision like magicLink/googleLogin.
   aiDiagnostics           Boolean  @default(false)
   // Maintenance reports (#2780). Default ON: a general-purpose module with no
-  // credential or inventory prerequisite, so it follows the memberNotices /
-  // eventsCalendar precedent rather than the capability-module one. Safe to add
-  // as a defaulted column because every read narrows to
+  // external-account or inventory prerequisite, so it follows the memberNotices
+  // / eventsCalendar precedent rather than the capability-module one. Safe to
+  // add as a defaulted column because every read narrows to
   // CLUB_MODULE_SETTINGS_COLUMN_SELECT, so a previously deployed client never
   // names it. Turning it ON does NOT open the unauthenticated QR form — that is
-  // a separate, default-OFF setting on MaintenanceReportSettings, because an
+  // a separate, default-OFF switch on MaintenanceReportSettings, because an
   // endpoint anybody can post to must be opted into deliberately.
   maintenanceReports      Boolean  @default(true)
   updatedByMemberId       String?

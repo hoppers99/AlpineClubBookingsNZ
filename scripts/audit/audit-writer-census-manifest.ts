@@ -290,7 +290,13 @@ export const AUDIT_CENSUS_TOTALS = {
   // (`member.email-inheritance-source.changed`), one `createStructuredAuditLog`
   // inside the reconciler, category `family`. It records a real routing change,
   // so it is a categorised writer, not an `UNCATEGORISED_AUDIT_WRITERS` entry.
-  writeSites: 435,
+  // 435 -> 445 (#2780): the ten maintenance-report writers. Two QR-sign sites
+  // (create/rotate and pause/resume, each a dynamic action pair), the settings
+  // route's settings.updated / anonymous-enabled-or-disabled / questions.updated,
+  // the queue's report.viewed / report.status_changed / report.photo_deleted, and
+  // report.submitted on both the member and the anonymous submit route. All
+  // `logAudit`, all category `lodge`. Re-measured with `npm run audit:census`.
+  writeSites: 445,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -327,7 +333,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // Both are `logAudit` on the same grounds as the row they sit beside — a
     // rejected audit write on either path would turn "a person needs to know about
     // this money" into a replayed refund.
-    logAudit: { total: 245, uncategorised: 0 },
+    // 245 -> 255 (#2780): all ten maintenance-report writers use `logAudit` — QR
+    // sign create/rotate/pause/resume, queue triage and photo disclosure/deletion,
+    // and the two submit records. None sits inside the submit transaction, so a
+    // failed audit write never fails a submitted report.
+    logAudit: { total: 255, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     // 104 -> 105 (#2649): the return-to-waitlist repair, above.
@@ -568,7 +578,15 @@ export const AUDIT_CENSUS_TOTALS = {
     // `admin` above for the readership and retention consequences. Bed
     // allocation is now wholly `lodge`: 28 sites, one gate, no action name
     // written into two.
-    lodge: 52,
+    // 52 -> 62 (#2780): the ten maintenance-report writers. The QR-sign
+    // management route writes four (`maintenance.qr_token.created/rotated/
+    // paused/resumed`), the officer queue detail route writes the triage and
+    // photo-disclosure/deletion set, and the member and anonymous submit routes
+    // record a report received. All `lodge` — physical-lodge maintenance is Lodge
+    // Operations — and `lodge` is not one of the three (`admin`, `security`,
+    // `system`) readable with `support:view` alone, so the support-only
+    // population pinned below does not move.
+    lodge: 62,
     // 19 -> 34 (#2581 child 2): the fifteen Xero settings, mapping, replay and
     // retry writers. `xero` is `support` plus `finance`.
     xero: 34,
