@@ -302,6 +302,33 @@ describe("bed allocation board — booking scope on the deep link (#2678)", () =
       expect(latest?.has("lodgeId")).toBe(false);
       expect(latest?.get("bookingId")).toBe("booking-1");
     });
+
+    // SETTLE BEFORE ASSERTING, for the same reason and against the same class
+    // (#2953). The read asserted above does not leave the board at rest.
+    // Measured with a probe that let it run to quiescence, it makes THREE
+    // requests here, not two:
+    //
+    //   1. lodgeId=lodge-1&bookingId=booking-1   the deep link
+    //   2. bookingId=booking-1                   the null report, asserted above
+    //   3. lodgeId=lodge-1&bookingId=booking-1   #2701 re-adopts the lodge the
+    //                                            server said it scoped to, which
+    //                                            is the focus being KEPT, not lost
+    //
+    // `useScopedDashboard` clears its value whenever the scope key changes, and
+    // the badge renders only inside `{payload ? … }`, so the badge is unmounted
+    // twice between requests 2 and 3. Reading the DOM synchronously in one of
+    // those gaps fails as `Unable to find an element with the text: Focused
+    // booking` — observed 2 times in 30 runs under 20 competing CPU burners, and
+    // in ~150ms each time, so it is an ordering failure and not a slow one.
+    //
+    // Waiting for the board to come to REST is not the same thing as retrying
+    // the assertion: what is waited on below is the board's own request and
+    // render, and the badge assertion still gets exactly one chance, on the
+    // state the board settles in. Do not fold it into the wait.
+    await waitFor(() => {
+      expect(boardRequests()).toHaveLength(3);
+      expect(screen.getByTestId("room-table")).toBeInTheDocument();
+    });
     expect(screen.getByText("Focused booking")).toBeInTheDocument();
   });
 });
