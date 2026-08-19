@@ -46,7 +46,11 @@ import {
 import { PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE } from "@/lib/policies/minimum-stay";
 import { PUBLIC_GROUP_JOIN_ADULT_MEMBER_HOSTING_MESSAGE } from "@/lib/policies/adult-member-hosting";
 import { prisma } from "@/lib/prisma";
-import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
+import {
+  hashActionToken,
+  isActionTokenFormat,
+  issueActionToken,
+} from "@/lib/action-tokens";
 import {
   sendBookingRequestApprovedEmail,
   sendGroupBookingJoinVerificationEmail,
@@ -538,6 +542,40 @@ export async function resolveGroupBookingByCode(
     return null;
   }
   return toGroupBookingSummary(group);
+}
+
+/**
+ * Public, read-only: the name of the lodge behind a group-join VERIFICATION
+ * token (#2919), so the confirmation page names the lodge the group is actually
+ * staying at instead of the club's default one.
+ *
+ * Resolved here, server-side, rather than returned by the verify endpoint: that
+ * endpoint is a POST because it creates the booking, so it only ever answers
+ * AFTER the joiner has read this copy and clicked Confirm. The sibling
+ * /join/[code] page gets the same value from `summary.lodgeName`.
+ *
+ * Returns the name only — never the travel note or door code, which this
+ * unauthenticated surface has no business carrying — and null for a malformed
+ * or unknown token, so the caller falls back to the club default exactly as
+ * before and the page reveals nothing about whether a token exists.
+ */
+export async function resolveGroupJoinVerificationLodgeName(
+  token: string
+): Promise<string | null> {
+  if (!isActionTokenFormat(token)) {
+    return null;
+  }
+  const join = await prisma.groupBookingJoin.findUnique({
+    where: { verificationTokenHash: hashActionToken(token) },
+    select: {
+      groupBooking: {
+        select: {
+          organiserBooking: { select: { lodge: { select: { name: true } } } },
+        },
+      },
+    },
+  });
+  return join?.groupBooking.organiserBooking.lodge.name ?? null;
 }
 
 // ---------------------------------------------------------------------------
