@@ -69,13 +69,38 @@ export async function uploadOtherClubsToServer(): Promise<UploadSummary> {
     })),
   );
 
-  // Advance the watermark to the newest `updatedAt` we just sent. Any row edited
-  // after this read has a larger `updatedAt` and is caught on the next upload.
-  const watermark = lodges.reduce(
-    (max, l) => (l.updatedAt > max ? l.updatedAt : max),
-    lodges[0].updatedAt,
+  // Advance the watermark to the newest `updatedAt` the server ACCEPTED. Any row
+  // edited after this read has a larger `updatedAt` and is caught next time.
+  //
+  // Rows the server reported as `skipped` are excluded (INV-INT-004). Advancing
+  // past a rejected row is how a rejection becomes permanent: the row is never
+  // re-sent, so it silently never reaches the registry and nothing says so. By
+  // holding the watermark below the oldest skipped row, every subsequent run
+  // retries it — and `skipped` is surfaced in the summary so an operator can see
+  // a row that keeps bouncing.
+  const skippedNames = new Set(
+    result.results.filter((r) => r.status === "skipped").map((r) => r.name),
   );
-  await recordOtherLodgesUpload(watermark);
+  const accepted = lodges.filter((l) => !skippedNames.has(l.name));
+
+  if (accepted.length > 0) {
+    const oldestSkipped = lodges
+      .filter((l) => skippedNames.has(l.name))
+      .reduce<Date | null>((min, l) => (!min || l.updatedAt < min ? l.updatedAt : min), null);
+
+    let watermark = accepted.reduce(
+      (max, l) => (l.updatedAt > max ? l.updatedAt : max),
+      accepted[0].updatedAt,
+    );
+    // Never step over a rejected row, even when a newer row was accepted.
+    if (oldestSkipped && watermark >= oldestSkipped) {
+      watermark = new Date(oldestSkipped.getTime() - 1);
+    }
+    if (!since || watermark > since) {
+      await recordOtherLodgesUpload(watermark);
+    }
+  }
+
   return { ...result, sent: lodges.length };
 }
 
@@ -85,6 +110,10 @@ export interface DownloadSummary {
   updated: number;
   /** Fetched rows already identical locally — left untouched (no `updatedAt` bump). */
   unchanged: number;
+  /** Rows where the LOCAL copy was newer, so the remote was not applied. */
+  keptLocal: number;
+  /** Rows the server sent that failed validation and were discarded. */
+  dropped: number;
 }
 
 /**
@@ -93,6 +122,24 @@ export interface DownloadSummary {
  * changed since last time are fetched, and a fetched row is only written when
  * its data actually differs from the local copy — so an unchanged row keeps its
  * `updatedAt` and is never needlessly re-uploaded. Keyed by unique lodge name.
+ *
+ * TWO rules keep `updatedAt` honest as a sync signal, because the upload
+ * watermark is derived from it:
+ *
+ *  1. A server-sourced write carries the SERVER's `updatedAt`, not `now()`.
+ *     Prisma's `@updatedAt` would otherwise stamp the moment we wrote it, which
+ *     re-presents a row we merely received as a local edit — and the next
+ *     upload dutifully sends it back. (The server reports identical content as
+ *     `unchanged`, so that echo settles after one redundant round trip rather
+ *     than running forever; it is still a lie about when the row last changed,
+ *     and the watermark is built on that field.)
+ *
+ *  2. A remote row OLDER than the local copy is not applied. Upload runs before
+ *     download in the same pass, so an admin editing a row in between would
+ *     otherwise have their edit overwritten by the copy the server was already
+ *     holding — and, with rule 1, the stale value would then look authoritative.
+ *     Newest-timestamp-wins keeps the club's own fresh edit and lets the next
+ *     upload carry it.
  */
 export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
   const settings = await loadServerNzSettings();
@@ -101,10 +148,11 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
   let created = 0;
   let updated = 0;
   let unchanged = 0;
+  let keptLocal = 0;
   for (const lodge of pull.lodges) {
     const existing = await prisma.otherLodge.findUnique({
       where: { name: lodge.name },
-      select: { id: true, ...LODGE_DATA_SELECT },
+      select: { id: true, updatedAt: true, ...LODGE_DATA_SELECT },
     });
     const data = {
       location: lodge.location,
@@ -113,6 +161,14 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
       bookingOfficerPhone: lodge.bookingOfficerPhone,
       bedCapacity: lodge.bedCapacity,
     };
+
+    // The server's own timestamp for this row. An unparseable value falls back to
+    // `null`, which means "let Prisma stamp it" — worse than the server's answer
+    // but better than refusing the row.
+    const remoteUpdatedAt = Number.isNaN(Date.parse(lodge.updatedAt))
+      ? null
+      : new Date(lodge.updatedAt);
+
     if (!existing) {
       // Upsert, not create: `name` is unique and this read-then-write is not
       // atomic, so a concurrent writer (an admin pressing Download while the
@@ -124,25 +180,53 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
       // update it would have made, and stays correct when it wins.
       await prisma.otherLodge.upsert({
         where: { name: lodge.name },
-        create: { name: lodge.name, ...data },
-        update: data,
+        create: {
+          name: lodge.name,
+          ...data,
+          ...(remoteUpdatedAt ? { updatedAt: remoteUpdatedAt } : {}),
+        },
+        update: { ...data, ...(remoteUpdatedAt ? { updatedAt: remoteUpdatedAt } : {}) },
       });
       created++;
-    } else if (
+      continue;
+    }
+
+    const differs =
       existing.location !== data.location ||
       existing.bookingOfficerName !== data.bookingOfficerName ||
       existing.bookingOfficerEmail !== data.bookingOfficerEmail ||
       existing.bookingOfficerPhone !== data.bookingOfficerPhone ||
-      existing.bedCapacity !== data.bedCapacity
-    ) {
-      // Prisma's `@updatedAt` stamps the row's Last Updated on this write.
-      await prisma.otherLodge.update({ where: { id: existing.id }, data });
-      updated++;
-    } else {
+      existing.bedCapacity !== data.bedCapacity;
+
+    if (!differs) {
       unchanged++;
+      continue;
     }
+
+    // Rule 2: a local edit made after the server's copy wins and is left to the
+    // next upload. Equal timestamps apply the remote, so a server correction
+    // issued in the same instant is not silently dropped.
+    if (remoteUpdatedAt && existing.updatedAt > remoteUpdatedAt) {
+      keptLocal++;
+      continue;
+    }
+
+    await prisma.otherLodge.update({
+      where: { id: existing.id },
+      // Rule 1: carry the server's timestamp rather than letting `@updatedAt`
+      // stamp now(), so this row is not re-uploaded as though we had edited it.
+      data: { ...data, ...(remoteUpdatedAt ? { updatedAt: remoteUpdatedAt } : {}) },
+    });
+    updated++;
   }
 
   await recordOtherLodgesDownload(pull.cursor);
-  return { fetched: pull.count, created, updated, unchanged };
+  return {
+    fetched: pull.count,
+    created,
+    updated,
+    unchanged,
+    keptLocal,
+    dropped: pull.dropped,
+  };
 }

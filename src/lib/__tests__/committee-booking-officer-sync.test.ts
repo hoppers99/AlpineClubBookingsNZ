@@ -22,6 +22,7 @@ function makeDb(opts: {
   holder?: {
     memberId: string;
     member: typeof MEMBER;
+    showPhone?: boolean;
     committeeRole: { contactEmail: string | null };
   } | null;
   lodges?: Array<{ name: string }>;
@@ -38,7 +39,11 @@ function makeDb(opts: {
       findMany: vi.fn().mockResolvedValue(opts.roles ?? []),
     },
     committeeAssignment: {
-      findFirst: vi.fn().mockResolvedValue(opts.holder ?? null),
+      // `showPhone` defaults TRUE here so the pre-existing cases still exercise
+      // the phone path; the withheld-phone case sets it false explicitly.
+      findFirst: vi.fn().mockResolvedValue(
+        opts.holder ? { showPhone: true, ...opts.holder } : null,
+      ),
     },
     lodge: {
       findMany: vi.fn().mockResolvedValue(opts.lodges ?? []),
@@ -166,5 +171,95 @@ describe("syncBookingOfficerForRole", () => {
       { key: "bookings" },
       { name: { equals: "Booking Officer", mode: "insensitive" } },
     ]);
+  });
+  // ---------------------------------------------------------------------------
+  // Consent. This registry is redistributed to every connected club, so it must
+  // never be broader than the club's own public committee page.
+  // ---------------------------------------------------------------------------
+
+  it("only ever considers a holder the club has already published", async () => {
+    const { db } = makeDb({
+      roles: [{ id: "role_bo" }],
+      holder: {
+        memberId: "m1",
+        member: MEMBER,
+        committeeRole: { contactEmail: ROLE_CONTACT_EMAIL },
+      },
+      lodges: [{ name: "Whakapapa Lodge" }],
+      otherLodges: [],
+    });
+
+    await syncBookingOfficerForRole(db as never, "role_bo");
+
+    // The fake ignores `where`, so the gate is asserted on the query itself —
+    // the same four conditions `/api/committee` applies. `published`, `showPhone`
+    // and `contactable` are all @default(false), so without `published` here a
+    // brand-new assignment would be published nationally by default.
+    const where = db.committeeAssignment.findFirst.mock.calls[0][0].where;
+    expect(where).toMatchObject({
+      isActive: true,
+      published: true,
+      committeeRole: { isActive: true },
+      member: { active: true },
+    });
+  });
+
+  it("withholds the phone when the member did not consent to showing it", async () => {
+    const { db, update } = makeDb({
+      roles: [{ id: "role_bo" }],
+      holder: {
+        memberId: "m1",
+        member: MEMBER,
+        showPhone: false,
+        committeeRole: { contactEmail: ROLE_CONTACT_EMAIL },
+      },
+      lodges: [{ name: "Whakapapa Lodge" }],
+      otherLodges: [
+        {
+          id: "ol1",
+          bookingOfficerName: null,
+          bookingOfficerEmail: null,
+          bookingOfficerPhone: null,
+        },
+      ],
+    });
+
+    await syncBookingOfficerForRole(db as never, "role_bo");
+
+    // Name and the ROLE's shared email still travel — those are published. The
+    // personal phone does not, because the club withheld it locally.
+    expect(update.mock.calls[0][0].data).toEqual({
+      bookingOfficerName: "Andy Schulz",
+      bookingOfficerEmail: ROLE_CONTACT_EMAIL,
+      bookingOfficerPhone: null,
+    });
+  });
+
+  it("clears a previously published phone when consent is withdrawn", async () => {
+    const { db, update } = makeDb({
+      roles: [{ id: "role_bo" }],
+      holder: {
+        memberId: "m1",
+        member: MEMBER,
+        showPhone: false,
+        committeeRole: { contactEmail: ROLE_CONTACT_EMAIL },
+      },
+      lodges: [{ name: "Whakapapa Lodge" }],
+      otherLodges: [
+        {
+          id: "ol1",
+          bookingOfficerName: "Andy Schulz",
+          bookingOfficerEmail: ROLE_CONTACT_EMAIL,
+          bookingOfficerPhone: "64 27 4224115",
+        },
+      ],
+    });
+
+    const result = await syncBookingOfficerForRole(db as never, "role_bo");
+
+    // Turning showPhone off is a real change, so the row IS rewritten — the
+    // number must actively leave the registry rather than merely stop refreshing.
+    expect(result).toEqual({ updated: 1, holderMemberId: "m1" });
+    expect(update.mock.calls[0][0].data.bookingOfficerPhone).toBeNull();
   });
 });

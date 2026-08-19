@@ -5,11 +5,11 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
 import { createAuditLog } from "@/lib/audit";
 import { loadServerNzSettings } from "@/lib/servernz-settings";
-import { uploadOtherClubsToServer } from "@/lib/servernz-other-lodges-sync";
-import { respondToSyncError } from "@/app/(admin)/admin/alpine_server/sync-response";
+import { downloadOtherClubsFromServer } from "@/lib/servernz-other-lodges-sync";
+import { respondToSyncError } from "@/lib/servernz-sync-response";
 
-// POST /api/admin/alpine_server/other-lodges/upload — push this club's Other
-// Clubs registry up to the central server using the stored API key.
+// POST /api/admin/alpine-server/other-lodges/download — pull the distributed
+// Other Clubs set from the central server and merge it into the local registry.
 export async function POST() {
   const guard = await requireAdmin({
     permission: { area: "finance", level: "edit" },
@@ -25,18 +25,18 @@ export async function POST() {
   }
 
   try {
-    const result = await uploadOtherClubsToServer();
+    const result = await downloadOtherClubsFromServer();
     await createAuditLog({
-      action: "alpine_server.other_lodges.upload",
+      action: "alpine_server.other_lodges.download",
       category: "lodge",
       severity: "info",
       outcome: "success",
       memberId: guard.session.user.id,
-      summary: "Uploaded Other Clubs to Alpine Central Server",
-      details: `created ${result.created}, updated ${result.updated}, skipped ${result.skipped}`,
+      summary: "Downloaded Other Clubs from Alpine Central Server",
+      details: `fetched ${result.fetched}, added ${result.created}, updated ${result.updated}`,
     });
     return NextResponse.json(result);
   } catch (error) {
-    return respondToSyncError(error, guard.session.user.id, "upload");
+    return respondToSyncError(error, guard.session.user.id, "download");
   }
 }

@@ -1,5 +1,5 @@
 - **Your club can now connect to the Alpine Central Server and keep its "Other
-  Clubs" details in step with every other club automatically.** Until now the
+  Clubs" details in step with every other club automatically (#2949).** Until now the
   Other Clubs registry was a purely local list: someone had to type in each
   partner club's booking officer, phone number and bed count, and re-type them
   whenever a club changed its details.
@@ -19,7 +19,7 @@
   administrator both connects the server and enables the share.
 
 - **The club's own booking officer contact now follows the committee roster
-  instead of being maintained by hand.** Assigning a member to the Booking
+  instead of being maintained by hand (#2949).** Assigning a member to the Booking
   Officer committee role — or removing them — immediately refreshes the booking
   officer name and phone number on the club's own entries in the Other Clubs
   registry, which is what partner clubs see once the central-server share is on.
@@ -30,3 +30,9 @@
   of officer never publishes a personal inbox. When nobody currently holds the
   role, the contact fields are cleared rather than left showing whoever held it
   last. If a club has renamed the role, it is still recognised.
+
+  A member's phone number is shared only if your club already publishes it on
+  your own committee page — the sync honours the same "published" and "show
+  phone" settings that page does, so nothing appears nationally that was
+  deliberately withheld locally. Turning the module off in **Admin → Feature
+  modules** stops the nightly sync entirely.

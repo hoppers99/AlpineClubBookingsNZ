@@ -582,10 +582,10 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  439
+row-producing sites:  440
 uncategorised:        0
 category values: admin 102, booking 101, xero 34, family 35, payment 37,
-                 lodge 55, account 19, security 18, privacy 19,
+                 lodge 55, account 19, security 19, privacy 19,
                  communication 14, system 4
 ```
 
@@ -600,7 +600,9 @@ late-capture writers this page's own subject depends on (`payment` 35 → 37,
 event (`family` 34 → 35, 434 → 435), and the Alpine Central Server integration
 (PR #21) added four: the manual Other Clubs upload and download plus the shared
 sync-failure row (`lodge` 52 → 55) and the connection-settings save (`admin`
-101 → 102), taking the total 435 → 439, which is the figure above. The 22 moves are pinned **per site**, not only by that
+101 → 102), taking the total 435 → 439. The #2949 review then added the
+refused-base-URL-change record (`security` 18 → 19, 439 → 440), which is the
+figure above. The 22 moves are pinned **per site**, not only by that
 distribution: `REVIEWED_ADMIN_CATEGORIES_2730` in
 `scripts/audit/audit-writer-census-manifest.ts` records each one, and the census
 contract test measures the tree against it. A distribution cannot see a swap —

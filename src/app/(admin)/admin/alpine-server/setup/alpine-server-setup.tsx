@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { useSession } from "next-auth/react";
 import { ArrowUpToLine, ArrowDownToLine, ExternalLink } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +14,15 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { formatNZDateTime } from "@/lib/nzst-date";
+import { isFullAdmin } from "@/lib/access-roles";
+import {
+  ViewOnlyActionButton,
+  AdminViewOnlySectionBanner,
+} from "@/components/admin/view-only-action";
+import {
+  useAdminAreaEditAccess,
+  ADMIN_FULL_ADMIN_ONLY_ACTION_REASON,
+} from "@/hooks/use-admin-area-edit-access";
 
 interface InitialState {
   apiKeySet: boolean;
@@ -30,6 +39,18 @@ function fmt(iso: string | null): string {
 }
 
 export function AlpineServerSetup({ initialState }: { initialState: InitialState }) {
+  // Two different permissions, and the page says which is which rather than
+  // presenting one dead button. The page lives in the finance area like the rest
+  // of the Integrations hub, so the sync controls follow `finance: edit`; the
+  // base URL and the API key additionally require Full Admin, because between
+  // them they decide WHERE a credential is sent (see the settings route).
+  const canEdit = useAdminAreaEditAccess("finance");
+  const { data: session } = useSession();
+  const canWriteConnection =
+    canEdit === undefined
+      ? undefined
+      : canEdit &&
+        Boolean(session?.user && isFullAdmin({ accessRoles: session.user.accessRoles }));
   const [baseUrl, setBaseUrl] = useState(initialState.baseUrl ?? "");
   const [savedBaseUrl, setSavedBaseUrl] = useState(initialState.baseUrl ?? "");
   const [apiKey, setApiKey] = useState("");
@@ -51,7 +72,7 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
     setBusy("baseUrl");
     setMessage(null);
     try {
-      const res = await fetch("/api/admin/alpine_server/settings", {
+      const res = await fetch("/api/admin/alpine-server/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ baseUrl }),
@@ -99,7 +120,7 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
     setMessage(null);
     const next = !enabled;
     try {
-      const res = await fetch("/api/admin/alpine_server/settings", {
+      const res = await fetch("/api/admin/alpine-server/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ otherLodgesEnabled: next }),
@@ -119,7 +140,7 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
     setMessage(null);
     try {
       const res = await fetch(
-        `/api/admin/alpine_server/other-lodges/${direction}`,
+        `/api/admin/alpine-server/other-lodges/${direction}`,
         { method: "POST" },
       );
       const data = await res.json().catch(() => null);
@@ -167,6 +188,11 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <AdminViewOnlySectionBanner canEdit={canEdit}>
+            Your admin role can view the Alpine Central Server setup, but changing
+            it needs finance edit access — and the server address and API key need
+            Full Admin.
+          </AdminViewOnlySectionBanner>
           <div className="space-y-2">
             <Label htmlFor="acs-base-url">Server base URL</Label>
             <div className="flex gap-2">
@@ -176,9 +202,14 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
               />
-              <Button onClick={saveBaseUrl} disabled={busy !== null}>
+              <ViewOnlyActionButton
+                canEdit={canWriteConnection}
+                readOnlyReason={ADMIN_FULL_ADMIN_ONLY_ACTION_REASON}
+                onClick={saveBaseUrl}
+                disabled={busy !== null}
+              >
                 {busy === "baseUrl" ? "Saving…" : "Save"}
-              </Button>
+              </ViewOnlyActionButton>
             </div>
           </div>
 
@@ -224,12 +255,14 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
               />
-              <Button
+              <ViewOnlyActionButton
+                canEdit={canWriteConnection}
+                readOnlyReason={ADMIN_FULL_ADMIN_ONLY_ACTION_REASON}
                 onClick={saveApiKey}
                 disabled={busy !== null || !apiKey.trim()}
               >
                 {busy === "apiKey" ? "Saving…" : "Save key"}
-              </Button>
+              </ViewOnlyActionButton>
             </div>
             {apiKeySet ? (
               <p className="text-xs text-muted-foreground">
@@ -251,6 +284,28 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
           </CardDescription>
         </CardHeader>
         <CardContent>
+          <AdminViewOnlySectionBanner canEdit={canEdit}>
+            Your admin role can view what is shared, but enabling an item or
+            running a sync needs finance edit access.
+          </AdminViewOnlySectionBanner>
+
+          {/* The owner approved sharing booking-officer contact details on the
+              explicit condition that whoever turns this on is told plainly what
+              leaves the club. It is stated here, at the switch, rather than only
+              in the module description — this is the screen where the decision
+              is actually made. */}
+          <div className="mb-4 rounded-md border border-border bg-muted p-3 text-sm">
+            <p className="font-medium">What leaves this club when an item is enabled</p>
+            <p className="mt-1 text-muted-foreground">
+              Your lodges&apos; names, locations, bed counts and booking-officer
+              contact details are uploaded to the central server and redistributed
+              to every other connected club, where they appear on those clubs&apos;
+              pages. The booking-officer email is the committee role&apos;s shared
+              address, never a member&apos;s personal one, and a member&apos;s phone
+              number is shared only if your club already publishes it on your own
+              committee page. No other member data is sent.
+            </p>
+          </div>
           {!connectionReady ? (
             <p className="mb-4 text-sm text-muted-foreground">
               Save a base URL and API key above to enable syncing.
@@ -275,23 +330,29 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Button
+                <ViewOnlyActionButton
+                  canEdit={canEdit}
+                  describeReason={false}
                   variant="outline"
                   size="sm"
                   onClick={toggleEnabled}
                   disabled={busy !== null}
                 >
                   {enabled ? "Disable" : "Enable"}
-                </Button>
-                <Button
+                </ViewOnlyActionButton>
+                <ViewOnlyActionButton
+                  canEdit={canEdit}
+                  describeReason={false}
                   size="sm"
                   onClick={() => syncOtherLodges("upload")}
                   disabled={busy !== null || !enabled || !connectionReady}
                 >
                   <ArrowUpToLine className="mr-1.5 h-4 w-4" />
                   {busy === "upload" ? "Uploading…" : "Upload"}
-                </Button>
-                <Button
+                </ViewOnlyActionButton>
+                <ViewOnlyActionButton
+                  canEdit={canEdit}
+                  describeReason={false}
                   size="sm"
                   variant="secondary"
                   onClick={() => syncOtherLodges("download")}
@@ -299,7 +360,7 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
                 >
                   <ArrowDownToLine className="mr-1.5 h-4 w-4" />
                   {busy === "download" ? "Downloading…" : "Download"}
-                </Button>
+                </ViewOnlyActionButton>
               </div>
             </div>
           </div>

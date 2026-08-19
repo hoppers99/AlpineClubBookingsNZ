@@ -27,6 +27,7 @@ sequencing):
 | `BedAllocationSettings` | per-lodge row | converted from singleton |
 | `BookingDefaults` | per-lodge row | converted from singleton |
 | `BookingRequestSettings` | per-lodge row | converted from singleton |
+| `ServerNzSettings` | club-wide singleton (`id = "default"`) | NOT converted to a per-lodge row, deliberately: one club holds ONE connection to the central server (one base URL, one API key, one sync cursor), and the registry it exchanges is a list of other CLUBS rather than of this club's buildings. A per-lodge row would imply a lodge could sync independently, which the central server has no concept of |
 | Lodge identity fields (`lodgeName`, `doorCode`, `lodgeTravelNote`) | resolve from `Lodge` (default lodge when no `lodgeId` is in scope) | dropped from the `EmailMessageSetting` singleton (migration `20260709130000`) |
 
 ## Club-Wide Defaults With Per-Lodge Overrides

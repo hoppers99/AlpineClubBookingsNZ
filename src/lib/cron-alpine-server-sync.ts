@@ -6,6 +6,8 @@ import {
   type DownloadSummary,
 } from "@/lib/servernz-other-lodges-sync";
 import { loadServerNzSettings } from "@/lib/servernz-settings";
+import { loadEffectiveModuleFlags } from "@/lib/module-settings";
+import { withOtherLodgesSyncClaim } from "@/lib/servernz-sync-claim";
 import { ServerNzNotConfiguredError } from "@/lib/servernz-api";
 import logger from "@/lib/logger";
 
@@ -29,6 +31,18 @@ export interface AlpineServerSyncResult {
 }
 
 export async function syncOtherClubsWithServer(): Promise<AlpineServerSyncResult> {
+  // The module flag is checked HERE as well as on the admin routes, because this
+  // path never passes through the route-feature gate: the cron endpoint is
+  // authenticated with CRON_SECRET, not a session, so no prefix rule can cover
+  // it. Without this check, switching the module off in Admin -> Modules would
+  // 404 the setup page while the nightly job carried on uploading — which for a
+  // feature that sends contact details to a third party is the failure that
+  // matters most (INV-CONFIG-001).
+  const flags = await loadEffectiveModuleFlags();
+  if (!flags.alpineCentralServer) {
+    return { status: "skipped", reason: "module-disabled" };
+  }
+
   const settings = await loadServerNzSettings();
 
   // Only sync clubs that have opted in and pointed at a server. Missing API key
@@ -41,10 +55,20 @@ export async function syncOtherClubsWithServer(): Promise<AlpineServerSyncResult
   }
 
   try {
-    // Upload first so any local edits land centrally before we pull the merged
-    // distributed set back down.
-    const upload = await uploadOtherClubsToServer();
-    const download = await downloadOtherClubsFromServer();
+    // Single-flight across containers and across the cron/admin-button pair. The
+    // in-process boolean in instrumentation.node.ts covers neither.
+    const pass = await withOtherLodgesSyncClaim(async () => {
+      // Upload first so any local edits land centrally before we pull the merged
+      // distributed set back down.
+      const upload = await uploadOtherClubsToServer();
+      const download = await downloadOtherClubsFromServer();
+      return { upload, download };
+    });
+
+    if (!pass) {
+      return { status: "skipped", reason: "sync-already-running" };
+    }
+    const { upload, download } = pass;
     logger.info(
       {
         job: "alpine-server-other-lodges-sync",

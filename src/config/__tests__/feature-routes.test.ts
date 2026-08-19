@@ -443,10 +443,6 @@ describe("feature route map", () => {
       "twoFactor",
       "magicLink",
       "googleLogin",
-      // The Alpine Central Server integration is not route-feature-gated: its
-      // setup/API-key entry on the Integrations hub stays reachable while the
-      // module is off (same as googleLogin), so it has no FEATURE_ROUTE_RULES rule.
-      "alpineCentralServer",
     ];
 
     const gatedFlags = new Set<string>(

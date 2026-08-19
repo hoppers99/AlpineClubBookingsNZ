@@ -14,6 +14,11 @@ import { formatCommitteeMemberPhone } from "@/lib/committee";
  * the member's personal email. This is what feeds the central-server distribution,
  * so partner clubs always see the current officer.
  *
+ * CONSENT: only a holder the club has already published is used, and their phone
+ * only when `showPhone` is set — the same gates the club's own public committee
+ * page applies. See the note above the holder query for why, and for why
+ * `contactable` is not among them.
+ *
  * Role identity: the seeded Booking Officer role carries the stable key "bookings"
  * (a role's key never changes when its display name is edited). A club may rename
  * the role, so a role literally named "Booking Officer" is also honoured as a
@@ -72,11 +77,38 @@ async function applyBookingOfficerContact(
   db: CommitteeSyncClient,
   roleIds: string[],
 ): Promise<{ updated: number; holderMemberId: string | null }> {
+  // The SAME gates the club's own public committee page applies, and for the same
+  // reason: this registry is redistributed to every connected club, so it must
+  // never be broader than the page the member could already see themselves on.
+  // `src/app/api/committee/route.ts` filters `isActive && published &&
+  // committeeRole.isActive`, and `serializePublicCommitteeAssignment` emits the
+  // phone only when `showPhone`.
+  //
+  // All three of `published`, `showPhone` and `contactable` are `@default(false)`
+  // in the schema, so a newly created Booking Officer assignment starts NOT
+  // published with the phone withheld. Selecting on `isActive` alone therefore
+  // published a member's personal mobile nationally by default — the opposite of
+  // what the club had chosen. `member.active` is here for the same class of
+  // reason: a deactivated member must stop being published, not keep being sent.
+  //
+  // `contactable` is deliberately NOT a gate. It produces a `contactKey` for the
+  // club's own contact form and gates neither the name nor the phone on the
+  // public page, and the registry publishes no contact-form route — so honouring
+  // it would make the national surface NARROWER than the local one rather than
+  // equal to it, on a flag that is about a different mechanism.
   const holder = await db.committeeAssignment.findFirst({
-    where: { committeeRoleId: { in: roleIds }, isActive: true },
+    where: {
+      committeeRoleId: { in: roleIds },
+      isActive: true,
+      published: true,
+      committeeRole: { isActive: true },
+      member: { active: true },
+    },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     select: {
       memberId: true,
+      // Whether the member consented to their phone being shown publicly.
+      showPhone: true,
       // Email comes from the ROLE's shared contact address (e.g. bookings@club),
       // not the member's personal email; name and phone come from the member.
       committeeRole: { select: { contactEmail: true } },
@@ -97,11 +129,25 @@ async function applyBookingOfficerContact(
         bookingOfficerName:
           `${holder.member.firstName} ${holder.member.lastName}`.trim() || null,
         bookingOfficerEmail: holder.committeeRole.contactEmail?.trim() || null,
-        bookingOfficerPhone: formatCommitteeMemberPhone(holder.member),
+        bookingOfficerPhone: holder.showPhone
+          ? formatCommitteeMemberPhone(holder.member)
+          : null,
       }
     : EMPTY_CONTACT;
 
   // Match OtherLodge registry rows to the club's own lodge names.
+  //
+  // KNOWN LIMITATION, stated rather than hidden: this identifies "our own" rows
+  // by free-text name equality, and a `Lodge` is a BUILDING while an
+  // `OtherLodge` is a CLUB. A deployment that happens to name one of its lodges
+  // exactly as another club's registry row would have our booking officer
+  // written into that club's row, and then uploaded. An explicit `isOwnClub`
+  // flag on OtherLodge removes the class outright and is the right fix; it needs
+  // its own migration against a table that already shipped (#2749), which is
+  // more schema surface than this change should carry, so it is left as a
+  // follow-up rather than done badly here. Until then the exposure is bounded by
+  // requiring an EXACT match — no normalisation, no case folding, no fuzzy
+  // matching — so it takes a deliberate collision rather than a near miss.
   const lodges = await db.lodge.findMany({ select: { name: true } });
   const lodgeNames = [...new Set(lodges.map((lodge) => lodge.name))];
   if (lodgeNames.length === 0) {

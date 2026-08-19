@@ -53,7 +53,7 @@ const sections: AdminHubSection[] = [
     icon: Bot,
   },
   {
-    href: "/admin/alpine_server/setup",
+    href: "/admin/alpine-server/setup",
     title: "Alpine Central Server",
     description:
       "Connect to the Alpine Central Server (ServerNZ): request a connection, store your API key, and upload/download shared data such as the Other Clubs registry.",

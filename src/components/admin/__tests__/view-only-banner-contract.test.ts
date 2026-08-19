@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 319,
+  callSites: 324,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 268,
+  optOuts: 271,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 237,
+  staticOptOuts: 240,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 31,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -334,13 +334,13 @@ const FIGURES = {
   /** …of the vouched: proved through the wizard shell's channel (#2324). */
   shellVouchedOptOuts: 5,
   /** Controls that KEEP the per-button reason, and the files holding them. */
-  exceptions: 51,
-  exceptionFiles: 28,
+  exceptions: 53,
+  exceptionFiles: 29,
   /** The remainder bucket: neither a member detail card nor dialog-only. */
-  leafControls: 37,
-  leafFiles: 22,
+  leafControls: 39,
+  leafFiles: 23,
   /** Components that render an `AdminViewOnlySectionBanner`. */
-  bannerComponents: 84,
+  bannerComponents: 85,
   /**
    * Admin files that render an `AdminViewOnlyNotice` and NO
    * `ViewOnlyActionButton` — the first of the three cases in which the older
@@ -1408,6 +1408,29 @@ describe("view-only section banner coverage (#2160)", () => {
                no banner of its own (the page's covers it). Re-measured with
                `npx vitest run view-only-banner-contract`, which reports
                319 / 268 / 237. READ NOTHING FROM THIS COLUMN; run the suite.
+          324  +5  the Alpine Central Server setup page
+               (`alpine-server/setup/alpine-server-setup.tsx`), added in review of
+               PR #2949 — the page shipped with FIVE mutating controls as plain
+               `Button`s and no banner at all, which this suite could not see:
+               its per-file rules only inspect files that already render a
+               ViewOnlyActionButton, so a page with zero gated controls is
+               structurally invisible to it.
+
+               The five split 3/2, and the split is the point. Enable/Disable,
+               Upload and Download are finance-gated, matching the section
+               banner directly above them, so they are STATIC opt-outs and hand
+               their explanation to it (staticOptOuts 237 -> 240, optOuts
+               268 -> 271). The server address and the API key KEEP their own
+               reason, because they need FULL ADMIN and the banner describes the
+               finance area — the exact case
+               `ADMIN_FULL_ADMIN_ONLY_ACTION_REASON` exists for, and the same
+               shape as the Xero/Google credential controls (exceptions
+               51 -> 53, exceptionFiles 28 -> 29). The page renders two banners
+               of its own, one per Card, so bannerComponents 84 -> 85 (a file is
+               counted once however many banners it holds). Vouched opt-outs are
+               untouched: nothing here is a child taking a parent's vouch.
+               Re-measured with `npx vitest run view-only-banner-contract`,
+               which reports 324 / 271 / 240.
 
       */
       // #2259 adds the per-booking "No emails"

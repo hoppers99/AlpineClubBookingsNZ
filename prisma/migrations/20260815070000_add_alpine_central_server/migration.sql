@@ -21,6 +21,7 @@ CREATE TABLE "ServerNzSettings" (
     "otherLodgesLastUploadAt" TIMESTAMP(3),
     "otherLodgesLastDownloadAt" TIMESTAMP(3),
     "otherLodgesCursor" VARCHAR(64),
+    "otherLodgesSyncStartedAt" TIMESTAMP(3),
     "updatedByMemberId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
