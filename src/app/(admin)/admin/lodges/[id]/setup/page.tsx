@@ -40,9 +40,16 @@ interface LodgeRecord {
   name: string;
   slug: string;
   active: boolean;
-  doorCode: string | null;
-  travelNote: string | null;
+  // Optional since #2925: `GET /api/admin/lodges` omits the detail fields for a
+  // caller holding no `lodge:view`. See `identityDetailFields` below for why
+  // that matters to a SAVE and not only to a read.
+  doorCode?: string | null;
+  travelNote?: string | null;
 }
+
+/** The identity detail fields this wizard's step 1 saves (#2925). */
+const LODGE_IDENTITY_DETAIL_FIELDS = ["doorCode", "travelNote"] as const;
+type LodgeIdentityDetailField = (typeof LODGE_IDENTITY_DETAIL_FIELDS)[number];
 
 interface SeasonRecord {
   id: string;
@@ -134,6 +141,18 @@ export default function LodgeSetupWizardPage() {
   const [name, setName] = useState("");
   const [doorCode, setDoorCode] = useState("");
   const [travelNote, setTravelNote] = useState("");
+  /**
+   * Which identity detail fields the loaded lodge record actually carried
+   * (#2925). A field missing here is OMITTED from the PATCH rather than sent
+   * empty: the route reads an absent key as "leave unchanged" and a `null` as
+   * "clear it", so saving a form seeded from a NARROWED record would silently
+   * wipe the door code. This wizard sits behind the lodge area and cannot be
+   * served a narrowed record today; the belt is here because the wipe would be
+   * silent and unrecoverable if that changed.
+   */
+  const [identityDetailFields, setIdentityDetailFields] = useState<
+    readonly LodgeIdentityDetailField[]
+  >(LODGE_IDENTITY_DETAIL_FIELDS);
 
   // Step 2 — rooms quick-seed. Names are unique per lodge, so plain
   // prefixes work; the lodge-name default just reads nicely on boards.
@@ -188,6 +207,9 @@ export default function LodgeSetupWizardPage() {
         setName(found.name);
         setDoorCode(found.doorCode ?? "");
         setTravelNote(found.travelNote ?? "");
+        setIdentityDetailFields(
+          LODGE_IDENTITY_DETAIL_FIELDS.filter((field) => field in found),
+        );
       } catch (err) {
         if (!cancelled) {
           setLoadError(err instanceof Error ? err.message : "Failed to load");
@@ -241,8 +263,12 @@ export default function LodgeSetupWizardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: name.trim(),
-          doorCode: doorCode.trim() || null,
-          travelNote: travelNote.trim() || null,
+          ...Object.fromEntries(
+            identityDetailFields.map((field) => [
+              field,
+              (field === "doorCode" ? doorCode : travelNote).trim() || null,
+            ]),
+          ),
         }),
       });
       if (res.status === 403) {
