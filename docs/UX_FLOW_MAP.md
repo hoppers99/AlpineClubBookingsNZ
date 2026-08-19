@@ -851,8 +851,8 @@ calls a palette-reading `email-templates/` export outside the gate, so a new
 sender or template inherits the guarantee without anybody remembering to. It
 derives which exports read the palette (directly or through any helper chain,
 module-private ones included) rather than matching a `*Template` name, so the
-shared layout blocks are covered too; 127 render calls across 21 sending modules
-are gated today, and none are not. When the theme genuinely
+shared layout blocks are covered too; every one of the 127 render calls across the
+21 sending modules is gated today. When the theme genuinely
 cannot be read the gate says so instead of caching the default as the club's
 choice — `getWebsiteThemeRenderState()` never throws and returns the DEFAULT
 values with `readFailed: true`, so `readFailed` is treated as a failure: nothing
