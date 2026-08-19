@@ -23,7 +23,7 @@
  * `expectClubTimeZonePremise()` checks `APP_TIME_ZONE` — which is
  * `process.env.TZ || NEXT_PUBLIC_TZ || "Pacific/Auckland"`, so with `TZ` unset
  * it reports `Pacific/Auckland` on a runner whose actual zone is UTC. Nothing in
- * `.github/workflows/`, `vitest.config.ts`, `vitest.setup.ts` or `package.json`
+ * `.github/workflows/`, `vitest.config.mts`, `vitest.setup.ts` or `package.json`
  * sets `TZ`, so on CI that guard passes while the host is UTC — and under a UTC
  * host the defective parser and the fixed one produce the IDENTICAL instant.
  * Every assertion here that claims to prove the zone fix was therefore inert on

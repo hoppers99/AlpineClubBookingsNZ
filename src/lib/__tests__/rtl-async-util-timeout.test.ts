@@ -17,7 +17,7 @@
   timed out in 5000ms" rather than RTL's message naming the query and dumping the
   DOM.
 
-  Deliberately a jsdom suite: `vitest.config.ts` defaults the environment to
+  Deliberately a jsdom suite: `vitest.config.mts` defaults the environment to
   `node`, and the setup file only configures RTL when a `document` exists.
 */
 
