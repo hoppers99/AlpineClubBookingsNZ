@@ -370,8 +370,15 @@ export function MemberGroupJoinPanel({
                       <span>
                         <span className="block font-medium">Card</span>
                         <span className="block text-xs opacity-80">
-                          {bookingMessages["booking.payment.card.description"] ??
-                            "Pay now and secure the booking immediately."}
+                          {/* #2919 review: a template like every other body here
+                              — render it, do not print it. */}
+                          {renderClientBookingMessage({
+                            template:
+                              bookingMessages["booking.payment.card.description"],
+                            fallback: "Pay now and secure the booking immediately.",
+                            clubTokens: messageTokens,
+                            lodgeName: summary.lodgeName,
+                          })}
                         </span>
                       </span>
                     </button>
@@ -388,8 +395,15 @@ export function MemberGroupJoinPanel({
                       <span>
                         <span className="block font-medium">Internet Banking</span>
                         <span className="block text-xs opacity-80">
-                          {bookingMessages["booking.payment.internetBanking.description"] ??
-                            "Receive a Xero invoice by email."}
+                          {renderClientBookingMessage({
+                            template:
+                              bookingMessages[
+                                "booking.payment.internetBanking.description"
+                              ],
+                            fallback: "Receive a Xero invoice by email.",
+                            clubTokens: messageTokens,
+                            lodgeName: summary.lodgeName,
+                          })}
                         </span>
                       </span>
                     </button>

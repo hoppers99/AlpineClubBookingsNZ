@@ -39,6 +39,7 @@ const RENDER_SURFACES: Array<{
   file: string;
   what: string;
   lodgePass: string | null;
+  readsMessageMap: boolean;
 }> = [
   {
     file: "src/app/(authenticated)/bookings/[id]/page.tsx",
@@ -47,35 +48,51 @@ const RENDER_SURFACES: Array<{
     // club tokens off the wire, and its own contract test
     // (booking-message-merge-data-contract.test.ts) pins the lodge it uses.
     lodgePass: null,
+    readsMessageMap: true,
   },
   {
     file: "src/app/(public)/pay/[token]/page.tsx",
     what: "the public payment-link page",
     lodgePass: "lodgeName: context.lodgeName ?? null",
+    readsMessageMap: true,
   },
   {
     file: "src/app/(authenticated)/book/_hooks/use-booking-wizard.ts",
     what: "the booking wizard's payment-method copy",
     lodgePass: "lodgeName: selectedLodge?.name ?? null",
+    readsMessageMap: true,
   },
   {
     file: "src/app/(website-dynamic)/join/[code]/member-group-join-panel.tsx",
     what: "the member group-join panel",
     lodgePass: "lodgeName: summary.lodgeName",
+    readsMessageMap: true,
   },
   {
     file: "src/components/group-booking/organiser-group-booking-card.tsx",
     what: "the organiser group-booking card",
     // Shorthand: the server page passes the booking's lodge in as this prop.
     lodgePass: "lodgeName,",
+    readsMessageMap: true,
   },
   {
     file: "src/app/api/admin/booking-messages/preview/route.ts",
     what: "the admin preview",
     // Sample data by design: there is no booking to read a lodge from.
     lodgePass: null,
+    // It renders the body being edited, straight from the request, so it holds
+    // no map of effective bodies.
+    readsMessageMap: false,
   },
 ];
+
+/**
+ * The conventional name of the fetched-bodies map on every surface that holds
+ * one. The per-site check below keys on it, so the registry above records which
+ * files have one: rename the variable and that check fails loudly rather than
+ * silently passing over an unrendered body.
+ */
+const MESSAGE_MAP_READ = /bookingMessages\s*\[/g;
 
 /** Every `renderClientBookingMessage(...)` call's source text, parens balanced. */
 function clientRenderCalls(code: string): string[] {
@@ -246,6 +263,45 @@ describe("every surface that renders a booking-message body (#2919)", () => {
         expect(call, `${file}: a render call with no lodge of its own`).toContain(
           lodgePass!
         );
+      }
+    }
+  );
+
+  // The test above only proves a file renders SOMEWHERE in it. That is not
+  // enough: the group-join panel rendered one body through the renderer while
+  // two more — the Card and Internet Banking payment choices — still went
+  // straight to the screen beside it, and every assertion here passed. A body
+  // read is checked per SITE, not per file.
+  it.each(RENDER_SURFACES)(
+    "hands every message body it reads to the renderer, not to the screen: $what",
+    ({ file, readsMessageMap }) => {
+      const code = stripComments(read(file));
+      const reads = Array.from(code.matchAll(MESSAGE_MAP_READ));
+
+      if (!readsMessageMap) {
+        expect(
+          reads,
+          `${file} is registered as holding no map of fetched bodies, but reads one`
+        ).toEqual([]);
+        return;
+      }
+
+      // A rename of the map would otherwise skip this file in silence.
+      expect(
+        reads.length,
+        `${file} is registered as holding a map of fetched bodies and none was found — did the variable get renamed?`
+      ).toBeGreaterThan(0);
+
+      for (const match of reads) {
+        const before = code.slice(0, match.index).trimEnd();
+        const routed =
+          before.endsWith("template:") ||
+          before.endsWith("renderBookingMessageTemplate(");
+
+        expect(
+          routed,
+          `${file}: a message body is read at offset ${match.index} without being handed to the renderer — it reaches the member with its {{tokens}} unsubstituted`
+        ).toBe(true);
       }
     }
   );

@@ -186,6 +186,43 @@ describe("MemberGroupJoinPanel", () => {
     expect(screen.queryByRole("button", { name: /Internet Banking/ })).toBeNull();
   });
 
+  // #2919 review round 2: the two payment-CHOICE bodies were still printed raw
+  // beside the one that had been fixed. They only exist before the join is
+  // submitted, so the post-submit "no braces" assertion below never saw them.
+  it("fills in the merge fields of both payment choices before the join is submitted", async () => {
+    stubFetch({
+      summary: summary({ paymentMode: "EACH_PAYS_OWN" }),
+      internetBankingEnabled: true,
+      joinBody: { bookingId: "b1", organiserSettled: false, requiresPayment: true },
+      bookingMessages: {
+        "booking.payment.card.description":
+          "Pay now to hold your bed at {{CLUB_LODGE_NAME}}.",
+        "booking.payment.internetBanking.description":
+          "{{CLUB_NAME}} will invoice you for {{CLUB_LODGE_NAME}}. Questions: {{SUPPORT_EMAIL}}.",
+      },
+      bookingMessageTokens: {
+        CLUB_NAME: "Alpine Club",
+        // The club default, which is NOT the lodge this group is at.
+        CLUB_LODGE_NAME: "Default Lodge",
+        SUPPORT_EMAIL: "support@example.test",
+        BASE_URL: "https://example.test",
+      },
+    });
+
+    render(<MemberGroupJoinPanel code={CODE} />);
+
+    expect(
+      await screen.findByText("Pay now to hold your bed at West Ridge Hut.")
+    ).toBeDefined();
+    expect(
+      screen.getByText(
+        "Alpine Club will invoice you for West Ridge Hut. Questions: support@example.test."
+      )
+    ).toBeDefined();
+    expect(document.body.textContent).not.toContain("{{");
+    expect(document.body.textContent).not.toContain("Default Lodge");
+  });
+
   // #2919 review: the panel rendered this body with only {{paymentReference}}
   // substituted, so an operator who wrote {{CLUB_LODGE_NAME}} into it sent the
   // joiner literal braces.
