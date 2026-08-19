@@ -234,6 +234,17 @@ async function refreshEmailPalette(): Promise<void> {
   if (refreshing) {
     return;
   }
+  // The failure cooldown is the ONE place that decides not to hammer an
+  // unreadable store, so the TTL refresh honours it too. Without this a process
+  // whose gate load failed would still start a background read from the very
+  // next `emailPalette()` call, which is exactly the traffic the cooldown
+  // exists to stop.
+  if (
+    failedLoadAt !== 0 &&
+    Date.now() - failedLoadAt < FAILED_LOAD_COOLDOWN_MS
+  ) {
+    return;
+  }
   refreshing = true;
   // Stamp the time up-front so a burst of renders triggers only one refresh.
   cachedAt = Date.now();
