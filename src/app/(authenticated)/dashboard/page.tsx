@@ -26,6 +26,7 @@ import {
   TicketPercent,
   ClipboardCheck,
   ChevronRight,
+  Wrench,
 } from "lucide-react";
 import { formatCents } from "@/lib/utils";
 import { CLUB_HUT_LEADER_LABEL, CLUB_NAME } from "@/config/club-identity";
@@ -684,6 +685,28 @@ export default async function DashboardPage() {
                 className="mt-4 w-full"
               >
                 <Link href="/induction">Open Induction</Link>
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* #2780. Gated on the module only — the QR path's own setting is
+            irrelevant here, because this card is the signed-in door. */}
+        {modules.maintenanceReports && (
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">
+                Lodge Maintenance Issue
+              </CardTitle>
+              <Wrench className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-lg font-semibold">Something need fixing?</div>
+              <p className="text-xs text-muted-foreground mt-1">
+                Tell whoever looks after the lodge, with a photo if you have one.
+              </p>
+              <Button asChild size="sm" variant="outline" className="mt-4 w-full">
+                <Link href="/maintenance-report">Report an issue</Link>
               </Button>
             </CardContent>
           </Card>
