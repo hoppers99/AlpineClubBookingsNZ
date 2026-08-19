@@ -8,6 +8,7 @@ import {
   statSync,
   statfsSync,
   unlinkSync,
+  writeFileSync,
 } from "fs";
 import path from "path";
 
@@ -214,7 +215,13 @@ export function ensureLocalBackupDirectory(directory: string): void {
   try {
     // An actual write, not an `access()` check: the container may run as a user
     // whose permission bits say yes on a read-only mount.
-    copyFileSync("/dev/null", probe);
+    //
+    // An EMPTY WRITE, not a copy from /dev/null. The first version copied that
+    // device, which does not exist off Linux — so on a Windows developer machine
+    // the probe failed with an ENOENT naming a Windows-shaped path to that
+    // device, and every valid directory was reported as unwritable. The check
+    // has no reason to name a platform-specific file at all.
+    writeFileSync(probe, "");
     unlinkSync(probe);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

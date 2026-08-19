@@ -1,10 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import path from "path";
 
 import {
   diskSpaceLevel,
+  ensureLocalBackupDirectory,
   DISK_SPACE_CRITICAL_BYTES,
   DISK_SPACE_WARNING_BYTES,
   isValidLocalBackupPath,
@@ -109,6 +118,36 @@ describe("resolveLocalBackupDirectory", () => {
     expect(
       isValidLocalBackupPath(`${appRoot}-backups`, { applicationRoot: appRoot }),
     ).toBe(true);
+  });
+});
+
+describe("ensureLocalBackupDirectory", () => {
+  // THIS SUITE EXISTS BECAUSE THE FIRST VERSION SHIPPED BROKEN AND NOTHING HERE
+  // NOTICED. The write probe copied `/dev/null`, which is a Linux device: on a
+  // Windows developer machine every valid directory was reported as
+  // "not writable by the application", with an ENOENT naming a Windows-shaped
+  // path to that device. The path
+  // RULES were tested exhaustively and the one function that actually touches
+  // the filesystem was not called at all.
+  it("accepts a writable directory that already exists", () => {
+    expect(() => ensureLocalBackupDirectory(root)).not.toThrow();
+  });
+
+  it("creates a directory that does not exist yet", () => {
+    const nested = path.join(root, "nested", "backups");
+    ensureLocalBackupDirectory(nested);
+    expect(existsSync(nested)).toBe(true);
+  });
+
+  it("leaves no probe file behind", () => {
+    ensureLocalBackupDirectory(root);
+    expect(readdirSync(root)).toEqual([]);
+  });
+
+  it("refuses a path the rules reject before touching the disk", () => {
+    expect(() => ensureLocalBackupDirectory("relative/path")).toThrow(
+      LocalBackupPathError,
+    );
   });
 });
 
