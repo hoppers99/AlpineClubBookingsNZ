@@ -9,7 +9,10 @@ import { groupSettlementReapDeadline } from "@/lib/cron-group-settlement-reaper"
 import { getAdminAlertDeliveryEscalations } from "@/lib/email-admin-alert-escalation";
 import { getExhaustedEmailFailureReviewQueue } from "@/lib/email-failure-review";
 import { getEmailDeliverabilityTelemetry } from "@/lib/email-suppression";
-import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
+import {
+  coverageSpansMultipleLodges,
+  getUnassignedHutLeaderDates,
+} from "@/lib/hut-leader-coverage";
 import {
   getUnreachableMemberSummary,
   UNREACHABLE_MEMBER_REASON_LABEL,
@@ -735,6 +738,14 @@ async function addLodgeItems(
     scope: { kind: "all" },
   });
 
+  // Uncovered LODGE-nights (#2917): a club-wide read, so a night on which two
+  // lodges both lack a leader is two rows and two units of work. The noun follows
+  // the data — "lodge-night" only once more than one lodge is involved — so a
+  // single-lodge club's tile is unchanged (ADR-002 Presentation Rule).
+  const unassignedNoun = coverageSpansMultipleLodges(unassignedDates)
+    ? "lodge-night"
+    : "lodge date";
+
   addItem(items, {
     id: "lodge-unassigned-hut-leaders",
     domain: "lodge",
@@ -743,9 +754,9 @@ async function addLodgeItems(
     owner: "Lodge",
     count: unassignedDates.length,
     href: "/admin/hut-leaders",
-    summary: `${unassignedDates.length} upcoming lodge ${plural(
+    summary: `${unassignedDates.length} upcoming ${plural(
       unassignedDates.length,
-      "date",
+      unassignedNoun,
     )} in the next ${hutLeaderLookaheadDays} days with bookings have no ${CLUB_HUT_LEADER_LABEL.toLowerCase()} assigned.`,
   });
   addItem(items, {

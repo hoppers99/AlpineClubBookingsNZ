@@ -52,7 +52,10 @@ import {
 } from "@/lib/date-only";
 import { countRosterDaysNeedingChores } from "@/lib/roster-status";
 import { countGuestsAwaitingBed } from "@/lib/bed-allocation-board";
-import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
+import {
+  coverageSpansMultipleLodges,
+  getUnassignedHutLeaderDates,
+} from "@/lib/hut-leader-coverage";
 import { OPEN_DELETION_REQUEST_STATUSES } from "@/lib/deletion-request-decision";
 import {
   buildUnpaidFinishedStaysHref,
@@ -225,6 +228,9 @@ async function getStats() {
   ]);
 
   const revenueThisMonth = revenueResult._sum.amountCents ?? 0;
+  const unassignedSpansLodges = coverageSpansMultipleLodges(
+    unassignedHutLeaderDates,
+  );
 
   return {
     todayKey,
@@ -239,9 +245,18 @@ async function getStats() {
     unsettledAdditionalFinishedStays,
     unsettledAdditionalUpcomingStays,
     recentBookings,
-    unassignedDatesWithBookings: unassignedHutLeaderDates.map(
-      (item) => item.date,
+    // One entry per uncovered LODGE-night (#2917), so a night on which two
+    // lodges both lack a leader counts twice — the true amount of work, which
+    // the owner chose over a comparable-looking number. The label names the
+    // lodge only when the result actually spans more than one, per the
+    // multi-lodge Presentation Rule (ADR-002): a single-lodge club sees exactly
+    // the bare dates and count it saw before.
+    unassignedDatesWithBookings: unassignedHutLeaderDates.map((item) =>
+      unassignedSpansLodges && item.lodgeName
+        ? `${item.date} (${item.lodgeName})`
+        : item.date,
     ),
+    unassignedSpansLodges,
     pendingRefundAppeals,
     pendingCreditApprovals,
     pendingMembershipCancellations,
@@ -498,7 +513,9 @@ export default async function AdminDashboardPage() {
               <div>
                 <p className="font-medium text-warning-11">{CLUB_HUT_LEADER_LABEL} Assignment Required</p>
                 <p className="text-sm text-warning-11 mt-1">
-                  {stats.unassignedDatesWithBookings.length} upcoming date{stats.unassignedDatesWithBookings.length !== 1 ? "s" : ""} with bookings but no {CLUB_HUT_LEADER_LABEL.toLowerCase()} assigned:{" "}
+                  {stats.unassignedDatesWithBookings.length} upcoming{" "}
+                  {stats.unassignedSpansLodges ? "lodge-night" : "date"}
+                  {stats.unassignedDatesWithBookings.length !== 1 ? "s" : ""} with bookings but no {CLUB_HUT_LEADER_LABEL.toLowerCase()} assigned:{" "}
                   {stats.unassignedDatesWithBookings.slice(0, 5).join(", ")}
                   {stats.unassignedDatesWithBookings.length > 5 ? ` and ${stats.unassignedDatesWithBookings.length - 5} more` : ""}
                 </p>
@@ -548,7 +565,8 @@ export default async function AdminDashboardPage() {
                     {stats.unassignedDatesWithBookings.length}
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
-                    upcoming night
+                    upcoming{" "}
+                    {stats.unassignedSpansLodges ? "lodge-night" : "night"}
                     {stats.unassignedDatesWithBookings.length === 1
                       ? ""
                       : "s"}{" "}
