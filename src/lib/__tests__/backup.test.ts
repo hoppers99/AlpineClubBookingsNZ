@@ -67,6 +67,10 @@ function makeConfig(
     accessKeyId: null,
     secretAccessKey: null,
     restoreValidationUrl: null,
+    // Local backups off by default here, so every existing case in this file
+    // keeps asserting the S3/ephemeral behaviour it was written for.
+    localEnabled: false,
+    localPath: null,
     needsReentry: false,
     ...overrides,
   };
@@ -183,6 +187,47 @@ describe("backup", () => {
         healthSignal: "backup-not-durable",
       },
     });
+  });
+
+  it("does not call a local-only backup 'not durable'", () => {
+    // A club that backs up to a configured on-host directory HAS a destination.
+    // Before local backups existed, "no S3" and "nowhere at all" were the same
+    // state, so the nightly run failed; treating them the same now would fail
+    // every local-only club's cron every night, for a backup that worked.
+    expect(
+      buildBackupCronOutcome({
+        success: true,
+        filename: "backup.sql.gz",
+        sizeBytes: 1024,
+        uploadedToS3: false,
+        storedLocally: true,
+        localPruned: ["tacbookings-old.sql.gz"],
+      }),
+    ).toEqual({
+      status: "SUCCESS",
+      resultSummary: {
+        filename: "backup.sql.gz",
+        sizeBytes: 1024,
+        minSizeBytes: 128,
+        s3: false,
+        local: true,
+        localPruned: 1,
+      },
+    });
+  });
+
+  it("still fails a run that reached NEITHER destination", () => {
+    // The guard that keeps the case above honest: without a destination the
+    // dump is in the container's ephemeral /tmp and a restart discards it.
+    expect(
+      buildBackupCronOutcome({
+        success: true,
+        filename: "backup.sql.gz",
+        sizeBytes: 1024,
+        uploadedToS3: false,
+        storedLocally: false,
+      }).status,
+    ).toBe("FAILURE");
   });
 
   describe("applyLegacyBackupEnvGate (#2095 MAJOR-1)", () => {

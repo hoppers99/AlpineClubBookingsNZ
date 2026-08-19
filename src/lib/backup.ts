@@ -29,12 +29,13 @@ import path from "path";
 import { gzipSync } from "zlib";
 import logger from "@/lib/logger";
 import { resolveBackupConfig } from "@/lib/backup-config";
+import { pruneLocalBackups, storeLocalBackup } from "@/lib/backup-local";
 
 const BACKUP_DIR = "/tmp/tacbookings-backups";
 const S3_BACKUP_PREFIX = "tacbookings_s3backup";
 const MIN_BACKUP_SIZE_BYTES = 128;
-const BACKUP_COMMAND_TIMEOUT_MS = 120_000;
-const BACKUP_COMMAND_MAX_BUFFER_BYTES = 1024 * 1024 * 1024;
+export const BACKUP_COMMAND_TIMEOUT_MS = 120_000;
+export const BACKUP_COMMAND_MAX_BUFFER_BYTES = 1024 * 1024 * 1024;
 const PRISMA_ONLY_DATABASE_URL_PARAMS = new Set([
   "connection_limit",
   "pool_timeout",
@@ -55,6 +56,10 @@ export interface BackupResult {
   filename?: string;
   filepath?: string;
   uploadedToS3?: boolean;
+  /** Local destination (on-host directory), when the club has one enabled. */
+  storedLocally?: boolean;
+  localPath?: string;
+  localPruned?: string[];
   s3Key?: string;
   s3ReadbackVerified?: boolean;
   s3ReadbackSizeBytes?: number;
@@ -92,7 +97,11 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
     };
   }
 
-  if (!config.enabled) {
+  // Either destination being on is enough to run. A club that backs up only to
+  // a local directory never enabled the S3 switch, and refusing to run for them
+  // would make the local feature inert (owner instruction: the existing cron
+  // performs the backup when the local option is ticked).
+  if (!config.enabled && !config.localEnabled) {
     return {
       success: false,
       skipped: true,
@@ -161,6 +170,33 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
       };
     }
 
+    // The local destination, written from the SAME verified dump the S3 upload
+    // uses — after the empty/too-small checks above, so a corrupt dump is never
+    // copied into the directory an operator would restore from.
+    let storedLocally = false;
+    let localPath: string | undefined;
+    let localPruned: string[] | undefined;
+    if (config.localEnabled && config.localPath) {
+      try {
+        localPath = storeLocalBackup(filepath, config.localPath);
+        storedLocally = true;
+        // Same retention window as S3, by owner instruction — one number for the
+        // whole feature.
+        localPruned = pruneLocalBackups(config.localPath, config.retentionDays);
+      } catch (localErr) {
+        const message =
+          localErr instanceof Error ? localErr.message : String(localErr);
+        logger.error({ err: localErr, job: "backup" }, "Local backup copy failed");
+        return {
+          success: false,
+          filename,
+          filepath,
+          sizeBytes: stats.size,
+          error: `Local backup failed: ${message}`,
+        };
+      }
+    }
+
     let uploadedToS3 = false;
     let s3Key: string | undefined;
     let s3ReadbackVerified = false;
@@ -198,6 +234,9 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
           filename,
           filepath,
           sizeBytes: stats.size,
+          storedLocally,
+          localPath,
+          localPruned,
           uploadedToS3,
           s3Key,
           s3ReadbackVerified,
@@ -242,6 +281,9 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
       success: true,
       filename,
       filepath,
+      storedLocally,
+      localPath,
+      localPruned,
       uploadedToS3,
       s3Key,
       s3ReadbackVerified,
@@ -265,7 +307,20 @@ export function buildBackupCronOutcome(result: BackupResult): BackupCronOutcome 
       s3: result.uploadedToS3,
     };
 
-    if (!result.uploadedToS3) {
+    if (result.storedLocally) {
+      resultSummary.local = true;
+      if (result.localPruned?.length) {
+        resultSummary.localPruned = result.localPruned.length;
+      }
+    }
+
+    // "Not durable" means the dump exists ONLY in the container's ephemeral
+    // /tmp, which a restart discards. A club that has deliberately configured a
+    // local directory has a destination, so this no longer fails their nightly
+    // run — but a local directory sits on the same host as the database, so it
+    // is not off-site, and the operator guide says so rather than this pretending
+    // the two destinations are equivalent.
+    if (!result.uploadedToS3 && !result.storedLocally) {
       return {
         status: "FAILURE",
         error:
@@ -424,7 +479,7 @@ export function splitPostgresPassword(url: string): {
 }
 
 /** Child env with `PGPASSWORD` set when a password was split out of the URL. */
-function buildPostgresEnvironment(password?: string): NodeJS.ProcessEnv {
+export function buildPostgresEnvironment(password?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   if (password) {
     env.PGPASSWORD = password;

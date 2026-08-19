@@ -301,7 +301,13 @@ export const AUDIT_CENSUS_TOTALS = {
   // non-Full-Admin attempt to move the central server address, categorised
   // `security` at the site. A refusal that leaves no trace is the one an
   // operator cannot investigate, and this is a privilege boundary.
-  writeSites: 440,
+  // 440 -> 443 (local database backups): the restore endpoint records THREE
+  // rows — started, completed, failed — rather than one on success. A restore
+  // overwrites the live database irreversibly and can die part-way, so the row
+  // written BEFORE the attempt is the only one guaranteed to survive the
+  // incident someone will need to reconstruct; "who asked for this, and which
+  // file" must not depend on the restore finishing. All three are `security`.
+  writeSites: 443,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -369,7 +375,10 @@ export const AUDIT_CENSUS_TOTALS = {
     // 108 -> 112 (Alpine Central Server, PR #21): all four of that change's new
     // write sites reach the sink through `createAuditLog`, matching the routes
     // around them rather than introducing another form.
-    createAuditLog: { total: 113, uncategorised: 0 },
+    // 113 -> 116 (local database backups): the restore endpoint's three
+    // rows, written through `createAuditLog` like the backups routes around
+    // them rather than introducing another form.
+    createAuditLog: { total: 116, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -581,7 +590,14 @@ export const AUDIT_CENSUS_TOTALS = {
     // moves 124 -> 125 by one refusal record, which is evidence of an attempt to
     // cross a privilege boundary and belongs where a support operator can
     // correlate it.
-    security: 19,
+    // 19 -> 22 (local database backups): the three restore rows. `security` is
+    // right for all three — a restore is a privileged, destructive act on the
+    // whole dataset, not an `admin` settings change — and `security` is readable
+    // with support:view alone, so the weakest-gate total moves 125 -> 128. That
+    // is a WIDENING of three, and deliberate: a support operator investigating a
+    // sudden data loss should be able to see that a restore happened without
+    // needing Full Admin to find out.
+    security: 22,
     // 16 -> 18 (#2595): the two reviewed-move writes. `lodge` is the category
     // every other bed-allocation write already uses, and it is not one of the
     // three (`admin`, `security`, `system`) readable with support:view alone —

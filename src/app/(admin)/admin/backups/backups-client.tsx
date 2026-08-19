@@ -25,6 +25,7 @@ import {
   ForbiddenSaveError,
 } from "@/hooks/use-section-edit-state";
 import { formatNZDateTime } from "@/lib/nzst-date";
+import { LocalBackupCard } from "@/app/(admin)/admin/backups/local-backup-card";
 
 interface BackupRunSummary {
   id: string;
@@ -38,7 +39,19 @@ interface BackupRunSummary {
   triggeredByMemberId: string | null;
 }
 
-interface BackupStatus {
+export interface LocalBackupFileSummary {
+  filename: string;
+  sizeBytes: number;
+  modifiedAt: string;
+}
+
+export interface LocalBackupDiskSpaceSummary {
+  availableBytes: number;
+  totalBytes: number;
+  level: "ok" | "warning" | "critical";
+}
+
+export interface BackupStatus {
   enabled: boolean;
   bucket: string | null;
   region: string;
@@ -46,6 +59,12 @@ interface BackupStatus {
   accessKeyIdSet: boolean;
   secretAccessKeySet: boolean;
   restoreValidationUrlSet: boolean;
+  localEnabled: boolean;
+  localPath: string | null;
+  localBackups: LocalBackupFileSummary[];
+  /** Null when the directory could not be measured — shown as unknown, never as fine. */
+  localDiskSpace: LocalBackupDiskSpaceSummary | null;
+  localError: string | null;
   durable: boolean;
   needsReentry: boolean;
   running: boolean;
@@ -64,12 +83,12 @@ interface ConfigDraft {
   region: string;
 }
 
-const STATUS_URL = "/api/admin/backups/status";
-const CONFIG_URL = "/api/admin/backups/config";
-const RUN_URL = "/api/admin/backups/run";
+export const STATUS_URL = "/api/admin/backups/status";
+export const CONFIG_URL = "/api/admin/backups/config";
+export const RUN_URL = "/api/admin/backups/run";
 const CREDENTIALS_URL = "/api/admin/integrations/credentials";
 
-async function readError(res: Response, fallback: string): Promise<string> {
+export async function readError(res: Response, fallback: string): Promise<string> {
   try {
     const body = (await res.json()) as { error?: string };
     return body.error ?? fallback;
@@ -204,14 +223,15 @@ export function BackupsClient() {
             canEdit={canEdit}
             onRan={loadStatus}
           />
-          <ConfigCard
+          <S3BackupCard
             status={status}
             canEdit={canEdit}
             canManageDestination={canManageDestination}
             onSaved={loadStatus}
           />
-          <CredentialsCard
+          <LocalBackupCard
             status={status}
+            canEdit={canEdit}
             canManageDestination={canManageDestination}
             onSaved={loadStatus}
           />
@@ -402,7 +422,7 @@ function StatusCard({
   );
 }
 
-function ConfigCard({
+function S3BackupCard({
   status,
   canEdit,
   canManageDestination,
@@ -481,10 +501,10 @@ function ConfigCard({
       <CardHeader>
         <div className="flex items-center justify-between">
           <div>
-            <CardTitle>Configuration</CardTitle>
+            <CardTitle>AWS S3 Backup</CardTitle>
             <CardDescription>
               The enabled switch and retention are operational settings; the S3
-              destination is Full-Admin only.
+              destination and credentials are Full-Admin only.
             </CardDescription>
           </div>
           {!section.editing ? (
@@ -601,12 +621,27 @@ function ConfigCard({
             </Button>
           </div>
         ) : null}
+
+        {/*
+          The credentials, folded into this panel rather than sitting in their
+          own card (owner request). They keep their OWN save button, and that is
+          not cosmetic: secrets are written write-only through the shared
+          Full-Admin credentials route, while the fields above go through the
+          support:edit backups config route. One save button over both would
+          either post secrets on a support admin's ordinary config save or
+          silently drop them.
+        */}
+        <CredentialsSection
+          status={status}
+          canManageDestination={canManageDestination}
+          onSaved={onSaved}
+        />
       </CardContent>
     </Card>
   );
 }
 
-function CredentialsCard({
+function CredentialsSection({
   status,
   canManageDestination,
   onSaved,
@@ -667,16 +702,17 @@ function CredentialsCard({
   }, [accessKeyId, secretAccessKey, restoreUrl, writeCredential, onSaved]);
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Credentials (Full Admin only)</CardTitle>
-        <CardDescription>
+    <div className="space-y-4 rounded-md border border-border p-3">
+      <div>
+        <p className="text-xs font-medium text-muted-foreground">
+          Credentials (Full Admin only)
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">
           Write-only. Enter a value to set or replace it; stored secrets are
           never displayed. Leave a field blank to keep the current value.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {!canManageDestination ? (
+        </p>
+      </div>
+      {!canManageDestination ? (
           <AdminViewOnlyNotice canEdit={false}>
             Only a Full Admin can set backup credentials.
           </AdminViewOnlyNotice>
@@ -749,11 +785,10 @@ function CredentialsCard({
           </p>
         ) : null}
 
-        <Button onClick={onSave} disabled={!canManageDestination || saving}>
-          {saving ? "Saving…" : "Save credentials"}
-        </Button>
-      </CardContent>
-    </Card>
+      <Button onClick={onSave} disabled={!canManageDestination || saving}>
+        {saving ? "Saving…" : "Save credentials"}
+      </Button>
+    </div>
   );
 }
 

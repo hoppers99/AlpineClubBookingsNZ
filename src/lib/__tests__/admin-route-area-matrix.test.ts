@@ -128,6 +128,11 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/ai-diagnostics/settings": "support",
   "/api/admin/audit-log": "support",
   "/api/admin/backups/config": "support",
+  // The `support` AREA, with a Full-Admin gate inside the handler — the same
+  // shape the destination fields on the config route carry. Restoring over the
+  // live database is not a support:edit action; the area only decides who can
+  // reach the route at all.
+  "/api/admin/backups/restore": "support",
   "/api/admin/backups/run": "support",
   "/api/admin/backups/status": "support",
   "/api/admin/bed-allocation": "bookings",
