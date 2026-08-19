@@ -127,7 +127,7 @@ up on their own.
 | A saved style change hasn't reached the public home page yet | The home page is cached for up to a minute for logged-out visitors | Wait a minute and reload, or check while signed in — signed-in views are never cached |
 | The logo upload is refused | The file is over 2MB, is an SVG, or is not a real image | Export a PNG, JPEG, WebP, or GIF under 2MB; it does not need to be small, it is resized for you |
 | The new logo doesn't replace the old one everywhere | The page is still showing a cached copy | Reload after a minute; the stored logo itself is replaced immediately on save |
-| An email arrived in the platform's default teal instead of our colours | The saved style could not be read at the moment that message was built — normally a brief database fault. The email is sent rather than withheld, and one warning naming the style as unreadable is written to the server log | Nothing needs re-saving. Check the server log for that warning and the database's health; emails use your colours again as soon as the style can be read |
+| An email arrived in the platform's default teal instead of our colours | The saved style could not be read at the moment that message was built — normally a brief database fault. The email is sent rather than withheld, and one warning naming the style as unreadable is written to the server log | Nothing needs re-saving. Check the server log for that warning and the database's health. Messages sent in the half-minute after a failed read also go out in the default colours rather than each waiting on the database again; your colours return on the first message after that |
 
 ## Related links
 

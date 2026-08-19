@@ -18,3 +18,11 @@
   them, so every email for the next five minutes was quietly off-brand with
   nothing said about it. The club's last known colours are now kept instead, and
   emails return to normal as soon as the style can be read again.
+
+  A database that has stopped answering — rather than one that answers with an
+  error — no longer slows the mail down either. The first message in a half-minute
+  window waits briefly for the colours and the rest go out at once on the colours
+  already in hand, so publishing a notice to a few hundred members cannot turn
+  into an hour of waiting, and an admin answering a refund appeal is not left
+  watching the page. Whichever message is the first one after the database answers
+  again carries the club's colours.
