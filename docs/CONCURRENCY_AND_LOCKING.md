@@ -3064,6 +3064,49 @@ reads the credit operation's **recorded outcome**, not a recomputed "would this
 credit?", precisely so a one-shot operation that already skipped can never
 excuse the invoice again.
 
+## Stripe refund-note link repair: deliberately lock-free (#2901)
+
+`applyStripeRefundNoteLinkRepairs` (`src/lib/xero-refund-note-link-repair.ts`,
+operator CLI `scripts/xero-refund-note-link-repair.ts`) flips
+`XeroObjectLink.active` on a Stripe payment's `REFUND_CREDIT_NOTE` links —
+local mirror rows only, no money column, no booking status, no provider call.
+Under `INV-LOCK-001` that composes no settlement-money or capacity transition,
+so it joins no lock cohort; this section is its registration as an explicitly
+lock-free money-adjacent writer (the advisory-lock census only enumerates
+sites that DO take a lock, so it is structurally blind to this class).
+
+The counterpart that makes it dangerous anyway is the outbox executor:
+`createXeroCreditNote` reads `sumCoveredRefundCreditNoteCents` **outside any
+transaction and under no lock**, then spends multi-second provider time before
+creating the note. Joining global `lock(1)` here would therefore exclude
+nothing — cohort membership only serialises against writers that take the same
+key — and holding a transaction open across the executor's provider calls is
+the shape this document forbids. The mechanisms that do the work instead:
+
+- **In-flight-operation refusal**: a payment with a PENDING/RUNNING/
+  WAITING_PAYMENT outbound `CREDIT_NOTE` `CREATE` operation is refused at plan
+  time and the check is repeated inside the apply transaction. The executor
+  can only be mid-provider-call for an operation row that already exists in
+  one of those statuses, which the transactional re-check observes.
+- **Exact-count status-guarded claims**: the `updateMany` claims pin
+  `active: true/false` and the matched counts must equal the plan exactly; a
+  row a concurrent writer already flipped rolls the whole payment back.
+- **Post-claim coverage verification**: the transaction re-sums coverage
+  through `sumCoveredRefundCreditNoteCents` after its claims and must land on
+  the plan's promised total, so a link a concurrent writer *inserted* after
+  the in-transaction re-plan (the executor completing) also rolls the payment
+  back rather than compounding with it.
+- **Operator window**: the runbook has the operator hold the Xero outbox/cron
+  drain during `--apply`. The residual sub-second window (executor past its
+  coverage read but not yet committed when the repair commits) is accepted and
+  is no longer silent: the reconciliation report's
+  `overCoveredStripeRefundPayments` drift class flags the outcome for repair.
+
+The tolerated counterpart reads are additive-only: every other refund-note
+writer only ever ADDS active coverage, whose worst case (coverage above the
+target) suppresses further enqueues and is now reported as drift, never
+compounded by this repair.
+
 ## Rules of thumb when working here
 
 - **Adding a capacity claim?** Take `acquireLodgeCapacityLock(tx, lodgeId)` on
