@@ -574,7 +574,14 @@ RUNNING-stuck dead-ends); the daily credit-reconciliation cron re-enqueues
 the uncovered delta for any flagged payment so historical gaps self-heal; and
 a partial unique index allows at most one ACTIVE outbox operation per
 correlation key (owner-approved defence in depth — terminal rows may repeat
-the key across attempts).
+the key across attempts). Every canonical-link maintainer is bound by the
+multi-note contract too: `cleanupStaleCanonicalXeroObjectLinks` and the
+reconciliation report's drift classifications never deactivate or flag an
+active Stripe per-delta refund-note link as stale, mismatched, or duplicate
+(#2901 — treating the scalar pointer as the sole note put cleanup and this
+self-heal into an unbounded duplicate-note loop); the operator repair for
+already-damaged links is `scripts/xero-refund-note-link-repair.ts`
+([runbook](../xero/ARCHITECTURE.md)).
 
 ### INV-ADDPAY-021
 

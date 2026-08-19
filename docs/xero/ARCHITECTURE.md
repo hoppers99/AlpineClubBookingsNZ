@@ -264,7 +264,8 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | --- | --- |
 | `xero-inbound-reconciliation` | Stored-event worker + per-entity reconcilers + incremental cursor reconciliation (see Flow 2). Split into cohesive `xero-inbound/*` sub-modules (#1208 item 1 / #1270, entry re-exports the public surface); see refactor item 1 for the module map. |
 | `xero-booking-repair` | Booking-vs-Xero audit and self-repair (see Flow 3). CLI entry: `scripts/xero-booking-repair.ts`. Split into cohesive `xero-booking-repair-*` sub-modules (#1208 item 2, entry re-exports the public surface); see refactor item 2 for the module map. |
-| `xero-hardening` | Historical `XeroObjectLink` backfill, stale canonical-link cleanup, the emailed reconciliation report, repeated-failure alerting. Split into cohesive `xero-hardening-*` sub-modules (#1208 item 5, entry re-exports the public surface); see refactor item 5 for the module map. |
+| `xero-hardening` | Historical `XeroObjectLink` backfill, stale canonical-link cleanup, the emailed reconciliation report, repeated-failure alerting. Split into cohesive `xero-hardening-*` sub-modules (#1208 item 5, entry re-exports the public surface); see refactor item 5 for the module map. Cleanup and the report's drift classifications are source-aware for Stripe per-delta refund notes (#2901): see "Repairing Stripe refund-note links" under Flow 3. |
+| `xero-refund-note-link-repair` | Dry-run-first operator repair for Stripe per-delta `REFUND_CREDIT_NOTE` links damaged by the pre-#2901 cleanup loop: reactivates wrongly deactivated links to exactly the refunded total, deactivates local mirrors of notes voided in Xero, never calls a provider. CLI entry: `scripts/xero-refund-note-link-repair.ts`. Runbook: "Repairing Stripe refund-note links (#2901)" under Flow 3. |
 | `xero-invoice-rounding-audit` | Read-only diagnostic that replays the pre-#1231 line maths in integer cents to flag issued invoices that would have carried the #1163 rounding drift, across **both** builder callers — per-booking invoices (`Payment.xeroInvoiceId`) and group-settlement invoices (`GroupBookingSettlement.xeroInvoiceId`). Makes **no** live-provider calls and mutates nothing (only `booking.findMany` + `groupBookingSettlement.findMany`). CLI entry: `scripts/audit-xero-invoice-rounding.ts`. See "Historical rounding-drift audit" below. |
 | `xero-credit-sync-checker` | #2501 detect-and-warn reconciliation of **applied account credit**: compares each booking's stamped `BOOKING_APPLIED` sum (BookingApp's known credit, the same figure the #2483 email nets from) against its live Xero invoice `amountCredited`, and warns admins on drift with the exact per-booking amount. Read-only, idempotent, fail-safe. See "Credit-sync drift checker" below. |
 | `xero-cron-runner` | Maps the 8 cron tasks to the workers above, records `CronJobRun` rows, gates on module + connection. |
@@ -491,12 +492,75 @@ Scheduled hardening (cron tasks, all idempotent):
 - `backfill` — `backfillHistoricalXeroObjectLinks`: creates canonical
   `XeroObjectLink` rows for pre-ledger history (runs `link-cleanup` too).
 - `link-cleanup` — `cleanupStaleCanonicalXeroObjectLinks`: deactivates
-  superseded canonical links.
+  superseded canonical links. **Source-aware for payment refund notes
+  (#2901):** a `source: STRIPE` payment refunded in steps legitimately holds
+  one ACTIVE `REFUND_CREDIT_NOTE` link per refund delta (`INV-ADDPAY-020`),
+  and its scalar `Payment.xeroRefundCreditNoteId` names only the latest of
+  them — so cleanup never deactivates an active Stripe per-delta note link
+  (resolved from the links' own payment ids, so a null scalar still shields
+  them), while non-Stripe payment sources keep single-canonical enforcement
+  and malformed (wrong `xeroObjectType`) or foreign (no such payment) links
+  stay subject to cleanup. Before this, cleanup and the credit-reconciliation
+  self-heal fed each other an unbounded duplicate-note loop: cleanup
+  deactivated live coverage, reconciliation saw the shortfall and minted
+  another provider note, the scalar moved, and the next cleanup deactivated
+  the other side. The reconciliation report's stale/mismatched/duplicate
+  drift classifications share the same exemption so the emailed digest cannot
+  flag the multi-note contract as drift.
 - `report` — `sendXeroReconciliationReport`: emailed issue digest (repeated
   failures, unsupported partials, stale pending, persistently-failing inbound
   events, link problems).
 - Repeated-failure alerting (`maybeNotifyXeroRepeatedFailure`) and the
   once-per-hour error alert (`notifyXeroSyncError`) keep failure noise bounded.
+
+### Repairing Stripe refund-note links (#2901)
+
+Operator runbook for an instance damaged by the pre-#2901 cleanup loop: some
+per-delta `REFUND_CREDIT_NOTE` links are wrongly inactive locally, and Xero
+holds surplus duplicate credit notes (each usually with a refund payment
+recorded against the Stripe bank account) that no money movement backs.
+
+The repair is dry-run-first and split between Xero (manual, operator-only) and
+the local ledger (scripted). **No code path ever voids or deletes a Xero
+document automatically** — that judgement stays with the operator.
+
+1. **Dry run** (read-only, run first and keep the output with the change
+   record):
+
+   ```bash
+   npx tsx scripts/xero-refund-note-link-repair.ts            # all refunded Stripe payments
+   npx tsx scripts/xero-refund-note-link-repair.ts --payment <id>
+   ```
+
+   For each payment whose active link coverage diverges from
+   `refundedAmountCents` it lists every refund-note link (active/inactive,
+   recorded or payload-recovered amount, inbound-merged Xero status) and the
+   plan: which links it would reactivate (oldest first, landing EXACTLY on the
+   refunded total), which active links mirror notes already VOIDED/DELETED in
+   Xero and would be deactivated, and which payments need manual review
+   instead.
+2. **Fix the Xero side manually.** In Xero, void the surplus duplicate credit
+   notes (and remove their refund payments) so exactly the notes matching the
+   real refund deltas survive. Then let inbound reconciliation record it (the
+   webhook, or `POST /api/cron/xero?task=inbound`), which merges
+   `status: VOIDED` onto the local links — the script trusts only that
+   recorded status, so this ordering matters.
+3. **Re-run the dry run** and review: the previously ambiguous payments should
+   now be `REPAIRABLE`, with the voided notes excluded.
+4. **Apply** (local ledger writes only, each payment in its own transaction,
+   re-planned from an in-transaction snapshot and applied through
+   status-guarded claims; safe to re-run — a second pass finds nothing):
+
+   ```bash
+   npx tsx scripts/xero-refund-note-link-repair.ts --apply
+   ```
+
+The script never reactivates unrelated links (other roles/object types), links
+on non-Stripe or nonexistent payments, links whose note is VOIDED/DELETED, or
+any set that would push coverage past the refunded total; a payment whose
+recoverable links cannot land exactly on the refunded total is reported for
+manual review and left untouched. Module:
+`src/lib/xero-refund-note-link-repair.ts`.
 
 Admin triage complements this: the failures overview groups FAILED operations
 into actionable states (retryable, requeued, manually resolved,
