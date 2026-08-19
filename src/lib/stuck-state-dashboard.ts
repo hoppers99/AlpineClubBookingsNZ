@@ -10,9 +10,10 @@ import { getAdminAlertDeliveryEscalations } from "@/lib/email-admin-alert-escala
 import { getExhaustedEmailFailureReviewQueue } from "@/lib/email-failure-review";
 import { getEmailDeliverabilityTelemetry } from "@/lib/email-suppression";
 import {
-  coverageSpansMultipleLodges,
+  coverageNeedsLodgeContext,
   getUnassignedHutLeaderDates,
 } from "@/lib/hut-leader-coverage";
+import { countActiveLodges } from "@/lib/lodges";
 import {
   getUnreachableMemberSummary,
   UNREACHABLE_MEMBER_REASON_LABEL,
@@ -143,6 +144,13 @@ export interface StuckStateDashboardDependencies {
   getBedAllocationDashboard: typeof getBedAllocationDashboard;
   getUnassignedHutLeaderDates: typeof getUnassignedHutLeaderDates;
   loadHutLeaderLookaheadDays: typeof loadHutLeaderLookaheadDays;
+  /**
+   * The club's active-lodge count, for the ADR-002 Presentation Rule on the
+   * hut-leader tile (#2917). A bound thunk rather than `typeof
+   * countActiveLodges`, because that helper deliberately takes an explicit
+   * Prisma client and this module's injected `db` is a narrowed shape.
+   */
+  countActiveLodges: () => Promise<number>;
 }
 
 const DOMAIN_LABELS: Record<StuckStateDomain, string> = {
@@ -186,6 +194,7 @@ const defaultDependencies: StuckStateDashboardDependencies = {
   getBedAllocationDashboard,
   getUnassignedHutLeaderDates,
   loadHutLeaderLookaheadDays,
+  countActiveLodges: () => countActiveLodges(prisma),
 };
 
 function plural(count: number, singular: string, pluralForm = `${singular}s`) {
@@ -725,29 +734,39 @@ async function addLodgeItems(
   items: StuckStateItem[],
   deps: StuckStateDashboardDependencies,
 ) {
-  const [hutLeaderLookaheadDays, openIssueReports] = await Promise.all([
-    deps.loadHutLeaderLookaheadDays(),
-    deps.db.issueReport.count({
-      where: {
-        resolvedAt: null,
-      },
-    }),
-  ]);
+  const [hutLeaderLookaheadDays, openIssueReports, activeLodgeCount] =
+    await Promise.all([
+      deps.loadHutLeaderLookaheadDays(),
+      deps.db.issueReport.count({
+        where: {
+          resolvedAt: null,
+        },
+      }),
+      deps.countActiveLodges(),
+    ]);
   const unassignedDates = await deps.getUnassignedHutLeaderDates({
     lookAheadDays: hutLeaderLookaheadDays,
     scope: { kind: "all" },
   });
 
   // Uncovered LODGE-nights (#2917): two lodges uncovered on one night is two
-  // rows. The noun follows the data, so a single-lodge tile is unchanged.
-  const unassignedNoun = coverageSpansMultipleLodges(unassignedDates)
+  // rows. The noun follows the CLUB, not the rows — a multi-lodge club counts
+  // lodge-nights even on a day when only one lodge is short — so a single-lodge
+  // tile is unchanged and a multi-lodge one never changes noun between loads.
+  const unassignedNoun = coverageNeedsLodgeContext({
+    activeLodgeCount,
+    rows: unassignedDates,
+  })
     ? "lodge-night"
     : "lodge date";
 
   addItem(items, {
     id: "lodge-unassigned-hut-leaders",
     domain: "lodge",
-    title: `Unassigned ${CLUB_HUT_LEADER_LABEL.toLowerCase()} dates`,
+    // The title carries the same unit as the summary below it (#2917 review):
+    // a heading saying "dates" above a count of lodge-nights is the very
+    // conflation this issue exists to remove.
+    title: `Unassigned ${CLUB_HUT_LEADER_LABEL.toLowerCase()} ${unassignedNoun}s`,
     severity: "warning",
     owner: "Lodge",
     count: unassignedDates.length,

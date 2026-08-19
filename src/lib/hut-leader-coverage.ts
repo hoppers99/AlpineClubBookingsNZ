@@ -36,13 +36,27 @@ export interface UnassignedHutLeaderDate {
   lodgeId: string | null;
   /** For display; callers must not use it as an identity (see the Presentation Rule). */
   lodgeName: string | null;
+  /**
+   * Whether that lodge is still active.
+   *
+   * `false` is the archived-but-occupied case, and it is deliberately reported
+   * rather than filtered away. Deactivating a lodge that still has future
+   * bookings is permitted with `force` (`findLodgeDeactivationRefusal` in
+   * `src/lib/lodge-deactivation-guard.ts` reports them and can be overridden)
+   * and does not cancel them, so real guests still arrive on those nights and
+   * still need a leader. An uncovered night nobody can see is worse than one
+   * that is awkward to clear, so the row stays and names its lodge.
+   *
+   * Null only where `lodgeId` is null (the legacy lodge-less row below).
+   */
+  lodgeActive: boolean | null;
   bookingCount: number;
   guestCount: number;
 }
 
 type HutLeaderBooking = {
   lodgeId: string | null;
-  lodge?: { name: string } | null;
+  lodge?: { name: string; active?: boolean } | null;
   checkIn: Date;
   checkOut: Date;
   guests?: Array<{
@@ -122,16 +136,19 @@ export async function getUnassignedHutLeaderDates(input: {
     }),
     db.booking.findMany({
       where: {
+        // A club-wide read is deliberately NOT filtered to active lodges
+        // (#2917 review). Deactivating a lodge that still has future bookings is
+        // permitted with `force` and does not cancel them, so an archived lodge
+        // can have live guest nights with no leader; filtering it out removed the
+        // only signal of a stranded stay from every surface at once — the
+        // dashboard card, the sidebar badge and the stuck-state tile — and no
+        // other page can show it either. The row is instead reported with
+        // `lodgeActive: false` and its lodge named, so an officer can see which
+        // lodge it is and that it is archived. The `lodge` scope needs no filter:
+        // its callers resolve the id through resolveOptionalActiveLodgeId first.
         ...(input.scope.kind === "lodge"
           ? { lodgeId: input.scope.lodgeId }
-          : // A club-wide read reports only ACTIVE lodges (#2917). An archived
-            // lodge can never be covered — the auto-assign cron iterates
-            // `{ active: true }` (#2915/#2916) and the admin workspace can only
-            // select an active lodge — so reporting it would leave a permanently
-            // amber row no officer is able to action. The `lodge` scope needs no
-            // such filter: its callers resolve the id through
-            // resolveOptionalActiveLodgeId first.
-            { lodge: { active: true } }),
+          : {}),
         status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
         deletedAt: null,
         checkIn: { lte: endDate },
@@ -141,8 +158,10 @@ export async function getUnassignedHutLeaderDates(input: {
         lodgeId: true,
         // Named on the row so a club-wide caller can say WHICH lodge without a
         // second query; every row is produced by a booking, so the relation is
-        // always loaded where a row exists.
-        lodge: { select: { name: true } },
+        // always loaded where a row exists. `active` travels with the name
+        // because a club-wide read can legitimately surface an archived lodge
+        // (see the where-clause above).
+        lodge: { select: { name: true, active: true } },
         checkIn: true,
         checkOut: true,
         guests: {
@@ -168,6 +187,7 @@ export async function getUnassignedHutLeaderDates(input: {
   type LodgeNightStats = {
     lodgeId: string | null;
     lodgeName: string | null;
+    lodgeActive: boolean | null;
     bookingCount: number;
     guestCount: number;
   };
@@ -177,9 +197,19 @@ export async function getUnassignedHutLeaderDates(input: {
    *
    * The trigger condition per lodge is UNCHANGED from the club-wide version: an
    * operational booking occupying that night, at a lodge with no assignment
-   * covering it, carrying at least one operationally present guest. Only the
-   * grouping changed — the counts are now banked per lodge instead of summed
-   * across all of them.
+   * covering it, carrying at least one guest active on that night —
+   * `countActiveGuestsForNight`, i.e. `isGuestActiveOnNight`. Only the grouping
+   * changed: the counts are now banked per lodge instead of summed across all of
+   * them.
+   *
+   * That night predicate is deliberately NOT the writer side's, and this reader
+   * does not claim to match it. The #2916 auto-assign cron filters its guests
+   * with `OPERATIONALLY_PRESENT_GUEST_WHERE` (consent null or CONFIRMED) over the
+   * operational-DAY model, so two documented divergences remain: a guest on their
+   * departure morning is operationally present but is not a night here, and a
+   * member guest whose consent is still PENDING raises an amber row here that the
+   * cron will never auto-assign for. An amber row an officer clears by hand is
+   * the safe direction for both.
    */
   function getBookingStatsByLodge(date: Date): Map<string, LodgeNightStats> {
     const byLodge = new Map<string, LodgeNightStats>();
@@ -210,6 +240,7 @@ export async function getUnassignedHutLeaderDates(input: {
       const stats = byLodge.get(key) ?? {
         lodgeId: booking.lodgeId ?? null,
         lodgeName: booking.lodge?.name ?? null,
+        lodgeActive: booking.lodge?.active ?? null,
         bookingCount: 0,
         guestCount: 0,
       };
@@ -247,14 +278,45 @@ export async function getUnassignedHutLeaderDates(input: {
 }
 
 /**
- * True when a coverage result names more than one lodge.
+ * Whether a club-wide coverage surface must name the lodge on each row and use
+ * the lodge-night noun.
  *
- * Club-wide surfaces use it to satisfy the multi-lodge Presentation Rule
- * (ADR-002): a single-lodge club is never shown a lodge name it cannot act on,
- * and a multi-lodge club is never shown a bare date it cannot place.
+ * Keyed on the CLUB, never on the result. The rule is ADR-002's Presentation
+ * Rule — "when exactly one active lodge exists" — measured with the house
+ * predicate `countActiveLodges` (`src/lib/lodges.ts`), which is how
+ * `booking-request-quotes.ts` and `api/admin/bookings/route.ts` decide the same
+ * question. Deriving it from how many lodges the ROWS span was wrong twice over:
+ * a three-lodge club whose gaps all sat at one lodge was shown bare dates that
+ * never said where to send anyone (the outcome #2917's decision rejected), and
+ * the wording flipped between page loads as unrelated lodges gained and lost
+ * cover.
+ *
+ * The second clause is the archived-but-occupied case: a club with exactly one
+ * active lodge can still be shown a row for an archived lodge that kept its
+ * future bookings, and a bare date there would point the officer at the wrong
+ * lodge.
  */
-export function coverageSpansMultipleLodges(
-  rows: readonly UnassignedHutLeaderDate[],
-): boolean {
-  return new Set(rows.map((row) => row.lodgeId)).size > 1;
+export function coverageNeedsLodgeContext(input: {
+  activeLodgeCount: number;
+  rows: readonly UnassignedHutLeaderDate[];
+}): boolean {
+  return (
+    input.activeLodgeCount > 1 ||
+    input.rows.some((row) => row.lodgeActive === false)
+  );
+}
+
+/**
+ * The lodge label for one row: its name, marked when the lodge is archived.
+ *
+ * The marker matters because the hut-leaders workspace cannot select an archived
+ * lodge (`useLodgeOptions` offers active lodges only), so an officer sent to a
+ * bare name they cannot find in the selector would think the dashboard was
+ * wrong. Callers apply it only when `coverageNeedsLodgeContext` is true.
+ */
+export function coverageLodgeLabel(row: UnassignedHutLeaderDate): string | null {
+  if (!row.lodgeName) return null;
+  return row.lodgeActive === false
+    ? `${row.lodgeName}, archived`
+    : row.lodgeName;
 }

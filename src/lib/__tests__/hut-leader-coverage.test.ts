@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 
 import {
-  coverageSpansMultipleLodges,
+  coverageLodgeLabel,
+  coverageNeedsLodgeContext,
   getUnassignedHutLeaderDates,
 } from "@/lib/hut-leader-coverage";
 
@@ -22,6 +23,8 @@ function buildDb(options: {
   hutLeaderLookaheadDays?: number;
   bookings?: Array<{
     lodgeId?: string | null;
+    /** The booking's lodge `active` flag; defaults to an active lodge. */
+    lodgeActive?: boolean;
     checkIn: Date;
     checkOut: Date;
     guests?: Array<{
@@ -44,7 +47,10 @@ function buildDb(options: {
         (options.bookings ?? []).map((booking) => {
           const lodgeId = booking.lodgeId ?? "lodge-a";
           return {
-            lodge: { name: LODGE_NAMES[lodgeId] ?? lodgeId },
+            lodge: {
+              name: LODGE_NAMES[lodgeId] ?? lodgeId,
+              active: booking.lodgeActive ?? true,
+            },
             ...booking,
             lodgeId,
           };
@@ -68,11 +74,13 @@ function uncovered(
   bookingCount: number,
   guestCount: number,
   lodgeId = "lodge-a",
+  lodgeActive = true,
 ) {
   return {
     date,
     lodgeId,
     lodgeName: LODGE_NAMES[lodgeId],
+    lodgeActive,
     bookingCount,
     guestCount,
   };
@@ -413,22 +421,43 @@ describe("getUnassignedHutLeaderDates", () => {
       expect(result.every((row) => row.lodgeId === "lodge-a")).toBe(true);
     });
 
-    it("reports only ACTIVE lodges on a club-wide read, and does not re-filter a lodge-scoped one", async () => {
-      // An archived lodge can never be covered — the auto-assign cron iterates
-      // active lodges only (#2915) and the admin workspace cannot select an
-      // archived one — so a club-wide amber row for it would be unactionable.
-      const clubWide = buildDb({});
-      await getUnassignedHutLeaderDates({
+    it("STILL REPORTS an archived lodge that kept its future bookings, and never filters a club-wide read by lodge", async () => {
+      // Deactivating a lodge with future bookings is permitted with `force` and
+      // does not cancel them (src/lib/lodge-deactivation-guard.ts), so real
+      // guests arrive at an archived lodge with no leader. Filtering the club-wide
+      // read to active lodges removed that night from the dashboard card, the
+      // sidebar badge and the stuck-state tile at once, and no other page can
+      // show it — an invisible uncovered night, which is strictly worse than one
+      // that takes an extra step to clear (#2917 review).
+      const night = dateOnly("2026-08-10");
+      const clubWide = buildDb({
+        bookings: [
+          {
+            lodgeId: "lodge-b",
+            lodgeActive: false,
+            checkIn: night,
+            checkOut: dateOnly("2026-08-11"),
+            guests: [{}, {}],
+          },
+        ],
+      });
+      const result = await getUnassignedHutLeaderDates({
         scope: { kind: "all" },
         db: clubWide,
-        from: dateOnly("2026-08-10"),
-        to: dateOnly("2026-08-10"),
+        from: night,
+        to: night,
       });
-      expect(clubWide.booking.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({ lodge: { active: true } }),
-        }),
-      );
+
+      expect(result).toEqual([
+        uncovered("2026-08-10", 1, 2, "lodge-b", false),
+      ]);
+      // No lodge predicate at all on a club-wide read: the row is reported and
+      // labelled, not excluded by the query.
+      const [[clubWideArgs]] = clubWide.booking.findMany.mock.calls as [
+        [{ where: Record<string, unknown> }],
+      ];
+      expect(clubWideArgs.where.lodge).toBeUndefined();
+      expect(clubWideArgs.where.lodgeId).toBeUndefined();
 
       const oneLodge = buildDb({});
       await getUnassignedHutLeaderDates({
@@ -446,20 +475,69 @@ describe("getUnassignedHutLeaderDates", () => {
   });
 });
 
-describe("coverageSpansMultipleLodges", () => {
-  it("is false for an empty or single-lodge result and true once a second lodge appears", () => {
-    expect(coverageSpansMultipleLodges([])).toBe(false);
+describe("coverageNeedsLodgeContext", () => {
+  const oneLodgeRows = [
+    uncovered("2026-08-10", 1, 1),
+    uncovered("2026-08-11", 1, 1),
+  ];
+
+  it("NAMES THE LODGE FOR A MULTI-LODGE CLUB EVEN WHEN EVERY UNCOVERED NIGHT IS AT ONE LODGE", () => {
+    // The whole point of #2917. Three active lodges, two of them covered for the
+    // entire lookahead, so the rows span a single lodge — the common multi-lodge
+    // case. Keying on the rows would show bare dates here (rejected Option B),
+    // and would flip the wording back and forth as the other lodges gained and
+    // lost cover between page loads.
     expect(
-      coverageSpansMultipleLodges([
-        uncovered("2026-08-10", 1, 1),
-        uncovered("2026-08-11", 1, 1),
-      ]),
-    ).toBe(false);
-    expect(
-      coverageSpansMultipleLodges([
-        uncovered("2026-08-10", 1, 1),
-        uncovered("2026-08-10", 1, 1, "lodge-b"),
-      ]),
+      coverageNeedsLodgeContext({ activeLodgeCount: 3, rows: oneLodgeRows }),
     ).toBe(true);
+    // Same club, nothing uncovered at all: still multi-lodge, so a surface that
+    // renders a noun renders the lodge-night one.
+    expect(coverageNeedsLodgeContext({ activeLodgeCount: 3, rows: [] })).toBe(
+      true,
+    );
+  });
+
+  it("shows a single-lodge club no lodge context (ADR-002 Presentation Rule)", () => {
+    expect(
+      coverageNeedsLodgeContext({ activeLodgeCount: 1, rows: oneLodgeRows }),
+    ).toBe(false);
+    expect(coverageNeedsLodgeContext({ activeLodgeCount: 1, rows: [] })).toBe(
+      false,
+    );
+  });
+
+  it("names the lodge on a one-lodge club when a row belongs to an ARCHIVED lodge", () => {
+    // One active lodge, but an archived lodge that kept its bookings is also
+    // reported: a bare date would point the officer at the wrong lodge.
+    expect(
+      coverageNeedsLodgeContext({
+        activeLodgeCount: 1,
+        rows: [uncovered("2026-08-10", 1, 1, "lodge-b", false)],
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("coverageLodgeLabel", () => {
+  it("marks an archived lodge, because the hut-leaders selector cannot offer one", () => {
+    expect(coverageLodgeLabel(uncovered("2026-08-10", 1, 1))).toBe(
+      "Alpine Lodge",
+    );
+    expect(
+      coverageLodgeLabel(uncovered("2026-08-10", 1, 1, "lodge-b", false)),
+    ).toBe("Basin Lodge, archived");
+  });
+
+  it("is null for a legacy row with no lodge, so a caller falls back to the bare date", () => {
+    expect(
+      coverageLodgeLabel({
+        date: "2026-08-10",
+        lodgeId: null,
+        lodgeName: null,
+        lodgeActive: null,
+        bookingCount: 1,
+        guestCount: 1,
+      }),
+    ).toBeNull();
   });
 });
