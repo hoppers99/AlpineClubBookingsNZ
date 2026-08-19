@@ -934,9 +934,13 @@ describe("finance dashboard page model", () => {
 
     it("raises no spurious warning on an accounting view when the carried lodge has no season", async () => {
       twoLodges();
-      // Club-wide there IS a season; only lodge-b lacks one. Scoping the read to
-      // the invisible carried-over lodge is what used to produce the warning.
-      mockSeasonFindMany.mockResolvedValue([alphaSeason]);
+      // Club-wide there IS a season; only lodge-b lacks one. The mock filters
+      // the way Postgres would, so scoping the read to the invisible
+      // carried-over lodge really does come back empty.
+      mockSeasonFindMany.mockImplementation(
+        async (args: { where?: { lodgeId?: string } }) =>
+          args.where?.lodgeId ? [] : [alphaSeason]
+      );
 
       const model = await buildFinanceDashboardPageModel({
         member: financeManager(),
