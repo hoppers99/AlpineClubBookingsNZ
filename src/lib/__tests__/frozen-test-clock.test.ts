@@ -49,7 +49,7 @@ const OPT_OUT_MENTION = /optOutOfFrozenClock\s*\(/;
 /**
  * Mirrors what Vitest actually collects, so the allowlist cannot be dodged by
  * putting an opt-out outside `src/` — `scripts/` carries six suites of its own.
- * `e2e/` and `.claude/` are the two directories `vitest.config.ts` excludes.
+ * `e2e/` and `.claude/` are the two directories `vitest.config.mts` excludes.
  */
 const SKIPPED_DIRECTORIES = new Set([
   "node_modules",
@@ -234,7 +234,7 @@ describe("the setup-file ordering the whole design rests on", () => {
   // explicit pin stands between the design and a `Promise.all`. Asserted here
   // because a reviewer deleting the config line would otherwise see no failure.
   const config = fs.readFileSync(
-    path.join(process.cwd(), "vitest.config.ts"),
+    path.join(process.cwd(), "vitest.config.mts"),
     "utf8"
   );
 

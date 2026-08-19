@@ -16,7 +16,7 @@ the full local gate.
 
 ## Shared setup
 
-`vitest.config.ts` points every test file at two setup files, in order —
+`vitest.config.mts` points every test file at two setup files, in order —
 `vitest.clock-setup.ts` then `vitest.setup.ts`. Between them they:
 
 - **freeze the clock** — the rest of this page;
@@ -245,7 +245,7 @@ generalised.
 3. **Need a different fixed instant? Pin it in the file, do not opt out.** A
    suite's own `vi.setSystemTime(...)` in its own `beforeAll`/`beforeEach` wins,
    because the freeze is already installed by the time any hook runs;
-   `vitest.config.ts` pins `sequence.hooks: "stack"` so the setup file's
+   `vitest.config.mts` pins `sequence.hooks: "stack"` so the setup file's
    `afterAll` restore stays last. The `vi.mock("@/lib/date-only", …)` idiom (see
    `site-banners.test.ts`) also still works and is unaffected.
 
