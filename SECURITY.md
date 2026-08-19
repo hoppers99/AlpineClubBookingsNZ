@@ -36,17 +36,22 @@ This project uses:
 
 ## Which CI security checks block a merge
 
-Two are required protected-branch checks on `main` today, and two more are
-pending an owner action (#2686) — see `AGENTS.md` → "Completion and Merge" for
-the applied list, the rollout order, and the `gh api` call that reads the live
-configuration rather than trusting a document:
+Two are required protected-branch checks on `main` today, and three more are
+pending an owner action (#2686, #2946) — see `AGENTS.md` → "Completion and
+Merge" for the applied list, the rollout order, and the `gh api` call that reads
+the live configuration rather than trusting a document:
 
 - **`Static analysis gate`** (required today) — Semgrep, running four registry
   packs plus this repository's own rules in `.semgrep/rules/`. The same job
   first runs each custom rule against its must-fail/must-pass fixtures in
   `.semgrep/tests/`.
-- **`verify`** (required today) — carries `npm audit --audit-level=high`
-  alongside lint, types and tests.
+- **`verify`** (required today) — lint, types, `npm test` and the build.
+- **`Dependency audit`** (**pending**) — `npm audit --audit-level=high` over the
+  committed lockfile. It used to be a step inside `verify`, where a published
+  advisory in a transitive dependency skipped every gate behind it — lint, the
+  file-size ratchet, `prisma generate`, typecheck, knip, `npm test` and the
+  build — on every branch, while the other required checks stayed green (#2945,
+  split out in #2946). It is a job of its own for that reason and must stay one.
 - **`Secret scan (gitleaks)`** (**pending**) — gitleaks in one pinned container
   over three scopes: the pull request's own commits, the history of `main`, and
   the checked-out tree. Suppressions are exact-literal, content-scoped

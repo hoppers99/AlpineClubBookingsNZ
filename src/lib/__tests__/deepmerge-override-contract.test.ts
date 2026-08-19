@@ -16,11 +16,14 @@ import { describe, expect, it } from "vitest";
   and cannot carry a comment, so the reasoning lives here instead — and, more
   usefully, so does the condition for removing it.
 
-  It mattered more than a single red check. `verify` runs `Audit dependencies`
+  It mattered more than a single red check. `verify` ran `Audit dependencies`
   early, and a failure there SKIPS every later step: lint, the file-size ratchet,
   Prisma generate, typecheck, knip, test and build. So the advisory did not just
   turn `main` red, it silently stopped the suite from running on every branch
-  while other checks stayed green (#2945).
+  while other checks stayed green (#2945). That structural fault is fixed —
+  the audit is its own job now (#2946) and an advisory reddens only itself — so
+  the blast radius of the next one is a single check. This override still stands
+  on its own merits.
 
   npm's own remedy was `prisma@6.12.0` — a major downgrade of the database
   toolchain to fix a transitive advisory. Rejected.
