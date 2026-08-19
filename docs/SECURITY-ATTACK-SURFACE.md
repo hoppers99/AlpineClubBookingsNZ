@@ -3143,6 +3143,25 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   kept.) It is now a sign-out-and-return control: signing out lands a signed-out
   navigation on the invite page, which is where the address is written.
 
+  **Stated limit: a cookie is per-browser, where the old `callbackUrl` was
+  per-tab.** If somebody opens an invitation on a shared lodge or kiosk browser
+  while signed out and walks away *without signing in*, the next person to sign in
+  on that browser within ten minutes is landed on that invitation. The retire above
+  closes the case where the first visitor DID sign in, which is the common one and
+  the one that put a live token in a second person's address bar; this remainder
+  discloses the invited email address and the family-group name, and the page's
+  email re-check still refuses the join. It is inherent to a browser-scoped return
+  address: the pre-#2827 `callbackUrl` avoided it only by living in a URL, which is
+  the exposure being closed.
+
+  It could be closed by binding the address to the tab that asked for it — a
+  tokenless flag on the sign-in link (`/login?…`), honoured only when present. That
+  is a constant, not a secret, so it is safe to render; it is not done here because
+  it has to be threaded through all four resolution sites and both 2FA detour hops,
+  which is a login-flow change rather than a fix, and it trades a bounded
+  disclosure for regression risk across the flows this PR has just corrected. If it
+  is wanted, it is a deliberate follow-up with an owner decision behind it.
+
   An absent or expired cookie degrades to the member's ordinary landing rather
   than to an error — as does a browser too old to send `Sec-Fetch-*` — and the
   emailed link still works. Severity was always materially lower than the payment

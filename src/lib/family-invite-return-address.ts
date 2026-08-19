@@ -58,6 +58,18 @@ import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
  *    and 2FA-detour flows as well; their server components cannot write a cookie,
  *    so the first cut left the address alive for its full ten minutes after use.
  *
+ * **Stated limit, and it is a property of cookies rather than of this code.** A
+ * cookie is per-BROWSER where the `callbackUrl` it replaces was per-tab, so on a
+ * shared browser somebody who opens an invitation and leaves without signing in
+ * hands the next ten minutes' sign-in that landing. What is disclosed is the
+ * invited email address and the group name; the page's email re-check still refuses
+ * the join. The retire above closes the version of this that mattered — where the
+ * first visitor signed in, and their live token ended up in the second person's
+ * address bar. Closing the remainder means binding the address to the tab that
+ * asked for it, with a tokenless flag on the sign-in link threaded through all four
+ * resolution sites and both 2FA detour hops; `docs/SECURITY-ATTACK-SURFACE.md`
+ * records why that is a deliberate follow-up rather than part of this fix.
+ *
  * ## Why the shape check is this narrow
  *
  * {@link getFamilyInviteReturnPath} refuses anything that is not literally
