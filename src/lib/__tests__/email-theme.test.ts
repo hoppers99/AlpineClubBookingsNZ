@@ -40,7 +40,7 @@ import {
   type ClubThemeValues,
 } from "../club-theme-schema";
 import { buildThemeSubstrate } from "@/lib/theme/theme-substrate";
-import { frozenTestNow } from "./helpers/clock";
+import { frozenTestNow, realElapsedMs } from "./helpers/clock";
 
 // The email palette is DERIVED from the three seeds via the light substrate
 // (#2187 D7): gold/deep pass through, and charcoal/mist/snow/ridge are the
@@ -425,6 +425,184 @@ describe("email render gate (#2900)", () => {
     expect(html).toContain(DEFAULT_CLUB_THEME_VALUES.brandGold);
     expect(mocks.warn).toHaveBeenCalledTimes(1);
     expect(mocks.warn.mock.calls[0][0]).toEqual({ reason: "read-timeout" });
+  });
+
+  it("charges only the FIRST email of a cooldown window the wait, even when the read is wedged", async () => {
+    // The case the cooldown exists for, and the one it used to miss. A read that
+    // TIMED OUT has by definition not settled, so it is still in flight — a
+    // cooldown that only engaged once `inFlightLoad` was null therefore skipped
+    // itself in exactly this scenario and charged every email a fresh full
+    // timeout. `notices-email.ts` awaits the gate inside a sequential
+    // per-recipient loop, so on a 300-member notice publish that is the
+    // difference between one 5s wait and most of an hour.
+    //
+    // A LONGER load timeout than the rest of this suite, deliberately: the
+    // measurement has to separate "waited a full timeout" from "did not wait",
+    // and at 50ms the two are only 50ms apart — close enough that a busy Windows
+    // CI box can put the fast case over the line. At 300ms each verdict has
+    // roughly a 3x margin, and only the first email pays it, so the test costs
+    // 300ms once rather than per assertion.
+    __resetEmailPaletteCacheForTests({ loadTimeoutMs: 300 });
+    mocks.getWebsiteThemeRenderState.mockReturnValue(new Promise(() => {}));
+
+    const firstStartedNs = process.hrtime.bigint();
+    await renderEmailHtml(() => passwordResetTemplate("1"));
+    const firstWaitMs = realElapsedMs(firstStartedNs);
+
+    const secondStartedNs = process.hrtime.bigint();
+    await renderEmailHtml(() => passwordResetTemplate("2"));
+    const secondWaitMs = realElapsedMs(secondStartedNs);
+    const thirdStartedNs = process.hrtime.bigint();
+    await renderEmailHtml(() => passwordResetTemplate("3"));
+    const thirdWaitMs = realElapsedMs(thirdStartedNs);
+
+    // The first email really did wait (otherwise the assertions below would pass
+    // vacuously off a gate that never waits at all).
+    expect(firstWaitMs).toBeGreaterThanOrEqual(250);
+    // The next two did not.
+    expect(secondWaitMs).toBeLessThan(100);
+    expect(thirdWaitMs).toBeLessThan(100);
+
+    // Still one read for the whole burst, and one warning rather than a flood.
+    expect(mocks.getWebsiteThemeRenderState).toHaveBeenCalledTimes(1);
+    expect(mocks.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets a wedged read that finally lands lift the cooldown and brand the next email", async () => {
+    // The cooldown must not outlive the outage. The read is never cancelled, so
+    // when it settles late it still commits — and the next email is correctly
+    // branded immediately, not thirty seconds later.
+    let release!: () => void;
+    const wedged = new Promise<ReturnType<typeof themeRead>>((resolve) => {
+      release = () => resolve(themeRead(CUSTOM_THEME_VALUES));
+    });
+    mocks.getWebsiteThemeRenderState.mockReturnValue(wedged);
+
+    const timedOutHtml = await renderEmailHtml(() => passwordResetTemplate("1"));
+    expect(timedOutHtml).toContain(DEFAULT_CLUB_THEME_VALUES.brandGold);
+
+    // Second email during the cooldown: still the default, and no new read.
+    const cooledHtml = await renderEmailHtml(() => passwordResetTemplate("2"));
+    expect(cooledHtml).toContain(DEFAULT_CLUB_THEME_VALUES.brandGold);
+    expect(mocks.getWebsiteThemeRenderState).toHaveBeenCalledTimes(1);
+
+    // The parked read lands. The clock has NOT moved, so nothing but the late
+    // commit can be what unblocks the next email.
+    release();
+    await wedged;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const brandedHtml = await renderEmailHtml(() => passwordResetTemplate("3"));
+    expect(brandedHtml).toContain(expectedPalette(CUSTOM_THEME_VALUES).gold);
+    expect(brandedHtml).not.toContain(DEFAULT_CLUB_THEME_VALUES.brandGold);
+    expect((await ensureEmailPaletteReady()).source).toBe("club-theme");
+  });
+
+  it("still sends when the logger itself throws on the unreadable-theme path", async () => {
+    // `ensureEmailPaletteReady` is documented as never throwing, and it is now
+    // awaited on every send path — `sendEmail()` awaits it as its first
+    // statement, before any EmailLog row exists. So a logger fault here would
+    // lose the email outright, and a per-recipient `catch` (notices-email.ts)
+    // would swallow it, leaving nothing for the retry cron. This lane already met
+    // that shape for real: a logger mock without a `warn` member made the
+    // warning throw and a notice silently emailed nobody.
+    mocks.getWebsiteThemeRenderState.mockResolvedValue(failedThemeRead());
+    mocks.warn.mockImplementation(() => {
+      throw new Error("log transport is down");
+    });
+
+    const readiness = await ensureEmailPaletteReady();
+    expect(readiness.source).toBe("built-in-default");
+
+    const html = await renderEmailHtml(() => passwordResetTemplate("Jo"));
+    expect(html).toContain(DEFAULT_CLUB_THEME_VALUES.brandGold);
+
+    // And the throttle stamp was taken before the throwing call, so a broken
+    // logger cannot turn into one attempted warning per email either.
+    expect(mocks.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not report a read failure for a read a NEWER read overtook", async () => {
+    // Cold process. The gate's own read gets valid club values, but a Site Style
+    // save primes in the meantime. Discarding the gate's result on the grounds
+    // that a newer read had STARTED left the palette unloaded, so the gate
+    // reported `built-in-default`, warned that the theme was unreadable — which
+    // the operator guide tells clubs to read as a database fault — and sent that
+    // email in the shipped default brand, from a read that succeeded.
+    let releaseGateRead!: () => void;
+    const gateRead = new Promise<ReturnType<typeof themeRead>>((resolve) => {
+      releaseGateRead = () => resolve(themeRead(CUSTOM_THEME_VALUES));
+    });
+    const NEXT_THEME_VALUES = {
+      ...CUSTOM_THEME_VALUES,
+      brandGold: "#0f9d58",
+      brandDeep: "#202124",
+    };
+    let releasePrimeRead!: () => void;
+    const primeRead = new Promise<ReturnType<typeof themeRead>>((resolve) => {
+      releasePrimeRead = () => resolve(themeRead(NEXT_THEME_VALUES));
+    });
+    mocks.getWebsiteThemeRenderState
+      .mockReturnValueOnce(gateRead)
+      .mockReturnValueOnce(primeRead);
+
+    const emailPromise = renderEmailHtml(() => passwordResetTemplate("Jo"));
+    // The save's prime starts while the gate's read is still parked, so it takes
+    // the higher write token.
+    const primePromise = primeEmailPalette();
+
+    releaseGateRead();
+    const html = await emailPromise;
+
+    // The gate's read succeeded, so this email carries the club's colours and no
+    // warning was logged.
+    expect(html).toContain(expectedPalette(CUSTOM_THEME_VALUES).gold);
+    expect(html).not.toContain(DEFAULT_CLUB_THEME_VALUES.brandGold);
+    expect(mocks.warn).not.toHaveBeenCalled();
+
+    // The newer read still wins when it lands.
+    releasePrimeRead();
+    await primePromise;
+    expect(emailPalette().gold).toBe("#0f9d58");
+  });
+
+  it("does not let a failed TTL refresh suppress the next attempt for a whole TTL", async () => {
+    mocks.getWebsiteThemeRenderState.mockResolvedValueOnce(
+      themeRead(CUSTOM_THEME_VALUES),
+    );
+    await renderEmailHtml(() => passwordResetTemplate("1"));
+    expect(mocks.getWebsiteThemeRenderState).toHaveBeenCalledTimes(1);
+
+    // The TTL lapses and the background refresh fails. It stamps `cachedAt`
+    // up-front to collapse a burst into one read, so on failure it must roll that
+    // stamp back — otherwise the next attempt is a full five minutes away rather
+    // than the thirty seconds the failure cooldown advertises, and an admin who
+    // recoloured the site during a brief blip waits ten minutes for emails.
+    mocks.getWebsiteThemeRenderState.mockResolvedValueOnce(failedThemeRead());
+    vi.setSystemTime(new Date(frozenTestNow().getTime() + 6 * 60 * 1000));
+    await renderEmailHtml(() => passwordResetTemplate("2"));
+    expect(mocks.getWebsiteThemeRenderState).toHaveBeenCalledTimes(2);
+
+    // Inside the failure cooldown, no further read: the rollback is only safe
+    // because the cooldown is armed with it.
+    vi.setSystemTime(new Date(frozenTestNow().getTime() + 6 * 60 * 1000 + 5_000));
+    await renderEmailHtml(() => passwordResetTemplate("3"));
+    expect(mocks.getWebsiteThemeRenderState).toHaveBeenCalledTimes(2);
+
+    // Past the cooldown — well short of another TTL — it tries again and the
+    // club's new colours land.
+    const NEXT_THEME_VALUES = {
+      ...CUSTOM_THEME_VALUES,
+      brandGold: "#0f9d58",
+    };
+    mocks.getWebsiteThemeRenderState.mockResolvedValue(
+      themeRead(NEXT_THEME_VALUES),
+    );
+    vi.setSystemTime(new Date(frozenTestNow().getTime() + 6 * 60 * 1000 + 31_000));
+    await renderEmailHtml(() => passwordResetTemplate("4"));
+    expect(mocks.getWebsiteThemeRenderState).toHaveBeenCalledTimes(3);
+    expect(emailPalette().gold).toBe("#0f9d58");
   });
 
   it("does no I/O once the palette has been loaded", async () => {

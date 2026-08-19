@@ -40,9 +40,16 @@
  *
  * Repeated failures are bounded, not repeated per message: concurrent renders
  * share one in-flight read, a waiter gives up after `LOAD_TIMEOUT_MS`, and a
- * failed attempt suppresses further attempts for `FAILED_LOAD_COOLDOWN_MS`. A
- * database outage therefore costs at most one bounded wait per cooldown window
- * across the whole process, never one per email.
+ * failed OR TIMED-OUT attempt makes every render inside the next
+ * `FAILED_LOAD_COOLDOWN_MS` proceed immediately on the current palette instead of
+ * waiting again. A database outage therefore costs at most one bounded wait per
+ * cooldown window across the whole process, never one per email — including when
+ * the read is WEDGED rather than failing, which is the case that matters most,
+ * because a read that timed out is by definition still in flight.
+ *
+ * "Proceed immediately" rather than "attempt nothing": the in-flight read is
+ * never cancelled, and if it lands late it still commits and lifts the cooldown,
+ * so the first email after the theme becomes readable is correctly branded.
  *
  * ## Warm points and the write ordering
  *
@@ -141,10 +148,10 @@ const TTL_MS = 5 * 60 * 1000;
 const LOAD_TIMEOUT_MS = 5_000;
 
 /**
- * After a failed or timed-out authoritative read, do not attempt another for
- * this long. Without it a wedged database costs EVERY email a full
- * `LOAD_TIMEOUT_MS` wait; with it the whole process pays at most one such wait
- * per window.
+ * After a failed or timed-out authoritative read, do not WAIT for another for
+ * this long: renders inside the window take the current palette immediately.
+ * Without it a wedged database costs EVERY email a full `LOAD_TIMEOUT_MS` wait;
+ * with it the whole process pays at most one such wait per window.
  */
 const FAILED_LOAD_COOLDOWN_MS = 30_000;
 
@@ -165,56 +172,91 @@ let failedLoadAt = 0;
 /** Shared in-flight first load, so concurrent cold renders do ONE read. */
 let inFlightLoad: Promise<void> | null = null;
 let lastUnavailableWarnAt = 0;
-// Monotonic token bumped at the START of every palette read (background refresh,
-// explicit prime, or the render gate's first load). A read captures the token
-// before its DB read and only commits its result if it still holds the latest
-// token afterwards. This makes the last-STARTED read win: a slow read cannot
-// overwrite a palette written by a read that started later. In particular, a
-// stale in-flight background refresh (reading the OLD theme) can no longer
-// clobber a save-time prime that started later and already wrote the NEW theme
-// (#1912).
+// Monotonic token issued at the START of every palette read (background refresh,
+// explicit prime, or the render gate's first load), paired with the token of the
+// read that last COMMITTED. A read commits only if its own token is higher than
+// the last committed one, which makes the last-STARTED read win: a slow read
+// cannot overwrite a palette written by a read that started later. In
+// particular, a stale in-flight background refresh (reading the OLD theme) can
+// no longer clobber a save-time prime that started later and already wrote the
+// NEW theme (#1912).
+//
+// Comparing against the last COMMITTED token, rather than against the newest
+// token merely ISSUED, is deliberate. A read that is overtaken by one still in
+// flight has valid values and nothing newer has landed yet, so discarding it
+// would leave the palette unloaded and make the gate report a read failure it
+// did not have — an email in the default brand, plus a "theme unreadable"
+// warning operators are told to treat as a database fault, from a read that
+// succeeded. The newer read still wins when it lands, because its token is
+// higher again.
 let latestWriteToken = 0;
+let latestCommittedToken = 0;
 // Test seam: `LOAD_TIMEOUT_MS` is deliberately long for production, and a suite
 // asserting the timeout must not wait five real seconds for it.
 let loadTimeoutMs = LOAD_TIMEOUT_MS;
 
 /**
- * Read the persisted theme once and commit it if this read is still the latest
- * one to have started. Returns whether the palette now holds a value that came
- * from the store.
+ * What one authoritative theme read did.
+ *
+ * `committed` — read succeeded and its values are now the palette.
+ * `superseded` — read succeeded, but a read that started LATER had already
+ *   committed, so its (at least as fresh) values stand instead. The palette is
+ *   authoritative either way, so this is a success, not a failure.
+ * `failed` — the theme could not be read. Nothing was committed and the palette
+ *   is whatever it was before.
+ */
+type PaletteReadOutcome = "committed" | "superseded" | "failed";
+
+/**
+ * Read the persisted theme once and commit it unless a read that started later
+ * has already committed.
  *
  * Never throws. `getWebsiteThemeRenderState()` swallows its own database error
  * and hands back the DEFAULT values with `readFailed: true`, so `readFailed` —
  * not an exception — is the failure signal that must be honoured here.
+ *
+ * The invariant every caller relies on: an outcome other than `failed` implies
+ * `loadedFromStore` is true. Either this read committed, or a newer one already
+ * had.
  */
-async function readAndCommitPalette(): Promise<boolean> {
+async function readAndCommitPalette(): Promise<PaletteReadOutcome> {
   const token = ++latestWriteToken;
   try {
     const { values, readFailed } = await getWebsiteThemeRenderState();
     if (readFailed) {
       // The DEFAULT values this returned are a placeholder, not the club's
       // theme. Committing them would silently rebrand every email.
-      return false;
+      return "failed";
     }
-    // Only commit if no newer read (refresh, prime or gate) started while we
-    // were reading; otherwise this result is stale and must not clobber it.
-    if (token === latestWriteToken) {
+    if (token > latestCommittedToken) {
       cached = toEmailPalette(values);
       cachedAt = Date.now();
       loadedFromStore = true;
-      return true;
+      latestCommittedToken = token;
+      return "committed";
     }
-    // A newer read superseded us. It will commit its own (at least as fresh)
-    // result, so the palette is authoritative either way.
-    return loadedFromStore;
+    // A read that started later already committed. Its result is at least as
+    // fresh as ours, so the palette is authoritative and this read succeeded.
+    return "superseded";
   } catch {
     // Defensive: `getWebsiteThemeRenderState` is not expected to throw, but a
     // palette read must never take an email down with it.
-    return false;
+    return "failed";
   }
 }
 
-/** One warning per window, so an outage cannot turn into a log flood. */
+/**
+ * One warning per window, so an outage cannot turn into a log flood.
+ *
+ * The logger call is guarded because `ensureEmailPaletteReady()` is documented as
+ * never throwing and is now awaited on EVERY send path. A logger fault on this
+ * branch — a transport failure, or in a test a mock without a `warn` member —
+ * would otherwise turn cosmetically-off branding into a lost email: `sendEmail()`
+ * awaits the gate as its first statement, so the throw lands before any
+ * `EmailLog` row exists, and a per-recipient `catch` (as in `notices-email.ts`)
+ * swallows it, leaving nothing for the retry cron to find. The throttle stamp is
+ * taken BEFORE the call so a throwing logger cannot defeat it either.
+ */
 function warnRenderingWithBuiltInDefault(reason: string): void {
   const now = Date.now();
   if (
@@ -224,10 +266,15 @@ function warnRenderingWithBuiltInDefault(reason: string): void {
     return;
   }
   lastUnavailableWarnAt = now;
-  logger.warn(
-    { reason },
-    "Rendering email with the built-in default palette: the club's saved Site Style theme could not be read. Email branding will not match the site until the theme becomes readable.",
-  );
+  try {
+    logger.warn(
+      { reason },
+      "Rendering email with the built-in default palette: the club's saved Site Style theme could not be read. Email branding will not match the site until the theme becomes readable.",
+    );
+  } catch {
+    // Nothing useful is left to do: the fallback for a broken logger cannot be
+    // the logger. The email still goes out, which is the point.
+  }
 }
 
 async function refreshEmailPalette(): Promise<void> {
@@ -247,9 +294,24 @@ async function refreshEmailPalette(): Promise<void> {
   }
   refreshing = true;
   // Stamp the time up-front so a burst of renders triggers only one refresh.
+  const cachedAtBeforeRefresh = cachedAt;
   cachedAt = Date.now();
   try {
-    await readAndCommitPalette();
+    const outcome = await readAndCommitPalette();
+    if (outcome === "failed") {
+      // Nothing was committed, so the TTL clock must not stay advanced: leaving
+      // it would suppress the next attempt for a full TTL, and an admin who
+      // changed the club's colours during a brief database blip would wait five
+      // minutes for emails to pick them up rather than the thirty seconds the
+      // failure cooldown advertises. Rolling it back is only safe BECAUSE the
+      // cooldown is armed in the same breath — otherwise the very next
+      // `emailPalette()` call would start another read, which is the traffic the
+      // cooldown exists to stop.
+      cachedAt = cachedAtBeforeRefresh;
+      failedLoadAt = Date.now();
+    } else {
+      failedLoadAt = 0;
+    }
   } finally {
     refreshing = false;
   }
@@ -281,7 +343,7 @@ export function emailPalette(): EmailPalette {
  *   that one read rather than each starting their own.
  * - It waits at most `loadTimeoutMs`, and it never throws.
  * - When the store is unreadable it reports `built-in-default`, logs a throttled
- *   warning, and suppresses further attempts for `FAILED_LOAD_COOLDOWN_MS`.
+ *   warning, and suppresses further WAITING for `FAILED_LOAD_COOLDOWN_MS`.
  */
 export async function ensureEmailPaletteReady(): Promise<EmailPaletteReadiness> {
   if (loadedFromStore) {
@@ -291,8 +353,23 @@ export async function ensureEmailPaletteReady(): Promise<EmailPaletteReadiness> 
     return READY_FROM_STORE;
   }
 
+  // Inside the cooldown window, render now on the current palette. This check
+  // deliberately does NOT care whether a read is still in flight, and that is
+  // the whole point of the bound: a read that TIMED OUT is by definition still
+  // pending, so requiring `inFlightLoad === null` here would skip the cooldown
+  // in exactly the case it exists for. A wedged theme read — a `ClubTheme`
+  // SELECT parked behind an ACCESS EXCLUSIVE lock during a migration, say, with
+  // no statement timeout to end it — would then charge EVERY email a fresh full
+  // `loadTimeoutMs`: two gate calls per message, three with a stored body
+  // override, so 10-15s each, and `notices-email.ts` loops recipients
+  // sequentially with the gate inside the loop, which on a 300-member notice is
+  // most of an hour. Two admin refund-request replies also await the gate on the
+  // request path, where that wait is the HTTP response time.
+  //
+  // A late-settling read still wins: it commits, clears `failedLoadAt` and sets
+  // `loadedFromStore`, so the next email takes the warm early return above and
+  // the cooldown is over the moment the theme is actually readable.
   if (
-    inFlightLoad === null &&
     failedLoadAt !== 0 &&
     Date.now() - failedLoadAt < FAILED_LOAD_COOLDOWN_MS
   ) {
@@ -303,12 +380,17 @@ export async function ensureEmailPaletteReady(): Promise<EmailPaletteReadiness> 
   const load =
     inFlightLoad ??
     (inFlightLoad = (async () => {
+      let outcome: PaletteReadOutcome = "failed";
       try {
-        const ok = await readAndCommitPalette();
-        failedLoadAt = ok ? 0 : Date.now();
+        outcome = await readAndCommitPalette();
+      } catch {
+        // `readAndCommitPalette` already swallows everything; belt and braces so
+        // this shared promise can never reject and take a waiter's send with it.
+        outcome = "failed";
       } finally {
         inFlightLoad = null;
       }
+      failedLoadAt = outcome === "failed" ? Date.now() : 0;
     })());
 
   let timedOut = false;
@@ -332,7 +414,9 @@ export async function ensureEmailPaletteReady(): Promise<EmailPaletteReadiness> 
   if (timedOut) {
     // Arm the cooldown from the WAITER too. The read is still in flight and may
     // yet succeed, but until it does, every further email would otherwise queue
-    // behind its own full timeout.
+    // behind its own full timeout. Note the `loadedFromStore` check above runs
+    // FIRST, so a read that committed in the same tick as the timer firing is
+    // not recorded as a failure.
     failedLoadAt = Date.now();
   }
   warnRenderingWithBuiltInDefault(timedOut ? "read-timeout" : "read-failed");
@@ -379,10 +463,14 @@ export async function renderEmailHtml<T>(build: () => T): Promise<T> {
  * later read.
  */
 export async function primeEmailPalette(): Promise<void> {
-  const committed = await readAndCommitPalette();
-  if (committed) {
+  const outcome = await readAndCommitPalette();
+  if (outcome !== "failed") {
     failedLoadAt = 0;
   }
+  // A FAILED prime deliberately does not arm the cooldown. A boot or save prime
+  // runs ahead of any email, so spending the next thirty seconds of email
+  // branding on a wait no email asked for would work against #2900; the gate
+  // arms the cooldown when a read fails in service of an actual send.
 }
 
 /** Test hook: reset the module-level cache to its initial cold state. */
@@ -393,6 +481,7 @@ export function __resetEmailPaletteCacheForTests(options?: {
   cachedAt = 0;
   refreshing = false;
   latestWriteToken = 0;
+  latestCommittedToken = 0;
   loadedFromStore = false;
   failedLoadAt = 0;
   inFlightLoad = null;
