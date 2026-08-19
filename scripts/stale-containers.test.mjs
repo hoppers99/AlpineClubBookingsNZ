@@ -70,31 +70,87 @@ function resolverFor(states) {
 
 describe("extractIssueNumber", () => {
   it("reads the canonical issue<n> token", () => {
-    expect(extractIssueNumber("pg-issue2595")).toEqual({ issue: 2595, reason: null });
+    expect(extractIssueNumber("pg-issue2595")).toEqual({
+      issue: 2595,
+      reason: null,
+      source: "issue-token",
+    });
     expect(extractIssueNumber("tacbookings-issue2595-app-1")).toEqual({
       issue: 2595,
       reason: null,
+      source: "issue-token",
+    });
+  });
+
+  it("accepts the canonical token in a name from no known family", () => {
+    // The token is an explicit declaration, so it needs no prefix anchor — that
+    // is exactly why the docs prefer it over a bare number.
+    expect(extractIssueNumber("zookeeper-issue2181")).toEqual({
+      issue: 2181,
+      reason: null,
+      source: "issue-token",
     });
   });
 
   it("lets the canonical token win over an unrelated digit run in the same name", () => {
     // Without this, adopting the convention would make a name LESS resolvable
     // than the legacy shape it replaced.
-    expect(extractIssueNumber("pg-issue2595-shard-4096")).toEqual({ issue: 2595, reason: null });
+    expect(extractIssueNumber("pg-issue2595-shard-4096")).toEqual({
+      issue: 2595,
+      reason: null,
+      source: "issue-token",
+    });
+  });
+
+  it("refuses an issue-shaped digit run in a name from no agent-owned family", () => {
+    /*
+      Review measured this on the real module: with no anchor, any 3-7 digit
+      segment inside the repository's issue range claimed the container.
+      `zookeeper-2181` -> #2181 (a CLOSED issue), `etcd-2379` -> #2379 (CLOSED),
+      `snapshot-2026`, `pgdata-2026`, `db-2024` — none of them agent lane
+      containers, all of them printed with a `docker rm -f` line. #2794's own
+      requirement is "do not infer ownership from arbitrary substring matches
+      that could target unrelated containers".
+    */
+    for (const name of ["zookeeper-2181", "etcd-2379", "snapshot-2026", "pgdata-2026", "db-2024"]) {
+      expect(extractIssueNumber(name), name).toEqual({
+        issue: null,
+        reason: "unanchored-digits",
+        source: null,
+      });
+    }
   });
 
   it("reads the legacy bare-numeric and glued shapes measured on the host", () => {
-    expect(extractIssueNumber("pg-2376").issue).toBe(2376);
-    expect(extractIssueNumber("drift-2597").issue).toBe(2597);
-    expect(extractIssueNumber("pg-race-2595-resume").issue).toBe(2595);
-    expect(extractIssueNumber("pg-2623-fence").issue).toBe(2623);
-    expect(extractIssueNumber("tacbookings-e2e2595").issue).toBe(2595);
+    // Every one of these carries an agent-owned first segment, which is what the
+    // anchor above requires and what the real host debris looked like.
+    expect(extractIssueNumber("pg-2376")).toMatchObject({ issue: 2376, source: "bare-digits" });
+    expect(extractIssueNumber("drift-2597")).toMatchObject({ issue: 2597, source: "bare-digits" });
+    expect(extractIssueNumber("pg-race-2595-resume")).toMatchObject({ issue: 2595 });
+    expect(extractIssueNumber("pg-2623-fence")).toMatchObject({ issue: 2623 });
+    expect(extractIssueNumber("wt-2794")).toMatchObject({ issue: 2794 });
+    expect(extractIssueNumber("tacbookings-e2e2595")).toMatchObject({
+      issue: 2595,
+      source: "glued-digits",
+    });
   });
 
   it("refuses a name with no issue number in it", () => {
-    expect(extractIssueNumber("my-scratch-db")).toEqual({ issue: null, reason: "no-issue-in-name" });
-    expect(extractIssueNumber("")).toEqual({ issue: null, reason: "no-issue-in-name" });
-    expect(extractIssueNumber(undefined)).toEqual({ issue: null, reason: "no-issue-in-name" });
+    expect(extractIssueNumber("my-scratch-db")).toEqual({
+      issue: null,
+      reason: "no-issue-in-name",
+      source: null,
+    });
+    expect(extractIssueNumber("")).toEqual({
+      issue: null,
+      reason: "no-issue-in-name",
+      source: null,
+    });
+    expect(extractIssueNumber(undefined)).toEqual({
+      issue: null,
+      reason: "no-issue-in-name",
+      source: null,
+    });
   });
 
   it("never reads a Compose container number or a short digit run as an issue", () => {
@@ -107,10 +163,15 @@ describe("extractIssueNumber", () => {
   });
 
   it("refuses an ambiguous name rather than guessing an owner", () => {
-    expect(extractIssueNumber("pg-2595-2597")).toEqual({ issue: null, reason: "ambiguous" });
+    expect(extractIssueNumber("pg-2595-2597")).toEqual({
+      issue: null,
+      reason: "ambiguous",
+      source: null,
+    });
     expect(extractIssueNumber("pg-issue2595-issue2597")).toEqual({
       issue: null,
       reason: "ambiguous",
+      source: null,
     });
   });
 });
@@ -216,6 +277,54 @@ describe("buildReport", () => {
     // Ownership failed, so GitHub was never asked — no lookup, no false answer.
     expect(resolveIssueState).not.toHaveBeenCalled();
     expect(report.groups).toEqual([]);
+  });
+
+  it("never claims a host container whose name merely contains an issue-shaped number", async () => {
+    // The resolver would happily call #2181 closed. It is never asked, because
+    // ownership fails first — a digit run in somebody else's container name is
+    // not an ownership claim.
+    const resolveIssueState = resolverFor({ 2181: "CLOSED", 2026: "CLOSED" });
+    const report = await buildReport({
+      listContainers: async () => [
+        container({ name: "zookeeper-2181" }),
+        container({ name: "pgdata-2026" }),
+      ],
+      resolveIssueState,
+      now: NOW,
+    });
+
+    expect(report.entries.map((entry) => entry.classification)).toEqual(["unknown", "unknown"]);
+    expect(report.entries.every((entry) => entry.reviewAsStale === false)).toBe(true);
+    expect(report.entries[0].note).toContain("not an agent-owned name");
+    expect(resolveIssueState).not.toHaveBeenCalled();
+    expect(report.groups).toEqual([]);
+    expect(renderReport(report)).not.toContain("docker rm -f");
+  });
+
+  it("shows how each owner was established, so a name-derived guess is visible", async () => {
+    const report = await buildReport({
+      listContainers: async () => [
+        container({ name: "pg-2376" }),
+        container({ name: "pg-issue2595" }),
+        container({ name: "scratch-db", issueLabel: "2597" }),
+      ],
+      resolveIssueState: resolverFor({ 2376: "CLOSED", 2595: "CLOSED", 2597: "CLOSED" }),
+      now: NOW,
+    });
+
+    expect(
+      report.entries.map((entry) => [entry.name, entry.ownerSource]),
+    ).toEqual([
+      ["pg-2376", "bare-digits"],
+      ["pg-issue2595", "issue-token"],
+      ["scratch-db", "issue-label"],
+    ]);
+
+    const rendered = renderReport(report);
+    expect(rendered).toContain("OWNER FROM");
+    expect(rendered).toMatch(/pg-2376\s+-\s+#2376\s+name digits/);
+    expect(rendered).toMatch(/pg-issue2595\s+-\s+#2595\s+issue<n>/);
+    expect(rendered).toMatch(/scratch-db\s+-\s+#2597\s+label/);
   });
 
   it('reports "unknown" — never "safe to remove" — when GitHub status cannot be resolved', async () => {

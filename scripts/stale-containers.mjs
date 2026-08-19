@@ -48,7 +48,10 @@
  *   3. An explicit `agent-lane.issue=<n>` label is authoritative when present.
  *   4. Otherwise the issue number is read out of the Compose project name (for a
  *      Compose-managed container) or the container name (for a standalone one),
- *      by the conservative extraction in `extractIssueNumber` below.
+ *      by the conservative extraction in `extractIssueNumber` below — and only
+ *      when that name belongs to an agent-owned family
+ *      (`AGENT_OWNED_PREFIXES`). A digit run in somebody else's container name
+ *      establishes nothing.
  */
 import process from "node:process";
 import { execFileSync } from "node:child_process";
@@ -101,6 +104,28 @@ const CANONICAL_ISSUE_TOKEN = /(?:^|[-_])issue(\d{1,7})(?=$|[-_])/gi;
 const BARE_NUMERIC_SEGMENT = /^\d{3,7}$/;
 
 /**
+ * First-segment names that mark a container or Compose project as agent-owned.
+ *
+ * This anchor is the difference between "a digit run in a name" and "an agent
+ * lane's container", and #2794 requires it in as many words: *do not infer
+ * ownership from arbitrary substring matches that could target unrelated
+ * containers.* Without it a 3-7 digit segment inside this repository's issue range
+ * was enough to claim any container on the host — measured, `zookeeper-2181`,
+ * `etcd-2379`, `snapshot-2026` and `pgdata-2026` all resolved to closed
+ * references and were printed as debris with a `docker rm -f` line, and the
+ * tool's own canonical example `pg-2376` is coincidentally the Docker daemon TLS
+ * port.
+ *
+ * The set is the measured agent-owned naming families (`pg-2376`, `pg-race-2595`,
+ * `drift-2597`, `wt-2794`, `tacbookings-e2e2595`) and nothing else. It applies
+ * ONLY to the legacy digit-run path: the canonical `issue<n>` token and the
+ * `agent-lane.issue` label are explicit declarations and need no anchor, which is
+ * the whole reason to prefer them. A lane whose naming family is not listed here
+ * declares itself with the token or the label rather than by adding a prefix.
+ */
+export const AGENT_OWNED_PREFIXES = new Set(["pg", "drift", "wt", "tacbookings"]);
+
+/**
  * A glued suffix on an otherwise alphabetic segment: `e2e2595` in
  * `tacbookings-e2e2595`. The segment must END in the digit run and the part
  * before it must end in a letter, so `postgres16` (two digits) and a pure
@@ -111,17 +136,24 @@ const GLUED_NUMERIC_SUFFIX = /^(?:[a-z0-9]*[a-z])(\d{3,7})$/i;
 /**
  * Pull the owning issue number out of an agent-owned name.
  *
- * Returns `{ issue }` only when exactly one distinct candidate is found.
+ * Returns `{ issue, source }` only when exactly one distinct candidate is found
+ * in a name that is agent-owned. `source` records HOW the number was read —
+ * `issue-token`, `bare-digits` or `glued-digits` — because a declared owner and a
+ * digit run are not equally trustworthy and the report says which it had.
+ *
  * Anything else returns a reason, and every reason routes to `unknown`:
  *
  *   - `no-issue-in-name` — nothing issue-shaped is present. A container the
  *     convention does not cover is somebody else's, not debris.
  *   - `ambiguous` — two or more different numbers. `pg-2595-2597` could be owned
  *     by either, and guessing is exactly the false-deletion risk this refuses.
+ *   - `unanchored-digits` — a single issue-shaped digit run, in a name that does
+ *     not belong to an agent-owned family (`zookeeper-2181`, `pgdata-2026`). The
+ *     number resolves; the ownership claim does not.
  */
 export function extractIssueNumber(name) {
   const text = String(name ?? "");
-  if (!text) return { issue: null, reason: "no-issue-in-name" };
+  if (!text) return { issue: null, reason: "no-issue-in-name", source: null };
 
   const canonical = new Set();
   for (const match of text.matchAll(CANONICAL_ISSUE_TOKEN)) {
@@ -130,22 +162,37 @@ export function extractIssueNumber(name) {
   // The canonical token wins outright. A name that declares `issue2595` has said
   // what it means, and letting a stray digit run elsewhere in the same name turn
   // that into "ambiguous" would punish the convention we want lanes to adopt.
-  if (canonical.size === 1) return { issue: [...canonical][0], reason: null };
-  if (canonical.size > 1) return { issue: null, reason: "ambiguous" };
+  if (canonical.size === 1) {
+    return { issue: [...canonical][0], reason: null, source: "issue-token" };
+  }
+  if (canonical.size > 1) return { issue: null, reason: "ambiguous", source: null };
 
+  const segments = text.split(/[-_]/);
   const legacy = new Set();
-  for (const segment of text.split(/[-_]/)) {
+  let sawBare = false;
+  for (const segment of segments) {
     if (BARE_NUMERIC_SEGMENT.test(segment)) {
       legacy.add(Number(segment));
+      sawBare = true;
       continue;
     }
     const glued = GLUED_NUMERIC_SUFFIX.exec(segment);
     if (glued) legacy.add(Number(glued[1]));
   }
 
-  if (legacy.size === 1) return { issue: [...legacy][0], reason: null };
-  if (legacy.size > 1) return { issue: null, reason: "ambiguous" };
-  return { issue: null, reason: "no-issue-in-name" };
+  if (legacy.size > 1) return { issue: null, reason: "ambiguous", source: null };
+  if (legacy.size === 0) return { issue: null, reason: "no-issue-in-name", source: null };
+  if (!AGENT_OWNED_PREFIXES.has(String(segments[0]).toLowerCase())) {
+    return { issue: null, reason: "unanchored-digits", source: null };
+  }
+  // When both shapes matched the same number, report the bare one: it is the less
+  // trustworthy of the two and the reserved-family refusal in `classifyOwnership`
+  // keys off it.
+  return {
+    issue: [...legacy][0],
+    reason: null,
+    source: sawBare ? "bare-digits" : "glued-digits",
+  };
 }
 
 /**
@@ -159,22 +206,38 @@ export function classifyOwnership(container) {
   const project = container.project || null;
 
   if (project && RESERVED_PROJECTS.has(project)) {
-    return { ownership: "shared", issue: null, reason: `reserved Compose project ${project}` };
+    return {
+      ownership: "shared",
+      issue: null,
+      source: "reserved-project",
+      reason: `reserved Compose project ${project}`,
+    };
   }
   if (String(container.sharedLabel ?? "").toLowerCase() === "true") {
-    return { ownership: "shared", issue: null, reason: `${SHARED_LABEL}=true` };
+    return {
+      ownership: "shared",
+      issue: null,
+      source: "shared-label",
+      reason: `${SHARED_LABEL}=true`,
+    };
   }
 
   const labelled = String(container.issueLabel ?? "").trim();
   if (labelled) {
     if (/^\d{1,7}$/.test(labelled)) {
-      return { ownership: "agent-lane", issue: Number(labelled), reason: `${ISSUE_LABEL} label` };
+      return {
+        ownership: "agent-lane",
+        issue: Number(labelled),
+        source: "issue-label",
+        reason: `${ISSUE_LABEL} label`,
+      };
     }
     // A malformed label is worse than no label: something set it deliberately
     // and got it wrong, so say so instead of quietly falling back to the name.
     return {
       ownership: "unowned",
       issue: null,
+      source: "issue-label",
       reason: `${ISSUE_LABEL} label is not an issue number: ${labelled}`,
     };
   }
@@ -182,18 +245,26 @@ export function classifyOwnership(container) {
   // Prefer the Compose project name. Every container in the project shares one
   // owner, so reading the project answers once for the whole stack and cannot
   // be confused by a per-service name.
-  const source = project ?? container.name;
-  const { issue, reason } = extractIssueNumber(source);
+  const basis = project ?? container.name;
+  const { issue, reason, source } = extractIssueNumber(basis);
   if (issue === null) {
-    return {
-      ownership: "unowned",
-      issue: null,
-      reason: reason === "ambiguous"
-        ? `more than one issue number in "${source}"`
-        : `no issue number in "${source}"`,
-    };
+    return { ownership: "unowned", issue: null, source: null, reason: describeNoOwner(reason, basis) };
   }
-  return { ownership: "agent-lane", issue, reason: `issue number read from "${source}"` };
+  return { ownership: "agent-lane", issue, source, reason: `issue number read from "${basis}"` };
+}
+
+/** Turn an `extractIssueNumber` reason into the sentence the report prints. */
+function describeNoOwner(reason, basis) {
+  if (reason === "ambiguous") return `more than one issue number in "${basis}"`;
+  if (reason === "unanchored-digits") {
+    const prefixes = [...AGENT_OWNED_PREFIXES].map((prefix) => `${prefix}-`).join(", ");
+    return (
+      `"${basis}" carries an issue-shaped digit run but is not an agent-owned name, so its ` +
+      `owner is not established — declare one with an issue<n> token, an ${ISSUE_LABEL} label, ` +
+      `or one of the ${prefixes} name families`
+    );
+  }
+  return `no issue number in "${basis}"`;
 }
 
 /**
@@ -323,7 +394,7 @@ export async function buildReport({ listContainers, resolveIssueState, now = Dat
     }
   }
 
-  const entries = owned.map(({ container, ownership, issue, reason }) => {
+  const entries = owned.map(({ container, ownership, issue, reason, source }) => {
     const resolved = issue === null ? null : issueStates.get(issue);
     const issueState = resolved?.state ?? null;
 
@@ -357,6 +428,11 @@ export async function buildReport({ listContainers, resolveIssueState, now = Dat
       createdAt: container.createdAt ?? "",
       ageDays: ageInDays(container.createdAt, now),
       issue,
+      // How the owner was established, not just what it is. A row whose owner came
+      // from a digit run in a name is a weaker claim than one carrying a label or
+      // the `issue<n>` token, and an operator deciding whether to run a teardown
+      // is entitled to see which they are looking at.
+      ownerSource: source ?? null,
       issueState,
       classification,
       note,
@@ -475,11 +551,28 @@ export function groupEntries(entries) {
   });
 }
 
+/**
+ * How the owner was established, in the fewest words that still distinguish a
+ * declaration from a guess. `name digits` is the row to read twice.
+ */
+const OWNER_SOURCE_LABELS = {
+  "reserved-project": "reserved",
+  "shared-label": "label",
+  "issue-label": "label",
+  "issue-token": "issue<n>",
+  "bare-digits": "name digits",
+  "glued-digits": "name digits",
+};
+
 const COLUMNS = [
   ["CONTAINER", (entry) => entry.name],
   ["PROJECT", (entry) => entry.project ?? "-"],
   ["ISSUE", (entry) => (entry.issue === null ? "-" : `#${entry.issue}`)],
-  ["ISSUE STATE", (entry) => entry.issueState ?? "unknown"],
+  ["OWNER FROM", (entry) => OWNER_SOURCE_LABELS[entry.ownerSource] ?? "-"],
+  // "-" rather than "unknown" when no owner was established: nothing was asked
+  // of GitHub for that row, and printing "unknown" invites the reader to think a
+  // lookup failed on a container the report is deliberately protecting.
+  ["ISSUE STATE", (entry) => entry.issueState ?? (entry.issue === null ? "-" : "unknown")],
   ["CONTAINER STATE", (entry) => entry.state || "-"],
   ["AGE", (entry) => (entry.ageDays === null ? "-" : `${entry.ageDays}d`)],
   ["REVIEW AS STALE", (entry) => (entry.reviewAsStale ? "yes" : "no")],
