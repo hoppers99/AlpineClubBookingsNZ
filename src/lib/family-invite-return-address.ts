@@ -84,11 +84,22 @@ const FAMILY_INVITE_RETURN_PATH_PATTERN = /^\/family-invite\/[a-f0-9]{64}$/;
 /**
  * The safe family-invite return path in `candidate`, or null.
  *
- * Both halves matter and neither is redundant: `getSafeInternalReturnPath()`
- * rejects everything that is not a same-origin relative path (it is the guard
- * `callbackUrl` already uses), and the pattern then rejects every same-origin
- * path that is not an invite page — including one carrying a query string or a
- * fragment, which the sanitiser preserves and this cookie has no use for.
+ * Two layers, and it is worth being exact about which one is load-bearing today,
+ * because a docblock that overstates a guard is how the guard stops being
+ * checked. **The anchored pattern is the binding control**: nothing that is not
+ * literally `/family-invite/<64 lowercase hex>` survives it, which already
+ * excludes every absolute URL, scheme-relative `//evil.example`, backslash,
+ * control character, query string and fragment. Mutation-measured, 20 Aug 2026:
+ * removing `getSafeInternalReturnPath()` from this function fails **no** test,
+ * while weakening the pattern to a substring test fails cases in the pure
+ * module, the resolver and the proxy.
+ *
+ * `getSafeInternalReturnPath()` is kept anyway, and deliberately: it is the
+ * guard `callbackUrl` already uses, so a future change that loosens this pattern
+ * — to admit a second invite shape, say — cannot turn this function into an open
+ * redirect on the way. It is defence in depth, not the thing standing between a
+ * planted cookie and `https://evil.example`. Do not remove it, and do not
+ * weaken the pattern on the strength of it being there.
  */
 export function getFamilyInviteReturnPath(
   candidate: string | null | undefined,

@@ -37,9 +37,12 @@ describe("getFamilyInviteReturnPath (#2827)", () => {
   });
 
   it("refuses every off-origin shape — the open-redirect guard", () => {
-    // Delegated to getSafeInternalReturnPath(), the guard `callbackUrl` already
-    // uses, so these are the shapes that must never survive whatever else changes.
-    // Each one is an attempt to make a post-login redirect leave this origin.
+    // Each one is an attempt to make a post-login redirect leave this origin, and
+    // this case pins the PROPERTY — none of them survives — rather than which of
+    // the two layers refuses it. Measured: today the anchored pattern refuses all
+    // of them on its own, and getSafeInternalReturnPath() is the defence-in-depth
+    // half that would take over if the pattern were ever loosened. See the
+    // function's docblock, which says the same thing in the same words.
     for (const candidate of [
       `https://evil.example${INVITE_PATH}`,
       `http://evil.example${INVITE_PATH}`,
