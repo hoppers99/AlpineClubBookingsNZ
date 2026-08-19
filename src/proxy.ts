@@ -511,7 +511,13 @@ function serialiseSignedInHintCookie(
  * A browser too old to send `Sec-Fetch-*` at all writes no address and degrades to
  * the member's ordinary post-login landing — the same graceful degradation as an
  * expired cookie, and the page's own copy already tells the recipient to return to
- * the link once their login is active.
+ * the link once their login is active. Measured on the vendored next runtime: the
+ * middleware adapter strips only the five `FLIGHT_HEADERS`, so `Sec-Fetch-*`
+ * reaches this function intact. A Next SOFT navigation would not qualify — an RSC
+ * fetch reports `empty` — and today nothing links to the invite page from inside
+ * the app at all: the only ways in are the emailed link and the wrong-account
+ * branch's sign-out return, both full document navigations. Anyone adding an
+ * in-app `<Link>` to it needs to know that.
  *
  * The value is a path, never a URL, and it is re-validated on the way out by
  * `getFamilyInviteReturnPath()` at each of the four post-login landing sites.

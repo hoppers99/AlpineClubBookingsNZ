@@ -310,4 +310,4 @@ src/lib/xero-operation-retry.ts 1311 domain-module
 src/lib/xero-organisation.ts 983 domain-module
 src/lib/xero-record-activity.ts 726 domain-module
 src/lib/xero-sync.ts 833 domain-module
-src/proxy.ts 1314 domain-module
+src/proxy.ts 1320 domain-module
