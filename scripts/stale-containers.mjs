@@ -2,8 +2,16 @@
 /**
  * Report agent-owned Docker debris: containers whose owning issue is closed.
  *
- *   npm run stale-containers
- *   npm run stale-containers -- --json
+ *   npm run stale-containers                  # human-readable report
+ *   npm run stale-containers -- -- --json     # portable in PowerShell, bash and CI
+ *   node scripts/stale-containers.mjs --json  # bypasses npm entirely; always exact
+ *
+ * The doubled `--` is the form `npm run agent:context` is documented with, and
+ * `parseArguments` skips a literal `--` so one line works in every shell. Do NOT
+ * write `npm run stale-containers --json` with no separator: measured, npm
+ * consumes `--json` as its own flag, the script receives nothing, and it prints
+ * the human table and exits 0 — which a JSON consumer reads as either a parse
+ * error or, worse, a padded table it half understands.
  *
  * ## Why this exists (#2794)
  *

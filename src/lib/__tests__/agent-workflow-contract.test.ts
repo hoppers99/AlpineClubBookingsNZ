@@ -248,6 +248,23 @@ describe("repository agent workflow contract", () => {
       "a lane abandoned or replaced, and a failed experiment",
     );
     expect(packageJson).toContain('"stale-containers": "node scripts/stale-containers.mjs"');
+
+    /*
+      Review found the placement hazard the section above cannot fix on its own:
+      the obligation lived only in the Codex guide, while a lane's close-out
+      sequence is defined in AGENTS.md. A lane that worked steps 1-6 and deleted
+      its branch never met the rule, which is the exact failure #2794 exists to
+      stop. So the close-out step itself names teardown, and the routing row that
+      points at this guide is no longer scoped to the npm preflight alone.
+    */
+    expect(agentsNormalized).toContain(
+      "tear down any Docker infrastructure the lane started",
+    );
+    expect(agentsNormalized).toContain("`npm run stale-containers` names what");
+    expect(agentsNormalized).toContain(
+      "or Docker infrastructure a lane starts and must later tear down",
+    );
+
     expect(codex).toContain("GitHub Actions owns the full");
     expect(codexNormalized).toContain("Run a full suite locally only to diagnose");
     expect(codex).not.toContain("Luna/Terra");
