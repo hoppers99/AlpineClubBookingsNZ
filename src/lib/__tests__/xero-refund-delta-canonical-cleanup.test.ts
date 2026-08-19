@@ -435,4 +435,61 @@ describe("Stripe per-delta refund notes vs canonical cleanup and reconciliation 
       100
     );
   });
+
+  it("restores the self-heal when a settled note is voided in Xero (#2901 fix round)", async () => {
+    await settleBothDeltas();
+    expect(await sumCoveredRefundCreditNoteCents("pay_1")).toBe(100);
+
+    // The operator voids cn_10 in Xero; inbound reconciliation re-upserts the
+    // link with the live status. The write itself deactivates the mirror
+    // (normalize is status-aware), and a VOIDED note counts as nothing in the
+    // coverage sum either way — pre-fix, this state kept coverage at 100
+    // forever and the member's 10c refund was never re-credited in Xero.
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "pay_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_10",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { status: "VOIDED", total: 0.1 },
+      mergeMetadata: true,
+    });
+
+    expect(activeRefundNoteIds()).toEqual(["cn_90"]);
+    expect(await sumCoveredRefundCreditNoteCents("pay_1")).toBe(90);
+
+    // The detector now sees the honest 10c shortfall and the daily
+    // reconciliation re-enqueues exactly one replacement delta.
+    outboxMocks.enqueueXeroRefundCreditNoteOperation.mockResolvedValue({
+      queueOperationId: "op_reissue",
+    });
+    const missing = await getRefundsMissingXeroCreditNotes();
+    expect(missing.count).toBe(1);
+    expect(missing.payments[0]).toMatchObject({
+      paymentId: "pay_1",
+      uncoveredCents: 10,
+    });
+    await reconcileCreditBalances();
+    expect(outboxMocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith(
+      "pay_1",
+      100
+    );
+  });
+
+  it("cleanup deactivates a stamped-VOIDED mirror that is somehow still active (#2901 fix round)", async () => {
+    await settleBothDeltas();
+    // A row stamped VOIDED while the write-time deactivation did not exist yet
+    // (or by a racing writer): still active, status merged.
+    const cn10 = state.links.find((link) => link.xeroObjectId === "cn_10");
+    expect(cn10).toBeDefined();
+    cn10!.metadata = { ...(cn10!.metadata ?? {}), status: "VOIDED" };
+    expect(cn10!.active).toBe(true);
+
+    const cleanup = await cleanupStaleCanonicalXeroObjectLinks();
+
+    expect(cleanup.deactivatedLinkIds).toHaveLength(1);
+    expect(cleanup.byCategory.paymentRefundCreditNotes).toBe(1);
+    expect(activeRefundNoteIds()).toEqual(["cn_90"]);
+    expect(await sumCoveredRefundCreditNoteCents("pay_1")).toBe(90);
+  });
 });

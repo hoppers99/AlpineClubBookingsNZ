@@ -33,6 +33,8 @@ import {
   findStripeSourcePaymentIds,
   isStripePerDeltaRefundCreditNoteLink,
 } from "./xero-hardening-canonical-links";
+import { isRefundCreditNoteLinkCancelledInXero } from "@/lib/xero-refund-note-status";
+import { sumCoveredRefundCreditNoteCents } from "@/lib/xero-sync";
 
 const DEFAULT_STALE_PENDING_MINUTES = 30;
 
@@ -424,6 +426,10 @@ export async function buildXeroReconciliationReport(options?: {
         xeroObjectType: true,
         xeroObjectId: true,
         role: true,
+        // #2901 fix round: the merged inbound status decides whether a Stripe
+        // per-delta link mirrors a LIVE note — a VOIDED/DELETED note's mirror
+        // is stale drift, never exempt coverage.
+        metadata: true,
       },
     }),
     prisma.xeroSyncOperation.findMany({
@@ -653,7 +659,10 @@ export async function buildXeroReconciliationReport(options?: {
 
   const staleCanonicalLinkRecords = links.filter((link) => {
     if (isStripePerDeltaRefundCreditNoteLink(link, stripePaymentIds)) {
-      return false;
+      // Exempt only LIVE per-delta coverage: the still-active mirror of a
+      // note VOIDED/DELETED in Xero is exactly the drift the nightly cleanup
+      // deactivates (#2901 fix round), so the digest must show it too.
+      return isRefundCreditNoteLinkCancelledInXero(link.metadata);
     }
     const expectation = canonicalExpectationByScope.get(buildCanonicalScopeKey(link));
     if (!expectation) {
@@ -667,22 +676,60 @@ export async function buildXeroReconciliationReport(options?: {
   });
   const staleCanonicalLinks = staleCanonicalLinkRecords.length;
 
-  const duplicateCanonicalLinkGroups = Array.from(activeLinksByScope.values()).filter(
-    (scopedLinks) => {
-      const firstLink = scopedLinks[0];
-      if (
-        firstLink.localModel === "Payment" &&
-        firstLink.role === "REFUND_CREDIT_NOTE" &&
-        stripePaymentIds.has(firstLink.localId)
-      ) {
-        // Several active per-delta refund notes on one Stripe payment are the
-        // contract (#2901), never duplicates.
-        return false;
-      }
-      return scopedLinks.length > 1;
-    }
-  );
+  // Several active per-delta refund notes on one Stripe payment are the
+  // contract (#2901), never duplicates — but the exemption is judged per LINK
+  // through the shared predicate, not per group (#2901 fix round): a scope
+  // group is keyed on localModel:localId:role only, so a malformed (wrong
+  // xeroObjectType) sibling can share a group with legitimate per-delta links
+  // and must still count as a duplicate, exactly as the cleanup treats it.
+  const duplicateCanonicalLinkGroups = Array.from(activeLinksByScope.values())
+    .map((scopedLinks) =>
+      scopedLinks.filter(
+        (link) => !isStripePerDeltaRefundCreditNoteLink(link, stripePaymentIds)
+      )
+    )
+    .filter((nonExemptLinks) => nonExemptLinks.length > 1);
   const duplicateActiveCanonicalLinks = duplicateCanonicalLinkGroups.length;
+
+  // #2901 fix round: OVER-coverage needs its own drift class. The health
+  // snapshot (`getRefundsMissingXeroCreditNotes`) reports only UNDER-coverage,
+  // cleanup and the classes above deliberately exempt live Stripe per-delta
+  // links, and the outbox enqueue/executor silently cap an over-covered
+  // payment's next refund note at zero — so without this count a payment whose
+  // active, non-cancelled notes exceed the refunded total over-credits the
+  // member in Xero indefinitely with no signal anywhere. Coverage is summed
+  // through the same status-aware seam every other valuation uses.
+  const stripeRefundPaymentRows =
+    stripePaymentIds.size > 0
+      ? await prisma.payment.findMany({
+          where: { id: { in: Array.from(stripePaymentIds) } },
+          select: { id: true, refundedAmountCents: true },
+        })
+      : [];
+  const overCoveredStripeRefundItems: XeroReconciliationIssueItem[] = [];
+  for (const payment of stripeRefundPaymentRows) {
+    const coveredCents = await sumCoveredRefundCreditNoteCents(payment.id);
+    if (coveredCents > payment.refundedAmountCents) {
+      overCoveredStripeRefundItems.push({
+        label: `Payment ${payment.id}`,
+        localModel: "Payment",
+        localId: payment.id,
+        localUrl: buildLocalAdminUrl("Payment", payment.id),
+        xeroObjectType: null,
+        xeroObjectId: null,
+        xeroObjectNumber: null,
+        xeroObjectUrl: null,
+        operationId: null,
+        operationStatus: null,
+        operationType: null,
+        correlationKey: null,
+        detail: `Active refund credit-note coverage is ${coveredCents} cents against a refunded total of ${payment.refundedAmountCents} cents, so Xero over-credits this member and any further refund on this payment gets no credit note.`,
+        latestErrorMessage: null,
+        createdAt: null,
+      });
+    }
+  }
+  const overCoveredStripeRefundPayments = overCoveredStripeRefundItems.length;
 
   const repeatedFailures = groupRepeatedFailures(recentFailureOperations)
     .filter((group) => group.failureCount >= repeatedFailureThreshold)
@@ -735,6 +782,7 @@ export async function buildXeroReconciliationReport(options?: {
     mismatchedCanonicalLinks,
     staleCanonicalLinks,
     duplicateActiveCanonicalLinks,
+    overCoveredStripeRefundPayments,
     stalePendingOperations,
     recentFailedOperations,
     recentPartialOperations,
@@ -761,6 +809,15 @@ export async function buildXeroReconciliationReport(options?: {
     );
   });
   const staleCanonicalItems = staleCanonicalLinkRecords.map((link) => {
+    if (
+      isStripePerDeltaRefundCreditNoteLink(link, stripePaymentIds) &&
+      isRefundCreditNoteLinkCancelledInXero(link.metadata)
+    ) {
+      return buildCanonicalLinkIssueItem(
+        link,
+        `The Xero credit note ${link.xeroObjectId} is VOIDED/DELETED in Xero but its local link is still active. The nightly link-cleanup deactivates it so the refund self-heal can reissue the uncovered delta.`
+      );
+    }
     const expectation = canonicalExpectationByScope.get(buildCanonicalScopeKey(link));
     const detail = expectation
       ? `Active ${link.role} link points to ${link.xeroObjectType} ${link.xeroObjectId}, but the local record now expects ${expectation.xeroObjectType} ${expectation.xeroObjectId}.`
@@ -862,6 +919,21 @@ export async function buildXeroReconciliationReport(options?: {
           },
         ]
       : []),
+    ...(overCoveredStripeRefundPayments > 0
+      ? [
+          {
+            id: "stripe-refund-over-coverage",
+            title: "Stripe refund coverage above the refunded total",
+            severity: "critical" as const,
+            count: overCoveredStripeRefundPayments,
+            whatWentWrong:
+              "A Stripe payment's active refund credit-note links total MORE than the money actually refunded, so Xero over-credits the member — and every later refund on that payment is silently capped to no credit note at all.",
+            howToFix:
+              'Verify the notes in Xero and void the surplus duplicates THERE (nothing is ever voided automatically, and deleting local rows fixes nothing). Inbound reconciliation and the nightly link-cleanup then deactivate the voided mirrors and coverage returns to the refunded total. Runbook: docs/xero/ARCHITECTURE.md, "Repairing Stripe refund-note links (#2901)".',
+            items: overCoveredStripeRefundItems.slice(0, topLimit),
+          },
+        ]
+      : []),
     ...(stalePendingOperations > 0
       ? [
           {
@@ -901,7 +973,7 @@ export async function buildXeroReconciliationReport(options?: {
             whatWentWrong:
               "Local records and the durable Xero object-link ledger disagree about which Xero contact, invoice, credit note, or subscription invoice is canonical.",
             howToFix:
-              "Open the linked record activity and compare the local record, active Xero links, and external Xero object. Missing links are usually repaired by the nightly backfill; mismatched or duplicate active links need admin review.",
+              'Open the linked record activity and compare the local record, active Xero links, and external Xero object. A missing link with NO row at all is repaired by the nightly backfill, but the backfill never reactivates an existing INACTIVE row — for a Stripe refund note that stays "missing" run the #2901 repair script (docs/xero/ARCHITECTURE.md, "Repairing Stripe refund-note links"). Mismatched or duplicate active links need admin review.',
             items: canonicalDriftItems,
           },
         ]
@@ -942,6 +1014,7 @@ export async function buildXeroReconciliationReport(options?: {
       mismatchedCanonicalLinks,
       staleCanonicalLinks,
       duplicateActiveCanonicalLinks,
+      overCoveredStripeRefundPayments,
       stalePendingOperations,
       recentFailedOperations,
       recentPartialOperations,

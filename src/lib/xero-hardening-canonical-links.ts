@@ -12,10 +12,14 @@
 // an unbounded duplicate-note loop (a production payment accumulated 21
 // alternating notes for one 100-cent refund). Stripe per-delta links are
 // therefore exempt from single-canonical enforcement here, exactly as they are
-// in `normalizePaymentRefundLinkWithClient` (xero-sync.ts). Non-Stripe payment
-// sources still contract to a single refund note and keep the enforcement.
+// in `normalizePaymentRefundLinkWithClient` (xero-sync.ts) — EXCEPT the mirror
+// of a note whose recorded Xero status is VOIDED/DELETED, which is stale by
+// definition and is deactivated so the self-heal can reissue the uncovered
+// delta. Non-Stripe payment sources still contract to a single refund note and
+// keep the enforcement.
 import { PaymentSource } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { isRefundCreditNoteLinkCancelledInXero } from "@/lib/xero-refund-note-status";
 import type {
   CanonicalLinkExpectation,
   CanonicalLinkRecord,
@@ -48,12 +52,15 @@ export async function findStripeSourcePaymentIds(
 }
 
 /**
- * True when this active link is a Stripe per-delta refund credit note link,
- * which the multi-note contract (INV-ADDPAY-020) keeps active alongside its
- * siblings — single-canonical cleanup must not touch it. A REFUND_CREDIT_NOTE
- * link with the wrong xeroObjectType is malformed (the pipeline only writes
- * CREDIT_NOTE) and stays subject to cleanup, as does a link whose payment does
- * not exist or is not Stripe-sourced.
+ * True when this active link is SHAPED like a Stripe per-delta refund credit
+ * note link, which the multi-note contract (INV-ADDPAY-020) keeps active
+ * alongside its siblings. Shape only: callers that exempt these links from
+ * cleanup/drift must additionally check the recorded Xero status — a
+ * VOIDED/DELETED note's mirror is NOT live coverage
+ * (`isRefundCreditNoteLinkCancelledInXero`). A REFUND_CREDIT_NOTE link with
+ * the wrong xeroObjectType is malformed (the pipeline only writes CREDIT_NOTE)
+ * and stays subject to cleanup, as does a link whose payment does not exist or
+ * is not Stripe-sourced.
  */
 export function isStripePerDeltaRefundCreditNoteLink(
   link: Pick<CanonicalLinkRecord, "localModel" | "localId" | "role" | "xeroObjectType">,
@@ -157,6 +164,9 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
         xeroObjectType: true,
         xeroObjectId: true,
         role: true,
+        // #2901 fix round: the merged inbound status decides whether a Stripe
+        // per-delta link still mirrors a LIVE note (see the filter below).
+        metadata: true,
       },
     }),
   ]);
@@ -240,6 +250,15 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
     // Single-canonical enforcement is retained ONLY for sources whose contract
     // genuinely permits one note (#2901).
     if (isStripePerDeltaRefundCreditNoteLink(link, stripePaymentIds)) {
+      // The exemption shields LIVE per-delta coverage, not the mirror of a
+      // note the operator VOIDED/DELETED in Xero: a cancelled note credits
+      // nothing (INV-ADDPAY-020), so its still-active mirror is stale drift.
+      // Deactivating it here is what re-arms the credit-reconciliation
+      // self-heal to reissue the uncovered delta (#2901 review) — this is a
+      // local link flip, never a provider call.
+      if (isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
+        return true;
+      }
       preservedStripeRefundCreditNoteLinks += 1;
       return false;
     }

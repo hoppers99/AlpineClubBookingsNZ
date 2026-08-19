@@ -3,6 +3,7 @@ import { createHash } from "crypto";
 import { prisma } from "./prisma";
 import { getXeroErrorStatusCode } from "./xero-error-shape";
 import { asRecord, readString } from "./xero-json";
+import { isRefundCreditNoteLinkCancelledInXero } from "./xero-refund-note-status";
 import { buildXeroObjectUrl, stripXeroOrgShortCode } from "./xero-links";
 import {
   redactSensitiveRecord,
@@ -161,7 +162,11 @@ export function buildXeroIdempotencyKey(
  * refund total (#1162): the link metadata's recorded `amountCents` when
  * present, else the create operation's persisted request payload
  * (`allocation.amount` in dollars), which every historical note carries.
- * Returns null when neither source can recover an amount. Shared by
+ * Returns null when neither source can recover an amount — or when the link's
+ * recorded Xero status is VOIDED/DELETED, because a cancelled note credits
+ * nothing in Xero and must not count as coverage anywhere (#2901 review:
+ * status-blind counting here permanently suppressed the self-heal after an
+ * operator void, under-crediting the member). Shared by
  * `sumCoveredRefundCreditNoteCents` and the #2901 operator repair so the two
  * can never disagree about what a legacy link is worth.
  */
@@ -170,6 +175,9 @@ export async function recoverRefundCreditNoteLinkAmountCents(
   link: { xeroObjectId: string; metadata: unknown },
   db: Prisma.TransactionClient = prisma
 ): Promise<number | null> {
+  if (isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
+    return null;
+  }
   const metadata = asRecord(link.metadata);
   const recorded = metadata?.amountCents;
   if (typeof recorded === "number" && Number.isFinite(recorded)) {
@@ -458,6 +466,19 @@ async function normalizePaymentRefundLinkWithClient(
     // the single-active canonical enforcement that non-Stripe single-note
     // refunds still rely on below.
     if (payment?.source === PaymentSource.STRIPE) {
+      // ... unless the incoming write itself says the note was VOIDED/DELETED
+      // in Xero (inbound reconciliation and the operator status recorder carry
+      // the live provider status). A cancelled note credits nothing, so its
+      // local mirror is deactivated on write — without this, an inbound
+      // re-reconcile of a voided note re-armed the phantom coverage the #2901
+      // repair had just removed (upsert's update clause forces `active` from
+      // this return value).
+      if (isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
+        return {
+          ...link,
+          active: false,
+        };
+      }
       return {
         ...link,
         active: link.active ?? true,

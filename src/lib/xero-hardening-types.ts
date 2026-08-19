@@ -93,6 +93,13 @@ export interface XeroReconciliationReport {
     mismatchedCanonicalLinks: number;
     staleCanonicalLinks: number;
     duplicateActiveCanonicalLinks: number;
+    /**
+     * Stripe payments whose ACTIVE, non-cancelled refund credit-note coverage
+     * exceeds `refundedAmountCents` (#2901 fix round). No other detector sees
+     * over-coverage: the health snapshot flags only under-coverage, and the
+     * outbox caps an over-covered payment's next note at zero silently.
+     */
+    overCoveredStripeRefundPayments: number;
     stalePendingOperations: number;
     recentFailedOperations: number;
     recentPartialOperations: number;
