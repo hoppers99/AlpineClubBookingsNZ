@@ -1,5 +1,13 @@
+// `.mts`, not `.ts`, and that extension is load-bearing (#2864). Vite 8.2.1
+// warns that a `.ts` config using ESM syntax is being loaded as CommonJS, and
+// when vite makes `configLoader: "native"` the default such a file stops
+// loading altogether. `.mts` is unambiguously ESM, so the native loader reads
+// it directly. The alternative — `"type": "module"` in `package.json` —
+// reinterprets every `.js` file in the repository and was rejected for that
+// blast radius.
+import path from "node:path";
+
 import { defineConfig, configDefaults } from "vitest/config";
-import path from "path";
 
 export default defineConfig({
   test: {
@@ -37,7 +45,10 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      // `import.meta.dirname`, not `__dirname`: this file is now ESM, where
+      // the CommonJS wrapper variables do not exist. Reading it under vite's
+      // native config loader would otherwise be a ReferenceError (#2864).
+      "@": path.resolve(import.meta.dirname, "./src"),
     },
   },
 });

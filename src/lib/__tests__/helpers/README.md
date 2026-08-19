@@ -110,8 +110,9 @@ await settleLodgeScopedPage("/api/admin/hut-leaders?lodgeId=");
 fireEvent.click(screen.getByRole("button", { name: /pick range/i }));
 ```
 
-For any suite that **mocks** `OccupancyCalendar` on `/admin/hut-leaders` or
-`/admin/roster`. The mock's button is in the DOM on the commit that first renders
+For any suite that drives a **mocked** child of a lodge-scoped admin page — the
+`OccupancyCalendar` on `/admin/hut-leaders` and `/admin/roster`, and since #2953
+`LodgeSelect` on `/admin/bed-allocation`. The mock's button is in the DOM on the commit that first renders
 the lodge-scoped form, so `fireEvent` can dispatch before that commit's passive
 effects run — and one of them resets the picked range. The picked dates are then
 wiped, failing a synchronous assertion, or removing step 2 of the assignment form
