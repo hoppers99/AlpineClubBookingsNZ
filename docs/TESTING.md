@@ -113,6 +113,40 @@ API showed the pre-settle DOM is 563 characters, header and notice only (#2885).
 synchronous expectations in `waitFor` to make them retry. The first restores the
 bug; the second hides it behind a slow pass.
 
+### It is not only the calendar, and not only the click
+
+The rule is about the page being **at rest**, so it is not confined to the three
+suites #2950 named, nor to a mocked *calendar*. It applies wherever a test drives
+a mocked child of a lodge-scoped page and then reads the DOM. #2953 measured a
+second suite where both halves bit, `bed-allocation-board-booking-scope.test.tsx`:
+
+**Settle before you interact.** That suite mocks `LodgeSelect`, so its buttons are
+clickable on the commit that first renders the board — before the passive effect
+that adopts the lodge the server echoed (#2701) has run. A click in that gap sets
+the selection to null and the still-queued adoption puts it straight back, so the
+board's scope key round-trips to the value it already had, `useScopedDashboard`
+never sees a change, and the request the test is asserting on is **never issued at
+all**. Measured with a probe that clicked deliberately early: exactly one board
+request, permanently. That state is terminal, which is why it presented as a full
+4,000ms `waitFor` window followed by a failed *synchronous* assertion — 4,125ms on
+CI, and 1 failure in 20 runs locally under 20 competing CPU burners.
+
+**Settle before you assert, too.** Awaiting a *request* is not awaiting the render
+it causes, and a page that has answered one question may still be moving. The same
+board makes **three** requests after that click, not two: the deep link, the
+unscoped read the test asserts on, and a third once #2701 re-adopts the lodge the
+server echoed. `useScopedDashboard` clears its value on every scope change, so the
+badge the test reads next is unmounted twice in between, and a synchronous read
+landing in one of those gaps fails as `Unable to find an element with the text:
+Focused booking` — 2 failures in 30 runs, in ~150ms each, so an ordering failure
+rather than a slow one. Wait for the page to reach rest, then assert once. Waiting
+on the page's own request and render is a **settle**; folding the assertion into
+that wait is a **retry**, and the prohibition above still stands.
+
+With both settles, that suite ran **30/30 under 20 competing CPU burners with the
+RTL window forced back to its 1,000ms default** — the same both-directions proof
+#2944 used, and the reason a wider window was never the fix here.
+
 ## Which project typechecks a test
 
 `npm run typecheck` runs two TypeScript projects, and between them they must
