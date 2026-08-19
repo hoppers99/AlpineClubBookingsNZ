@@ -33,10 +33,14 @@ vi.mock("@/lib/lodge-capacity", () => ({
 import type { MemberGuestConsentStatus } from "@prisma/client";
 import {
   BedAllocationAdminError,
-  assignBedRangeWithLocksHeld as assignBedRange,
+} from "@/lib/bed-allocation-admin-contract";
+import {
   manuallyAllocateBedForNightsWithLocksHeld as manuallyAllocateBedForNights,
   manuallyAllocateBedWithLocksHeld as manuallyAllocateBed,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-manual-writes";
+import {
+  assignBedRangeWithLocksHeld as assignBedRange,
+} from "@/lib/bed-allocation-range-assign";
 import { parseDateOnly } from "@/lib/date-only";
 
 function buildGuest(consentStatus: MemberGuestConsentStatus | null) {

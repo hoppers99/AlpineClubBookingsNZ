@@ -311,7 +311,7 @@ export function countActiveGuestsForNight(
  * WAY.** `stayEnd` is a departure morning, never an occupied night
  * (INV-DATE-003), and the bed-allocation planner is fed ONE PSEUDO-GUEST PER
  * NIGHT — each carrying `stayStart = night`, `stayEnd = night + 1`
- * (`candidateGuestBookings` in `admin-bed-allocation.ts`). Make this inclusive
+ * (`candidateGuestBookings` in `bed-allocation-board-records.ts`). Make this inclusive
  * and every pseudo-guest grows a phantom second night, so the planner claims the
  * morning-after bed while its real occupant is still in it: a genuine double
  * booking, on the automatic path, silently. `bed-allocation.test.ts` →

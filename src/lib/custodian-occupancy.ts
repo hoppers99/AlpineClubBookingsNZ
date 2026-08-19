@@ -321,7 +321,7 @@ export async function custodianHeldNightsForBed(input: {
  * onto a custodian-held bed-night.
  *
  * Deliberately its own class rather than `BedAllocationAdminError`: this
- * module sits UNDER admin-bed-allocation.ts (which imports it), so importing
+ * module sits UNDER the admin bed-allocation modules (which import it), so importing
  * that error type back would be a cycle. Each chokepoint maps this to its own
  * refusal shape — a 409 for the single-night path, a per-night
  * `CUSTODIAN_HOLD` conflict entry for the bulk/range paths.
@@ -341,7 +341,7 @@ export class CustodianHoldConflictError extends Error {
 /**
  * Refuse to place anything on a bed-night a custodian holds.
  *
- * THE guard, called from `allocateBedNight` — the single upsert funnel every
+ * THE guard, called from `allocateBedNightWithLocksHeld` — the single upsert funnel every
  * manual placement (single-night, bulk, board move, range assign) reaches. Its
  * callers hold the per-lodge advisory lock, so a hold created concurrently
  * either commits before this read (and is seen) or waits behind it (and sees

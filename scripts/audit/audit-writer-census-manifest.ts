@@ -936,13 +936,13 @@ export const REVIEWED_ADMIN_CATEGORIES_2730: Readonly<Record<string, string>> = 
     "lodge",
   "src/app/api/admin/bed-allocation/rooms/route.ts::POST#0": "lodge",
   "src/app/api/admin/bed-allocation/settings/route.ts::PUT#0": "lodge",
-  "src/lib/admin-bed-allocation.ts::approveBedAllocations#0": "lodge",
-  "src/lib/admin-bed-allocation.ts::moveBedAllocationsSameDateWithLocksHeld.moveUnderLock#0":
+  "src/lib/bed-allocation-approval.ts::approveBedAllocations#0": "lodge",
+  "src/lib/bed-allocation-manual-writes.ts::moveBedAllocationsSameDateWithLocksHeld.moveUnderLock#0":
     "lodge",
-  "src/lib/admin-bed-allocation.ts::moveBedAllocationsSameDateWithLocksHeld.moveUnderLock#1":
+  "src/lib/bed-allocation-manual-writes.ts::moveBedAllocationsSameDateWithLocksHeld.moveUnderLock#1":
     "lodge",
-  "src/lib/admin-bed-allocation.ts::recordRangeAssignAudit#0": "lodge",
-  "src/lib/admin-bed-allocation.ts::recordRangeAssignAudit#1": "lodge",
+  "src/lib/bed-allocation-range-audit.ts::recordRangeAssignAudit#0": "lodge",
+  "src/lib/bed-allocation-range-audit.ts::recordRangeAssignAudit#1": "lodge",
   "src/lib/bed-allocation-removal.ts::applyBedAllocationRemoval#0": "lodge",
   "src/lib/bed-allocation-removal.ts::applyBedAllocationRemoval#1": "lodge",
 
@@ -1504,11 +1504,11 @@ export const AUDIT_WRITER_WRAPPERS: Readonly<
   // `BED_ALLOCATION_PARTNERS_PROMOTED` — an action name the automatic path in
   // `bed-allocation-move.ts` already wrote as `lodge`, so this one wrapper was
   // half of a same-action, two-permission-gate split.
-  "src/lib/admin-bed-allocation.ts::recordRangeAssignAudit#0": {
+  "src/lib/bed-allocation-range-audit.ts::recordRangeAssignAudit#0": {
     sink: "createAuditLog",
     category: "lodge",
   },
-  "src/lib/admin-bed-allocation.ts::recordRangeAssignAudit#1": {
+  "src/lib/bed-allocation-range-audit.ts::recordRangeAssignAudit#1": {
     sink: "createAuditLog",
     category: "lodge",
   },

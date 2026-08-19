@@ -1747,7 +1747,7 @@ a **custodian occupancy** (#2286). The invariants:
   1. **Every** `BedAllocation` write path that places a guest on a bed re-reads
      the live holds **on the same client, immediately before the write**, and
      refuses or drops what would land on one: the manual funnel
-     `allocateBedNight`, the range assign's `CUSTODIAN_HOLD` classification,
+     `allocateBedNightWithLocksHeld`, the range assign's `CUSTODIAN_HOLD` classification,
      `runAutoBedAllocation`'s in-transaction re-filter, and the lifecycle
      reconcile's write-time re-filter (`dropRowsOnCustodianHeldBedNights`). A
      read at plan time alone is NOT enough — a reconcile is routinely called
@@ -1762,8 +1762,11 @@ a **custodian occupancy** (#2286). The invariants:
      re-filter still runs on that client.
 
   `custodian-write-path-contract.test.ts` fails CI when a new write
-  path appears undeclared, and `CUSTODIAN_BED_CONFLICT` on the allocation board
-  surfaces any row that got through anyway.
+  path appears undeclared — including a SECOND write added to a file already on
+  the list, which each site's declared occurrence count catches — and asserts
+  point 2 as an ORDER over each self-wrapping writer's own body rather than as a
+  symbol present somewhere in its module (#2688). `CUSTODIAN_BED_CONFLICT` on the
+  allocation board surfaces any row that got through anyway.
 - **A held bed cannot be deactivated or deleted**, nor can its room, while the
   hold exists (`onDelete: Restrict` is the FK backstop behind the app guards).
 - **Minor privacy.** A minor-age custodian is never individually named on the

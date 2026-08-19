@@ -54,11 +54,17 @@ vi.mock("@/lib/lodge-capacity", () => ({
 }));
 
 import {
-  getBedAllocationDashboard,
   isBookingBedAllocationLocked,
-  parseBedAllocationDateRange,
+} from "@/lib/bed-allocation-approval";
+import {
   runAutoBedAllocation,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-auto-allocate";
+import {
+  getBedAllocationDashboard,
+} from "@/lib/bed-allocation-board";
+import {
+  parseBedAllocationDateRange,
+} from "@/lib/bed-allocation-date-range";
 import { BED_ALLOCATION_PRIORITY_VOCABULARY } from "@/lib/bed-allocation-settings";
 import { reconcileBedAllocationsForBookingWithLodgeLockHeld as reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { parseDateOnly } from "@/lib/date-only";

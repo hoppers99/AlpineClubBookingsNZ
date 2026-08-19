@@ -989,7 +989,7 @@ async function autoAllocateMissingBedNights({
     // bookingId directly. reconcileBedAllocationsForBooking already skips the
     // planner for held bookings; this keeps the invariant local to the code
     // that writes BedAllocation rows. The board planner applies the same
-    // exclusion (admin-bed-allocation.ts heldSpans / unallocatedGuestNights).
+    // exclusion (bed-allocation-board.ts heldSpans / unallocatedGuestNights).
     .filter((booking) => booking.id === bookingId && !booking.wholeLodgeHold)
     .map((booking): BedAllocationBooking | null => {
       const guests: BedAllocationBooking["guests"] = [];
@@ -1602,7 +1602,7 @@ export async function reconcileBedAllocationsForBookingWithLodgeLockHeld({
   // empty range — skip the planner entirely: it would deterministically place
   // nothing, and cancel/delete flows call this inside their transactions.
   // ADR-001 short-circuit (#2285): a whole-lodge-held booking must never be
-  // fed to the planner — the board already excludes it (admin-bed-allocation
+  // fed to the planner — the board already excludes it (bed-allocation-board
   // heldSpans), and the lifecycle must agree. Keyed on the flag, not the
   // status: a held booking sits in an ordinary allocatable status, so
   // BED_ALLOCATABLE_BOOKING_STATUSES alone cannot express this.
@@ -1978,7 +1978,7 @@ async function futurePartnerShareAllocationLodgeIds(
  *    no guest row.
  *  - Every allocating writer picks its rooms from the guest's OWN booking's
  *    lodge (`roomsForBooking`/`roomsAtLodge` in `bed-allocation.ts`, and the
- *    lodge-scoped room reads in `admin-bed-allocation.ts`), and both
+ *    lodge-scoped room reads in `bed-allocation-rooms.ts`), and both
  *    `Booking.lodgeId` and `LodgeRoom.lodgeId` are NOT NULL, so the allocation's
  *    lodge is the booking's lodge.
  *  - `Booking.lodgeId` is never written after create (no writer updates it), so
