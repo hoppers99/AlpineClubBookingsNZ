@@ -1357,14 +1357,23 @@ The security-relevant properties:
   another layer.** One predicate was necessary and not sufficient — the review of
   the first cut found the invariant false at `/`, where the directive side had a
   carve-out the predicate knew nothing about (see the `/` bullet above). It now
-  rests on two facts together: the hint sync is the proxy's only `Set-Cookie`
-  writer and is gated on that predicate, and every path the predicate admits gets a
-  directive from one of the two cache rules. A third `Set-Cookie` writer, or a
-  second carve-out on the directive side, has to re-establish the pairing rather
-  than inherit it, and BOTH facts are tested rather than only documented (review
-  finding, 4 Aug 2026): the gating is mutation-proven, and the sole-writer half is a
-  source-reading contract case that walks `src/proxy.ts`'s AST and fails on any
-  `"Set-Cookie"` literal or `.cookies.set()` outside the hint sync. Without it a
+  rests on two facts together: the proxy's `Set-Cookie` writers are a known,
+  short census, every one of them gated on that predicate, and every path the
+  predicate admits gets a directive from one of the two cache rules. A further
+  `Set-Cookie` writer, or a second carve-out on the directive side, has to
+  re-establish the pairing rather than inherit it, and BOTH facts are tested
+  rather than only documented (review finding, 4 Aug 2026): the gating is
+  mutation-proven, and the census half is a source-reading contract case that
+  walks `src/proxy.ts`'s AST and fails on any `"Set-Cookie"` literal or
+  `.cookies.set()` written outside it. **#2827 is the first change to take that
+  route, so the census is now a set of two** — the hint sync, and
+  `stampFamilyInviteReturnAddress()`, which carries the family-invite post-login
+  return address on the same `GET` + `isPageShapedPath()` gate (see the #2827
+  bullet under "Admin Raw CSS on the public site" below). The census is asserted
+  both ways round, so neither a writer added somewhere new nor one deleted or
+  renamed away can pass vacuously, and the excluded-shape case beside it now
+  requires no `Set-Cookie` **at all** rather than merely no marker cookie — which
+  is what makes it cover the second writer too. Without it a
   lodge-preference or consent-banner cookie added ahead of the header block would
   have left the whole suite green while `GET /branding/logo.png` shipped that cookie
   beside `send`'s `public, max-age=…`. The hint is NOT suppressed out of territory
@@ -3000,20 +3009,84 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   instead of silently reopening the oracle. Query-string tokens
   (`/reset-password?token=…`) were never affected: `usePathname()` drops the query.
 
-- **Open, and NOT fixed by #2827: `/family-invite/[token]` renders its invite
-  token into a login link.** `src/app/(public)/family-invite/[token]/page.tsx`
-  builds `<Link href={buildLoginPath('/family-invite/<token>')}>` for the
-  signed-out and wrong-account branches, so the invite token sits in an `href` on
-  a Raw-CSS-bearing page — the same selector class. It was left alone
-  deliberately: unlike the group-join fallback this is a **server-rendered link
-  that genuinely works without JavaScript**, and the token is the callback address
-  the login flow needs, so removing it from the attribute means either dropping a
-  working no-JS path or carrying the return address some other way (a cookie, a
-  short-lived server-side handle) — a product decision, not the same
-  straightforward rule. Severity is also materially lower than the payment token:
-  the invite is bound to the invited email and the page re-checks that the
-  signed-in member's email matches before letting anyone join, so the token alone
-  is not a bearer credential.
+- **`/family-invite/[token]`'s login link: FIXED by #2827, via a server-side
+  return address (owner decision, 19 Aug 2026).** The page used to build
+  `<Link href={buildLoginPath('/family-invite/<token>')}>` for its signed-out and
+  wrong-account branches, so the invite token sat in an `href` on a
+  Raw-CSS-bearing page — the same selector class. It was not the same
+  *straightforward* rule as the two above, because unlike the group-join fallback
+  this link **genuinely works without JavaScript**, so a click handler over
+  in-memory state would have closed the oracle by quietly dropping a working
+  no-JS path. The owner chose the rework instead: keep the plain anchor, and carry
+  the return address out of the page.
+
+  Both affordances are now `<Link href="/login">` with no `callbackUrl` at all,
+  and the post-login return address travels in an `HttpOnly`, `SameSite=Lax`,
+  path-wide cookie with a ten-minute life
+  (`src/lib/family-invite-return-address.ts`). Four things make that safe rather
+  than a token in a different hiding place:
+
+  - **It is unreadable from the page.** `HttpOnly` puts it out of reach of CSS
+    attribute selectors, of `document.cookie`, and of the document, the address
+    bar and the `Referer` alike — which is a *narrower* exposure than the `href`
+    it replaces, not a lateral move. It is not a new bearer store in
+    [`TOKEN_HASHING.md`](TOKEN_HASHING.md)'s sense either: nothing is persisted
+    server-side, and `PartnerInviteToken.tokenHash` is unchanged.
+  - **`src/proxy.ts` is what writes it**, on every GET of the invite page. A
+    server component may not set a cookie during render, and the token only ever
+    reaches the server on a request whose URL contains it, so the two candidate
+    no-JS carriers were this response's own headers and a Server Action form
+    posting back to the same URL. The second is attribute-safe (measured on the
+    vendored next runtime: `defaultEncodeFormAction` returns only an
+    `$ACTION_ID_…` field name, and react-dom writes `action=""`), but its
+    no-JavaScript half is progressive enhancement that cannot be exercised
+    without a running build — so the guarantee would have shipped untested. This
+    is the **second** `Set-Cookie` writer in the proxy, and it re-establishes the
+    #2578 pairing rather than inheriting it: same `GET` + `isPageShapedPath()`
+    gate, and its one address always takes the private-only directive.
+  - **The value can only ever be an invite page.** `getFamilyInviteReturnPath()`
+    runs the candidate through `getSafeInternalReturnPath()` — the guard
+    `callbackUrl` already uses, closing the open-redirect class — and then refuses
+    every *safe internal* path that is not literally
+    `/family-invite/<64 lowercase hex>`. So a planted or shared-browser cookie
+    cannot steer a member's post-login landing to an admin page, a payment page or
+    anywhere else. `resolvePostLoginLandingPath()` re-validates it itself rather
+    than trusting its caller.
+  - **The email re-check stays, and is load-bearing.** The worst a planted value
+    achieves is landing somebody on an invite page; the page still refuses to let
+    them join unless the signed-in member's email matches the invited address.
+    This mechanism does not replace that check.
+
+  All four post-login landing sites honour the address (the landing route for
+  credentials and magic link, `/login`'s self-heal for Google, and both 2FA detour
+  pages), so no flow regresses to the dashboard; the route handler, being the only
+  one that can write cookies, clears it. An absent or expired cookie degrades to
+  the member's ordinary landing rather than to an error — the emailed link still
+  works. Severity was always materially lower than the payment token, for the
+  email-binding reason above; it is closed regardless, because a bearer-shaped
+  value in a selectable attribute is the class, not the consequence.
+
+  Four suites pin it, and each property was mutation-verified rather than merely
+  asserted. `src/lib/__tests__/family-invite-return-address.test.ts` covers the
+  shape guard and the cookie attributes, and holds the duplicated token pattern
+  in step with `ACTION_TOKEN_PATTERN` so changing the token format fails a test
+  instead of quietly disabling the return address.
+  `src/lib/__tests__/family-invite-return-cookie-proxy.test.ts` drives the real
+  Next adapter: the address is stamped on a GET of the invite page and on no
+  other address or method, for a signed-in visitor as well as a signed-out one,
+  and never beside a shared-cache directive.
+  `src/app/(public)/family-invite/[token]/__tests__/family-invite-login-link.test.tsx`
+  asserts that neither branch renders even a six-character prefix of the token in
+  any attribute or visible text, that the affordance is still a real anchor (so
+  the no-JavaScript path is genuinely kept, not just claimed), and that the email
+  re-check still refuses a wrong signed-in account. The return leg is pinned at
+  all four resolution sites — `src/lib/__tests__/post-login-landing.test.ts`,
+  `src/app/api/auth/post-login-landing/__tests__/route.test.ts` (which also pins
+  the clear-even-when-outranked behaviour),
+  `src/app/(public)/login/__tests__/login-page-session-redirect.test.tsx` and
+  `src/app/(public)/login/__tests__/two-factor-detour-landing.test.tsx` — and the
+  proxy's `Set-Cookie` writer census in `src/lib/__tests__/csp-proxy.test.ts` is
+  now the set of two described under #2578 above.
 
 ## Follow-Up Mapping
 
