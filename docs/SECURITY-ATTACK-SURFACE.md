@@ -2969,6 +2969,47 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   `appCss` variant (which excludes `rawCss`), as the `(public)` layout did before
   #2818 — not a per-field DOM change.
 
+### The hero header: one HTML sink, and only stored CMS text may reach it (#2818 D6, #2819)
+
+Every public page hero renders its header the same way, and the rule for that one
+element is now uniform across all five code-backed pages:
+
+> Only a genuine non-empty `PageContent.headerText` — admin HTML, sanitised on
+> write and again on read by `getPublishedPageContentByPath()` — may be rendered
+> through `dangerouslySetInnerHTML`. The fallback sentence the page composes when
+> that field is empty or the row is missing renders as an ordinary escaped React
+> text child.
+
+The distinction is not cosmetic. A composed fallback interpolates **club identity**
+(`name`, `lodgeName`), which is free text an admin types into Site Appearance &
+Content and which no sanitiser has ever seen — so the branch that runs when a
+deployment has no CMS row was the branch handing unsanitised settings text to an
+HTML sink. #2818 fixed `/booking-requests` and `/school-bookings` while creating
+them; #2819 removed the same latent branch from `/join`, `/join/apply` and
+`/contact`, which had carried it since they were written.
+
+It was latent rather than exploitable: every one of those pages ships a seeded row
+with non-empty `headerText`, so a normal deployment has always been on the
+sanitised branch, and reaching the other one takes an admin blanking the field or a
+deployment that has not been seeded. It is also not a privilege escalation on its
+own — the identity fields are admin-writable — but it turns a settings field into
+script on an anonymous public page, which is a different blast radius from the
+admin surface the writer already had.
+
+Pinned by `src/lib/__tests__/website-page-header-fallback-render.test.tsx` (the
+three established pages) and `booking-request-pages-fallback-render.test.tsx` (the
+two form pages). Both deliberately blank or remove the row rather than trusting
+starter data, feed a markup-shaped club identity through it, and assert the markup
+is serialised escaped with no element created — plus, for `/contact`, whose
+fallback interpolates nothing, that the element carrying it is the text `<p>` and
+not the sink `<div>`, since escaping alone cannot catch a revert there. Each file
+also keeps a positive case proving stored CMS header HTML still renders as HTML.
+
+`(website)/page.tsx`, `(website)/[...slug]/page.tsx` and the `/404` boundary in
+`src/app/not-found.tsx` compose no fallback at all — they render the stored field
+or a wholly separate hardcoded block — so the rule reaches them with nothing to
+change.
+
 ## Follow-Up Mapping
 
 - #613 - Standardize route guards: route metadata and shared active-session and
