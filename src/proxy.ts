@@ -18,6 +18,11 @@ import {
 } from "./lib/internal-return-path";
 import { ASSET_URL_EXTENSIONS } from "./lib/asset-url-404";
 import {
+  FAMILY_INVITE_RETURN_MAX_AGE_SECONDS,
+  getFamilyInviteReturnPath,
+  serialiseFamilyInviteReturnCookie,
+} from "./lib/family-invite-return-address";
+import {
   isFixedNonceWebsitePath,
   isPublicWebsitePath,
 } from "./lib/public-website-paths";
@@ -291,19 +296,28 @@ const API_NAMESPACE_ANY_CASE_PATTERN = /^\/api(?:\/|$)/i;
  * Both consequences follow from the same fact — no page document can be served here
  * — so ONE predicate answers both questions the proxy asks about such a response:
  * whether to write the private-only directive ({@link getPrivateOnlyCacheControl})
- * and whether to write the D2 marker cookie ({@link syncSignedInHint}). Keeping them
- * on one predicate is what holds the #2578 invariant structurally rather than by
- * coincidence: **the proxy never emits a `Set-Cookie` on a response whose
- * `Cache-Control` it has left to another layer.**
+ * and whether to write a cookie at all (the D2 marker in {@link syncSignedInHint},
+ * and since #2827 the family-invite return address in
+ * {@link stampFamilyInviteReturnAddress}). Keeping them on one predicate is what holds
+ * the #2578 invariant structurally rather than by coincidence: **the proxy never emits
+ * a `Set-Cookie` on a response whose `Cache-Control` it has left to another layer.**
  *
  * One predicate is necessary and was not sufficient: the review of the first cut found
  * the invariant false at `/`, where {@link getPrivateOnlyCacheControl} had a carve-out
  * this predicate knows nothing about. It is closed there, so the claim above now rests
- * on two facts together — {@link syncSignedInHint} is the proxy's ONLY `Set-Cookie`
- * writer and is gated on this predicate, and every path it admits gets a directive
- * from either `getPrivateOnlyCacheControl()` or `getAnonymousPageCacheControl()`.
- * Anything that adds a third `Set-Cookie` writer, or a second carve-out on the
- * directive side, has to re-establish the pairing rather than inherit it.
+ * on two facts together — the proxy's `Set-Cookie` writers are EXACTLY
+ * {@link syncSignedInHint} and {@link stampFamilyInviteReturnAddress}, and both are
+ * gated on this predicate, and every path it admits gets a directive from either
+ * `getPrivateOnlyCacheControl()` or `getAnonymousPageCacheControl()`. Anything that
+ * adds a further `Set-Cookie` writer, or a second carve-out on the directive side, has
+ * to re-establish the pairing rather than inherit it.
+ *
+ * #2827 added the second writer and re-established the pairing rather than inheriting
+ * it: it takes the same `request.method === "GET"` and `isPageShapedPath()` gate, its
+ * one address (`/family-invite/<token>`) is page-shaped and out of the public-website
+ * territory so it always takes {@link PRIVATE_ONLY_CACHE_CONTROL}, and
+ * `csp-proxy.test.ts` now asserts the writer census by AST **and** that neither cookie
+ * appears on the shapes this predicate excludes.
  *
  * **BOTH facts are now tested, which the first cut left to the docblock (review
  * finding, 4 Aug 2026).** The gating is mutation-proven — reverting the cookie gate to
@@ -435,6 +449,67 @@ function serialiseSignedInHintCookie(
   }
 
   return attributes.join("; ");
+}
+
+/**
+ * Stamps the #2827 family-invite post-login return address on the response to a
+ * GET of `/family-invite/<token>`.
+ *
+ * **Why the proxy carries this, rather than the page.** The sign-in affordance on
+ * that page used to be `buildLoginPath('/family-invite/<token>')`, which rendered
+ * the invite token into an `href` on a page that also injects admin-authored Raw
+ * CSS — a CSS attribute selector then reads the token a character at a time. It is
+ * a plain `/login` link now, so the return address has to travel out of band, and
+ * it must survive with JavaScript switched off. That rules almost everything out:
+ * the token only ever reaches the server on a request whose URL contains it, and a
+ * server COMPONENT may not set a cookie during render. The two remaining no-JS
+ * carriers are this response's own headers and a Server Action form posting back
+ * to the same URL. The second was measured to be attribute-safe (React writes
+ * `action=""`, and Next's `defaultEncodeFormAction` returns only an
+ * `$ACTION_ID_…` field name) but its no-JavaScript half is progressive
+ * enhancement that cannot be exercised without a running build, so the guarantee
+ * would have shipped untested. This one is a plain response header, asserted end
+ * to end through the real adapter in `csp-proxy.test.ts`.
+ *
+ * **The pairing is re-established, not inherited** — see
+ * {@link isPageShapedPath}. Same `GET` + `isPageShapedPath()` gate as
+ * {@link syncSignedInHint}: the predicate is strictly redundant here, because the
+ * address pattern already admits only one page-shaped shape, and it is kept so the
+ * invariant holds structurally rather than by coincidence about that pattern.
+ * `/family-invite/…` is out of the public-website territory and page-shaped, so
+ * {@link getPrivateOnlyCacheControl} always answers true for it and the cookie can
+ * never land beside a shared-cache directive.
+ *
+ * **Written unconditionally, session or no session.** The wrong-account branch of
+ * the invite page ("Sign in with a different account") is reached BY a signed-in
+ * visitor, and it needs the return address just as much as the signed-out branch —
+ * so gating on {@link hasSessionCookie} would have quietly dropped it for the one
+ * case that most needs to come back.
+ *
+ * The value is a path, never a URL, and it is re-validated on the way out by
+ * `getFamilyInviteReturnPath()` at each of the four post-login landing sites.
+ */
+function stampFamilyInviteReturnAddress(
+  request: NextRequest,
+  response: NextResponse,
+): void {
+  if (request.method !== "GET") return;
+
+  const path = normalisePathname(request.nextUrl.pathname);
+
+  if (!isPageShapedPath(path)) return;
+
+  const returnPath = getFamilyInviteReturnPath(path);
+
+  if (!returnPath) return;
+
+  response.headers.append(
+    "Set-Cookie",
+    serialiseFamilyInviteReturnCookie(
+      returnPath,
+      FAMILY_INVITE_RETURN_MAX_AGE_SECONDS,
+    ),
+  );
 }
 
 /**
@@ -1011,6 +1086,7 @@ export async function proxy(request: NextRequest) {
   response.headers.set(CSP_HEADER, csp);
   setSecurityHeaders(response.headers, pathname);
   syncSignedInHint(request, response, hasSessionCookie(request));
+  stampFamilyInviteReturnAddress(request, response);
 
   const anonymousCacheControl = getAnonymousPageCacheControl(request);
 

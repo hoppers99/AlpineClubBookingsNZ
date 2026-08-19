@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { buildLoginPath, getExplicitCallbackUrl } from "@/lib/auth-redirect";
+import { readFamilyInviteReturnAddress } from "@/lib/family-invite-return-address-cookie";
 import { resolvePostLoginLandingPath } from "@/lib/post-login-landing";
 import { TwoFactorEnrollPanel } from "../two-factor-panels";
 
@@ -35,8 +36,12 @@ export default async function TwoFactorEnrollPage({
   // server-side from the authoritative session, never a raced post-signIn fetch.
   // An explicit deep link still wins (D-D4). This is the single authoritative
   // resolution site for a member reaching enrollment via any entry point.
+  // #2827: same as /login/verify — the family-invite return address is read from
+  // the HttpOnly cookie so a member enrolling in 2FA on the way in still lands back
+  // on the invite, without the invite token appearing in this page's query string.
   const landing = resolvePostLoginLandingPath({
     explicitCallbackUrl,
+    privateReturnPath: await readFamilyInviteReturnAddress(),
     landingPreference: session.user.postLoginLanding,
     permissionInput: {
       adminPermissionMatrix: session.user.adminPermissionMatrix,

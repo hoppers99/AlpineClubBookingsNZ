@@ -3,13 +3,33 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PartnerInviteClaimCard } from "@/components/partner-invite-claim-card";
 import { auth } from "@/lib/auth";
-import { buildLoginPath } from "@/lib/auth-redirect";
 import { prisma } from "@/lib/prisma";
 import { getPartnerInviteTokenForClaim } from "@/lib/partner-invite-token";
 import { normalizeInvitedEmail } from "@/lib/partner-invite-token-policy";
 import { getCachedClubIdentity } from "@/lib/public-layout-config";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * The sign-in affordances on this page are plain, tokenless `/login` links
+ * (#2827).
+ *
+ * They used to be `buildLoginPath('/family-invite/<token>')`, which put the
+ * invite token into an `href` — and this page carries the club's normal chrome,
+ * which injects admin-authored **Raw CSS**, so `a[href^="/family-invite/9f"]`
+ * read the token out one character at a time. Do not reintroduce a callbackUrl
+ * here, in any attribute, hidden input or form action.
+ *
+ * The post-login return address is carried server-side instead, in the HttpOnly
+ * cookie `src/lib/family-invite-return-address.ts` documents: `src/proxy.ts`
+ * stamps it on every GET of this page, and all four post-login landing sites
+ * honour it. The flow still works with JavaScript switched off — these are
+ * ordinary anchors, and the cookie rides on the response that rendered them.
+ *
+ * An absent or expired cookie degrades to the member's ordinary post-login
+ * landing, never to an error; the emailed invite link still works.
+ */
+const LOGIN_PATH = "/login";
 
 function Shell({
   title,
@@ -94,8 +114,10 @@ export default async function PartnerInvitePage({
 
   const groupName = view.groupName ?? "a family group";
 
-  // Not signed in: route the recipient through the normal membership process
-  // (do not fork a second registration path), then back to this same link.
+  // Not signed in: route the recipient through the normal membership process (do
+  // not fork a second registration path). Signing in brings them back here — the
+  // return address travels in the #2827 HttpOnly cookie, not in the link, so see
+  // LOGIN_PATH above before adding a callbackUrl to either button.
   if (!session?.user?.id) {
     return (
       <Shell title="Family group invitation">
@@ -115,9 +137,7 @@ export default async function PartnerInvitePage({
             <Link href="/join/apply">Apply for membership</Link>
           </Button>
           <Button asChild variant="outline">
-            <Link href={buildLoginPath(`/family-invite/${encodeURIComponent(token)}`)}>
-              I already have an account
-            </Link>
+            <Link href={LOGIN_PATH}>I already have an account</Link>
           </Button>
         </div>
       </Shell>
@@ -143,9 +163,7 @@ export default async function PartnerInvitePage({
         </p>
         <div className="pt-2">
           <Button asChild variant="outline">
-            <Link href={buildLoginPath(`/family-invite/${encodeURIComponent(token)}`)}>
-              Sign in with a different account
-            </Link>
+            <Link href={LOGIN_PATH}>Sign in with a different account</Link>
           </Button>
         </div>
       </Shell>
