@@ -36,7 +36,7 @@ import {
   MAX_MAINTENANCE_QUESTION_HELP_LENGTH,
   MAX_MAINTENANCE_QUESTION_LABEL_LENGTH,
   MAX_MAINTENANCE_QUESTIONS,
-} from "@/lib/maintenance-reports";
+} from "@/lib/maintenance-report-limits";
 
 /**
  * The bounded question-set editor (#2780, owner decision 2: "a bounded editor,

@@ -14,6 +14,18 @@ import {
   parseMaintenancePhoto,
   MaintenancePhotoError,
 } from "@/lib/maintenance-report-photo";
+import {
+  MAX_MAINTENANCE_QUESTIONS,
+  MAX_MAINTENANCE_QUESTION_LABEL_LENGTH,
+  MAX_MAINTENANCE_QUESTION_HELP_LENGTH,
+  MAX_MAINTENANCE_QUESTION_CHOICES,
+  MAX_MAINTENANCE_QUESTION_CHOICE_LENGTH,
+  MAX_MAINTENANCE_SUMMARY_LENGTH,
+  MAX_MAINTENANCE_SHORT_ANSWER_LENGTH,
+  MAX_MAINTENANCE_LONG_ANSWER_LENGTH,
+  MAX_MAINTENANCE_REPORTER_NAME_LENGTH,
+  MAX_MAINTENANCE_REPORTER_CONTACT_LENGTH,
+} from "@/lib/maintenance-report-limits";
 
 /**
  * The shared maintenance-report service (#2780).
@@ -31,19 +43,22 @@ import {
  * member however it is shaped.
  */
 
-/** Question limits. Bounded editor, not a form builder — decision 2 on #2780. */
-export const MAX_MAINTENANCE_QUESTIONS = 20;
-export const MAX_MAINTENANCE_QUESTION_LABEL_LENGTH = 200;
-export const MAX_MAINTENANCE_QUESTION_HELP_LENGTH = 300;
-export const MAX_MAINTENANCE_QUESTION_CHOICES = 10;
-export const MAX_MAINTENANCE_QUESTION_CHOICE_LENGTH = 120;
-
-/** Answer limits, applied to every submission on both paths. */
-export const MAX_MAINTENANCE_SUMMARY_LENGTH = 200;
-export const MAX_MAINTENANCE_SHORT_ANSWER_LENGTH = 300;
-export const MAX_MAINTENANCE_LONG_ANSWER_LENGTH = 2000;
-export const MAX_MAINTENANCE_REPORTER_NAME_LENGTH = 120;
-export const MAX_MAINTENANCE_REPORTER_CONTACT_LENGTH = 200;
+// The bounded limits live in a client-safe module (no `crypto`/Prisma imports)
+// so the question editor and the shared form can import them without pulling
+// this service into the browser bundle (INV-OPS-013). Re-exported here so server
+// callers keep a single import site.
+export {
+  MAX_MAINTENANCE_QUESTIONS,
+  MAX_MAINTENANCE_QUESTION_LABEL_LENGTH,
+  MAX_MAINTENANCE_QUESTION_HELP_LENGTH,
+  MAX_MAINTENANCE_QUESTION_CHOICES,
+  MAX_MAINTENANCE_QUESTION_CHOICE_LENGTH,
+  MAX_MAINTENANCE_SUMMARY_LENGTH,
+  MAX_MAINTENANCE_SHORT_ANSWER_LENGTH,
+  MAX_MAINTENANCE_LONG_ANSWER_LENGTH,
+  MAX_MAINTENANCE_REPORTER_NAME_LENGTH,
+  MAX_MAINTENANCE_REPORTER_CONTACT_LENGTH,
+};
 
 export class MaintenanceReportValidationError extends Error {
   constructor(message: string) {
