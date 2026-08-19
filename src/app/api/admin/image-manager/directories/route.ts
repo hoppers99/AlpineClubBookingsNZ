@@ -6,6 +6,7 @@ import path from "path";
 import {
   IMAGES_ROOT,
   ensureImagesRootForRead,
+  isSafeDirectoryName,
   isStorageUnavailableCode,
   resolveInImagesRoot,
   storageUnavailableMessage,
@@ -24,7 +25,9 @@ async function collectDirs(absDir: string, relBase: string): Promise<string[]> {
       const rel = relBase ? `${relBase}/${entry.name}` : entry.name;
       result.push(rel);
       // absDir is contained under IMAGES_ROOT; entry.name comes from readdir of
-      // that directory, not from request input.
+      // that directory, not from request input. Justification and the #2841
+      // triage: docs/SECURITY-ATTACK-SURFACE.md -> "Image Manager path
+      // containment".
       // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       const children = await collectDirs(path.join(absDir, entry.name), rel);
       result.push(...children);
@@ -74,7 +77,7 @@ export async function POST(request: NextRequest) {
       ? (body as Record<string, string>).parent
       : "";
 
-  if (!name || /[/\\<>:"|?*\x00-\x1F]/.test(name)) {
+  if (!isSafeDirectoryName(name)) {
     return NextResponse.json(
       { error: "Invalid directory name" },
       { status: 400 },
@@ -86,11 +89,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid parent path" }, { status: 400 });
   }
 
-  // parentAbs is resolveInImagesRoot-contained and name is charset-validated
-  // above; the startsWith check below re-confirms containment before mkdir.
+  // parentAbs is resolveInImagesRoot-contained and `name` passed
+  // isSafeDirectoryName above; the startsWith check below re-confirms
+  // containment before mkdir. Why this suppression is justified, and the whole
+  // #2841 triage behind it, is recorded once in
+  // docs/SECURITY-ATTACK-SURFACE.md -> "Image Manager path containment".
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   const newAbs = path.join(parentAbs, name);
-  if (newAbs !== IMAGES_ROOT && !newAbs.startsWith(IMAGES_ROOT + path.sep)) {
+  // Strict: a directory being CREATED is always a child, never the root itself.
+  // This check used to carry a `newAbs !== IMAGES_ROOT &&` escape hatch, which
+  // short-circuited the containment test whenever the target resolved to the
+  // root — so with a nested parent, `name: ".."` walked back up to IMAGES_ROOT
+  // and reached mkdir (#2841). isSafeDirectoryName now stops that name earlier;
+  // dropping the escape hatch means containment no longer depends on it.
+  if (!newAbs.startsWith(IMAGES_ROOT + path.sep)) {
     return NextResponse.json({ error: "Invalid path" }, { status: 400 });
   }
 
@@ -173,7 +185,7 @@ export async function PATCH(request: NextRequest) {
       { status: 400 },
     );
   }
-  if (!newName || /[/\\<>:"|?*\x00-\x1F]/.test(newName)) {
+  if (!isSafeDirectoryName(newName)) {
     return NextResponse.json(
       { error: "Invalid directory name" },
       { status: 400 },
@@ -185,8 +197,10 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "Invalid path" }, { status: 400 });
   }
 
-  // oldAbs is resolveInImagesRoot-contained and newName is charset-validated
-  // above; the startsWith check below re-confirms containment before rename.
+  // oldAbs is resolveInImagesRoot-contained and `newName` passed
+  // isSafeDirectoryName above; the startsWith check below re-confirms
+  // containment before rename. Justification and the #2841 triage:
+  // docs/SECURITY-ATTACK-SURFACE.md -> "Image Manager path containment".
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   const newAbs = path.join(path.dirname(oldAbs), newName);
   if (!newAbs.startsWith(IMAGES_ROOT + path.sep)) {
