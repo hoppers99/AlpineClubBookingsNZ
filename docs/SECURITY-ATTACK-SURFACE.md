@@ -2935,7 +2935,7 @@ and `DEPLOYMENT.md`.
   itself is served from the store — so it now fails in seconds rather than only in
   Playwright.
 
-### Admin Raw CSS on the public site: the `data-page-slug` oracle (#2818 D8)
+### Admin Raw CSS on the public site: attribute-selector credential oracles (#2818 D8, #2827)
 
 The public footer stamps a `data-page-slug` attribute so an admin's Site-Style
 **Raw CSS** can target one page (`[data-page-slug="contact"] { … }`). Raw CSS is a
@@ -2968,6 +2968,52 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   left unchanged. The clean fix, if ever wanted, is to render these pages with the
   `appCss` variant (which excludes `rawCss`), as the `(public)` layout did before
   #2818 — not a per-field DOM change.
+
+- **The same oracle, one hop along: the group-join payment link (#2827).** The
+  group-join confirmation page rendered the pay-by-link token into an anchor
+  (`<a href="/pay/<payToken>">`) as a "if you are not redirected" fallback. That
+  token is a **bearer credential** for `/pay/[token]`, so `a[href^="/pay/9f3a"]`
+  read it out the same way. The automatic redirect is unchanged; the fallback is
+  now a button whose click handler navigates from the token held in **component
+  state**, so nothing selectable carries it. No no-JavaScript path was lost —
+  reaching that state at all requires the Confirm button's `fetch`, and only that
+  response carries the token. Pinned in
+  `src/app/(website-dynamic)/join/verify/[token]/__tests__/group-join-verify-pay-token-not-rendered.test.tsx`,
+  which asserts both halves: the navigation still reaches the right address, and
+  no attribute in the rendered tree holds even a probe-length prefix of the token.
+
+- **What #2827's census then found: `data-page-slug` was still stamping the
+  `(public)` group's tokens.** #2818's fix drives its route shapes from
+  `PER_REQUEST_WEBSITE_ROUTES`, which lists `(website-dynamic)` only — the right
+  boundary for the setup gate, the CSP nonce and the CMS catch-all, and the wrong
+  one here. The same footer is also rendered by `src/app/(public)/layout.tsx`,
+  which injects the club theme (`rawCss` included) on the same page, so every
+  `(public)` route with a `[token]` segment still stamped its credential into the
+  attribute: `/pay/[token]` — **the payment page, and the destination of the flow
+  above** — plus `/chores/[token]`, `/family-invite/[token]` and
+  `/membership-cancellation/[token]`. Closing the anchor while the destination
+  stamped the same token would have moved the oracle rather than removed it.
+  `PUBLIC_GROUP_DYNAMIC_ROUTES` in `website-footer-shell.tsx` now folds those into
+  the shapes, and because that group has no published census to drive from, the
+  test reads the `src/app/(public)` tree **from disk** and requires equality in
+  both directions — so a token route added there without the list fails a test
+  instead of silently reopening the oracle. Query-string tokens
+  (`/reset-password?token=…`) were never affected: `usePathname()` drops the query.
+
+- **Open, and NOT fixed by #2827: `/family-invite/[token]` renders its invite
+  token into a login link.** `src/app/(public)/family-invite/[token]/page.tsx`
+  builds `<Link href={buildLoginPath('/family-invite/<token>')}>` for the
+  signed-out and wrong-account branches, so the invite token sits in an `href` on
+  a Raw-CSS-bearing page — the same selector class. It was left alone
+  deliberately: unlike the group-join fallback this is a **server-rendered link
+  that genuinely works without JavaScript**, and the token is the callback address
+  the login flow needs, so removing it from the attribute means either dropping a
+  working no-JS path or carrying the return address some other way (a cookie, a
+  short-lived server-side handle) — a product decision, not the same
+  straightforward rule. Severity is also materially lower than the payment token:
+  the invite is bound to the invited email and the page re-checks that the
+  signed-in member's email matches before letting anyone join, so the token alone
+  is not a bearer credential.
 
 ## Follow-Up Mapping
 
