@@ -2992,33 +2992,73 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   no attribute in the rendered tree holds even a probe-length prefix of the token.
 
 - **What #2827's census then found: `data-page-slug` was still stamping the
-  `(public)` group's tokens.** #2818's fix drives its route shapes from
-  `PER_REQUEST_WEBSITE_ROUTES`, which lists `(website-dynamic)` only — the right
-  boundary for the setup gate, the CSP nonce and the CMS catch-all, and the wrong
-  one here. The same footer is also rendered by `src/app/(public)/layout.tsx`,
-  which injects the club theme (`rawCss` included) on the same page, so every
-  `(public)` route with a `[token]` segment still stamped its credential into the
-  attribute: `/pay/[token]` — **the payment page, and the destination of the flow
-  above** — plus `/chores/[token]`, `/family-invite/[token]` and
-  `/membership-cancellation/[token]`. Closing the anchor while the destination
-  stamped the same token would have moved the oracle rather than removed it.
-  `PUBLIC_GROUP_DYNAMIC_ROUTES` in `website-footer-shell.tsx` now folds those into
-  the shapes, and because that group has no published census to drive from, the
-  test reads the `src/app/(public)` tree **from disk** and requires equality in
-  both directions — so a token route added there without the list fails a test
-  instead of silently reopening the oracle. Query-string tokens
-  (`/reset-password?token=…`) were never affected: `usePathname()` drops the query.
+  `(public)` group's tokens — and this entry originally overstated what that
+  exposed (corrected 20 Aug 2026 by review).** #2818's fix drives its route shapes
+  from `PER_REQUEST_WEBSITE_ROUTES`, which lists `(website-dynamic)` only — the
+  right boundary for the setup gate, the CSP nonce and the CMS catch-all, and the
+  wrong one here. The same footer is also rendered by
+  `src/app/(public)/layout.tsx`, so every `(public)` route with a `[token]`
+  segment fell through to the raw-pathname branch and stamped its credential into
+  the attribute: `/pay/[token]` — **the payment page, and the destination of the
+  flow above** — plus `/chores/[token]`, `/family-invite/[token]` and
+  `/membership-cancellation/[token]`.
+
+  **What that was NOT is an admin-CSS oracle.** The first version of this entry
+  said that layout "injects the club theme (`rawCss` included) on the same page".
+  It does not: it injects `theme.appCss`, and `buildClubThemeAppCss()` excludes
+  `rawCss` by design — the same fact the accepted-residual bullet above states
+  correctly ("render these pages with the `appCss` variant (which excludes
+  `rawCss`), as the `(public)` layout did"). `buildClubThemeCss()` is the only
+  builder that appends `rawCss`, and its output reaches a page document in three
+  places: `src/components/website/website-chrome.tsx` (the `(website)` and
+  `(website-dynamic)` groups), the lodge display screen and the
+  setup-in-progress screen. So no admin selector ever ran on a `(public)` page,
+  and the two fixes above — the group-join anchor and #2818's shapes — are where
+  the live oracle was.
+
+  The `(public)` half is kept as **defence in depth**, and it is worth having:
+  the attribute stops carrying a bearer credential at all, so the day this group
+  moves under the shared chrome — exactly what #2818 did to `(website-dynamic)` —
+  cannot silently make the oracle real, and closing the group-join anchor while
+  its destination page stamped the same token would have left a stamped credential
+  one hop along. `PUBLIC_GROUP_DYNAMIC_ROUTES` in `website-footer-shell.tsx` folds
+  those routes into the shapes, and because that group has no published census to
+  drive from, the test reads the `src/app/(public)` tree **from disk** and requires
+  equality in both directions — recognising every extension Next's default
+  `pageExtensions` serves, so a `page.ts` route cannot be invisible to the scan
+  while being served normally. Query-string tokens (`/reset-password?token=…`)
+  were never affected: `usePathname()` drops the query.
+
+  Review also found the shape match claiming an address a **static** route owns:
+  `/join/apply`, the membership application form, matched `/join/[code]` on
+  segment count and was stamped `join/[code]`, so an admin rule for either page
+  hit the wrong one. `SHAPE_SHADOWED_STATIC_ROUTES` records the collisions and
+  the same disk scan requires the list to match the tree in both directions. No
+  token is involved either way — it is a styling-correctness bug in a
+  security fix, fixed in the same PR.
 
 - **`/family-invite/[token]`'s login link: FIXED by #2827, via a server-side
   return address (owner decision, 19 Aug 2026).** The page used to build
   `<Link href={buildLoginPath('/family-invite/<token>')}>` for its signed-out and
-  wrong-account branches, so the invite token sat in an `href` on a
-  Raw-CSS-bearing page — the same selector class. It was not the same
-  *straightforward* rule as the two above, because unlike the group-join fallback
-  this link **genuinely works without JavaScript**, so a click handler over
-  in-memory state would have closed the oracle by quietly dropping a working
-  no-JS path. The owner chose the rework instead: keep the plain anchor, and carry
-  the return address out of the page.
+  wrong-account branches, so the invite token sat in an `href` — and from there in
+  the recipient's address bar, their browser history and any `Referer` the next hop
+  saw.
+
+  **This entry originally called that page Raw-CSS-bearing and the `href` a CSS
+  oracle. It was not (corrected 20 Aug 2026 by review).** `/family-invite/[token]`
+  is a `(public)` route, and that group's layout injects `theme.appCss`, which
+  excludes `rawCss` — see the bullet above for the full accounting of which groups
+  get which variant. So the exposure closed here is the URL/history/`Referer` one,
+  which was real, plus the standing hazard that moving this group under the shared
+  chrome would have made the CSS oracle real without anyone revisiting the link.
+  The rework is right; the record of what it closed needed to be accurate before it
+  became this repository's memory of the event.
+
+  It was not the same *straightforward* rule as the two above either, because
+  unlike the group-join fallback this link **genuinely works without JavaScript**,
+  so a click handler over in-memory state would have dropped a working no-JS path.
+  The owner chose the rework instead: keep the plain anchor, and carry the return
+  address out of the page.
 
   Both affordances are now `<Link href="/login">` with no `callbackUrl` at all,
   and the post-login return address travels in an `HttpOnly`, `SameSite=Lax`,
@@ -3032,7 +3072,10 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
     it replaces, not a lateral move. It is not a new bearer store in
     [`TOKEN_HASHING.md`](TOKEN_HASHING.md)'s sense either: nothing is persisted
     server-side, and `PartnerInviteToken.tokenHash` is unchanged.
-  - **`src/proxy.ts` is what writes it**, on every GET of the invite page. A
+  - **`src/proxy.ts` is what writes it**, on a signed-out top-level navigation to
+    the invite page — and what **retires** it on the signed-in GET of that page.
+    Both conditions came out of the 20 Aug 2026 review and each closed a real
+    defect; they are stated in full further down this entry. A
     server component may not set a cookie during render, and the token only ever
     reaches the server on a request whose URL contains it, so the two candidate
     no-JS carriers were this response's own headers and a Server Action form
@@ -3052,34 +3095,76 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
     cannot steer a member's post-login landing to an admin page, a payment page or
     anywhere else. `resolvePostLoginLandingPath()` re-validates it itself rather
     than trusting its caller.
-  - **The email re-check stays, and is load-bearing.** The worst a planted value
-    achieves is landing somebody on an invite page; the page still refuses to let
-    them join unless the signed-in member's email matches the invited address.
-    This mechanism does not replace that check.
+  - **The email re-check stays and is load-bearing against a FORWARDED link —
+    but it does not discharge cookie planting, and the first cut said it did
+    (corrected 20 Aug 2026).** The claim was that the worst a planted value
+    achieves is landing somebody on an invite page they cannot join, because the
+    page requires the signed-in member's email to match the invited address. True,
+    and void in the case that matters: any member may invite an arbitrary address
+    to their own family group, so an attacker invites the **victim's own** email
+    and the match succeeds — a forced post-login landing, wearing the club's own
+    chrome, one click from a family-group and partner-relationship change.
+
+    What actually bounds it is the write condition: the address is written only on
+    a `Sec-Fetch-Dest: document` request, so planting needs a visible top-level
+    navigation of the victim's browser to the club's own invite page, which
+    achieves no more than emailing them the link. Joining still takes a deliberate
+    click on a page that names the inviter and the group. `Sec-Fetch-Dest` is
+    browser-set and unforgeable from script; the condition is deliberately NOT
+    narrowed to `Sec-Fetch-Site: same-origin`, because the ordinary path here is a
+    click on an emailed link and arrives `cross-site`.
+
+  ### The address's life, and why one route handler could not manage it
 
   All four post-login landing sites honour the address (the landing route for
   credentials and magic link, `/login`'s self-heal for Google, and both 2FA detour
-  pages), so no flow regresses to the dashboard; the route handler, being the only
-  one that can write cookies, clears it. An absent or expired cookie degrades to
-  the member's ordinary landing rather than to an error — the emailed link still
-  works. Severity was always materially lower than the payment token, for the
-  email-binding reason above; it is closed regardless, because a bearer-shaped
-  value in a selectable attribute is the class, not the consequence.
+  pages), so no flow regresses to the dashboard.
 
-  Four suites pin it, and each property was mutation-verified rather than merely
+  Retiring it is the proxy's job, because **only one of those four can write a
+  cookie at all** — the other three are server components. The first cut had
+  `/api/auth/post-login-landing` clear it, and the 20 Aug 2026 review measured
+  that as a no-op: the route's answer IS a redirect to the invite page, whose GET
+  re-stamped the cookie for another ten minutes, and the Google and both 2FA
+  flows never call that route. Consequence on a shared lodge or kiosk browser:
+  member A signed in through their invitation, and member B signing in at `/login`
+  within ten minutes was redirected to A's invite page with A's live token in B's
+  address bar. Because every one of the four flows terminates in a signed-in GET
+  of the invite page, `syncFamilyInviteReturnAddress()` retires it there, which
+  makes "cleared on use" true for all four. The route handler still clears it for
+  the one case that never lands on the page — an explicit `callbackUrl` outranked
+  the address.
+
+  The wrong-account branch's control changed with it. It used to be a `/login`
+  link, which is inert for the signed-in visitor that branch is *for*: `/login`
+  redirects an authenticated visitor to their resolved landing, so the button
+  bounced back to the identical screen, and no `(public)` page carries a sign-out
+  affordance to use instead. (The pre-#2827 `buildLoginPath(...)` link bounced the
+  same way, so this was not a regression — it was a promise the code had never
+  kept.) It is now a sign-out-and-return control: signing out lands a signed-out
+  navigation on the invite page, which is where the address is written.
+
+  An absent or expired cookie degrades to the member's ordinary landing rather
+  than to an error — as does a browser too old to send `Sec-Fetch-*` — and the
+  emailed link still works. Severity was always materially lower than the payment
+  token, for the email-binding reason above; it is closed regardless, because a
+  bearer-shaped value in a place the URL or an attribute can carry is the class,
+  not the consequence.
+
+  Eight suites pin it, and each property was mutation-verified rather than merely
   asserted. `src/lib/__tests__/family-invite-return-address.test.ts` covers the
   shape guard and the cookie attributes, and holds the duplicated token pattern
   in step with `ACTION_TOKEN_PATTERN` so changing the token format fails a test
   instead of quietly disabling the return address.
   `src/lib/__tests__/family-invite-return-cookie-proxy.test.ts` drives the real
-  Next adapter: the address is stamped on a GET of the invite page and on no
-  other address or method, for a signed-in visitor as well as a signed-out one,
-  and never beside a shared-cache directive.
+  Next adapter: the address is written on a document navigation to the invite page
+  and on no other address, method or fetch destination; a signed-in GET retires it
+  instead; and it never lands beside a shared-cache directive.
   `src/app/(public)/family-invite/[token]/__tests__/family-invite-login-link.test.tsx`
   asserts that neither branch renders even a six-character prefix of the token in
-  any attribute or visible text, that the affordance is still a real anchor (so
-  the no-JavaScript path is genuinely kept, not just claimed), and that the email
-  re-check still refuses a wrong signed-in account. The return leg is pinned at
+  any attribute or visible text, that the signed-out branch's affordance is still a
+  real anchor (so the no-JavaScript path is genuinely kept, not just claimed), that
+  the wrong-account branch offers no `/login` anchor to bounce off, and that the
+  email re-check still refuses a wrong signed-in account. The return leg is pinned at
   all four resolution sites — `src/lib/__tests__/post-login-landing.test.ts`,
   `src/app/api/auth/post-login-landing/__tests__/route.test.ts` (which also pins
   the clear-even-when-outranked behaviour),
