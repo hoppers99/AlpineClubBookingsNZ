@@ -23,9 +23,10 @@ npm run quality:budget
 git diff --check
 ```
 
-The blocking `verify` job owns the full `npm test`, production build and audit;
-do not duplicate the full suite locally unless diagnosing CI or CI is
-unavailable. `npm test` includes property-based tests (fast-check) for the pure money math —
+The blocking `verify` job owns the full `npm test` and the production build; the
+dependency audit is its own blocking job beside it (`Dependency audit`, #2946)
+so an advisory cannot skip the gates behind it. Do not duplicate the full suite
+locally unless diagnosing CI or CI is unavailable. `npm test` includes property-based tests (fast-check) for the pure money math —
 pricing, promo discounts, refund tiers, change fees, member credit, and the
 Xero booking-edit settlement classifier — in
 `src/lib/policies/__tests__/*.property.test.ts` and
@@ -48,7 +49,15 @@ SHADOW_DATABASE_URL=postgresql://user:pass@localhost:5432/drift_shadow \
 
 CI also runs independent static and container checks:
 
-- `npm audit --audit-level=high --package-lock-only` on pull requests
+- `npm audit --audit-level=high` in its own blocking `Dependency audit` job, on
+  pull requests and on pushes to `main`. It runs from a bare checkout with no
+  `npm ci`: measured on npm 11.16.0 / Node 24 the audit builds its tree from
+  `package-lock.json` and returns the same verdict with or without
+  `node_modules`, and skipping the install keeps a required supply-chain gate
+  from reddening for anything except an advisory
+- `npm audit --audit-level=high --package-lock-only` again in the advisory,
+  pull-request-only `dependency-review` job. That one carries a job-level `if:`,
+  which is exactly why it can never be a required check
 - Semgrep with Next.js, TypeScript, JavaScript and React registry rules, **plus
   the repository's own rules in `.semgrep/rules/`** for the two boundaries no
   registry pack can know about — a `"use client"` module importing server-only
@@ -278,6 +287,11 @@ Accepted residual risk:
   GHCR package publish job.
 - The `npm audit --audit-level=high` gate keeps high/critical npm advisories
   blocking, while lower severity advisories remain review-driven.
+- Until `Dependency audit` is added to branch protection it is a red check
+  rather than a merge block (#2946). Adding the context before the job exists on
+  `main` would leave every open pull request waiting forever on a check that has
+  never reported, so the order in `AGENTS.md` -> "Completion and Merge" applies:
+  merge first, add the context second, rebase open pull requests third.
 
 ## Image Uploads Storage
 

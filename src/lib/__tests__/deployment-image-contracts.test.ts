@@ -8,6 +8,21 @@ function readRepoFile(relativePath: string) {
   return readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
 }
 
+/**
+ * Strip whole-line `#` comments so an assertion reads the DIRECTIVES.
+ *
+ * Recurring defect in this file: a comment explaining at length why a directive
+ * must never be removed satisfies the guard that was supposed to notice the
+ * directive going missing. Three of the assertions below were found green
+ * against a deleted directive for exactly that reason.
+ */
+function directivesOnly(text: string) {
+  return text
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("#"))
+    .join("\n");
+}
+
 describe("deployment image contracts", () => {
   it("lets production Compose use prebuilt app and migration images", () => {
     const compose = readRepoFile("docker-compose.yml");
@@ -297,6 +312,98 @@ describe("deployment image contracts", () => {
       for (const entry of entries) {
         expect(entry, `${entry} is not a gitleaks fingerprint`).toMatch(
           /^[0-9a-f]{40}:[^:]+:[^:]+:\d+$/,
+        );
+      }
+    });
+
+    // #2946. The audit used to be a STEP near the front of `verify`. Actions
+    // skips every later step in a job once one fails, so when a high-severity
+    // advisory landed in a transitive dependency on 17 August (#2945) it took
+    // lint, the file-size ratchet, `prisma generate`, typecheck, knip, `npm test`
+    // and the build down with it — on every branch, silently, while the other
+    // required checks stayed green. The check list read "one dependency thing is
+    // red"; the suite had not run. #2947 restored it and the first real run
+    // immediately failed on a defect (#2944) that had accumulated behind it.
+    it("audits dependencies in a job of its own, so an advisory cannot silence verify (#2946)", () => {
+      const workflow = readRepoFile(".github/workflows/ci.yml");
+      const job = workflow.slice(
+        workflow.indexOf("  dependency-audit:"),
+        workflow.indexOf("  static-analysis:"),
+      );
+
+      expect(job.length).toBeGreaterThan(0);
+      // The context name is what branch protection stores. Renaming it silently
+      // un-requires the gate until someone re-reads the protection API.
+      expect(job).toMatch(/^ {4}name: Dependency audit$/m);
+      // Still BLOCKING, and still the same command (owner decision, 19 Aug 2026):
+      // a new advisory is a supply-chain decision a human makes, not a report.
+      // Anchored to the run line — the job's comment quotes the command while
+      // explaining why it needs no install.
+      expect(job).toMatch(/^ +run: npm audit --audit-level=high$/m);
+      expect(job).not.toContain("continue-on-error");
+
+      // ...and `verify` must no longer run it. Asserted against the DIRECTIVES,
+      // because verify now carries a comment naming the departed step and saying
+      // where it went, which a plain substring check would match.
+      const verify = directivesOnly(
+        workflow.slice(
+          workflow.indexOf("  verify:"),
+          workflow.indexOf("  migration-drift:"),
+        ),
+      );
+      expect(verify.length).toBeGreaterThan(0);
+      expect(verify).not.toContain("npm audit");
+      // The gates that were skipped must all still be in `verify`, and none of
+      // them may have acquired a condition of its own on the way out.
+      for (const step of [
+        "run: npm run lint",
+        "run: npm run quality:budget",
+        "run: npm run db:generate",
+        "run: npm run typecheck",
+        "run: npx knip",
+        "run: npm test",
+        "run: npm run build",
+      ]) {
+        expect(verify, `verify no longer runs \`${step}\``).toContain(step);
+      }
+    });
+
+    // The generalisation of the two job-level assertions above, applied to every
+    // required check at once (#2946). A skipped job REPORTS a status and GitHub
+    // counts a skipped required check as SATISFYING branch protection, so a
+    // job-level `if:` — or a `needs:` on a job that then fails — turns a gate
+    // vacuously green and switches the merge button on. Conditions belong on
+    // steps. The two exemptions are named, not inferred.
+    it("puts no job-level `if:` or `needs:` on any required-check job (#2946)", () => {
+      const workflow = readRepoFile(".github/workflows/ci.yml");
+
+      // Deliberately NOT required, each for a reason that is itself the point:
+      // `dependency-review` is advisory and pull-request-only (its job-level
+      // `if:` is exactly why it can never be required), and
+      // `publish-ghcr-images` is a release step rather than a gate.
+      const notRequired = new Set(["dependency-review", "publish-ghcr-images"]);
+
+      // From `jobs:` onward only — `on:` also carries two-space keys
+      // (`pull_request:`, `push:`) that are not jobs.
+      const jobsBlock = workflow.slice(workflow.indexOf("\njobs:\n"));
+      expect(jobsBlock.length).toBeGreaterThan(0);
+
+      const jobs = [...jobsBlock.matchAll(/^ {2}([a-z0-9-]+):$/gm)];
+      expect(jobs.length).toBeGreaterThan(5);
+
+      for (const [index, match] of jobs.entries()) {
+        const id = match[1];
+        if (notRequired.has(id)) continue;
+
+        const start = match.index ?? 0;
+        const end = jobs[index + 1]?.index ?? jobsBlock.length;
+        const body = directivesOnly(jobsBlock.slice(start, end));
+
+        expect(body, `job \`${id}\` has a job-level \`if:\``).not.toMatch(
+          /^ {4}if:/m,
+        );
+        expect(body, `job \`${id}\` has a job-level \`needs:\``).not.toMatch(
+          /^ {4}needs:/m,
         );
       }
     });
