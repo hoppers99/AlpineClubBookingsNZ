@@ -545,19 +545,13 @@ export async function resolveGroupBookingByCode(
 }
 
 /**
- * Public, read-only: the name of the lodge behind a group-join VERIFICATION
- * token (#2919), so the confirmation page names the lodge the group is actually
- * staying at instead of the club's default one.
- *
- * Resolved here, server-side, rather than returned by the verify endpoint: that
- * endpoint is a POST because it creates the booking, so it only ever answers
- * AFTER the joiner has read this copy and clicked Confirm. The sibling
- * /join/[code] page gets the same value from `summary.lodgeName`.
- *
- * Returns the name only — never the travel note or door code, which this
- * unauthenticated surface has no business carrying — and null for a malformed
- * or unknown token, so the caller falls back to the club default exactly as
- * before and the page reveals nothing about whether a token exists.
+ * Public, read-only: the lodge behind a group-join VERIFICATION token (#2919),
+ * so the confirmation page names the lodge the group is actually staying at.
+ * Resolved server-side rather than by the verify endpoint, which is a POST
+ * because it creates the booking and so only answers AFTER the joiner has read
+ * that copy. The name only — never the travel note or door code — and null for
+ * a malformed or unknown token, so the caller falls back to the club default
+ * exactly as before and the page is no token-existence oracle.
  */
 export async function resolveGroupJoinVerificationLodgeName(
   token: string

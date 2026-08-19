@@ -58,6 +58,16 @@ Forward options:
 season exists, the dashboard surfaces a warning instead of guessing a date
 window.
 
+The seasons it chooses from follow the page's **Lodge (occupancy)** selector,
+like every other booking-derived read on the dashboard. Pick a lodge and only
+that lodge's seasons are considered — a lodge with none gets the warning above
+rather than another lodge's dates. Leave the selector on **All lodges** and
+every lodge's seasons are considered; the forward-window description then names
+the season it picked together with the lodge it belongs to
+(`Alpha Lodge — Alpha Winter: …`), so a two-lodge club can always see whose
+season set the range. A single-lodge club sees the season name alone, exactly
+as before.
+
 The dashboard may expose `expenseCategoryId` and `expenseLine` filters only for
 cost views.
 

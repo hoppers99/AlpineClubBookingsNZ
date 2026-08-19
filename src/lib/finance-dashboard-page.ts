@@ -57,6 +57,7 @@ import {
   type FinanceSyncHealthTone,
 } from "@/lib/finance-sync-health";
 import { formatNZDateTime } from "@/lib/nzst-date";
+import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { formatCents } from "@/lib/utils";
 
@@ -242,17 +243,31 @@ function cardRows(cards: FinanceDashboardKpiCard[]) {
   }));
 }
 
-async function loadSeasons() {
-  return prisma.season.findMany({
-    where: { active: true },
+/**
+ * Active seasons for the page's reporting scope (#2919). They drive the "Rest
+ * of Season" forward window, so reading them unscoped let one lodge's season
+ * define another lodge's forward range with nothing on screen saying so. A
+ * selected lodge reads only its own; All Lodges reads every lodge's and carries
+ * the lodge name so the window can say whose season it picked.
+ */
+async function loadSeasons(lodgeId: string | null, labelWithLodge: boolean) {
+  const seasons = await prisma.season.findMany({
+    where: { active: true, ...(lodgeId ? lodgeNullTolerantScope(lodgeId) : {}) },
     select: {
       name: true,
       startDate: true,
       endDate: true,
       active: true,
+      lodge: { select: { name: true } },
     },
     orderBy: [{ startDate: "asc" }],
   });
+  return seasons.map(({ lodge, ...season }) => ({
+    ...season,
+    // Only in All-Lodges mode, and only for a club that has more than one:
+    // labelling a single-lodge club's own season with its own name is noise.
+    lodgeName: labelWithLodge ? lodge.name : null,
+  }));
 }
 
 async function buildSyncStatus(): Promise<{
@@ -324,7 +339,12 @@ function buildSelectionLabels(selection: FinanceDashboardSelection) {
     forward: FINANCE_DASHBOARD_FORWARD_LABELS[selection.forward],
     primaryWindow: financeDashboardWindowDetail(selection.primary),
     comparisonWindow: financeDashboardWindowDetail(selection.comparison),
-    forwardWindow: financeDashboardWindowDetail(selection.forwardWindow),
+    // #2919: name the season the forward window came from, which in All-Lodges
+    // mode is prefixed with the lodge it belongs to. Dates alone never said
+    // which lodge's season had defined the range.
+    forwardWindow: selection.forwardWindow.seasonName
+      ? `${selection.forwardWindow.seasonName}: ${financeDashboardWindowDetail(selection.forwardWindow)}`
+      : financeDashboardWindowDetail(selection.forwardWindow),
   };
 }
 
@@ -1542,20 +1562,6 @@ export async function buildFinanceDashboardPageModel(input: {
   member: FinanceAccessMember;
   searchParams?: SearchParams;
 }): Promise<FinanceDashboardPageModel> {
-  // Seed the financial-year cache (override → Xero org → March default) so
-  // FY-aligned ranges resolve correctly before the selection is built.
-  const [seasons, sync, financialYearEndMonth] = await Promise.all([
-    loadSeasons(),
-    buildSyncStatus(),
-    refreshFinancialYearConfig(),
-  ]);
-  const selection = resolveFinanceDashboardSelection({
-    searchParams: input.searchParams,
-    seasons,
-    financialYearEndMonth,
-  });
-  const labels = buildSelectionLabels(selection);
-
   const activeLodges = await prisma.lodge.findMany({
     where: { active: true },
     select: { id: true, name: true },
@@ -1575,6 +1581,22 @@ export async function buildFinanceDashboardPageModel(input: {
     selectableLodges.some((lodge) => lodge.id === requestedLodgeId)
       ? requestedLodgeId
       : null;
+
+  // Seed the financial-year cache (override → Xero org → March default) so
+  // FY-aligned ranges resolve correctly before the selection is built. The
+  // seasons read is resolved AFTER the lodge scope (#2919) because it honours
+  // it, exactly as the occupancy and pricing reads below do.
+  const [seasons, sync, financialYearEndMonth] = await Promise.all([
+    loadSeasons(selectedLodgeId, selectedLodgeId === null && selectableLodges.length > 1),
+    buildSyncStatus(),
+    refreshFinancialYearConfig(),
+  ]);
+  const selection = resolveFinanceDashboardSelection({
+    searchParams: input.searchParams,
+    seasons,
+    financialYearEndMonth,
+  });
+  const labels = buildSelectionLabels(selection);
 
   let viewModel: FinanceDashboardViewModel;
   let ratios: FinanceDashboardRatioExplorerModel | null = null;

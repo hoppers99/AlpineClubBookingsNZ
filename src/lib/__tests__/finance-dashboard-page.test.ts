@@ -796,6 +796,116 @@ describe("finance dashboard page model", () => {
     );
   });
 
+  // #2919. The seasons that drive the "Rest of Season" forward window were read
+  // with no lodge filter and no lodge column, so at a two-lodge club one lodge's
+  // season could silently define the other lodge's forward range.
+  describe("the Rest of Season forward window honours the reporting lodge", () => {
+    // The suite runs with today frozen at 2026-07-01, so both of these are
+    // active-or-upcoming for good.
+    const alphaSeason = {
+      name: "Alpha Winter",
+      startDate: new Date("2026-06-01T00:00:00.000Z"),
+      endDate: new Date("2026-08-31T00:00:00.000Z"),
+      active: true,
+      lodge: { name: "Alpha Lodge" },
+    };
+    const bravoSeason = {
+      name: "Bravo Winter",
+      startDate: new Date("2026-07-15T00:00:00.000Z"),
+      endDate: new Date("2026-09-30T00:00:00.000Z"),
+      active: true,
+      lodge: { name: "Bravo Lodge" },
+    };
+
+    function twoLodges() {
+      mockLodgeFindMany.mockResolvedValue([
+        { id: "lodge-a", name: "Alpha Lodge" },
+        { id: "lodge-b", name: "Bravo Lodge" },
+      ]);
+    }
+
+    it("reads only the selected lodge's seasons", async () => {
+      twoLodges();
+      mockSeasonFindMany.mockResolvedValue([bravoSeason]);
+
+      const model = await buildFinanceDashboardPageModel({
+        member: financeManager(),
+        searchParams: {
+          view: "bookings",
+          lodgeId: "lodge-b",
+          forward: "rest-of-season",
+        },
+      });
+
+      expect(mockSeasonFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { active: true, lodgeId: "lodge-b" },
+        })
+      );
+      // Scoped to one lodge, the label is the season alone: naming the lodge
+      // every row already belongs to would be noise.
+      expect(model.selectionLabels.forwardWindow).toContain("Bravo Winter");
+      expect(model.selectionLabels.forwardWindow).not.toContain("Bravo Lodge");
+      expect(model.selection.forwardWindow.to).toBe("2026-09-30");
+    });
+
+    it("labels the season with its lodge when All Lodges is selected", async () => {
+      twoLodges();
+      // Both lodges' seasons come back; the earliest-starting one wins, and it
+      // is not the lodge the reader is looking at unless it says so.
+      mockSeasonFindMany.mockResolvedValue([alphaSeason, bravoSeason]);
+
+      const model = await buildFinanceDashboardPageModel({
+        member: financeManager(),
+        searchParams: { view: "bookings", forward: "rest-of-season" },
+      });
+
+      expect(model.selectedLodgeId).toBeNull();
+      expect(mockSeasonFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { active: true } })
+      );
+      expect(model.selectionLabels.forwardWindow).toContain(
+        "Alpha Lodge — Alpha Winter"
+      );
+      expect(model.selection.forwardWindow.to).toBe("2026-08-31");
+    });
+
+    it("leaves a single-lodge club's wording untouched (ADR-002)", async () => {
+      // Default beforeEach: one active lodge, so there is no selector and
+      // nothing to disambiguate.
+      mockSeasonFindMany.mockResolvedValue([alphaSeason]);
+
+      const model = await buildFinanceDashboardPageModel({
+        member: financeManager(),
+        searchParams: { view: "bookings", forward: "rest-of-season" },
+      });
+
+      expect(mockSeasonFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { active: true } })
+      );
+      expect(model.selectionLabels.forwardWindow).toContain("Alpha Winter");
+      expect(model.selectionLabels.forwardWindow).not.toContain("Alpha Lodge");
+    });
+
+    it("warns rather than borrowing another lodge's season when the selected lodge has none", async () => {
+      twoLodges();
+      mockSeasonFindMany.mockResolvedValue([]);
+
+      const model = await buildFinanceDashboardPageModel({
+        member: financeManager(),
+        searchParams: {
+          view: "bookings",
+          lodgeId: "lodge-b",
+          forward: "rest-of-season",
+        },
+      });
+
+      expect(model.warnings).toContain(
+        "Rest of Season needs an active or upcoming configured season. Configure seasons before using this forward window."
+      );
+    });
+  });
+
   it("surfaces missing stored monthly data as a compact warning", async () => {
     mockBuildFinanceMonthlyBalanceSeries.mockResolvedValue({
       points: [],

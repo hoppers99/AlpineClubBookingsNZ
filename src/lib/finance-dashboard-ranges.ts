@@ -139,6 +139,13 @@ export interface FinanceDashboardSeasonWindow {
   startDate: Date;
   endDate: Date;
   active: boolean;
+  /**
+   * The lodge this season belongs to (#2919), set only when the dashboard is in
+   * All-Lodges mode at a club with more than one lodge — the one case where the
+   * seasons on offer come from more than one property and the window label would
+   * otherwise name a season without saying whose it is.
+   */
+  lodgeName?: string | null;
 }
 
 export interface FinanceDashboardDateWindow {
@@ -479,11 +486,17 @@ function resolveForwardFinanceWindow(input: {
         ? formatDateOnly(today)
         : formatDateOnly(activeOrUpcoming.startDate);
     const to = formatDateOnly(activeOrUpcoming.endDate);
+    // #2919: in All-Lodges mode the seasons come from more than one property, so
+    // the season that wins says which lodge it belongs to. Scoped to one lodge
+    // (and at a single-lodge club) no name is carried and the label is unchanged.
+    const seasonName = activeOrUpcoming.lodgeName
+      ? `${activeOrUpcoming.lodgeName} — ${activeOrUpcoming.name}`
+      : activeOrUpcoming.name;
     return {
       from,
       to,
-      label: `${activeOrUpcoming.name}: ${formatDate(from)} to ${formatDate(to)}`,
-      seasonName: activeOrUpcoming.name,
+      label: `${seasonName}: ${formatDate(from)} to ${formatDate(to)}`,
+      seasonName,
     };
   }
 

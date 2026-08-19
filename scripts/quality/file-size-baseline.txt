@@ -81,7 +81,7 @@ src/app/(admin)/admin/xero/member-grouping/page.tsx 695 route-page-shell
 src/app/(authenticated)/book/_components/review-step.tsx 969 domain-module
 src/app/(authenticated)/book/_hooks/use-booking-wizard.ts 1922 domain-module
 src/app/(authenticated)/book/page.tsx 680 route-page-shell
-src/app/(authenticated)/bookings/[id]/page.tsx 2495 route-page-shell
+src/app/(authenticated)/bookings/[id]/page.tsx 2508 route-page-shell
 src/app/(authenticated)/dashboard/page.tsx 864 route-page-shell
 src/app/(authenticated)/profile/family-group-section.tsx 1142 domain-module
 src/app/(authenticated)/profile/page.tsx 667 route-page-shell
@@ -245,9 +245,9 @@ src/lib/email-message-renderer.ts 842 domain-module
 src/lib/email-message-token-contract.ts 715 domain-module
 src/lib/email/booking.ts 1426 domain-module
 src/lib/finance-booking-metrics.ts 1281 domain-module
-src/lib/finance-dashboard-page.ts 1653 domain-module
+src/lib/finance-dashboard-page.ts 1675 domain-module
 src/lib/finance-report-mappings.ts 1022 domain-module
-src/lib/group-booking.ts 1722 domain-module
+src/lib/group-booking.ts 1754 domain-module
 src/lib/group-cancel.ts 872 domain-module
 src/lib/group-settlement.ts 1235 domain-module
 src/lib/ib-hold-clearing-audit.ts 799 domain-module
@@ -272,7 +272,7 @@ src/lib/membership-subscription-billing.ts 1402 domain-module
 src/lib/membership-type-policy.ts 1106 domain-module
 src/lib/nomination.ts 2448 domain-module
 src/lib/notices.ts 708 domain-module
-src/lib/payment-link.ts 1168 domain-module
+src/lib/payment-link.ts 1180 domain-module
 src/lib/payment-reconciliation.ts 2896 domain-module
 src/lib/payment-recovery.ts 1881 domain-module
 src/lib/payment-transactions.ts 1101 domain-module

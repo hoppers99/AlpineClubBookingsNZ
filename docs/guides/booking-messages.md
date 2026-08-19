@@ -75,6 +75,12 @@ Available merge fields include `{{bookerFirstName}}`, `{{bookerFullName}}`,
 `{{holdDays}}`, `{{bookingStatus}}`, `{{CLUB_NAME}}`, `{{CLUB_LODGE_NAME}}`,
 `{{BASE_URL}}`, and `{{SUPPORT_EMAIL}}`.
 
+`{{CLUB_LODGE_NAME}}` fills in from the lodge the booking is actually at, so a
+club with more than one lodge sees the right property named in each member's
+message. The preview beside the editor has no real booking to read, so it shows
+your default lodge's name — that is the sample standing in, not what the member
+will be sent.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
