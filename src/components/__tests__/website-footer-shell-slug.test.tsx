@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   PUBLIC_GROUP_DYNAMIC_ROUTES,
+  SHAPE_SHADOWED_STATIC_ROUTES,
   pageSlugFromPathname,
 } from "@/components/website-footer-shell";
 import { PER_REQUEST_WEBSITE_ROUTES } from "@/lib/public-website-paths";
@@ -119,6 +120,50 @@ describe("data-page-slug never contains a dynamic segment's value (#2818)", () =
 });
 
 /**
+ * Every extension Next serves a page from. `next.config.ts` sets no
+ * `pageExtensions` override (verified), so the default `['tsx','ts','jsx','js']`
+ * applies — and a scan that recognised only `page.tsx` would have been blind to a
+ * `(public)/gift/[token]/page.ts`, which would be served normally, be absent from
+ * `dynamicRoutesOnDisk`, pass the both-directions equality below and go back to
+ * stamping its token (review finding, 20 Aug 2026). Every page in the tree is
+ * `.tsx` today, so this was latent rather than live; the repository has been bitten
+ * by the same extension-set class before, which
+ * `scripts/lib/file-size-budget.ts` records.
+ */
+const PAGE_FILE_NAMES = new Set(["page.tsx", "page.ts", "page.jsx", "page.js"]);
+
+/**
+ * Every address under `directory` that a page file serves, as a route pattern —
+ * Next's own rules: `(group)` directories are not path segments, `[param]` ones
+ * are kept verbatim.
+ */
+function routesUnder(directory: string, prefix: string): string[] {
+  const entries = readdirSync(directory, { withFileTypes: true });
+  const here = entries.some(
+    (entry) => entry.isFile() && PAGE_FILE_NAMES.has(entry.name),
+  )
+    ? [prefix === "" ? "/" : prefix]
+    : [];
+
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .filter((entry) => entry.name !== "__tests__" && entry.name !== "_components")
+    .flatMap((entry) =>
+      routesUnder(
+        path.join(directory, entry.name),
+        // A route GROUP contributes no segment, which is exactly why
+        // `(public)` itself does not appear in any of these addresses.
+        entry.name.startsWith("(") ? prefix : `${prefix}/${entry.name}`,
+      ),
+    )
+    .concat(here);
+}
+
+function groupDir(group: string): string {
+  return path.join(process.cwd(), "src", "app", group);
+}
+
+/**
  * The anti-rot half of the #2827 census fix.
  *
  * `(website-dynamic)`'s shapes come from a published census that
@@ -132,34 +177,7 @@ describe("data-page-slug never contains a dynamic segment's value (#2818)", () =
  * So the list is compared against the directory tree on disk instead of trusted.
  */
 describe("the (public) dynamic-route list matches the real route tree (#2827)", () => {
-  const PUBLIC_GROUP_DIR = path.join(process.cwd(), "src", "app", "(public)");
-
-  /**
-   * Every address under `(public)` that a `page.tsx` serves, as a route pattern —
-   * Next's own rules: `(group)` directories are not path segments, `[param]` ones
-   * are kept verbatim.
-   */
-  function routesUnder(directory: string, prefix: string): string[] {
-    const entries = readdirSync(directory, { withFileTypes: true });
-    const here = entries.some((entry) => entry.isFile() && entry.name === "page.tsx")
-      ? [prefix === "" ? "/" : prefix]
-      : [];
-
-    return entries
-      .filter((entry) => entry.isDirectory())
-      .filter((entry) => entry.name !== "__tests__" && entry.name !== "_components")
-      .flatMap((entry) =>
-        routesUnder(
-          path.join(directory, entry.name),
-          // A route GROUP contributes no segment, which is exactly why
-          // `(public)` itself does not appear in any of these addresses.
-          entry.name.startsWith("(") ? prefix : `${prefix}/${entry.name}`,
-        ),
-      )
-      .concat(here);
-  }
-
-  const dynamicRoutesOnDisk = routesUnder(PUBLIC_GROUP_DIR, "")
+  const dynamicRoutesOnDisk = routesUnder(groupDir("(public)"), "")
     .filter((route) => route.includes("["))
     .sort();
 
@@ -180,5 +198,78 @@ describe("the (public) dynamic-route list matches the real route tree (#2827)", 
       expect(slug).toBe(route.replace(/^\//, ""));
       expect(slug).not.toContain(TOKEN.slice(0, 4));
     }
+  });
+});
+
+/**
+ * The other half of the anti-rot guarantee, and the gap the census above left
+ * (review finding, 20 Aug 2026).
+ *
+ * The scan above asks "is every DYNAMIC route covered?". Nothing asked the
+ * converse: is any STATIC route on disk shadowed by a shape? It was —
+ * `/join/apply`, the live membership application form, matched `/join/[code]` on
+ * segment count and was stamped `join/[code]`, so a club's
+ * `[data-page-slug="join/apply"]` rule silently never applied and a rule written for
+ * the code page also restyled the application form. `SHAPE_SHADOWED_STATIC_ROUTES`
+ * records the collisions; this suite works them out from disk and requires the two
+ * to agree in both directions, so adding `(public)/pay/help/page.tsx` fails here
+ * instead of quietly acquiring the `pay/[token]` slug.
+ *
+ * All three groups that render this footer are scanned, because a shape from either
+ * census can shadow a static route in any of them — `/join/[code]` lives in
+ * `(website-dynamic)` and the address it shadowed is in `(website)`.
+ */
+describe("no static route is shadowed by a dynamic shape (#2827)", () => {
+  const FOOTER_GROUPS = ["(website)", "(website-dynamic)", "(public)"] as const;
+
+  const staticRoutesOnDisk = FOOTER_GROUPS.flatMap((group) =>
+    routesUnder(groupDir(group), ""),
+  )
+    .filter((route) => !route.includes("[") && route !== "/")
+    .sort();
+
+  /** The addresses a shape would claim if nothing else did. */
+  const shadowed = staticRoutesOnDisk
+    .filter((route) => {
+      const segments = route.split("/").filter((segment) => segment.length > 0);
+
+      return DYNAMIC_ROUTES.some((shape) => {
+        const shapeSegments = shape
+          .split("/")
+          .filter((segment) => segment.length > 0);
+
+        return (
+          shapeSegments.length === segments.length &&
+          shapeSegments.every(
+            (segment, index) =>
+              segment.startsWith("[") || segment === segments[index],
+          )
+        );
+      });
+    })
+    .sort();
+
+  it("finds static routes to check, so this suite cannot pass vacuously", () => {
+    expect(staticRoutesOnDisk.length).toBeGreaterThan(0);
+  });
+
+  it("records exactly the collisions that exist on disk", () => {
+    expect(shadowed).toEqual([...SHAPE_SHADOWED_STATIC_ROUTES].sort());
+  });
+
+  it("stamps every static route as ITSELF, shadowed or not", () => {
+    for (const route of staticRoutesOnDisk) {
+      expect(pageSlugFromPathname(route), route).toBe(route.replace(/^\//, ""));
+    }
+  });
+
+  it("still stamps the shape for the shadowing route's own addresses", () => {
+    // The fix must not cost the shape match anything: `/join/ABC123` is a code, and
+    // `/join/apply` is a page, and both answers have to be right at once.
+    expect(pageSlugFromPathname("/join/ABC123")).toBe("join/[code]");
+    expect(pageSlugFromPathname("/join/apply")).toBe("join/apply");
+    // A trailing slash cannot be used to slip past the static check and land on the
+    // shape.
+    expect(pageSlugFromPathname("/join/apply/")).toBe("join/apply");
   });
 });
