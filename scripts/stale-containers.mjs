@@ -136,6 +136,24 @@ function firstSegment(name) {
 /** Opt-out label: a deliberately shared stack that happens to carry a number. */
 export const SHARED_LABEL = "agent-lane.shared";
 
+/**
+ * Values that make `agent-lane.shared` mean shared, and mean not-shared.
+ *
+ * Compared after `.trim().toLowerCase()`, and that is not tidiness: review
+ * measured that `agent-lane.shared=true ` with one trailing space defeated the
+ * opt-out completely, and a stack deliberately marked shared was reported as
+ * removable debris. A trailing space is easy to acquire in a Compose `labels:`
+ * block or a shell variable, and this is the one label whose entire purpose is to
+ * prevent a removal.
+ *
+ * A value in neither set is treated the way a malformed `agent-lane.issue` value
+ * is treated below — reported, not ignored. Something set it deliberately and got
+ * it wrong, and quietly falling through to a name-shaped guess is how a protected
+ * stack becomes a candidate.
+ */
+const SHARED_LABEL_TRUE = new Set(["true", "1", "yes"]);
+const SHARED_LABEL_FALSE = new Set(["false", "0", "no"]);
+
 /** Opt-in label: the authoritative owning issue, set when the lane creates it. */
 export const ISSUE_LABEL = "agent-lane.issue";
 
@@ -270,13 +288,25 @@ export function classifyOwnership(container, { reserved = reservedProjects() } =
       reason: `reserved Compose project ${project}`,
     };
   }
-  if (String(container.sharedLabel ?? "").toLowerCase() === "true") {
-    return {
-      ownership: "shared",
-      issue: null,
-      source: "shared-label",
-      reason: `${SHARED_LABEL}=true`,
-    };
+  const sharedRaw = String(container.sharedLabel ?? "").trim();
+  const sharedValue = sharedRaw.toLowerCase();
+  if (sharedValue) {
+    if (SHARED_LABEL_TRUE.has(sharedValue)) {
+      return {
+        ownership: "shared",
+        issue: null,
+        source: "shared-label",
+        reason: `${SHARED_LABEL}=${sharedRaw}`,
+      };
+    }
+    if (!SHARED_LABEL_FALSE.has(sharedValue)) {
+      return {
+        ownership: "unowned",
+        issue: null,
+        source: "shared-label",
+        reason: `${SHARED_LABEL} label is not a yes/no value: ${sharedRaw}`,
+      };
+    }
   }
 
   const labelled = String(container.issueLabel ?? "").trim();

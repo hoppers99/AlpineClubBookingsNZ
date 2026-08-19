@@ -202,6 +202,37 @@ describe("classifyOwnership", () => {
     expect(result.ownership).toBe("shared");
   });
 
+  it("honours the shared label through surrounding whitespace and casing", () => {
+    /*
+      Measured by review: `sharedLabel: "true "` returned ownership `agent-lane`,
+      issue 2595 — one trailing space defeated the opt-out entirely and a stack
+      deliberately marked shared was reported as removable debris. A trailing
+      space is easy to acquire in a Compose `labels:` block or a shell variable,
+      and this is the one label whose whole job is to prevent a removal.
+    */
+    for (const value of ["true ", " true", "\tTrue\n", "YES", "1"]) {
+      const result = classifyOwnership(container({ name: "pg-2595", sharedLabel: value }));
+      expect(result.ownership, JSON.stringify(value)).toBe("shared");
+      expect(result.issue, JSON.stringify(value)).toBeNull();
+    }
+  });
+
+  it("reports an unreadable shared label instead of falling through to the name", () => {
+    // Symmetric with the malformed issue label below. Something set this
+    // deliberately and got it wrong; guessing from the name is how a protected
+    // stack becomes a removal candidate.
+    const result = classifyOwnership(container({ name: "pg-2595", sharedLabel: "maybe" }));
+    expect(result.ownership).toBe("unowned");
+    expect(result.issue).toBeNull();
+    expect(result.reason).toContain("not a yes/no value");
+
+    // An explicit negative is a real answer, so the name is read as usual.
+    expect(classifyOwnership(container({ name: "pg-2595", sharedLabel: "false" }))).toMatchObject({
+      ownership: "agent-lane",
+      issue: 2595,
+    });
+  });
+
   it("prefers an explicit issue label over the name", () => {
     const result = classifyOwnership(container({ name: "scratch-db", issueLabel: "2794" }));
     expect(result).toMatchObject({ ownership: "agent-lane", issue: 2794 });
