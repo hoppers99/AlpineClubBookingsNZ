@@ -158,15 +158,20 @@ export function initialLodgeIdFromLocation(): string | null {
  * only `lodges`/`loading` are unaffected: on failure they still see the empty
  * list they saw before.
  *
- * `forbidden` is kept SEPARATE from `failed`, and the distinction is not
- * academic. `/api/admin/lodges` needs `lodge:view`; the bed-allocation board
- * needs `bookings`. Two shipped role presets — `ADMIN_MEMBERSHIP` and
- * `FINANCE_ADMIN` — hold `bookings: "view"` and no `lodge` entry at all, so for
- * them a 403 here is the NORMAL answer, not an outage. Collapsing it into
- * `failed` hands those roles a permanent error with a retry that can only 403
- * again (PR #2885 review, HIGH 2). A caller can offer them the club-wide
- * read-only view instead, which is what they saw before the board learned to
- * distinguish these states at all.
+ * `forbidden` is kept SEPARATE from `failed`, because a refusal is a
+ * permissions fact with a retry that can only refuse again, where a failure is
+ * an outage worth retrying (PR #2885 review, HIGH 2). A caller can offer a
+ * refused role the club-wide read-only view instead of a dead error.
+ *
+ * WHO can still be refused changed in #2925. `/api/admin/lodges` no longer
+ * needs `lodge:view`: it admits any admitted admin (`overview:view`) and
+ * narrows its payload instead, so the two shipped presets this state was
+ * written for — `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN`, which hold
+ * `bookings: "view"` and no `lodge` entry — now get a 200 carrying the lodge
+ * names. `forbidden` is NOT dead code: every shipped admin preset carries
+ * `overview`, but a club-edited or custom role can hold `bookings: "view"` with
+ * `overview: "none"` and reach a bookings page, and that role is still refused
+ * here. So the state stays, and so does every caller's handling of it.
  */
 export function useLodgeOptions(scope: "member" | "admin" = "member") {
   const [lodges, setLodges] = useState<LodgeOption[]>([]);

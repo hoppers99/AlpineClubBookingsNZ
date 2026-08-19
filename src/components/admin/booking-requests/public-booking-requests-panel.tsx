@@ -403,10 +403,13 @@ export function PublicBookingRequestsPanel({
     honestly. This panel counted the lodge-options hook's list instead, and that
     was wrong in both directions:
 
-      - too closed: `/api/admin/lodges` needs `lodge:view`, and
+      - too closed: `/api/admin/lodges` then needed `lodge:view`, and
         `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold `bookings: "view"` with no
-        `lodge` entry at all, so their 403 is permanent and a multi-lodge club's
-        officer queue rendered with no lodge on screen — on a MUTATION surface;
+        `lodge` entry at all, so their 403 was permanent and a multi-lodge club's
+        officer queue rendered with no lodge on screen — on a MUTATION surface.
+        #2925 has since relaxed that route, but the server-side rule is still the
+        right place for this: a client cannot honestly apply a count rule using a
+        list any role might be refused;
       - too open: once this PR made the whole-lodge form always send the sole
         lodge id, new single-lodge rows carry a real name, so a genuine
         single-lodge club would have shown a permanent badge.
