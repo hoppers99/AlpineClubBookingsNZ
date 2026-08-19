@@ -19,6 +19,7 @@ import { validateCustodianBedHold } from "@/lib/custodian-assignment";
 import { custodianBedHoldErrorResponse } from "@/lib/custodian-assignment-routes";
 import { isMinorAgeTier } from "@/lib/custodian-occupancy";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
+import { HutLeaderAssignmentSource } from "@prisma/client";
 
 const createSchema = z.object({
   memberId: z.string().min(1),
@@ -248,6 +249,10 @@ export async function POST(req: NextRequest) {
           endDate: newEnd,
           hutLeaderPin,
           lodgeId: lockedLodgeId,
+          // #2926: an officer put this leader here. Stamped rather than left to
+          // the column default so the provenance is stated at the write, and so
+          // the writer census can read it off the call site.
+          source: HutLeaderAssignmentSource.MANUAL,
           ...(bedId ? { bedId } : {}),
         },
       });

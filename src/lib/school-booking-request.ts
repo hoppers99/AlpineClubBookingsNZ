@@ -29,6 +29,7 @@ import {
   BookingRequestStatus,
   BookingRequestType,
   BookingStatus,
+  HutLeaderAssignmentSource,
   PaymentSource,
   PaymentStatus,
   Prisma,
@@ -1266,6 +1267,15 @@ export async function approveSchoolBookingRequest(input: {
             // lodge so school-created assignments are lodge-scoped like the
             // manual and cron paths, not left null.
             lodgeId: bookingLodgeId,
+            // #2926. THIS is what excludes teacher rows from the hut-leader
+            // overlap predicate — the provenance of the row, stamped by the
+            // writer that created it, not anything about the member. These
+            // rows deliberately overlap each other (several teachers do
+            // supervise one group), so leaving them in the predicate blocked
+            // every later manual and cron assignment for those nights while
+            // never being blocked itself. Written once, here, and never
+            // updated: a later membership edit cannot move it.
+            source: HutLeaderAssignmentSource.SCHOOL_BOOKING,
           },
           select: { id: true },
         });
