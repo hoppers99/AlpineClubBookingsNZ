@@ -30,12 +30,10 @@ vi.mock("@/lib/auth", () => ({ auth: vi.fn() }));
 const mockRequireActiveSessionUser = vi.fn<() => Promise<Response | null>>(
   async () => null
 );
-vi.mock("@/lib/session-guards", () => ({
+vi.mock("@/lib/session-guards", async () => ({
   requireActiveSessionUser: () => mockRequireActiveSessionUser(),
-  requireAdmin: async (options?: unknown) =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(
-      options as never
-    ),
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
 }));
 
 vi.mock("@/lib/logger", () => ({
