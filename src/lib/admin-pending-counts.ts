@@ -45,6 +45,12 @@ export type AdminPendingCounts = {
   deletionRequests: number;
   memberDeleteRequests: number;
   issueReports: number;
+  /**
+   * Uncovered LODGE-nights, not calendar dates (#2917): each lodge runs its own
+   * hut leader, so a night on which two lodges both lack one is two pieces of
+   * work and the sidebar badge counts two. Identical to the old number on a
+   * single-lodge club.
+   */
   unassignedHutLeaderDates: number;
 };
 

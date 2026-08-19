@@ -31,6 +31,7 @@ import {
 import { formatCents as formatMoneyCents } from "@/lib/utils";
 import { buildBookingRequestsHref } from "@/lib/admin-booking-requests-path";
 import { sendToAdmins } from "./admin-alerts-shared";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 // N-02: Admin alert - new booking
 export async function sendAdminNewBookingAlert(data: {
@@ -47,7 +48,7 @@ export async function sendAdminNewBookingAlert(data: {
     subject: data.reviewReason
       ? `Booking Review Required: ${data.memberName}`
       : `New Booking: ${data.memberName} (${data.status})`,
-    html: adminNewBookingTemplate(data),
+    html: await renderEmailHtml(() => adminNewBookingTemplate(data)),
     templateName: "admin-new-booking",
     templateData: {
       ...data,
@@ -79,7 +80,7 @@ export async function sendAdminMinorsOnlyReviewAlert(data: {
 }) {
   await sendToAdmins({
     subject: `Review required: booking has only under-18 guests (${data.memberName})`,
-    html: adminMinorsReviewRequiredTemplate(data),
+    html: await renderEmailHtml(() => adminMinorsReviewRequiredTemplate(data)),
     templateName: "admin-minors-review",
     templateData: {
       memberName: data.memberName,
@@ -106,7 +107,7 @@ export async function sendAdminPartnerShareSweptAlert(data: {
 }) {
   await sendToAdmins({
     subject: `Review required: shared double-bed placements removed (${data.memberName})`,
-    html: adminPartnerShareSweptTemplate(data),
+    html: await renderEmailHtml(() => adminPartnerShareSweptTemplate(data)),
     templateName: "admin-partner-share-swept",
     templateData: {
       memberName: data.memberName,
@@ -141,7 +142,7 @@ export async function sendAdminOwnerSubstitutionAlert(data: {
 }) {
   await sendToAdmins({
     subject: `Owner substitution — reconcile Xero contact for booking request ${data.requestId}`,
-    html: adminOwnerSubstitutionTemplate(data),
+    html: await renderEmailHtml(() => adminOwnerSubstitutionTemplate(data)),
     templateName: "admin-owner-substitution",
     templateData: {
       requestId: data.requestId,
@@ -173,7 +174,7 @@ export async function sendAdminPendingDeadlineAlert(
 ) {
   await sendToAdmins({
     subject: `${bookings.length} Pending Booking${bookings.length > 1 ? "s" : ""} Approaching Deadline`,
-    html: adminPendingDeadlineTemplate(bookings),
+    html: await renderEmailHtml(() => adminPendingDeadlineTemplate(bookings)),
     templateName: "admin-pending-deadline",
     templateData: {
       count: bookings.length,
@@ -208,7 +209,7 @@ export async function sendAdminBookingBumpedAlert(data: {
 }) {
   await sendToAdmins({
     subject: `Booking Bumped: ${data.bumpedMemberName}`,
-    html: adminBookingBumpedTemplate(data),
+    html: await renderEmailHtml(() => adminBookingBumpedTemplate(data)),
     templateName: "admin-booking-bumped",
     templateData: {
       ...data,
@@ -233,7 +234,7 @@ export async function sendAdminCapacityWarningAlert(
 ) {
   await sendToAdmins({
     subject: `Capacity Warning: ${days.length} high-occupancy day${days.length > 1 ? "s" : ""} ahead${lodgeName ? ` at ${lodgeName}` : ""}`,
-    html: adminCapacityWarningTemplate(days, lodgeCapacity, lodgeName),
+    html: await renderEmailHtml(() => adminCapacityWarningTemplate(days, lodgeCapacity, lodgeName)),
     templateName: "admin-capacity-warning",
     templateData: {
       count: days.length,
@@ -263,7 +264,7 @@ export async function sendAdminWaitlistOfferAlert(data: {
 }) {
   await sendToAdmins({
     subject: `Waitlist Offer: ${data.memberName}`,
-    html: adminWaitlistOfferTemplate(data),
+    html: await renderEmailHtml(() => adminWaitlistOfferTemplate(data)),
     templateName: "admin-waitlist-offer",
     templateData: {
       ...data,
@@ -291,7 +292,7 @@ export async function sendAdminBookingChangeRequestAlert(data: {
 
   await sendToAdmins({
     subject: `Booking Change Request: ${data.memberName}`,
-    html: adminBookingChangeRequestTemplate({
+    html: await renderEmailHtml(() => adminBookingChangeRequestTemplate({
       memberName: data.memberName,
       memberEmail: data.memberEmail,
       bookingId: data.bookingId,
@@ -300,7 +301,7 @@ export async function sendAdminBookingChangeRequestAlert(data: {
       requestedSummary: data.requestedSummary,
       reason: data.reason,
       reviewUrl,
-    }),
+    })),
     templateName: "admin-booking-change-request",
     templateData: {
       ...data,
@@ -326,13 +327,13 @@ export async function sendAdminBookingRequestPendingEmail(data: {
 
   await sendToAdmins({
     subject: `Booking request ready for review: ${data.requesterName}`,
-    html: adminBookingRequestPendingTemplate({
+    html: await renderEmailHtml(() => adminBookingRequestPendingTemplate({
       requesterName: data.requesterName,
       checkIn: data.checkIn,
       checkOut: data.checkOut,
       guestCount: data.guestCount,
       reviewUrl,
-    }),
+    })),
     templateName: "admin-booking-request-pending",
     templateData: {
       requesterName: data.requesterName,
@@ -358,7 +359,7 @@ export async function sendAdminBookingRequestHoldExpiredEmail(data: {
 
   await sendToAdmins({
     subject: `Request booking unpaid at hold expiry: ${data.requesterName}`,
-    html: adminBookingRequestHoldExpiredTemplate({
+    html: await renderEmailHtml(() => adminBookingRequestHoldExpiredTemplate({
       requesterName: data.requesterName,
       checkIn: data.checkIn,
       checkOut: data.checkOut,
@@ -366,7 +367,7 @@ export async function sendAdminBookingRequestHoldExpiredEmail(data: {
       totalCents: data.totalCents,
       holdUntil: data.holdUntil,
       reviewUrl,
-    }),
+    })),
     templateName: "admin-booking-request-hold-expired",
     templateData: {
       requesterName: data.requesterName,
@@ -402,14 +403,14 @@ export async function sendAdminBookingRequestHoldCancelledEmail(data: {
 
   await sendToAdmins({
     subject: `Request booking auto-cancelled — unpaid past check-in: ${data.requesterName}`,
-    html: adminBookingRequestHoldCancelledTemplate({
+    html: await renderEmailHtml(() => adminBookingRequestHoldCancelledTemplate({
       requesterName: data.requesterName,
       checkIn: data.checkIn,
       checkOut: data.checkOut,
       guestCount: data.guestCount,
       totalCents: data.totalCents,
       reviewUrl,
-    }),
+    })),
     templateName: "admin-booking-request-hold-cancelled",
     templateData: {
       requesterName: data.requesterName,
@@ -448,7 +449,7 @@ export async function sendAdminSplitSettlementUnpaidAlert(data: {
 
   await sendToAdmins({
     subject: `Split booking guest portion unpaid — no card on file: ${data.memberName}`,
-    html: adminSplitSettlementUnpaidTemplate({
+    html: await renderEmailHtml(() => adminSplitSettlementUnpaidTemplate({
       memberName: data.memberName,
       checkIn: data.checkIn,
       checkOut: data.checkOut,
@@ -457,7 +458,7 @@ export async function sendAdminSplitSettlementUnpaidAlert(data: {
       holdUntil: data.holdUntil,
       reviewUrl,
       parentUnpaid: data.parentUnpaid,
-    }),
+    })),
     templateName: "admin-split-settlement-unpaid",
     templateData: {
       memberName: data.memberName,
@@ -500,7 +501,7 @@ export async function sendAdminSplitSettlementCancelledAlert(data: {
 
   await sendToAdmins({
     subject: `Split booking guest portion auto-cancelled — unpaid past check-in: ${data.memberName}`,
-    html: adminSplitSettlementCancelledTemplate({
+    html: await renderEmailHtml(() => adminSplitSettlementCancelledTemplate({
       memberName: data.memberName,
       checkIn: data.checkIn,
       checkOut: data.checkOut,
@@ -508,7 +509,7 @@ export async function sendAdminSplitSettlementCancelledAlert(data: {
       totalCents: data.totalCents,
       reviewUrl,
       parentUnpaid: data.parentUnpaid,
-    }),
+    })),
     templateName: "admin-split-settlement-cancelled",
     templateData: {
       memberName: data.memberName,
@@ -543,7 +544,7 @@ export async function sendAdminSchoolManualInvoiceEmail(data: {
 
   await sendToAdmins({
     subject: `School booking needs a manual invoice: ${data.schoolName}`,
-    html: adminSchoolManualInvoiceTemplate({
+    html: await renderEmailHtml(() => adminSchoolManualInvoiceTemplate({
       schoolName: data.schoolName,
       contactEmail: data.contactEmail,
       checkIn: data.checkIn,
@@ -551,7 +552,7 @@ export async function sendAdminSchoolManualInvoiceEmail(data: {
       guestCount: data.guestCount,
       totalCents: data.totalCents,
       reviewUrl,
-    }),
+    })),
     templateName: "admin-school-manual-invoice",
     templateData: {
       schoolName: data.schoolName,
@@ -602,7 +603,7 @@ export async function sendAdminWholeLodgeManualInvoiceEmail(data: {
 
   await sendToAdmins({
     subject: `Whole-lodge booking needs a manual invoice: ${data.memberName}`,
-    html: adminWholeLodgeManualInvoiceTemplate({
+    html: await renderEmailHtml(() => adminWholeLodgeManualInvoiceTemplate({
       memberName: data.memberName,
       contactEmail: data.contactEmail,
       checkIn: data.checkIn,
@@ -612,7 +613,7 @@ export async function sendAdminWholeLodgeManualInvoiceEmail(data: {
       appliedCreditCents: data.appliedCreditCents ?? 0,
       paymentReference: data.paymentReference,
       reviewUrl,
-    }),
+    })),
     templateName: "admin-whole-lodge-manual-invoice",
     templateData: {
       memberName: data.memberName,

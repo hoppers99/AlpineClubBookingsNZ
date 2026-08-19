@@ -38,8 +38,10 @@ export async function register() {
     // #1912: warm the HTML-email brand palette from the persisted Site Style
     // theme so the first email after a cold start uses the configured colours,
     // not the built-in default. Best-effort and runs regardless of cron config;
-    // never blocks or fails startup (emailPalette() also self-warms on first
-    // use as a fallback).
+    // it never blocks or fails startup. Since #2900 it is an optimisation, not
+    // the guarantee: if it fails, the render gate (`renderEmailHtml`) loads the
+    // palette before any themed HTML is built, so a failed prime costs the
+    // first email a bounded wait rather than the wrong brand.
     try {
       const { primeEmailPalette } = await import("./lib/email-theme");
       await primeEmailPalette();
