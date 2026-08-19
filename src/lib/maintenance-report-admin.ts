@@ -124,10 +124,3 @@ export function mapMaintenanceReportForDetail(report: DetailRow, now = new Date(
     },
   };
 }
-
-export type AdminMaintenanceReportListItem = ReturnType<
-  typeof mapMaintenanceReportForList
->;
-export type AdminMaintenanceReportDetail = ReturnType<
-  typeof mapMaintenanceReportForDetail
->;

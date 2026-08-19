@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { CheckCircle2, Wrench } from "lucide-react";
 
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -126,11 +126,7 @@ export default function MaintenanceReportPage() {
         </p>
       </div>
 
-      {loadError ? (
-        <Alert variant="destructive">
-          <AlertDescription>{loadError}</AlertDescription>
-        </Alert>
-      ) : null}
+      {loadError ? <Alert variant="error">{loadError}</Alert> : null}
 
       {payload ? (
         <MaintenanceReportForm

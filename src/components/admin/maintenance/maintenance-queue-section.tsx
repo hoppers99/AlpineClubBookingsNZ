@@ -7,7 +7,7 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -228,8 +228,8 @@ export function MaintenanceQueueSection() {
       </AdminViewOnlySectionBanner>
 
       {error ? (
-        <Alert variant="destructive" className="mb-4">
-          <AlertDescription>{error}</AlertDescription>
+        <Alert variant="error" className="mb-4">
+          {error}
         </Alert>
       ) : null}
 
@@ -292,7 +292,9 @@ export function MaintenanceQueueSection() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="ALL">Anywhere</SelectItem>
-                  <SelectItem value="MEMBER_PORTAL">A member's account</SelectItem>
+                  <SelectItem value="MEMBER_PORTAL">
+                    A member&apos;s account
+                  </SelectItem>
                   <SelectItem value="LODGE_QR">A lodge QR code</SelectItem>
                 </SelectContent>
               </Select>

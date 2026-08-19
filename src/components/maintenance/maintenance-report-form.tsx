@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { Camera, Loader2, X } from "lucide-react";
 
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -206,11 +206,7 @@ export function MaintenanceReportForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      {error ? (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      ) : null}
+      {error ? <Alert variant="error">{error}</Alert> : null}
 
       {lodges ? (
         <div className="space-y-2">

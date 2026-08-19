@@ -8,7 +8,7 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -226,8 +226,8 @@ export function MaintenanceQrSection() {
       </AdminViewOnlySectionBanner>
 
       {error ? (
-        <Alert variant="destructive" className="mb-4">
-          <AlertDescription>{error}</AlertDescription>
+        <Alert variant="error" className="mb-4">
+          {error}
         </Alert>
       ) : null}
 
