@@ -28,6 +28,16 @@ the full local gate.
 - **set React Testing Library's async window to 4,000ms** under jsdom — the
   section below.
 
+The `.mts` extension is deliberate, not incidental (#2864). Vite reads a plain
+`.ts` config as CommonJS, so from 8.2.1 it warns on every run that this file
+uses ESM syntax, and once `configLoader: "native"` becomes vite's default such a
+file stops loading at all. `.mts` is unambiguously ESM, which the native loader
+reads directly. It is the narrow fix: the alternative — `"type": "module"` in
+`package.json` — would reinterpret every `.js` file in the repository. Because
+the file is now ESM, it has no `__dirname`; the `@` alias is built from
+`import.meta.dirname` instead. If you rename it again, `frozen-test-clock.test.ts`
+reads it from disk by name and will fail loudly rather than silently skip.
+
 ## The RTL async window is 4,000ms, not the 1,000ms default
 
 RTL's async utilities — `findBy*`, `findAllBy*`, `waitFor`,
