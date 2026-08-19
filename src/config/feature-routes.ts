@@ -243,7 +243,11 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     // is necessary and not sufficient for the public door.
     //
     // "/maintenance-report" (singular) is the member page and also prefixes
-    // nothing else; "/lodge-maintenance" is the tokenised public page.
+    // nothing else; "/lodge-maintenance" is the tokenised public page and
+    // "/api/lodge-maintenance" its only API. The public halves are named
+    // separately from the member ones on purpose — a reader auditing the
+    // unauthenticated surface should be able to find every path that serves it by
+    // its own prefix rather than by inspecting a shared one.
     flag: "maintenanceReports",
     prefixes: [
       "/admin/maintenance-reports",
@@ -251,6 +255,7 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
       "/maintenance-report",
       "/api/maintenance-reports",
       "/lodge-maintenance",
+      "/api/lodge-maintenance",
     ],
   },
   {
