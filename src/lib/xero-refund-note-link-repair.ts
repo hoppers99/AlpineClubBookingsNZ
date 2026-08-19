@@ -46,9 +46,18 @@
  *   whole payment back on any divergence. (The unique link key also means one
  *   row per note per payment, so reactivation cannot mint a second active row
  *   for the same note.)
- * - In-flight counterparts: a payment with a PENDING/RUNNING/WAITING_PAYMENT
- *   outbound CREDIT_NOTE CREATE operation is refused outright, and the check
- *   is repeated inside the apply transaction (#2901 review F4, below).
+ * - Still-executable counterparts: a payment is refused outright while ANY
+ *   outbound CREDIT_NOTE operation row that could still drive
+ *   `createXeroCreditNote` exists for it — a CREATE in
+ *   PENDING/RUNNING/WAITING_PAYMENT (the outbox executor's own lifecycle) OR
+ *   in FAILED/PARTIAL (the manual-retry and requeue entry points accept
+ *   exactly those two, and the credit-note retry branch performs NO
+ *   claim-first status flip, so it mints while the row still reads
+ *   FAILED/PARTIAL), or a REQUEUE row in PENDING/RUNNING (the background
+ *   retry drain executes the ORIGINAL operation while the original's own row
+ *   never changes status). SUCCEEDED and CANCELLED rows cannot re-execute
+ *   and never block. The check is repeated inside the apply transaction
+ *   (#2901 review F4, below).
  *
  * Concurrency (#2901 review F4): this writer takes NO advisory lock, and that
  * is a reasoned choice, not an omission. It composes no settlement-money or
@@ -58,9 +67,14 @@
  * and takes no lock itself, so joining global `lock(1)` here would exclude
  * nothing. The protections that do the work instead:
  *
- * - the transactional in-flight-operation refusal above — the executor can
- *   only be mid-provider-call for an operation row that already exists as
- *   PENDING/RUNNING, which the in-transaction re-check observes;
+ * - the transactional still-executable-operation refusal above — every path
+ *   that reaches `createXeroCreditNote` does so for an operation row whose
+ *   (operationType, status) pair the refusal matches while the provider call
+ *   is in flight: the outbox executor holds its CREATE at RUNNING (or
+ *   WAITING_PAYMENT before it), the retry drain holds its REQUEUE at RUNNING
+ *   while the original CREATE stays FAILED/PARTIAL, and the manual retry
+ *   runs with the CREATE still FAILED/PARTIAL — all matched, and re-checked
+ *   inside the transaction;
  * - status-guarded `updateMany` claims whose matched counts must equal the
  *   plan exactly (a row a concurrent writer flipped rolls the payment back
  *   rather than committing a partial repair);
@@ -124,10 +138,15 @@ export interface StripeRefundNoteLinkRepairPlan {
   /**
    * Why the payment still needs operator attention — beside the planned
    * writes (a shortfall the self-heal will fill, a surplus to void in Xero)
-   * or instead of them (an in-flight outbox operation, nothing recoverable).
+   * or instead of them (a still-executable outbox operation, nothing
+   * recoverable).
    */
   manualReviewReason: string | null;
-  /** True when an in-flight outbound CREDIT_NOTE CREATE blocked the payment. */
+  /**
+   * True when a still-executable outbound CREDIT_NOTE operation blocked the
+   * payment (a CREATE in PENDING/RUNNING/WAITING_PAYMENT/FAILED/PARTIAL, or
+   * a REQUEUE in PENDING/RUNNING — see findBlockingRefundCreditNoteOperationId).
+   */
   blockedByPendingOperation: boolean;
   links: StripeRefundNoteLinkAssessment[];
   reactivateLinkIds: string[];
@@ -234,11 +253,13 @@ function buildPlan(
   const deactivateLinkIds: string[] = [];
 
   if (options.pendingOperationId !== null) {
-    // #2901 review F4: the outbox executor derives its amounts from a
-    // coverage read taken OUTSIDE any transaction, so changing coverage while
-    // an operation is queued or running can race it into minting another
-    // duplicate provider note. Refuse the whole payment; the state is
-    // transient and a re-run after the drain is cheap.
+    // #2901 review F4: every path that reaches createXeroCreditNote (the
+    // outbox executor, the background REQUEUE drain, the manual retry)
+    // derives its amounts from a coverage read taken OUTSIDE any
+    // transaction, so changing coverage while any of them could still run
+    // can race one into minting another duplicate provider note. Refuse the
+    // whole payment; a queued/running state drains, and a FAILED/PARTIAL row
+    // is resolved in the admin Xero panel first.
     for (const link of ordered) {
       assessments.push({
         linkId: link.id,
@@ -250,7 +271,7 @@ function buildPlan(
         createdAt: link.createdAt,
         plannedAction: link.active ? "keep-active" : "leave-inactive",
         reason:
-          "Blocked: a refund credit-note operation is queued or running for this payment.",
+          "Blocked: a credit-note operation for this payment could still execute.",
       });
     }
     return {
@@ -261,7 +282,7 @@ function buildPlan(
       activeCoveredCents,
       plannedCoveredCents: activeCoveredCents,
       repairable: false,
-      manualReviewReason: `A Xero refund credit-note operation (${options.pendingOperationId}) is PENDING or RUNNING for this payment. The executor computes its amounts from live coverage, so changing links now could mint a duplicate note. Let the outbox drain (or resolve the stuck operation), then re-run.`,
+      manualReviewReason: `A Xero credit-note operation (${options.pendingOperationId}) for this payment could still execute — it is queued, running, awaiting payment confirmation, or failed-but-retryable. Every execution path computes its amounts from live coverage, so changing links now could mint a duplicate note. Let the outbox and retry queue drain, or resolve the failed operation in the admin Xero panel, then re-run.`,
       blockedByPendingOperation: true,
       links: assessments,
       reactivateLinkIds,
@@ -399,10 +420,44 @@ const REFUND_NOTE_LINK_WHERE = (paymentId: string) =>
     role: "REFUND_CREDIT_NOTE",
   }) as const;
 
-/** Outbox statuses that mean a CREDIT_NOTE CREATE could still execute. */
-const IN_FLIGHT_OPERATION_STATUSES = ["PENDING", "RUNNING", "WAITING_PAYMENT"];
+/**
+ * CREATE statuses from which a credit-note operation can still drive
+ * `createXeroCreditNote` for this payment:
+ * - PENDING/RUNNING/WAITING_PAYMENT — the outbox executor's own lifecycle;
+ * - FAILED/PARTIAL — the manual-retry and requeue entry points
+ *   (`getXeroOperationRetryMeta` accepts exactly these two), and the
+ *   credit-note retry branch performs NO claim-first status flip (unlike the
+ *   invoice branch's FAILED→RUNNING claim), so the row still reads
+ *   FAILED/PARTIAL during its provider call.
+ * SUCCEEDED and CANCELLED rows cannot re-execute and never block.
+ */
+const BLOCKING_CREATE_STATUSES = [
+  "PENDING",
+  "RUNNING",
+  "WAITING_PAYMENT",
+  "FAILED",
+  "PARTIAL",
+];
 
-async function findInFlightRefundCreditNoteOperationId(
+/**
+ * REQUEUE rows (`XERO_OPERATION_REQUEUE_TYPE`, `xero-operation-queue.ts`)
+ * carry the original operation's entityType/localModel/localId; the
+ * background retry drain claims them PENDING→RUNNING and executes the
+ * ORIGINAL operation via `retryXeroSyncOperation` — minting while the
+ * original CREATE's own row never changes status. A requeue row is created
+ * `replayable: false`, so once FAILED it is dead and does not block.
+ */
+const BLOCKING_REQUEUE_STATUSES = ["PENDING", "RUNNING"];
+
+/**
+ * The id of any operation row that could still drive `createXeroCreditNote`
+ * for this payment, or null. Scoped to OUTBOUND CREDIT_NOTE operations on
+ * THIS payment only: a same-payment account-credit-note CREATE matches too
+ * (conservative in the safe direction — telling the two apart means parsing
+ * payloads), but invoice/contact/allocation operations and other payments
+ * never block.
+ */
+async function findBlockingRefundCreditNoteOperationId(
   paymentId: string,
   db: Prisma.TransactionClient
 ): Promise<string | null> {
@@ -410,10 +465,15 @@ async function findInFlightRefundCreditNoteOperationId(
     where: {
       direction: "OUTBOUND",
       entityType: "CREDIT_NOTE",
-      operationType: "CREATE",
       localModel: "Payment",
       localId: paymentId,
-      status: { in: IN_FLIGHT_OPERATION_STATUSES },
+      OR: [
+        { operationType: "CREATE", status: { in: BLOCKING_CREATE_STATUSES } },
+        {
+          operationType: "REQUEUE",
+          status: { in: BLOCKING_REQUEUE_STATUSES },
+        },
+      ],
     },
     select: { id: true },
   });
@@ -424,7 +484,7 @@ async function planForPayment(
   payment: RepairPayment,
   db: Prisma.TransactionClient
 ): Promise<StripeRefundNoteLinkRepairPlan> {
-  const pendingOperationId = await findInFlightRefundCreditNoteOperationId(
+  const pendingOperationId = await findBlockingRefundCreditNoteOperationId(
     payment.id,
     db
   );
@@ -500,7 +560,8 @@ type ApplyTransactionOutcome =
  * Apply the repairable plans, each payment in its own transaction. The apply
  * is BOUND to what the operator reviewed: the caller passes the reviewed
  * payment ids (the operator script requires them), the plan is rebuilt from a
- * fresh in-transaction snapshot (including the in-flight-operation guard) and
+ * fresh in-transaction snapshot (including the still-executable-operation
+ * guard) and
  * applied only when it proposes the same link ids the dry run showed; the
  * claims must match the plan exactly and coverage is re-summed after them —
  * any divergence rolls that payment back and reports it, applying nothing.
@@ -530,8 +591,8 @@ export async function applyStripeRefundNoteLinkRepairs(options?: {
         async (tx): Promise<ApplyTransactionOutcome> => {
           // Re-read the payment and links inside the transaction and rebuild
           // the plan from that snapshot: the guarded updates below only ever
-          // run against state the planner has just seen, and the in-flight
-          // operation guard is re-checked transactionally.
+          // run against state the planner has just seen, and the
+          // still-executable-operation guard is re-checked transactionally.
           const payment = await tx.payment.findUnique({
             where: { id: plan.paymentId },
             select: {

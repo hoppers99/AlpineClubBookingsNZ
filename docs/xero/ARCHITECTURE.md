@@ -265,7 +265,7 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | `xero-inbound-reconciliation` | Stored-event worker + per-entity reconcilers + incremental cursor reconciliation (see Flow 2). Split into cohesive `xero-inbound/*` sub-modules (#1208 item 1 / #1270, entry re-exports the public surface); see refactor item 1 for the module map. |
 | `xero-booking-repair` | Booking-vs-Xero audit and self-repair (see Flow 3). CLI entry: `scripts/xero-booking-repair.ts`. Split into cohesive `xero-booking-repair-*` sub-modules (#1208 item 2, entry re-exports the public surface); see refactor item 2 for the module map. |
 | `xero-hardening` | Historical `XeroObjectLink` backfill, stale canonical-link cleanup, the emailed reconciliation report, repeated-failure alerting. Split into cohesive `xero-hardening-*` sub-modules (#1208 item 5, entry re-exports the public surface); see refactor item 5 for the module map. Cleanup and the report's drift classifications are source-aware for Stripe per-delta refund notes (#2901): see "Repairing Stripe refund-note links" under Flow 3. |
-| `xero-refund-note-link-repair` | Dry-run-first operator repair for Stripe per-delta `REFUND_CREDIT_NOTE` links damaged by the pre-#2901 cleanup loop: unconditionally deactivates local mirrors of notes VOIDED/DELETED in Xero, reactivates wrongly deactivated links (recorded-status only, never past the refunded total; landing short is applied honestly and the self-heal reissues the remainder), refuses payments with an in-flight credit-note operation. No provider calls; `--apply` is bound to reviewed payment ids. CLI entry: `scripts/xero-refund-note-link-repair.ts`. Runbook: "Repairing Stripe refund-note links (#2901)" under Flow 3. |
+| `xero-refund-note-link-repair` | Dry-run-first operator repair for Stripe per-delta `REFUND_CREDIT_NOTE` links damaged by the pre-#2901 cleanup loop: unconditionally deactivates local mirrors of notes VOIDED/DELETED in Xero, reactivates wrongly deactivated links (recorded-status only, never past the refunded total; landing short is applied honestly and the self-heal reissues the remainder), refuses payments with a still-executable credit-note operation (queued/running/awaiting-payment, failed-but-retryable, or a queued retry of one). No provider calls; `--apply` is bound to reviewed payment ids. CLI entry: `scripts/xero-refund-note-link-repair.ts`. Runbook: "Repairing Stripe refund-note links (#2901)" under Flow 3. |
 | `xero-refund-note-status-recorder` | Read-only provider GETs that record each linked refund credit note's live Xero status onto ALL of its local links, active or not (`--record-statuses`; run automatically before `--apply`). Exists because inbound reconciliation structurally cannot stamp a status onto an inactive link, and the repair never reactivates an unknown-status note. |
 | `xero-refund-note-status` | The one home for "does this credit-note status still count as refund coverage?" (`VOIDED`/`DELETED` do not) and for reading a link's recorded status — shared by the inbound contribution math, `sumCoveredRefundCreditNoteCents`, cleanup, the drift report and the operator repair so no path can disagree (#2901). |
 | `xero-invoice-rounding-audit` | Read-only diagnostic that replays the pre-#1231 line maths in integer cents to flag issued invoices that would have carried the #1163 rounding drift, across **both** builder callers — per-booking invoices (`Payment.xeroInvoiceId`) and group-settlement invoices (`GroupBookingSettlement.xeroInvoiceId`). Makes **no** live-provider calls and mutates nothing (only `booking.findMany` + `groupBookingSettlement.findMany`). CLI entry: `scripts/audit-xero-invoice-rounding.ts`. See "Historical rounding-drift audit" below. |
@@ -567,11 +567,17 @@ document automatically** — that judgement stays with the operator.
    `POST /api/cron/xero` or the admin outbox drain while step 5 runs. The
    outbox executor prices a credit note from a lock-free coverage read taken
    seconds before its provider call, so changing coverage mid-flight could
-   mint a duplicate note. The script refuses any payment that has a
-   PENDING/RUNNING outbound credit-note operation (re-checked inside each
-   transaction), and its apply transactions re-sum coverage after their
-   claims and roll back on any divergence — but not racing the executor at
-   all is the cheap, certain option.
+   mint a duplicate note — and so could the background retry drain and the
+   admin panel's manual retry, which execute the same mint. The script
+   refuses any payment with a credit-note operation that could still
+   execute — a CREATE that is queued, running, awaiting payment
+   confirmation, **or FAILED/PARTIAL** (those two are exactly what manual
+   retry and requeue accept, and the credit-note retry runs while its row
+   still reads FAILED), or a queued/running REQUEUE of one — re-checked
+   inside each transaction. Resolve failed credit-note operations in the
+   admin Xero panel before applying. The apply transactions also re-sum
+   coverage after their claims and roll back on any divergence — but not
+   racing the executor at all is the cheap, certain option.
 5. **Apply, bound to the payments you reviewed** (local ledger writes only,
    each payment in its own transaction, re-planned from an in-transaction
    snapshot and applied through status-guarded claims whose matched counts

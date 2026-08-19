@@ -172,8 +172,17 @@ const fakePrisma = vi.hoisted(() => {
           entityType?: string;
           operationType?: string;
           direction?: string;
+          OR?: Array<{ operationType?: string; status?: { in: string[] } }>;
         };
       }) => {
+        const matchesBranch = (
+          row: FakeOperationRow,
+          branch: { operationType?: string; status?: { in: string[] } }
+        ) => {
+          if (branch.operationType !== undefined && row.operationType !== branch.operationType) return false;
+          if (branch.status?.in && !branch.status.in.includes(row.status)) return false;
+          return true;
+        };
         const matches = state.operations
           .filter((row) => {
             if (args.where.localId !== undefined && row.localId !== args.where.localId) return false;
@@ -182,6 +191,7 @@ const fakePrisma = vi.hoisted(() => {
             if (args.where.operationType !== undefined && row.operationType !== args.where.operationType) return false;
             if (args.where.direction !== undefined && row.direction !== args.where.direction) return false;
             if (args.where.status?.in && !args.where.status.in.includes(row.status)) return false;
+            if (args.where.OR && !args.where.OR.some((branch) => matchesBranch(row, branch))) return false;
             return true;
           })
           .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
@@ -529,11 +539,162 @@ describe("findStripeRefundNoteLinkRepairs", () => {
     expect(plan?.reactivateLinkIds).toEqual([]);
     expect(plan?.deactivateLinkIds).toEqual([]);
     expect(plan?.manualReviewReason).toContain("op_pending");
-    expect(plan?.manualReviewReason).toContain("PENDING or RUNNING");
+    expect(plan?.manualReviewReason).toContain("could still execute");
 
     const apply = await applyStripeRefundNoteLinkRepairs();
     expect(apply.appliedPayments).toBe(0);
     expect(state.links.find((link) => link.id === "link_90")?.active).toBe(false);
+  });
+
+  it("refuses the whole payment while a REQUEUE of a credit-note operation is queued for the retry drain (#2901 verify round)", async () => {
+    state.links = [
+      makeLink({
+        id: "link_90",
+        xeroObjectId: "cn_90",
+        active: false,
+        metadata: { amountCents: 90, status: "AUTHORISED" },
+      }),
+      makeLink({
+        id: "link_10",
+        xeroObjectId: "cn_10",
+        active: true,
+        metadata: { amountCents: 10 },
+      }),
+    ];
+    state.operations = [
+      // The original CREATE ended SUCCEEDED long ago — on its own it never
+      // blocks (pinned by the legacy-payload test above).
+      {
+        id: "op_done",
+        direction: "OUTBOUND",
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        localModel: "Payment",
+        localId: "pay_1",
+        xeroObjectId: "cn_10",
+        status: "SUCCEEDED",
+        requestPayload: { allocation: { amount: 0.1 } },
+        createdAt: new Date("2026-05-02T00:00:00Z"),
+      },
+      // ...but an admin queued a background retry: the drain will execute the
+      // original via retryXeroSyncOperation -> createXeroCreditNote while
+      // neither row is a PENDING/RUNNING CREATE. operationType REQUEUE with
+      // the original's entityType/localModel/localId, exactly as
+      // queueXeroOperationRetry writes it (xero-operation-queue.ts).
+      {
+        id: "op_requeue",
+        direction: "OUTBOUND",
+        entityType: "CREDIT_NOTE",
+        operationType: "REQUEUE",
+        localModel: "Payment",
+        localId: "pay_1",
+        xeroObjectId: null,
+        status: "PENDING",
+        requestPayload: { originalOperationId: "op_failed_elsewhere" },
+        createdAt: new Date("2026-05-05T00:00:00Z"),
+      },
+    ];
+
+    const report = await findStripeRefundNoteLinkRepairs();
+
+    const plan = report.plans[0];
+    expect(plan?.blockedByPendingOperation).toBe(true);
+    expect(plan?.repairable).toBe(false);
+    expect(plan?.reactivateLinkIds).toEqual([]);
+    expect(plan?.manualReviewReason).toContain("op_requeue");
+
+    const apply = await applyStripeRefundNoteLinkRepairs();
+    expect(apply.appliedPayments).toBe(0);
+    expect(state.links.find((link) => link.id === "link_90")?.active).toBe(false);
+  });
+
+  it("refuses the whole payment while a FAILED or PARTIAL credit-note CREATE could still be retried (#2901 verify round)", async () => {
+    state.payments.push({
+      id: "pay_2",
+      bookingId: "book_2",
+      source: "STRIPE",
+      refundedAmountCents: 100,
+      xeroInvoiceId: "inv_2",
+      xeroRefundCreditNoteId: null,
+      createdAt: new Date("2026-05-01T00:00:00Z"),
+    });
+    state.links = [
+      makeLink({
+        id: "link_90",
+        xeroObjectId: "cn_90",
+        active: false,
+        metadata: { amountCents: 90, status: "AUTHORISED" },
+      }),
+      makeLink({
+        id: "link_10",
+        xeroObjectId: "cn_10",
+        active: true,
+        metadata: { amountCents: 10 },
+      }),
+      makeLink({
+        id: "link_2_90",
+        localId: "pay_2",
+        xeroObjectId: "cn_2_90",
+        active: false,
+        metadata: { amountCents: 90, status: "AUTHORISED" },
+      }),
+      makeLink({
+        id: "link_2_10",
+        localId: "pay_2",
+        xeroObjectId: "cn_2_10",
+        active: true,
+        metadata: { amountCents: 10 },
+      }),
+    ];
+    state.operations = [
+      // The manual retry executes createXeroCreditNote with NO claim-first
+      // status flip (xero-operation-retry.ts credit-note branch), so the row
+      // reads FAILED throughout its provider call; it is also exactly what
+      // the requeue screen accepts. Both must block.
+      {
+        id: "op_failed",
+        direction: "OUTBOUND",
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        localModel: "Payment",
+        localId: "pay_1",
+        xeroObjectId: null,
+        status: "FAILED",
+        requestPayload: { refundAmountCents: 90 },
+        createdAt: new Date("2026-05-05T00:00:00Z"),
+      },
+      {
+        id: "op_partial",
+        direction: "OUTBOUND",
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        localModel: "Payment",
+        localId: "pay_2",
+        xeroObjectId: null,
+        status: "PARTIAL",
+        requestPayload: { refundAmountCents: 90 },
+        createdAt: new Date("2026-05-05T00:00:00Z"),
+      },
+    ];
+
+    const report = await findStripeRefundNoteLinkRepairs();
+
+    expect(report.plans).toHaveLength(2);
+    for (const [paymentId, operationId] of [
+      ["pay_1", "op_failed"],
+      ["pay_2", "op_partial"],
+    ] as const) {
+      const plan = report.plans.find((entry) => entry.paymentId === paymentId);
+      expect(plan?.blockedByPendingOperation).toBe(true);
+      expect(plan?.repairable).toBe(false);
+      expect(plan?.reactivateLinkIds).toEqual([]);
+      expect(plan?.manualReviewReason).toContain(operationId);
+    }
+
+    const apply = await applyStripeRefundNoteLinkRepairs();
+    expect(apply.appliedPayments).toBe(0);
+    expect(state.links.find((link) => link.id === "link_90")?.active).toBe(false);
+    expect(state.links.find((link) => link.id === "link_2_90")?.active).toBe(false);
   });
 
   it("does not report healthy payments, non-Stripe payments, never-invoiced payments, or unrelated links", async () => {

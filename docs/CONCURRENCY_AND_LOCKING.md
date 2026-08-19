@@ -3083,11 +3083,17 @@ nothing — cohort membership only serialises against writers that take the same
 key — and holding a transaction open across the executor's provider calls is
 the shape this document forbids. The mechanisms that do the work instead:
 
-- **In-flight-operation refusal**: a payment with a PENDING/RUNNING/
-  WAITING_PAYMENT outbound `CREDIT_NOTE` `CREATE` operation is refused at plan
-  time and the check is repeated inside the apply transaction. The executor
-  can only be mid-provider-call for an operation row that already exists in
-  one of those statuses, which the transactional re-check observes.
+- **Still-executable-operation refusal**: a payment is refused at plan time —
+  and the check repeated inside the apply transaction — while ANY outbound
+  `CREDIT_NOTE` operation row that could still drive `createXeroCreditNote`
+  exists for it: a `CREATE` in PENDING/RUNNING/WAITING_PAYMENT (the outbox
+  executor's lifecycle) or in FAILED/PARTIAL (manual retry and requeue accept
+  exactly those two, and the credit-note retry branch performs no claim-first
+  status flip, so it mints while the row still reads FAILED/PARTIAL), or a
+  `REQUEUE` row in PENDING/RUNNING (the background retry drain executes the
+  ORIGINAL operation while the original's own row never changes status).
+  Every mint path therefore holds a matching row for the whole provider
+  call; SUCCEEDED/CANCELLED rows cannot re-execute and never block.
 - **Exact-count status-guarded claims**: the `updateMany` claims pin
   `active: true/false` and the matched counts must equal the plan exactly; a
   row a concurrent writer already flipped rolls the whole payment back.

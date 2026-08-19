@@ -12,7 +12,11 @@ import { asRecord, readString } from "@/lib/xero-json";
  * Unknown shapes (missing/non-string status) COUNT — outbound-created links
  * carry no status until inbound reconciliation or the operator status
  * recorder merges one, and their notes are live. Only an explicit
- * VOIDED/DELETED is excluded.
+ * VOIDED/DELETED is excluded. Note the assumption this bakes in: a
+ * non-cancelled recorded status (DRAFT, SUBMITTED, PAID, ...) counts as live
+ * coverage. That is safe because the system only ever creates AUTHORISED
+ * refund credit notes; a hand-crafted DRAFT note linked as refund coverage
+ * would count here before it credits anything in Xero (#2901 stated limit).
  */
 export function isIncludedRefundCreditNoteStatus(status: unknown) {
   if (typeof status !== "string") {

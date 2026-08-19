@@ -12,5 +12,7 @@
   it records each linked note's live Xero status first (read-only provider
   GETs — the script never creates, voids or deletes anything in Xero), never
   reactivates a cancelled or unknown-status note, never pushes coverage past
-  the refunded total, refuses payments with an in-flight credit-note
-  operation, and applies only the payment ids the operator reviewed.
+  the refunded total, refuses payments with a still-executable credit-note
+  operation (queued, running, awaiting payment, failed-but-retryable, or a
+  queued retry of one), and applies only the payment ids the operator
+  reviewed.
