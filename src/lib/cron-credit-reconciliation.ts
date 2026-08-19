@@ -56,20 +56,25 @@ export async function reconcileCreditBalances(): Promise<{
 
   if (refundsMissingCreditNotes.count > 0) {
     // F4 (#1354) self-heal: re-enqueue the uncovered delta for each flagged
-    // payment. The enqueue is delta-capped (it computes
-    // refundedAmountCents − covered at enqueue) and correlation-key-deduped,
-    // the execution path recomputes coverage again at execution time, and the
-    // #1353 floor keeps refundedAmountCents from being rewritten down — so a
-    // historically swallowed delta converges to exactly one corrective note,
-    // and repeats collapse into the existing PENDING operation. Alerting
-    // below is unchanged: operators still see the divergence until the books
-    // actually heal.
+    // payment. #2902 (INV-PAY-050): the amount asked for is the CASH
+    // uncovered delta (provider-backed PaymentRefund evidence minus covered
+    // notes), never the aggregate refundedAmountCents mirror — the mirror
+    // also counts account-credit dispositions, and passing it minted
+    // fictitious refund notes plus Stripe-bank payments for cancellations
+    // that returned no cash. The enqueue re-caps against the same cash
+    // evidence and is correlation-key-deduped, the execution path recomputes
+    // coverage and cash evidence again at execution time, and the #1353 floor
+    // keeps refundedAmountCents from being rewritten down — so a historically
+    // swallowed delta converges to exactly one corrective note, and repeats
+    // collapse into the existing PENDING operation. Alerting below is
+    // unchanged: operators still see the divergence until the books actually
+    // heal.
     let reEnqueued = 0;
     for (const missing of refundsMissingCreditNotes.payments) {
       try {
         const queued = await enqueueXeroRefundCreditNoteOperation(
           missing.paymentId,
-          missing.refundedAmountCents
+          missing.uncoveredCents
         );
         if (queued.queueOperationId) {
           reEnqueued += 1;
@@ -102,6 +107,8 @@ export async function reconcileCreditBalances(): Promise<{
           paymentId: payment.paymentId,
           bookingId: payment.bookingId,
           refundedAmountCents: payment.refundedAmountCents,
+          cashRefundedCents: payment.cashRefundedCents,
+          uncoveredCents: payment.uncoveredCents,
           refundedAt: payment.refundedAt,
         })),
         href: "/admin/xero",

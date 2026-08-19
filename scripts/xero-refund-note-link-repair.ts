@@ -2,14 +2,20 @@
 /**
  * Operator repair for Stripe per-delta refund credit-note links damaged by the
  * pre-#2901 canonical cleanup (and for the local aftermath of voiding the
- * Xero-side duplicate notes the resulting loop created).
+ * Xero-side duplicate notes the resulting loop created). The same dry run is
+ * also the #2902 operator report: it lists payments whose refund-note coverage
+ * exceeds their provider-backed cash refunds — the fictitious notes (with
+ * Stripe-bank refund payments) that account-credit cancellations used to mint.
  *
  * It never voids or deletes a Xero document — Xero-side duplicates are voided
  * by the operator in Xero (runbook: docs/xero/ARCHITECTURE.md → "Repairing
  * Stripe refund-note links (#2901)"). The only provider traffic is READ-ONLY
  * status fetches (`--record-statuses`, and automatically before `--apply`),
  * because a note whose live status was never recorded locally is never
- * reactivated.
+ * reactivated. Coverage targets are the provider-backed CASH refund evidence
+ * (#2902, INV-PAY-050: succeeded PaymentRefund cents, with the pre-ledger
+ * legacy fallback — never the raw refundedAmountCents mirror, which also
+ * counts account-credit dispositions).
  *
  * Dry run by default. SAFE USAGE — review the dry-run report first, keep its
  * output with the change record, then apply exactly the reviewed payments:
