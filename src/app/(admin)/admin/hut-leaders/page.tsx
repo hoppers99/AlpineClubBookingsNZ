@@ -69,10 +69,9 @@ interface HutLeaderAssignment {
 
 interface UnassignedDate {
   date: string;
-  // One row per uncovered lodge-night since #2917. This workspace is scoped to
-  // one selected lodge, so every row carries the same lodge and the fields are
-  // used for keying rather than display (the selector already names it).
-  // Optional, so an older cached response cannot break the panel.
+  // One row per uncovered lodge-night since #2917; here always the selected
+  // lodge, so these are for keying, not display. Optional: an older cached
+  // response must not break the panel.
   lodgeId?: string | null;
   lodgeName?: string | null;
   bookingCount: number;

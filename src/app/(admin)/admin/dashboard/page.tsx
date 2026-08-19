@@ -245,12 +245,10 @@ async function getStats() {
     unsettledAdditionalFinishedStays,
     unsettledAdditionalUpcomingStays,
     recentBookings,
-    // One entry per uncovered LODGE-night (#2917), so a night on which two
-    // lodges both lack a leader counts twice — the true amount of work, which
-    // the owner chose over a comparable-looking number. The label names the
-    // lodge only when the result actually spans more than one, per the
-    // multi-lodge Presentation Rule (ADR-002): a single-lodge club sees exactly
-    // the bare dates and count it saw before.
+    // One entry per uncovered LODGE-night (#2917): two lodges uncovered on one
+    // night is two pieces of work. The label names the lodge only when the
+    // result spans more than one, per the Presentation Rule (ADR-002), so a
+    // single-lodge club sees the same bare dates and count as before.
     unassignedDatesWithBookings: unassignedHutLeaderDates.map((item) =>
       unassignedSpansLodges && item.lodgeName
         ? `${item.date} (${item.lodgeName})`

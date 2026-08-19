@@ -738,10 +738,8 @@ async function addLodgeItems(
     scope: { kind: "all" },
   });
 
-  // Uncovered LODGE-nights (#2917): a club-wide read, so a night on which two
-  // lodges both lack a leader is two rows and two units of work. The noun follows
-  // the data — "lodge-night" only once more than one lodge is involved — so a
-  // single-lodge club's tile is unchanged (ADR-002 Presentation Rule).
+  // Uncovered LODGE-nights (#2917): two lodges uncovered on one night is two
+  // rows. The noun follows the data, so a single-lodge tile is unchanged.
   const unassignedNoun = coverageSpansMultipleLodges(unassignedDates)
     ? "lodge-night"
     : "lodge date";
