@@ -1927,6 +1927,18 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "xeroLinksNote",
   "xeroObjectUrl",
   "xeroInvoiceNumber",
+  // #2780: the admin maintenance-report alert. `reportedBy` names the member or
+  // "a lodge QR code"; `sourceLabel` says which door it came through; `photoLabel`
+  // says whether a photo is attached; `summary` is the one-line fault; `answersText`
+  // is the composed question/answer block; `maintenanceReportUrl` deep-links the
+  // officer to the queue. All composed by the sender so a club override can move
+  // them, and none carries a bearer token or account secret.
+  "reportedBy",
+  "sourceLabel",
+  "photoLabel",
+  "summary",
+  "answersText",
+  "maintenanceReportUrl",
   "y|ies",
 ] as const;
 

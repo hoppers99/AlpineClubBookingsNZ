@@ -238,6 +238,14 @@ export const SINGLETONS: SingletonSpec[] = [
       // The two PRIVACY toggles that decide how a member is FOUND live on the
       // separate member-guest-settings singleton below and are excluded there.
       "memberGuests",
+      // maintenanceReports SHOULD-TRAVEL (#2780): "does this club collect
+      // maintenance reports?" is a plain capability decision like eventsCalendar
+      // or memberNotices — no credential, no per-install auth choice. Importing
+      // the flag does NOT open the unauthenticated QR path: that is the
+      // default-OFF anonymousReportsEnabled setting on MaintenanceReportSettings,
+      // which is excluded from config transfer for exactly that reason, so a
+      // target's public door stays closed regardless of what this flag imports.
+      "maintenanceReports",
     ],
     excluded: {
       multiLodge:
