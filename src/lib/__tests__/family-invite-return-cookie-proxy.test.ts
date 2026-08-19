@@ -56,7 +56,12 @@ function returnCookies(headers: Headers): string[] {
     .filter((value) => value.startsWith(`${FAMILY_INVITE_RETURN_COOKIE}=`));
 }
 
-async function get(path: string, init?: RequestInit) {
+// The init type is taken from the constructor rather than written as the DOM's
+// `RequestInit`: Next's own is narrower (its `signal` may not be null), so the
+// global one does not type-check here.
+type NextRequestInit = ConstructorParameters<typeof NextRequest>[1];
+
+async function get(path: string, init?: NextRequestInit) {
   return proxy(new NextRequest(`https://example.org${path}`, init));
 }
 
