@@ -10,6 +10,7 @@ import {
   parseDockerOutput,
   parseDockerTimestamp,
   renderReport,
+  reservedProjects,
   RESERVED_PROJECTS,
 } from "./stale-containers.mjs";
 
@@ -210,6 +211,61 @@ describe("classifyOwnership", () => {
     const result = classifyOwnership(container({ name: "pg-2376", issueLabel: "not-a-number" }));
     expect(result.ownership).toBe("unowned");
     expect(result.reason).toContain("not an issue number");
+  });
+
+  it("protects a Compose project this host has configured through the environment", () => {
+    /*
+      Both shared project names are environment-configurable — `docker-compose.yml`
+      reads `${COMPOSE_PROJECT_NAME:-tacbookings}` and `scripts/e2e-stack.sh` reads
+      `${E2E_COMPOSE_PROJECT:-tacbookings-staging}` — so the hard-coded default set
+      protects nothing on a host that changed either.
+    */
+    const reserved = reservedProjects({
+      COMPOSE_PROJECT_NAME: "clubstack-prod",
+      E2E_COMPOSE_PROJECT: "clubstack-e2e",
+    });
+    expect(reserved.has("clubstack-prod")).toBe(true);
+    expect(reserved.has("tacbookings-measure")).toBe(true);
+
+    const result = classifyOwnership(
+      container({ name: "clubstack-prod-postgres-1", project: "clubstack-prod" }),
+      { reserved },
+    );
+    expect(result.ownership).toBe("shared");
+  });
+
+  it("refuses a bare number inside a reserved project family, however the host is configured", () => {
+    /*
+      `scripts/run-production-blue-green-deploy.sh` derives the project name from
+      the source-repo directory basename, in a shell this command never sees — so
+      reading the environment cannot be the only protection. A deploy or checkout
+      root named `tacbookings-2026` produced project `tacbookings-2026`, extracted
+      #2026, resolved closed and printed
+      `docker compose -p tacbookings-2026 down -v` against a live shared stack.
+      A bare number in a reserved family is ambiguous, and ambiguous is unknown.
+    */
+    const result = classifyOwnership(
+      container({ name: "tacbookings-2026-app-1", project: "tacbookings-2026" }),
+    );
+    expect(result.ownership).toBe("unowned");
+    expect(result.issue).toBeNull();
+    expect(result.reason).toContain("reserved");
+    expect(result.reason).toContain("COMPOSE_PROJECT_NAME");
+  });
+
+  it("still resolves a declared lane stack inside a reserved project family", () => {
+    // The refusal above must not cost the tool its actual job: a lane stack that
+    // declares its owner, or uses the glued form the E2E lanes measured on the
+    // host, still resolves.
+    expect(
+      classifyOwnership(container({ name: "tacbookings-issue2794-app-1", project: "tacbookings-issue2794" })),
+    ).toMatchObject({ ownership: "agent-lane", issue: 2794, source: "issue-token" });
+    expect(
+      classifyOwnership(container({ name: "tacbookings-e2e2595-app-1", project: "tacbookings-e2e2595" })),
+    ).toMatchObject({ ownership: "agent-lane", issue: 2595, source: "glued-digits" });
+    expect(
+      classifyOwnership(container({ name: "tacbookings-2026-app-1", project: "tacbookings-2026", issueLabel: "2794" })),
+    ).toMatchObject({ ownership: "agent-lane", issue: 2794 });
   });
 
   it("reads the Compose project rather than the per-service container name", () => {

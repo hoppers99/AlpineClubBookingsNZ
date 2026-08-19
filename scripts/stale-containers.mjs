@@ -43,7 +43,8 @@
  * infrastructure". Summary of what this file implements:
  *
  *   1. RESERVED projects are shared infrastructure and are never debris,
- *      whatever their name looks like. Checked first, before anything else.
+ *      whatever their name looks like. Checked first, before anything else, and
+ *      read from this host's environment as well as from the defaults.
  *   2. An explicit `agent-lane.shared=true` label also means shared.
  *   3. An explicit `agent-lane.issue=<n>` label is authoritative when present.
  *   4. Otherwise the issue number is read out of the Compose project name (for a
@@ -69,12 +70,68 @@ import { fetchIssueState } from "./lib/github-cli.mjs";
  * blocking. Reporting any of them as removable debris would be the worst
  * possible failure of this tool, so the check runs before issue extraction and
  * matches the project name exactly rather than by prefix.
+ *
+ * These are the DEFAULTS only. Every one of them is environment-configurable, so
+ * see `reservedProjects` below — a hard-coded list on its own left the shared
+ * stack unprotected under any non-default name.
  */
 export const RESERVED_PROJECTS = new Set([
   "tacbookings",
   "tacbookings-staging",
   "tacbookings-measure",
 ]);
+
+/** Environment variables a deployment uses to name its Compose project. */
+const RESERVED_PROJECT_ENV_KEYS = ["COMPOSE_PROJECT_NAME", "E2E_COMPOSE_PROJECT"];
+
+/**
+ * The reserved set for THIS environment: the defaults plus whatever this host
+ * has configured.
+ *
+ * `docker-compose.yml` uses `${COMPOSE_PROJECT_NAME:-tacbookings}`,
+ * `scripts/e2e-stack.sh` uses `${E2E_COMPOSE_PROJECT:-tacbookings-staging}`,
+ * `CONFIGURATION.md` documents `COMPOSE_PROJECT_NAME` as configurable with
+ * "defaults vary by script", and `scripts/run-production-blue-green-deploy.sh`
+ * derives it from the source-repo directory basename. So the exact-match snapshot
+ * above is only correct on a host that changed none of that, and review measured
+ * the consequence: a deploy root named `tacbookings-2026` produces project
+ * `tacbookings-2026`, which is not in the default set, extracts #2026, resolves
+ * closed, and gets a `docker compose -p tacbookings-2026 down -v` printed against
+ * a live shared stack and its volumes.
+ */
+export function reservedProjects(env = process.env) {
+  const reserved = new Set(RESERVED_PROJECTS);
+  for (const key of RESERVED_PROJECT_ENV_KEYS) {
+    const value = String(env?.[key] ?? "").trim();
+    if (value) reserved.add(value);
+  }
+  return reserved;
+}
+
+/**
+ * The first name segment of each reserved project (`tacbookings`).
+ *
+ * Reading the environment only helps when the reporter runs in the same
+ * environment as whatever created the stack, and the blue-green deploy derives
+ * its project name from a directory basename in a shell this command never sees.
+ * So within a reserved project's own name family, a BARE number is not enough to
+ * claim per-issue ownership: `tacbookings-2026` is equally consistent with a
+ * configured deployment and with a lane stack, and the honest answer to that is
+ * `unknown`.
+ *
+ * A declared owner still wins — `tacbookings-issue2794`, or an
+ * `agent-lane.issue` label — and so does the glued form the E2E lane stacks
+ * actually use (`tacbookings-e2e2595`), which names a purpose rather than being a
+ * bare number. That keeps the measured true positives working while removing the
+ * one shape that collides with a deployment name.
+ */
+function reservedFamilies(reserved) {
+  return new Set([...reserved].map((project) => firstSegment(project)));
+}
+
+function firstSegment(name) {
+  return String(name ?? "").split(/[-_]/)[0].toLowerCase();
+}
 
 /** Opt-out label: a deliberately shared stack that happens to carry a number. */
 export const SHARED_LABEL = "agent-lane.shared";
@@ -202,10 +259,10 @@ export function extractIssueNumber(name) {
  * question fail independently: GitHub being unreachable must not turn a shared
  * stack into an unknown one, and it must not turn anything into debris.
  */
-export function classifyOwnership(container) {
+export function classifyOwnership(container, { reserved = reservedProjects() } = {}) {
   const project = container.project || null;
 
-  if (project && RESERVED_PROJECTS.has(project)) {
+  if (project && reserved.has(project)) {
     return {
       ownership: "shared",
       issue: null,
@@ -249,6 +306,18 @@ export function classifyOwnership(container) {
   const { issue, reason, source } = extractIssueNumber(basis);
   if (issue === null) {
     return { ownership: "unowned", issue: null, source: null, reason: describeNoOwner(reason, basis) };
+  }
+  if (source === "bare-digits" && reservedFamilies(reserved).has(firstSegment(basis))) {
+    return {
+      ownership: "unowned",
+      issue: null,
+      source: null,
+      reason:
+        `"${basis}" is a bare number inside the reserved "${firstSegment(basis)}" ` +
+        "Compose-project family, which a deployment can be configured to use " +
+        `(${RESERVED_PROJECT_ENV_KEYS.join(" / ")}) — declare a lane stack with an ` +
+        `issue<n> token or an ${ISSUE_LABEL} label instead`,
+    };
   }
   return { ownership: "agent-lane", issue, source, reason: `issue number read from "${basis}"` };
 }
@@ -332,12 +401,20 @@ export function ageInDays(createdAt, now) {
  * Build the whole report from two injected boundaries.
  *
  * `listContainers()` returns the parsed `docker ps -a` rows or throws;
- * `resolveIssueState(n)` returns `{ state }` or throws. Both are injected so the
+ * `resolveIssueState(n)` returns `{ state, url }` or throws; `reserved` is the
+ * shared-project set for this environment, defaulting to `reservedProjects()`
+ * (the documented defaults plus this host's configured names). All three are
+ * injected so the
  * unit suite can exercise every failure branch — Docker down, `gh` logged out, a
  * single issue that 404s — with no live Docker and no destructive operation
  * anywhere near a test run.
  */
-export async function buildReport({ listContainers, resolveIssueState, now = Date.now() }) {
+export async function buildReport({
+  listContainers,
+  resolveIssueState,
+  now = Date.now(),
+  reserved = reservedProjects(),
+}) {
   let containers;
   try {
     containers = await listContainers();
@@ -352,7 +429,7 @@ export async function buildReport({ listContainers, resolveIssueState, now = Dat
 
   const owned = containers.map((container) => ({
     container,
-    ...classifyOwnership(container),
+    ...classifyOwnership(container, { reserved }),
   }));
 
   // Resolve each distinct issue once. A stack contributes three containers and
