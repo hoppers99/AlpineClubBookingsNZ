@@ -46,14 +46,22 @@ vi.mock("@/lib/lodge-capacity", () => ({
 
 import {
   BedAllocationAdminError,
-  buildBedAllocationWarnings,
+} from "@/lib/bed-allocation-admin-contract";
+import {
   deleteBedAllocationBedWithLocksHeld as deleteBedAllocationBed,
-  deleteBedAllocationRoomWithLocksHeld as deleteBedAllocationRoom,
+  updateBedAllocationBedWithLocksHeld as updateBedAllocationBed,
+} from "@/lib/bed-allocation-beds";
+import {
   manuallyAllocateBedForNightsWithLocksHeld as manuallyAllocateBedForNights,
   manuallyAllocateBedWithLocksHeld as manuallyAllocateBed,
-  updateBedAllocationBedWithLocksHeld as updateBedAllocationBed,
+} from "@/lib/bed-allocation-manual-writes";
+import {
+  deleteBedAllocationRoomWithLocksHeld as deleteBedAllocationRoom,
   updateBedAllocationRoomWithLocksHeld as updateBedAllocationRoom,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-rooms";
+import {
+  buildBedAllocationWarnings,
+} from "@/lib/bed-allocation-warnings";
 
 const LODGE = "lodge-a";
 

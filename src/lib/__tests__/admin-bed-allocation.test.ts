@@ -37,30 +37,44 @@ vi.mock("@/lib/lodge-capacity", () => ({
 
 import {
   BedAllocationAdminError,
-  MAX_BED_ALLOCATION_RANGE_NIGHTS,
-  buildBedAllocationWarnings,
-  countGuestsAwaitingBed,
-  createBedAllocationBed,
-  createBedAllocationRoom,
-  createBedAllocationRoomsBulk,
-  deleteBedAllocation as deleteBedAllocationPublic,
-  deleteBedAllocationRoom as deleteBedAllocationRoomPublic,
+} from "@/lib/bed-allocation-admin-contract";
+import {
   approveBedAllocationsWithLocksHeld as approveBedAllocations,
   isBookingBedAllocationLocked,
+} from "@/lib/bed-allocation-approval";
+import {
+  createBedAllocationBed,
+  updateBedAllocationBed as updateBedAllocationBedPublic,
+  updateBedAllocationBedWithLocksHeld as updateBedAllocationBed,
+  deleteBedAllocationBedWithLocksHeld,
+} from "@/lib/bed-allocation-beds";
+import {
+  countGuestsAwaitingBed,
   getBedAllocationDashboard,
-  getRoomsAndBedsConfiguration,
-  listBedAllocationRooms,
+} from "@/lib/bed-allocation-board";
+import {
+  MAX_BED_ALLOCATION_RANGE_NIGHTS,
+  parseBedAllocationDateRange,
+} from "@/lib/bed-allocation-date-range";
+import {
+  deleteBedAllocation as deleteBedAllocationPublic,
   manuallyAllocateBed,
   manuallyAllocateBedForNights as manuallyAllocateBedForNightsPublic,
   manuallyAllocateBedForNightsWithLocksHeld as manuallyAllocateBedForNights,
   moveBedAllocationsSameDate,
-  parseBedAllocationDateRange,
-  updateBedAllocationBed as updateBedAllocationBedPublic,
-  updateBedAllocationBedWithLocksHeld as updateBedAllocationBed,
   deleteBedAllocationWithLocksHeld as deleteBedAllocation,
+} from "@/lib/bed-allocation-manual-writes";
+import {
+  createBedAllocationRoom,
+  createBedAllocationRoomsBulk,
+  deleteBedAllocationRoom as deleteBedAllocationRoomPublic,
+  getRoomsAndBedsConfiguration,
+  listBedAllocationRooms,
   deleteBedAllocationRoomWithLocksHeld as deleteBedAllocationRoom,
-  deleteBedAllocationBedWithLocksHeld,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-rooms";
+import {
+  buildBedAllocationWarnings,
+} from "@/lib/bed-allocation-warnings";
 import { getLodgePartnerSharedCapacityStatus } from "@/lib/lodge-capacity";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { parseDateOnly } from "@/lib/date-only";
@@ -549,7 +563,7 @@ describe("manuallyAllocateBedForNights", () => {
       lodgeBed: {
         findUnique: vi.fn().mockResolvedValue(input.bed),
       },
-      // #2286: allocateBedNight refuses a custodian-held bed-night. No holds in
+      // #2286: allocateBedNightWithLocksHeld refuses a custodian-held bed-night. No holds in
       // these cases, so every assertion below reads as it did before.
       hutLeaderAssignment: {
         findMany: vi.fn().mockResolvedValue([]),
@@ -590,7 +604,7 @@ describe("manuallyAllocateBedForNights", () => {
         // #1701: resolveSecondOccupant checks the target bed-night's existing
         // occupants; default to empty (a free bed-night → primary allocation).
         findMany: input.existingOccupants ?? vi.fn().mockResolvedValue([]),
-        // #1750: allocateBedNight reads the guest's pre-move row (null = fresh
+        // #1750: allocateBedNightWithLocksHeld reads the guest's pre-move row (null = fresh
         // CREATE, so no old bed-night to repair) and the orphan-promote helper
         // looks up + flips a surviving partner. Defaults leave promotion inert.
         findUnique: input.previous ?? vi.fn().mockResolvedValue(null),
@@ -4066,7 +4080,7 @@ describe("bed allocation lock semantics are two-way (#2252)", () => {
         update: vi.fn(),
         upsert,
       },
-      // #2286: allocateBedNight refuses a custodian-held bed-night. No holds
+      // #2286: allocateBedNightWithLocksHeld refuses a custodian-held bed-night. No holds
       // here, so the move behaves exactly as before.
       hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
     };

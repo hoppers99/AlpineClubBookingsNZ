@@ -100,6 +100,30 @@ Imported from its own module rather than the barrel above, like `clock.ts`: it
 pulls in `@testing-library/react`, which has no business being loaded by the
 node-environment suites that use the barrel for factories and Prisma mocks.
 
+## Settling a lodge-scoped page before interacting (jsdom only)
+
+```ts
+import { settleLodgeScopedPage } from "@/lib/__tests__/helpers/lodge-scope-settle";
+
+render(<HutLeadersPage />);
+await settleLodgeScopedPage("/api/admin/hut-leaders?lodgeId=");
+fireEvent.click(screen.getByRole("button", { name: /pick range/i }));
+```
+
+For any suite that drives a **mocked** child of a lodge-scoped admin page — the
+`OccupancyCalendar` on `/admin/hut-leaders` and `/admin/roster`, and since #2953
+`LodgeSelect` on `/admin/bed-allocation`. The mock's button is in the DOM on the commit that first renders
+the lodge-scoped form, so `fireEvent` can dispatch before that commit's passive
+effects run — and one of them resets the picked range. The picked dates are then
+wiped, failing a synchronous assertion, or removing step 2 of the assignment form
+and failing as `Unable to find role="button" and name "Any member"`. That is an
+ordering bug: it reproduces with the RTL async window at 4,000ms, so no wider
+window fixes it (#2944, mechanism and measurements in the module comment; see
+also [`../../../../docs/TESTING.md`](../../../../docs/TESTING.md)).
+
+Import it directly rather than through the barrel, like `focus.ts` — it pulls in
+`@testing-library/react`.
+
 ## Club time zone premise
 
 ```ts

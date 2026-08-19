@@ -30,9 +30,9 @@ vi.mock("@/lib/public-content-revalidation", () => ({
   revalidatePublicPageContent: vi.fn(),
 }));
 
-vi.mock("@/lib/admin-bed-allocation", async (importActual) => {
+vi.mock("@/lib/bed-allocation-rooms", async (importActual) => {
   const actual =
-    await importActual<typeof import("@/lib/admin-bed-allocation")>();
+    await importActual<typeof import("@/lib/bed-allocation-rooms")>();
   return {
     ...actual,
     deleteBedAllocationRoom: (...args: unknown[]) =>
@@ -45,7 +45,9 @@ vi.mock("@/lib/audit", () => ({
   logAudit: (...args: unknown[]) => mockLogAudit(...args),
 }));
 
-import { BedAllocationAdminError } from "@/lib/admin-bed-allocation";
+import {
+  BedAllocationAdminError,
+} from "@/lib/bed-allocation-admin-contract";
 
 function callDelete(id: string) {
   return import("@/app/api/admin/bed-allocation/rooms/[id]/route").then(

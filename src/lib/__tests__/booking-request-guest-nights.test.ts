@@ -37,7 +37,9 @@ import {
   buildApprovalGuestNights,
   toPipelineGuestCreateData,
 } from "@/lib/booking-request-shared";
-import { countGuestsAwaitingBed } from "@/lib/admin-bed-allocation";
+import {
+  countGuestsAwaitingBed,
+} from "@/lib/bed-allocation-board";
 import { parseDateOnly } from "@/lib/date-only";
 import { buildInvoiceLineItems } from "@/lib/xero-booking-invoices";
 

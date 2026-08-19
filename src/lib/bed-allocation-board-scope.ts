@@ -3,9 +3,11 @@
  * `GET /api/admin/bed-allocation` and the board page that calls it (#2701).
  *
  * It is a module of its own because both ends need the same three facts and
- * neither end can import the other: `admin-bed-allocation.ts` reaches Prisma,
- * so the client page importing it would drag the server into the browser
- * bundle, and the route cannot import a page. Keeping the rule in one place is
+ * neither end can import the other: `bed-allocation-board.ts` — which owns
+ * `getBedAllocationDashboard` since the #2688 split, and was
+ * `admin-bed-allocation.ts` when this was written — reaches Prisma, so the
+ * client page importing it would drag the server into the browser bundle, and
+ * the route cannot import a page. Keeping the rule in one place is
  * what lets the board's own test drive a fake server through the SAME predicate
  * the route uses, so "the client never sends a contradictory pair" cannot drift
  * away from what the route actually refuses.

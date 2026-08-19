@@ -206,7 +206,7 @@ export interface BuildBedAllocationPlanInput {
    *
    * This module is pure and deterministic — no logger, no Sentry, no clock — so
    * the reporting itself belongs to the caller. `bed-allocation-lifecycle.ts`
-   * and `admin-bed-allocation.ts` already have a logger and wire this up; the
+   * and `bed-allocation-board.ts` already have a logger and wire this up; the
    * callback must not throw.
    */
   onInvariantViolation?: (message: string) => void;
@@ -362,7 +362,7 @@ function roomsForBooking(
  *
  * 2. The envelope branch is HALF-OPEN, and must stay half-open. This function is
  *    fed ONE PSEUDO-GUEST PER NIGHT — `candidateGuestBookings` in
- *    `admin-bed-allocation.ts` emits `stayStart = night`, `stayEnd = night + 1`
+ *    `bed-allocation-board-records.ts` emits `stayStart = night`, `stayEnd = night + 1`
  *    for every unallocated guest-night. An inclusive envelope gives each of them
  *    a phantom second night and the planner claims the morning-after bed, which
  *    is a double booking (#2628). `expandStayEnvelopeToNightKeys` is the single

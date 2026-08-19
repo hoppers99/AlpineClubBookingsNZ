@@ -415,13 +415,13 @@ At the successful end of a meaningful piece of work:
    trace, add a justified `entry` or file-scoped `ignoreIssues` carve-out to
    `knip.jsonc` (see CONTRIBUTING.md "Dead-code gate") rather than deleting live
    code. `main` is branch-protected, and force-pushes and branch deletions are
-   blocked. **Six checks are required today. Two more are pending an owner
+   blocked. **Six checks are required today. Three more are pending an owner
    action** and are marked as such below — this table is the applied
    configuration plus what is queued, never an aspiration:
 
    | Required check | Status | Job | What it gates |
    | --- | --- | --- | --- |
-   | `verify` | applied | `ci.yml` → `verify` | lint, typecheck, knip, `npm test`, build, PR-body gates |
+   | `verify` | applied | `ci.yml` → `verify` | lint, typecheck, knip, `npm test`, build, PR-body gates. It no longer runs the dependency audit (#2946) |
    | `Migration drift check` | applied | `ci.yml` → `migration-drift` | migrations reproduce `schema.prisma`; real-Postgres lock harnesses |
    | `Data migration verification` | applied | `ci.yml` → `data-migration-verification` | data-rewriting migrations against realistic pre-state |
    | `Static analysis gate` | applied | `ci.yml` → `static-analysis` | Semgrep: four registry packs **plus** `.semgrep/rules/**` and their fixtures |
@@ -429,16 +429,25 @@ At the successful end of a meaningful piece of work:
    | `E2E multi-lodge` | applied | `e2e.yml` → `e2e-multi-lodge` | the multi-lodge browser suite |
    | `Secret scan (gitleaks)` | **PENDING owner action** | `ci.yml` → `secret-scan` | the PR's own commits, `main`'s history including merge commits, and the checked-out tree (#2686) |
    | `Image security gate (Trivy CRITICAL)` | **PENDING owner action** | `ci.yml` → `docker-image-security` | CRITICAL image vulnerabilities. HIGH stays advisory (#2686) |
+   | `Dependency audit` | **PENDING owner action** | `ci.yml` → `dependency-audit` | `npm audit --audit-level=high`. Split out of `verify` (#2946), where a failing audit skipped lint, the ratchet, `prisma generate`, typecheck, knip, `npm test` and the build on every branch (#2945) |
 
-   **The rollout order for the two pending ones is load-bearing, and adding them
-   early breaks every open pull request.** Both contexts are produced by jobs
-   this change RENAMES, so a branch that predates the merge produces the old
-   context names and none of the new ones — and a required check that has never
-   reported sits on "Expected — waiting for status" forever. The order is:
+   **The rollout order for the three pending ones is load-bearing, and adding a
+   context early breaks every open pull request.** Two of them
+   (`Secret scan (gitleaks)`, `Image security gate (Trivy CRITICAL)`) are
+   produced by jobs #2686 RENAMES; the third (`Dependency audit`) is produced by
+   a job #2946 ADDS. Either way a branch that predates the merge produces none of
+   the new context names — and a required check that has never reported sits on
+   "Expected — waiting for status" forever. The order is the same for all three:
 
-   1. merge the change that renames the jobs;
-   2. then add the two contexts to branch protection;
+   1. merge the change that adds or renames the job;
+   2. then add that job's context to branch protection;
    3. then rebase every open pull request onto the new `main`, oldest first.
+
+   **Between step 1 and step 2 the new context is a red check, not a merge
+   block.** For `Dependency audit` that window is a real, accepted supply-chain
+   gap: `verify` has stopped running the audit, so until the context is added a
+   high advisory reddens a check nothing enforces. Close it promptly rather than
+   leaving it queued.
 
    Confirm the applied list rather than trusting this table:
 
@@ -569,14 +578,21 @@ At the successful end of a meaningful piece of work:
   SES, and Sentry) require an explicit owner approval comment on the PR before
   merge. Branch protection enforces green CI, not human review, so this comment
   is the human gate.
-- **That comment is not self-authenticating here — an open security gap
-  (#2713).** Agents drive `gh` as the owner's account, so an agent can post a
-  comment reading as owner approval and a poller can act on its own output:
-  until a machine account exists, the gate on money, schema, auth and capacity
-  work is a comment any agent can write. Never write the approval phrase into
-  any comment you post, quoted or illustrative; before merging a gated PR,
-  confirm the approving comment was not produced by an agent run, and if you
-  cannot, the PR is unapproved.
+- **That comment is self-authenticating by author, and only by author
+  (#2713).** Automated sessions authenticate as **`thatskiff33-agents`**; the
+  owner approves as **`thatskiff33`**. So an approval counts only when the
+  comment's author login is `thatskiff33`, and **never** when it is
+  `thatskiff33-agents` — check the author, not the words. Read it at source
+  with `npm run issue -- <n>` or `gh pr view --comments`, which report the
+  login; a pasted quotation reports nothing. Never write the approval phrase
+  into any comment you post, quoted or illustrative, so the phrase never
+  appears under an agent login at all.
+- Branch protection deliberately does **not** require a review (owner decision,
+  18 Aug 2026). It is all-or-nothing per branch, so requiring one would gate
+  every docs and CI PR as heavily as a schema change. The separation of logins
+  is the control; the risk it accepts is that an account with write access can
+  merge gated work without the comment, which the audit trail then shows
+  plainly rather than disguises.
 
 ## Wave Orchestration Playbook
 

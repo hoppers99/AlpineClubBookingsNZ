@@ -18,7 +18,7 @@ import {
  * two surfaces — not a second copy of the same limit drifting apart.
  */
 
-// Mirrors MAX_BED_ALLOCATION_RANGE_NIGHTS in src/lib/admin-bed-allocation.ts.
+// Mirrors MAX_BED_ALLOCATION_RANGE_NIGHTS in src/lib/bed-allocation-date-range.ts.
 // This is the READ window only (the dashboard GET 400s above it). Assignment
 // writes are bounded separately and far more generously — see
 // MAX_RANGE_ASSIGN_NIGHTS (#2251).

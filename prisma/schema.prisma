@@ -2490,9 +2490,11 @@ model LodgeBed {
   // adds one partner-shared admission slot above the base figure (#1745).
   bedType   BedType  @default(SINGLE)
   // Optional pairing label within a room: at most two beds share a bunkGroup,
-  // one BUNK_TOP and one BUNK_BOTTOM. Enforced in admin-bed-allocation.ts, not
-  // by a DB constraint (a "<=2 per group, one of each type" rule can't be a
-  // plain unique index, and partial indexes are out of scope for this change).
+  // one BUNK_TOP and one BUNK_BOTTOM. Enforced in
+  // src/lib/bed-allocation-bunk-pairing.ts (#2688 moved it out of the deleted
+  // admin-bed-allocation.ts), not by a DB constraint (a "<=2 per group, one of
+  // each type" rule can't be a plain unique index, and partial indexes are out
+  // of scope for this change).
   bunkGroup String?  @db.VarChar(50)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

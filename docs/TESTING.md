@@ -24,7 +24,128 @@ the full local gate.
   environment) so server-side modules can be imported at all;
 - supply fake email-delivery environment values, because
   `src/lib/email-delivery.ts` refuses to build a transport without them
-  (nodemailer is mocked, so nothing is ever sent).
+  (nodemailer is mocked, so nothing is ever sent);
+- **set React Testing Library's async window to 4,000ms** under jsdom — the
+  section below.
+
+## The RTL async window is 4,000ms, not the 1,000ms default
+
+RTL's async utilities — `findBy*`, `findAllBy*`, `waitFor`,
+`waitForElementToBeRemoved` — run on their **own** clock, `asyncUtilTimeout`,
+entirely separate from vitest's `testTimeout`. It defaults to 1,000ms, and when
+it expires RTL throws
+
+```
+TestingLibraryElementError: Unable to find role="button" and name "Any member"
+```
+
+which reads like a missing element. **It is a timeout.** Written off as flake
+three times on this repository before #2944 named it.
+
+Measured for #2944 by instrumenting RTL's `asyncWrapper` over one pass of
+`src/app/(admin)` — 73 files, 546 tests, 558 async waits:
+
+| Runner | Slowest single wait | Margin against the 1,000ms default |
+| --- | --- | --- |
+| Idle developer machine | 470ms | 2.1x |
+| Same box, 12 competing CPU burners | 1,144ms | none — 3 of 558 waits blew the window |
+
+CI runs a suite roughly 1.7x slower than an idle developer machine (measured in
+#2923), which puts that idle 470ms at ~800ms before another job shares the box.
+So the default is not a comfortable ceiling load occasionally grazes; a busy
+runner goes straight through it, and because scheduling decides which wait loses,
+a **different** suite fails each run. `vitest.setup.ts` therefore configures
+4,000ms repo-wide, and `src/lib/__tests__/rtl-async-util-timeout.test.ts` reads
+the value back so it cannot be dropped silently.
+
+The exposure is repo-wide rather than confined to the handful of suites that had
+gone red, which is why the setting is not per file: of the 314 test files that
+import `@testing-library/react` or `@testing-library/dom`, **219** use at least
+one async utility (131 `findBy*`/`findAllBy*`, 199 `waitFor`, none
+`waitForElementToBeRemoved`), spread across 82 files under `src/lib`, 69 under
+`src/components`, 66 under `src/app` and 2 under `src/hooks`. The measurements, and why the
+value is 4,000ms rather than 5,000ms (it has to stay below `testTimeout`, or
+vitest's opaque "Test timed out in 5000ms" replaces RTL's message naming the
+query), are stated in full beside the setting.
+
+**A wider window is not a licence to wait instead of think.** A test that
+interacts with a page before that page has settled has an ordering bug, and a
+wider window converts it into a slow pass rather than fixing it. The next section
+is the worked example.
+
+## Settle before you interact with a mocked child component
+
+```ts
+import { settleLodgeScopedPage } from "@/lib/__tests__/helpers/lodge-scope-settle";
+
+render(<HutLeadersPage />);
+await settleLodgeScopedPage("/api/admin/hut-leaders?lodgeId=");
+fireEvent.click(screen.getByRole("button", { name: /pick range/i }));
+expect(screen.getByLabelText("Start Date")).toHaveValue("2099-07-10");
+```
+
+`/admin/hut-leaders` and `/admin/roster` render their date controls and their
+occupancy calendar together behind one `lodgeScopeReady` gate, and both reset
+workspace state in a `useEffect` keyed on the settled lodge. In a browser those
+two cannot collide, because React flushes pending passive effects before
+dispatching a discrete input event.
+
+In a suite that **mocks the calendar** they can. The mock's button is in the DOM
+on the commit that first renders the gated form, so `findByRole` can resolve on a
+commit whose passive effects have not run and `fireEvent` dispatches immediately.
+The page applies the picked range, the pending reset effect fires straight after,
+and the date inputs go back to empty — failing a *synchronous* assertion that no
+window can reach. On `/admin/hut-leaders` step 2 of the form only renders once
+dates are chosen, so the same loss presents as `Unable to find role="button" and
+name "Any member"` instead.
+
+Measured for #2944 on `occupancy-calendar-pages.test.tsx` under 12 CPU burners:
+with the window already at 4,000ms and `testTimeout` at 60,000ms, **1 failure in
+30 runs** on the synchronous assertion; with the settle and the window back at
+its 1,000ms default, **30/30 green**. That pair is the whole argument for keeping
+these two fixes separate.
+
+This is test-only. Both pages gate the real date inputs behind nested
+`lodgeScopeReady` checks — a probe against the real page with a deferred lodges
+API showed the pre-settle DOM is 563 characters, header and notice only (#2885).
+
+**Do not** "simplify" a settle back to an immediate click, and **do not** wrap the
+synchronous expectations in `waitFor` to make them retry. The first restores the
+bug; the second hides it behind a slow pass.
+
+### It is not only the calendar, and not only the click
+
+The rule is about the page being **at rest**, so it is not confined to the three
+suites #2950 named, nor to a mocked *calendar*. It applies wherever a test drives
+a mocked child of a lodge-scoped page and then reads the DOM. #2953 measured a
+second suite where both halves bit, `bed-allocation-board-booking-scope.test.tsx`:
+
+**Settle before you interact.** That suite mocks `LodgeSelect`, so its buttons are
+clickable on the commit that first renders the board — before the passive effect
+that adopts the lodge the server echoed (#2701) has run. A click in that gap sets
+the selection to null and the still-queued adoption puts it straight back, so the
+board's scope key round-trips to the value it already had, `useScopedDashboard`
+never sees a change, and the request the test is asserting on is **never issued at
+all**. Measured with a probe that clicked deliberately early: exactly one board
+request, permanently. That state is terminal, which is why it presented as a full
+4,000ms `waitFor` window followed by a failed *synchronous* assertion — 4,125ms on
+CI, and 1 failure in 20 runs locally under 20 competing CPU burners.
+
+**Settle before you assert, too.** Awaiting a *request* is not awaiting the render
+it causes, and a page that has answered one question may still be moving. The same
+board makes **three** requests after that click, not two: the deep link, the
+unscoped read the test asserts on, and a third once #2701 re-adopts the lodge the
+server echoed. `useScopedDashboard` clears its value on every scope change, so the
+badge the test reads next is unmounted twice in between, and a synchronous read
+landing in one of those gaps fails as `Unable to find an element with the text:
+Focused booking` — 2 failures in 30 runs, in ~150ms each, so an ordering failure
+rather than a slow one. Wait for the page to reach rest, then assert once. Waiting
+on the page's own request and render is a **settle**; folding the assertion into
+that wait is a **retry**, and the prohibition above still stands.
+
+With both settles, that suite ran **30/30 under 20 competing CPU burners with the
+RTL window forced back to its 1,000ms default** — the same both-directions proof
+#2944 used, and the reason a wider window was never the fix here.
 
 ## Which project typechecks a test
 

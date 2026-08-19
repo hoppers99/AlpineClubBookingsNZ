@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
-  MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS,
   assignBedRange,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-range-assign";
+import {
+  MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS,
+} from "@/lib/bed-allocation-range-report";
 import {
   bedAllocationErrorResponse,
   requireBedAllocationWrite,

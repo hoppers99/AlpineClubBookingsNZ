@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
-  parseBedAllocationDateRange,
   runAutoBedAllocation,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-auto-allocate";
+import {
+  parseBedAllocationDateRange,
+} from "@/lib/bed-allocation-date-range";
 import {
   bedAllocationErrorResponse,
   requireBedAllocationWrite,

@@ -838,12 +838,21 @@ Verified controls already present and intentionally preserved:
   the pull-request commit range, the history of `main` and the checked-out
   tree, in one job; and the Dockerfile uses `node:24.15-alpine`.
 - Two CI security gates are **required** protected-branch checks today —
-  `Static analysis gate` and `verify` (which carries
-  `npm audit --audit-level=high`). #2686 adds `Secret scan (gitleaks)` and
-  `Image security gate (Trivy CRITICAL)` to that list; both are **pending an
-  owner action** on branch protection and are not enforced until it is applied.
+  `Static analysis gate` and `verify`. #2686 adds `Secret scan (gitleaks)` and
+  `Image security gate (Trivy CRITICAL)` to that list, and #2946 adds
+  `Dependency audit`; all three are **pending an owner action** on branch
+  protection and are not enforced until it is applied.
   `AGENTS.md` → "Completion and Merge" carries the applied list, the pending
   ones, and the rollout order.
+- `npm audit --audit-level=high` is no longer a step inside `verify`. A
+  high-severity advisory published in a transitive dependency on 17 August 2026
+  failed that step, and because Actions skips every later step in a job once one
+  fails, it silently stopped lint, the file-size ratchet, `prisma generate`,
+  typecheck, knip, `npm test` and the build from running on every branch while
+  the other required checks stayed green (#2945). The audit is now the separate,
+  still-blocking `Dependency audit` job (#2946), and it carries no job-level
+  `if:` and no `needs:` — a skipped required check SATISFIES branch protection,
+  so either one would make the gate vacuously green.
 - The secret scan reads merge commits. `git log -p` emits no patch for a merge
   commit, and roughly a third of this repository's 7,510 commits are merges, so
   a scan without `--diff-merges=first-parent` never looked at them — and a

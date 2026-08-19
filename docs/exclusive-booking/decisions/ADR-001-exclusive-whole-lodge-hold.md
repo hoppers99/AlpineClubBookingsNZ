@@ -182,7 +182,7 @@ Both directions, and nothing member/public-facing (decision 6):
 ### Bed-allocation short-circuit — as built (#120, admin-only)
 
 A held booking implicitly occupies the whole lodge, so it needs no per-bed
-allocation. In `getBedAllocationDashboard` (`src/lib/admin-bed-allocation.ts`)
+allocation. In `getBedAllocationDashboard` (`src/lib/bed-allocation-board.ts`)
 a held booking's guest-nights are excluded from `unallocatedGuestNights` and
 never fed to the planner (so a hold can never register as an allocation gap /
 stuck state), and it is represented distinctly via the additive
@@ -214,7 +214,7 @@ generated or demanded for held bookings.
   held booking's own guests.** The short-circuit previously lived only in the
   read paths and the lifecycle, so an admin could still hand-place a held
   booking's guest on a bed; the row was accepted and then swept by the next
-  reconcile. `assertGuestAndBedForAllocation` (`src/lib/admin-bed-allocation.ts`)
+  reconcile. `assertGuestAndBedForAllocation` (`src/lib/bed-allocation-placement.ts`)
   is now the chokepoint for all three manual paths — single-night board
   placement, the bulk multi-night drop, and range assignment — and refuses a
   whole-lodge-held booking outright. Range assignment reports it as its own

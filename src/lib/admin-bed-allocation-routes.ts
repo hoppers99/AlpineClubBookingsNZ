@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
-import { BedAllocationAdminError } from "@/lib/admin-bed-allocation";
+import {
+  BedAllocationAdminError,
+} from "@/lib/bed-allocation-admin-contract";
 import { BedAllocationSettingsValidationError } from "@/lib/bed-allocation-settings";
 import { requireAdmin } from "@/lib/session-guards";
 

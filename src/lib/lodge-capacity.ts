@@ -13,7 +13,7 @@ import type { FeatureFlags } from "@/config/schema";
 // from this total by the boot-time config self-heal — see
 // `config-self-heal.ts`). This constant is therefore NO LONGER read by
 // `getLodgeCapacityStatus`; it survives only as a SEED-TEMPLATE reference — the
-// "import rooms & beds from config" affordance (`admin-bed-allocation.ts`) and
+// "import rooms & beds from config" affordance (`bed-allocation-rooms.ts`) and
 // the admin lodge-settings screen's "config suggests N beds" hint
 // (`api/admin/lodge-settings`). `club.json beds[]` is a seed input, never a
 // runtime capacity source.

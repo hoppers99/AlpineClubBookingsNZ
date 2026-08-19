@@ -4021,7 +4021,7 @@ describe("sweepUnbackedFutureSharedDoublesWithLocksHeld (#2595)", () => {
 // older lifecycle wrongly created, with no data migration) and never feeds the
 // booking to the planner. Keyed on the flag, NOT the status: a held booking
 // sits in an ordinary BED_ALLOCATABLE status (PAID here). The board applies
-// the same exclusion (admin-bed-allocation heldSpans); the two-paths agreement
+// the same exclusion (bed-allocation-board heldSpans); the two-paths agreement
 // is locked down in held-booking-allocation-agreement.test.ts.
 // ---------------------------------------------------------------------------
 describe("exclusive whole-lodge hold (ADR-001, #2285)", () => {
