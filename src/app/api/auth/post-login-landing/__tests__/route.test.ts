@@ -133,8 +133,17 @@ describe("GET /api/auth/post-login-landing (#2090)", () => {
  * #2827 — this route is the terminal consumer of the family-invite return
  * address for the credential and magic-link flows: the client navigates to
  * whatever it answers. It is also the only one of the four resolution sites that
- * can CLEAR the cookie, `cookies()` being writable in a route handler and not in
+ * CAN clear the cookie, `cookies()` being writable in a route handler and not in
  * a server component.
+ *
+ * Which is precisely why it is not where the address is retired on use. Its answer
+ * is a redirect to the invite page, so the GET it authorises used to restore the
+ * value it had just cleared — and the Google and both 2FA flows never call this
+ * route at all. `syncFamilyInviteReturnAddress()` in `src/proxy.ts` retires the
+ * address on the signed-in GET of the invite page, which every one of the four
+ * flows terminates in. The clear pinned below is still needed for the one case
+ * that never lands on that page: an explicit `callbackUrl` outranked the address,
+ * and leaving it behind would steer the member's NEXT sign-in.
  */
 describe("GET /api/auth/post-login-landing — family-invite return address (#2827)", () => {
   const TOKEN =

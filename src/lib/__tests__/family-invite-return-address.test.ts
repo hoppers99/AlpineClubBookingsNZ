@@ -12,11 +12,13 @@ import {
  *
  * The invite page's sign-in link used to be
  * `buildLoginPath('/family-invite/<token>')`, which rendered the invite token
- * into an `href` on a page that injects admin-authored Raw CSS. The token now
- * travels in an `HttpOnly` cookie instead, and these cases pin the two
- * properties that makes safe: the value can only ever be an invite page (so a
- * planted cookie is neither an open redirect nor a general "land anywhere"
- * lever), and the cookie is genuinely unreadable from the page.
+ * into an `href` and so into the visitor's address bar, history and `Referer`.
+ * (It did NOT expose the token to admin Raw CSS: that page's layout injects the
+ * `appCss` variant, which excludes it — the module docblock records the correction
+ * in full.) The token now travels in an `HttpOnly` cookie instead, and these cases
+ * pin the two properties that makes safe: the value can only ever be an invite
+ * page (so a planted cookie is neither an open redirect nor a general "land
+ * anywhere" lever), and the cookie is genuinely unreadable from the page.
  */
 
 /** A realistic 64-hex action token — the shape `issueActionToken` mints. */

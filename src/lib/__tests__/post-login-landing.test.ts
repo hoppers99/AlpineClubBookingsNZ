@@ -161,7 +161,8 @@ describe("resolvePostLoginLandingPath — explicit callbackUrl precedence (D-D4)
 /**
  * #2827 — the family-invite return address, carried in an HttpOnly cookie rather
  * than in a `callbackUrl`, because putting it in the URL means rendering the
- * invite token into a link's `href` on a page that injects admin Raw CSS.
+ * invite token into a link's `href` and so into the address bar, the browser's
+ * history and any `Referer` the next hop is shown.
  *
  * The resolver re-validates the value itself, so these cases hold whatever a
  * caller forwards: the only path this input can ever produce is an invite page.

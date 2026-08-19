@@ -15,14 +15,16 @@ import {
  *      value the login flow itself materialised (the 2FA detour, a provider
  *      callbackUrl) must NOT be passed in as `explicitCallbackUrl`, so it never
  *      counts as explicit here.
- *   2. A family-invite return address carried server-side in the #2827 cookie —
- *      an explicit deep link the visitor asked for by clicking "I already have
- *      an account" on `/family-invite/<token>`, which is carried privately
- *      rather than in a `callbackUrl` because putting it in the URL means
- *      rendering the invite token into a link's `href` on a page that injects
- *      admin Raw CSS. It sits BELOW an explicit `callbackUrl`, so a member who
- *      was bounced out of a member page still returns to that page, and the
- *      invite cookie simply expires. See
+ *   2. A family-invite return address carried server-side in the #2827 cookie.
+ *      It is carried privately rather than in a `callbackUrl` because putting it
+ *      in the URL means rendering the invite token into a link's `href`, and from
+ *      there into the visitor's address bar, history and `Referer`. It sits BELOW
+ *      an explicit `callbackUrl`, so a member who was bounced out of a member page
+ *      still returns to that page and the invite cookie simply expires. Note the
+ *      address is bound to *opening the invitation*, not to clicking a particular
+ *      button: `src/proxy.ts` writes it on a signed-out document navigation to the
+ *      invite page and retires it on the signed-in GET. Full account, including
+ *      what that page did and did not expose, in
  *      `src/lib/family-invite-return-address.ts`.
  *   3. An explicit MEMBER_DASHBOARD preference — pins /dashboard even for a
  *      member with admin access.
