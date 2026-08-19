@@ -61,14 +61,18 @@ import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
  * **Stated limit, and it is a property of cookies rather than of this code.** A
  * cookie is per-BROWSER where the `callbackUrl` it replaces was per-tab, so on a
  * shared browser somebody who opens an invitation and leaves without signing in
- * hands the next ten minutes' sign-in that landing. What is disclosed is the
- * invited email address and the group name; the page's email re-check still refuses
- * the join. The retire above closes the version of this that mattered — where the
- * first visitor signed in, and their live token ended up in the second person's
- * address bar. Closing the remainder means binding the address to the tab that
- * asked for it, with a tokenless flag on the sign-in link threaded through all four
- * resolution sites and both 2FA detour hops; `docs/SECURITY-ATTACK-SURFACE.md`
- * records why that is a deliberate follow-up rather than part of this fix.
+ * hands the next sign-in that landing, for as long as the cookie lives — which is
+ * why {@link FAMILY_INVITE_RETURN_MAX_AGE_SECONDS} was shortened to two minutes.
+ * What is disclosed is the invited email address and the group name; the page's
+ * email re-check still refuses the join. The retire above closes the version of
+ * this that mattered — where the first visitor signed in, and their live token
+ * ended up in the second person's address bar. Closing the remainder completely
+ * means binding the address to the tab that asked for it, with a tokenless flag on
+ * the sign-in link threaded through all four resolution sites and both 2FA detour
+ * hops; the owner chose (19 Aug 2026) to shorten the window rather than build that
+ * in a PR whose scope excludes the login flow, and
+ * `docs/SECURITY-ATTACK-SURFACE.md` records it as an accepted, bounded residual
+ * with its named fix.
  *
  * ## Why the shape check is this narrow
  *
@@ -108,9 +112,19 @@ import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
 export const FAMILY_INVITE_RETURN_COOKIE = "family-invite-return";
 
 /**
- * Ten minutes: long enough to read the page, click "I already have an account",
- * type an email and password and clear a 2FA challenge; short enough that a
- * value nobody consumed is gone well before the browser session is.
+ * Two minutes: long enough that a recipient who clicks the emailed link, then
+ * clicks "I already have an account", types an email and password and clears a
+ * 2FA challenge comfortably completes inside it — that is a continuous sitting of
+ * seconds, not minutes — while a value nobody consumed is gone quickly.
+ *
+ * The window is deliberately short because it is also the exposure window for the
+ * one residual this mechanism does not close: on a shared browser, a visitor who
+ * opens an invitation and leaves *without signing in* hands the return address to
+ * whoever signs in next, for this long. Two minutes (owner decision, 19 Aug 2026)
+ * rather than the ten this shipped at first, chosen over building the full
+ * tab-scoped fix in a PR whose scope excludes the login flow — see
+ * {@link getFamilyInviteReturnPath}'s cookie-planting note and
+ * `docs/SECURITY-ATTACK-SURFACE.md`, which name that deferred fix.
  *
  * Accuracy does not depend on it being generous. The address is written on a
  * signed-out navigation to the invite page and retired by the signed-in GET of it
@@ -120,7 +134,7 @@ export const FAMILY_INVITE_RETURN_COOKIE = "family-invite-return";
  * to the member's ordinary post-login landing rather than to an error — the
  * emailed invite link still works.
  */
-export const FAMILY_INVITE_RETURN_MAX_AGE_SECONDS = 10 * 60;
+export const FAMILY_INVITE_RETURN_MAX_AGE_SECONDS = 2 * 60;
 
 /**
  * The one address shape this cookie may ever carry. Kept in step with

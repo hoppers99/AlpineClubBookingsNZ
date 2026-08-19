@@ -3060,9 +3060,11 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   The owner chose the rework instead: keep the plain anchor, and carry the return
   address out of the page.
 
-  Both affordances are now `<Link href="/login">` with no `callbackUrl` at all,
+  The signed-out branch's affordance is now a `<Link href="/login">` with no
+  `callbackUrl` at all (the wrong-account branch's is a sign-out control, below),
   and the post-login return address travels in an `HttpOnly`, `SameSite=Lax`,
-  path-wide cookie with a ten-minute life
+  path-wide cookie with a **two-minute** life — shortened from ten by the owner
+  (19 Aug 2026), see the bounded-residual note below
   (`src/lib/family-invite-return-address.ts`). Four things make that safe rather
   than a token in a different hiding place:
 
@@ -3143,24 +3145,30 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   kept.) It is now a sign-out-and-return control: signing out lands a signed-out
   navigation on the invite page, which is where the address is written.
 
-  **Stated limit: a cookie is per-browser, where the old `callbackUrl` was
-  per-tab.** If somebody opens an invitation on a shared lodge or kiosk browser
-  while signed out and walks away *without signing in*, the next person to sign in
-  on that browser within ten minutes is landed on that invitation. The retire above
-  closes the case where the first visitor DID sign in, which is the common one and
-  the one that put a live token in a second person's address bar; this remainder
-  discloses the invited email address and the family-group name, and the page's
-  email re-check still refuses the join. It is inherent to a browser-scoped return
-  address: the pre-#2827 `callbackUrl` avoided it only by living in a URL, which is
-  the exposure being closed.
+  **Accepted bounded residual (owner decision, 19 Aug 2026): a cookie is
+  per-browser, where the old `callbackUrl` was per-tab.** If somebody opens an
+  invitation on a shared lodge or kiosk browser while signed out and walks away
+  *without signing in*, the next person to sign in on that browser within the
+  cookie's life is landed on that invitation. The retire above closes the case
+  where the first visitor DID sign in, which is the common one and the one that put
+  a live token in a second person's address bar; this remainder discloses the
+  invited email address and the family-group name, and the page's email re-check
+  still refuses the join. It is inherent to a browser-scoped return address: the
+  pre-#2827 `callbackUrl` avoided it only by living in a URL, which is the exposure
+  being closed.
 
-  It could be closed by binding the address to the tab that asked for it — a
+  The complete closure is to bind the address to the tab that asked for it — a
   tokenless flag on the sign-in link (`/login?…`), honoured only when present. That
-  is a constant, not a secret, so it is safe to render; it is not done here because
-  it has to be threaded through all four resolution sites and both 2FA detour hops,
-  which is a login-flow change rather than a fix, and it trades a bounded
-  disclosure for regression risk across the flows this PR has just corrected. If it
-  is wanted, it is a deliberate follow-up with an owner decision behind it.
+  is a constant, not a secret, so it is safe to render. **The owner chose not to
+  build it in this PR, and to shorten the exposure window instead:** the cookie's
+  life was reduced from ten minutes to two (`FAMILY_INVITE_RETURN_MAX_AGE_SECONDS`),
+  so the residual is now a roughly two-minute window on a shared browser after a
+  signed-out visitor abandons an invitation. The tab-scoped fix has to be threaded
+  through all four resolution sites and both 2FA detour hops — a change to the login
+  flow, which this PR's scope excludes — and it would trade a bounded disclosure for
+  regression risk across the flows this PR has just corrected. It is therefore a
+  named, deferred fix the owner has accepted, recorded here and in the module
+  docblock; it is deliberately **not** filed as an issue.
 
   An absent or expired cookie degrades to the member's ordinary landing rather
   than to an error — as does a browser too old to send `Sec-Fetch-*` — and the

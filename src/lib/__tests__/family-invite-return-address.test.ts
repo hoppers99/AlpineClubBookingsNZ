@@ -132,8 +132,13 @@ describe("serialiseFamilyInviteReturnCookie (#2827)", () => {
     expect(cookie).toContain("Path=/");
   });
 
-  it("expires within ten minutes", () => {
-    expect(FAMILY_INVITE_RETURN_MAX_AGE_SECONDS).toBe(600);
+  it("expires within two minutes", () => {
+    // Two minutes, not the ten this shipped at first (owner decision, 19 Aug
+    // 2026): the lifetime IS the exposure window for the shared-browser residual
+    // this mechanism does not fully close, so it is kept as short as the emailed
+    // link -> sign-in sitting comfortably allows. Pinned by value, not just by the
+    // constant, so shortening or lengthening it is a deliberate edit here.
+    expect(FAMILY_INVITE_RETURN_MAX_AGE_SECONDS).toBe(120);
     expect(cookie).toContain(`Max-Age=${FAMILY_INVITE_RETURN_MAX_AGE_SECONDS}`);
   });
 
@@ -153,10 +158,18 @@ describe("serialiseFamilyInviteReturnCookie (#2827)", () => {
     const original = process.env.NODE_ENV;
     try {
       vi.stubEnv("NODE_ENV", "production");
-      expect(serialiseFamilyInviteReturnCookie(INVITE_PATH, 600)).toContain("Secure");
+      expect(
+        serialiseFamilyInviteReturnCookie(
+          INVITE_PATH,
+          FAMILY_INVITE_RETURN_MAX_AGE_SECONDS,
+        ),
+      ).toContain("Secure");
       vi.stubEnv("NODE_ENV", "development");
       expect(
-        serialiseFamilyInviteReturnCookie(INVITE_PATH, 600),
+        serialiseFamilyInviteReturnCookie(
+          INVITE_PATH,
+          FAMILY_INVITE_RETURN_MAX_AGE_SECONDS,
+        ),
       ).not.toContain("Secure");
     } finally {
       vi.unstubAllEnvs();

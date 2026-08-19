@@ -32,7 +32,7 @@
   sign-in button is now a plain link, and the return address is remembered
   privately by the server instead — in a short-lived cookie the page itself cannot
   read, which is written only when somebody actually opens the invitation, is
-  discarded the moment the sign-in lands back on it, and expires after ten minutes
+  discarded the moment the sign-in lands back on it, and expires after two minutes
   in any case. Nothing changes for the recipient: the emailed link still works,
   signing in still brings them back to the invitation whichever way they sign in
   (including Google and a two-factor challenge), the sign-in button still works

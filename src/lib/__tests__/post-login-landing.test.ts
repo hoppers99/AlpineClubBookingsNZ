@@ -195,7 +195,7 @@ describe("resolvePostLoginLandingPath — private family-invite return address (
 
   it("loses to a genuinely explicit callbackUrl", () => {
     // Precedence 2, not 1, on purpose: a member bounced out of a member page asked
-    // for THAT page on this sign-in attempt, and a ten-minute invite cookie must
+    // for THAT page on this sign-in attempt, and a lingering invite cookie must
     // not outrank it. The cookie simply expires.
     expect(
       resolvePostLoginLandingPath({
