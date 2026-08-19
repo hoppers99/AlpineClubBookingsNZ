@@ -123,6 +123,50 @@ charging a card and confirming a booking awaiting review, and has nothing to do
 with member-guest consent. The consent surfaces say *awaiting approval* or
 *consent* and never *pending guests*.
 
+### Charge a visiting club's members at your member rate
+
+A non-member who belongs to another club's lodge can be charged your **member**
+rate instead of the non-member rate — the reciprocal arrangement clubs have with
+each other. The public booking-request form already asks "are you a member of
+another lodge?", but plenty of these people arrive some other way: an officer
+books them on behalf, or the answer only comes up later. This is how you set it
+on any booking, at any time before the stay starts.
+
+Open the booking, choose **Edit Booking**, and on the Guests card:
+
+1. Tick **Member of Other Lodge**. A **Other Lodge Name** picker appears,
+   listing the other lodges recorded on
+   [Setup & Configuration → Lodges](lodges.md#other-lodges).
+2. Choose the lodge. The tick boxes beside the guest names come alive.
+3. Tick each person who is a member of that lodge. Their fee is recalculated at
+   your club's member rate **for their own age group** — an adult at the adult
+   member rate, a child at the child member rate — and the new figure appears
+   beside their name with the old one struck through. Unticking puts them back
+   on the non-member rate.
+4. Save. Any difference is settled the same way every other booking change is:
+   more to pay, or a refund/credit, shown before you commit.
+
+Things worth knowing:
+
+- **Only non-members get a tick box.** A member of your own club already prices
+  at their own membership rate, so their row shows an empty column.
+- **It changes the price and nothing else.** The person is still a non-member
+  everywhere it matters: they still need an adult member staying with them, they
+  still count as a non-member for the guest hold, and member-only promotions
+  still do not reach them. They are a member of *another* club, not of yours.
+- **Clearing the lodge clears everybody.** Untick **Member of Other Lodge**, or
+  set the picker back to *Select a lodge*, and every tick clears with it — you
+  cannot record somebody as an other-lodge member of no lodge.
+- **Only one lodge per booking.** A party split across two visiting clubs needs
+  the officer to pick the one that applies, or to price the second club's people
+  by hand.
+- **Not once the stay has started.** The tick is refused mid-stay, because an
+  in-progress booking prices its remaining nights through a different path and
+  the change would silently settle nothing. Contact the office for a stay
+  already under way.
+- **It is an officer decision, and it is audited.** Members never see the
+  control on their own booking.
+
 ### Read the results table
 
 1. The toolbar shows "Showing N of M bookings found". Sort any sortable column

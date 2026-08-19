@@ -19,7 +19,19 @@ import {
 //   TYPE_POLICY_FORCED  — a member whose type forces the non-member rate
 //                         (bookingBehavior NON_MEMBER_RATE); priced from
 //                         NON_MEMBER but excluded from the group discount.
-export type RateSource = "OWN_TYPE" | "NON_MEMBER_DEFAULT" | "TYPE_POLICY_FORCED";
+//   OTHER_LODGE_MEMBER  — a NON-member of this club whom the booking officer has
+//                         recognised as a member of the booking's partner lodge
+//                         (BookingGuest.otherLodgeMember); priced from the
+//                         built-in FULL type's rows, i.e. the club's own member
+//                         rate. Excluded from the group-discount substitution
+//                         for the same reason a member is: the substitution
+//                         exists to lift a NON_MEMBER-priced guest UP to the
+//                         FULL rate, and this guest is already there.
+export type RateSource =
+  | "OWN_TYPE"
+  | "NON_MEMBER_DEFAULT"
+  | "TYPE_POLICY_FORCED"
+  | "OTHER_LODGE_MEMBER";
 
 export interface SeasonRateData {
   seasonId: string;
@@ -50,6 +62,14 @@ export interface GuestInput {
   ageTier: AgeTier;
   isMember: boolean;
   memberId?: string | null;
+  /**
+   * The reciprocal other-club rate opt-in (Other Lodges epic). A NON-member the
+   * booking officer has recognised as a member of the booking's partner lodge,
+   * which `resolveGuestRateMembershipTypes` resolves to the built-in FULL type's
+   * rate rows. Declared here because it is an input to RATE RESOLUTION, not to
+   * the night arithmetic below — nothing in this module reads it.
+   */
+  otherLodgeMember?: boolean | null;
   // The membership type whose rate rows price this guest, and the reason
   // (#1930, E4). Resolved by resolveGuestRateMembershipTypes before pricing;
   // persisted as the BookingGuest.rateMembershipTypeId snapshot.
