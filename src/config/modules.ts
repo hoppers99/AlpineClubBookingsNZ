@@ -28,6 +28,7 @@ export const MODULE_KEYS = [
   "aiAssistant",
   "memberGuests",
   "aiDiagnostics",
+  "maintenanceReports",
 ] as const;
 
 export type ModuleKey = (typeof MODULE_KEYS)[number];
@@ -86,6 +87,10 @@ export const DEFAULT_MODULE_SETTINGS: ModuleSettingsValues = {
   aiAssistant: false,
   memberGuests: false,
   aiDiagnostics: false,
+  // General-purpose, no deploy-time setup, so it follows the ON default the
+  // comment above describes. Turning it ON does NOT open the unauthenticated QR
+  // form: that is a separate, default-OFF setting (#2780).
+  maintenanceReports: true,
 };
 
 export interface ModuleDefinition {
@@ -326,6 +331,19 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
       "A member who has been asked but has not answered yet holds a bed, and is deliberately left off the kiosk arrivals list, the chore roster and the arrival emails until they accept.",
       "Finding another member is by exact email address unless you switch on name search — which makes your membership list browsable to any member. It ships off.",
       "It also covers what YOUR staff do: adding a member guest on somebody's booking, copying a booking, and approving a booking request with a member linked to a place all email that member to say so. Those emails are not optional, and nobody is asked first on an admin path.",
+    ],
+  },
+  maintenanceReports: {
+    key: "maintenanceReports",
+    label: "Maintenance reports",
+    description:
+      "Members report a physical fault at the lodge from a card on their dashboard, and the report lands in a queue for whoever holds Lodge Operations. Optionally, a printed QR code in the lodge opens the same form without signing in.",
+    dependencies: [
+      // Stated because the module switch is NOT what opens the public door, and
+      // an admin reading this card is the person most likely to assume it is.
+      "The QR code that lets somebody report a fault WITHOUT signing in is off until you switch it on under Admin -> Lodge -> Maintenance reports, and each lodge needs its own code generated on that lodge's page.",
+      "The questions the form asks are yours to edit, reorder and retire; five plain-English ones are set up for you.",
+      "Photos attached to a report are deleted automatically after the number of days you set (30 by default); the report itself is kept.",
     ],
   },
   aiDiagnostics: {

@@ -28,6 +28,9 @@ CREATE TYPE "MaintenanceReportStatus" AS ENUM ('OPEN', 'IN_PROGRESS', 'RESOLVED'
 -- AlterTable
 ALTER TABLE "ClubModuleSettings" ADD COLUMN     "maintenanceReports" BOOLEAN NOT NULL DEFAULT true;
 
+-- AlterTable
+ALTER TABLE "NotificationPreference" ADD COLUMN     "adminMaintenanceReport" BOOLEAN NOT NULL DEFAULT true;
+
 -- CreateTable
 CREATE TABLE "MaintenanceReportSettings" (
     "id" TEXT NOT NULL DEFAULT 'default',

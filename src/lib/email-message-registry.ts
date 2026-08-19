@@ -98,6 +98,12 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   "admin-refund-request",
   "admin-booking-change-request",
   "admin-issue-report",
+  // #2780: a maintenance report was lodged. Ordinary admin alert plumbing -
+  // sendToAdmins, gated by the adminMaintenanceReport preference (Lodge
+  // Operations edit) and by the club-wide delivery rules. Deliberately NOT in
+  // LOCKED_DELIVERY_TEMPLATE_NAMES: no money moves, and a club that would rather
+  // read the queue than the mail must be allowed to mute it.
+  "admin-maintenance-report",
   "admin-membership-cancellation-request",
   "admin-account-deletion-requested",
   "admin-member-archive-requested",

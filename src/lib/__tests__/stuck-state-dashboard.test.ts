@@ -36,6 +36,7 @@ const modulesOn: FeatureFlags = {
   eventsCalendar: true,
   memberGuests: false,
   aiDiagnostics: false,
+  maintenanceReports: true,
 };
 
 function emptyEmailResponses() {

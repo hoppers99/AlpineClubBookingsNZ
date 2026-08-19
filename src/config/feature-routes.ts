@@ -235,6 +235,25 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     exemptPaths: ["/api/admin/ai-diagnostics/readiness"],
   },
   {
+    // Maintenance reports (#2780). Switching the module off removes ALL FOUR
+    // surfaces together — the admin queue and its APIs, the member form, and the
+    // unauthenticated QR page and its submit route — which is what a module
+    // toggle is supposed to mean. The QR half additionally needs
+    // MaintenanceReportSettings.anonymousReportsEnabled, so the module being on
+    // is necessary and not sufficient for the public door.
+    //
+    // "/maintenance-report" (singular) is the member page and also prefixes
+    // nothing else; "/lodge-maintenance" is the tokenised public page.
+    flag: "maintenanceReports",
+    prefixes: [
+      "/admin/maintenance-reports",
+      "/api/admin/maintenance-reports",
+      "/maintenance-report",
+      "/api/maintenance-reports",
+      "/lodge-maintenance",
+    ],
+  },
+  {
     // Google Analytics integration configuration (#2573). Admin -> Modules is the
     // master switch (owner decision section 1), so with the module off this whole
     // subtree 404s: the club cannot read or write the configuration, and the

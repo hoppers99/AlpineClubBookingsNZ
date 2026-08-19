@@ -92,6 +92,7 @@ const MODULES_ON = {
   eventsCalendar: true,
   memberGuests: true,
   aiDiagnostics: false,
+  maintenanceReports: true,
 };
 
 function exceptionRow(overrides: Record<string, unknown> = {}) {

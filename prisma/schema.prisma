@@ -5641,6 +5641,10 @@ model NotificationPreference {
   adminBookingRequest        Boolean  @default(true)
   adminBookingReviewRequired Boolean  @default(true)
   adminMemberDeleteRequest   Boolean  @default(true)
+  // #2780: a maintenance report was lodged. Audience is Lodge Operations edit
+  // (ADMIN_NOTIFICATION_PREFERENCE_REQUIREMENT), so "the maintenance officer" is
+  // whoever the club has given that area to — never a hard-coded address.
+  adminMaintenanceReport     Boolean  @default(true)
   createdAt                  DateTime @default(now())
   updatedAt                  DateTime @updatedAt
 

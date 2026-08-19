@@ -102,6 +102,51 @@ export function adminIssueReportTemplate(data: {
 }
 
 /**
+ * `admin-maintenance-report` (#2780): somebody reported a physical fault at a
+ * lodge, from the members' portal or from the QR code on the wall.
+ *
+ * EVERY DYNAMIC VALUE HERE CAN COME FROM AN UNAUTHENTICATED STRANGER — the
+ * summary, the answers, and the self-declared name and contact on the QR path —
+ * so every one of them is escaped, and the answers are rendered through the
+ * shared `infoTable`/`multilineBlock` blocks rather than concatenated into
+ * markup. The only URL in the message is one this application built
+ * (`sameOrigin`), never anything the reporter supplied: a report is not allowed
+ * to put a link of its choosing in front of an officer.
+ */
+export function adminMaintenanceReportTemplate(data: {
+  lodgeName: string;
+  reportedBy: string;
+  sourceLabel: string;
+  photoLabel: string;
+  summary: string;
+  answers: Array<{ label: string; value: string }>;
+  maintenanceReportUrl: string;
+}): string {
+  return layout(`
+    ${heading("Maintenance Report Lodged")}
+    ${paragraph("Something needs attention at " + escapeHtml(data.lodgeName) + ".")}
+    ${infoTable([
+      { label: "Lodge", value: escapeHtml(data.lodgeName) },
+      { label: "Reported by", value: escapeHtml(data.reportedBy) },
+      { label: "How it was sent", value: escapeHtml(data.sourceLabel) },
+      { label: "Photo", value: escapeHtml(data.photoLabel) },
+    ])}
+    ${alertBox(escapeHtml(data.summary), "info")}
+    ${
+      data.answers.length > 0
+        ? infoTable(
+            data.answers.map((answer) => ({
+              label: escapeHtml(answer.label),
+              value: escapeHtml(answer.value),
+            })),
+          )
+        : paragraph("No further answers were given.")
+    }
+    ${button("Review Maintenance Report", data.maintenanceReportUrl, { sameOrigin: true })}
+  `);
+}
+
+/**
  * The public website's contact form, delivered to whoever the committee
  * assignment routes it to.
  *
