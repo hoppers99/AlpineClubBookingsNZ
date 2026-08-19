@@ -1,0 +1,316 @@
+import { describe, expect, it, vi } from "vitest";
+import type { Role } from "@prisma/client";
+import {
+  assertOtherLodgeExists,
+  OTHER_LODGE_RATE_ADMIN_ONLY_MESSAGE,
+  OTHER_LODGE_RATE_GUEST_NOT_ON_BOOKING_MESSAGE,
+  OTHER_LODGE_RATE_LODGE_NOT_FOUND_MESSAGE,
+  OTHER_LODGE_RATE_LODGE_REQUIRED_MESSAGE,
+  OTHER_LODGE_RATE_MEMBER_GUEST_MESSAGE,
+  resolveOtherLodgeRateElection,
+  type OtherLodgeRateBooking,
+} from "@/lib/booking-other-lodge-rate";
+import {
+  priceBookingGuestsWithMembershipTypePolicy,
+  resolveGuestRateMembershipTypes,
+} from "@/lib/membership-type-policy";
+
+/**
+ * The reciprocal "other club member" rate (Other Lodges epic).
+ *
+ * Two halves are tested here because they are the two halves that can silently
+ * disagree: the ELECTION (who is ticked, and who must therefore be repriced) and
+ * the RATE RESOLUTION (what a ticked guest is actually priced from).
+ */
+
+const ADMIN = "ADMIN" as Role;
+const MEMBER = "MEMBER" as Role;
+
+function makeBooking(
+  overrides: Partial<OtherLodgeRateBooking> = {},
+): OtherLodgeRateBooking {
+  return {
+    otherLodgeId: null,
+    guests: [
+      { id: "guest-nonmember", isMember: false, otherLodgeMember: false },
+      { id: "guest-member", isMember: true, otherLodgeMember: false },
+    ],
+    ...overrides,
+  };
+}
+
+describe("resolveOtherLodgeRateElection", () => {
+  it("is inert when the request says nothing about the rate, and reports the stored state", () => {
+    const election = resolveOtherLodgeRateElection({
+      booking: makeBooking({
+        otherLodgeId: "lodge-1",
+        guests: [
+          { id: "guest-a", isMember: false, otherLodgeMember: true },
+          { id: "guest-b", isMember: false, otherLodgeMember: false },
+        ],
+      }),
+      input: {},
+      // A member's own edit reaches this path on every ordinary save, so an
+      // inert election must NOT trip the admin gate.
+      role: MEMBER,
+    });
+
+    expect(election.requested).toBe(false);
+    expect(election.otherLodgeId).toBe("lodge-1");
+    expect([...election.flaggedGuestIds]).toEqual(["guest-a"]);
+    // Nothing to reprice: an unrelated edit must never disturb a settled stay.
+    expect(election.repriceGuestIds.size).toBe(0);
+  });
+
+  it("refuses a non-admin actor who does carry an election", () => {
+    expect(() =>
+      resolveOtherLodgeRateElection({
+        booking: makeBooking(),
+        input: { otherLodgeId: "lodge-1", otherLodgeMemberGuestIds: ["guest-nonmember"] },
+        role: MEMBER,
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        message: OTHER_LODGE_RATE_ADMIN_ONLY_MESSAGE,
+        status: 403,
+      }),
+    );
+  });
+
+  it("refuses a tick naming a guest who is not on this booking", () => {
+    expect(() =>
+      resolveOtherLodgeRateElection({
+        booking: makeBooking(),
+        input: { otherLodgeId: "lodge-1", otherLodgeMemberGuestIds: ["guest-elsewhere"] },
+        role: ADMIN,
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        message: OTHER_LODGE_RATE_GUEST_NOT_ON_BOOKING_MESSAGE,
+        status: 400,
+      }),
+    );
+  });
+
+  it("refuses a tick on a member of this club, who already prices at their own rate", () => {
+    expect(() =>
+      resolveOtherLodgeRateElection({
+        booking: makeBooking(),
+        input: { otherLodgeId: "lodge-1", otherLodgeMemberGuestIds: ["guest-member"] },
+        role: ADMIN,
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        message: OTHER_LODGE_RATE_MEMBER_GUEST_MESSAGE,
+        status: 400,
+      }),
+    );
+  });
+
+  it("refuses ticks with no lodge behind them", () => {
+    expect(() =>
+      resolveOtherLodgeRateElection({
+        booking: makeBooking(),
+        input: { otherLodgeId: null, otherLodgeMemberGuestIds: ["guest-nonmember"] },
+        role: ADMIN,
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        message: OTHER_LODGE_RATE_LODGE_REQUIRED_MESSAGE,
+        status: 400,
+      }),
+    );
+  });
+
+  it("reprices a guest the officer has just ticked", () => {
+    const election = resolveOtherLodgeRateElection({
+      booking: makeBooking(),
+      input: { otherLodgeId: "lodge-1", otherLodgeMemberGuestIds: ["guest-nonmember"] },
+      role: ADMIN,
+    });
+
+    expect(election.requested).toBe(true);
+    expect(election.otherLodgeId).toBe("lodge-1");
+    expect(election.otherLodgeIdChanged).toBe(true);
+    expect([...election.flaggedGuestIds]).toEqual(["guest-nonmember"]);
+    expect([...election.repriceGuestIds]).toEqual(["guest-nonmember"]);
+  });
+
+  it("reprices a guest the officer has just UNticked — the direction a delta would miss", () => {
+    const election = resolveOtherLodgeRateElection({
+      booking: makeBooking({
+        otherLodgeId: "lodge-1",
+        guests: [{ id: "guest-a", isMember: false, otherLodgeMember: true }],
+      }),
+      // Present but empty: the end state is "nobody", which is how unticking
+      // travels. A delta-shaped payload could not express this at all.
+      input: { otherLodgeId: "lodge-1", otherLodgeMemberGuestIds: [] },
+      role: ADMIN,
+    });
+
+    expect(election.flaggedGuestIds.size).toBe(0);
+    expect([...election.repriceGuestIds]).toEqual(["guest-a"]);
+    expect(election.otherLodgeIdChanged).toBe(false);
+  });
+
+  it("clearing the lodge unticks everybody, and reprices them", () => {
+    const election = resolveOtherLodgeRateElection({
+      booking: makeBooking({
+        otherLodgeId: "lodge-1",
+        guests: [
+          { id: "guest-a", isMember: false, otherLodgeMember: true },
+          { id: "guest-b", isMember: false, otherLodgeMember: true },
+        ],
+      }),
+      input: { otherLodgeId: null, otherLodgeMemberGuestIds: [] },
+      role: ADMIN,
+    });
+
+    expect(election.otherLodgeId).toBeNull();
+    expect(election.otherLodgeIdChanged).toBe(true);
+    expect(election.flaggedGuestIds.size).toBe(0);
+    expect([...election.repriceGuestIds].sort()).toEqual(["guest-a", "guest-b"]);
+  });
+
+  it("reprices nobody when the election is re-sent unchanged", () => {
+    // The panel sends the fields only when they differ, but a client that
+    // re-asserts the stored election must still be a no-op: repricing here would
+    // re-rate settled guests at today's season rates on an unrelated save.
+    const election = resolveOtherLodgeRateElection({
+      booking: makeBooking({
+        otherLodgeId: "lodge-1",
+        guests: [{ id: "guest-a", isMember: false, otherLodgeMember: true }],
+      }),
+      input: { otherLodgeId: "lodge-1", otherLodgeMemberGuestIds: ["guest-a"] },
+      role: ADMIN,
+    });
+
+    expect(election.requested).toBe(true);
+    expect(election.otherLodgeIdChanged).toBe(false);
+    expect(election.repriceGuestIds.size).toBe(0);
+  });
+});
+
+describe("assertOtherLodgeExists", () => {
+  it("refuses a lodge id that names nothing, rather than letting the FK fail", async () => {
+    const db = { otherLodge: { findUnique: vi.fn(async () => null) } };
+    await expect(
+      assertOtherLodgeExists(db as never, "lodge-gone"),
+    ).rejects.toThrowError(
+      expect.objectContaining({
+        message: OTHER_LODGE_RATE_LODGE_NOT_FOUND_MESSAGE,
+        status: 400,
+      }),
+    );
+  });
+
+  it("reads nothing when no lodge is named", async () => {
+    const findUnique = vi.fn(async () => null);
+    await expect(
+      assertOtherLodgeExists({ otherLodge: { findUnique } } as never, null),
+    ).resolves.toBeUndefined();
+    expect(findUnique).not.toHaveBeenCalled();
+  });
+});
+
+// --- Rate resolution -------------------------------------------------------
+
+const fullType = { id: "type-full", key: "FULL" };
+const nonMemberType = { id: "type-nonmember", key: "NON_MEMBER" };
+
+function makeRateDb() {
+  return {
+    member: { findMany: vi.fn(async () => []) },
+    seasonalMembershipAssignment: { findMany: vi.fn(async () => []) },
+    membershipType: {
+      findMany: vi.fn(async (args: { where: { key: { in: string[] } } }) =>
+        [fullType, nonMemberType].filter((type) =>
+          args.where.key.in.includes(type.key),
+        ),
+      ),
+    },
+  };
+}
+
+// FULL is the club's own member rate; NON_MEMBER is what a visitor pays.
+const seasonRates = [
+  {
+    seasonId: "season-2026",
+    startDate: new Date("2026-04-01T00:00:00.000Z"),
+    endDate: new Date("2026-10-31T00:00:00.000Z"),
+    rates: [
+      { membershipTypeId: "type-full", ageTier: "ADULT" as const, pricePerNightCents: 1000 },
+      { membershipTypeId: "type-nonmember", ageTier: "ADULT" as const, pricePerNightCents: 2400 },
+      { membershipTypeId: "type-full", ageTier: "CHILD" as const, pricePerNightCents: 500 },
+      { membershipTypeId: "type-nonmember", ageTier: "CHILD" as const, pricePerNightCents: 1200 },
+    ],
+  },
+];
+
+describe("resolveGuestRateMembershipTypes — other-lodge members", () => {
+  it("prices a ticked non-member from the FULL member rows", async () => {
+    const rated = await resolveGuestRateMembershipTypes(makeRateDb(), {
+      seasonYear: 2026,
+      guests: [
+        { isMember: false, memberId: null, otherLodgeMember: true },
+        { isMember: false, memberId: null, otherLodgeMember: false },
+      ],
+    });
+
+    expect(rated[0]).toMatchObject({
+      rateMembershipTypeId: "type-full",
+      rateSource: "OTHER_LODGE_MEMBER",
+    });
+    // The untickled guest beside them is untouched — the flag is per person.
+    expect(rated[1]).toMatchObject({
+      rateMembershipTypeId: "type-nonmember",
+      rateSource: "NON_MEMBER_DEFAULT",
+    });
+  });
+
+  it("leaves a guest with no flag exactly as it was before the field existed", async () => {
+    const rated = await resolveGuestRateMembershipTypes(makeRateDb(), {
+      seasonYear: 2026,
+      guests: [{ isMember: false, memberId: null }],
+    });
+
+    expect(rated[0]).toMatchObject({
+      rateMembershipTypeId: "type-nonmember",
+      rateSource: "NON_MEMBER_DEFAULT",
+    });
+  });
+
+  it("never lets the flag override a MEMBER of this club", async () => {
+    // The API boundary refuses this combination; the resolver is the second
+    // fence, so a row that somehow carries both still resolves through the
+    // member's own membership type rather than the other-lodge branch.
+    const rated = await resolveGuestRateMembershipTypes(makeRateDb(), {
+      seasonYear: 2026,
+      guests: [{ isMember: true, memberId: "member-1", otherLodgeMember: true }],
+    });
+
+    expect(rated[0].rateSource).not.toBe("OTHER_LODGE_MEMBER");
+    expect(rated[0]).toMatchObject({ rateMembershipTypeId: "type-full", rateSource: "OWN_TYPE" });
+  });
+
+  it("charges the member rate for the ticked guest's own age tier, end to end", async () => {
+    const price = await priceBookingGuestsWithMembershipTypePolicy(makeRateDb(), {
+      ownerMemberId: "member-1",
+      checkIn: new Date("2026-05-01T00:00:00.000Z"),
+      checkOut: new Date("2026-05-03T00:00:00.000Z"),
+      guests: [
+        // A visiting club's adult and their child, both ticked, plus an
+        // ordinary non-member who is not.
+        { ageTier: "ADULT", isMember: false, memberId: null, otherLodgeMember: true },
+        { ageTier: "CHILD", isMember: false, memberId: null, otherLodgeMember: true },
+        { ageTier: "ADULT", isMember: false, memberId: null },
+      ],
+      seasons: seasonRates,
+      seasonYear: 2026,
+    });
+
+    // Two nights each: 1000 and 500 at the member rates, 2400 at non-member.
+    expect(price.guests.map((guest) => guest.priceCents)).toEqual([2000, 1000, 4800]);
+    expect(price.totalPriceCents).toBe(7800);
+  });
+});
