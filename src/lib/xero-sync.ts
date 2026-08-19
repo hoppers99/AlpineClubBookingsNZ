@@ -157,6 +157,46 @@ export function buildXeroIdempotencyKey(
 }
 
 /**
+ * The cents one REFUND_CREDIT_NOTE link contributes to a payment's covered
+ * refund total (#1162): the link metadata's recorded `amountCents` when
+ * present, else the create operation's persisted request payload
+ * (`allocation.amount` in dollars), which every historical note carries.
+ * Returns null when neither source can recover an amount. Shared by
+ * `sumCoveredRefundCreditNoteCents` and the #2901 operator repair so the two
+ * can never disagree about what a legacy link is worth.
+ */
+export async function recoverRefundCreditNoteLinkAmountCents(
+  paymentId: string,
+  link: { xeroObjectId: string; metadata: unknown },
+  db: Prisma.TransactionClient = prisma
+): Promise<number | null> {
+  const metadata = asRecord(link.metadata);
+  const recorded = metadata?.amountCents;
+  if (typeof recorded === "number" && Number.isFinite(recorded)) {
+    return Math.max(0, Math.round(recorded));
+  }
+  const operation = await db.xeroSyncOperation.findFirst({
+    where: {
+      direction: "OUTBOUND",
+      entityType: "CREDIT_NOTE",
+      operationType: "CREATE",
+      localModel: "Payment",
+      localId: paymentId,
+      xeroObjectId: link.xeroObjectId,
+    },
+    orderBy: { createdAt: "desc" },
+    select: { requestPayload: true },
+  });
+  const payload = asRecord(operation?.requestPayload);
+  const allocation = asRecord(payload?.allocation);
+  const allocationCents = providerAmountToCents(allocation?.amount);
+  if (allocationCents !== null) {
+    return Math.max(0, allocationCents);
+  }
+  return null;
+}
+
+/**
  * Cents already covered by refund credit notes for a payment (#1162): the sum
  * of the active REFUND_CREDIT_NOTE links' recorded amounts. Links written
  * before amounts were recorded fall back to the create operation's persisted
@@ -182,30 +222,8 @@ export async function sumCoveredRefundCreditNoteCents(
 
   let coveredCents = 0;
   for (const link of links) {
-    const metadata = asRecord(link.metadata);
-    const recorded = metadata?.amountCents;
-    if (typeof recorded === "number" && Number.isFinite(recorded)) {
-      coveredCents += Math.max(0, Math.round(recorded));
-      continue;
-    }
-    const operation = await db.xeroSyncOperation.findFirst({
-      where: {
-        direction: "OUTBOUND",
-        entityType: "CREDIT_NOTE",
-        operationType: "CREATE",
-        localModel: "Payment",
-        localId: paymentId,
-        xeroObjectId: link.xeroObjectId,
-      },
-      orderBy: { createdAt: "desc" },
-      select: { requestPayload: true },
-    });
-    const payload = asRecord(operation?.requestPayload);
-    const allocation = asRecord(payload?.allocation);
-    const allocationCents = providerAmountToCents(allocation?.amount);
-    if (allocationCents !== null) {
-      coveredCents += Math.max(0, allocationCents);
-    }
+    coveredCents +=
+      (await recoverRefundCreditNoteLinkAmountCents(paymentId, link, db)) ?? 0;
   }
   return coveredCents;
 }

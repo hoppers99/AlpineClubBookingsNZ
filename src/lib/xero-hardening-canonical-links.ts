@@ -2,6 +2,19 @@
 // local canonical field no longer points at them. Extracted verbatim from
 // xero-hardening.ts (#1208 item 5). Import xero source modules directly, never
 // the @/lib/xero facade (#1208).
+//
+// SOURCE-AWARE for payment refund credit notes (#2901): a `source: STRIPE`
+// payment refunded in steps holds one active REFUND_CREDIT_NOTE link PER
+// refund delta (INV-ADDPAY-020), so the scalar `Payment.xeroRefundCreditNoteId`
+// is only "the latest note", never "the only note". Treating it as the sole
+// canonical target made this cleanup deactivate live coverage, which the daily
+// credit-reconciliation self-heal then rebuilt with ANOTHER provider document —
+// an unbounded duplicate-note loop (a production payment accumulated 21
+// alternating notes for one 100-cent refund). Stripe per-delta links are
+// therefore exempt from single-canonical enforcement here, exactly as they are
+// in `normalizePaymentRefundLinkWithClient` (xero-sync.ts). Non-Stripe payment
+// sources still contract to a single refund note and keep the enforcement.
+import { PaymentSource } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type {
   CanonicalLinkExpectation,
@@ -9,6 +22,50 @@ import type {
   XeroCanonicalLinkCleanupResult,
 } from "./xero-hardening-types";
 import { buildCanonicalScopeKey } from "./xero-hardening-shared";
+
+/**
+ * The payment ids, among the given refund-note link owners, whose payment is
+ * `source: STRIPE`. Queried from the LINKS' local ids rather than from the
+ * canonical-field payment scan so a Stripe payment whose scalar pointer (and
+ * even invoice pointer) is currently null still shields its per-delta links —
+ * a null scalar previously produced "no expectation", which deactivated every
+ * active note link for that payment. Shared by cleanup and the drift report.
+ */
+export async function findStripeSourcePaymentIds(
+  paymentIds: string[]
+): Promise<Set<string>> {
+  if (paymentIds.length === 0) {
+    return new Set();
+  }
+  const stripePayments = await prisma.payment.findMany({
+    where: {
+      id: { in: paymentIds },
+      source: PaymentSource.STRIPE,
+    },
+    select: { id: true },
+  });
+  return new Set(stripePayments.map((payment) => payment.id));
+}
+
+/**
+ * True when this active link is a Stripe per-delta refund credit note link,
+ * which the multi-note contract (INV-ADDPAY-020) keeps active alongside its
+ * siblings — single-canonical cleanup must not touch it. A REFUND_CREDIT_NOTE
+ * link with the wrong xeroObjectType is malformed (the pipeline only writes
+ * CREDIT_NOTE) and stays subject to cleanup, as does a link whose payment does
+ * not exist or is not Stripe-sourced.
+ */
+export function isStripePerDeltaRefundCreditNoteLink(
+  link: Pick<CanonicalLinkRecord, "localModel" | "localId" | "role" | "xeroObjectType">,
+  stripePaymentIds: ReadonlySet<string>
+): boolean {
+  return (
+    link.localModel === "Payment" &&
+    link.role === "REFUND_CREDIT_NOTE" &&
+    link.xeroObjectType === "CREDIT_NOTE" &&
+    stripePaymentIds.has(link.localId)
+  );
+}
 
 function getCanonicalCleanupCategory(
   link: Pick<CanonicalLinkRecord, "localModel" | "role">
@@ -161,7 +218,32 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
       expectation,
     ])
   );
+  // #2901: resolve payment sources from the LINKS, not from the canonical-field
+  // payment scan above, so per-delta links survive even when the payment's
+  // scalar pointers are null and it therefore has no expectation row.
+  const stripePaymentIds = await findStripeSourcePaymentIds(
+    Array.from(
+      new Set(
+        links
+          .filter(
+            (link) =>
+              link.localModel === "Payment" && link.role === "REFUND_CREDIT_NOTE"
+          )
+          .map((link) => link.localId)
+      )
+    )
+  );
+  let preservedStripeRefundCreditNoteLinks = 0;
   const staleLinks = links.filter((link) => {
+    // Stripe payments legitimately hold one ACTIVE refund note per refund
+    // delta (INV-ADDPAY-020); the scalar pointer is only the latest of them.
+    // Single-canonical enforcement is retained ONLY for sources whose contract
+    // genuinely permits one note (#2901).
+    if (isStripePerDeltaRefundCreditNoteLink(link, stripePaymentIds)) {
+      preservedStripeRefundCreditNoteLinks += 1;
+      return false;
+    }
+
     const expectation = expectationByScope.get(buildCanonicalScopeKey(link));
     if (!expectation) {
       return true;
@@ -207,6 +289,7 @@ export async function cleanupStaleCanonicalXeroObjectLinks(): Promise<XeroCanoni
     scannedActiveLinks: links.length,
     keptActiveLinks: links.length - deactivatedLinks,
     deactivatedLinks,
+    preservedStripeRefundCreditNoteLinks,
     byCategory,
     deactivatedLinkIds: staleLinkIds,
   };

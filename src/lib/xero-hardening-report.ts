@@ -29,6 +29,10 @@ import {
   buildCanonicalScopeKey,
   getRepeatedFailureWindowStart,
 } from "./xero-hardening-shared";
+import {
+  findStripeSourcePaymentIds,
+  isStripePerDeltaRefundCreditNoteLink,
+} from "./xero-hardening-canonical-links";
 
 const DEFAULT_STALE_PENDING_MINUTES = 30;
 
@@ -608,7 +612,36 @@ export async function buildXeroReconciliationReport(options?: {
       expectation.role === "SUBSCRIPTION_INVOICE"
   ).length;
 
+  // #2901: `source: STRIPE` payments hold one active REFUND_CREDIT_NOTE link
+  // per refund delta (INV-ADDPAY-020), so for those payments the scalar
+  // pointer names the LATEST note, not the ONLY note. The mismatch, stale and
+  // duplicate classifications below all assume single-canonical and would
+  // report every legitimate per-delta sibling as drift, so they are made
+  // source-aware exactly like `cleanupStaleCanonicalXeroObjectLinks`. The
+  // "missing" classification is deliberately kept: the scalar-pointed note
+  // should always carry an active link, whatever the source.
+  const stripePaymentIds = await findStripeSourcePaymentIds(
+    Array.from(
+      new Set(
+        links
+          .filter(
+            (link) =>
+              link.localModel === "Payment" && link.role === "REFUND_CREDIT_NOTE"
+          )
+          .map((link) => link.localId)
+      )
+    )
+  );
+
   const mismatchedCanonicalExpectations = canonicalExpectations.filter((expectation) => {
+    if (
+      isStripePerDeltaRefundCreditNoteLink(expectation, stripePaymentIds)
+    ) {
+      // Active sibling notes beside the scalar-pointed one are the multi-delta
+      // contract, not a mismatch; an absent scalar link is already counted as
+      // missing above.
+      return false;
+    }
     const scopeKey = buildCanonicalScopeKey(expectation);
     const scopedLinks = activeLinksByScope.get(scopeKey) ?? [];
     return (
@@ -619,6 +652,9 @@ export async function buildXeroReconciliationReport(options?: {
   const mismatchedCanonicalLinks = mismatchedCanonicalExpectations.length;
 
   const staleCanonicalLinkRecords = links.filter((link) => {
+    if (isStripePerDeltaRefundCreditNoteLink(link, stripePaymentIds)) {
+      return false;
+    }
     const expectation = canonicalExpectationByScope.get(buildCanonicalScopeKey(link));
     if (!expectation) {
       return true;
@@ -632,7 +668,19 @@ export async function buildXeroReconciliationReport(options?: {
   const staleCanonicalLinks = staleCanonicalLinkRecords.length;
 
   const duplicateCanonicalLinkGroups = Array.from(activeLinksByScope.values()).filter(
-    (scopedLinks) => scopedLinks.length > 1
+    (scopedLinks) => {
+      const firstLink = scopedLinks[0];
+      if (
+        firstLink.localModel === "Payment" &&
+        firstLink.role === "REFUND_CREDIT_NOTE" &&
+        stripePaymentIds.has(firstLink.localId)
+      ) {
+        // Several active per-delta refund notes on one Stripe payment are the
+        // contract (#2901), never duplicates.
+        return false;
+      }
+      return scopedLinks.length > 1;
+    }
   );
   const duplicateActiveCanonicalLinks = duplicateCanonicalLinkGroups.length;
 

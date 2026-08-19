@@ -165,9 +165,14 @@ describe("buildXeroReconciliationReport", () => {
     mocks.memberFindMany.mockResolvedValue([
       { id: "mem_1", xeroContactId: "contact_1" },
     ]);
-    mocks.paymentFindMany.mockResolvedValue([
-      { id: "pay_1", xeroInvoiceId: "inv_1", xeroRefundCreditNoteId: "cn_1" },
-    ]);
+    // First call: the canonical-field payment scan. Second call (#2901): the
+    // source resolution for refund-note link owners — pay_1 is NOT Stripe
+    // here, so the pre-#2901 single-canonical expectations stay in force.
+    mocks.paymentFindMany.mockImplementation(async (args?: { where?: { source?: string } }) =>
+      args?.where?.source === "STRIPE"
+        ? []
+        : [{ id: "pay_1", xeroInvoiceId: "inv_1", xeroRefundCreditNoteId: "cn_1" }]
+    );
     mocks.subscriptionFindMany.mockResolvedValue([
       { id: "sub_1", xeroInvoiceId: "subinv_1" },
     ]);
@@ -398,6 +403,112 @@ describe("buildXeroReconciliationReport", () => {
         count: 4,
       }),
     ]);
+  });
+
+  it("does not report Stripe per-delta refund notes as stale, mismatched, or duplicate drift (#2901)", async () => {
+    mocks.memberFindMany.mockResolvedValue([]);
+    mocks.paymentFindMany.mockImplementation(
+      async (args?: { where?: { source?: string; id?: { in?: string[] } } }) => {
+        if (args?.where?.source === "STRIPE") {
+          expect(args.where.id?.in).toEqual(["pay_stripe"]);
+          return [{ id: "pay_stripe" }];
+        }
+        return [
+          {
+            id: "pay_stripe",
+            xeroInvoiceId: "inv_1",
+            // The scalar names the LATEST per-delta note, not the only one.
+            xeroRefundCreditNoteId: "cn_10",
+          },
+        ];
+      }
+    );
+    mocks.subscriptionFindMany.mockResolvedValue([]);
+    mocks.linkFindMany.mockResolvedValue([
+      {
+        localModel: "Payment",
+        localId: "pay_stripe",
+        xeroObjectType: "INVOICE",
+        xeroObjectId: "inv_1",
+        role: "PRIMARY_INVOICE",
+      },
+      {
+        localModel: "Payment",
+        localId: "pay_stripe",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_90",
+        role: "REFUND_CREDIT_NOTE",
+      },
+      {
+        localModel: "Payment",
+        localId: "pay_stripe",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_10",
+        role: "REFUND_CREDIT_NOTE",
+      },
+    ]);
+    mocks.operationFindMany.mockResolvedValue([]);
+    mocks.operationCount.mockResolvedValue(0);
+
+    const report = await buildXeroReconciliationReport({
+      now: new Date("2026-04-13T12:00:00Z"),
+    });
+
+    expect(report.summary).toEqual(
+      expect.objectContaining({
+        missingPaymentRefundCreditNoteLinks: 0,
+        mismatchedCanonicalLinks: 0,
+        staleCanonicalLinks: 0,
+        duplicateActiveCanonicalLinks: 0,
+        issueTotalCount: 0,
+      })
+    );
+    expect(
+      report.issueSections.some((section) => section.id === "canonical-link-drift")
+    ).toBe(false);
+  });
+
+  it("still reports a missing active link for the scalar-pointed Stripe refund note (#2901)", async () => {
+    mocks.memberFindMany.mockResolvedValue([]);
+    mocks.paymentFindMany.mockImplementation(
+      async (args?: { where?: { source?: string } }) =>
+        args?.where?.source === "STRIPE"
+          ? [{ id: "pay_stripe" }]
+          : [
+              {
+                id: "pay_stripe",
+                xeroInvoiceId: null,
+                xeroRefundCreditNoteId: "cn_10",
+              },
+            ]
+    );
+    mocks.subscriptionFindMany.mockResolvedValue([]);
+    // Only the earlier delta's link is active; the scalar-pointed cn_10 link
+    // is absent, which stays reportable drift the nightly backfill repairs.
+    mocks.linkFindMany.mockResolvedValue([
+      {
+        localModel: "Payment",
+        localId: "pay_stripe",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_90",
+        role: "REFUND_CREDIT_NOTE",
+      },
+    ]);
+    mocks.operationFindMany.mockResolvedValue([]);
+    mocks.operationCount.mockResolvedValue(0);
+
+    const report = await buildXeroReconciliationReport({
+      now: new Date("2026-04-13T12:00:00Z"),
+    });
+
+    expect(report.summary).toEqual(
+      expect.objectContaining({
+        missingPaymentRefundCreditNoteLinks: 1,
+        mismatchedCanonicalLinks: 0,
+        staleCanonicalLinks: 0,
+        duplicateActiveCanonicalLinks: 0,
+      })
+    );
   });
 });
 
@@ -694,6 +805,8 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
         xeroRefundCreditNoteId: null,
       },
     ]);
+    // No REFUND_CREDIT_NOTE links below, so the #2901 source resolution never
+    // issues its payment query — the scan mock above stays single-purpose.
     mocks.subscriptionFindMany.mockResolvedValue([]);
     mocks.linkFindMany.mockResolvedValue([
       {
@@ -729,6 +842,7 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
       scannedActiveLinks: 3,
       keptActiveLinks: 1,
       deactivatedLinks: 2,
+      preservedStripeRefundCreditNoteLinks: 0,
       byCategory: {
         memberContacts: 1,
         paymentInvoices: 1,
@@ -742,6 +856,162 @@ describe("cleanupStaleCanonicalXeroObjectLinks", () => {
       where: {
         id: {
           in: ["link_old_contact", "link_old_invoice"],
+        },
+        active: true,
+      },
+      data: {
+        active: false,
+      },
+    });
+  });
+
+  it("preserves every active Stripe per-delta refund note link, wherever the scalar points (#2901)", async () => {
+    mocks.memberFindMany.mockResolvedValue([]);
+    mocks.paymentFindMany.mockImplementation(
+      async (args?: { where?: { source?: string; id?: { in?: string[] } } }) => {
+        if (args?.where?.source === "STRIPE") {
+          // Source resolution is keyed on the LINKS' payment ids (#2901), so a
+          // Stripe payment with a null scalar still shields its notes.
+          expect([...(args.where.id?.in ?? [])].sort()).toEqual([
+            "pay_null_scalar",
+            "pay_stripe",
+          ]);
+          return [{ id: "pay_stripe" }, { id: "pay_null_scalar" }];
+        }
+        return [
+          {
+            id: "pay_stripe",
+            xeroInvoiceId: "inv_1",
+            xeroRefundCreditNoteId: "cn_10",
+          },
+        ];
+      }
+    );
+    mocks.subscriptionFindMany.mockResolvedValue([]);
+    mocks.linkFindMany.mockResolvedValue([
+      {
+        id: "link_cn_90",
+        localModel: "Payment",
+        localId: "pay_stripe",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_90",
+        role: "REFUND_CREDIT_NOTE",
+      },
+      {
+        id: "link_cn_10",
+        localModel: "Payment",
+        localId: "pay_stripe",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_10",
+        role: "REFUND_CREDIT_NOTE",
+      },
+      {
+        // A Stripe payment whose scalar AND invoice pointers are null has no
+        // expectation row at all; pre-#2901 that deactivated its live coverage.
+        id: "link_no_expectation",
+        localModel: "Payment",
+        localId: "pay_null_scalar",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_other",
+        role: "REFUND_CREDIT_NOTE",
+      },
+    ]);
+
+    const result = await cleanupStaleCanonicalXeroObjectLinks();
+
+    expect(result).toEqual({
+      completedAt: expect.any(Date),
+      scannedActiveLinks: 3,
+      keptActiveLinks: 3,
+      deactivatedLinks: 0,
+      preservedStripeRefundCreditNoteLinks: 3,
+      byCategory: {
+        memberContacts: 0,
+        paymentInvoices: 0,
+        paymentRefundCreditNotes: 0,
+        subscriptionInvoices: 0,
+        otherCanonicalLinks: 0,
+      },
+      deactivatedLinkIds: [],
+    });
+    expect(mocks.linkUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("keeps single-canonical enforcement for non-Stripe refund notes and malformed or foreign links (#2901)", async () => {
+    mocks.memberFindMany.mockResolvedValue([]);
+    mocks.paymentFindMany.mockImplementation(
+      async (args?: { where?: { source?: string } }) =>
+        args?.where?.source === "STRIPE"
+          ? [{ id: "pay_stripe" }]
+          : [
+              {
+                id: "pay_ib",
+                xeroInvoiceId: "inv_ib",
+                xeroRefundCreditNoteId: "cn_canonical",
+              },
+              {
+                id: "pay_stripe",
+                xeroInvoiceId: "inv_s",
+                xeroRefundCreditNoteId: "cn_s",
+              },
+            ]
+    );
+    mocks.subscriptionFindMany.mockResolvedValue([]);
+    mocks.linkFindMany.mockResolvedValue([
+      {
+        // Internet Banking source: the single-note contract still holds, so
+        // the non-canonical note is deactivated.
+        id: "link_ib_keep",
+        localModel: "Payment",
+        localId: "pay_ib",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_canonical",
+        role: "REFUND_CREDIT_NOTE",
+      },
+      {
+        id: "link_ib_stale",
+        localModel: "Payment",
+        localId: "pay_ib",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_old",
+        role: "REFUND_CREDIT_NOTE",
+      },
+      {
+        // Malformed: a REFUND_CREDIT_NOTE link must target a CREDIT_NOTE, so a
+        // wrong-typed row is stale even on a Stripe payment.
+        id: "link_wrong_type",
+        localModel: "Payment",
+        localId: "pay_stripe",
+        xeroObjectType: "INVOICE",
+        xeroObjectId: "inv_s",
+        role: "REFUND_CREDIT_NOTE",
+      },
+      {
+        // Foreign: no payment row exists for this id, so no source can vouch
+        // for it and it stays subject to cleanup.
+        id: "link_foreign",
+        localModel: "Payment",
+        localId: "pay_missing",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_x",
+        role: "REFUND_CREDIT_NOTE",
+      },
+    ]);
+    mocks.linkUpdateMany.mockResolvedValue({ count: 3 });
+
+    const result = await cleanupStaleCanonicalXeroObjectLinks();
+
+    expect(result.deactivatedLinkIds).toEqual([
+      "link_ib_stale",
+      "link_wrong_type",
+      "link_foreign",
+    ]);
+    expect(result.preservedStripeRefundCreditNoteLinks).toBe(0);
+    expect(result.byCategory.paymentRefundCreditNotes).toBe(3);
+    expect(mocks.linkUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: {
+          in: ["link_ib_stale", "link_wrong_type", "link_foreign"],
         },
         active: true,
       },
