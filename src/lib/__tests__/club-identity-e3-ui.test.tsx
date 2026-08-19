@@ -129,6 +129,87 @@ describe("Lodges page — address field (E3 #1929)", () => {
   });
 });
 
+/*
+  #2925: the door-code wipe path.
+
+  `PATCH /api/admin/lodges/[id]` reads an ABSENT key as "leave unchanged" and a
+  `null` as "clear it". So an editor seeded from a narrowed record — one with no
+  `doorCode` field at all — that always sent `doorCode: form.doorCode.trim() ||
+  null` would silently and irreversibly wipe a live door code on the next Save.
+  The editor therefore sends only the detail fields the record it loaded
+  actually carried.
+*/
+describe("Lodges page — a narrowed record cannot wipe a door code (#2925)", () => {
+  function stubLodgeList(lodge: Record<string, unknown>) {
+    const patches: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        if (init?.method === "PATCH") {
+          patches.push(JSON.parse(String(init.body)));
+          return { ok: true, status: 200, json: async () => ({ lodge }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ lodges: [lodge] }) };
+      }),
+    );
+    return patches;
+  }
+
+  async function editAndSave() {
+    const edit = await screen.findByRole("button", { name: /Edit/i });
+    fireEvent.click(edit);
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+  }
+
+  it("omits the detail fields it was never given", async () => {
+    const patches = stubLodgeList({
+      id: "lodge-1",
+      name: "Alpine Lodge",
+      slug: "alpine-lodge",
+      active: true,
+    });
+
+    render(<AdminLodgesPage />);
+    await editAndSave();
+
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toEqual({ name: "Alpine Lodge" });
+    expect(patches[0]).not.toHaveProperty("doorCode");
+    expect(patches[0]).not.toHaveProperty("address");
+    expect(patches[0]).not.toHaveProperty("travelNote");
+  });
+
+  it("still sends every detail field of a full record, including a cleared one", async () => {
+    // The other half: the belt must not quietly stop an ordinary admin from
+    // CLEARING a door code they can see, which is a real thing they may want.
+    const patches = stubLodgeList({
+      id: "lodge-1",
+      name: "Alpine Lodge",
+      slug: "alpine-lodge",
+      active: true,
+      address: "12 Mountain Road",
+      doorCode: "4821",
+      travelNote: "Chains required.",
+    });
+
+    render(<AdminLodgesPage />);
+    const edit = await screen.findByRole("button", { name: /Edit/i });
+    fireEvent.click(edit);
+    fireEvent.change(screen.getByLabelText("Door code"), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toEqual({
+      name: "Alpine Lodge",
+      address: "12 Mountain Road",
+      doorCode: null,
+      travelNote: "Chains required.",
+    });
+  });
+});
+
 describe("LodgeDetailsPanel — cross-area denial (E3 #1929)", () => {
   it("renders a read-only notice on a 403 instead of a raw failure", async () => {
     vi.stubGlobal(
@@ -147,6 +228,75 @@ describe("LodgeDetailsPanel — cross-area denial (E3 #1929)", () => {
     expect(mocks.toastError).not.toHaveBeenCalled();
     expect(screen.queryByText("Could not load lodge details.")).toBeNull();
     expect(screen.queryByRole("button", { name: /Retry/i })).toBeNull();
+  });
+
+  /*
+    #2925: `GET /api/admin/lodges` now admits any admitted admin and NARROWS its
+    payload for a caller without `lodge:view`, so the refusal this card used to
+    read off a 403 arrives as a 200 carrying only `{ id, name, slug, active }`.
+    Keying on the status alone would render a live-looking form whose address,
+    travel note and door code are silently blank — and whose Save would post
+    those blanks back over the real values.
+  */
+  it("renders the same read-only notice for a narrowed 200, not a blank form", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          lodges: [
+            { id: "lodge-1", name: "Alpine Lodge", slug: "alpine-lodge", active: true },
+          ],
+        }),
+      })),
+    );
+
+    render(<LodgeDetailsPanel />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/does not include lodge access/i),
+      ).toBeInTheDocument(),
+    );
+    // The form the narrowing would otherwise have rendered blank.
+    expect(screen.queryByLabelText("Door code")).toBeNull();
+    expect(screen.queryByLabelText("Address")).toBeNull();
+    expect(screen.queryByLabelText("Travel note")).toBeNull();
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it("still edits a lodge whose detail fields are present but empty", async () => {
+    // The distinction the `in` check exists to keep: a lodge with no door code
+    // SET sends `doorCode: null`, which is an editable empty value, not a
+    // refusal. A null check here would have refused a perfectly ordinary lodge.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          lodges: [
+            {
+              id: "lodge-1",
+              name: "Alpine Lodge",
+              slug: "alpine-lodge",
+              active: true,
+              address: null,
+              doorCode: null,
+              travelNote: null,
+            },
+          ],
+        }),
+      })),
+    );
+
+    render(<LodgeDetailsPanel />);
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Door code")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/does not include lodge access/i)).toBeNull();
   });
 
   it("still shows the generic error + Retry on a non-403 failure", async () => {

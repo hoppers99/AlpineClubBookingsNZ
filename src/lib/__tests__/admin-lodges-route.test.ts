@@ -34,9 +34,19 @@ vi.mock("@/lib/auth", () => ({
   has never had. Any other file mocking `@/lib/session-guards` this way has the
   same hole, which is what #2921 sweeps.
 
-  Found while proving a lodge-list access change that has since been reverted to
-  #2925, and kept because the vacuity predates that change: the gates here are
-  only real with the options forwarded. Test-only; no product code depends on it.
+  THAT FALLBACK IS STILL WRONG, and #2925 deliberately did not fix it. The real
+  guard falls back to `hasAdminAccess` — the literal `ADMIN` role — so the mock
+  is wider than the thing it stands in for. Correcting it was tried and MEASURED
+  here: 7 test files and 20 tests go red on the correction (Xero, health, family
+  groups, reports, dependents), because each was passing against a gate the mock
+  was not applying. That is #2921's sweep, route by route, not a side effect of
+  a lodge-list change.
+
+  What #2925 does instead is stop depending on the mock for the thing that
+  matters: `admin-lodges-access-gate.test.ts` runs the REAL `requireAdmin`, the
+  REAL path inference and the REAL permission matrix against this route, so the
+  gate is observable there whatever this mock believes. The cases below cover
+  the route's ordinary behaviour; they are not the access proof.
 */
 vi.mock("@/lib/session-guards", () => ({
   requireAdmin: async (options?: unknown) =>
