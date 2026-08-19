@@ -17,8 +17,10 @@ import {
   FINANCE_DASHBOARD_VIEW_LABELS,
   financeDashboardDateRangeDayCount,
   financeDashboardMonthCount,
+  financeDashboardViewUsesLodgeScope,
   financeDashboardWindowDetail,
   resolveFinanceDashboardSelection,
+  resolveFinanceDashboardView,
   type FinanceDashboardSelection,
 } from "@/lib/finance-dashboard-ranges";
 import {
@@ -185,7 +187,10 @@ export interface FinanceDashboardPageModel {
    * nights, booked revenue). ADR-002: the selector only appears once a second
    * active lodge exists, so a single-lodge club sees an empty list and no
    * selector. Accounting views (P&L, cash, balances) stay club-wide and ignore
-   * this scope.
+   * this scope — including the seasons behind the "Rest of Season" forward
+   * window (#2919), which honour it only on the views that render the selector
+   * (FINANCE_DASHBOARD_LODGE_SCOPED_VIEWS), never on a lodgeId the query string
+   * happens to have carried over.
    */
   lodges: Array<{ id: string; name: string }>;
   /** Selected reporting lodge, or null for all active lodges (summed capacity). */
@@ -247,12 +252,23 @@ function cardRows(cards: FinanceDashboardKpiCard[]) {
  * Active seasons for the page's reporting scope (#2919). They drive the "Rest
  * of Season" forward window, so reading them unscoped let one lodge's season
  * define another lodge's forward range with nothing on screen saying so. A
- * selected lodge reads only its own; All Lodges reads every lodge's and carries
- * the lodge name so the window can say whose season it picked.
+ * selected lodge reads only its own; All Lodges reads every ACTIVE lodge's and
+ * carries the lodge name so the window can say whose season it picked.
+ *
+ * `lodge: { active: true }` is deliberate and is not the Season's own `active`
+ * flag: a deactivated lodge disappears from the selector and from the
+ * summed-capacity denominator, so a still-active season row of its own must not
+ * set the club-wide forward window or put a name on screen that appears nowhere
+ * else (review finding, #2919). Season.lodgeId is NOT NULL, so this excludes no
+ * lodgeless rows — there are none.
  */
 async function loadSeasons(lodgeId: string | null, labelWithLodge: boolean) {
   const seasons = await prisma.season.findMany({
-    where: { active: true, ...(lodgeId ? lodgeNullTolerantScope(lodgeId) : {}) },
+    where: {
+      active: true,
+      lodge: { active: true },
+      ...(lodgeId ? lodgeNullTolerantScope(lodgeId) : {}),
+    },
     select: {
       name: true,
       startDate: true,
@@ -339,11 +355,13 @@ function buildSelectionLabels(selection: FinanceDashboardSelection) {
     forward: FINANCE_DASHBOARD_FORWARD_LABELS[selection.forward],
     primaryWindow: financeDashboardWindowDetail(selection.primary),
     comparisonWindow: financeDashboardWindowDetail(selection.comparison),
-    // #2919: name the season the forward window came from, which in All-Lodges
-    // mode is prefixed with the lodge it belongs to. Dates alone never said
-    // which lodge's season had defined the range.
-    forwardWindow: selection.forwardWindow.seasonName
-      ? `${selection.forwardWindow.seasonName}: ${financeDashboardWindowDetail(selection.forwardWindow)}`
+    // #2919: in All-Lodges mode at a multi-lodge club, say WHOSE season set the
+    // forward window — dates alone never did. That string is the one the range
+    // resolver already built (`label`), reused rather than rebuilt so there is
+    // no second construction to keep in step. Every other case (one lodge
+    // selected, or a single-lodge club) keeps the dates-only wording it had.
+    forwardWindow: selection.forwardWindow.seasonLodgeName
+      ? selection.forwardWindow.label
       : financeDashboardWindowDetail(selection.forwardWindow),
   };
 }
@@ -1582,12 +1600,26 @@ export async function buildFinanceDashboardPageModel(input: {
       ? requestedLodgeId
       : null;
 
+  // Which lodge (if any) the seasons are read for. The view select and the lodge
+  // select share one GET form, so switching from Bookings to an accounting view
+  // resubmits the lodgeId the previous view had — on a page that then renders no
+  // lodge selector at all. Honouring it there would let an invisible lodge set
+  // the forward window, or raise a "configure seasons" warning with no control
+  // to explain or clear it (review finding, #2919). The view is resolved from the
+  // query string alone, which needs no seasons, so there is no cycle; and the
+  // "which views are lodge-scoped" rule lives once, in
+  // FINANCE_DASHBOARD_LODGE_SCOPED_VIEWS, shared with the client's render gate.
+  const seasonLodgeId = financeDashboardViewUsesLodgeScope(
+    resolveFinanceDashboardView(input.searchParams)
+  )
+    ? selectedLodgeId
+    : null;
   // Seed the financial-year cache (override → Xero org → March default) so
   // FY-aligned ranges resolve correctly before the selection is built. The
   // seasons read is resolved AFTER the lodge scope (#2919) because it honours
   // it, exactly as the occupancy and pricing reads below do.
   const [seasons, sync, financialYearEndMonth] = await Promise.all([
-    loadSeasons(selectedLodgeId, selectedLodgeId === null && selectableLodges.length > 1),
+    loadSeasons(seasonLodgeId, seasonLodgeId === null && selectableLodges.length > 1),
     buildSyncStatus(),
     refreshFinancialYearConfig(),
   ]);

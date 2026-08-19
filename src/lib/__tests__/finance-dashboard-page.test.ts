@@ -824,7 +824,7 @@ describe("finance dashboard page model", () => {
       ]);
     }
 
-    it("reads only the selected lodge's seasons", async () => {
+    it("reads only the selected lodge's seasons, and says nothing new on screen", async () => {
       twoLodges();
       mockSeasonFindMany.mockResolvedValue([bravoSeason]);
 
@@ -839,13 +839,16 @@ describe("finance dashboard page model", () => {
 
       expect(mockSeasonFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { active: true, lodgeId: "lodge-b" },
+          where: { active: true, lodge: { active: true }, lodgeId: "lodge-b" },
         })
       );
-      // Scoped to one lodge, the label is the season alone: naming the lodge
-      // every row already belongs to would be noise.
-      expect(model.selectionLabels.forwardWindow).toContain("Bravo Winter");
-      expect(model.selectionLabels.forwardWindow).not.toContain("Bravo Lodge");
+      // Scoped to one lodge there is nothing to disambiguate, so the header
+      // keeps the dates-only wording it has always had. The season name is
+      // still on the model for the Forward demand card's own footnote.
+      expect(model.selectionLabels.forwardWindow).toBe(
+        "15 Jul 2026 to 30 Sept 2026"
+      );
+      expect(model.selection.forwardWindow.seasonName).toBe("Bravo Winter");
       expect(model.selection.forwardWindow.to).toBe("2026-09-30");
     });
 
@@ -862,10 +865,17 @@ describe("finance dashboard page model", () => {
 
       expect(model.selectedLodgeId).toBeNull();
       expect(mockSeasonFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { active: true } })
+        expect.objectContaining({
+          where: { active: true, lodge: { active: true } },
+        })
       );
-      expect(model.selectionLabels.forwardWindow).toContain(
-        "Alpha Lodge — Alpha Winter"
+      expect(model.selectionLabels.forwardWindow).toBe(
+        "Alpha Lodge — Alpha Winter: 1 Jul 2026 to 31 Aug 2026"
+      );
+      // One construction only: the header reuses the label the range resolver
+      // built, so the two can never drift apart (review finding, #2919).
+      expect(model.selectionLabels.forwardWindow).toBe(
+        model.selection.forwardWindow.label
       );
       expect(model.selection.forwardWindow.to).toBe("2026-08-31");
     });
@@ -881,10 +891,66 @@ describe("finance dashboard page model", () => {
       });
 
       expect(mockSeasonFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { active: true } })
+        expect.objectContaining({
+          where: { active: true, lodge: { active: true } },
+        })
       );
-      expect(model.selectionLabels.forwardWindow).toContain("Alpha Winter");
+      // Untouched means untouched: the dates alone, with neither the season
+      // name nor a lodge name added to what a one-lodge club used to read.
+      expect(model.selectionLabels.forwardWindow).toBe(
+        "1 Jul 2026 to 31 Aug 2026"
+      );
+      expect(model.selectionLabels.forwardWindow).not.toContain("Alpha Winter");
       expect(model.selectionLabels.forwardWindow).not.toContain("Alpha Lodge");
+    });
+
+    // Review finding (#2919): the view select and the lodge select share one GET
+    // form, so switching to an accounting view resubmits the lodgeId the previous
+    // view had — on a page that renders no lodge selector. Honouring it there
+    // would scope the window, or raise the "configure seasons" warning, with no
+    // control on screen to explain or clear it.
+    it("ignores a lodgeId carried over onto a view that shows no lodge selector", async () => {
+      twoLodges();
+      mockSeasonFindMany.mockResolvedValue([alphaSeason, bravoSeason]);
+
+      const model = await buildFinanceDashboardPageModel({
+        member: financeManager(),
+        searchParams: {
+          view: "revenue",
+          lodgeId: "lodge-b",
+          forward: "rest-of-season",
+        },
+      });
+
+      expect(mockSeasonFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { active: true, lodge: { active: true } },
+        })
+      );
+      expect(model.warnings).not.toContain(
+        "Rest of Season needs an active or upcoming configured season. Configure seasons before using this forward window."
+      );
+    });
+
+    it("raises no spurious warning on an accounting view when the carried lodge has no season", async () => {
+      twoLodges();
+      // Club-wide there IS a season; only lodge-b lacks one. Scoping the read to
+      // the invisible carried-over lodge is what used to produce the warning.
+      mockSeasonFindMany.mockResolvedValue([alphaSeason]);
+
+      const model = await buildFinanceDashboardPageModel({
+        member: financeManager(),
+        searchParams: {
+          view: "balance-sheet",
+          lodgeId: "lodge-b",
+          forward: "rest-of-season",
+        },
+      });
+
+      expect(model.warnings).not.toContain(
+        "Rest of Season needs an active or upcoming configured season. Configure seasons before using this forward window."
+      );
+      expect(model.selection.forwardWindow.to).toBe("2026-08-31");
     });
 
     it("warns rather than borrowing another lodge's season when the selected lodge has none", async () => {
