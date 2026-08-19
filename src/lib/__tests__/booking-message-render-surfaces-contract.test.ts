@@ -105,15 +105,17 @@ function clientRenderCalls(code: string): string[] {
 }
 
 /**
- * Files that legitimately carry message bodies WITHOUT rendering them: the
- * settings loaders, the endpoint that serves the raw templates to the client
- * surfaces above, and the admin editor (which edits the template itself, braces
- * and all).
+ * Files that legitimately handle — or merely name — the message bodies without
+ * rendering them: the settings loaders, the endpoint that serves the raw
+ * templates to the surfaces above, the admin editor's own endpoint (it edits the
+ * template itself, braces and all), and the public-boundary register, which
+ * names the endpoint's path in its audited reason string.
  */
-const NON_RENDERING_CARRIERS = [
+const NON_RENDERING_REFERENCES = [
   "src/lib/booking-message-settings.ts",
   "src/app/api/booking-messages/route.ts",
   "src/app/api/admin/booking-messages/route.ts",
+  "src/lib/api-route-security.ts",
 ];
 
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx"]);
@@ -180,7 +182,9 @@ const ALL_SOURCE_FILES = listSourceFiles("src");
 const CARRIERS = ALL_SOURCE_FILES.filter((file) => {
   const code = stripComments(read(file));
   return (
-    code.includes('"/api/booking-messages"') ||
+    // Quote-insensitive on purpose: a template literal or single quotes must not
+    // hide a new surface from the census.
+    code.includes("/api/booking-messages") ||
     code.includes("loadPublicBookingMessages") ||
     code.includes("loadEffectiveBookingMessageMap") ||
     code.includes("buildSampleBookingMessageData") ||
@@ -194,7 +198,7 @@ describe("every surface that renders a booking-message body (#2919)", () => {
   it("is registered here — a new one has to declare how it renders", () => {
     const registered = new Set([
       ...RENDER_SURFACES.map((surface) => surface.file),
-      ...NON_RENDERING_CARRIERS,
+      ...NON_RENDERING_REFERENCES,
       // The renderer's own home, and the helper it exports.
       "src/lib/booking-message-definitions.ts",
     ]);
@@ -209,7 +213,7 @@ describe("every surface that renders a booking-message body (#2919)", () => {
   it("names files that really exist, so the registry cannot rot silently", () => {
     for (const surface of [
       ...RENDER_SURFACES.map((s) => s.file),
-      ...NON_RENDERING_CARRIERS,
+      ...NON_RENDERING_REFERENCES,
     ]) {
       expect(ALL_SOURCE_FILES, `${surface} is registered but not in src/`).toContain(
         surface
