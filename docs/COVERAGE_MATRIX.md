@@ -84,6 +84,7 @@ a `GAP`, replace it with a relative link to that file (e.g.
 | `lodge` | lodge | `ARCHITECTURE.md` (lodge kiosk / operations) | [guide](guides/lodge.md) | 3 |
 | `lodge-instructions` | lodge | `src/lib/token-catalogue.ts`, `PUBLIC_PAGE_CONTENT_TOKENS.md` | [guide](guides/lodge-instructions.md) | 3 |
 | `lodges` | lodge | `multi-lodge/README.md`, `multi-lodge/feature-overview.md` | [guide](guides/lodges.md) (+ [feature hub](multi-lodge/README.md)) | 3 |
+| `maintenance-reports` | lodge | `multi-lodge/lodge-scoping-contract.md` (scoping), `SECURITY.md` (QR bearer token) | [guide](guides/maintenance-reports.md) | — (maintenanceReports module, on by default; outside #2050) |
 | `member-applications` | membership | `ARCHITECTURE.md` (membership application / nominations) | [guide](guides/member-applications.md) | 2 |
 | `member-fields` | membership | — | [guide](guides/member-fields.md) | 2 |
 | `members` | membership | `ARCHITECTURE.md` (members, CSV import, roles) | [guide](guides/members.md) | 2 |
@@ -197,10 +198,11 @@ delivery.
 Batch 3 (lodge operations) mixes direct sidebar pages, lodge-scoped hub-card
 pages, and a feature-gated display cluster; the guides document the reality:
 
-- **The Lodge Operations sidebar section owns five pages** with direct sidebar
+- **The Lodge Operations sidebar section owns six pages** with direct sidebar
   entries, so their guides open with the canonical line: `hut-leaders`, `roster`,
-  `lodge` (**Lodge Kiosk**), `work-parties`, and `lodge-instructions`
-  (**Admin → Lodge Operations → …**).
+  `lodge` (**Lodge Kiosk**), `work-parties`, `lodge-instructions`, and
+  `maintenance-reports` (**Lodge Maintenance**) (**Admin → Lodge Operations →
+  …**). The Lobby Display hub also lives in this section but opens its own cluster.
 - **`chores` has no sidebar entry, and opens route-first** (the
   `lockers`/`seasons`/`rooms-beds` lodge-scoped precedent). It is lodge-scoped
   (ADR-005) with no clean `Admin → X` click path — there is no direct sidebar

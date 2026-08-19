@@ -28,6 +28,9 @@ sequencing):
 | `BookingDefaults` | per-lodge row | converted from singleton |
 | `BookingRequestSettings` | per-lodge row | converted from singleton |
 | Lodge identity fields (`lodgeName`, `doorCode`, `lodgeTravelNote`) | resolve from `Lodge` (default lodge when no `lodgeId` is in scope) | dropped from the `EmailMessageSetting` singleton (migration `20260709130000`) |
+| `MaintenanceReport` | direct `lodgeId` | a reported physical fault belongs to one building (#2780); `onDelete: Cascade` — a deleted lodge takes its fault history with it |
+| `LodgeMaintenanceReportToken` | direct `lodgeId` (`@unique`) | one live QR-sign bearer token per lodge (#2780); rotating overwrites in place, `onDelete: Cascade` |
+| `MaintenanceReportAnswer` | via `MaintenanceReport` | no direct FK; answers store the question label as asked, so they carry the report's lodge |
 
 ## Club-Wide Defaults With Per-Lodge Overrides
 
@@ -536,6 +539,11 @@ new ADR:
 - Skifield conditions (`WhakapapaReportCache`, the `skifieldConditions`
   module): public-website content, not lodge UI. A per-lodge/per-field
   conditions widget would be a future enhancement, not a scoping change.
+- Maintenance-report policy and questions (`MaintenanceReportSettings`
+  singleton, `MaintenanceReportQuestion`): the club asks the same bounded
+  question set at every lodge, and the photo/retention/anonymous-QR policy is a
+  club decision (#2780). The reports and their per-lodge QR signs above are
+  lodge-scoped; the questions asked and the policy governing them are not.
 
 ## Known Not-Yet-Scoped Surfaces (open)
 
