@@ -15,13 +15,29 @@
   default lodge, because it has no real booking to read; that is a sample
   standing in, and the guide now says so.
 
-  The fourth is for whoever reads the finance dashboard. Its "Rest of Season"
-  forward window read every lodge's seasons regardless of the Lodge (occupancy)
-  selector, so one lodge's season could quietly set another lodge's date range
-  with nothing on screen saying which. It now follows that selector like every
-  other booking figure on the page; pick a lodge with no season configured and
-  you get the existing "configure seasons" warning instead of another lodge's
-  dates. Left on All lodges, the window names the lodge the winning season
-  belongs to.
+  Review of that third fix turned up something worse on four *other* screens that
+  show the same admin-written messages: the payment page, the payment choices in
+  the booking flow, the group-join panel and the organiser's group-settlement
+  card each filled in the payment reference and printed every other merge field
+  as literal text — so a club that wrote `{{CLUB_LODGE_NAME}}` into a payment
+  message put those characters in front of a member. All four now fill in every
+  field, from the lodge that booking (or, in the booking flow, the lodge the
+  member has selected) is actually at. A field with no value for that booking
+  comes out blank; braces never reach a member.
 
-  A club with one lodge sees no change on any of the four.
+  The fourth surface is for whoever reads the finance dashboard. Its "Rest of
+  Season" forward window read every lodge's seasons regardless of the Lodge
+  (occupancy) selector, so one lodge's season could quietly set another lodge's
+  date range with nothing on screen saying which. It now follows that selector on
+  the two views that show it — Bookings and Pricing sensitivity — and pick a lodge
+  with no season configured and you get the existing "configure seasons" warning
+  instead of another lodge's dates. The accounting views (P&L, cash, balances)
+  stay club-wide, as they always have, so a lodge left in the address bar by an
+  earlier submit cannot set a range on a page with no lodge selector to explain
+  it. Left on All lodges at a club with more than one, the window names the lodge
+  the winning season belongs to; a deactivated lodge's seasons are left out
+  entirely, since that lodge is absent from the selector too.
+
+  A club with one lodge sees no change to the finance dashboard's wording, and
+  none of these screens change for a club whose booking messages are the shipped
+  defaults — none of those mention a lodge.

@@ -1739,6 +1739,9 @@ export default async function BookingDetailPage({
             bookingId={booking.id}
             canOpenGroup={canOpenGroup}
             group={organiserGroupState}
+            /* #2919: the card renders booking-message bodies of its own, so it
+               needs THIS booking's lodge for {{CLUB_LODGE_NAME}} too. */
+            lodgeName={bookingLodgeEmailSettings.lodgeName}
           />
         </section>
       )}

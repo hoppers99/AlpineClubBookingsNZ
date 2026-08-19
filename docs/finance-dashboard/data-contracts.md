@@ -61,12 +61,24 @@ window.
 The seasons it chooses from follow the page's **Lodge (occupancy)** selector,
 like every other booking-derived read on the dashboard. Pick a lodge and only
 that lodge's seasons are considered — a lodge with none gets the warning above
-rather than another lodge's dates. Leave the selector on **All lodges** and
-every lodge's seasons are considered; the forward-window description then names
-the season it picked together with the lodge it belongs to
-(`Alpha Lodge — Alpha Winter: …`), so a two-lodge club can always see whose
-season set the range. A single-lodge club sees the season name alone, exactly
-as before.
+rather than another lodge's dates. Leave the selector on **All lodges** and every
+active lodge's seasons are considered; a deactivated lodge's seasons are not,
+because a deactivated lodge is absent from the selector and from the
+summed-capacity denominator too.
+
+Two limits on that, both deliberate:
+
+- The selector only appears on **Bookings** and **Pricing sensitivity**, the two
+  views whose figures are booking-derived. The accounting views (P&L, cash,
+  balances, ratios, working capital, sync health) are club-wide, so their seasons
+  are read club-wide as well — a `lodgeId` left in the address bar by an earlier
+  submit changes nothing there. A date range must never be set by a lodge the
+  reader cannot see.
+- The forward-window description names the lodge alongside the season it picked
+  (`Alpha Lodge — Alpha Winter: …`) **only** when the seasons on offer really do
+  come from more than one property: All lodges, at a club with more than one
+  active lodge. With a lodge selected, or at a single-lodge club, the description
+  is the dates alone, exactly as before.
 
 The dashboard may expose `expenseCategoryId` and `expenseLine` filters only for
 cost views.

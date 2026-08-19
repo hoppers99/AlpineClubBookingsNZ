@@ -69,8 +69,10 @@ single-lodge fork, not a transition state.
 - So do the screens the member reads on the way through: the payment
   page's "your booking is confirmed" line, the group-join confirmation
   page, and any booking message a club writes with
-  `{{CLUB_LODGE_NAME}}` in it, all name the lodge that booking is
-  actually at rather than the club's default one.
+  `{{CLUB_LODGE_NAME}}` in it — on the booking page, the payment page,
+  the booking flow's payment choices and the group screens alike — all
+  name the lodge that booking is actually at rather than the club's
+  default one.
 - If the committee restricts a lodge (for example, one lodge is
   reserved for a section of the club), ineligible members simply do not
   see it offered. By default every member can book every lodge.

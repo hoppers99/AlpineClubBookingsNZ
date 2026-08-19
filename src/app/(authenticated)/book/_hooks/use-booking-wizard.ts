@@ -9,6 +9,11 @@ import { useClubIdentity } from "@/components/club-identity-provider";
 import { useLodgeOptions } from "@/components/lodge-select";
 import { deriveSettledLodgeOptionScope } from "@/lib/lodge-option-scope";
 import { BOOKING_LODGE_UNRESOLVED_MEMBER_MESSAGE } from "@/lib/booking-lodge-scope";
+import {
+  renderClientBookingMessage,
+  type BookingMessageClubTokens,
+  type BookingMessageKey,
+} from "@/lib/booking-message-definitions";
 import { type PromoResult } from "@/components/promo-code-input";
 import {
   getBookingErrorPaymentTargets,
@@ -332,6 +337,10 @@ export function useBookingWizard() {
   const [internetBankingUnavailableReason, setInternetBankingUnavailableReason] = useState<string | null>(null);
   const [internetBankingHoldSummary, setInternetBankingHoldSummary] = useState<string | null>(null);
   const [bookingMessages, setBookingMessages] = useState<BookingMessageMap>({});
+  // #2919 review: what these bodies' merge tokens resolve to. Without them an
+  // operator's {{CLUB_LODGE_NAME}} reached the member as literal braces.
+  const [bookingMessageTokens, setBookingMessageTokens] =
+    useState<BookingMessageClubTokens | null>(null);
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
   // Whether `/api/members/family` has answered at all — see the note in the
   // fetch below and in `predictMemberGuestConsent`.
@@ -677,8 +686,14 @@ export function useBookingWizard() {
   useEffect(() => {
     fetch("/api/booking-messages")
       .then((res) => (res.ok ? res.json() : null))
-      .then((data) => setBookingMessages(data?.messages ?? {}))
-      .catch(() => setBookingMessages({}));
+      .then((data) => {
+        setBookingMessages(data?.messages ?? {});
+        setBookingMessageTokens(data?.tokens ?? null);
+      })
+      .catch(() => {
+        setBookingMessages({});
+        setBookingMessageTokens(null);
+      });
   }, []);
 
   // MG3 (#2308): the member-guest surface's server-computed shape. Failing
@@ -1695,16 +1710,30 @@ export function useBookingWizard() {
     exceptionOfferState.proposalSignature === exceptionProposalSignature()
       ? exceptionOfferState.offer
       : null;
-  const cardPaymentDescription =
-    bookingMessages["booking.payment.card.description"] ??
-    "Pay now and secure the booking immediately.";
-  const internetBankingPaymentDescription =
-    bookingMessages["booking.payment.internetBanking.description"] ??
-    "Receive a Xero invoice by email and make payment via internet banking. Once the payment is reconciled and sync'd back to the booking system, your booking will be confirmed. Until then your booking is not held and someone else could take your space by booking and paying with Card.";
+  // #2919 review: these three bodies are templates — every token is insertable
+  // into them — so they render through the shared client renderer with the lodge
+  // the member is actually booking, not the club's default one.
+  const renderPaymentMessage = (key: BookingMessageKey, fallback: string) =>
+    renderClientBookingMessage({
+      template: bookingMessages[key],
+      fallback,
+      clubTokens: bookingMessageTokens,
+      lodgeName: selectedLodge?.name ?? null,
+    });
+  const cardPaymentDescription = renderPaymentMessage(
+    "booking.payment.card.description",
+    "Pay now and secure the booking immediately."
+  );
+  const internetBankingPaymentDescription = renderPaymentMessage(
+    "booking.payment.internetBanking.description",
+    "Receive a Xero invoice by email and make payment via internet banking. Once the payment is reconciled and sync'd back to the booking system, your booking will be confirmed. Until then your booking is not held and someone else could take your space by booking and paying with Card."
+  );
   const internetBankingUnavailableCopy =
     internetBankingUnavailableReason ??
-    bookingMessages["booking.payment.internetBanking.unavailable"] ??
-    "Internet Banking is not available for this check-in date. Please pay by card to secure the booking immediately.";
+    renderPaymentMessage(
+      "booking.payment.internetBanking.unavailable",
+      "Internet Banking is not available for this check-in date. Please pay by card to secure the booking immediately."
+    );
 
   const subscriptionUnpaid =
     subscriptionStatus &&

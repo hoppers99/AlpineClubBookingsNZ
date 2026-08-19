@@ -261,6 +261,88 @@ describe("public payment-link confirmation names the booking's lodge", () => {
     expect(screen.queryByText(/Test Lodge is confirmed/i)).toBeNull();
   });
 
+  // #2919 review: this page printed the internet-banking body with only
+  // {{paymentReference}} substituted, so an operator's {{CLUB_LODGE_NAME}}
+  // reached the member as literal braces on the most-read surface of the four.
+  it("fills in every merge field in an edited internet-banking message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/pay/public-token" && !init?.method) {
+          return {
+            ok: true,
+            json: async () => ({ ...payableContext, lodgeName: "Second Lodge" }),
+          } as Response;
+        }
+        if (url === "/api/booking-messages") {
+          return {
+            ok: true,
+            json: async () => ({
+              messages: {
+                "paymentLink.internetBanking.description":
+                  "Transfer to {{CLUB_LODGE_NAME}} ({{CLUB_NAME}}) using {{paymentReference}}. Help: {{SUPPORT_EMAIL}}.",
+              },
+              tokens: {
+                CLUB_NAME: "Alpine Club",
+                // The club default, which is not this booking's lodge.
+                CLUB_LODGE_NAME: "Test Lodge",
+                SUPPORT_EMAIL: "support@example.test",
+                BASE_URL: "https://example.test",
+              },
+            }),
+          } as Response;
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }) as typeof fetch,
+    );
+
+    render(<PayByLinkPage />);
+
+    expect(
+      await screen.findByText(
+        "Transfer to Second Lodge (Alpine Club) using BOOK-123. Help: support@example.test.",
+      ),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("{{");
+  });
+
+  it("blanks a merge field it has no value for rather than showing braces", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/pay/public-token" && !init?.method) {
+          return { ok: true, json: async () => payableContext } as Response;
+        }
+        // The endpoint answered with bodies but no token values at all (an older
+        // response, or a failed settings read).
+        if (url === "/api/booking-messages") {
+          return {
+            ok: true,
+            json: async () => ({
+              messages: {
+                "paymentLink.internetBanking.description":
+                  "Pay {{CLUB_LODGE_NAME}} with {{paymentReference}}.",
+              },
+            }),
+          } as Response;
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }) as typeof fetch,
+    );
+
+    render(<PayByLinkPage />);
+
+    expect(
+      await screen.findByText(/Or pay by internet banking/),
+    ).toBeInTheDocument();
+    // The blank is the contract: an unsupplied token renders as nothing (hence
+    // the double space), never as `{{CLUB_LODGE_NAME}}` in the member's face.
+    expect(document.body.textContent).toContain("Pay  with BOOK-123.");
+    expect(document.body.textContent).not.toContain("{{");
+  });
+
   it("falls back to the club lodge name when the context carries none", async () => {
     installAlreadyPaidFetch(payableContext);
     render(<PayByLinkPage />);

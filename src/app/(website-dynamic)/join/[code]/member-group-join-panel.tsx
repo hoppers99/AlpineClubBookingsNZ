@@ -18,6 +18,10 @@ import {
   type BookingFamilyMember,
 } from "@/lib/family-booking";
 import { buildInternetBankingPaymentReference } from "@/lib/booking-payment-methods";
+import {
+  renderClientBookingMessage,
+  type BookingMessageClubTokens,
+} from "@/lib/booking-message-definitions";
 import { formatNZDate } from "@/lib/nzst-date";
 
 type PaymentMethod = "stripe" | "internet_banking";
@@ -70,6 +74,10 @@ export function MemberGroupJoinPanel({
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("stripe");
   const [ibReference, setIbReference] = useState<string | null>(null);
   const [bookingMessages, setBookingMessages] = useState<Record<string, string>>({});
+  // #2919 review: what this panel's message tokens resolve to. Without them an
+  // operator's {{CLUB_LODGE_NAME}} reached the joiner as literal braces.
+  const [messageTokens, setMessageTokens] =
+    useState<BookingMessageClubTokens | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -127,8 +135,14 @@ export function MemberGroupJoinPanel({
   useEffect(() => {
     fetch("/api/booking-messages")
       .then((res) => (res.ok ? res.json() : null))
-      .then((data) => setBookingMessages(data?.messages ?? {}))
-      .catch(() => setBookingMessages({}));
+      .then((data) => {
+        setBookingMessages(data?.messages ?? {});
+        setMessageTokens(data?.tokens ?? null);
+      })
+      .catch(() => {
+        setBookingMessages({});
+        setMessageTokens(null);
+      });
   }, []);
 
   function toggle(id: string) {
@@ -259,10 +273,17 @@ export function MemberGroupJoinPanel({
               {ibReference ? (
                 <>
                   <p className="text-sm text-muted-foreground">
-                    {(
-                      bookingMessages["paymentLink.internetBanking.description"] ??
-                      "Use reference {{paymentReference}} when making a direct transfer. The booking will be confirmed after the Xero invoice payment is reconciled."
-                    ).replaceAll("{{paymentReference}}", ibReference)}
+                    {/* #2919 review: every token this body may carry, with the
+                        group's OWN lodge standing in for CLUB_LODGE_NAME. */}
+                    {renderClientBookingMessage({
+                      template:
+                        bookingMessages["paymentLink.internetBanking.description"],
+                      fallback:
+                        "Use reference {{paymentReference}} when making a direct transfer. The booking will be confirmed after the Xero invoice payment is reconciled.",
+                      clubTokens: messageTokens,
+                      lodgeName: summary.lodgeName,
+                      data: { paymentReference: ibReference },
+                    })}
                   </p>
                   <div className="rounded-md border border-border p-3 text-sm">
                     <p className="font-medium text-foreground">Payment reference</p>
