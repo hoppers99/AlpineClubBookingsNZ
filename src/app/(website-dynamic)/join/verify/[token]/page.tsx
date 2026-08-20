@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { clubIdentity } from "@/config/club-identity";
+import { resolveGroupJoinVerificationLodgeName } from "@/lib/group-booking";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { GroupJoinVerifyPageClient } from "@/app/(website-dynamic)/join/verify/[token]/group-join-verify-page-client";
 
@@ -35,5 +36,15 @@ export default async function GroupJoinVerifyPage({
     notFound();
   }
   const { token } = await params;
-  return <GroupJoinVerifyPageClient club={clubIdentity} token={token} />;
+  // #2919: the "finalise your spot at ..." copy renders BEFORE the joiner
+  // clicks Confirm, so the (mutating, POST-only) verify endpoint cannot supply
+  // the lodge. Resolve it here instead; null falls back to the club default.
+  const lodgeName = await resolveGroupJoinVerificationLodgeName(token);
+  return (
+    <GroupJoinVerifyPageClient
+      club={clubIdentity}
+      token={token}
+      lodgeName={lodgeName}
+    />
+  );
 }

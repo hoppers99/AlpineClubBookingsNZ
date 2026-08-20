@@ -130,7 +130,8 @@ in. Cite rules by id, never by line number.
   Claude Code.
 - [`../agents/CODEX_WORKFLOW.md`](../agents/CODEX_WORKFLOW.md) — the operating
   guide for Codex agents, including the Windows worktree runtime and
-  dependency preflight.
+  dependency preflight, and lane-owned Docker teardown with the report-only
+  `npm run stale-containers` debris check.
 - [`../agents/ISSUE_WORKFLOW.md`](../agents/ISSUE_WORKFLOW.md) — issue
   contracts: claiming, recording a decision, and what never goes in a public
   artifact.

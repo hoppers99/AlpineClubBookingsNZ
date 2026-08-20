@@ -57,6 +57,15 @@ before a pair, pair set, or aggregate can complete.
   and Docker evidence before/between/after sides, and fails if an unexpected
   running container or excessive sampled host CPU is present. The recorded
   limit is a contamination control, not a product-performance threshold.
+
+  When that check reports an unexpected container, run `npm run stale-containers`
+  (#2794) before doing anything else. It names each non-measurement container's
+  owning issue and whether that issue is closed, which is usually the whole
+  answer: the blockage is abandoned lane debris, not a live workload worth
+  waiting for. **Clean the host; never widen `ALLOWED_RUNNING_CONTAINERS` to get
+  a run started.** That allowlist is the contamination control itself, and the
+  reporter deliberately has no removal mode — it tells you what is there, and a
+  human runs the teardown.
 - Build both images from immutable source archives, set
   `org.opencontainers.image.revision` to the exact source commit, and retain the
   archives. Do not identify an image by a mutable tag alone.

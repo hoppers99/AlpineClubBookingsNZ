@@ -25,6 +25,9 @@
     "scripts/codex/issue-to-prompt.mjs",
     // Documented operator CLI (docs/MAINTENANCE.md, docs/xero/ARCHITECTURE.md).
     "scripts/xero-booking-repair.ts",
+    // Documented operator CLI (#2901, docs/xero/ARCHITECTURE.md → "Repairing
+    // Stripe refund-note links"; invoked via `npx tsx`, never imported).
+    "scripts/xero-refund-note-link-repair.ts",
     // Documented operator CLI (docs/MAINTENANCE.md, docs/DOMAIN_INVARIANTS.md,
     // docs/STATE_MACHINES.md; invoked via `npx tsx`, never imported).
     "scripts/backfill-orphaned-applied-credits.ts",
