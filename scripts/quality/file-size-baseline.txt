@@ -81,7 +81,7 @@ src/app/(admin)/admin/xero/member-grouping/page.tsx 695 route-page-shell
 src/app/(authenticated)/book/_components/review-step.tsx 969 domain-module
 src/app/(authenticated)/book/_hooks/use-booking-wizard.ts 1951 domain-module
 src/app/(authenticated)/book/page.tsx 680 route-page-shell
-src/app/(authenticated)/bookings/[id]/page.tsx 2495 route-page-shell
+src/app/(authenticated)/bookings/[id]/page.tsx 2511 route-page-shell
 src/app/(authenticated)/dashboard/page.tsx 887 route-page-shell
 src/app/(authenticated)/profile/family-group-section.tsx 1142 domain-module
 src/app/(authenticated)/profile/page.tsx 667 route-page-shell
@@ -310,5 +310,6 @@ src/lib/xero-operation-outbox.ts 2422 domain-module
 src/lib/xero-operation-retry.ts 1311 domain-module
 src/lib/xero-organisation.ts 983 domain-module
 src/lib/xero-record-activity.ts 726 domain-module
-src/lib/xero-sync.ts 833 domain-module
+src/lib/xero-refund-note-link-repair.ts 819 domain-module
+src/lib/xero-sync.ts 872 domain-module
 src/proxy.ts 1208 domain-module
