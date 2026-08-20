@@ -256,6 +256,19 @@ deliberately decided to add a leader. Both probes must keep agreeing with each
 other — a locked re-ask that answered a different question from the cheap one
 would make the two skips disagree.
 
+**COVERAGE is a whole class of reader, and every one of them stays
+source-blind.** The cron's two probes are the ones that can refuse an automatic
+write, which is why they are named above, but `hut-leader-coverage.ts`, the
+admin page's uncovered-dates panel and the `eligible-members` suggester all ask
+the same "is somebody on site that night?" question, and all of them should keep
+counting a teacher. The consequence to know about is a conservatism, not a
+defect: on a night a school group occupies, the suggester still reports the
+member as fully covered and offers no range, even though the POST would now
+accept one. An officer who wants a leader beside the teachers adds the
+assignment directly and is no longer refused. Anything NEW that refuses a write
+on the strength of an overlap belongs behind `findHutLeaderOverlapRefusal`
+rather than behind its own read.
+
 ### Composition: roster-date writers (#2586)
 
 `lockRosterDate` is the only source of the `roster:<date>` key. Every operation

@@ -249,9 +249,8 @@ export async function POST(req: NextRequest) {
           endDate: newEnd,
           hutLeaderPin,
           lodgeId: lockedLodgeId,
-          // #2926: an officer put this leader here. Stamped rather than left to
-          // the column default so the provenance is stated at the write, and so
-          // the writer census can read it off the call site.
+          // #2926: an officer put this leader here. Stamped rather than left
+          // to the column default so the census reads it off the call site.
           source: HutLeaderAssignmentSource.MANUAL,
           ...(bedId ? { bedId } : {}),
         },
