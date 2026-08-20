@@ -107,6 +107,10 @@ regexes = ['''^eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJkYXRhIjoiVTJGc2RHVmtYMTh
 description = "A fixture database password in the measurement harness's own self-test, whose value is a hyphenated English phrase naming the UTF-16 test material it exists to exercise. It is a password to nothing."
 regexes = ['''^utf16-secret-material$''']
 
+[[allowlists]]
+description = "The synthetic 64-hex action token the #2827 attribute-oracle tests share, written in source as four hand-typed 16-hex fragments joined with `+` — a shape no credential generator emits, so it is plainly a source constant. The suites (`family-invite-login-link`, `group-join-verify-pay-token-not-rendered`, `family-invite-return-address`, `family-invite-return-cookie-proxy`) assert this token NEVER appears in a rendered HTML attribute and use a short prefix of it as an `^=` CSS oracle probe, so it has to LOOK like a real action token — high entropy, no repeating run — for the absence to prove anything. `issueActionToken` mints these from randomness and persists only their hash; this fixed constant authorises nothing in any deployment. `generic-api-key` matches only the first 16-hex fragment, forgiven here as an exact literal and nothing else."
+regexes = ['''^e7c1b93a5d0f4826$''']
+
 # ---------------------------------------------------------------------------
 # Repository-owned rules
 # ---------------------------------------------------------------------------
