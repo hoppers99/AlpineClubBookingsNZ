@@ -7,6 +7,7 @@ import { findHutLeaderOverlapRefusal } from "./hut-leader-overlap-guard";
 import { loadHutLeaderLookaheadDays } from "./lodge-settings";
 import { loadEffectiveModuleFlags } from "./module-settings";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
+import { HutLeaderAssignmentSource } from "@prisma/client";
 import logger from "./logger";
 
 /**
@@ -59,6 +60,17 @@ export async function autoAssignHutLeaders(): Promise<{
   for (const lodge of activeLodges) {
     for (const day of days) {
       // Check if there's already an assignment for this date AT THIS LODGE.
+      //
+      // THIS PROBE IS DELIBERATELY SOURCE-BLIND, and it is the one gate #2926
+      // decided rather than changed (owner decision recorded on the issue; the
+      // "fifth gate" its acceptance criteria name). A school-teacher row counts
+      // as coverage here, so the job does not auto-assign a leader for a night
+      // a school group already has teachers on site — a teacher IS present, and
+      // manufacturing a second leader beside them helps nobody. The OVERLAP
+      // predicate below is the opposite and on purpose: it answers "may a
+      // DELIBERATE assignment stand here?", and an officer choosing to add one
+      // is not to be refused by teacher rows. Coverage is automatic and stays
+      // out of the way; overlap is a refusal and stops refusing.
       const existingAssignment = await prisma.hutLeaderAssignment.findFirst({
         where: {
           startDate: { lte: day },
@@ -157,9 +169,22 @@ export async function autoAssignHutLeaders(): Promise<{
       // an assignment at another lodge is not a conflict here. Asked through
       // the SHARED predicate all four deciding call sites use (#2887), so the
       // cheap answer here and the authoritative one under the lock below cannot
-      // disagree about what an overlap is. The predicate is role-blind today —
-      // school-teacher records DO block here; excluding them is #2926, and the
-      // single predicate is what makes that a one-line change.
+      // disagree about what an overlap is.
+      //
+      // SCHOOL-TEACHER ROWS STILL BLOCK HERE, and deliberately so: this call
+      // omits `allowOverlappingSchoolRows`. #2926's carve-out answers "may a
+      // DELIBERATE assignment stand here?", which is an officer's question and
+      // not this job's. An earlier version of this comment claimed the coverage
+      // probe above had already skipped any night with teachers present, so the
+      // carve-out was felt at the admin route rather than here. That was FALSE,
+      // and reachable: the probe asks about one `day`, while the row created
+      // below spans the guest's WHOLE STAY. Teachers 10-14 Aug, a sole adult's
+      // stay 12-20 Aug, the loop reaching 15 Aug - the probe finds 15 Aug
+      // uncovered, and with the carve-out applied the span read over 12-20 Aug
+      // skipped the teacher rows and planted a CRON row across the school
+      // nights. Being MANUAL-equivalent it then blocked officers across the
+      // whole span too. Omitting the flag restores exactly the pre-carve-out
+      // refusal for this job.
       const earlyOverlap = await findHutLeaderOverlapRefusal(prisma, {
         lodgeId: lodge.id,
         startDate: member.checkIn,
@@ -177,6 +202,10 @@ export async function autoAssignHutLeaders(): Promise<{
 
           // Both questions re-asked under the key. Another container or an
           // admin may have covered this lodge-night since the cheap asks.
+          // Source-blind for the same reason the cheap probe is, and it has to
+          // match it exactly: a locked re-ask that answered a different question
+          // from the one above would make the cheap skip and the authoritative
+          // skip disagree (#2926).
           const lockedAssigned = await tx.hutLeaderAssignment.findFirst({
             where: {
               startDate: { lte: day },
@@ -200,6 +229,12 @@ export async function autoAssignHutLeaders(): Promise<{
               startDate: member.checkIn,
               endDate: member.checkOut,
               lodgeId: lodge.id,
+              // #2926: the nightly sole-adult rule put this leader here. A CRON
+              // row is an ordinary assignment for every purpose — it blocks and
+              // is blocked exactly like a MANUAL one. The value is recorded so
+              // provenance is complete and so a future question about
+              // auto-assigned rows has something to ask.
+              source: HutLeaderAssignmentSource.CRON,
             },
           });
           return true;

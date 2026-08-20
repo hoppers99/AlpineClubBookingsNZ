@@ -387,7 +387,13 @@ describe("F8: Hut Leader Role Assignment", () => {
       );
       expect(mockPrisma.hutLeaderAssignment.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({ lodgeId: "lodge-2" }),
+          data: expect.objectContaining({
+            lodgeId: "lodge-2",
+            // #2926: an officer put this leader here. MANUAL is also the column
+            // default, so this assertion is what keeps the stamp at the call
+            // site rather than letting it drift into an implicit value.
+            source: "MANUAL",
+          }),
         })
       );
     });

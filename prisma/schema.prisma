@@ -5443,6 +5443,20 @@ model HutLeaderAssignment {
   // onDelete: Restrict is the FK backstop behind the app-level guards: a bed
   // (or its room) can never be deleted out from under a live custodian hold.
   bedId        String?
+  // Which writer created this row (#2926). Stamped ONCE, by the create, and
+  // never recomputed — that is the entire point of the column. The overlap
+  // predicate has to answer "was this row created as part of a school
+  // booking?", and every property of the MEMBER that correlates with the
+  // answer today is admin-writable: `Member.role` is derived from the access
+  // roles (`legacyRoleFromAccessRoles` maps ORG -> SCHOOL), and the access
+  // roles themselves are what the member editor's User Type control writes.
+  // Deriving the exclusion from either means reclassifying a member as an
+  // organisation silently removes their LIVE assignment from the overlap
+  // check — a membership edit breaking a roster invariant it never touched.
+  // Nothing writes this column after the insert, so no membership edit can
+  // move it. See docs/CONCURRENCY_AND_LOCKING.md -> "Composition: lodge
+  // admission, deactivation and hut-leader assignments".
+  source       HutLeaderAssignmentSource @default(MANUAL)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -5454,6 +5468,21 @@ model HutLeaderAssignment {
   @@index([startDate, endDate])
   @@index([lodgeId])
   @@index([bedId])
+}
+
+// Provenance of a HutLeaderAssignment row (#2926). Set by whichever writer
+// created it; there is no other writer and no derivation.
+//
+// MANUAL          POST /api/admin/hut-leaders — an officer assigned this leader.
+// CRON            cron-hut-leader-auto-assign — the nightly sole-adult rule.
+// SCHOOL_BOOKING  school-booking-request.ts — one row per TEACHER when a school
+//                 request is approved. These rows deliberately overlap each
+//                 other (several teachers supervise one group) and are the rows
+//                 the overlap predicate excludes.
+enum HutLeaderAssignmentSource {
+  MANUAL
+  CRON
+  SCHOOL_BOOKING
 }
 
 // Per-lodge access grants (docs/multi-lodge/lodge-scoping-contract.md,
