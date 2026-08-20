@@ -40,8 +40,8 @@ interface LodgeRecord {
   name: string;
   slug: string;
   active: boolean;
-  doorCode?: string | null;
-  travelNote?: string | null;
+  doorCode: string | null;
+  travelNote: string | null;
 }
 
 interface SeasonRecord {
@@ -169,9 +169,6 @@ export default function LodgeSetupWizardPage() {
           (candidate: LodgeRecord) => candidate.id === lodgeId,
         );
         if (!found) throw new Error("Lodge not found");
-        // #2925: a narrowed list (no `lodge:view`) omits `doorCode`, and step 1's
-        // Save would then WIPE it — PATCH reads absent as "keep", null as "clear".
-        if (!("doorCode" in found)) throw new Error("Lodge details need lodge access");
         const flags: Record<string, boolean> = {};
         if (modulesRes.ok) {
           const modulesData = await modulesRes.json();

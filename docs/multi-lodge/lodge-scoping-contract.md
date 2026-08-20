@@ -752,14 +752,30 @@ future column is excluded by default because `lodgeIdentitySelect` names what
 goes out rather than what stays in, and `serializeLodgeIdentity` names the same
 four again so a planted select cannot leak through it either.
 
-**Two consequences at the surfaces.** A narrowed payload is a permissions
-answer, so a surface that needs the detail fields must key on the FIELDS being
-absent, not on a 403 — `lodge-details-panel.tsx` does, and renders its
+**Reading it: key on the absent FIELDS, never on a 403.** A narrowed payload is
+a permissions answer wearing a 200, so a surface that needs the detail fields has
+to notice they are missing. `lodge-details-panel.tsx` does, and renders its
 explanation rather than a form whose address, travel note and door code are
-silently blank. And because `PATCH /api/admin/lodges/[id]` reads an absent key
-as "leave unchanged" and a `null` as "clear it", an editor seeded from a narrowed
-record must OMIT the fields it was never given; the Lodges page and the lodge
-setup wizard do, so no save can wipe a door code it was never shown.
+silently blank. It tests `"doorCode" in row`, not `row.doorCode != null` — a
+lodge with no door code SET sends `doorCode: null`, which is an ordinary editable
+value.
+
+**Writing it: the door-code wipe cannot happen, and the reason is the level
+ranks, not a page gate.** The worry is real in shape: `PATCH
+/api/admin/lodges/[id]` reads an absent key as "leave unchanged" and a `null` as
+"clear it", so an editor seeded from a narrowed record and then saved would blank
+a door code nobody was shown. But the PATCH requires `lodge:edit`, this route
+narrows below `lodge:view`, and `edit` outranks `view` — so **every caller who
+can write has already been served the full record.** The wipe is closed at the
+server for every editor, present and future, without any of them cooperating.
+
+The Lodges list editor additionally omits detail fields it was never given from
+its PATCH body. That is belt-and-braces over the argument above, kept because it
+is cheap and directly tested. It was deliberately NOT replicated in the lodge
+setup wizard: a second copy bought no reachable safety, pushed a 913-line file
+past its size ceiling, and made the wizard reject any incomplete test fixture —
+it broke a passing back-link test on a lodge row that simply had not bothered to
+include `doorCode`.
 
 ## Presentation Rule
 

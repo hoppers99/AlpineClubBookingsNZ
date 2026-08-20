@@ -54,10 +54,13 @@ type LodgeFormState = {
    * "leave unchanged" and a `null` as "clear it" — so seeding a form from a
    * narrowed record and saving it would otherwise WIPE the door code.
    *
-   * This page sits behind the lodge area, so a narrowed record cannot reach it
-   * today and no UI change is warranted for a state nobody can produce. The
-   * belt is here because the wipe is silent and irreversible if that ever stops
-   * being true.
+   * BELT-AND-BRACES, and worth knowing which: the wipe is already impossible at
+   * the server. The PATCH needs `lodge:edit`, the list narrows below
+   * `lodge:view`, and `edit` outranks `view` in `LEVEL_RANK` — so any caller who
+   * can write here was served the full record. This is kept because it is a few
+   * lines and directly tested; it is deliberately not replicated in the lodge
+   * setup wizard, where a second copy bought no reachable safety and made the
+   * page reject any lodge fixture that omitted `doorCode`.
    */
   detailFields: readonly LodgeDetailField[];
 };
