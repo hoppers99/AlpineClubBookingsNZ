@@ -236,6 +236,11 @@ export function BackupsClient() {
             canEdit={canEdit}
             canManageDestination={canManageDestination}
             onSaved={loadStatus}
+            // #2168: this shell renders `viewOnlyBanner` above every branch, so
+            // it vouches for the card's buttons handing their explanation to it
+            // rather than each repeating a reason. The literal is required AT
+            // the render site — that is what makes the vouch checkable.
+            ancestorRendersViewOnlyBanner={true}
           />
           <RecentRunsCard runs={status.recentRuns} />
         </>

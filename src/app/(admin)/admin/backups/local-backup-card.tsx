@@ -105,11 +105,21 @@ export function LocalBackupCard({
   canEdit,
   canManageDestination,
   onSaved,
+  ancestorRendersViewOnlyBanner = false,
 }: {
   status: BackupStatus;
   canEdit: boolean | undefined;
   canManageDestination: boolean;
   onSaved: () => Promise<BackupStatus | null>;
+  /**
+   * #2168's vouch: TRUE only when the parent really does render an
+   * `AdminViewOnlySectionBanner` above this card, passed as a literal at the
+   * render site. Defaulting to FALSE is the safety — this card lives in its own
+   * file, so rendering it standalone, in a dialog, or under some future parent
+   * keeps each button's own view-only reason rather than silently deleting the
+   * explanation.
+   */
+  ancestorRendersViewOnlyBanner?: boolean;
 }) {
   const pathHint = useFieldHint();
   const section = useSectionEditState<LocalDraft>({
@@ -242,7 +252,7 @@ export function LocalBackupCard({
           {!section.editing ? (
             <ViewOnlyActionButton
               canEdit={canEdit}
-              describeReason={false}
+              describeReason={!ancestorRendersViewOnlyBanner}
               variant="outline"
               size="sm"
               onClick={section.startEditing}
@@ -315,7 +325,7 @@ export function LocalBackupCard({
           <div className="flex gap-2">
             <ViewOnlyActionButton
               canEdit={canEdit}
-              describeReason={false}
+              describeReason={!ancestorRendersViewOnlyBanner}
               onClick={section.save}
               disabled={!section.dirty || !section.valid || section.saving}
             >
@@ -339,7 +349,7 @@ export function LocalBackupCard({
           </p>
           <ViewOnlyActionButton
             canEdit={canEdit}
-            describeReason={false}
+            describeReason={!ancestorRendersViewOnlyBanner}
             onClick={onRunNow}
             // The same conditions the Status card's run button uses — the two
             // press the same endpoint, so a button that looks available here and
