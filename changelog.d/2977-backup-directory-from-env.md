@@ -1,6 +1,6 @@
 - **Setting up a local backup directory no longer requires knowing how Docker
-  works.** Two things went wrong for the first operator who tried it, and both
-  are fixed.
+  works (#2977).** Two things went wrong for the first operator who tried
+  it, and both are fixed.
 
   The backup directory is the path **inside the container**, not on the server,
   because the application runs in a container with a read-only filesystem and
