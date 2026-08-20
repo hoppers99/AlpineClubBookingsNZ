@@ -321,16 +321,33 @@ const NOTICE = "AdminViewOnlyNotice";
   to re-measure and update every place together — never to loosen an assertion.
 */
 const FIGURES = {
-  /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 324,
+  /**
+   * Every `<ViewOnlyActionButton>` render site in the admin tree.
+   *
+   * 324 -> 327 (local database backups): the Local backup panel's Edit, Save and
+   * Manual Backup buttons. The panel is its own file because the backups page's
+   * shell is already the largest in that area, which is also why all three are
+   * VOUCHED rather than static — see `vouchedOptOuts`.
+   */
+  callSites: 327,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 271,
+  optOuts: 274,
   /** `describeReason={false}` — needs a banner in the SAME file. */
   staticOptOuts: 240,
-  /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
-  vouchedOptOuts: 31,
+  /**
+   * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
+   *
+   * 31 -> 34 (local database backups). The three new buttons live in a CHILD
+   * file while `BackupsClient` renders the one banner for the page, which is
+   * exactly the shape #2168 added the vouch for. They were written as static
+   * `describeReason={false}` first, copying the sibling S3 panel where the
+   * banner IS in the same file — and this contract caught it: an opt-out with no
+   * covering banner in its own file deletes the explanation outright for anyone
+   * who later renders the card somewhere else.
+   */
+  vouchedOptOuts: 34,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
-  renderSiteVouchedOptOuts: 26,
+  renderSiteVouchedOptOuts: 29,
   /** …of the vouched: proved through the wizard shell's channel (#2324). */
   shellVouchedOptOuts: 5,
   /** Controls that KEEP the per-button reason, and the files holding them. */
