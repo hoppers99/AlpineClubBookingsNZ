@@ -75,6 +75,11 @@ function makeBooking(overrides: Partial<BookingData> = {}): BookingData {
       { id: "lodge-b", name: "Bruce Lodge" },
     ],
     otherLodgeId: null,
+    // #2978: eligibility now arrives from the server rather than being derived
+    // from `isMember` on the client. The default mirrors what the server sends
+    // for this fixture - the two non-members - so every pre-existing case keeps
+    // its meaning; the widened-rule case overrides it.
+    otherLodgeRateEligibleGuestIds: ["g-visitor", "g-child"],
     ...overrides,
   };
 }
@@ -132,6 +137,7 @@ function Harness({
           enabled: otherLodgeRate.enabled,
           lodgeId: otherLodgeRate.lodgeId,
           flaggedGuestIds: otherLodgeRate.flaggedGuestIds,
+          eligibleGuestIds: otherLodgeRate.eligibleGuestIds,
           guestTicksEnabled: otherLodgeRate.guestTicksEnabled,
           quotedGuestPriceCents,
           onEnabledChange: otherLodgeRate.onEnabledChange,
@@ -252,6 +258,64 @@ describe("Member of Other Lodge — the card and the hook together", () => {
     // The club's own member prices at their own membership rate.
     expect(
       screen.queryByLabelText("Price Ada Owner at the other-lodge member rate"),
+    ).toBeNull();
+  });
+
+  /**
+   * #2978. The tick follows the RATE, and the rate is a server answer: the
+   * client cannot see membership types or subscription standing, so it is told
+   * who is eligible rather than guessing from `isMember`.
+   *
+   * The case that matters is a guest flagged `isMember` who nonetheless prices
+   * at the non-member rate - a non-member contact re-added through the
+   * member-guest finder, which is how the gap was reported.
+   */
+  it("offers a tick to a member-flagged guest the server judged eligible", () => {
+    render(
+      <Harness
+        booking={makeBooking({
+          // Ada is `isMember`, and the server says she is on the non-member
+          // rate, so she is exactly who the reciprocal rate is for.
+          otherLodgeRateEligibleGuestIds: ["g-owner", "g-visitor", "g-child"],
+        })}
+      />,
+    );
+    fireEvent.click(memberOfOtherLodgeTick());
+
+    expect(tickFor("Ada Owner").type).toBe("checkbox");
+  });
+
+  it("offers no tick to anybody the server left out, whatever their isMember flag", () => {
+    render(
+      <Harness
+        booking={makeBooking({
+          // The server withheld Kit - e.g. a lapsed member the subscription
+          // lockout has already repriced, who must not be re-rated back up.
+          otherLodgeRateEligibleGuestIds: ["g-visitor"],
+        })}
+      />,
+    );
+    fireEvent.click(memberOfOtherLodgeTick());
+
+    expect(tickFor("Vic Visitor").type).toBe("checkbox");
+    expect(
+      screen.queryByLabelText("Price Kit Visitor at the other-lodge member rate"),
+    ).toBeNull();
+  });
+
+  it("offers no tick at all when the server sent no eligibility list", () => {
+    // A non-admin viewer is shipped neither the registry nor the list. Belt and
+    // braces: even with the registry present, an absent list offers nothing,
+    // so the screen can never propose what the save would refuse.
+    render(
+      <Harness
+        booking={makeBooking({ otherLodgeRateEligibleGuestIds: undefined })}
+      />,
+    );
+    fireEvent.click(memberOfOtherLodgeTick());
+
+    expect(
+      screen.queryByLabelText("Price Vic Visitor at the other-lodge member rate"),
     ).toBeNull();
   });
 

@@ -125,6 +125,8 @@ import { classifyMemberGuestConsent } from "@/lib/member-guest-consent";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import { loadMemberGuestSettings } from "@/lib/member-guest-settings";
 import { resolveMemberGuestNameSearchAccess } from "@/lib/member-guest-find";
+import { resolveOtherLodgeRateEligibleGuestIds } from "@/lib/membership-type-policy";
+import { getSeasonYear } from "@/lib/utils";
 import { getPublicOtherLodges } from "@/lib/booking-request";
 import { eachDateOnlyInRange, getTodayDateOnly } from "@/lib/date-only";
 import {
@@ -948,7 +950,22 @@ export default async function BookingDetailPage({
     // rows either way, because it is what the member is being charged.
     otherLodgeId: booking.otherLodgeId,
     ...(viewerAuthorizationRole === "ADMIN"
-      ? { otherLodges: await getPublicOtherLodges(prisma) }
+      ? {
+          otherLodges: await getPublicOtherLodges(prisma),
+          // #2978: which guests may be ticked. Resolved server-side because the
+          // answer needs membership types and the unpaid-subscription set, and
+          // shipped in the SAME admin-only spread as the registry above for a
+          // second reason: an ineligible row can be ineligible because that
+          // member's subscription is unpaid, so this list must not reach an
+          // ordinary viewer. Costs no query on the common all-non-members
+          // booking, which the helper short-circuits.
+          otherLodgeRateEligibleGuestIds: [
+            ...(await resolveOtherLodgeRateEligibleGuestIds(prisma, {
+              seasonYear: getSeasonYear(booking.checkIn),
+              guests: booking.guests,
+            })),
+          ],
+        }
       : {}),
     // #2104: an already-flagged/reviewed booking must not re-prompt the member
     // for a justification when the guest list shuffles — the edit panel keys the

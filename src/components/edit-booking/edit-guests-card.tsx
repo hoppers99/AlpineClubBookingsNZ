@@ -83,6 +83,14 @@ export interface GuestsCardOtherLodge {
   enabled: boolean;
   lodgeId: string | null;
   flaggedGuestIds: ReadonlySet<string>;
+  /**
+   * #2978: the guests the server will accept a tick for - those currently
+   * priced at the club's non-member rate. Decided server-side because it needs
+   * membership types and subscription standing, neither of which the client
+   * holds; empty for a viewer who was shipped none, so nobody is offered a tick
+   * they could not save.
+   */
+  eligibleGuestIds: ReadonlySet<string>;
   /** False until a lodge is named, which is what disables every guest tick. */
   guestTicksEnabled: boolean;
   /**
@@ -550,10 +558,19 @@ export function EditGuestsCard({
               !mode.overrideEnabled &&
               !mode.isInProgressEdit
                 ? {
-                    // A tick is offered for NON-MEMBERS only: a member of this
-                    // club already prices at their own membership rate, and the
-                    // server refuses the combination outright.
-                    offered: !guest.isMember,
+                    // #2978: offered to whoever currently prices at the club's
+                    // NON-MEMBER rate, which is NOT the same as `!isMember`. A
+                    // non-member contact re-added through the member-guest
+                    // finder carries `isMember` while resolving to the built-in
+                    // NON_MEMBER type, and they are exactly who a reciprocal
+                    // rate is for.
+                    //
+                    // The set is resolved SERVER-side by the same helper the
+                    // save fences on, rather than re-derived here from
+                    // `isMember`: the client cannot see membership types or
+                    // subscription standing, so deriving it here would offer
+                    // ticks the save refuses. Empty for a non-admin viewer.
+                    offered: otherLodge.eligibleGuestIds.has(guest.id),
                     // Live only once a lodge is named, and never on a row this
                     // edit is removing.
                     enabled:

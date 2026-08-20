@@ -52,6 +52,12 @@ export interface OtherLodgeRateState {
     otherLodgeMemberGuestIds?: string[];
   };
   /** Discard the pending election — used by the admin date-override reset. */
+  /**
+   * #2978: the guests this officer may tick, straight from the server. Empty
+   * when the payload carried none, which is also what a non-admin viewer gets -
+   * so no tick box is offered to anybody who could not save one.
+   */
+  eligibleGuestIds: ReadonlySet<string>;
   reset: () => void;
 }
 
@@ -65,6 +71,13 @@ function sameMembership(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean
 
 export function useOtherLodgeRate(booking: BookingData): OtherLodgeRateState {
   const lodges = useMemo(() => booking.otherLodges ?? [], [booking.otherLodges]);
+  // Memoised so the identity is stable across renders: it feeds a per-row prop
+  // in `edit-guests-card`, and a fresh Set each render would re-render every
+  // guest row on every keystroke elsewhere in the panel.
+  const eligibleGuestIds = useMemo(
+    () => new Set(booking.otherLodgeRateEligibleGuestIds ?? []),
+    [booking.otherLodgeRateEligibleGuestIds],
+  );
   const available = Array.isArray(booking.otherLodges);
   const storedLodgeId = booking.otherLodgeId ?? null;
   const storedFlaggedGuestIds = useMemo(
@@ -142,6 +155,7 @@ export function useOtherLodgeRate(booking: BookingData): OtherLodgeRateState {
   return {
     available,
     lodges,
+    eligibleGuestIds,
     enabled,
     lodgeId,
     flaggedGuestIds,
