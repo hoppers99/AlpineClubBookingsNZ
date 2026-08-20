@@ -186,6 +186,11 @@ export const explicitPublicApiRoutes = {
     reason:
       "Serves Image Manager uploads from the shared images volume at runtime.",
   },
+  "src/app/api/lodge-maintenance/[token]/route.ts": {
+    boundary: "public",
+    reason:
+      "Anonymous lodge maintenance QR endpoint (#2780): no session by design. GET reads what one lodge's form needs and POST submits a fault, both keyed solely by a hashed per-lodge bearer token printed on the lodge sign. Every failure — bad token, paused sign, module off, lodge inactive — returns the SAME generic 404, so it cannot be used to enumerate; module-gated in the proxy, additionally gated by the default-OFF anonymousReportsEnabled setting, IP + token rate limited, and it reveals and mutates nothing about any account.",
+  },
   "src/app/api/lodge/instructions/preview/route.ts": {
     boundary: "public",
     reason:

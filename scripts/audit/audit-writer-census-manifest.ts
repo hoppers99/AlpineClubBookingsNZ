@@ -290,6 +290,12 @@ export const AUDIT_CENSUS_TOTALS = {
   // (`member.email-inheritance-source.changed`), one `createStructuredAuditLog`
   // inside the reconciler, category `family`. It records a real routing change,
   // so it is a categorised writer, not an `UNCATEGORISED_AUDIT_WRITERS` entry.
+  // 435 -> 445 (#2780): the ten maintenance-report writers. Two QR-sign sites
+  // (create/rotate and pause/resume, each a dynamic action pair), the settings
+  // route's settings.updated / anonymous-enabled-or-disabled / questions.updated,
+  // the queue's report.viewed / report.status_changed / report.photo_deleted, and
+  // report.submitted on both the member and the anonymous submit route. All
+  // `logAudit`, all category `lodge`. Re-measured with `npm run audit:census`.
   // 435 -> 439 (Alpine Central Server, PR #21): the four write sites the
   // integration adds, all `createAuditLog`, all categorised at the site so none
   // joins `UNCATEGORISED_AUDIT_WRITERS`. Three are `lodge` — the manual Other
@@ -307,7 +313,12 @@ export const AUDIT_CENSUS_TOTALS = {
   // written BEFORE the attempt is the only one guaranteed to survive the
   // incident someone will need to reconstruct; "who asked for this, and which
   // file" must not depend on the restore finishing. All three are `security`.
-  writeSites: 443,
+  // 443 -> 453 (#2780 merged with main): main's three lines above and this
+  // branch's ten maintenance writers are DISJOINT additions to the same base of
+  // 435, so the merged total is 453. Taken from `npm run audit:census` run on
+  // the merged tree rather than by adding one branch's delta to the other's
+  // total, which is how a published count goes wrong in a merge.
+  writeSites: 453,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -344,7 +355,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // Both are `logAudit` on the same grounds as the row they sit beside — a
     // rejected audit write on either path would turn "a person needs to know about
     // this money" into a replayed refund.
-    logAudit: { total: 245, uncategorised: 0 },
+    // 245 -> 255 (#2780): all ten maintenance-report writers use `logAudit` — QR
+    // sign create/rotate/pause/resume, queue triage and photo disclosure/deletion,
+    // and the two submit records. None sits inside the submit transaction, so a
+    // failed audit write never fails a submitted report.
+    logAudit: { total: 255, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     // 104 -> 105 (#2649): the return-to-waitlist repair, above.
@@ -610,12 +625,22 @@ export const AUDIT_CENSUS_TOTALS = {
     // `admin` above for the readership and retention consequences. Bed
     // allocation is now wholly `lodge`: 28 sites, one gate, no action name
     // written into two.
+    // 52 -> 62 (#2780): the ten maintenance-report writers. The QR-sign
+    // management route writes four (`maintenance.qr_token.created/rotated/
+    // paused/resumed`), the officer queue detail route writes the triage and
+    // photo-disclosure/deletion set, and the member and anonymous submit routes
+    // record a report received. All `lodge` — physical-lodge maintenance is Lodge
+    // Operations — and `lodge` is not one of the three (`admin`, `security`,
+    // `system`) readable with `support:view` alone, so the support-only
+    // population pinned below does not move.
     // 52 -> 55 (Alpine Central Server, PR #21): the manual Other Clubs upload
     // and download, plus the shared failure row that records a sync which could
     // not run. They sit beside the Other Lodges CRUD writers they distribute, on
     // the same `support` + `lodge` gate, so no reader gains anything they could
     // not already see about that registry.
-    lodge: 55,
+    // 55 -> 65 (#2780 merged with main): both additions are `lodge` and both are
+    // disjoint, so the merged figure is 65. Measured, not added up.
+    lodge: 65,
     // 19 -> 34 (#2581 child 2): the fifteen Xero settings, mapping, replay and
     // retry writers. `xero` is `support` plus `finance`.
     xero: 34,

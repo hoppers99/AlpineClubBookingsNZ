@@ -288,6 +288,14 @@ const ROUTE_AREA_PREFIXES: Array<{
       // Lobby display management (#27/#33, epic #25): lodge operations.
       "/admin/display",
       "/api/admin/display",
+      // Maintenance reports (#2780). "The maintenance officer" is not a role in
+      // this product and must not become one: it is whoever the club has given
+      // Lodge Operations to. So the queue, the question set, the settings and
+      // the per-lodge QR tokens all sit in the `lodge` area, and the alert
+      // audience is `{ area: "lodge", level: "edit" }` — see
+      // ADMIN_NOTIFICATION_PREFERENCE_REQUIREMENT.
+      "/admin/maintenance-reports",
+      "/api/admin/maintenance-reports",
     ],
   },
   {

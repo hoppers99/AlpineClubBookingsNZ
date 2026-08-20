@@ -235,6 +235,30 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     exemptPaths: ["/api/admin/ai-diagnostics/readiness"],
   },
   {
+    // Maintenance reports (#2780). Switching the module off removes ALL FOUR
+    // surfaces together — the admin queue and its APIs, the member form, and the
+    // unauthenticated QR page and its submit route — which is what a module
+    // toggle is supposed to mean. The QR half additionally needs
+    // MaintenanceReportSettings.anonymousReportsEnabled, so the module being on
+    // is necessary and not sufficient for the public door.
+    //
+    // "/maintenance-report" (singular) is the member page and also prefixes
+    // nothing else; "/lodge-maintenance" is the tokenised public page and
+    // "/api/lodge-maintenance" its only API. The public halves are named
+    // separately from the member ones on purpose — a reader auditing the
+    // unauthenticated surface should be able to find every path that serves it by
+    // its own prefix rather than by inspecting a shared one.
+    flag: "maintenanceReports",
+    prefixes: [
+      "/admin/maintenance-reports",
+      "/api/admin/maintenance-reports",
+      "/maintenance-report",
+      "/api/maintenance-reports",
+      "/lodge-maintenance",
+      "/api/lodge-maintenance",
+    ],
+  },
+  {
     // Alpine Central Server (ServerNZ). Admin -> Modules is the master switch,
     // and for THIS module that is load-bearing rather than tidy: the feature
     // uploads club and booking-officer contact details to a third party which

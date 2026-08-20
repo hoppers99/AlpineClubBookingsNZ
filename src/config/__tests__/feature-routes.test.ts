@@ -121,6 +121,37 @@ describe("feature route map", () => {
     expect(config.matcher).toContain("/api/calendar/:path*");
   });
 
+  it("gates every maintenance-reports surface and keeps its API prefixes in the matcher (#2780)", async () => {
+    // This is the regression the #2780 security review caught: FEATURE_ROUTE_RULES
+    // gated both /api prefixes, but the proxy matcher listed NEITHER, so with the
+    // module off the pages 404'd (non-/api, caught by the root matcher entry) while
+    // the two API doors — including the UNAUTHENTICATED QR submit — stayed live.
+    const off = { ...allOn, maintenanceReports: false };
+    for (const href of [
+      "/maintenance-report",
+      "/lodge-maintenance/tok-1",
+      "/admin/maintenance-reports",
+      "/api/maintenance-reports",
+      "/api/lodge-maintenance/tok-1",
+      "/api/admin/maintenance-reports",
+      "/api/admin/maintenance-reports/tokens",
+    ]) {
+      expect(getDisabledFeatureForPath(href, off)).toBe("maintenanceReports");
+      expect(getDisabledFeatureForPath(href, allOn)).toBeNull();
+    }
+
+    // Both member-facing /api prefixes need their OWN matcher entry — the root
+    // entry excludes every "/api/…" path, so a gate with no matcher entry never
+    // fires. (The admin prefix is covered by "/api/admin/:path*".)
+    const { config } = await import("@/proxy");
+    expect(config.matcher).toContain("/api/maintenance-reports/:path*");
+    expect(config.matcher).toContain("/api/lodge-maintenance/:path*");
+
+    // Lookalike prefixes must not be caught by the gate.
+    expect(getRequiredFeaturesForPath("/api/lodge-maintenancex")).toEqual([]);
+    expect(getRequiredFeaturesForPath("/maintenance-reportx")).toEqual([]);
+  });
+
   it("gates the AI assistant admin surface but NOT the /api/help/chat route", () => {
     // The admin usage + settings surfaces hard-gate on the module flag.
     expect(getRequiredFeaturesForPath("/api/admin/ai-assistant/usage")).toEqual([

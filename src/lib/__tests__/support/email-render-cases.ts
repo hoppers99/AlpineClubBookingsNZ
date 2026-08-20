@@ -103,6 +103,7 @@ import {
   adminEmailDeliveryFailedTemplate,
   adminEmailWithheldTemplate,
   adminIssueReportTemplate,
+  adminMaintenanceReportTemplate,
   websiteContactTemplate,
 } from "@/lib/email-templates/admin-ops";
 import {
@@ -852,6 +853,10 @@ const GENERATED_CASES: EmailRenderCase[] = [
     adminIssueReportTemplate({ memberName: "memberName-1", memberEmail: "memberEmail-2", pageUrl: "pageUrl-3", description: "description-4", issueReportUrl: "issueReportUrl-5", hasScreenshot: true }) },
   { id: "adminIssueReportTemplate:full", fn: "adminIssueReportTemplate", render: () =>
     adminIssueReportTemplate({ memberName: "memberName-1", memberEmail: "memberEmail-2", pageUrl: "pageUrl-3", pageTitle: "pageTitle-4", description: "description-5", issueReportUrl: "issueReportUrl-6", hasScreenshot: true }) },
+  { id: "adminMaintenanceReportTemplate:minimal", fn: "adminMaintenanceReportTemplate", render: () =>
+    adminMaintenanceReportTemplate({ lodgeName: "lodgeName-1", reportedBy: "reportedBy-2", sourceLabel: "sourceLabel-3", photoLabel: "photoLabel-4", summary: "summary-5", answers: [], maintenanceReportUrl: "maintenanceReportUrl-6" }) },
+  { id: "adminMaintenanceReportTemplate:full", fn: "adminMaintenanceReportTemplate", render: () =>
+    adminMaintenanceReportTemplate({ lodgeName: "lodgeName-1", reportedBy: "reportedBy-2", sourceLabel: "sourceLabel-3", photoLabel: "photoLabel-4", summary: "summary-5", answers: [{ label: "label-6", value: "value-7" }, { label: "label-8", value: "value-9" }], maintenanceReportUrl: "maintenanceReportUrl-10" }) },
   { id: "refundRequestApprovedTemplate:minimal", fn: "refundRequestApprovedTemplate", render: () =>
     refundRequestApprovedTemplate({ firstName: "firstName-1", amountCents: 102, adminNotes: "adminNotes-3", checkIn: new Date("2026-03-05T00:00:00.000Z"), checkOut: new Date("2026-03-06T00:00:00.000Z") }) },
   { id: "refundRequestDeclinedTemplate:minimal", fn: "refundRequestDeclinedTemplate", render: () =>

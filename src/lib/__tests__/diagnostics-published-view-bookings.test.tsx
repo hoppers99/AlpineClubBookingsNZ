@@ -86,6 +86,7 @@ const MODULES_OFF = {
   eventsCalendar: false,
   memberGuests: false,
   aiDiagnostics: true,
+  maintenanceReports: true,
   alpineCentralServer: false,
 };
 
