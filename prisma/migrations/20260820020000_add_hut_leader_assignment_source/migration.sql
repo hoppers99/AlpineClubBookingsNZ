@@ -79,7 +79,7 @@
 -- its previous shape and loses only the provenance, which nothing older reads.
 --
 -- DATA VERIFICATION:
--- prisma/migration-verification/20260819130000_add_hut_leader_assignment_source.ts
+-- prisma/migration-verification/20260820020000_add_hut_leader_assignment_source.ts
 
 CREATE TYPE "HutLeaderAssignmentSource" AS ENUM ('MANUAL', 'CRON', 'SCHOOL_BOOKING');
 
