@@ -17,6 +17,7 @@ import {
 import { ApiError } from "@/lib/api-error";
 import {
   assertOtherLodgeExists,
+  requestCarriesOtherLodgeElection,
   resolveOtherLodgeRateElection,
   type OtherLodgeRateElection,
 } from "@/lib/booking-other-lodge-rate";
@@ -106,6 +107,7 @@ import {
 } from "@/lib/date-only";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
+import { resolveOtherLodgeRateEligibleGuestIds } from "@/lib/membership-type-policy";
 import { getSeasonYear } from "@/lib/utils";
 import { assertNoBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
 import {
@@ -653,10 +655,29 @@ export async function prepareGuestPlan(
   // save writes, and the rows it reprices, are exactly the ones the officer was
   // quoted. `booking` here is the post-lock re-read, so a concurrent edit that
   // changed a guest's flag is seen before the reprice decision is made.
+  // #2978: eligibility is a rate question, so it needs the season's
+  // membership-type policies and the unpaid-subscription set. Resolved on `tx`,
+  // never the module client: this runs inside the transaction holding the
+  // capacity lock, and a second pool connection under that lock is the
+  // starvation shape `docs/CONCURRENCY_AND_LOCKING.md` forbids by name. The
+  // lockout mode is the one this request already resolved, so no settings read
+  // is added either. Keyed to the BOOKING's season, exactly as `modify-quote`
+  // keys it, so the preview and the save fence identical sets.
+  // Only when this request actually mentions the rate. Almost no modification
+  // does, and these are two reads issued INSIDE the transaction holding the
+  // capacity lock - the place where an avoidable query is least welcome.
+  const otherLodgeEligibleGuestIds = requestCarriesOtherLodgeElection(input)
+    ? await resolveOtherLodgeRateEligibleGuestIds(tx, {
+        seasonYear: getSeasonYear(booking.checkIn),
+        guests: booking.guests,
+        subscriptionLockoutMode,
+      })
+    : new Set<string>();
   const otherLodgeElection = resolveOtherLodgeRateElection({
     booking,
     input,
     role,
+    eligibleGuestIds: otherLodgeEligibleGuestIds,
   });
   // Only when this edit named a lodge: an inert election's stored id was already
   // validated when it was set, so re-reading it on every unrelated modification

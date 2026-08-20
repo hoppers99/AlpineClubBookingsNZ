@@ -17,6 +17,7 @@ import {
   getMembershipTypeBookingPolicyErrorBody,
   MembershipTypeBookingPolicyError,
   priceBookingGuestsWithMembershipTypePolicy,
+  resolveOtherLodgeRateEligibleGuestIds,
 } from "@/lib/membership-type-policy";
 import {
   groupDiscountEditNotice,
@@ -33,6 +34,7 @@ import { ApiError } from "@/lib/api-error";
 import {
   assertOtherLodgeExists,
   OTHER_LODGE_RATE_IN_PROGRESS_MESSAGE,
+  requestCarriesOtherLodgeElection,
   resolveOtherLodgeRateElection,
   type OtherLodgeRateElection,
 } from "@/lib/booking-other-lodge-rate";
@@ -750,13 +752,34 @@ export async function POST(
   // per-guest flag below is identical to the one the save will persist.
   let otherLodgeElection: OtherLodgeRateElection;
   try {
+    // #2978: who may be ticked is a RATE question, so it needs the season's
+    // membership-type policies and the unpaid-subscription set. Resolved from
+    // the BOOKING's own season rather than any new dates this edit proposes:
+    // the edit panel decides which rows get a tick box from the stored booking,
+    // so keying the fence to the same season is what keeps the screen and the
+    // save from disagreeing. A date move across a season boundary can therefore
+    // judge eligibility on the old season - accepted, because the alternative
+    // is a tick the officer can see and cannot save.
+    const otherLodgeInput = {
+      otherLodgeId: requestedOtherLodgeId,
+      otherLodgeMemberGuestIds,
+    };
+    // Only when the request actually mentions the rate. Almost no modification
+    // does, and resolving eligibility costs two reads.
+    const otherLodgeEligibleGuestIds = requestCarriesOtherLodgeElection(
+      otherLodgeInput,
+    )
+      ? await resolveOtherLodgeRateEligibleGuestIds(prisma, {
+          seasonYear: getSeasonYear(booking.checkIn),
+          guests: booking.guests,
+          subscriptionLockoutMode: await resolveSubscriptionLockoutMode(),
+        })
+      : new Set<string>();
     otherLodgeElection = resolveOtherLodgeRateElection({
       booking,
-      input: {
-        otherLodgeId: requestedOtherLodgeId,
-        otherLodgeMemberGuestIds,
-      },
+      input: otherLodgeInput,
       role: actorRole,
+      eligibleGuestIds: otherLodgeEligibleGuestIds,
     });
     await assertOtherLodgeExists(prisma, otherLodgeElection.otherLodgeId);
   } catch (error) {
