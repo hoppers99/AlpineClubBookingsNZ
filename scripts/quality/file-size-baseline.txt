@@ -109,7 +109,7 @@ src/app/api/admin/family-groups/[id]/route.ts 294 route-handler
 src/app/api/admin/fee-configuration/route.ts 480 route-handler
 src/app/api/admin/hut-leaders/eligible-members/route.ts 327 route-handler
 src/app/api/admin/hut-leaders/route.ts 317 route-handler
-src/app/api/admin/image-manager/directories/route.ts 255 route-handler
+src/app/api/admin/image-manager/directories/route.ts 252 route-handler
 src/app/api/admin/induction-templates/[id]/route.ts 253 route-handler
 src/app/api/admin/integrations/credentials/route.ts 279 route-handler
 src/app/api/admin/issue-reports/[id]/route.ts 259 route-handler
