@@ -31,13 +31,11 @@ vi.mock("@/lib/audit", () => ({
   createAuditLog: mocks.createAuditLog,
 }));
 
-vi.mock("@/lib/session-guards", () => ({
+vi.mock("@/lib/session-guards", async () => ({
   // Forward the route's explicit permission requirement so the view/edit
   // matrix is exercised end-to-end.
-  requireAdmin: async (options: unknown) =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(
-      options as never,
-    ),
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
 

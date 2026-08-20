@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
-import type { AdminAccessRequirement } from "@/lib/admin-permissions";
 
 vi.mock("server-only", () => ({}));
 
@@ -23,11 +22,9 @@ vi.mock("@/lib/auth", () => ({
   auth: mocks.auth,
 }));
 
-vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: async (options?: unknown) =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(
-      options as { permission?: AdminAccessRequirement | false },
-    ),
+vi.mock("@/lib/session-guards", async () => ({
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
 
