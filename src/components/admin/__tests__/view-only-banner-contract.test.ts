@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 319,
+  callSites: 330,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 268,
+  optOuts: 279,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 237,
+  staticOptOuts: 248,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 31,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -340,7 +340,7 @@ const FIGURES = {
   leafControls: 37,
   leafFiles: 22,
   /** Components that render an `AdminViewOnlySectionBanner`. */
-  bannerComponents: 84,
+  bannerComponents: 88,
   /**
    * Admin files that render an `AdminViewOnlyNotice` and NO
    * `ViewOnlyActionButton` — the first of the three cases in which the older
@@ -1408,6 +1408,26 @@ describe("view-only section banner coverage (#2160)", () => {
                no banner of its own (the page's covers it). Re-measured with
                `npx vitest run view-only-banner-contract`, which reports
                319 / 268 / 237. READ NOTHING FROM THIS COLUMN; run the suite.
+
+          330 +11  #2780's Lodge Maintenance admin surface adds four sibling
+               sections, each with its OWN unconditional
+               `AdminViewOnlySectionBanner` and its gated controls as static
+               `describeReason={false}` opt-outs in the same file:
+               `maintenance-settings-section.tsx` (Edit + Save = 2),
+               `maintenance-questions-section.tsx` (Edit + Save = 2),
+               `maintenance-qr-section.tsx` (Pause/Resume + Replace/Create the
+               sign = 3), and `maintenance-queue-section.tsx` (Delete the photo +
+               Reopen + Working on it + Mark resolved = 4). So callSites
+               319 -> 330 (+11), optOuts 268 -> 279 (+11) and staticOptOuts
+               237 -> 248 (+11) all move together — every one of the eleven is a
+               static opt-out under a banner in its own file. bannerComponents
+               84 -> 88 (+4), one per section. The vouched split, the exceptions
+               and the leaf bucket do NOT move: nothing here keeps its own reason,
+               nothing is vouched through a parent, and nothing is gated on an
+               area narrower than the `lodge` area every one of the four banners
+               states. Re-measured with `npx vitest run view-only-banner-contract`,
+               which reports 330 / 279 / 248. READ NOTHING FROM THIS COLUMN; run
+               the suite.
 
       */
       // #2259 adds the per-booking "No emails"
