@@ -68,6 +68,7 @@ const completeDatabase: SetupDatabaseSnapshot = {
     eventsCalendar: true,
     memberGuests: false,
     aiDiagnostics: false,
+    maintenanceReports: true,
     alpineCentralServer: false,
   },
   ageTierSettingCount: 4,

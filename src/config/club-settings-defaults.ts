@@ -200,3 +200,28 @@ export const DEFAULT_MEMBERSHIP_CANCELLATION_SETTINGS = {
     "Former members can reapply through the normal membership process. The committee will confirm any outstanding balances and restore access only after the rejoin process is approved.",
   xeroArchiveContactsOnCancellation: false,
 } as const;
+
+/**
+ * `MaintenanceReportSettings` — the effective policy a missing `id = "default"`
+ * row synthesises (#2780). Read by `normalizeMaintenanceReportSettings`.
+ *
+ * `anonymousReportsEnabled` ships FALSE and that is a security default, not a
+ * taste: it is the switch that opens an endpoint anybody on the internet can
+ * post to, so an upgrade must never turn it on. Everything else ships in the
+ * shape a club would most likely want, because those are only preferences.
+ */
+export const DEFAULT_MAINTENANCE_REPORT_SETTINGS = {
+  anonymousReportsEnabled: false,
+  photosEnabled: true,
+  anonymousPhotosEnabled: true,
+  photoRetentionDays: 30,
+  anonymousContactPrompt: true,
+} as const;
+
+/**
+ * Inclusive bounds for `photoRetentionDays`, declared in this dependency-free
+ * leaf so the admin route, the config-transfer spec and the retention helper all
+ * enforce the same two numbers without importing the Prisma-backed module.
+ */
+export const MAINTENANCE_REPORT_PHOTO_RETENTION_DAYS_MIN = 1;
+export const MAINTENANCE_REPORT_PHOTO_RETENTION_DAYS_MAX = 365;

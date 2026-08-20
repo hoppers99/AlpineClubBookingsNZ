@@ -476,10 +476,14 @@ function redactJsonStringCandidate(
 // Token-bearing paths can land in webserver, proxy, callbackUrl, and
 // observability access logs. Redact both literal paths and URL-encoded callback
 // paths so opaque action tokens do not leak through login redirects.
+// `lodge-maintenance` joins the list with #2780: the per-lodge QR sign carries a
+// 256-bit bearer token in the path, and it is the one token here that a stranger
+// can walk into a building and photograph, so keeping it out of proxy and Sentry
+// logs matters at least as much as for the emailed ones.
 const TOKEN_PATH_PATTERN =
-  /(\/(?:membership-cancellation|chores|nominations|pay)\/|\/booking-requests\/(?:verify|respond)\/|\/group-bookings\/join\/verify\/)[A-Za-z0-9_-]+/g;
+  /(\/(?:membership-cancellation|chores|nominations|pay|lodge-maintenance)\/|\/booking-requests\/(?:verify|respond)\/|\/group-bookings\/join\/verify\/)[A-Za-z0-9_-]+/g;
 const ENCODED_TOKEN_PATH_PATTERN =
-  /(%2F(?:membership-cancellation|chores|nominations|pay)%2F|%2Fbooking-requests%2F(?:verify|respond)%2F|%2Fgroup-bookings%2Fjoin%2Fverify%2F)[A-Za-z0-9_-]+/gi;
+  /(%2F(?:membership-cancellation|chores|nominations|pay|lodge-maintenance)%2F|%2Fbooking-requests%2F(?:verify|respond)%2F|%2Fgroup-bookings%2Fjoin%2Fverify%2F)[A-Za-z0-9_-]+/gi;
 
 function redactSensitiveTextValue(
   value: string,

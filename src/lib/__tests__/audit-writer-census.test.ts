@@ -1253,7 +1253,11 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // categorised at the site but named in none of the four per-site maps, so
     // they land unpinned. `pinned` is unchanged, which is the point — no
     // existing classification moved.
-    ).toEqual({ pinned: 127, unpinned: 316 });
+    // 316 -> 326 (#2780 merged with main): the ten maintenance-report writers
+    // land unpinned for the same reason — categorised at the site, named in none
+    // of the four maps. 453 sites measured minus 127 pinned. `pinned` is again
+    // unchanged, so no existing classification moved in this merge either.
+    ).toEqual({ pinned: 127, unpinned: 326 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

@@ -123,6 +123,17 @@ function sliceFrom(source: string, startMarker: string, endMarker: string) {
 describe("Admin modules schema contract", () => {
   it("persists only activation booleans for supported optional modules", () => {
     const schema = readRepoFile("prisma/schema.prisma");
+    // End the slice at the ClubModuleSettings/Lodge boundary, NOT at the distant
+    // "Booking Modifications" section header. This guard's promise is about
+    // ClubModuleSettings — "persists only activation booleans, never a secret,
+    // token, credential or tenant column" — and the old far marker over-reached
+    // across the whole Lodge model, which is core and unrelated. That was harmless
+    // until #2780 gave a lodge a legitimate `LodgeMaintenanceReportToken?`
+    // relation, whose model name contains "token" and tripped the guard on a model
+    // it was never meant to police. Bounding the slice to ClubModuleSettings keeps
+    // the real guarantee intact and precise.
+    // Both sides of this merge fixed the same over-wide slice independently.
+    // Main's bound is the tighter one and subsumes this branch's, so it is kept.
     // End the slice at the model's own closing brace, not at a distant section
     // banner. The banner sat hundreds of lines past ClubModuleSettings, so every
     // model declared in between was scanned as if it belonged to it — and the

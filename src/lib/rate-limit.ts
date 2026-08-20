@@ -622,6 +622,43 @@ export const rateLimiters = {
    * tightens the paid-call backstop rather than loosening it.
    */
   aiDiagnosticsGlobal: { id: "ai-diagnostics-global", limit: 200, windowSeconds: 86400, authSensitive: true } as RateLimitConfig,
+  // Maintenance reports (#2780). Three limiters, because the QR door and the
+  // members' door are different risks and one budget cannot size both.
+  /**
+   * UNAUTHENTICATED per-lodge QR submissions: 5 per hour, per IP.
+   *
+   * Deliberately the same shape as `bookingRequest`, the other public form that
+   * writes a row and mails an officer, because the abuse is the same abuse: an
+   * anonymous POST that costs the club an email and a queue entry. Five an hour
+   * is far more than a real person standing in a lodge needs (they report the
+   * broken thing once) and far less than a script needs to be worth writing.
+   *
+   * `authSensitive`, so a degraded shared-store fallback runs it at limit/4
+   * rather than handing an attacker a fresh full budget per replica. There is no
+   * credential to guess here, but the *public form* half of that flag's
+   * docblock is exactly what this is.
+   */
+  maintenanceReportAnonymous: { id: "maintenance-report-anonymous", limit: 5, windowSeconds: 60 * 60, authSensitive: true } as RateLimitConfig,
+  /**
+   * READS of the anonymous form's question set: 30 per 15 minutes, per IP.
+   *
+   * Separate from the submit budget on purpose. Loading the page is cheap and a
+   * person may reload it, so throttling reads at the submit rate would break
+   * honest use; but the read is also the only endpoint that answers anything at
+   * all about a token, so it is the one an enumeration attempt would hammer.
+   * Capping it is what makes guessing 2^256 tokens uneconomic in wall-clock
+   * terms as well as in arithmetic.
+   */
+  maintenanceReportToken: { id: "maintenance-report-token", limit: 30, windowSeconds: 15 * 60, authSensitive: true } as RateLimitConfig,
+  /**
+   * Signed-in member submissions: 10 per hour, applied per member AND per IP
+   * (the IP key at ten times the budget, via applyMemberScopedRateLimit).
+   *
+   * Deliberately NOT `authSensitive`: there is no credential behind it, and
+   * quartering a member's allowance during a database blip would refuse a real
+   * fault report at the moment somebody is standing in front of the fault.
+   */
+  maintenanceReportMember: { id: "maintenance-report-member", limit: 10, windowSeconds: 60 * 60 } as RateLimitConfig,
 } as const;
 
 // test seam
