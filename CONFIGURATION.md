@@ -2506,7 +2506,9 @@ rate-limited, or temporarily unavailable.
 | `GROUP_CANCEL_RESUME_GRACE_MINUTES`   | Grace before the group-settlement-reaper resumes a crash-interrupted organiser-cancel cleanup (#1236); defaults to 15 minutes. |
 | `WAITLIST_TRANSACTION_RETRY_ATTEMPTS` | Optional waitlist transaction retry count.                                  |
 | `WAITLIST_TRANSACTION_RETRY_DELAY_MS` | Optional waitlist transaction retry delay.                                  |
-| `BACKUP_CRON_SCHEDULE`                | Cron expression for the nightly backup schedule (cron-leader timing). The ONLY backup setting still read from the environment. |
+| `BACKUP_CRON_SCHEDULE`                | Cron expression for the nightly backup schedule (cron-leader timing).       |
+| `BACKUP_LOCAL_HOST_DIR`               | Host directory bind-mounted into the app container for local database backups. Used only by `docker-compose.yml`; empty uses the `backup_data` named volume instead. Must be owned by uid 1001. |
+| `BACKUP_LOCAL_DIR`                    | Path **inside the container** that mount lands on (default `/backups`). What the app writes to, and the value `/admin/backups` pre-fills. A path saved on that page overrides it. |
 | `AUDIT_ARCHIVE_DATABASE_URL`          | Preferred optional archive database for audit retention.                    |
 | `AUDIT_LOG_ARCHIVE_DATABASE_URL`      | Backward-compatible archive database alias.                                 |
 | `SHADOW_DATABASE_URL`                 | Optional Prisma shadow database URL for migration validation.               |
@@ -2524,9 +2526,15 @@ rate-limited, or temporarily unavailable.
 > `BACKUP_S3_SECRET_ACCESS_KEY`, `BACKUP_RETENTION_DAYS`, and
 > `BACKUP_RESTORE_VALIDATION_URL` variables are **no longer read**: a deployment
 > that still sets them sees a "no longer used — re-enter in-app, then remove from
-> the environment" warning on the Backups page. `BACKUP_CRON_SCHEDULE` is the one
-> exception and remains an environment variable (it is cron-leader timing, not
-> club configuration). The S3 access key/secret and the restore-validation DSN
+> the environment" warning on the Backups page. `BACKUP_CRON_SCHEDULE`,
+> `BACKUP_LOCAL_HOST_DIR` and `BACKUP_LOCAL_DIR` are the exceptions and remain
+> environment variables, because they are deployment infrastructure rather than
+> club configuration: cron-leader timing, and where a volume is mounted. The two
+> `BACKUP_LOCAL_*` variables are a PAIR describing the two ends of one mount —
+> the host directory and the container path it appears at — and entering a HOST
+> path on the Backups page cannot work: the container has a read-only filesystem
+> and cannot see or create it. See
+> [`docs/guides/backups.md`](docs/guides/backups.md#setting-the-directory-on-a-docker-deployment). The S3 access key/secret and the restore-validation DSN
 > are write-only and never returned to the browser or an audit row; the S3
 > destination (bucket/region) and credentials can only be changed by a Full
 > Admin.

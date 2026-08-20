@@ -88,15 +88,53 @@ as well as — or instead of — uploading it to S3.
 1. Go to **Admin → Integrations → Database Backups** and press **Edit** on the
    **Local backup** panel.
 2. Tick **Enable local backups**.
-3. Enter the **backup directory**. It is mandatory, and it must be a full path
-   (starting with `/`) outside the application directory. Example:
-   `/var/backups/tacbookings`.
+3. Check the **backup directory**. It is mandatory, and on a Docker deployment
+   it is normally **already filled in** from `BACKUP_LOCAL_DIR` (see below) —
+   leave it alone unless the mount has moved. It must be a full path (starting
+   with `/`) outside the application directory.
+
+   **It is the path inside the container, not on the host.** The application
+   runs in a container with a read-only filesystem, so it can only write to a
+   directory that has been mounted into it. Typing a host path such as
+   `/home/lwtc_lodge/db_backup` fails, because that path does not exist in the
+   container's filesystem and cannot be created there.
 4. **Save**. The directory is created if it does not exist, and the save is
    refused if the application cannot write to it — so a path that will not work
    is rejected while you are looking at the screen, not at 3am.
 
 From then on the nightly job writes to that directory as well, and prunes files
 older than the **retention** window set above — the same number the S3 side uses.
+
+#### Setting the directory on a Docker deployment
+
+Two `.env` variables, because a container and its host do not share a
+filesystem:
+
+| Variable | Meaning |
+| --- | --- |
+| `BACKUP_LOCAL_HOST_DIR` | The directory **on the host** the files land in. Used only by `docker-compose.yml`, to bind-mount it into the app container. Leave empty to use a named volume (`backup_data`) instead — fine unless you need to copy the files off the machine. |
+| `BACKUP_LOCAL_DIR` | The path **inside the container** the same mount lands on, `/backups` by default. This is what the app writes to, and what the Backups page pre-fills. |
+
+To use a host directory:
+
+```bash
+# 1. Create it, and give it to the user the app runs as (uid 1001)
+sudo mkdir -p /home/lwtc_lodge/db_backup
+sudo chown -R 1001:1001 /home/lwtc_lodge/db_backup
+
+# 2. Point .env at it
+#    BACKUP_LOCAL_HOST_DIR=/home/lwtc_lodge/db_backup
+#    BACKUP_LOCAL_DIR=/backups
+
+# 3. Recreate the container so the mount exists (a restart is not enough)
+docker compose up -d app
+
+# 4. Prove the container can write there
+docker compose exec app sh -c 'touch /backups/.probe && rm /backups/.probe && echo OK'
+```
+
+Then open the Backups page: the backup directory is already `/backups`, and the
+files appear on the host in `/home/lwtc_lodge/db_backup`.
 
 **Two things to get right before relying on this.**
 
@@ -160,6 +198,8 @@ finishes or fails — so a restore is always traceable even if it dies part-way.
 | "Changing the backup destination requires Full Admin access." | You have support-edit but not Full Admin | A Full Admin must change the bucket/region, the local backup directory, and credentials |
 | Yellow "below 5 GB" or red "below 1 GB" disk-space line | The volume holding the backup directory is filling up | Free space, shorten the retention window, or point the directory at a larger volume |
 | "That path is inside the application directory…" | The directory would sit where the web server can serve files from | Choose a path outside the app, such as `/var/backups/tacbookings` |
+| "Could not create … This application runs inside a container…" | A **host** path was entered, or no volume is mounted at it | Enter the container path (`BACKUP_LOCAL_DIR`, `/backups` by default), and mount the host directory with `BACKUP_LOCAL_HOST_DIR` — see *Setting the directory on a Docker deployment* above |
+| "… is not writable by the application" on a mounted directory | The host directory is not owned by uid 1001 | `sudo chown -R 1001:1001 <host directory>`, then try again |
 | Local backups configured but the directory is empty after a deploy | The path is inside the container rather than on a mounted volume | Mount a host directory or named volume at that path |
 | "A backup is running. Wait for it to finish before restoring." | A backup and a restore cannot run at once | Wait for the run to finish, then retry |
 | "pg_dump is not installed on the server" (or psql / gunzip / aws) | The host is missing the PostgreSQL client tools or the AWS CLI | The app's Docker image installs both (`postgresql16-client`, `aws-cli`). A server or development machine running the app OUTSIDE that image needs them installed and on `PATH` — on Windows, install the PostgreSQL client tools and add their `bin` directory to `PATH`, or run the app through Docker |

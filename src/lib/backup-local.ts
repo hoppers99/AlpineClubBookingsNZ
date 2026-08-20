@@ -3,6 +3,7 @@ import "server-only";
 import {
   copyFileSync,
   existsSync,
+  readFileSync,
   mkdirSync,
   readdirSync,
   statSync,
@@ -201,6 +202,69 @@ export function isValidLocalBackupPath(
  * Called at save time so an unusable path is refused while the operator is
  * looking at the screen, rather than at 3am by the cron job.
  */
+/**
+ * Whether this process is running inside a container.
+ *
+ * `/.dockerenv` is written by the Docker runtime into every container it
+ * starts, and the cgroup path names the container runtime on the rest. Either
+ * being true is enough for the purpose here, which is not a security decision —
+ * it only decides how to WORD a failure.
+ */
+function isContainerised(): boolean {
+  if (existsSync("/.dockerenv")) return true;
+  try {
+    return /docker|containerd|kubepods/.test(
+      readFileSync("/proc/self/cgroup", "utf8"),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The advice to attach to a directory the app cannot create or write.
+ *
+ * WHY THIS EXISTS. An operator set up local backups on a real deployment by
+ * creating `/home/<user>/db_backup` on the HOST and typing that path here, and
+ * got back "Could not create that directory: ENOENT". Every word of that was
+ * true and none of it was useful: the app runs in a container with
+ * `read_only: true`, so a host path it has never been shown does not exist in
+ * its filesystem and cannot be created there either. The person reading the
+ * message has no reason to know any of that, and the fix — mount a volume — is
+ * not something the error hints at.
+ *
+ * So a containerised failure now says what the app knows about itself.
+ */
+export function directoryAdviceForThisRuntime(
+  // Injected so both branches are testable without mocking `fs` — the same seam
+  // `resolveLocalBackupDirectory` takes for `applicationRoot`. Mocking `fs` here
+  // would break the sibling suites that deliberately use a real temp directory.
+  containerised: boolean = isContainerised(),
+): string {
+  if (!containerised) {
+    return " Check the path exists and that the application's user can write to it.";
+  }
+  const mounted = process.env.BACKUP_LOCAL_DIR?.trim();
+  return (
+    " This application runs inside a container with a read-only filesystem, so" +
+    " it can only write to a directory that has been MOUNTED into it — a path" +
+    " that exists on the host is not visible here unless it is mounted." +
+    (mounted
+      ? ` This deployment mounts ${mounted}; enter that path rather than the host path.`
+      : " Set BACKUP_LOCAL_HOST_DIR in your .env to the host directory, recreate" +
+        " the app container (docker compose up -d app), then enter the container" +
+        " path shown in .env.example (BACKUP_LOCAL_DIR, /backups by default).") +
+    " The host directory must also be owned by uid 1001, the user the app runs" +
+    " as: sudo chown -R 1001:1001 <host directory>."
+  );
+}
+
+/**
+ * Make sure the directory exists and this process can write to it.
+ *
+ * Called at save time so an unusable path is refused while the operator is
+ * looking at the screen, rather than at 3am by the cron job.
+ */
 export function ensureLocalBackupDirectory(directory: string): void {
   const resolved = resolveLocalBackupDirectory(directory);
   try {
@@ -208,7 +272,7 @@ export function ensureLocalBackupDirectory(directory: string): void {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new LocalBackupPathError(
-      `Could not create that directory: ${message}`,
+      `Could not create ${resolved}: ${message}.${directoryAdviceForThisRuntime()}`,
     );
   }
   const probe = path.join(resolved, `.tacbookings-write-test-${process.pid}`);
@@ -226,7 +290,7 @@ export function ensureLocalBackupDirectory(directory: string): void {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new LocalBackupPathError(
-      `That directory is not writable by the application: ${message}`,
+      `${resolved} is not writable by the application: ${message}.${directoryAdviceForThisRuntime()}`,
     );
   }
 }

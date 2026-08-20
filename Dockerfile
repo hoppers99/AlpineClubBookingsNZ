@@ -121,6 +121,13 @@ RUN node -e "const id=(process.env.RELEASE_ID??'').trim(); const sha=(process.en
 # and is writable under the read-only container root filesystem.
 RUN mkdir -p public/images && chown -R nextjs:nodejs public/images
 
+# Local database backups land here when the compose stack mounts a volume at
+# /backups (BACKUP_LOCAL_DIR). Created and owned by the app user in the IMAGE so
+# a named volume mounted over it inherits uid 1001 on first init — the same
+# mechanism /app/public/images relies on. Without this the default volume would
+# be root-owned and the app could not write its own backups.
+RUN mkdir -p /backups && chown -R nextjs:nodejs /backups
+
 USER nextjs
 
 EXPOSE 3000
