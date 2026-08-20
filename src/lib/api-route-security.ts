@@ -79,7 +79,7 @@ export const explicitPublicApiRoutes = {
   "src/app/api/booking-messages/route.ts": {
     boundary: "public",
     reason:
-      "Public read of admin-configured booking message display text (Internet Banking instructions and policy copy) shown on the booking flow; returns only template strings, no member data.",
+      "Public read of admin-configured booking message display text (Internet Banking instructions and policy copy) shown on the booking flow; returns those template strings plus the four club-level values their merge fields resolve to (#2919) — club name, default lodge name, public URL, support email, every one of them already published on the club's own website — and no member data, no lodge door code and no travel note.",
   },
   "src/app/api/booking-requests/quote/route.ts": {
     boundary: "public",

@@ -229,6 +229,7 @@ describe("sendAdminXeroReconciliationReportAlert", () => {
         mismatchedCanonicalLinks: 0,
         staleCanonicalLinks: 0,
         duplicateActiveCanonicalLinks: 0,
+        overCoveredStripeRefundPayments: 0,
         stalePendingOperations: 0,
         recentFailedOperations: 1,
         recentPartialOperations: 0,

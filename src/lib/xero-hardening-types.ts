@@ -93,6 +93,13 @@ export interface XeroReconciliationReport {
     mismatchedCanonicalLinks: number;
     staleCanonicalLinks: number;
     duplicateActiveCanonicalLinks: number;
+    /**
+     * Stripe payments whose ACTIVE, non-cancelled refund credit-note coverage
+     * exceeds `refundedAmountCents` (#2901 fix round). No other detector sees
+     * over-coverage: the health snapshot flags only under-coverage, and the
+     * outbox caps an over-covered payment's next note at zero silently.
+     */
+    overCoveredStripeRefundPayments: number;
     stalePendingOperations: number;
     recentFailedOperations: number;
     recentPartialOperations: number;
@@ -133,6 +140,11 @@ export interface XeroCanonicalLinkCleanupResult {
   scannedActiveLinks: number;
   keptActiveLinks: number;
   deactivatedLinks: number;
+  /**
+   * Active Stripe per-delta REFUND_CREDIT_NOTE links the source-aware cleanup
+   * deliberately left alone (#2901, INV-ADDPAY-020). Observability only.
+   */
+  preservedStripeRefundCreditNoteLinks: number;
   byCategory: {
     memberContacts: number;
     paymentInvoices: number;

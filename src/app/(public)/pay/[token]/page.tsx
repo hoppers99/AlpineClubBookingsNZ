@@ -9,6 +9,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import StripeProvider from "@/components/stripe/StripeProvider";
 import PaymentForm from "@/components/stripe/PaymentForm";
 import { useClubIdentity } from "@/components/club-identity-provider";
+import {
+  renderClientBookingMessage,
+  type BookingMessageClubTokens,
+} from "@/lib/booking-message-definitions";
 import { formatNZDate } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/utils";
 import { FocusedActionError } from "@/components/focused-action-error";
@@ -41,6 +45,11 @@ interface PaymentLinkContext {
     expiresAt: string;
   } | null;
   canRequestFreshLink: boolean;
+  /**
+   * The lodge THIS booking is at (#2919). Optional on the wire so a page served
+   * from a cached/older response still renders — the club default stands in.
+   */
+  lodgeName?: string;
 }
 
 type Tone = "success" | "warning" | "info";
@@ -112,6 +121,11 @@ export default function PayByLinkPage() {
   );
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [bookingMessages, setBookingMessages] = useState<Record<string, string>>({});
+  // #2919 review: the club-level values this page's message tokens resolve to.
+  // Without them an operator's {{CLUB_LODGE_NAME}} reached the member as
+  // literal braces.
+  const [messageTokens, setMessageTokens] =
+    useState<BookingMessageClubTokens | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -141,8 +155,14 @@ export default function PayByLinkPage() {
   useEffect(() => {
     fetch("/api/booking-messages")
       .then((res) => (res.ok ? res.json() : null))
-      .then((data) => setBookingMessages(data?.messages ?? {}))
-      .catch(() => setBookingMessages({}));
+      .then((data) => {
+        setBookingMessages(data?.messages ?? {});
+        setMessageTokens(data?.tokens ?? null);
+      })
+      .catch(() => {
+        setBookingMessages({});
+        setMessageTokens(null);
+      });
   }, []);
 
   async function startCardPayment() {
@@ -287,7 +307,10 @@ export default function PayByLinkPage() {
             state: "paid",
             headline: "Payment received",
             message: `Thanks ${context.firstName} — your payment is complete.`,
-            nextStep: `Your booking with ${club.lodgeName} is confirmed. We look forward to seeing you.`,
+            // #2919: name the booking's OWN lodge, not the club default. The two
+            // "contact us if this link fails" lines above stay club-level on
+            // purpose — those are about the club, not about a stay.
+            nextStep: `Your booking with ${context.lodgeName ?? club.lodgeName} is confirmed. We look forward to seeing you.`,
           };
     return <NarrativeCard narrative={narrative} tone="success" />;
   }
@@ -396,10 +419,19 @@ export default function PayByLinkPage() {
               <div className="rounded-md border border-border p-3 text-sm">
                 <p className="font-medium text-foreground">Or pay by internet banking</p>
                 <p className="mt-1 text-muted-foreground">
-                  {(
-                    bookingMessages["paymentLink.internetBanking.description"] ??
-                    "Use reference {{paymentReference}} when making a direct transfer. The booking will be confirmed after the Xero invoice payment is reconciled."
-                  ).replaceAll("{{paymentReference}}", payable.internetBankingReference)}
+                  {/* #2919 review: every token this body may carry, not just the
+                      payment reference — and the lodge is THIS booking's. */}
+                  {renderClientBookingMessage({
+                    template:
+                      bookingMessages["paymentLink.internetBanking.description"],
+                    fallback:
+                      "Use reference {{paymentReference}} when making a direct transfer. The booking will be confirmed after the Xero invoice payment is reconciled.",
+                    clubTokens: messageTokens,
+                    lodgeName: context.lodgeName ?? null,
+                    data: {
+                      paymentReference: payable.internetBankingReference,
+                    },
+                  })}
                 </p>
                 <p className="mt-2 font-mono text-foreground">{payable.internetBankingReference}</p>
               </div>

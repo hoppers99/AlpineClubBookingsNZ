@@ -16,6 +16,7 @@ import {
 import { logAudit } from "@/lib/audit";
 import logger from "@/lib/logger";
 import { MEMBER_LEVEL_ROLE_VALUES } from "@/lib/member-roles";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 const DEFAULT_BULK_SENDMAIL_LIMIT = 1;
 
@@ -137,7 +138,7 @@ export async function POST(request: Request) {
   );
 
   // Generate the email HTML (using escapeHtml inside the template)
-  const html = bulkCommunicationTemplate(subject, messageBody);
+  const html = await renderEmailHtml(() => bulkCommunicationTemplate(subject, messageBody));
 
   const queued = eligibleRecipients.length;
 

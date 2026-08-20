@@ -88,8 +88,16 @@ export default async function ContactPage() {
 
   const caption = page?.caption ?? "Get in touch";
   const title = page?.title ?? "Contact Us";
-  const headerText =
-    page?.headerText ||
+  // Only a GENUINE stored `headerText` may reach the HTML sink. It is admin HTML,
+  // sanitised on write and again on read by the published-row reader used above.
+  const storedHeaderHtml = page?.headerText.trim() ? page.headerText : null;
+  // The fallback is a sentence this code COMPOSES, so it renders as an escaped
+  // text child rather than through the sink (#2819). It interpolates nothing
+  // today, but it is ordinary application copy rather than authored HTML, and its
+  // two sibling pages compose the same header out of club identity — keeping the
+  // branch a text node here is what stops the next edit to this line quietly
+  // reopening the hole on the branch a blanked or missing row takes.
+  const fallbackHeaderText =
     "Have a question about the club, the lodge, or booking a stay? Get in touch and we'll get back to you.";
 
   return (
@@ -100,10 +108,16 @@ export default async function ContactPage() {
           <h1 className="font-heading text-4xl font-bold tracking-tight sm:text-5xl">
             {title}
           </h1>
-          <div
-            className="mt-4 max-w-2xl text-lg text-brand-snow/80"
-            dangerouslySetInnerHTML={{ __html: headerText }}
-          />
+          {storedHeaderHtml ? (
+            <div
+              className="mt-4 max-w-2xl text-lg text-brand-snow/80"
+              dangerouslySetInnerHTML={{ __html: storedHeaderHtml }}
+            />
+          ) : (
+            <p className="mt-4 max-w-2xl text-lg text-brand-snow/80">
+              {fallbackHeaderText}
+            </p>
+          )}
         </div>
       </section>
 

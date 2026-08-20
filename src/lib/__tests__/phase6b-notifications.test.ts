@@ -832,6 +832,7 @@ describe("Email templates - Phase 6b", () => {
         mismatchedCanonicalLinks: 1,
         staleCanonicalLinks: 2,
         duplicateActiveCanonicalLinks: 1,
+        overCoveredStripeRefundPayments: 0,
         stalePendingOperations: 3,
         recentFailedOperations: 4,
         recentPartialOperations: 1,
