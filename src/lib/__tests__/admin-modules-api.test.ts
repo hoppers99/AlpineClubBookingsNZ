@@ -123,11 +123,14 @@ function sliceFrom(source: string, startMarker: string, endMarker: string) {
 describe("Admin modules schema contract", () => {
   it("persists only activation booleans for supported optional modules", () => {
     const schema = readRepoFile("prisma/schema.prisma");
-    const model = sliceFrom(
-      schema,
-      "model ClubModuleSettings",
-      "// ---------------------------------------------------------------------------\n// Booking Modifications",
-    );
+    // End the slice at the model's own closing brace, not at a distant section
+    // banner. The banner sat hundreds of lines past ClubModuleSettings, so every
+    // model declared in between was scanned as if it belonged to it — and the
+    // `not.toMatch(/secret|.../)` guard below then fired on a NEIGHBOUR's docblock
+    // (ServerNzSettings, whose comment exists to say its API key is NOT stored
+    // there) rather than on anything ClubModuleSettings persists. A Prisma model
+    // body holds no nested braces, so the first line-initial `}` ends it.
+    const model = sliceFrom(schema, "model ClubModuleSettings", "\n}");
     const migration = readRepoFile(
       "prisma/migrations/20260518113000_add_club_module_settings/migration.sql",
     );

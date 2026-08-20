@@ -1,0 +1,115 @@
+name: Install Playwright browsers
+description: >
+  Put a working Chromium on the runner for the E2E jobs: restore it from cache,
+  install what is missing, prove it launches, and reach for the slow apt
+  system-dependency install ONLY when that proof fails.
+
+# WHY THIS EXISTS, measured rather than assumed (run 32304150140, 19 Aug 2026).
+#
+# The old step was `npx playwright install --with-deps chromium` behind a
+# three-attempt retry, run in both E2E jobs. It normally took ~25s. On that run
+# it took 9m15s, and the breakdown is the whole point:
+#
+#   * downloading Chromium, ffmpeg and the headless shell — about 10 SECONDS,
+#     184 MiB off a CDN that was never the problem;
+#   * everything else — `--with-deps`, i.e. `apt-get update` against
+#     azure.archive.ubuntu.com (68s stalled on one index alone) followed by
+#     ~7.5 minutes unpacking X fonts and libraries.
+#
+# So the expensive, flake-prone half was the apt half, and it was running on
+# every green run to install packages the `ubuntu-latest` runner image already
+# ships. That is also the half that breaks outright when the third-party apt
+# sources preinstalled on the runners serve invalid clearsigned metadata
+# (#1634) — the failure the retry loop was added to ride out. Retrying a
+# nine-minute step three times is a 27-minute way to fail.
+#
+# The order is therefore inverted: install the browsers (cheap, cached), prove
+# the browser actually launches, and run the apt work only if that proof fails.
+# A missing system library then still gets fixed automatically, but on the rare
+# path instead of the common one.
+#
+# The fonts `--with-deps` used to install are not load-bearing here: no spec
+# takes a pixel snapshot (`toHaveScreenshot`/`toMatchSnapshot` appear nowhere
+# under `e2e/`), so glyph availability cannot move an assertion.
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve the Playwright version
+      id: playwright
+      shell: bash
+      # The cache key is the version of the package that will DRIVE the
+      # browsers, read from the installed tree rather than hand-maintained —
+      # a version bump must miss the cache, and nothing else should.
+      run: |
+        version="$(node -p "require('@playwright/test/package.json').version")"
+        echo "version=${version}" >> "$GITHUB_OUTPUT"
+        echo "Playwright ${version}"
+
+    - name: Restore the browser cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ~/.cache/ms-playwright
+        key: ${{ runner.os }}-playwright-chromium-${{ steps.playwright.outputs.version }}
+
+    - name: Install browsers
+      shell: bash
+      # Run this even on a cache HIT, deliberately: on a hit it is a ~2s no-op
+      # that VERIFIES the restored tree, and on a partial or corrupt cache it
+      # downloads what is missing instead of leaving a broken browser for the
+      # launch check to find. The retry stays, because a download can still
+      # blip — but it now wraps ten seconds of work rather than nine minutes.
+      run: |
+        for attempt in 1 2 3; do
+          if npx playwright install chromium; then
+            exit 0
+          fi
+          echo "::warning::Playwright browser download attempt ${attempt} failed; retrying in $((attempt * 15))s"
+          sleep $((attempt * 15))
+        done
+        echo "::error::Playwright browser download failed after 3 attempts"
+        exit 1
+
+    - name: Prove the browser launches
+      id: launch
+      shell: bash
+      # The check that replaces `--with-deps` as the DEFAULT path. A browser
+      # that launches and renders a page has every system library it needs, so
+      # this answers the only question the apt install was there to answer —
+      # and answers it about the browser that will actually run the suite.
+      continue-on-error: true
+      run: node .github/actions/playwright-browsers/launch-check.mjs
+
+    - name: Install system dependencies and re-check
+      if: steps.launch.outcome == 'failure'
+      shell: bash
+      # The recovery path. Reached only when the launch check failed, which on
+      # a runner image that ships Chromium's libraries should be never — but
+      # when a future image drops one, this fixes it unattended instead of
+      # turning every E2E run red.
+      #
+      # The third-party apt sources are dropped first for the #1634 reason:
+      # packages.microsoft.com intermittently serves invalid clearsigned
+      # metadata ("Clearsigned file isn't valid, got 'NOSPLIT'"), which fails
+      # `apt-get update` outright, and those repos provide nothing Playwright
+      # needs — its system libraries come from the Ubuntu archive.
+      run: |
+        echo "::warning::Chromium did not launch from the runner image; installing system dependencies"
+        sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list \
+                   /etc/apt/sources.list.d/azure-cli.list \
+                   /etc/apt/sources.list.d/azure-cli.sources || true
+        for attempt in 1 2 3; do
+          if npx playwright install-deps chromium; then
+            break
+          fi
+          if [ "${attempt}" = "3" ]; then
+            echo "::error::playwright install-deps failed after 3 attempts"
+            exit 1
+          fi
+          echo "::warning::install-deps attempt ${attempt} failed; retrying in $((attempt * 15))s"
+          sleep $((attempt * 15))
+        done
+        # Re-check rather than assume: if the browser still cannot launch, fail
+        # HERE, where the log says why, instead of in the suite as a wall of
+        # timed-out specs.
+        node .github/actions/playwright-browsers/launch-check.mjs

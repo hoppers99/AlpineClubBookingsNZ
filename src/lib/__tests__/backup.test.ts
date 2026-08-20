@@ -35,13 +35,19 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 // Backup config is DB-only (#2095): mock the resolver rather than setting env.
-vi.mock("@/lib/backup-config", () => ({
-  resolveBackupConfig: vi.fn(),
-}));
+// PARTIAL, not wholesale: the module also exports the pure
+// `isAnyBackupDestinationEnabled` predicate the engine now gates on, and
+// replacing the whole module left it undefined — killing every case in this
+// file with "No isAnyBackupDestinationEnabled export is defined on the mock".
+vi.mock("@/lib/backup-config", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/backup-config")>();
+  return { ...actual, resolveBackupConfig: vi.fn() };
+});
 
 import {
   applyLegacyBackupEnvGate,
   buildBackupCronOutcome,
+  describeMissingCommand,
   LEGACY_BACKUP_ENV_UNMIGRATED_MESSAGE,
   runDatabaseBackup,
   sanitizePostgresUrlForPgDump,
@@ -67,6 +73,10 @@ function makeConfig(
     accessKeyId: null,
     secretAccessKey: null,
     restoreValidationUrl: null,
+    // Local backups off by default here, so every existing case in this file
+    // keeps asserting the S3/ephemeral behaviour it was written for.
+    localEnabled: false,
+    localPath: null,
     needsReentry: false,
     ...overrides,
   };
@@ -183,6 +193,47 @@ describe("backup", () => {
         healthSignal: "backup-not-durable",
       },
     });
+  });
+
+  it("does not call a local-only backup 'not durable'", () => {
+    // A club that backs up to a configured on-host directory HAS a destination.
+    // Before local backups existed, "no S3" and "nowhere at all" were the same
+    // state, so the nightly run failed; treating them the same now would fail
+    // every local-only club's cron every night, for a backup that worked.
+    expect(
+      buildBackupCronOutcome({
+        success: true,
+        filename: "backup.sql.gz",
+        sizeBytes: 1024,
+        uploadedToS3: false,
+        storedLocally: true,
+        localPruned: ["tacbookings-old.sql.gz"],
+      }),
+    ).toEqual({
+      status: "SUCCESS",
+      resultSummary: {
+        filename: "backup.sql.gz",
+        sizeBytes: 1024,
+        minSizeBytes: 128,
+        s3: false,
+        local: true,
+        localPruned: 1,
+      },
+    });
+  });
+
+  it("still fails a run that reached NEITHER destination", () => {
+    // The guard that keeps the case above honest: without a destination the
+    // dump is in the container's ephemeral /tmp and a restart discards it.
+    expect(
+      buildBackupCronOutcome({
+        success: true,
+        filename: "backup.sql.gz",
+        sizeBytes: 1024,
+        uploadedToS3: false,
+        storedLocally: false,
+      }).status,
+    ).toBe("FAILURE");
   });
 
   describe("applyLegacyBackupEnvGate (#2095 MAJOR-1)", () => {
@@ -420,6 +471,58 @@ describe("backup", () => {
     expect(parsed.searchParams.get("pgbouncer")).toBeNull();
     expect(parsed.searchParams.get("schema")).toBeNull();
     expect(parsed.searchParams.get("sslmode")).toBe("require");
+  });
+
+  it("says WHICH tool is missing when pg_dump is not installed", async () => {
+    // The reported failure was `pg_dump failed: spawnSync pg_dump ENOENT`, which
+    // names no package, suggests a code fault, and lands on the disaster-recovery
+    // screen. The image ships postgresql16-client, so this fires on a host that
+    // does not — where the reader needs to be told what to install.
+    vi.mocked(resolveBackupConfig).mockResolvedValue(makeConfig());
+    vi.mocked(existsSync).mockReturnValue(true);
+    const enoent = Object.assign(new Error("spawnSync pg_dump ENOENT"), {
+      code: "ENOENT",
+      syscall: "spawnSync pg_dump",
+      path: "pg_dump",
+    });
+    vi.mocked(execFileSync).mockImplementation(() => {
+      throw enoent;
+    });
+
+    const result = await runDatabaseBackup();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("pg_dump is not installed on the server");
+    expect(result.error).toContain("PostgreSQL client tools");
+    // The raw spawn text is gone rather than appended.
+    expect(result.error).not.toContain("spawnSync");
+  });
+
+  it("does not mislabel a missing FILE as a missing command", () => {
+    // ENOENT is also what a missing backup file reports. Only a failed LAUNCH
+    // (`syscall: spawnSync …`) is a missing executable.
+    expect(
+      describeMissingCommand(
+        Object.assign(new Error("ENOENT: no such file"), {
+          code: "ENOENT",
+          syscall: "open",
+          path: "/var/backups/gone.sql.gz",
+        }),
+      ),
+    ).toBeNull();
+    expect(describeMissingCommand(new Error("boom"))).toBeNull();
+  });
+
+  it("names the AWS CLI rather than postgres when the aws command is missing", () => {
+    expect(
+      describeMissingCommand(
+        Object.assign(new Error("spawnSync aws ENOENT"), {
+          code: "ENOENT",
+          syscall: "spawnSync aws",
+          path: "aws",
+        }),
+      ),
+    ).toContain("the AWS CLI");
   });
 
   it("fails closed when pg_dump exits non-zero", async () => {

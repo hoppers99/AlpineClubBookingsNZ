@@ -68,6 +68,12 @@ function readinessMessage(params: {
    * message fail-closed.
    */
   analyticsConfigured?: boolean;
+  /**
+   * Whether the Alpine Central Server (ServerNZ) API key is stored. Resolved by
+   * the CALLER (a DB read of the encrypted credential store); `undefined` reads
+   * as "not configured" so readiness stays fail-closed.
+   */
+  alpineServerConfigured?: boolean;
 }): { status: ModuleReadinessStatus; message: string } {
   if (!params.adminEnabled) {
     return {
@@ -113,6 +119,16 @@ function readinessMessage(params: {
     };
   }
 
+  // The ServerNZ integration is enabled but has no API key stored yet — point
+  // the admin at the setup on the Integrations hub.
+  if (params.key === "alpineCentralServer" && !params.alpineServerConfigured) {
+    return {
+      status: "credentials_missing",
+      message:
+        "Alpine Central Server is enabled, but no API key has been saved. Complete the setup under Admin → Integrations → Alpine Central Server.",
+    };
+  }
+
   return {
     status: "ready",
     message: `${params.label} is enabled.`,
@@ -131,6 +147,7 @@ function buildModuleStatusList(
       label: definition.label,
       adminEnabled,
       analyticsConfigured: context?.analyticsConfigured,
+      alpineServerConfigured: context?.alpineServerConfigured,
     });
 
     return {
@@ -153,6 +170,7 @@ function buildModuleStatusList(
  */
 export interface ModuleStatusContext {
   analyticsConfigured?: boolean;
+  alpineServerConfigured?: boolean;
 }
 
 export function buildClubModuleSettingsPayload(
@@ -178,17 +196,27 @@ export async function loadClubModuleSettings(): Promise<ClubModuleSettingsPayloa
     ({ isAnalyticsIntegrationConfigured }) =>
       isAnalyticsIntegrationConfigured(),
   );
-  const [record, analyticsConfigured] = await Promise.all([
-    prisma.clubModuleSettings.findUnique({
-      where: { id: CLUB_MODULE_SETTINGS_ID },
-      select: CLUB_MODULE_SETTINGS_COLUMN_SELECT,
-    }),
-    // Never throws: a read failure reports "not configured", which shows the
-    // "complete the setup" readiness message rather than failing the whole page.
-    analyticsConfiguredPromise,
-  ]);
+  // Same lazy-import discipline: keep this server-only credential read off the
+  // module graph that maintenance/E2E scripts evaluate.
+  const alpineServerConfiguredPromise = import("@/lib/servernz-config").then(
+    ({ isServerNzConfigured }) => isServerNzConfigured(),
+  );
+  const [record, analyticsConfigured, alpineServerConfigured] =
+    await Promise.all([
+      prisma.clubModuleSettings.findUnique({
+        where: { id: CLUB_MODULE_SETTINGS_ID },
+        select: CLUB_MODULE_SETTINGS_COLUMN_SELECT,
+      }),
+      // Never throws: a read failure reports "not configured", which shows the
+      // "complete the setup" readiness message rather than failing the whole page.
+      analyticsConfiguredPromise,
+      alpineServerConfiguredPromise,
+    ]);
 
-  return buildClubModuleSettingsPayload(record, { analyticsConfigured });
+  return buildClubModuleSettingsPayload(record, {
+    analyticsConfigured,
+    alpineServerConfigured,
+  });
 }
 
 const DISABLED_MODULE_FLAGS: FeatureFlags = Object.fromEntries(

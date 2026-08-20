@@ -69,6 +69,32 @@ export interface GuestsCardQuickAdd {
   onAddPartnerCandidate: (candidate: PartnerSharingCandidate) => void;
 }
 
+/**
+ * The reciprocal "other club member" rate (Other Lodges epic, follow-up to
+ * #2749): one partner lodge for the booking, then a tick per non-member guest.
+ */
+export interface GuestsCardOtherLodge {
+  /**
+   * Whether this viewer is offered the control at all — true when the server
+   * shipped the partner-lodge registry, which it does for admins/officers only.
+   */
+  available: boolean;
+  lodges: Array<{ id: string; name: string }>;
+  enabled: boolean;
+  lodgeId: string | null;
+  flaggedGuestIds: ReadonlySet<string>;
+  /** False until a lodge is named, which is what disables every guest tick. */
+  guestTicksEnabled: boolean;
+  /**
+   * The fee the pending edit would write for each existing guest, from the
+   * quote. Empty until a quote lands; the rows then show their stored fee.
+   */
+  quotedGuestPriceCents: ReadonlyMap<string, number>;
+  onEnabledChange: (enabled: boolean) => void;
+  onLodgeIdChange: (lodgeId: string | null) => void;
+  onGuestToggle: (guestId: string, flagged: boolean) => void;
+}
+
 /** The two ways guests can be given different nights from each other (#713). */
 export interface GuestsCardDateModes {
   canEditPerGuestDates: boolean;
@@ -141,6 +167,7 @@ export function EditGuestsCard({
   party,
   memberGuest,
   memberLink,
+  otherLodge,
   quickAdd,
   dateModes,
   guestEdits,
@@ -158,6 +185,7 @@ export function EditGuestsCard({
   party: GuestsCardParty;
   memberGuest: GuestsCardMemberGuest;
   memberLink: GuestsCardMemberLink;
+  otherLodge: GuestsCardOtherLodge;
   quickAdd: GuestsCardQuickAdd;
   dateModes: GuestsCardDateModes;
   guestEdits: GuestsCardGuestEdits;
@@ -419,6 +447,64 @@ export function EditGuestsCard({
           </div>
         ) : null}
 
+        {/*
+          Other Lodges epic: the reciprocal other-club rate.
+
+          A third tick beside "Per guest booking dates" and "Multiple date
+          ranges", and deliberately in the same place: all three change how the
+          guest rows below are priced or dated, so they read as one group of
+          switches over the same list.
+
+          ADMIN-ONLY BY ABSENCE, not by a disabled control — `available` is the
+          presence of the server's partner-lodge registry, which a member's
+          payload does not carry. A member therefore sees the card exactly as it
+          was before this feature. Also hidden under an admin date override,
+          which is date-only, and during an in-progress edit, whose planner
+          prices future nights through a different path than the one the tick
+          reprices — the same two exclusions the multi-range block above carries.
+        */}
+        {otherLodge.available &&
+        !mode.overrideEnabled &&
+        !mode.isInProgressEdit ? (
+          <div className="space-y-3 rounded-md border p-3 text-sm">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={otherLodge.enabled}
+                onChange={(e) => otherLodge.onEnabledChange(e.target.checked)}
+                className="h-4 w-4"
+              />
+              <span className="font-medium">Member of Other Lodge</span>
+            </label>
+            {otherLodge.enabled ? (
+              <div className="space-y-1">
+                <Label htmlFor="other-lodge-name">Other Lodge Name</Label>
+                <select
+                  id="other-lodge-name"
+                  value={otherLodge.lodgeId ?? ""}
+                  onChange={(e) =>
+                    otherLodge.onLodgeIdChange(e.target.value || null)
+                  }
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
+                >
+                  <option value="">Select a lodge</option>
+                  {otherLodge.lodges.map((lodge) => (
+                    <option key={lodge.id} value={lodge.id}>
+                      {lodge.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Tick the non-members below who are members of this lodge. Each
+                  one is re-priced at this club&apos;s member rate for their age
+                  group; unticking puts them back on the non-member rate. The
+                  price change is shown before you save.
+                </p>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         {/* Existing guests */}
         {booking.guests.map((guest) => (
           <ExistingGuestRow
@@ -454,6 +540,32 @@ export function EditGuestsCard({
             onUndoRemove={() => guestEdits.onUndoRemoveGuest(guest.id)}
             onStartLink={() => memberLink.onStartLink(guest.id)}
             onUnlink={() => memberLink.onUnlink(guest.id)}
+            otherLodgeRate={
+              // The tick COLUMN exists only while "Member of Other Lodge" is
+              // ticked. Off, the rows are exactly what they were before this
+              // feature — no empty column indenting every name for a rate the
+              // officer is not setting.
+              otherLodge.available &&
+              otherLodge.enabled &&
+              !mode.overrideEnabled &&
+              !mode.isInProgressEdit
+                ? {
+                    // A tick is offered for NON-MEMBERS only: a member of this
+                    // club already prices at their own membership rate, and the
+                    // server refuses the combination outright.
+                    offered: !guest.isMember,
+                    // Live only once a lodge is named, and never on a row this
+                    // edit is removing.
+                    enabled:
+                      otherLodge.guestTicksEnabled &&
+                      !party.removedGuestIds.has(guest.id),
+                    checked: otherLodge.flaggedGuestIds.has(guest.id),
+                    onChange: (checked: boolean) =>
+                      otherLodge.onGuestToggle(guest.id, checked),
+                  }
+                : undefined
+            }
+            quotedPriceCents={otherLodge.quotedGuestPriceCents.get(guest.id)}
           />
         ))}
 
