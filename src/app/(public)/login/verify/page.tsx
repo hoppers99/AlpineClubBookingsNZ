@@ -1,7 +1,6 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { buildLoginPath, getExplicitCallbackUrl } from "@/lib/auth-redirect";
-import { readFamilyInviteReturnAddress } from "@/lib/family-invite-return-address-cookie";
 import { resolvePostLoginLandingPath } from "@/lib/post-login-landing";
 import { TwoFactorVerifyPanel } from "../two-factor-panels";
 
@@ -36,13 +35,8 @@ export default async function TwoFactorVerifyPage({
   // server-side from the authoritative session, never a raced post-signIn fetch.
   // An explicit deep link still wins (D-D4). This is the single authoritative
   // resolution site for a member reaching verification via any entry point.
-  // #2827: a 2FA-enabled member who came from a family invite must still land back
-  // on the invite after the challenge. The address is read from the HttpOnly cookie
-  // rather than carried in this page's query string, and the panel below only ever
-  // passes it to `router.replace()` — never into a rendered attribute.
   const landing = resolvePostLoginLandingPath({
     explicitCallbackUrl,
-    privateReturnPath: await readFamilyInviteReturnAddress(),
     landingPreference: session.user.postLoginLanding,
     permissionInput: {
       adminPermissionMatrix: session.user.adminPermissionMatrix,

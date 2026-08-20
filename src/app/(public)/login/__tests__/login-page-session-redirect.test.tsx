@@ -12,17 +12,9 @@ import {
 // same gates as login/verify: forced password change, then the two-factor
 // funnel, then the sanitised callbackUrl.
 
-const { mockAuth, mockRedirect, mockReadReturnAddress } = vi.hoisted(() => ({
+const { mockAuth, mockRedirect } = vi.hoisted(() => ({
   mockAuth: vi.fn(),
   mockRedirect: vi.fn(),
-  mockReadReturnAddress: vi.fn<() => Promise<string | null>>(),
-}));
-
-// #2827: the self-heal branch reads the family-invite return address from an
-// HttpOnly cookie. Mocked at the reader, not at `next/headers`, because
-// `cookies()` throws outside a request scope.
-vi.mock("@/lib/family-invite-return-address-cookie", () => ({
-  readFamilyInviteReturnAddress: () => mockReadReturnAddress(),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -89,7 +81,6 @@ async function runLoginPage(
 describe("LoginPage authenticated self-heal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockReadReturnAddress.mockResolvedValue(null);
     mockRedirect.mockImplementation((path: string) => {
       throw new Error(`redirect:${path}`);
     });
@@ -242,47 +233,6 @@ describe("LoginPage authenticated self-heal", () => {
     await expect(
       runLoginPage({ callbackUrl: "/bookings" })
     ).rejects.toThrow("redirect:/bookings");
-  });
-
-  it("returns a Google sign-in to the family-invite address in the cookie (#2827)", async () => {
-    // This branch is where a Google sign-in from an invite comes back: the
-    // provider callbackUrl is "/login" whenever there is no explicit deep link,
-    // so without the cookie read here the one flow with no client post-auth seam
-    // would land on the dashboard and the invite would be forgotten.
-    const invitePath = `/family-invite/${"e7c1b93a5d0f4826".repeat(4)}`;
-    mockAuth.mockResolvedValue(sessionUser());
-    mockReadReturnAddress.mockResolvedValue(invitePath);
-
-    await expect(runLoginPage()).rejects.toThrow(`redirect:${invitePath}`);
-  });
-
-  it("lets an explicit callbackUrl outrank the family-invite cookie (#2827)", async () => {
-    mockAuth.mockResolvedValue(sessionUser());
-    mockReadReturnAddress.mockResolvedValue(
-      `/family-invite/${"e7c1b93a5d0f4826".repeat(4)}`,
-    );
-
-    await expect(runLoginPage({ callbackUrl: "/bookings" })).rejects.toThrow(
-      "redirect:/bookings",
-    );
-  });
-
-  it("never materialises the family-invite address into the 2FA detour URL (#2827)", async () => {
-    // The invite token must not reappear in a URL the login page RENDERS or
-    // redirects through with a query string — the detour carries only a genuinely
-    // explicit deep link, and /login/verify re-reads the cookie for itself.
-    mockAuth.mockResolvedValue(
-      sessionUser({
-        twoFactorRequired: true,
-        twoFactorEnrolled: true,
-        twoFactorMethod: "totp",
-      }),
-    );
-    mockReadReturnAddress.mockResolvedValue(
-      `/family-invite/${"e7c1b93a5d0f4826".repeat(4)}`,
-    );
-
-    await expect(runLoginPage()).rejects.toThrow(/redirect:\/login\/verify$/);
   });
 
   it("still renders the form for an anonymous visitor", async () => {

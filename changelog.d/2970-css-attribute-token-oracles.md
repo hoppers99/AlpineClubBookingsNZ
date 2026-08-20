@@ -2,8 +2,8 @@
   Site-Style **Raw CSS** is a trusted admin capability, but a CSS attribute
   selector can read a value one character at a time — so on the pages that carry
   Raw CSS, any secret in an attribute was readable by whoever edits the club's
-  styling, which includes a content-area admin who is not a Full Admin. Three
-  places were putting a one-time token where it did not belong, and all three are
+  styling, which includes a content-area admin who is not a Full Admin. Two
+  places were putting a one-time token where it did not belong, and both are
   closed.
 
   On the group-join confirmation page, the "if you are not redirected" fallback
@@ -25,20 +25,5 @@
   same work fixed a styling bug it uncovered: the membership application form
   (`/join/apply`) was being labelled as the group-join code page, so a club's CSS
   rule for either one landed on the wrong page.
-
-  The family-group invitation page's "I already have an account" and "Sign in with
-  a different account" buttons used to carry the invite token in their link, so
-  the token appeared in the address bar and stayed in browser history. The
-  sign-in button is now a plain link, and the return address is remembered
-  privately by the server instead — in a short-lived cookie the page itself cannot
-  read, which is written only when somebody actually opens the invitation, is
-  discarded the moment the sign-in lands back on it, and expires after two minutes
-  in any case. Nothing changes for the recipient: the emailed link still works,
-  signing in still brings them back to the invitation whichever way they sign in
-  (including Google and a two-factor challenge), the sign-in button still works
-  with JavaScript switched off, and if the address has expired they simply land on
-  their usual page. If you are signed in as a different member, that page now
-  offers "Sign out and use a different account", which actually works — the old
-  button sent you straight back to the same screen.
 
   Nothing an operator has to configure, and no page a member sees looks different.

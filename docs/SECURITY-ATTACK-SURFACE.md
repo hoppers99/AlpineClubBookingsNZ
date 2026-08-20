@@ -1362,23 +1362,14 @@ The security-relevant properties:
   another layer.** One predicate was necessary and not sufficient — the review of
   the first cut found the invariant false at `/`, where the directive side had a
   carve-out the predicate knew nothing about (see the `/` bullet above). It now
-  rests on two facts together: the proxy's `Set-Cookie` writers are a known,
-  short census, every one of them gated on that predicate, and every path the
-  predicate admits gets a directive from one of the two cache rules. A further
-  `Set-Cookie` writer, or a second carve-out on the directive side, has to
-  re-establish the pairing rather than inherit it, and BOTH facts are tested
-  rather than only documented (review finding, 4 Aug 2026): the gating is
-  mutation-proven, and the census half is a source-reading contract case that
-  walks `src/proxy.ts`'s AST and fails on any `"Set-Cookie"` literal or
-  `.cookies.set()` written outside it. **#2827 is the first change to take that
-  route, so the census is now a set of two** — the hint sync, and
-  `stampFamilyInviteReturnAddress()`, which carries the family-invite post-login
-  return address on the same `GET` + `isPageShapedPath()` gate (see the #2827
-  bullet under "Admin Raw CSS on the public site" below). The census is asserted
-  both ways round, so neither a writer added somewhere new nor one deleted or
-  renamed away can pass vacuously, and the excluded-shape case beside it now
-  requires no `Set-Cookie` **at all** rather than merely no marker cookie — which
-  is what makes it cover the second writer too. Without it a
+  rests on two facts together: the hint sync is the proxy's only `Set-Cookie`
+  writer and is gated on that predicate, and every path the predicate admits gets a
+  directive from one of the two cache rules. A third `Set-Cookie` writer, or a
+  second carve-out on the directive side, has to re-establish the pairing rather
+  than inherit it, and BOTH facts are tested rather than only documented (review
+  finding, 4 Aug 2026): the gating is mutation-proven, and the sole-writer half is a
+  source-reading contract case that walks `src/proxy.ts`'s AST and fails on any
+  `"Set-Cookie"` literal or `.cookies.set()` outside the hint sync. Without it a
   lodge-preference or consent-banner cookie added ahead of the header block would
   have left the whole suite green while `GET /branding/logo.png` shipped that cookie
   beside `send`'s `public, max-age=…`. The hint is NOT suppressed out of territory
@@ -3042,168 +3033,6 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   token is involved either way — it is a styling-correctness bug in a
   security fix, fixed in the same PR.
 
-- **`/family-invite/[token]`'s login link: FIXED by #2827, via a server-side
-  return address (owner decision, 19 Aug 2026).** The page used to build
-  `<Link href={buildLoginPath('/family-invite/<token>')}>` for its signed-out and
-  wrong-account branches, so the invite token sat in an `href` — and from there in
-  the recipient's address bar, their browser history and any `Referer` the next hop
-  saw.
-
-  **This entry originally called that page Raw-CSS-bearing and the `href` a CSS
-  oracle. It was not (corrected 20 Aug 2026 by review).** `/family-invite/[token]`
-  is a `(public)` route, and that group's layout injects `theme.appCss`, which
-  excludes `rawCss` — see the bullet above for the full accounting of which groups
-  get which variant. So the exposure closed here is the URL/history/`Referer` one,
-  which was real, plus the standing hazard that moving this group under the shared
-  chrome would have made the CSS oracle real without anyone revisiting the link.
-  The rework is right; the record of what it closed needed to be accurate before it
-  became this repository's memory of the event.
-
-  It was not the same *straightforward* rule as the two above either, because
-  unlike the group-join fallback this link **genuinely works without JavaScript**,
-  so a click handler over in-memory state would have dropped a working no-JS path.
-  The owner chose the rework instead: keep the plain anchor, and carry the return
-  address out of the page.
-
-  The signed-out branch's affordance is now a `<Link href="/login">` with no
-  `callbackUrl` at all (the wrong-account branch's is a sign-out control, below),
-  and the post-login return address travels in an `HttpOnly`, `SameSite=Lax`,
-  path-wide cookie with a **two-minute** life — shortened from ten by the owner
-  (19 Aug 2026), see the bounded-residual note below
-  (`src/lib/family-invite-return-address.ts`). Four things make that safe rather
-  than a token in a different hiding place:
-
-  - **It is unreadable from the page.** `HttpOnly` puts it out of reach of CSS
-    attribute selectors, of `document.cookie`, and of the document, the address
-    bar and the `Referer` alike — which is a *narrower* exposure than the `href`
-    it replaces, not a lateral move. It is not a new bearer store in
-    [`TOKEN_HASHING.md`](TOKEN_HASHING.md)'s sense either: nothing is persisted
-    server-side, and `PartnerInviteToken.tokenHash` is unchanged.
-  - **`src/proxy.ts` is what writes it**, on a signed-out top-level navigation to
-    the invite page — and what **retires** it on the signed-in GET of that page.
-    Both conditions came out of the 20 Aug 2026 review and each closed a real
-    defect; they are stated in full further down this entry. A
-    server component may not set a cookie during render, and the token only ever
-    reaches the server on a request whose URL contains it, so the two candidate
-    no-JS carriers were this response's own headers and a Server Action form
-    posting back to the same URL. The second is attribute-safe (measured on the
-    vendored next runtime: `defaultEncodeFormAction` returns only an
-    `$ACTION_ID_…` field name, and react-dom writes `action=""`), but its
-    no-JavaScript half is progressive enhancement that cannot be exercised
-    without a running build — so the guarantee would have shipped untested. This
-    is the **second** `Set-Cookie` writer in the proxy, and it re-establishes the
-    #2578 pairing rather than inheriting it: same `GET` + `isPageShapedPath()`
-    gate, and its one address always takes the private-only directive.
-  - **The value can only ever be an invite page.** `getFamilyInviteReturnPath()`
-    runs the candidate through `getSafeInternalReturnPath()` — the guard
-    `callbackUrl` already uses, closing the open-redirect class — and then refuses
-    every *safe internal* path that is not literally
-    `/family-invite/<64 lowercase hex>`. So a planted or shared-browser cookie
-    cannot steer a member's post-login landing to an admin page, a payment page or
-    anywhere else. `resolvePostLoginLandingPath()` re-validates it itself rather
-    than trusting its caller.
-  - **The email re-check stays and is load-bearing against a FORWARDED link —
-    but it does not discharge cookie planting, and the first cut said it did
-    (corrected 20 Aug 2026).** The claim was that the worst a planted value
-    achieves is landing somebody on an invite page they cannot join, because the
-    page requires the signed-in member's email to match the invited address. True,
-    and void in the case that matters: any member may invite an arbitrary address
-    to their own family group, so an attacker invites the **victim's own** email
-    and the match succeeds — a forced post-login landing, wearing the club's own
-    chrome, one click from a family-group and partner-relationship change.
-
-    What actually bounds it is the write condition: the address is written only on
-    a `Sec-Fetch-Dest: document` request, so planting needs a visible top-level
-    navigation of the victim's browser to the club's own invite page, which
-    achieves no more than emailing them the link. Joining still takes a deliberate
-    click on a page that names the inviter and the group. `Sec-Fetch-Dest` is
-    browser-set and unforgeable from script; the condition is deliberately NOT
-    narrowed to `Sec-Fetch-Site: same-origin`, because the ordinary path here is a
-    click on an emailed link and arrives `cross-site`.
-
-  ### The address's life, and why one route handler could not manage it
-
-  All four post-login landing sites honour the address (the landing route for
-  credentials and magic link, `/login`'s self-heal for Google, and both 2FA detour
-  pages), so no flow regresses to the dashboard.
-
-  Retiring it is the proxy's job, because **only one of those four can write a
-  cookie at all** — the other three are server components. The first cut had
-  `/api/auth/post-login-landing` clear it, and the 20 Aug 2026 review measured
-  that as a no-op: the route's answer IS a redirect to the invite page, whose GET
-  re-stamped the cookie for another ten minutes, and the Google and both 2FA
-  flows never call that route. Consequence on a shared lodge or kiosk browser:
-  member A signed in through their invitation, and member B signing in at `/login`
-  within ten minutes was redirected to A's invite page with A's live token in B's
-  address bar. Because every one of the four flows terminates in a signed-in GET
-  of the invite page, `syncFamilyInviteReturnAddress()` retires it there, which
-  makes "cleared on use" true for all four. The route handler still clears it for
-  the one case that never lands on the page — an explicit `callbackUrl` outranked
-  the address.
-
-  The wrong-account branch's control changed with it. It used to be a `/login`
-  link, which is inert for the signed-in visitor that branch is *for*: `/login`
-  redirects an authenticated visitor to their resolved landing, so the button
-  bounced back to the identical screen, and no `(public)` page carries a sign-out
-  affordance to use instead. (The pre-#2827 `buildLoginPath(...)` link bounced the
-  same way, so this was not a regression — it was a promise the code had never
-  kept.) It is now a sign-out-and-return control: signing out lands a signed-out
-  navigation on the invite page, which is where the address is written.
-
-  **Accepted bounded residual (owner decision, 19 Aug 2026): a cookie is
-  per-browser, where the old `callbackUrl` was per-tab.** If somebody opens an
-  invitation on a shared lodge or kiosk browser while signed out and walks away
-  *without signing in*, the next person to sign in on that browser within the
-  cookie's life is landed on that invitation. The retire above closes the case
-  where the first visitor DID sign in, which is the common one and the one that put
-  a live token in a second person's address bar; this remainder discloses the
-  invited email address and the family-group name, and the page's email re-check
-  still refuses the join. It is inherent to a browser-scoped return address: the
-  pre-#2827 `callbackUrl` avoided it only by living in a URL, which is the exposure
-  being closed.
-
-  The complete closure is to bind the address to the tab that asked for it — a
-  tokenless flag on the sign-in link (`/login?…`), honoured only when present. That
-  is a constant, not a secret, so it is safe to render. **The owner chose not to
-  build it in this PR, and to shorten the exposure window instead:** the cookie's
-  life was reduced from ten minutes to two (`FAMILY_INVITE_RETURN_MAX_AGE_SECONDS`),
-  so the residual is now a roughly two-minute window on a shared browser after a
-  signed-out visitor abandons an invitation. The tab-scoped fix has to be threaded
-  through all four resolution sites and both 2FA detour hops — a change to the login
-  flow, which this PR's scope excludes — and it would trade a bounded disclosure for
-  regression risk across the flows this PR has just corrected. It is therefore a
-  named, deferred fix the owner has accepted, recorded here and in the module
-  docblock, and **tracked as issue #2974** for a later supervised, gated PR.
-
-  An absent or expired cookie degrades to the member's ordinary landing rather
-  than to an error — as does a browser too old to send `Sec-Fetch-*` — and the
-  emailed link still works. Severity was always materially lower than the payment
-  token, for the email-binding reason above; it is closed regardless, because a
-  bearer-shaped value in a place the URL or an attribute can carry is the class,
-  not the consequence.
-
-  Eight suites pin it, and each property was mutation-verified rather than merely
-  asserted. `src/lib/__tests__/family-invite-return-address.test.ts` covers the
-  shape guard and the cookie attributes, and holds the duplicated token pattern
-  in step with `ACTION_TOKEN_PATTERN` so changing the token format fails a test
-  instead of quietly disabling the return address.
-  `src/lib/__tests__/family-invite-return-cookie-proxy.test.ts` drives the real
-  Next adapter: the address is written on a document navigation to the invite page
-  and on no other address, method or fetch destination; a signed-in GET retires it
-  instead; and it never lands beside a shared-cache directive.
-  `src/app/(public)/family-invite/[token]/__tests__/family-invite-login-link.test.tsx`
-  asserts that neither branch renders even a six-character prefix of the token in
-  any attribute or visible text, that the signed-out branch's affordance is still a
-  real anchor (so the no-JavaScript path is genuinely kept, not just claimed), that
-  the wrong-account branch offers no `/login` anchor to bounce off, and that the
-  email re-check still refuses a wrong signed-in account. The return leg is pinned at
-  all four resolution sites — `src/lib/__tests__/post-login-landing.test.ts`,
-  `src/app/api/auth/post-login-landing/__tests__/route.test.ts` (which also pins
-  the clear-even-when-outranked behaviour),
-  `src/app/(public)/login/__tests__/login-page-session-redirect.test.tsx` and
-  `src/app/(public)/login/__tests__/two-factor-detour-landing.test.tsx` — and the
-  proxy's `Set-Cookie` writer census in `src/lib/__tests__/csp-proxy.test.ts` is
-  now the set of two described under #2578 above.
 ## CodeQL And Semgrep Alert Backlog Triage - 2026-08-19
 
 **Audience: developer.** This is the canonical record of the code-scanning alert

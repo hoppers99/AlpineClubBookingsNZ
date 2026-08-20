@@ -5,7 +5,6 @@ import {
   isValidAuthBounceRef,
   resolvePostLoginPath,
 } from "@/lib/auth-redirect";
-import { readFamilyInviteReturnAddress } from "@/lib/family-invite-return-address-cookie";
 import { resolvePostLoginLandingPath } from "@/lib/post-login-landing";
 import { googleCredentialsConfigured } from "@/lib/google-oauth";
 import { getCachedEffectiveModuleFlags } from "@/lib/public-layout-config";
@@ -77,17 +76,8 @@ export default async function LoginPage({
     // preference / role default is honoured on this self-heal path (and,
     // notably, this is where a Google sign-in with no explicit deep link lands
     // to be resolved).
-    // #2827: honour the family-invite return address here too. This branch is
-    // where a Google sign-in from an invite comes back (the provider callbackUrl
-    // is "/login" whenever there is no explicit deep link), so without this read
-    // the one flow that has no client post-auth seam would land on the dashboard.
-    // Deliberately NOT folded into `explicitCallbackUrl` above: that value is
-    // forwarded to the client form and into the 2FA detour's query string, and
-    // the whole point of this fix is that the invite token stops appearing in the
-    // login page's own output. It is read only on this redirect-only path.
     const landing = resolvePostLoginLandingPath({
       explicitCallbackUrl,
-      privateReturnPath: await readFamilyInviteReturnAddress(),
       landingPreference: session.user.postLoginLanding,
       permissionInput: {
         adminPermissionMatrix: session.user.adminPermissionMatrix,
