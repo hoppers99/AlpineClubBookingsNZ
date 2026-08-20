@@ -472,3 +472,44 @@ export function validateWhakapapaSourceUrl(
 
   return { ok: true, url: parsed.toString() };
 }
+
+/**
+ * How many redirect hops the report fetch will follow before giving up. Three is
+ * enough for the ordinary apex/`www`/trailing-slash shuffles a marketing site
+ * does and small enough that a redirect loop terminates quickly.
+ */
+export const WHAKAPAPA_MAX_REDIRECTS = 3;
+
+/**
+ * Resolve a redirect `Location` against the URL that produced it, then re-apply
+ * the host allowlist to the result.
+ *
+ * `fetch` defaults to `redirect: "follow"`, which validates only the URL the
+ * caller passed: every hop after that is chosen by the upstream server. The
+ * scraped body is cached and served publicly from `/api/skifield-whakapapa`, so
+ * an open redirect (or a compromised page) on an allowlisted host would turn a
+ * blind server-side fetch into a readable one — an attacker could point it at an
+ * internal address and read the response off the public endpoint. Re-validating
+ * every hop keeps the allowlist, not the upstream, in charge of what is fetched
+ * (#2841, CodeQL `js/request-forgery`).
+ */
+export function resolveWhakapapaRedirectTarget(
+  location: string | null | undefined,
+  currentUrl: string,
+): WhakapapaSourceUrlResult {
+  if (typeof location !== "string" || location.trim().length === 0) {
+    return { ok: false, error: "Redirect response had no Location header." };
+  }
+
+  let absolute: string;
+  try {
+    // A relative Location resolves against the hop that returned it, which is
+    // itself already allowlisted; an absolute one replaces it entirely. Either
+    // way the result goes back through the same host check below.
+    absolute = new URL(location.trim(), currentUrl).toString();
+  } catch {
+    return { ok: false, error: "Redirect Location was not a valid URL." };
+  }
+
+  return validateWhakapapaSourceUrl(absolute);
+}

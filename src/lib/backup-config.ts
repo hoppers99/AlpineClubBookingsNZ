@@ -58,6 +58,12 @@ export const BACKUP_CREDENTIAL_KEYS = {
   // Operational config (support:edit).
   enabled: "enabled",
   retentionDays: "retention_days",
+  // Local (on-host) destination. `localEnabled` is operational (support:edit);
+  // `localPath` is a DESTINATION and therefore Full-Admin only on exactly the
+  // same reasoning as `bucket` above — a dump written into a web-served
+  // directory is the whole database published to anyone who guesses a filename.
+  localEnabled: "local_enabled",
+  localPath: "local_path",
 } as const;
 
 /**
@@ -146,6 +152,9 @@ export interface ResolvedBackupConfig {
   accessKeyId: string | null;
   secretAccessKey: string | null;
   restoreValidationUrl: string | null;
+  /** Local on-host destination: the switch, and the directory it writes to. */
+  localEnabled: boolean;
+  localPath: string | null;
   /**
    * True when the provider has stored credentials that fail to decrypt (the app
    * auth secret changed). The backup engine treats this as a LOUD failure, never
@@ -172,6 +181,8 @@ export async function resolveBackupConfig(): Promise<ResolvedBackupConfig> {
     accessKeyId,
     secretAccessKey,
     restoreValidationUrl,
+    localEnabledRaw,
+    localPathRaw,
   ] = await Promise.all([
     getIntegrationCredentialValue(BACKUP_PROVIDER, BACKUP_CREDENTIAL_KEYS.enabled),
     getIntegrationCredentialValue(BACKUP_PROVIDER, BACKUP_CREDENTIAL_KEYS.bucket),
@@ -192,6 +203,11 @@ export async function resolveBackupConfig(): Promise<ResolvedBackupConfig> {
       BACKUP_PROVIDER,
       BACKUP_CREDENTIAL_KEYS.restoreValidationUrl,
     ),
+    getIntegrationCredentialValue(
+      BACKUP_PROVIDER,
+      BACKUP_CREDENTIAL_KEYS.localEnabled,
+    ),
+    getIntegrationCredentialValue(BACKUP_PROVIDER, BACKUP_CREDENTIAL_KEYS.localPath),
   ]);
 
   const bucket = bucketRaw?.trim() ? bucketRaw.trim() : null;
@@ -207,8 +223,28 @@ export async function resolveBackupConfig(): Promise<ResolvedBackupConfig> {
     restoreValidationUrl: restoreValidationUrl?.trim()
       ? restoreValidationUrl.trim()
       : null,
+    localEnabled: localEnabledRaw?.trim().toLowerCase() === "true",
+    localPath: localPathRaw?.trim() ? localPathRaw.trim() : null,
     needsReentry,
   };
+}
+
+/**
+ * Whether ANY destination is switched on — the one predicate that decides
+ * whether a backup runs at all.
+ *
+ * It exists as a shared function rather than an inline `a || b` because the
+ * question is asked in four places that must agree: the engine, the run-now
+ * route's up-front refusal, the run button's disabled state, and the status
+ * pill. Local backups shipped with the engine updated and the other three still
+ * reading `enabled` alone, so a club with local backups on was told "Backups are
+ * disabled" by the very button that would have worked.
+ */
+export function isAnyBackupDestinationEnabled(config: {
+  enabled: boolean;
+  localEnabled: boolean;
+}): boolean {
+  return config.enabled || config.localEnabled;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,7 +261,16 @@ export interface BackupSetupState {
   accessKeyIdSet: boolean;
   secretAccessKeySet: boolean;
   restoreValidationUrlSet: boolean;
-  /** True when backups will upload durably (bucket + both S3 secrets present). */
+  /** Local destination: the switch and the configured directory (not secret). */
+  localEnabled: boolean;
+  localPath: string | null;
+  /** True when EITHER destination is switched on — see isAnyBackupDestinationEnabled. */
+  anyDestinationEnabled: boolean;
+  /**
+   * True when backups reach a destination that survives a container restart —
+   * a configured S3 bucket with both secrets, OR an enabled local directory.
+   * False means the dump exists only in the container's ephemeral /tmp.
+   */
   durable: boolean;
   /** Any stored backup credential fails to decrypt (the auth secret changed). */
   needsReentry: boolean;
@@ -258,7 +303,12 @@ export async function getBackupSetupState(): Promise<BackupSetupState> {
     restoreValidationUrlSet: present.has(
       BACKUP_CREDENTIAL_KEYS.restoreValidationUrl,
     ),
-    durable: Boolean(config.bucket) && accessKeyIdSet && secretAccessKeySet,
+    localEnabled: config.localEnabled,
+    localPath: config.localPath,
+    anyDestinationEnabled: isAnyBackupDestinationEnabled(config),
+    durable:
+      (Boolean(config.bucket) && accessKeyIdSet && secretAccessKeySet) ||
+      (config.localEnabled && Boolean(config.localPath)),
     needsReentry: config.needsReentry,
   };
 }

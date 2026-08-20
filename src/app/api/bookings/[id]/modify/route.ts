@@ -97,6 +97,11 @@ const batchModifySchema = z.object({
     )
     .max(60)
     .optional(),
+  // Other Lodges epic: the reciprocal other-club rate election. Admin-only and
+  // gated in the service by `resolveOtherLodgeRateElection`; both fields are an
+  // END STATE for the whole booking, never a delta.
+  otherLodgeId: z.string().min(1).nullable().optional(),
+  otherLodgeMemberGuestIds: z.array(z.string().min(1)).max(200).optional(),
   promoCode: z.string().optional(),
   // #2266 (MED-4): guest-targeted promo beneficiaries. Existing guests bind by
   // bookingGuestId (stale ids refuse loudly); positional indexes exist only
@@ -139,6 +144,9 @@ const OVERRIDE_DATE_ONLY_FIELDS = [
   "guestUpdates",
   // #2337: a placeholder→member link is a guest change, never a date override.
   "linkGuestToMember",
+  // The other-lodge rate election re-rates guests, so it is a guest change too.
+  "otherLodgeId",
+  "otherLodgeMemberGuestIds",
   "promoCode",
   "promoGuestIds",
   "promoAddedGuestIndexes",
@@ -256,7 +264,11 @@ export async function PUT(
     }) ||
       // #2266: checked explicitly — `Boolean(0)` is false, so a credit
       // election of 0 cents would otherwise slip past the date-only contract.
-      parsed.data.applyCreditCents !== undefined)
+      parsed.data.applyCreditCents !== undefined ||
+      // Same trap, same fix: `otherLodgeId: null` CLEARS the election and is
+      // falsy, so the list membership above would let it through a date-only
+      // override.
+      parsed.data.otherLodgeId !== undefined)
   ) {
     return NextResponse.json(
       { error: "Admin override edits change dates only" },

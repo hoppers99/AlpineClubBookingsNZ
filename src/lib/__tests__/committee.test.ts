@@ -22,6 +22,14 @@ vi.mock("@/lib/prisma", () => ({
       create: vi.fn(),
       update: vi.fn(),
     },
+    // Booking Officer → OtherLodge sync (runs inside the assignment routes'
+    // transaction). Default to no lodges so it is a harmless no-op here; the sync
+    // itself is covered by committee-booking-officer-sync.test.ts.
+    lodge: { findMany: vi.fn().mockResolvedValue([]) },
+    otherLodge: {
+      findMany: vi.fn().mockResolvedValue([]),
+      update: vi.fn(),
+    },
     publicContentSettings: { findUnique: vi.fn() },
     auditLog: { create: vi.fn() },
   },
@@ -29,9 +37,9 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/auth", () => ({ auth: vi.fn() }));
 const mockRequireActiveSessionUser = vi.fn<(...args: unknown[]) => Promise<Response | null>>(async () => null);
-vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: async () =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(),
+vi.mock("@/lib/session-guards", async () => ({
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
   requireActiveSessionUser: (...args: Parameters<typeof mockRequireActiveSessionUser>) => mockRequireActiveSessionUser(...args),
 }));
 vi.mock("@/lib/audit", () => ({

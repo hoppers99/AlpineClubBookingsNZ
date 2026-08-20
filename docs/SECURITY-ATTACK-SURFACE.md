@@ -341,6 +341,11 @@ providers, and fell four behind as the rest landed. Anything that turns on
 - `anthropic` — the AI help assistant's API key (#2211).
 - `anthropic-diagnostics` — the AI Diagnostics API key, deliberately a
   **separate** namespace so the two are never shared or confused (#2371).
+- `servernz` — the Alpine Central Server API key, issued by the central server
+  to this club. Stranding it stops the nightly Other Clubs sync (upload and
+  download) until an admin re-enters it under Admin → Integrations → Alpine
+  Central Server; the non-secret connection settings (base URL, opt-in flag,
+  sync cursor) live in `ServerNzSettings` and survive rotation untouched.
 
 The authority is `WRITABLE_CREDENTIALS` in
 `src/app/api/admin/integrations/credentials/route.ts`, which is the allowlist
@@ -358,7 +363,7 @@ behind the code again the way the runbook did.
   state — that is the correct, safe outcome, not a bug. If a clone shared prod's
   secret it would silently hold live, decryptable credentials.
 - **Rotation blast radius.** Rotating the auth secret strands the credentials of
-  **every** provider in the list above — all six namespaces, not just the two an
+  **every** provider in the list above — all seven namespaces, not just the two an
   operator is likely to be thinking about — plus the wrapped Xero token key, on
   top of dropping sessions and all 2FA enrolments/recovery codes. See the
   auth-secret rotation runbook in `DEPLOYMENT.md`, which sequences the re-entry
@@ -2969,6 +2974,197 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   `appCss` variant (which excludes `rawCss`), as the `(public)` layout did before
   #2818 — not a per-field DOM change.
 
+## CodeQL And Semgrep Alert Backlog Triage - 2026-08-19
+
+**Audience: developer.** This is the canonical record of the code-scanning alert
+backlog triaged under issue #2841. Every `nosemgrep` comment in the Image Manager
+routes, and the MD5 key-derivation comment in `src/lib/mirotalk-token.ts`, point
+here rather than restating their justification, so there is one place to correct
+if any of it turns out to be wrong.
+
+Advisory CodeQL was enabled by #2686 with the words *"a CodeQL finding is visible
+and investigated"*. Advisory means it cannot block a merge; it does not mean the
+findings go unread. This section is the "investigated" half.
+
+**Headline: nothing in the backlog was exploitable by an unauthenticated
+attacker, and nothing warranted an emergency fix.** The one Critical is a false
+positive as reported. Three real defects came out of reading them anyway, and the
+most consequential was not on the list at all — it was the alert *pipeline*.
+
+### The alerts, measured
+
+Measured with `gh api "repos/.../code-scanning/alerts?state=open&per_page=100"`
+at `0a09fdbe9`. The issue's own tables list **15**; the API returns **17** — the
+15 CodeQL alerts plus two Semgrep alerts (43, 42) the tables omit.
+
+| Alert | Rule | Location | Outcome |
+| --- | --- | --- | --- |
+| 29 | `js/request-forgery` (critical) | `src/lib/whakapapa-report.server.ts` | False positive as reported — **but a real redirect-following residual, fixed** |
+| 8, 17, 35 | `js/path-injection` (high) | `src/app/api/admin/image-manager/images/route.ts` | False positive — containment barrier is real |
+| 32, 33, 34 | `js/path-injection` (high) | `src/app/api/admin/image-manager/directories/route.ts` | False positive — **but a real dot-only-name gap, fixed** |
+| 27 | `js/insufficient-password-hash` (high) | `src/lib/mirotalk-token.ts` | Not a password hash — protocol-fixed KDF. **Adjacent key-entropy gap fixed** |
+| 26, 25 | `js/insufficient-password-hash`, `js/weak-cryptographic-algorithm` (high) | `src/lib/__tests__/mirotalk-token.test.ts` | False positive — test-only, same protocol reason |
+| 40, 39 | `js/incomplete-multi-character-sanitization` (high) | `booking-requests-noindex.test.ts`, `booking-request-pages-fallback-render.test.tsx` | False positive — `vi.mock` doubles, not the implementation |
+| 38, 37, 36 | `js/bad-code-sanitization` (medium) | `measurement/**/self-test.mjs` | False positive — dev harness, not in the runtime image |
+| 43, 42 | `acb-unsafe-raw-sql` (Semgrep) | already `nosemgrep`-suppressed call sites | False positive, already suppressed — **a GitHub SARIF-ingest defect, fixed** |
+
+The dismissals themselves are an owner action: the machine account cannot write
+code-scanning dispositions. The reasoning for each is below, and it is what
+should be pasted into the dismissal.
+
+### The Critical, and the real thing underneath it
+
+Alert 29 says a user-controlled value reaches a `fetch` target. It does not. The
+Whakapapa report URL passes `validateWhakapapaSourceUrl` — https-only, no
+embedded credentials, and `host === entry || host.endsWith("." + entry)` against
+the configured host allowlist — at write time, again when the config row is
+coerced, and again at the sink. The only unauthenticated caller,
+`GET /api/skifield-whakapapa`, passes **no request input at all**: the URL comes
+from the stored configuration row. The standard allowlist bypasses were tried
+(credential confusion, suffix look-alikes, decimal/hex IP encodings) and none
+work; the `endsWith("." + entry)` form is correct because the dot is part of the
+compared suffix.
+
+**What was real: `fetch` defaults to `redirect: "follow"`.** Nothing re-checked
+the destination after a 30x, and the fetched body is cached and served publicly —
+so the upstream server chose every hop after the first, and could read the result
+back out of a public endpoint. That is an exfiltration channel, not a blind
+fetch. Fixed: the fetch is pinned to `redirect: "manual"` and each hop's
+`Location` is re-validated through the same allowlist, bounded at three
+redirects, with a relative `Location` resolved against the hop that issued it.
+
+### Image Manager path containment
+
+*Referenced by every `nosemgrep` comment in
+`src/app/api/admin/image-manager/**` and by `resolveInImagesRoot` in
+`src/lib/image-storage.ts`.*
+
+Two independent tools flag this code and one of them was already silenced, which
+is exactly the shape that deserves a decision rather than a second mute. The
+verdict is that the suppressions are right, for a reason that can be stated in
+one sentence: **every request-derived path goes through `resolveInImagesRoot`,
+which `path.resolve`s the input against the trusted `IMAGES_ROOT` constant and
+returns `null` unless the result is the root or sits below it — and every caller
+turns that `null` into a 400.** Absolute paths, `../` traversal and
+sibling-prefix attempts (`public/imagesEvil`) all fail the separator-anchored
+prefix test; null bytes are rejected by Node's `fs` layer; a symlink escape is
+unreachable because these endpoints can `mkdir`, `rename` and `rm` but cannot
+create a link. All six alerts also sit behind `requireAdmin` with
+`content:view` or `content:edit`.
+
+Both scanners lose that barrier for the same reason: it is expressed as a `null`
+return **across a function boundary** rather than as an inline check at the sink.
+Neither tool is wrong to flag the sink; it simply cannot see the guard.
+
+**What was real: the name filter banned separators but not dots.** `.` and `..`
+are the two names `path.join` expands as *operators* rather than treating as
+segments, so:
+
+- create with `parent: "trips"`, `name: ".."` built a target equal to
+  `IMAGES_ROOT`, and the containment check's `newAbs !== IMAGES_ROOT &&`
+  short-circuit read that as "contained", letting `mkdir` run;
+- rename with `newName: "."` resolved a nested directory onto its own parent,
+  passed containment, and reached `fs.rename`.
+
+Neither destroyed data — `mkdir` got `EEXIST` (a 409) and `rename` fails at the
+OS layer (a 500 where a 400 belongs) — and both need `content:edit`. But the
+containment check was the only thing standing, and it was one refactor from
+mattering. Fixed: `isSafeDirectoryName` is now the single statement of the name
+rule (charset plus a dot-only rejection) called by both endpoints, and the
+containment checks on create and on image delete dropped their `x !== root &&`
+escape hatches — a directory being created and a file being deleted are always
+strictly below their root.
+
+**Do not "simplify" either layer away.** The name filter and the containment
+check each cover what the other does not, and the strict form of the containment
+check is what stops its correctness depending on an argument made two branches
+earlier.
+
+### MiroTalk meeting tokens
+
+*Referenced by the `evpBytesToKey` comment in `src/lib/mirotalk-token.ts`.*
+
+Alert 27 flags an MD5 digest as an insufficient password hash. It is neither
+hashing a password nor free to change: it is OpenSSL's `EVP_BytesToKey`,
+reproduced byte-for-byte so that the AES blob this app produces is exactly what
+MiroTalk's `CryptoJS.AES.decrypt` consumes on the other side. Change the digest
+and every token minted here stops decrypting; the known-answer vectors in
+`src/lib/__tests__/mirotalk-token.test.ts` exist to catch that. Alerts 26 and 25
+are the same construction in the test's independent decrypt, written to prove the
+round trip against the genuine libraries.
+
+**What was real: `MIRO_JWT_KEY` had no documented entropy requirement at all.**
+That key does two jobs — it is the AES passphrase for the host username and
+password embedded in each join token, and the HS256 signing key for the token
+itself — so its entropy, not the KDF, is what stops an outsider minting a token
+MiroTalk accepts as a host. `.env.example` and
+[`guides/calendar.md`](guides/calendar.md) said only that it must equal
+MiroTalk's own `JWT_KEY`, which is precisely the instruction that leads an
+operator to copy MiroTalk's shipped placeholder into both sides.
+
+Fixed: `describeMirotalkJwtKeyWeakness` names why a key is weak (looks like a
+shipped example, under 32 characters, or too few distinct characters), and a
+weak key logs one warning per key and **still mints the token**. Advisory on
+purpose — a club whose meeting links silently stopped working is worse off than
+one running a guessable key, and nothing in-process can repair a deployment's
+configuration. The key itself is never logged. Token issue is already gated to
+calendar managers and audited per mint, which is why this stays low severity.
+
+### The Semgrep pair, which outranks the Critical
+
+This is the only finding that **degrades an ongoing control**, and the mechanism
+was measured rather than inferred. The SARIF from a green `main` run contains
+exactly two `acb-unsafe-raw-sql` results, and both carry
+`"suppressions": [{"kind": "inSource"}]`. Semgrep therefore honours the
+`nosemgrep` comments correctly — which is why the required `Static analysis gate`
+passes — but **GitHub's SARIF ingest does not act on that field** and files them
+as alerts that can never be closed. They are not stale: the suppressing commit is
+an ancestor of the scanned commit, and they are re-observed as open on every
+recent scan.
+
+Why that matters more than two false positives should: `INV-OPS-014`'s own
+failure message *instructs* a contributor to add those comments. So every
+justified exemption minted another permanent alert, and a genuinely dangerous new
+raw-SQL call would have arrived in that list **looking identical to the two
+known-safe ones**. That is a false negative by habituation — the same erosion
+that left this backlog unread until #2841 was filed.
+
+Fixed in `.github/workflows/ci.yml` via
+`scripts/ci/filter-suppressed-sarif.mjs`, which drops in-source-suppressed
+results and writes a separate file for the code-scanning upload. It honours only
+`kind: "inSource"` — a comment a reviewer sees in the diff — never `external`,
+and it keeps a suppression whose SARIF `status` is `rejected`. It cannot weaken
+the gate: `semgrep scan --error` runs first on the unfiltered results and has
+already decided the job's exit code, and the raw SARIF is still uploaded as the
+build artifact. Delete a `nosemgrep` comment and the result is reported
+unsuppressed again, so the alert returns.
+
+### Test-file and harness alerts
+
+- **40, 39 — incomplete multi-character sanitization.** Both are
+  `html.replace(/<[^>]*>/g, "")` inside a `vi.mock` factory. The real
+  `pageContentHtmlToPlainText` uses `sanitize-html` with `allowedTags: []`. Test
+  doubles, no production path. Keeping the doubles crude is deliberate: a test
+  that reimplements the sanitiser proves nothing about the sanitiser.
+- **38, 37, 36 — bad code sanitization** in the `measurement/` harness. One-off
+  evidence tooling that generates fixture `.js` files from paths it constructed
+  itself. Measured: the Dockerfile's runner stage copies only `public`,
+  `.next/standalone`, `.next/static`, `prisma`, `node_modules` and `.artifacts`,
+  so `measurement/` is not in the runtime image at all.
+
+### Stated limits
+
+- Whether GitHub ignores SARIF `suppressions` universally or only when `status`
+  is omitted was not resolved. It would change the *shape* of the pipeline fix,
+  not any disposition; the filter handles both by honouring `status` when
+  present.
+- The path-traversal escapes were reasoned from `path.resolve`/`path.join`
+  semantics and then pinned by tests against the real functions, not executed
+  against a live filesystem.
+- The published-alert half of the SARIF fix — that GitHub reports no alert for a
+  dropped result — cannot be executed outside CI. It follows from the measurement
+  the fix is based on rather than from a local run.
+- No refusals: every alert was analysable.
 ### The hero header: one HTML sink, and only stored CMS text may reach it (#2818 D6, #2819)
 
 Every public page hero renders its header the same way, and the rule for that one

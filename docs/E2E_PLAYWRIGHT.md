@@ -120,7 +120,7 @@ npm run test:e2e:run -- e2e/booking.spec.ts # one spec
 npm run test:e2e:down      # stop the stack and delete its volumes
 ```
 
-First-time setup: `npx playwright install chromium` (CI uses `--with-deps`).
+First-time setup: `npx playwright install chromium` — the same command CI runs (see "How CI installs the browser" below).
 The HTML report lands in `playwright-report/`; traces and screenshots for
 failures land in `test-results/`.
 
@@ -254,7 +254,34 @@ LD_LIBRARY_PATH="$PWD/extracted/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH" \
   npm run test:e2e:run
 ```
 
-CI installs the deps with `npx playwright install --with-deps`.
+### How CI installs the browser
+
+Both E2E jobs get their browser from the composite action
+`.github/actions/playwright-browsers`, and the order it works in is the point:
+
+1. **Restore `~/.cache/ms-playwright`**, keyed on the resolved `@playwright/test`
+   version, so a version bump misses the cache and nothing else does.
+2. **`npx playwright install chromium`** — run even on a cache hit, where it is a
+   ~2s no-op that verifies the restored tree and re-downloads anything partial.
+3. **Launch the browser and render a page** (`launch-check.mjs`). A browser that
+   launches and lays out a page has every system library it needs.
+4. **Only if that check fails**, run `npx playwright install-deps chromium` and
+   re-check.
+
+CI used to run `npx playwright install --with-deps chromium` on every run
+instead. It was measured at 9m15s on one run (job 32304150140, 19 Aug 2026)
+against a ~25s norm, and the split is why the order above changed: the browser
+downloads took **ten seconds**, and the rest was `apt-get update` plus seven and
+a half minutes of unpacking X fonts and libraries that the `ubuntu-latest`
+runner image already ships. That apt step is also the one that fails outright
+when the runners' preinstalled third-party apt sources serve invalid clearsigned
+metadata (#1634), so the retry loop that was there to survive it was retrying a
+nine-minute step. Now apt is the recovery path, not the default one, and a
+future runner image that genuinely drops a library still repairs itself
+unattended — it just costs those nine minutes when it happens rather than always.
+
+No spec takes a pixel snapshot, so the fonts the old command installed cannot
+move an assertion.
 
 ## Enabling the Stripe payment specs
 

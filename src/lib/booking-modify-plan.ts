@@ -15,6 +15,11 @@ import {
 } from "@prisma/client";
 
 import { ApiError } from "@/lib/api-error";
+import {
+  assertOtherLodgeExists,
+  resolveOtherLodgeRateElection,
+  type OtherLodgeRateElection,
+} from "@/lib/booking-other-lodge-rate";
 import logger from "@/lib/logger";
 import {
   ADULT_SUPERVISION_REVIEW_REASON,
@@ -117,6 +122,10 @@ type ProposedGuestPricingInput = {
   ageTier: AgeTier;
   isMember: boolean;
   memberId: string | null;
+  // Other Lodges epic: the reciprocal other-club rate flag this guest will carry
+  // once saved. Read by `resolveGuestRateMembershipTypes`, which resolves such a
+  // guest to the built-in FULL type's rate rows.
+  otherLodgeMember?: boolean;
   stayStart: Date;
   stayEnd: Date;
   nights?: Date[];
@@ -533,6 +542,17 @@ export type GuestPlan = {
     string,
     { firstName: string | null; lastName: string | null }
   >;
+  /**
+   * The resolved reciprocal other-club rate election (Other Lodges epic).
+   *
+   * Carried on the plan rather than re-resolved at the write step for the same
+   * reason every other decision here is: the rows were PRICED against this
+   * election (its `repriceGuestIds` is what cleared their locked nights), so the
+   * flags written must be the ones the price was computed from. An inert
+   * election — every modification that says nothing about the rate — reports the
+   * stored state and an empty reprice set, so nothing is written.
+   */
+  otherLodgeElection: OtherLodgeRateElection;
   totalGuestCount: number;
   requiresAdminReview: boolean;
   adminReviewReason: string | null;
@@ -628,6 +648,22 @@ export async function prepareGuestPlan(
   // resolve — a linked member is checked for existence/eligibility and placed in
   // the family boundary exactly like an added member guest, reusing all of it.
   const guestMemberLinks = resolveGuestMemberLinks({ booking, input, role });
+  // Other Lodges epic: the same resolver `modify-quote` ran to build the preview,
+  // over the same stored booking and the same request fields — so the flags this
+  // save writes, and the rows it reprices, are exactly the ones the officer was
+  // quoted. `booking` here is the post-lock re-read, so a concurrent edit that
+  // changed a guest's flag is seen before the reprice decision is made.
+  const otherLodgeElection = resolveOtherLodgeRateElection({
+    booking,
+    input,
+    role,
+  });
+  // Only when this edit named a lodge: an inert election's stored id was already
+  // validated when it was set, so re-reading it on every unrelated modification
+  // would be a query for nothing.
+  if (otherLodgeElection.requested) {
+    await assertOtherLodgeExists(tx, otherLodgeElection.otherLodgeId);
+  }
   const { members: linkedMembers, boundary } =
     await resolveLinkedBookingMembersWithBoundary(
       tx,
@@ -795,6 +831,11 @@ export async function prepareGuestPlan(
         // member rate. A non-linked guest is untouched.
         isMember: link ? true : entry.guest.isMember,
         memberId: link ? link.memberId : (entry.guest.memberId ?? null),
+        // Other Lodges epic: the flag this guest carries once saved. Taken from
+        // the election (the stored value when this edit says nothing about it),
+        // so an ordinary date change still prices an already-recognised
+        // other-club guest at the member rate rather than silently reverting it.
+        otherLodgeMember: otherLodgeElection.flaggedGuestIds.has(entry.guest.id),
         stayStart: entry.stayStart,
         stayEnd: entry.stayEnd,
         nights: entry.nights,
@@ -806,7 +847,17 @@ export async function prepareGuestPlan(
         // non-member price and the re-rate silently does nothing — the member
         // never gets the member rate. Clearing them reprices the whole stay at the
         // member season rate.
-        lockedNightPrices: link ? [] : lockedNightPricesForGuest(entry.guest),
+        //
+        // The other-lodge tick clears them on exactly the same argument, and in
+        // BOTH directions: ticking somebody whose nights are locked at the
+        // non-member price would never reach the member rate, and unticking
+        // somebody whose nights are locked at the member price would never leave
+        // it. Only guests whose flag actually CHANGED are cleared, so an
+        // unrelated edit never silently reprices a settled stay.
+        lockedNightPrices:
+          link || otherLodgeElection.repriceGuestIds.has(entry.guest.id)
+            ? []
+            : lockedNightPricesForGuest(entry.guest),
         // Carry the D-8 marker for a beyond-family link so the person-night guard
         // collapses exactly as it does for an added cross-family member guest.
         ...(link && linkCrossFamilyByGuestId.get(entry.guest.id)
@@ -979,6 +1030,7 @@ export async function prepareGuestPlan(
     guestMemberLinks,
     guestMemberLinkColumns,
     guestMemberLinkNames,
+    otherLodgeElection,
   };
 }
 
@@ -1894,6 +1946,7 @@ export async function applyGuestChanges(
     guestMemberLinks,
     priceBreakdown,
     inProgressPlan,
+    otherLodgeElection,
   }: {
     bookingId: string;
     newCheckIn: Date;
@@ -1920,6 +1973,12 @@ export async function applyGuestChanges(
     >;
     priceBreakdown: PricingResult["priceBreakdown"];
     inProgressPlan: BookingEditGuestRangePlan | null;
+    /**
+     * The resolved other-club rate election (Other Lodges epic), straight off the
+     * plan that priced these rows. Optional so this function's existing unit
+     * tests keep compiling; absent means "no election", which writes no flag.
+     */
+    otherLodgeElection?: OtherLodgeRateElection;
   },
 ): Promise<{ createdGuests: BookingGuest[] }> {
   const createdGuests: BookingGuest[] = [];
@@ -2144,6 +2203,17 @@ export async function applyGuestChanges(
         stayStart: envelope.stayStart,
         stayEnd: envelope.stayEnd,
         priceCents: priceBreakdown.guests[i].priceCents,
+        // Other Lodges epic: the tick this row now carries. Written ONLY for the
+        // guests whose flag this request actually changed, so an unrelated edit
+        // never rewrites a settled row — and written here, in the same update as
+        // the price it produced, so the flag and the money can never disagree.
+        ...(otherLodgeElection?.repriceGuestIds.has(remainingGuests[i].id)
+          ? {
+              otherLodgeMember: otherLodgeElection.flaggedGuestIds.has(
+                remainingGuests[i].id,
+              ),
+            }
+          : {}),
         // Overwrite the rate-type snapshot on the full-reprice path (#1930,
         // E4) — but ONLY when this guest kept no locked night, or the newly
         // resolved code would be posted over member-rate nights too (#2543).
@@ -2155,7 +2225,10 @@ export async function applyGuestChanges(
             rateMembershipTypeId?: string | null;
             nightDates?: Date[];
           },
-          link ? [] : lockedNightPricesForGuest(proposedRange?.guest ?? {}),
+          link ||
+            otherLodgeElection?.repriceGuestIds.has(remainingGuests[i].id)
+            ? []
+            : lockedNightPricesForGuest(proposedRange?.guest ?? {}),
         ),
       },
     });

@@ -21,9 +21,9 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/auth", () => ({
   auth: mocks.auth,
 }));
-vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: async () =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(),
+vi.mock("@/lib/session-guards", async () => ({
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
 vi.mock("@/lib/xero-member-grouping-resync", () => ({

@@ -1,11 +1,13 @@
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import crypto from "node:crypto";
 
 vi.mock("server-only", () => ({}));
 
 import {
+  MIRO_JWT_KEY_MIN_LENGTH,
   buildMirotalkToken,
   cryptoJsAesEncrypt,
+  describeMirotalkJwtKeyWeakness,
   parseExpiresToSeconds,
   resolveMirotalkMeetingToken,
   signHs256,
@@ -169,6 +171,66 @@ describe("parseExpiresToSeconds", () => {
   });
 });
 
+// #2841. CodeQL alert 27 flags the MD5 in `evpBytesToKey` as
+// js/insufficient-password-hash. That digest is fixed by MiroTalk's wire format
+// and is pinned by the known-answer vectors above, so it cannot change. The real
+// gap it points at is the key: MIRO_JWT_KEY is both the AES passphrase for the
+// host credentials inside a join token and the HS256 signing key for that token,
+// and it previously carried no documented entropy requirement at all.
+describe("describeMirotalkJwtKeyWeakness", () => {
+  it("accepts a generated secret", () => {
+    // The shape `openssl rand -base64 32` produces.
+    expect(
+      describeMirotalkJwtKeyWeakness("Qk9zZ1hUb2tvcm9hMjAyNlNraUNsdWJYWQ=="),
+    ).toBeNull();
+    // Fixed values, not randomBytes: a random key is *almost* always accepted,
+    // and "almost" is how a suite becomes intermittent.
+    expect(
+      describeMirotalkJwtKeyWeakness("Zx7Qb2Lm9Rt4Vy6Kd8Np1Sw3Hj5Cf0Gu2"),
+    ).toBeNull();
+  });
+
+  it("rejects a key that names MiroTalk or announces itself as a placeholder", () => {
+    // MiroTalk ships JWT_KEY pre-filled, and "must equal MiroTalk's JWT_KEY" is
+    // exactly the instruction that leads an operator to copy it into both sides.
+    for (const key of [
+      "mirotalkp2p_jwt_secret",
+      "mirotalksfu_jwt_secret",
+      "MiroTalk-Super-Long-But-Public-Default-Key-Value",
+      "your_jwt_key_here_padded_out_to_thirty_two",
+      "changeme-changeme-changeme-changeme",
+      "example-key-example-key-example-key",
+    ]) {
+      expect(describeMirotalkJwtKeyWeakness(key), key).toBe(
+        "looks like a shipped example value rather than a generated secret",
+      );
+    }
+  });
+
+  it("rejects a key shorter than the documented minimum, and says how short", () => {
+    expect(describeMirotalkJwtKeyWeakness("k")).toBe(
+      `is only 1 character long (at least ${MIRO_JWT_KEY_MIN_LENGTH} are needed)`,
+    );
+    expect(describeMirotalkJwtKeyWeakness("abcdefghijklmnop")).toBe(
+      `is only 16 characters long (at least ${MIRO_JWT_KEY_MIN_LENGTH} are needed)`,
+    );
+    // One character short is still short — the boundary is inclusive.
+    expect(
+      describeMirotalkJwtKeyWeakness("a".repeat(MIRO_JWT_KEY_MIN_LENGTH - 1)),
+    ).toContain("are needed");
+    // Exactly at the minimum is accepted.
+    const atMinimum = "Zx7Qb2Lm9Rt4Vy6Kd8Np1Sw3Hj5Cf0Gu";
+    expect(atMinimum).toHaveLength(MIRO_JWT_KEY_MIN_LENGTH);
+    expect(describeMirotalkJwtKeyWeakness(atMinimum)).toBeNull();
+  });
+
+  it("rejects a long key made of a handful of repeated characters", () => {
+    expect(describeMirotalkJwtKeyWeakness("ab".repeat(40))).toBe(
+      "repeats too few distinct characters to carry real entropy",
+    );
+  });
+});
+
 describe("resolveMirotalkMeetingToken", () => {
   const saved = {
     key: process.env.MIRO_JWT_KEY,
@@ -176,6 +238,18 @@ describe("resolveMirotalkMeetingToken", () => {
     pass: process.env.MIRO_MEETING_PASSWORD,
     presenter: process.env.MIRO_MEETING_PRESENTER,
   };
+
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    // Every key used below is deliberately weak, so the advisory warning fires;
+    // capture it rather than printing it through the suite.
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
 
   afterEach(() => {
     for (const [k, v] of [
@@ -240,5 +314,52 @@ describe("resolveMirotalkMeetingToken", () => {
     expect(
       JSON.parse(cryptoJsAesDecrypt(payload.data, "k")).presenter,
     ).toBe("false");
+  });
+
+  // The warning is advisory by design: a club whose meeting links stop working
+  // is worse off than one running a guessable key, and nothing inside this
+  // process can repair the deployment's configuration.
+  it("warns about a weak key but still mints a working token", () => {
+    process.env.MIRO_JWT_KEY = "weak-key-unique-to-this-test";
+    process.env.MIRO_MEETING_USERNAME = "lwtc";
+    process.env.MIRO_MEETING_PASSWORD = "pw";
+
+    const token = resolveMirotalkMeetingToken();
+
+    expect(token).toBeTruthy();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const message = String(warnSpy.mock.calls[0][0]);
+    expect(message).toContain("MIRO_JWT_KEY");
+    expect(message).toContain("openssl rand -base64 32");
+    // Never log the secret itself.
+    expect(message).not.toContain("weak-key-unique-to-this-test");
+    // And the token really is the MiroTalk-compatible one.
+    const payload = decodeSegment(token!.split(".")[1]) as { data: string };
+    expect(
+      JSON.parse(
+        cryptoJsAesDecrypt(payload.data, "weak-key-unique-to-this-test"),
+      ).username,
+    ).toBe("lwtc");
+  });
+
+  it("warns only once for the same weak key, however many links are served", () => {
+    process.env.MIRO_JWT_KEY = "dedupe-short-key";
+    process.env.MIRO_MEETING_USERNAME = "lwtc";
+    process.env.MIRO_MEETING_PASSWORD = "pw";
+
+    for (let i = 0; i < 5; i += 1) {
+      expect(resolveMirotalkMeetingToken()).toBeTruthy();
+    }
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays silent for a properly generated key", () => {
+    process.env.MIRO_JWT_KEY = "Zx7Qb2Lm9Rt4Vy6Kd8Np1Sw3Hj5Cf0Gu2";
+    process.env.MIRO_MEETING_USERNAME = "lwtc";
+    process.env.MIRO_MEETING_PASSWORD = "pw";
+
+    expect(resolveMirotalkMeetingToken()).toBeTruthy();
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });

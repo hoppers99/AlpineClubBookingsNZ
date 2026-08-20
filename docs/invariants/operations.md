@@ -195,6 +195,18 @@ rules first written here. #2765 extended it with the measured-audience half.
   `INV-OPS-001` is about what the result is declared to be, and both apply to
   the same call.
 
+  **What adding that `nosemgrep` line does, since this is the rule that tells
+  you to add one.** Semgrep marks the result suppressed rather than dropping it,
+  and GitHub's SARIF ingest used to file every such result as a code-scanning
+  alert no source change could close — so each justified exemption minted
+  permanent noise in the Security tab, which is where a real new raw-SQL call
+  would then have looked identical to the known-safe ones. Since #2841 the
+  `static-analysis` job filters in-source-suppressed results out of what it
+  publishes (`scripts/ci/filter-suppressed-sarif.mjs`), so a new justified
+  exemption no longer leaves an alert behind. The two that predate that filter
+  still need a one-time manual dismissal. Full reasoning:
+  [`SECURITY-ATTACK-SURFACE.md`](../SECURITY-ATTACK-SURFACE.md#the-semgrep-pair-which-outranks-the-critical).
+
 ## INV-OPS-013
 
 - **A `"use client"` module never reaches server-only code (#2686).**
@@ -320,14 +332,14 @@ rules first written here. #2765 extended it with the measured-audience half.
   still unreleased and unapplied anywhere. A GENERAL "did a reclassification ship
   without a
   backfill" check is **not available**, and pretending otherwise would be worse
-  than having none: the audit-writer census pins only 127 of its 435 write sites
+  than having none: the audit-writer census pins only 127 of its 440 write sites
   per-site — the union of `APPLIED_AUDIT_CATEGORIES`,
   `REVIEWED_ADMIN_CATEGORIES_2730`, `MEMBER_RECORD_ADMIN_CATEGORIES_2755` and
   `LODGE_GATED_ADMIN_CATEGORIES_2765`, counted rather than added up, and asserted
   by `audit-writer-census.test.ts` so this figure and the copy of it in
   `bed-allocation-audit-category-backfill.test.ts` cannot go stale again —
   deliberately, because pinning all of them would make every feature that records
-  something edit a 400-line literal — so for the other 308 there is no baseline
+  something edit a 400-line literal — so for the other 316 there is no baseline
   a check could compare against, and the category distribution alone cannot see a
   reclassification that another one compensates for. The two `verify` gates that
   can read a pull request parse its BODY, not its diff. So outside the pinned

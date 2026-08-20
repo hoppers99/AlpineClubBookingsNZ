@@ -159,6 +159,62 @@ qualification on this rule, stated in full as INV-MOD-026. Nothing else here
 moves: every edit path still passes the SAME resolved value, both planner
 branches included, and locks still win over it in both states of the switch.
 
+## INV-MOD-027
+
+A booking officer may price a **non-member** at the club's own member rate as a
+recognised member of a partner lodge, and that election changes the RATE and
+nothing else (Other Lodges epic, follow-up to #2749).
+
+`Booking.otherLodgeId` names the partner lodge for the whole booking;
+`BookingGuest.otherLodgeMember` is the per-person opt-in. A flagged guest
+resolves to the built-in `FULL` type's rate rows with `rateSource`
+`OTHER_LODGE_MEMBER`, at that guest's own age tier — resolved in
+`resolveGuestRateMembershipTypes`, the one gate every pricing path already
+passes through (INV-MOD-007), so no write path can be missing the rule.
+
+**`isMember` stays false, permanently and deliberately.** The person is a member
+of ANOTHER club, not of this one, so adult-member hosting (`INV-HOST`), the
+non-member hold, split bookings, `Booking.hasNonMembers`, the member-guest
+subscription gate and member-only promotions must all keep seeing a non-member.
+Only the rate resolver reads the flag, which is what confines the blast radius to
+price. The resolver additionally refuses to apply the flag to a member row at
+all, so a row that somehow carries both still resolves through that member's own
+membership type — the API refusal is the first fence, not the only one.
+
+**The election is an END STATE, and the guests whose flag CHANGES are exactly the
+guests whose locked nights are cleared.** `resolveOtherLodgeRateElection`
+(`src/lib/booking-other-lodge-rate.ts`) is shared verbatim by the modify-quote
+preview and by `prepareGuestPlan` on the save, so the rows the officer was quoted
+are the rows the save reprices and the flags it writes. Clearing the locks is
+load-bearing in BOTH directions and for the reason INV-MOD-005 gives: a ticked
+guest whose nights stay locked at the non-member price never reaches the member
+rate, and an unticked guest whose nights stay locked at the member price never
+leaves it. A guest whose flag did not change keeps their locks, so an unrelated
+edit reprices nobody. Because the locks are cleared, the guest is correctly
+re-snapshotted under INV-MOD-010 and the Xero hut-fee line follows the rate.
+
+**The gates are admin-only, non-member-only, and lodge-required**, enforced in
+the shared resolver rather than at each call site: a member self-service request
+that carried the fields is refused 403 however it reached the resolver, a tick
+naming a member of this club is refused, and a tick with no lodge behind it is
+refused so no booking can carry a member-rated guest with no club recorded
+against them. Clearing the lodge clears every tick with it.
+
+**It is refused on an in-progress (mid-stay) edit**, on the same evidence as the
+#2337 link (`GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE`): `buildInProgressGuestRangePlan`
+prices the STORED guest rows rather than the election-modified pricing rows, so a
+mid-stay election would stamp the flag and settle $0. Preview and save refuse
+identically, so the officer sees the refusal rather than a phantom $0 quote.
+
+**It is exempt from the quote-priced edit block when it rides alone**, again
+mirroring #2337. A booking converted from a public request is quote-priced and
+carries an even split of the negotiated total (#1032 blocks ordinary edits so
+nothing disturbs that basis) — but the public request form is exactly where the
+"member of another lodge" answer arrives, so re-rating one named person
+afterwards is the officer's deliberate act, not an ordinary edit. Every guest not
+re-rated keeps their locked split price. Pair the election with a date change or
+a guest add and the ordinary block applies again.
+
 ## INV-MOD-026
 
 A club decides whether a booking **edited later** earns its group discount on

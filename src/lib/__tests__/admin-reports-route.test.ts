@@ -55,9 +55,9 @@ const mockLogger = {
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
 vi.mock("@/lib/auth", () => ({ auth: () => mockAuth() }));
-vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: async () =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(),
+vi.mock("@/lib/session-guards", async () => ({
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
   requireActiveSessionUser: mockRequireActiveSessionUser,
 }));
 vi.mock("@/lib/logger", () => ({

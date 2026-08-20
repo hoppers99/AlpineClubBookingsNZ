@@ -101,6 +101,46 @@ describe("deployment image contracts", () => {
       expect(workflow).toContain("--error");
     });
 
+    // #2841. GitHub's SARIF ingest does not act on `suppressions`, so every
+    // justified `nosemgrep` comment used to mint a code-scanning alert that could
+    // never be closed — and a dangerous new raw-SQL call would have arrived in
+    // that list looking identical to the known-safe ones. The filter that fixes
+    // it has two ways of going wrong quietly, and this pins both: publishing the
+    // raw file again (the alerts come back) and filtering the AUDIT artifact or
+    // the blocking scan (which would hide real findings).
+    it("publishes filtered alerts while keeping the blocking scan and the artifact unfiltered", () => {
+      const workflow = readRepoFile(".github/workflows/ci.yml");
+
+      // The code-scanning upload consumes the FILTERED file.
+      expect(workflow).toMatch(
+        /sarif_file: \$\{\{ runner\.temp \}\}\/semgrep-output\/semgrep-results\.published\.sarif/,
+      );
+      // The build artifact keeps the RAW file — it is the audit record the
+      // triage was measured from.
+      expect(workflow).toMatch(
+        /name: semgrep-sarif-\$\{\{ github\.run_id \}\}\n\s+path: \$\{\{ runner\.temp \}\}\/semgrep-output\/semgrep-results\.sarif\n/,
+      );
+      // The filter runs on the raw output and writes a separate file, so the
+      // scan's own exit code was decided before it ever ran.
+      expect(workflow).toContain(
+        "node scripts/ci/filter-suppressed-sarif.mjs \\",
+      );
+      expect(workflow.indexOf("--sarif-output /out/semgrep-results.sarif")).
+        toBeLessThan(workflow.indexOf("filter-suppressed-sarif.mjs"));
+      // ...and `semgrep scan` must never be pointed at the published copy, which
+      // would make the filter part of the gate rather than part of the report.
+      expect(workflow).not.toContain(
+        "--sarif-output /out/semgrep-results.published.sarif",
+      );
+      // Conditions stay at STEP level: a job-level `if:` on a required check
+      // reports "skipped", which GitHub counts as SATISFYING branch protection.
+      const staticAnalysis = workflow.slice(
+        workflow.indexOf("  static-analysis:"),
+        workflow.indexOf("  secret-scan:"),
+      );
+      expect(staticAnalysis).not.toMatch(/^ {4}if:/m);
+    });
+
     it("keeps the gitleaks gate on one pinned container, covering the PR range, main's history and the tree", () => {
       const workflow = readRepoFile(".github/workflows/ci.yml");
 
