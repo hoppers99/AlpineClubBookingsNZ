@@ -265,7 +265,7 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | `xero-inbound-reconciliation` | Stored-event worker + per-entity reconcilers + incremental cursor reconciliation (see Flow 2). Split into cohesive `xero-inbound/*` sub-modules (#1208 item 1 / #1270, entry re-exports the public surface); see refactor item 1 for the module map. |
 | `xero-booking-repair` | Booking-vs-Xero audit and self-repair (see Flow 3). CLI entry: `scripts/xero-booking-repair.ts`. Split into cohesive `xero-booking-repair-*` sub-modules (#1208 item 2, entry re-exports the public surface); see refactor item 2 for the module map. |
 | `xero-hardening` | Historical `XeroObjectLink` backfill, stale canonical-link cleanup, the emailed reconciliation report, repeated-failure alerting. Split into cohesive `xero-hardening-*` sub-modules (#1208 item 5, entry re-exports the public surface); see refactor item 5 for the module map. Cleanup and the report's drift classifications are source-aware for Stripe per-delta refund notes (#2901): see "Repairing Stripe refund-note links" under Flow 3. |
-| `xero-refund-note-link-repair` | Dry-run-first operator repair for Stripe per-delta `REFUND_CREDIT_NOTE` links damaged by the pre-#2901 cleanup loop: unconditionally deactivates local mirrors of notes VOIDED/DELETED in Xero, reactivates wrongly deactivated links (recorded-status only, never past the refunded total; landing short is applied honestly and the self-heal reissues the remainder), refuses payments with a still-executable credit-note operation (queued/running/awaiting-payment, failed-but-retryable, or a queued retry of one). No provider calls; `--apply` is bound to reviewed payment ids. CLI entry: `scripts/xero-refund-note-link-repair.ts`. Runbook: "Repairing Stripe refund-note links (#2901)" under Flow 3. |
+| `xero-refund-note-link-repair` | Dry-run-first operator repair for Stripe per-delta `REFUND_CREDIT_NOTE` links damaged by the pre-#2901 cleanup loop: unconditionally deactivates local mirrors of notes VOIDED/DELETED in Xero, reactivates wrongly deactivated links (recorded-status only, never past the provider-backed cash refund-note target — `resolveStripeCashRefundEvidence`, #2902/INV-PAY-050; landing short is applied honestly and the self-heal reissues the remainder), refuses payments with a still-executable credit-note operation (queued/running/awaiting-payment, failed-but-retryable, or a queued retry of one). No provider calls; `--apply` is bound to reviewed payment ids. CLI entry: `scripts/xero-refund-note-link-repair.ts`. Runbook: "Repairing Stripe refund-note links (#2901)" under Flow 3. |
 | `xero-refund-note-status-recorder` | Read-only provider GETs that record each linked refund credit note's live Xero status onto ALL of its local links, active or not (`--record-statuses`; run automatically before `--apply`). Exists because inbound reconciliation structurally cannot stamp a status onto an inactive link, and the repair never reactivates an unknown-status note. |
 | `xero-refund-note-status` | The one home for "does this credit-note status still count as refund coverage?" (`VOIDED`/`DELETED` do not) and for reading a link's recorded status — shared by the inbound contribution math, `sumCoveredRefundCreditNoteCents`, cleanup, the drift report and the operator repair so no path can disagree (#2901). |
 | `xero-invoice-rounding-audit` | Read-only diagnostic that replays the pre-#1231 line maths in integer cents to flag issued invoices that would have carried the #1163 rounding drift, across **both** builder callers — per-booking invoices (`Payment.xeroInvoiceId`) and group-settlement invoices (`GroupBookingSettlement.xeroInvoiceId`). Makes **no** live-provider calls and mutates nothing (only `booking.findMany` + `groupBookingSettlement.findMany`). CLI entry: `scripts/audit-xero-invoice-rounding.ts`. See "Historical rounding-drift audit" below. |
@@ -550,11 +550,17 @@ document automatically** — that judgement stays with the operator.
    or through the scalar pointer), and **a link whose live status was never
    recorded is never reactivated** — the report renders it as
    `status unknown`. For each payment whose active coverage diverges from the
-   refunded total the report lists every refund-note link (active/inactive,
-   recorded or payload-recovered amount, recorded Xero status) and the plan:
-   reactivations (oldest first, never past the refunded total), active links
-   mirroring notes already VOIDED/DELETED in Xero (always deactivated —
-   a cancelled note is never coverage), and what still needs manual review.
+   **cash refund-note target** — the provider-backed cash evidence of
+   INV-PAY-050 (#2902), shown beside the raw refunded mirror with the rule
+   that produced it (`provider-ledger` / `legacy-mirror`) — the report lists
+   every refund-note link (active/inactive, recorded or payload-recovered
+   amount, recorded Xero status) and the plan: reactivations (oldest first,
+   never past the cash target), active links mirroring notes already
+   VOIDED/DELETED in Xero (always deactivated — a cancelled note is never
+   coverage), and what still needs manual review. A payment whose cash
+   target is ZERO while refund notes are active is the #2902 fictitious
+   shape: an account-credit-only cancellation carrying a cash refund note
+   (and usually a Stripe-bank refund payment) no Stripe transaction backs.
 2. **Fix the Xero side manually.** In Xero, void the surplus duplicate credit
    notes (and remove their refund payments) so exactly the notes matching the
    real refund deltas survive. **No code path ever does this for you.**
@@ -600,21 +606,57 @@ document automatically** — that judgement stays with the operator.
 The script never reactivates unrelated links (other roles/object types), links
 on non-Stripe, never-invoiced or nonexistent payments, links whose note is
 VOIDED/DELETED **or whose live status was never recorded**, or any set that
-would push coverage past the refunded total. A plan that lands SHORT of the
-refunded total still applies its honest writes — once the phantom coverage is
+would push coverage past the cash refund-note target. A plan that lands SHORT
+of the target still applies its honest writes — once the phantom coverage is
 gone, the daily credit-reconciliation self-heal issues one note for exactly
 the uncovered remainder (never void anything just to force an exact landing).
-A payment whose active, non-cancelled coverage EXCEEDS the refunded total is
-reported for manual review in Xero and left untouched. Modules:
+A payment whose active, non-cancelled coverage EXCEEDS the target is reported
+for manual review in Xero and left untouched — including the #2902
+account-credit shape above, where the operator voids the fictitious notes and
+their Stripe-bank refund payments in Xero, records statuses, and the next
+apply run deactivates the local mirrors. Modules:
 `src/lib/xero-refund-note-link-repair.ts` (planner/applier, no provider calls)
 and `src/lib/xero-refund-note-status-recorder.ts` (read-only status GETs).
+
+### Stripe refund notes cover cash evidence, never the mirror (#2902)
+
+`Payment.refundedAmountCents` deliberately mirrors BOTH refund dispositions —
+cash returned through Stripe AND cancellation/booking-modification value held
+as member account credit (`applyLocalRefundAllocation` runs on the credit
+paths so a later cancel cannot refund the same cents twice, #1031). It stays
+authoritative for settlement and conservation maths. It is therefore the
+WRONG input for deciding whether a Stripe cash-refund credit note should
+exist in Xero: an account-credit-only cancellation used to read as a missing
+Stripe refund, and the daily self-heal minted a fictitious
+`REFUND_CREDIT_NOTE` plus a refund payment against the Stripe bank account
+that no provider transaction backs.
+
+INV-PAY-050 binds every refund-note surface to
+`resolveStripeCashRefundEvidence` (`src/lib/stripe-cash-refund-evidence.ts`)
+instead: `succeeded` `PaymentRefund` cents when the payment has ledger rows
+(recorded before enqueue on every modern cash path, so stepped refunds sum
+naturally, #1162/#1354), else the pre-ledger fallback of the mirror minus the
+booking's account-credit disposition. Bound surfaces: health detection
+(`getRefundsMissingXeroCreditNotes`, which also reports the cash figure), the
+self-heal enqueue amount and the STRIPE enqueue cap
+(`enqueueXeroRefundCreditNoteOperation`), the execution-time delta recompute
+in `createXeroCreditNote` — which completes an already-queued fictitious
+operation WITHOUT billing Xero — and the #2901 repair's coverage target
+above. Stated limit: a payment refunded partly before and partly after the
+`PaymentRefund` ledger existed resolves from its partial ledger rows and can
+under-state cash; the pipeline then under-flags rather than minting a
+document, the fail-safe direction. Fictitious notes minted BEFORE #2902 are
+found by the dry-run report above and cleaned through the same operator
+void-then-apply loop.
 
 Admin triage complements this: the failures overview groups FAILED operations
 into actionable states (retryable, requeued, manually resolved,
 non-replayable), the health snapshot lists paid bookings missing invoices and
-refunds missing credit notes (flagged when the refunded amount still exceeds the
-cents already covered by active refund credit notes, so multi-note refunds are
-handled), and per-record activity shows the ledger for one booking/payment/member.
+refunds missing credit notes (flagged when the provider-backed CASH refund
+evidence — never the refunded-amount mirror, #2902/INV-PAY-050 — still exceeds
+the cents already covered by active refund credit notes, so multi-note refunds
+are handled and account-credit-only cancellations are excluded), and
+per-record activity shows the ledger for one booking/payment/member.
 
 Owner-substitution alert (operator runbook): when a booking request's held owner
 is no longer a valid non-login contact at conversion, the accept substitutes a

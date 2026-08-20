@@ -310,6 +310,24 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 - Both directions are audited with the acting admin and the previous status;
   marking paid also records the #2260 email decision BOTH ways.
 
+## INV-PAY-050
+
+- A Xero Stripe refund credit note (and its Stripe-bank refund payment)
+  documents PROVIDER-BACKED CASH only, never account credit. The amount those
+  documents may cover is `resolveStripeCashRefundEvidence`
+  (`src/lib/stripe-cash-refund-evidence.ts`): the payment's `succeeded`
+  `PaymentRefund` cents when any ledger rows exist, else the pre-ledger
+  fallback of `refundedAmountCents` minus its account-credit disposition —
+  never the raw `refundedAmountCents` mirror, which deliberately tracks both
+  dispositions (#1031) and stays authoritative for settlement and
+  conservation maths. Bound at every surface that can mint or size a refund
+  note: health detection (`getRefundsMissingXeroCreditNotes`), the daily
+  self-heal enqueue amount, the STRIPE enqueue cap, the execution-time delta
+  recompute in `createXeroCreditNote` (which also completes a queued
+  fictitious operation without billing Xero), and the #2901 link-repair
+  coverage target. An account-credit cancellation therefore keeps exactly its
+  `ACCOUNT_CREDIT_NOTE` and never grows a refund note (#2902).
+
 ## INV-PAY-002
 
 - Account credit is consumed only by a booking that is actually reaching
