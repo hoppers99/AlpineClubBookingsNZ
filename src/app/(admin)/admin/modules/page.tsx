@@ -100,6 +100,10 @@ const MODULE_SETUP_HREFS: Partial<Record<ModuleKey, string>> = {
   xeroIntegration: "/admin/xero/setup",
   googleLogin: "/admin/google/setup",
   analytics: "/admin/integrations",
+  // The Alpine Central Server setup lives on the Integrations hub (as a card
+  // opening /admin/alpine-server/setup); the module's "Set up" affordance points
+  // at the hub, matching the analytics pattern.
+  alpineCentralServer: "/admin/integrations",
 };
 
 function getReadiness(

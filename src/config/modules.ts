@@ -28,6 +28,7 @@ export const MODULE_KEYS = [
   "aiAssistant",
   "memberGuests",
   "aiDiagnostics",
+  "alpineCentralServer",
 ] as const;
 
 export type ModuleKey = (typeof MODULE_KEYS)[number];
@@ -86,6 +87,7 @@ export const DEFAULT_MODULE_SETTINGS: ModuleSettingsValues = {
   aiAssistant: false,
   memberGuests: false,
   aiDiagnostics: false,
+  alpineCentralServer: false,
 };
 
 export interface ModuleDefinition {
@@ -339,6 +341,15 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
       // check, are what make the product usable.
       "Enter a DEDICATED Anthropic API key under Admin → Integrations (a separate key from the AI help assistant — the keys are never shared).",
       "Set a monthly spend budget on the AI Diagnostics settings. It ships at NZ$0, which hard-stops every paid diagnostics call until you raise it.",
+    ],
+  },
+  alpineCentralServer: {
+    key: "alpineCentralServer",
+    label: "Alpine Central Server",
+    description:
+      "Connect this club to the Alpine Central Server (ServerNZ) to upload and download data shared across clubs — starting with the Other Clubs registry. SHARES DATA OUTSIDE THIS CLUB: your lodges' names, locations, bed counts and booking-officer contact details are sent to the central server and redistributed to every other connected club. The booking-officer email is the committee role's shared address, never a member's personal one, and a member's phone is shared only if your club already publishes it on your own committee page. Nothing is sent until you also enable an item on the setup page.",
+    dependencies: [
+      "Request a connection and obtain an API key from the central server, then enter it under Admin → Integrations → Alpine Central Server.",
     ],
   },
 };

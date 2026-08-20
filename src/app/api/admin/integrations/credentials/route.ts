@@ -35,6 +35,10 @@ import {
   DIAGNOSTICS_PROVIDER,
   DIAGNOSTICS_WRITABLE_CREDENTIAL_KEYS,
 } from "@/lib/ai-diagnostics-config";
+import {
+  SERVERNZ_PROVIDER,
+  SERVERNZ_WRITABLE_CREDENTIAL_KEYS,
+} from "@/lib/servernz-config";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 
@@ -80,6 +84,11 @@ const WRITABLE_CREDENTIALS: Record<string, readonly string[]> = {
   // encrypted store. Reachable whether or not the aiDiagnostics module is on, so
   // the credential can be entered before the module is enabled.
   [DIAGNOSTICS_PROVIDER]: [...DIAGNOSTICS_WRITABLE_CREDENTIAL_KEYS],
+  // Alpine Central Server (ServerNZ) API key: a single write-only secret, Full
+  // Admin. No verify-reset marker; the needs-reentry state is derived live from
+  // the encrypted store. Reachable whether or not the module is enabled so the
+  // key can be entered during setup.
+  [SERVERNZ_PROVIDER]: [...SERVERNZ_WRITABLE_CREDENTIAL_KEYS],
 };
 
 // GET /api/admin/integrations/credentials?provider=xero — METADATA-ONLY status.

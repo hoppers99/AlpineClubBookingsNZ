@@ -103,6 +103,12 @@ same **lodge edit** permission as the properties above.
 | Booking officer's phone | Contact phone | — | Optional; up to 50 characters |
 | Bed capacity | Informational bed count of the other lodge | — | Optional; whole number ≥ 0. Not this system's booking capacity |
 
+The names recorded here are what the public booking-request form offers under
+*"Are you a member of another lodge?"*, and what a booking officer picks from
+when charging a visiting club's members at your member rate — see
+[Bookings → Charge a visiting club's members at your member rate](bookings.md#charge-a-visiting-clubs-members-at-your-member-rate).
+A lodge that a booking or a request already names cannot be deleted.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

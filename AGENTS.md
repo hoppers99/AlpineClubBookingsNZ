@@ -415,9 +415,10 @@ At the successful end of a meaningful piece of work:
    trace, add a justified `entry` or file-scoped `ignoreIssues` carve-out to
    `knip.jsonc` (see CONTRIBUTING.md "Dead-code gate") rather than deleting live
    code. `main` is branch-protected, and force-pushes and branch deletions are
-   blocked. **Six checks are required today. Three more are pending an owner
-   action** and are marked as such below — this table is the applied
-   configuration plus what is queued, never an aspiration:
+   blocked. **Nine checks are required today**, and the table below is the
+   applied configuration — never an aspiration. Last reconciled 19 Aug 2026,
+   and it has twice asserted a status that was not the live one, so **verify it
+   with the command below rather than trusting it**.
 
    | Required check | Status | Job | What it gates |
    | --- | --- | --- | --- |
@@ -425,36 +426,50 @@ At the successful end of a meaningful piece of work:
    | `Migration drift check` | applied | `ci.yml` → `migration-drift` | migrations reproduce `schema.prisma`; real-Postgres lock harnesses |
    | `Data migration verification` | applied | `ci.yml` → `data-migration-verification` | data-rewriting migrations against realistic pre-state |
    | `Static analysis gate` | applied | `ci.yml` → `static-analysis` | Semgrep: four registry packs **plus** `.semgrep/rules/**` and their fixtures |
-   | `Playwright E2E` | applied | `e2e.yml` → `e2e` | the browser suite |
-   | `E2E multi-lodge` | applied | `e2e.yml` → `e2e-multi-lodge` | the multi-lodge browser suite |
-   | `Secret scan (gitleaks)` | **PENDING owner action** | `ci.yml` → `secret-scan` | the PR's own commits, `main`'s history including merge commits, and the checked-out tree (#2686) |
-   | `Image security gate (Trivy CRITICAL)` | **PENDING owner action** | `ci.yml` → `docker-image-security` | CRITICAL image vulnerabilities. HIGH stays advisory (#2686) |
-   | `Dependency audit` | **PENDING owner action** | `ci.yml` → `dependency-audit` | `npm audit --audit-level=high`. Split out of `verify` (#2946), where a failing audit skipped lint, the ratchet, `prisma generate`, typecheck, knip, `npm test` and the build on every branch (#2945) |
+   | `Playwright E2E` | applied | `e2e.yml` → `playwright` | the browser suite |
+   | `E2E multi-lodge` | applied | `e2e.yml` → `multi-lodge` | the multi-lodge browser suite |
+   | `Secret scan (gitleaks)` | applied | `ci.yml` → `secret-scan` | the PR's own commits, `main`'s history including merge commits, and the checked-out tree (#2686) |
+   | `Image security gate (Trivy CRITICAL)` | applied | `ci.yml` → `docker-image-security` | CRITICAL image vulnerabilities. HIGH stays advisory (#2686) |
+   | `Dependency audit` | applied | `ci.yml` → `dependency-audit` | `npm audit --audit-level=high`. Split out of `verify` (#2946), where a failing audit skipped lint, the ratchet, `prisma generate`, typecheck, knip, `npm test` and the build on every branch (#2945) |
 
-   **The rollout order for the three pending ones is load-bearing, and adding a
-   context early breaks every open pull request.** Two of them
-   (`Secret scan (gitleaks)`, `Image security gate (Trivy CRITICAL)`) are
-   produced by jobs #2686 RENAMES; the third (`Dependency audit`) is produced by
-   a job #2946 ADDS. Either way a branch that predates the merge produces none of
-   the new context names — and a required check that has never reported sits on
-   "Expected — waiting for status" forever. The order is the same for all three:
+   **Adding a required context is a three-step sequence, and doing it out of
+   order breaks every open pull request** — whenever a job producing a required
+   context is added or renamed. A branch predating the merge produces none of the
+   new names, and a required check that has never reported sits on
+   "Expected — waiting for status" forever:
 
    1. merge the change that adds or renames the job;
    2. then add that job's context to branch protection;
    3. then rebase every open pull request onto the new `main`, oldest first.
 
    **Between step 1 and step 2 the new context is a red check, not a merge
-   block.** For `Dependency audit` that window is a real, accepted supply-chain
-   gap: `verify` has stopped running the audit, so until the context is added a
-   high advisory reddens a check nothing enforces. Close it promptly rather than
-   leaving it queued.
+   block.** Splitting out `Dependency audit` (#2946) opened exactly such a gap:
+   `verify` had stopped running the audit, so a high advisory reddened a check
+   nothing enforced. Close such a window promptly.
 
-   Confirm the applied list rather than trusting this table:
+   **Read the applied list rather than trusting this table** — but an agent
+   session cannot: the machine account holds `push`, not `admin`, so the endpoint
+   404s for it. **That 404 means "not permitted", never "not protected"**; check
+   `gh api user -q .login` first. Ask the owner to run:
 
    ```bash
    gh api repos/thatskiff33/AlpineClubBookingsNZ/branches/main/protection \
-     --jq '.required_status_checks.contexts'
+     --jq '{checks: .required_status_checks.contexts,
+            strict: .required_status_checks.strict,
+            approvals: .required_pull_request_reviews.required_approving_review_count,
+            enforce_admins: .enforce_admins.enabled}'
    ```
+
+   A second trap: this repository also carries a *ruleset*, "Protect Main
+   Branch", whose enforcement is `disabled`. Rulesets never appear at the
+   endpoint above, so editing one changes nothing while appearing to work;
+   `gh api repos/<owner>/<repo>/rules/branches/main` lists what a ruleset really
+   applies — currently `[]`.
+
+   Measured 19 Aug 2026: the nine contexts above, `strict: false` (requiring
+   up-to-date branches serialises the queue behind full re-runs),
+   `required_approving_review_count: 0` (a pull request is required, a human
+   approval is not — #2713/#2948), `enforce_admins: false`.
 
    **Advisory, and deliberately NOT required** — a finding is investigated, but
    it cannot block a merge: `CodeQL`, `Analyze (javascript-typescript)` and
@@ -467,24 +482,21 @@ At the successful end of a meaningful piece of work:
    integration configured outside this repository); `dependency-review`;
    `Markdown relative-link check (offline)`; and the clock-rollover canary, which
    its own workflow comment says must never become a pull-request check.
-   Measured on fork pull requests #2782 and #2813: the CodeQL contexts do not
-   appear at all, which is a second reason they can never be required.
+   Measured on fork PRs #2782/#2813, the CodeQL contexts do not appear at
+   all — a second reason they can never be required.
 
-   **Never put a job-level `if:` on a required check.** The reason is the
-   opposite of the intuitive one. A skipped job DOES report a status — measured
-   on push `66448740c`, `dependency-review` and `gitleaks-pr-diff` both skipped
-   via a job-level `if:` and both reported one; only a workflow-level `on:`
-   filter produces no status at all. The hazard is that GitHub counts a
-   `skipped` required check as **satisfying** branch protection, so a job-level
-   `if:` on a security gate makes it vacuously green and the merge button turns
-   on. `needs:` has the same effect: if an upstream job fails, the dependent job
-   skips, and the required gate reports as satisfied. Put the condition on the
-   STEP instead, where a skip leaves the job a real pass or a real failure.
+   **Never put a job-level `if:` or `needs:` on a required check.** A skipped job
+   DOES report a status — measured on push `66448740c`, where `dependency-review`
+   and `gitleaks-pr-diff` both skipped via a job-level `if:` and both reported
+   one; only a workflow-level `on:` filter produces none. The hazard is that
+   GitHub counts a `skipped` required check as **satisfying** branch protection,
+   so an `if:` on a security gate makes it vacuously green and the merge button
+   turns on. `needs:` does the same when an upstream job fails. Put the condition
+   on the STEP instead, where a skip leaves the job a real pass or failure.
 
-   Because `enforce_admins` is off and no review approval is required, an admin
-   merge can still occasionally land `main` red, so investigate before assuming
-   a failure is pre-existing and compare against `main`'s own latest CI when a
-   failure looks unrelated. Require each required check present on the **exact
+   Because `enforce_admins` is off and no approval is required, an admin merge
+   can land `main` red; compare against `main`'s own latest CI before calling a
+   failure pre-existing. Require each required check present on the **exact
    current head SHA**: a conflicted PR gets no `pull_request` runs, so
    `gh pr checks` can read green off an older head, and an empty failure list is
    not a passing run (#2641).

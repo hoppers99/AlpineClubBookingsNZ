@@ -22,6 +22,14 @@ vi.mock("@/lib/prisma", () => ({
       create: vi.fn(),
       update: vi.fn(),
     },
+    // Booking Officer → OtherLodge sync (runs inside the assignment routes'
+    // transaction). Default to no lodges so it is a harmless no-op here; the sync
+    // itself is covered by committee-booking-officer-sync.test.ts.
+    lodge: { findMany: vi.fn().mockResolvedValue([]) },
+    otherLodge: {
+      findMany: vi.fn().mockResolvedValue([]),
+      update: vi.fn(),
+    },
     publicContentSettings: { findUnique: vi.fn() },
     auditLog: { create: vi.fn() },
   },

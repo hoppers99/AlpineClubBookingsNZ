@@ -149,7 +149,7 @@ function formatCommitteeMemberName(member: {
   return `${member.firstName} ${member.lastName}`.trim() || member.email || "Member";
 }
 
-function formatCommitteeMemberPhone(member: {
+export function formatCommitteeMemberPhone(member: {
   phoneCountryCode?: string | null;
   phoneAreaCode?: string | null;
   phoneNumber?: string | null;

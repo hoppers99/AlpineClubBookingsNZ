@@ -67,12 +67,12 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *
    * Since #2160 the DEFAULT is no longer the usual case — it is the fallback.
    * Most admin sections render an {@link AdminViewOnlySectionBanner} and pass
-   * `describeReason={false}` here (237 of 319 call sites), and a further 31 pass
+   * `describeReason={false}` here (240 of 327 call sites), and a further 34 pass
    * `describeReason={!ancestorRendersViewOnlyBanner}` because a VOUCHING PARENT
-   * renders the banner instead — 26 vouched at a JSX render site (#2168) and 5
+   * renders the banner instead — 29 vouched at a JSX render site (#2168) and 5
    * through the guided-setup shell's `WizardStepHelpers` channel (#2324), where
    * the shell calls each step from another file and no render site exists.
-   * 268 opt-outs in total.
+   * 274 opt-outs in total.
    * `view-only-banner-contract.test.ts` asserts every one of those figures, so
    * they are measured rather than counted by hand. The default survives in
    * three shapes:
@@ -86,7 +86,7 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *    switch, the #2262 cash-payment and manual-refund-task controls, the
    *    non-member contact form), where
    *    nothing local proves an ancestor renders a banner. (`docs/ARCHITECTURE.md`
-   *    counts 37 controls here, but that bucket is the arithmetic remainder,
+   *    counts 39 controls here, but that bucket is the arithmetic remainder,
    *    not a pure shape: 3 of the 37 are the FIRST shape — dialog contents
    *    inside `page-content-panel.tsx` and `site-banners-panel.tsx`, which are
    *    themselves banner-bearing panels; and 9 are the #2324 SCOPE exceptions
