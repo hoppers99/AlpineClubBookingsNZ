@@ -3,13 +3,49 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PartnerInviteClaimCard } from "@/components/partner-invite-claim-card";
 import { auth } from "@/lib/auth";
-import { buildLoginPath } from "@/lib/auth-redirect";
 import { prisma } from "@/lib/prisma";
 import { getPartnerInviteTokenForClaim } from "@/lib/partner-invite-token";
 import { normalizeInvitedEmail } from "@/lib/partner-invite-token-policy";
 import { getCachedClubIdentity } from "@/lib/public-layout-config";
+import { SignOutAndReturnButton } from "./sign-out-and-return-button";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * The signed-out branch's sign-in affordance is a plain, tokenless `/login`
+ * anchor (#2827).
+ *
+ * It used to be `buildLoginPath('/family-invite/<token>')`, which put the invite
+ * token into an `href` — and from there into the visitor's address bar, their
+ * history and any `Referer` the next hop saw. Do not reintroduce a callbackUrl
+ * here, in any attribute, hidden input or form action.
+ *
+ * **What that link did NOT expose, corrected 20 Aug 2026.** The first cut of this
+ * fix recorded that this page injects admin-authored Raw CSS and that
+ * `a[href^="/family-invite/9f"]` therefore read the token out a character at a
+ * time. That is false: `(public)/layout.tsx` injects `theme.appCss`, which
+ * `buildClubThemeAppCss()` builds **without** `rawCss`, so no admin CSS selector
+ * ever ran on this page. The oracle is real on `(website-dynamic)`, which is where
+ * #2827's other two fixes live. Keeping the token out of this link is still right —
+ * the URL exposure was real, and a future move of this group under the shared
+ * chrome would make the CSS oracle real too — but it is defence in depth here, not
+ * a closed breach. Full account in `src/lib/family-invite-return-address.ts`.
+ *
+ * The post-login return address is carried server-side instead, in the HttpOnly
+ * cookie that module documents: `src/proxy.ts` writes it on a signed-out
+ * navigation to this page and retires it on the signed-in GET, and all four
+ * post-login landing sites honour it. The signed-out flow still works with
+ * JavaScript switched off — that is an ordinary anchor, and the cookie rides on the
+ * response that rendered it.
+ *
+ * The wrong-account branch is NOT a `/login` link: see
+ * {@link SignOutAndReturnButton}, because `/login` redirects a signed-in visitor
+ * straight back here.
+ *
+ * An absent or expired cookie degrades to the member's ordinary post-login
+ * landing, never to an error; the emailed invite link still works.
+ */
+const LOGIN_PATH = "/login";
 
 function Shell({
   title,
@@ -94,8 +130,10 @@ export default async function PartnerInvitePage({
 
   const groupName = view.groupName ?? "a family group";
 
-  // Not signed in: route the recipient through the normal membership process
-  // (do not fork a second registration path), then back to this same link.
+  // Not signed in: route the recipient through the normal membership process (do
+  // not fork a second registration path). Signing in brings them back here — the
+  // return address travels in the #2827 HttpOnly cookie, not in the link, so see
+  // LOGIN_PATH above before adding a callbackUrl to either button.
   if (!session?.user?.id) {
     return (
       <Shell title="Family group invitation">
@@ -115,9 +153,7 @@ export default async function PartnerInvitePage({
             <Link href="/join/apply">Apply for membership</Link>
           </Button>
           <Button asChild variant="outline">
-            <Link href={buildLoginPath(`/family-invite/${encodeURIComponent(token)}`)}>
-              I already have an account
-            </Link>
+            <Link href={LOGIN_PATH}>I already have an account</Link>
           </Button>
         </div>
       </Shell>
@@ -138,15 +174,25 @@ export default async function PartnerInvitePage({
           This invitation was sent to <strong>{view.invitedEmail}</strong>.
         </p>
         <p>
-          Sign in with that account to accept the invitation to join{" "}
+          You are signed in as a different member. Sign out and sign back in with
+          that account to accept the invitation to join{" "}
           <strong>{groupName}</strong>.
         </p>
         <div className="pt-2">
-          <Button asChild variant="outline">
-            <Link href={buildLoginPath(`/family-invite/${encodeURIComponent(token)}`)}>
-              Sign in with a different account
-            </Link>
-          </Button>
+          {/*
+            NOT a `/login` link: this branch is reached BY a signed-in visitor, and
+            /login redirects an authenticated visitor straight back here, so the old
+            link bounced to the identical screen (review finding, 20 Aug 2026 — the
+            pre-#2827 `buildLoginPath(...)` link bounced the same way). Signing out
+            and returning here lands a SIGNED-OUT navigation on this address, which
+            is where `syncFamilyInviteReturnAddress()` writes the return address, so
+            the next sign-in comes back. See the component's docblock.
+          */}
+          <SignOutAndReturnButton
+            returnPath={`/family-invite/${encodeURIComponent(token)}`}
+          >
+            Sign out and use a different account
+          </SignOutAndReturnButton>
         </div>
       </Shell>
     );

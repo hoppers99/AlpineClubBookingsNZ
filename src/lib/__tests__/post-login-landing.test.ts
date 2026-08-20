@@ -157,3 +157,110 @@ describe("resolvePostLoginLandingPath — explicit callbackUrl precedence (D-D4)
     }
   });
 });
+
+/**
+ * #2827 — the family-invite return address, carried in an HttpOnly cookie rather
+ * than in a `callbackUrl`, because putting it in the URL means rendering the
+ * invite token into a link's `href` and so into the address bar, the browser's
+ * history and any `Referer` the next hop is shown.
+ *
+ * The resolver re-validates the value itself, so these cases hold whatever a
+ * caller forwards: the only path this input can ever produce is an invite page.
+ */
+describe("resolvePostLoginLandingPath — private family-invite return address (#2827)", () => {
+  const TOKEN =
+    "e7c1b93a5d0f4826" +
+    "1af74c02be95d738" +
+    "6b0d2e8149a3fc57" +
+    "d4938e6017c2ba5f";
+  const INVITE_PATH = `/family-invite/${TOKEN}`;
+
+  it("beats the landing preference and the role default", () => {
+    expect(
+      resolvePostLoginLandingPath({
+        privateReturnPath: INVITE_PATH,
+        landingPreference: "MEMBER_DASHBOARD",
+        permissionInput: FULL_ADMIN,
+      }),
+    ).toBe(INVITE_PATH);
+
+    expect(
+      resolvePostLoginLandingPath({
+        privateReturnPath: INVITE_PATH,
+        landingPreference: null,
+        permissionInput: FULL_ADMIN,
+      }),
+    ).toBe(INVITE_PATH);
+  });
+
+  it("loses to a genuinely explicit callbackUrl", () => {
+    // Precedence 2, not 1, on purpose: a member bounced out of a member page asked
+    // for THAT page on this sign-in attempt, and a lingering invite cookie must
+    // not outrank it. The cookie simply expires.
+    expect(
+      resolvePostLoginLandingPath({
+        explicitCallbackUrl: "/nominations/tok",
+        privateReturnPath: INVITE_PATH,
+        landingPreference: null,
+        permissionInput: FULL_ADMIN,
+      }),
+    ).toBe("/nominations/tok");
+  });
+
+  it("refuses an off-origin value — the open-redirect guard", () => {
+    for (const attempt of [
+      `https://evil.example${INVITE_PATH}`,
+      `//evil.example${INVITE_PATH}`,
+      `/\\evil.example${INVITE_PATH}`,
+      ` ${INVITE_PATH}`,
+      `${INVITE_PATH}\n`,
+    ]) {
+      expect(
+        resolvePostLoginLandingPath({
+          privateReturnPath: attempt,
+          landingPreference: null,
+          permissionInput: FULL_ADMIN,
+        }),
+        attempt,
+      ).toBe("/admin/dashboard");
+    }
+  });
+
+  it("refuses a safe internal path that is not an invite page", () => {
+    // The narrower half, and why a planted cookie is not a "land anywhere" lever:
+    // an attacker who can write this cookie cannot steer a member's post-login
+    // landing to an admin page, a payment page or anywhere else.
+    for (const attempt of [
+      "/admin/members",
+      "/dashboard",
+      `/pay/${TOKEN}`,
+      "/family-invite",
+      `/family-invite/${TOKEN}/extra`,
+      `${INVITE_PATH}?next=/admin`,
+    ]) {
+      expect(
+        resolvePostLoginLandingPath({
+          privateReturnPath: attempt,
+          landingPreference: null,
+          permissionInput: FULL_ADMIN,
+        }),
+        attempt,
+      ).toBe("/admin/dashboard");
+    }
+  });
+
+  it("degrades to the ordinary landing when there is no cookie at all", () => {
+    // An expired or absent address must never be an error: the emailed invite link
+    // still works, and the member simply lands where they normally would.
+    for (const absent of [null, undefined, ""]) {
+      expect(
+        resolvePostLoginLandingPath({
+          privateReturnPath: absent,
+          landingPreference: "MEMBER_DASHBOARD",
+          permissionInput: FULL_ADMIN,
+        }),
+        String(absent),
+      ).toBe("/dashboard");
+    }
+  });
+});
