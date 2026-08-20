@@ -55,10 +55,29 @@ interface FakeOperationRow {
   createdAt: Date;
 }
 
+interface FakePaymentRefundRow {
+  paymentId: string;
+  status: string;
+  amountCents: number;
+}
+
+interface FakeMemberCreditRow {
+  sourceBookingId: string;
+  type: string;
+  amountCents: number;
+  restoredFromBookingId: string | null;
+}
+
 const state = vi.hoisted(() => ({
   payments: [] as FakePaymentRow[],
   links: [] as FakeLinkRow[],
   operations: [] as FakeOperationRow[],
+  // #2902 cash-evidence inputs. Empty by default: no PaymentRefund ledger rows
+  // and no account-credit disposition resolves through the legacy-mirror
+  // fallback to cash target === refundedAmountCents, which is exactly the
+  // pre-#2902 target every #2901 scenario was written against.
+  paymentRefunds: [] as FakePaymentRefundRow[],
+  memberCredits: [] as FakeMemberCreditRow[],
 }));
 
 const fakePrisma = vi.hoisted(() => {
@@ -162,6 +181,50 @@ const fakePrisma = vi.hoisted(() => {
           row.active = args.data.active;
         }
         return { count: rows.length };
+      },
+    },
+    paymentRefund: {
+      // Mirrors resolveStripeCashRefundEvidence's groupBy(["status"]) shape.
+      groupBy: async (args: {
+        by: string[];
+        where: { paymentId: string };
+      }) => {
+        const rows = state.paymentRefunds.filter(
+          (row) => row.paymentId === args.where.paymentId
+        );
+        const byStatus = new Map<string, { sum: number; count: number }>();
+        for (const row of rows) {
+          const bucket = byStatus.get(row.status) ?? { sum: 0, count: 0 };
+          bucket.sum += row.amountCents;
+          bucket.count += 1;
+          byStatus.set(row.status, bucket);
+        }
+        return [...byStatus.entries()].map(([status, bucket]) => ({
+          status,
+          _sum: { amountCents: bucket.sum },
+          _count: { _all: bucket.count },
+        }));
+      },
+    },
+    memberCredit: {
+      aggregate: async (args: {
+        where: {
+          sourceBookingId: string;
+          type: { in: string[] };
+          amountCents: { gt: number };
+          restoredFromBookingId: null;
+        };
+      }) => {
+        const sum = state.memberCredits
+          .filter(
+            (row) =>
+              row.sourceBookingId === args.where.sourceBookingId &&
+              args.where.type.in.includes(row.type) &&
+              row.amountCents > args.where.amountCents.gt &&
+              row.restoredFromBookingId === null
+          )
+          .reduce((total, row) => total + row.amountCents, 0);
+        return { _sum: { amountCents: sum > 0 ? sum : null } };
       },
     },
     xeroSyncOperation: {
@@ -274,6 +337,8 @@ beforeEach(() => {
   ];
   state.links = [];
   state.operations = [];
+  state.paymentRefunds = [];
+  state.memberCredits = [];
 });
 
 describe("findStripeRefundNoteLinkRepairs", () => {
@@ -429,7 +494,9 @@ describe("findStripeRefundNoteLinkRepairs", () => {
     expect(plan?.reactivateLinkIds).toEqual([]);
     // The shortfall message must NOT tell the operator to void more notes —
     // that was the pre-fix defect. It points at status recording / self-heal.
-    expect(plan?.manualReviewReason).toContain("short of the refunded total");
+    expect(plan?.manualReviewReason).toContain(
+      "short of the provider-backed cash refund target"
+    );
     expect(plan?.manualReviewReason).not.toContain("void");
     expect(
       plan?.links.find((link) => link.linkId === "link_voided")?.plannedAction
