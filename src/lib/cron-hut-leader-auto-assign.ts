@@ -169,11 +169,22 @@ export async function autoAssignHutLeaders(): Promise<{
       // an assignment at another lodge is not a conflict here. Asked through
       // the SHARED predicate all four deciding call sites use (#2887), so the
       // cheap answer here and the authoritative one under the lock below cannot
-      // disagree about what an overlap is. School-teacher rows no longer block
-      // (#2926) — the predicate excludes them on `HutLeaderAssignment.source`,
-      // never on anything about the member. In practice the source-blind
-      // coverage probe above has already skipped this night when teachers are
-      // present, so the change is felt at the admin route rather than here.
+      // disagree about what an overlap is.
+      //
+      // SCHOOL-TEACHER ROWS STILL BLOCK HERE, and deliberately so: this call
+      // omits `allowOverlappingSchoolRows`. #2926's carve-out answers "may a
+      // DELIBERATE assignment stand here?", which is an officer's question and
+      // not this job's. An earlier version of this comment claimed the coverage
+      // probe above had already skipped any night with teachers present, so the
+      // carve-out was felt at the admin route rather than here. That was FALSE,
+      // and reachable: the probe asks about one `day`, while the row created
+      // below spans the guest's WHOLE STAY. Teachers 10-14 Aug, a sole adult's
+      // stay 12-20 Aug, the loop reaching 15 Aug - the probe finds 15 Aug
+      // uncovered, and with the carve-out applied the span read over 12-20 Aug
+      // skipped the teacher rows and planted a CRON row across the school
+      // nights. Being MANUAL-equivalent it then blocked officers across the
+      // whole span too. Omitting the flag restores exactly the pre-carve-out
+      // refusal for this job.
       const earlyOverlap = await findHutLeaderOverlapRefusal(prisma, {
         lodgeId: lodge.id,
         startDate: member.checkIn,

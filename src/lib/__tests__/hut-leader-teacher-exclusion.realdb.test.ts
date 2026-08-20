@@ -176,7 +176,10 @@ async function clearFixtures(): Promise<void> {
       });
 
       await expect(
-        findHutLeaderOverlapRefusal(prisma, CLASHING_WINDOW),
+        findHutLeaderOverlapRefusal(prisma, {
+          ...CLASHING_WINDOW,
+          allowOverlappingSchoolRows: true,
+        }),
       ).resolves.toMatchObject({ error: expect.stringContaining("Ordinary Leader") });
     });
 
@@ -195,7 +198,10 @@ async function clearFixtures(): Promise<void> {
           },
         });
 
-        const before = await findHutLeaderOverlapRefusal(prisma, CLASHING_WINDOW);
+        const before = await findHutLeaderOverlapRefusal(prisma, {
+          ...CLASHING_WINDOW,
+          allowOverlappingSchoolRows: true,
+        });
         expect(before).toMatchObject({ error: expect.stringContaining("Ordinary Leader") });
 
         // The membership edit, written the way the member editor writes it:
@@ -214,7 +220,10 @@ async function clearFixtures(): Promise<void> {
           });
         });
 
-        const after = await findHutLeaderOverlapRefusal(prisma, CLASHING_WINDOW);
+        const after = await findHutLeaderOverlapRefusal(prisma, {
+          ...CLASHING_WINDOW,
+          allowOverlappingSchoolRows: true,
+        });
         expect(
           after,
           "a membership edit removed a live hut-leader assignment from the overlap predicate",
@@ -242,7 +251,10 @@ async function clearFixtures(): Promise<void> {
         },
       });
 
-      await expect(findHutLeaderOverlapRefusal(prisma, CLASHING_WINDOW)).resolves.toBeNull();
+      await expect(findHutLeaderOverlapRefusal(prisma, {
+          ...CLASHING_WINDOW,
+          allowOverlappingSchoolRows: true,
+        })).resolves.toBeNull();
     });
 
     it("still refuses when a teacher-SHAPED member holds a manual assignment", async () => {
@@ -262,7 +274,10 @@ async function clearFixtures(): Promise<void> {
       });
 
       await expect(
-        findHutLeaderOverlapRefusal(prisma, CLASHING_WINDOW),
+        findHutLeaderOverlapRefusal(prisma, {
+          ...CLASHING_WINDOW,
+          allowOverlappingSchoolRows: true,
+        }),
       ).resolves.toMatchObject({ error: expect.stringContaining("School Contact") });
     });
 
@@ -283,6 +298,7 @@ async function clearFixtures(): Promise<void> {
         findHutLeaderOverlapRefusal(prisma, {
           ...CLASHING_WINDOW,
           lodgeId: OTHER_LODGE_ID,
+          allowOverlappingSchoolRows: true,
         }),
       ).resolves.toBeNull();
 
@@ -292,6 +308,7 @@ async function clearFixtures(): Promise<void> {
           lodgeId: LODGE_ID,
           startDate: STAY_END,
           endDate: new Date("2099-04-25T00:00:00.000Z"),
+          allowOverlappingSchoolRows: true,
         }),
       ).resolves.toBeNull();
 
@@ -300,6 +317,7 @@ async function clearFixtures(): Promise<void> {
         findHutLeaderOverlapRefusal(prisma, {
           ...CLASHING_WINDOW,
           excludeAssignmentId: LEADER_ASSIGNMENT_ID,
+          allowOverlappingSchoolRows: true,
         }),
       ).resolves.toBeNull();
     });

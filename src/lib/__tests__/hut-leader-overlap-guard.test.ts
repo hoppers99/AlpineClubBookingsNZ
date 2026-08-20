@@ -69,7 +69,12 @@ describe("findHutLeaderOverlapRefusal (#2887)", () => {
       whenever an admin edits a member.
     */
     const { client, findMany } = tx([]);
-    await findHutLeaderOverlapRefusal(client, WINDOW);
+    // The carve-out is opt-in, so a DELIBERATE caller has to ask for it. The
+    // companion test below pins what an automatic caller gets instead.
+    await findHutLeaderOverlapRefusal(client, {
+      ...WINDOW,
+      allowOverlappingSchoolRows: true,
+    });
     const where = (
       findMany.mock.calls[0] as unknown as [{ where: Record<string, unknown> }]
     )[0].where;
@@ -114,6 +119,59 @@ describe("findHutLeaderOverlapRefusal (#2887)", () => {
         where: expect.objectContaining({ lodgeId: expect.anything() }),
       }),
     );
+  });
+
+  it("does NOT carve out school rows for an automatic caller (#2926 cron defect)", async () => {
+    /*
+      The mirror of the test above, and the reason the flag is opt-in.
+
+      The carve-out answers "may a DELIBERATE assignment stand here?" — an
+      officer putting a leader beside a school group is not to be refused. It
+      does not answer "should an automatic job plant one?", and applying it to
+      the nightly job was a reachable defect:
+
+        teachers 10-14 Aug at a lodge; a sole adult member's stay 12-20 Aug; the
+        job reaches 15 Aug, whose coverage probe finds nothing; with the carve-out
+        applied the span read over 12-20 Aug skipped the teacher rows and the job
+        planted a CRON row across 12-20 — including the school nights it is
+        documented never to reach. Being MANUAL-equivalent, that row then blocked
+        officers across the whole span.
+
+      So omitting the flag must leave NO source filter, which restores exactly
+      the pre-carve-out refusal for the job. Asserted on the query rather than on
+      an outcome, because the whole point is that the automatic caller asks a
+      different question from the deliberate one.
+    */
+    const { client, findMany } = tx([]);
+    await findHutLeaderOverlapRefusal(client, WINDOW);
+    const where = (
+      findMany.mock.calls[0] as unknown as [{ where: Record<string, unknown> }]
+    )[0].where;
+
+    expect(where).not.toHaveProperty("source");
+    expect(Object.keys(where).sort()).toEqual([
+      "endDate",
+      "lodgeId",
+      "startDate",
+    ]);
+  });
+
+  it("refuses a span that overlaps a teacher row by more than a day when not opted in", async () => {
+    // The behavioural half: the query shape above must actually produce a
+    // refusal, or the guard could ask the right question and ignore the answer.
+    const { client } = tx([
+      {
+        id: "school-row",
+        startDate: new Date("2026-06-20T00:00:00.000Z"),
+        endDate: new Date("2026-07-05T00:00:00.000Z"),
+        source: "SCHOOL_BOOKING",
+        member: { firstName: "Ada", lastName: "Teacher" },
+      },
+    ]);
+
+    await expect(
+      findHutLeaderOverlapRefusal(client, WINDOW),
+    ).resolves.toMatchObject({ error: expect.stringContaining("overlaps") });
   });
 
   it("excludes the row being edited when asked to", async () => {

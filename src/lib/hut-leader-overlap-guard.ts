@@ -60,6 +60,28 @@ export async function findHutLeaderOverlapRefusal(
     endDate: Date;
     /** The row being edited, excluded from its own overlap check. */
     excludeAssignmentId?: string;
+    /**
+     * Whether a SCHOOL_BOOKING row may be overlapped (#2926).
+     *
+     * DEFAULTS TO FALSE, and the default is the load-bearing part. The carve-out
+     * answers "may a DELIBERATE assignment stand here?" — an officer choosing to
+     * put a leader beside a school group is not to be refused. It does NOT answer
+     * "should an automatic job plant one?", and conflating the two is a real
+     * defect rather than a theoretical one:
+     *
+     *   teachers 10-14 Aug at a lodge; a sole adult member's stay is 12-20 Aug;
+     *   the nightly job reaches 15 Aug, whose coverage probe finds nothing; with
+     *   the carve-out applied the span read over 12-20 Aug skips the teacher rows
+     *   and the job plants a CRON row across 12-20 — including the school nights
+     *   it is documented never to reach. That row is MANUAL-equivalent, so it then
+     *   blocks officers across the whole span too.
+     *
+     * So an AUTOMATIC caller omits this and keeps refusing, which is exactly the
+     * behaviour that existed before the carve-out; only the two deliberate admin
+     * routes opt in. Omitting it is always the safe answer, which is why the flag
+     * is opt-in rather than opt-out.
+     */
+    allowOverlappingSchoolRows?: boolean;
   },
 ): Promise<{ error: string } | null> {
   const overlaps = await tx.hutLeaderAssignment.findMany({
@@ -70,10 +92,13 @@ export async function findHutLeaderOverlapRefusal(
       startDate: { lte: input.endDate },
       endDate: { gte: input.startDate },
       ...lodgeNullTolerantScope(input.lodgeId),
-      // The teacher carve-out, keyed on the row's own provenance. `source` is
-      // NOT NULL with a database default, so `not` has no three-valued-logic
-      // hole: every row is either SCHOOL_BOOKING or it is not.
-      source: { not: HutLeaderAssignmentSource.SCHOOL_BOOKING },
+      // The teacher carve-out, keyed on the row's own provenance, and applied
+      // only for a DELIBERATE caller. `source` is NOT NULL with a database
+      // default, so `not` has no three-valued-logic hole: every row is either
+      // SCHOOL_BOOKING or it is not.
+      ...(input.allowOverlappingSchoolRows
+        ? { source: { not: HutLeaderAssignmentSource.SCHOOL_BOOKING } }
+        : {}),
     },
     include: { member: { select: { firstName: true, lastName: true } } },
   });

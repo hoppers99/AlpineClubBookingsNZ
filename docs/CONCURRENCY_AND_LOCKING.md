@@ -248,11 +248,25 @@ over any assignment spanning the night, once cheaply and once again under the ke
 — and *would this assignment overlap?*, which is the shared predicate. The
 coverage probes stay **source-blind**: a school-teacher row counts as coverage,
 so the job does not auto-assign a leader for a night a school group already has
-teachers on site. The overlap predicate excludes those same rows. That is not an
+teachers on site. The overlap predicate excludes those same rows **only for a
+deliberate caller**: the carve-out is opt-in via `allowOverlappingSchoolRows`,
+the two admin routes pass it, and the cron does not. That is not an
 inconsistency, it is the two questions being different ones: coverage is
 automatic and should stay out of the way when somebody responsible is already
 there, while overlap is a REFUSAL and must not refuse an officer who has
-deliberately decided to add a leader. Both probes must keep agreeing with each
+deliberately decided to add a leader.
+
+**Why the carve-out is opt-in rather than unconditional.** Applying it to the
+cron as well was a reachable defect, not a theoretical one. The coverage probes
+ask about ONE night, while the row the job creates spans the guest's whole stay.
+Teachers 10-14 Aug; a sole adult's stay 12-20 Aug; the loop reaches 15 Aug, whose
+coverage probe finds nothing; with the carve-out applied the span read over
+12-20 Aug skipped the teacher rows and the job planted a CRON row across
+12-20 Aug, including the school nights it is documented never to reach. Being
+MANUAL-equivalent, that row then blocked officers across the whole span. Omitting
+the flag restores exactly the pre-carve-out refusal for the job, so the night
+stays uncovered as it did before — which is the intended behaviour, not a
+regression. Both probes must keep agreeing with each
 other — a locked re-ask that answered a different question from the cheap one
 would make the two skips disagree.
 

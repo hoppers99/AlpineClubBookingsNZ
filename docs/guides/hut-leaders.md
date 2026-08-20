@@ -55,6 +55,17 @@ no hut-leader request or assignment write until a real lodge returns.
    then click to confirm. An assignment overlapping an existing one by more than a
    day is blocked.
 
+   **Exception: a school group's teachers do not block you.** When a school
+   booking is approved, the app records one assignment per teacher. Those do not
+   count against this rule, so you can deliberately put a club leader on the same
+   nights as a school group if you judge that it needs one. Two consequences worth
+   knowing. The eligible-members list still treats a school night as fully
+   covered, so it will not suggest a range there even though confirming one is now
+   accepted -- pick the member and set the dates yourself. And the nightly
+   automatic assignment leaves those nights alone entirely: it never places a
+   leader across a school group's nights, so if you want one there it has to be
+   you who puts it there.
+
 ### Hold a bed for a custodian
 
 Some clubs keep someone on site for a whole season — a custodian who lives in
@@ -119,7 +130,7 @@ row, so you never have to delete an assignment to change its bed:
 
 | Control | What it does | Notes / constraints |
 | --- | --- | --- |
-| Start Date / End Date | The nights the leader covers | NZ date-only; an >1-day overlap with an existing assignment is blocked |
+| Start Date / End Date | The nights the leader covers | NZ date-only; an >1-day overlap with an existing assignment is blocked, EXCEPT against a school group's teacher assignments, which never block you |
 | Eligible members list | Members whose bookings make them a natural fit | Adopts each member's conflict-free suggested range |
 | Pick any member | Assign a member with no booking (e.g. a visiting custodian) | Keeps the range you picked |
 | Hold a bed (optional) | Holds one bed for every covered night, with no booking | Default is **No bed — role only** (no capacity effect). Needs the `bedAllocation` module on to *set* a bed. Inclusive of the end date's night. Each choice names the bed type, so a double is obvious before you take it |
@@ -138,7 +149,7 @@ row, so you never have to delete an assignment to change its bed:
 | The dashboard lists an uncovered night at a lodge you have archived, shown as "*Lodge name*, archived" | Archiving a lodge stops new bookings but does not cancel the ones it already had. Those guests still arrive and still need a leader, so the night is still counted and is labelled archived. It will not clear itself: the nightly automatic assignment only ever assigns at active lodges | Decide which of the two you meant. To cover it, make the lodge active again (**Admin → Lodges**), assign a leader here, and archive it again afterwards. To be rid of it, cancel or move the remaining bookings at that lodge — the row goes when the last one does |
 | Hut Leaders is missing from the sidebar / 404s | The `hutLeaders` module is off | Enable it under **Admin → Setup → Modules** — see [`CONFIGURATION.md`](../../CONFIGURATION.md#module-controls-and-admin-modules) |
 | Everything is read-only ("… can view … but cannot change them") | Your admin role has lodge view but not edit | Ask a full admin for **lodge edit** access |
-| "This member overlaps an existing assignment" | The range overlaps another leader's by more than a day | Shorten the range or delete the conflicting assignment |
+| "This member overlaps an existing assignment" | The range overlaps another leader's by more than a day. A school group's teacher assignments are excluded and never cause this | Shorten the range or delete the conflicting assignment |
 | The label says "Custodian"/"Warden", not "Hut Leader" | The club renamed the hut-leader label in its identity settings | Expected — this page, the allocation board's band and every refusal message on screen all follow the club's label |
 | The **lodge TV** says "Custodian" even though we renamed the role | Deliberate: the wall uses one fixed word for every club, so a visitor reads it without knowing the club's vocabulary | Expected. Only the public screen does this; every admin surface uses your label |
 | A leader's PIN doesn't work on the kiosk | Their PIN was reset (old one revoked), or their kiosk account is ambiguous | Reset the PIN again; check the [Lodge Kiosk](lodge.md) account binding |

@@ -168,6 +168,8 @@ export async function POST(req: NextRequest) {
     lodgeId,
     startDate: newStart,
     endDate: newEnd,
+    // #2926: a DELIBERATE officer action, so the teacher carve-out applies.
+    allowOverlappingSchoolRows: true,
   });
   if (earlyOverlap) {
     return NextResponse.json({ error: earlyOverlap.error }, { status: 409 });
@@ -229,6 +231,8 @@ export async function POST(req: NextRequest) {
         lodgeId: lockedLodgeId,
         startDate: newStart,
         endDate: newEnd,
+        // #2926: a DELIBERATE officer action, so the teacher carve-out applies.
+        allowOverlappingSchoolRows: true,
       });
       if (lockedOverlap) throw new HutLeaderOverlapError(lockedOverlap.error);
 
