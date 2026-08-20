@@ -79,7 +79,7 @@ id and need the file it lives in.
 | Auth, sessions, tokens, permissions — anything security-shaped | — | [`SECURITY.md`](docs/SECURITY.md), [`SECURITY-ATTACK-SURFACE.md`](docs/SECURITY-ATTACK-SURFACE.md), [`TOKEN_HASHING.md`](docs/TOKEN_HASHING.md) |
 | Documentation itself | — | [`STYLE_GUIDE.md`](docs/STYLE_GUIDE.md) |
 | Locating bounded code, import or Prisma context for an agent | — | [`agents/SCOPED_CONTEXT.md`](docs/agents/SCOPED_CONTEXT.md) |
-| Your first `npm` command in a new worktree (Windows runtime + dependency preflight) | — | [`agents/CODEX_WORKFLOW.md`](docs/agents/CODEX_WORKFLOW.md) |
+| Your first `npm` command in a new worktree (Windows runtime + dependency preflight), or Docker infrastructure a lane starts and must later tear down | — | [`agents/CODEX_WORKFLOW.md`](docs/agents/CODEX_WORKFLOW.md) |
 | Working an issue, recording a decision on one, briefing a subagent, or reading untrusted issue/PR/provider text | — | [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md) — read the thread with `npm run issue -- <n>`, never `gh issue view`, and rewrite the body when you record a decision; [`agents/SUBAGENT_GUIDE.md`](docs/agents/SUBAGENT_GUIDE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](docs/agents/PROMPT_INJECTION_GUIDE.md) |
 | Posting in public — issues, PRs, comments, claims, cross-lane hand-offs | — | [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md) — what never goes in a public artifact, the `CLAIM:`/`LANE-SYNC:` prefixes, lane identity |
 | A Next.js API or convention | — | the relevant guide in `node_modules/next/dist/docs/` |
@@ -415,13 +415,13 @@ At the successful end of a meaningful piece of work:
    trace, add a justified `entry` or file-scoped `ignoreIssues` carve-out to
    `knip.jsonc` (see CONTRIBUTING.md "Dead-code gate") rather than deleting live
    code. `main` is branch-protected, and force-pushes and branch deletions are
-   blocked. **Six checks are required today. Two more are pending an owner
+   blocked. **Six checks are required today. Three more are pending an owner
    action** and are marked as such below — this table is the applied
    configuration plus what is queued, never an aspiration:
 
    | Required check | Status | Job | What it gates |
    | --- | --- | --- | --- |
-   | `verify` | applied | `ci.yml` → `verify` | lint, typecheck, knip, `npm test`, build, PR-body gates |
+   | `verify` | applied | `ci.yml` → `verify` | lint, typecheck, knip, `npm test`, build, PR-body gates. It no longer runs the dependency audit (#2946) |
    | `Migration drift check` | applied | `ci.yml` → `migration-drift` | migrations reproduce `schema.prisma`; real-Postgres lock harnesses |
    | `Data migration verification` | applied | `ci.yml` → `data-migration-verification` | data-rewriting migrations against realistic pre-state |
    | `Static analysis gate` | applied | `ci.yml` → `static-analysis` | Semgrep: four registry packs **plus** `.semgrep/rules/**` and their fixtures |
@@ -429,16 +429,25 @@ At the successful end of a meaningful piece of work:
    | `E2E multi-lodge` | applied | `e2e.yml` → `e2e-multi-lodge` | the multi-lodge browser suite |
    | `Secret scan (gitleaks)` | **PENDING owner action** | `ci.yml` → `secret-scan` | the PR's own commits, `main`'s history including merge commits, and the checked-out tree (#2686) |
    | `Image security gate (Trivy CRITICAL)` | **PENDING owner action** | `ci.yml` → `docker-image-security` | CRITICAL image vulnerabilities. HIGH stays advisory (#2686) |
+   | `Dependency audit` | **PENDING owner action** | `ci.yml` → `dependency-audit` | `npm audit --audit-level=high`. Split out of `verify` (#2946), where a failing audit skipped lint, the ratchet, `prisma generate`, typecheck, knip, `npm test` and the build on every branch (#2945) |
 
-   **The rollout order for the two pending ones is load-bearing, and adding them
-   early breaks every open pull request.** Both contexts are produced by jobs
-   this change RENAMES, so a branch that predates the merge produces the old
-   context names and none of the new ones — and a required check that has never
-   reported sits on "Expected — waiting for status" forever. The order is:
+   **The rollout order for the three pending ones is load-bearing, and adding a
+   context early breaks every open pull request.** Two of them
+   (`Secret scan (gitleaks)`, `Image security gate (Trivy CRITICAL)`) are
+   produced by jobs #2686 RENAMES; the third (`Dependency audit`) is produced by
+   a job #2946 ADDS. Either way a branch that predates the merge produces none of
+   the new context names — and a required check that has never reported sits on
+   "Expected — waiting for status" forever. The order is the same for all three:
 
-   1. merge the change that renames the jobs;
-   2. then add the two contexts to branch protection;
+   1. merge the change that adds or renames the job;
+   2. then add that job's context to branch protection;
    3. then rebase every open pull request onto the new `main`, oldest first.
+
+   **Between step 1 and step 2 the new context is a red check, not a merge
+   block.** For `Dependency audit` that window is a real, accepted supply-chain
+   gap: `verify` has stopped running the audit, so until the context is added a
+   high advisory reddens a check nothing enforces. Close it promptly rather than
+   leaving it queued.
 
    Confirm the applied list rather than trusting this table:
 
@@ -512,7 +521,11 @@ At the successful end of a meaningful piece of work:
    parent PR and epic before the PR merges - comments do not get fixes done;
    PRs do, and a filed issue is the only acceptable carry-forward vehicle (see
    "Residual risks" above for when carrying forward is legitimate at all).
-6. After merge, delete the merged branch and confirm `main` CI stays green.
+6. After merge, delete the merged branch, tear down any Docker infrastructure the
+   lane started — see
+   [`agents/CODEX_WORKFLOW.md`](docs/agents/CODEX_WORKFLOW.md) →
+   "Lane-owned Docker infrastructure", and `npm run stale-containers` names what
+   earlier lanes left behind — and confirm `main` CI stays green.
 
 ### Pre-authorisation and attributability
 

@@ -94,9 +94,9 @@ let previewBedAllocationRemoval: typeof import("@/lib/bed-allocation-removal")["
 let applyBedAllocationRemoval: typeof import("@/lib/bed-allocation-removal")["applyBedAllocationRemoval"];
 let previewBedAllocationMove: typeof import("@/lib/bed-allocation-move")["previewBedAllocationMove"];
 let applyBedAllocationMove: typeof import("@/lib/bed-allocation-move")["applyBedAllocationMove"];
-let moveBedAllocationsSameDate: typeof import("@/lib/admin-bed-allocation")["moveBedAllocationsSameDate"];
-let runAutoBedAllocation: typeof import("@/lib/admin-bed-allocation")["runAutoBedAllocation"];
-let deleteBedAllocationRoom: typeof import("@/lib/admin-bed-allocation")["deleteBedAllocationRoom"];
+let moveBedAllocationsSameDate: typeof import("@/lib/bed-allocation-manual-writes")["moveBedAllocationsSameDate"];
+let runAutoBedAllocation: typeof import("@/lib/bed-allocation-auto-allocate")["runAutoBedAllocation"];
+let deleteBedAllocationRoom: typeof import("@/lib/bed-allocation-rooms")["deleteBedAllocationRoom"];
 let reconcileBedAllocationsForBooking: typeof import("@/lib/bed-allocation-lifecycle")["reconcileBedAllocationsForBooking"];
 let cancelBooking: typeof import("@/lib/booking-cancel")["cancelBooking"];
 let writeRequestedRoom: typeof import("@/lib/requested-room-write")["writeRequestedRoom"];
@@ -702,11 +702,13 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
       ({ previewBedAllocationMove, applyBedAllocationMove } = await import(
         "@/lib/bed-allocation-move"
       ));
-      ({
-        deleteBedAllocationRoom,
-        moveBedAllocationsSameDate,
-        runAutoBedAllocation,
-      } = await import("@/lib/admin-bed-allocation"));
+      ({ deleteBedAllocationRoom } = await import("@/lib/bed-allocation-rooms"));
+      ({ moveBedAllocationsSameDate } = await import(
+        "@/lib/bed-allocation-manual-writes"
+      ));
+      ({ runAutoBedAllocation } = await import(
+        "@/lib/bed-allocation-auto-allocate"
+      ));
       ({ reconcileBedAllocationsForBooking } = await import(
         "@/lib/bed-allocation-lifecycle"
       ));

@@ -127,12 +127,50 @@ instead, that page keeps its own analytics posture — so the dedicated
 `/booking-requests` and `/school-bookings` pages are the analytics-free entry
 points, and an ordinary page you drop the form onto is not.
 
+### Connect to the Alpine Central Server
+
+The Alpine Central Server (ServerNZ) is a shared hub that clubs use to keep one
+another's contact details current. Instead of every club retyping every other
+club's booking officer by hand, each club maintains its own entry and the hub
+distributes it.
+
+**Read this before you turn it on.** This is the one integration that sends data
+*out* of your club. When you enable a shared item, your lodges' names, locations,
+bed counts and booking-officer contact details are uploaded to the central server
+and redistributed to every other connected club, where they appear on those
+clubs' pages. The booking-officer email is the committee **role's** shared
+address (for example `bookings@yourclub.nz`), never a member's personal one, and
+a member's phone number is shared **only** if your club already publishes it on
+your own committee page. No other member data is sent.
+
+1. Enable the **Alpine Central Server** module on [Modules](modules.md). With the
+   module off the setup page is not reachable and the nightly sync does not run,
+   so this is your off switch as well as your on switch.
+2. Ask the central server's operator for a connection. They issue you an API key.
+3. Open **Integrations → Alpine Central Server** and enter the server address.
+   It must be an `https://` address on the public internet — the API key travels
+   to it as a bearer token, so a plain `http://` address, or an internal one, is
+   refused. **Changing the address clears the stored key**, because a key issued
+   by one server means nothing to another.
+4. Paste the API key and save. It is stored encrypted and never shown again.
+5. Enable the **Other Clubs details** item, then press **Upload** to push your
+   entries and **Download** to pull the distributed set.
+
+After that a nightly job at 3am syncs both directions on its own. It only sends
+entries that changed since last time and only writes entries that genuinely
+differ, so a quiet night costs almost nothing.
+
+**Who can do what.** Enabling an item and running a sync needs finance **edit**.
+The server address and the API key additionally need **Full Admin**, because
+between them they decide where a credential is sent.
+
 ## Settings reference
 
 | Card | What it opens | Requires |
 | --- | --- | --- |
 | Xero Setup | The Xero connection and accounting configuration (`/admin/xero/setup`) | The `xeroIntegration` module; Xero OAuth credentials and tenant tokens configured server-side |
 | Google Analytics | Its settings in place on the hub: GA4 measurement id, consent-banner mode, banner wording, and **Ask visitors to choose again** | The `analytics` module; finance **view** to see the status, finance **edit** to change anything |
+| Alpine Central Server | The ServerNZ connection and shared-data setup (`/admin/alpine-server/setup`) | The `alpineCentralServer` module; finance **edit** to enable an item or run a sync, **Full Admin** for the server address and API key |
 | Database Backups | The guided backup setup wizard (`/admin/backups/setup`): S3 credentials, destination, nightly schedule, and a verification run | Support view; the S3 credentials and destination writes require Full Admin. See [Database Backups](backups.md) |
 
 Integrations is a **support**/**finance** area hub; the Xero credentials

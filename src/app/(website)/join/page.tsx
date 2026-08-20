@@ -46,9 +46,14 @@ export default async function JoinPage() {
   const embeddedBody = page ? await buildEmbeddedBody(page.contentHtml) : [];
   const caption = page?.caption || "Join the Club";
   const title = page?.title || "Becoming a Member";
-  const headerText =
-    page?.headerText ||
-    `How to become a member of the ${clubIdentity.name}. Nomination by two existing members, joining fee, induction process, and membership details.`;
+  // Only a GENUINE stored `headerText` may reach the HTML sink. It is admin HTML,
+  // sanitised on write and again on read by the published-row reader used above.
+  const storedHeaderHtml = page?.headerText.trim() ? page.headerText : null;
+  // The fallback is a string this code COMPOSES, and it interpolates a club-set
+  // value (`name`) that no sanitiser has ever seen. It renders as an escaped text
+  // child, never through the HTML sink — the branch a deployment with a blanked
+  // or missing row takes is exactly the branch that must not be one (#2819).
+  const fallbackHeaderText = `How to become a member of the ${clubIdentity.name}. Nomination by two existing members, joining fee, induction process, and membership details.`;
 
   return (
     <>
@@ -58,10 +63,16 @@ export default async function JoinPage() {
           <h1 className="font-heading text-4xl font-bold tracking-tight sm:text-5xl">
             {title}
           </h1>
-          <div
-            className="mt-4 max-w-2xl text-lg text-brand-snow/80"
-            dangerouslySetInnerHTML={{ __html: headerText }}
-          />
+          {storedHeaderHtml ? (
+            <div
+              className="mt-4 max-w-2xl text-lg text-brand-snow/80"
+              dangerouslySetInnerHTML={{ __html: storedHeaderHtml }}
+            />
+          ) : (
+            <p className="mt-4 max-w-2xl text-lg text-brand-snow/80">
+              {fallbackHeaderText}
+            </p>
+          )}
         </div>
       </section>
       <section className="bg-brand-snow py-16 sm:py-20">

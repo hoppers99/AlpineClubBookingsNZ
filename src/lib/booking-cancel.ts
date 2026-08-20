@@ -10,7 +10,12 @@ import {
 import { sendAdminManualRefundTaskAlert, sendBookingCancelledEmail } from "./email";
 import { logAudit } from "./audit";
 import { recordBookingEvent } from "./booking-events";
-import { BookingEventType, BookingStatus, type Prisma } from "@prisma/client";
+import {
+  BookingEventType,
+  BookingStatus,
+  ManualRefundTaskKind,
+  type Prisma,
+} from "@prisma/client";
 import {
   createCancellationCredit,
   lockMemberCreditLedger,
@@ -1508,6 +1513,12 @@ async function performBookingCancellation(
           bookingId,
           paymentId: payment.id,
           amountCents: refundAmountCents,
+          // #2797: the typed reason replaces reason-string sniffing. This is the
+          // cash/off-Xero cancellation hand-back (B5, #2262). `raisedAmountCents`
+          // mirrors the amount it was raised with so the row itself records that
+          // this task's amount is not admin-amendable — it was fixed at creation.
+          kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
+          raisedAmountCents: refundAmountCents,
           reason: `Booking ${bookingId} cancelled — cash/manual settlement, refund by hand (${refundPercentage}% under the policy in effect at the time).`.slice(
             0,
             500

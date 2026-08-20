@@ -1822,11 +1822,27 @@ model Booking {
   // the shortfall is surfaced in the pay-step response — never silently
   // swallowed. See consumeStoredCreditElection in booking-credit-election.ts.
   creditElectionCents          Int?
+  // Reciprocal "other club member" rate (Other Lodges epic, follow-up to
+  // #2749). The partner lodge the booking officer named on this booking, so the
+  // non-member guests ticked below can be priced at the club's own member rate.
+  // NULL — the default and the state of every booking made before this column —
+  // means no other lodge is claimed, and every guest prices exactly as it did.
+  //
+  // The booking carries the LODGE; the per-person opt-in is
+  // BookingGuest.otherLodgeMember, because a party can mix a visiting club
+  // member with their own non-member family. Clearing this column clears every
+  // guest flag with it (enforced at the API boundary), so a guest can never be
+  // priced as an other-club member with no club recorded against them.
+  //
+  // FK is Restrict, exactly like BookingRequest.otherLodgeId: an OtherLodge
+  // cited by a priced booking cannot be deleted out from under it.
+  otherLodgeId                 String?
   createdAt                 DateTime           @default(now())
   updatedAt                 DateTime           @updatedAt
 
   member                      Member                          @relation(fields: [memberId], references: [id], onDelete: Restrict)
   lodge                       Lodge                           @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  otherLodge                  OtherLodge?                     @relation(fields: [otherLodgeId], references: [id], onDelete: Restrict)
   waitlistOfferedLodge        Lodge?                          @relation("BookingWaitlistOfferedLodge", fields: [waitlistOfferedLodgeId], references: [id], onDelete: SetNull)
   waitlistAlternateLodges     BookingWaitlistAlternateLodge[]
   createdBy                   Member?                         @relation("BookingsCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
@@ -1893,6 +1909,7 @@ model Booking {
   @@index([requestedRoomId])
   @@index([parentBookingId])
   @@index([lodgeId])
+  @@index([otherLodgeId])
 }
 
 // Durable booking-lifecycle event store (issue #740). One row per transition
@@ -1953,6 +1970,23 @@ model BookingGuest {
   // forever. Deliberately a bare column (no FK): the snapshot must survive
   // even if a custom type is later deleted.
   rateMembershipTypeId String?
+  // Reciprocal "other club member" rate (Other Lodges epic, follow-up to
+  // #2749). TRUE when the booking officer has recognised this NON-MEMBER guest
+  // as a member of the booking's Booking.otherLodgeId, which prices them from
+  // the built-in FULL member rate rows instead of NON_MEMBER's.
+  //
+  // IT CHANGES THE RATE AND NOTHING ELSE. `isMember` stays FALSE, deliberately
+  // and permanently: the person is not a member of THIS club, so adult-member
+  // hosting, the non-member hold, split bookings, `Booking.hasNonMembers`, the
+  // subscription gate and member-only promotions must all keep seeing a
+  // non-member. Only the rate resolver reads this flag
+  // (resolveGuestRateMembershipTypes), which is what keeps the blast radius to
+  // pricing.
+  //
+  // Additive/expand-only; default false leaves every existing guest priced
+  // exactly as before. Never true on a member row (refused at the API
+  // boundary), and never true while the booking names no other lodge.
+  otherLodgeMember     Boolean   @default(false)
   // Member-guest consent (epic #2305, decision D-7). The approval state of a
   // MEMBER added as somebody else's guest lives here, on the guest row itself,
   // not in a side table.
@@ -2490,9 +2524,11 @@ model LodgeBed {
   // adds one partner-shared admission slot above the base figure (#1745).
   bedType   BedType  @default(SINGLE)
   // Optional pairing label within a room: at most two beds share a bunkGroup,
-  // one BUNK_TOP and one BUNK_BOTTOM. Enforced in admin-bed-allocation.ts, not
-  // by a DB constraint (a "<=2 per group, one of each type" rule can't be a
-  // plain unique index, and partial indexes are out of scope for this change).
+  // one BUNK_TOP and one BUNK_BOTTOM. Enforced in
+  // src/lib/bed-allocation-bunk-pairing.ts (#2688 moved it out of the deleted
+  // admin-bed-allocation.ts), not by a DB constraint (a "<=2 per group, one of
+  // each type" rule can't be a plain unique index, and partial indexes are out
+  // of scope for this change).
   bunkGroup String?  @db.VarChar(50)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -2682,11 +2718,74 @@ enum ManualRefundTaskStatus {
   DISMISSED
 }
 
+/// #2797: WHY a hand-back task exists, as a stable typed value rather than as a
+/// prefix of the free-form `reason` string. `reason` is operator prose and has
+/// been used as a de-facto discriminator (`note: { startsWith }` in the finance
+/// queue); a typed kind is what lets a consumer ask "is this the pending
+/// financial adjustment for an unpriceable edit?" without matching on English.
+///
+/// NULLABLE on the model, and deliberately: every row written before #2797 has
+/// no kind and is not rewritten by the migration (blue-green expand-only). Read
+/// `null` as "raised before the kind existed", never as "unclassified today" —
+/// every production writer sets one.
+enum ManualRefundTaskKind {
+  /// A cash/off-Xero settled booking was cancelled, so the club owes the money
+  /// back by hand (B5, #2262 — `booking-cancel.ts`).
+  CANCELLED_BOOKING_HAND_BACK
+  /// Stripe captured a booking-modification payment against a booking that had
+  /// already been deleted (#2700, INV-ADDPAY-036).
+  DELETED_BOOKING_LATE_CAPTURE
+  /// The record of a late capture the webhook refunded automatically — money
+  /// already back with the member, kept as a notice rather than as work
+  /// (#2760/#2773).
+  AUTOMATIC_LATE_CAPTURE_RECORD
+  /// #2797: an edit to a booking already under way changed the stay, but the
+  /// exact sold price needed to value what was given back could not be read
+  /// from the stored evidence. The stay change was applied; the money was NOT.
+  /// An admin prices it from the booking's own payment and rate history and
+  /// confirms the amount, and only then does any money move.
+  EDIT_FINANCIAL_REVIEW
+}
+
 model ManualRefundTask {
-  id                  String                 @id @default(cuid())
-  bookingId           String
-  paymentId           String
-  amountCents         Int
+  id        String @id @default(cuid())
+  bookingId String
+  /// #2797 (owner decision D2, 11 Aug 2026): OPTIONAL, because a pure credit
+  /// owed back for a night the member gave up need not sit against any one
+  /// captured payment. Every pre-#2797 row has one and every pre-#2797 writer
+  /// still sets one; only the `EDIT_FINANCIAL_REVIEW` kind may leave it unset,
+  /// and `resolveManualRefundTask` refuses to write a refund allocation when it
+  /// is absent (there is nothing to allocate against).
+  paymentId String?
+  /// #2797 (owner decision D2): OPTIONAL while OPEN, because an edit can raise a
+  /// task whose amount is genuinely unknown and `0` would be a magic value another
+  /// consumer could read as "assessed at nothing". It becomes a required
+  /// non-negative integer at COMPLETED — enforced by `resolveManualRefundTask`
+  /// and by the `ManualRefundTask_completed_amount_present` check constraint, so
+  /// no path can close one without a number.
+  amountCents Int?
+  /// #2797 (owner decision D2, the AUDIT half): what the task was RAISED with,
+  /// written once at creation and never amended. `amountCents` above carries the
+  /// live figure and is what the admin confirms; this is what it was before they
+  /// touched it, so the row itself — not only the audit log — says whether the
+  /// amount moved and by how much. Null exactly when the task was raised with no
+  /// amount at all.
+  raisedAmountCents Int?
+  /// #2797: the typed reason this task exists. See `ManualRefundTaskKind`.
+  kind ManualRefundTaskKind?
+  /// #2797: the stable identity of the OCCURRENCE this task is for, so a replay
+  /// of the same structural edit raises exactly ONE task across OPEN, COMPLETED
+  /// and DISMISSED. Unique where present; NULL for every row that predates the
+  /// column (Postgres permits many NULLs under a unique index), and NULL for the
+  /// legacy kinds, which carry their own idempotency in their writers.
+  occurrenceKey String?
+  /// #2797 (owner decision D3): the evidence an admin needs to price the
+  /// adjustment fairly, captured at raise time because the rows it describes are
+  /// gone the moment the edit commits — the diagnostic cause, the guest, the
+  /// nights given back, the stored guest total and whatever stored night prices
+  /// existed, and the booking/edit dates. The payment and rate history is NOT
+  /// copied here: the admin surface links to the booking's own, which is live.
+  reviewContext       Json?
   reason              String                 @db.VarChar(500)
   status              ManualRefundTaskStatus @default(OPEN)
   completedByMemberId String?
@@ -2696,13 +2795,15 @@ model ManualRefundTask {
   updatedAt           DateTime               @updatedAt
 
   booking     Booking  @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  payment     Payment  @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  payment     Payment? @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   completedBy Member?  @relation("ManualRefundTaskCompletedBy", fields: [completedByMemberId], references: [id], onDelete: SetNull)
 
+  @@unique([occurrenceKey])
   @@index([status])
   @@index([bookingId])
   @@index([paymentId])
   @@index([completedByMemberId])
+  @@index([kind, status])
 }
 
 model PaymentTransaction {
@@ -4312,6 +4413,10 @@ model ClubModuleSettings {
   // note in config-transfer/categories/club-settings.ts) — enabling a paid,
   // separately-keyed product is a per-deployment decision like magicLink/googleLogin.
   aiDiagnostics           Boolean  @default(false)
+  // Alpine Central Server (ServerNZ) integration — connect this club to the
+  // central hub to upload/download shared data. Off by default; configured
+  // under Admin → Integrations → Alpine Central Server.
+  alpineCentralServer     Boolean  @default(false)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @default(now()) @updatedAt
@@ -4420,6 +4525,41 @@ model OtherLodge {
   updatedAt           DateTime @updatedAt
 
   bookingRequests     BookingRequest[]
+  bookings            Booking[]
+}
+
+// Alpine Central Server (ServerNZ) connection — non-secret settings only. The
+// API key is NOT here; it lives in the encrypted IntegrationCredential store
+// (provider "servernz"). Singleton row keyed on the fixed id "default", mirroring
+// LodgeSettings. Per-shared-item enable flags and last-sync bookkeeping live
+// here so the setup page can render status without touching the secret store.
+model ServerNzSettings {
+  id      String  @id @default("default")
+  // Base URL of the central server, e.g. https://central.alpineclub.nz
+  baseUrl String? @db.VarChar(500)
+
+  // Shared item: "Other Clubs" details (the OtherLodge registry).
+  otherLodgesEnabled        Boolean   @default(false)
+  otherLodgesLastUploadAt   DateTime?
+  otherLodgesLastDownloadAt DateTime?
+  // Opaque cursor returned by the server's pull endpoint for incremental sync.
+  otherLodgesCursor         String?   @db.VarChar(64)
+
+  // Single-flight claim for a sync pass. The nightly cron and the admin
+  // Upload/Download buttons drive the same writers, and the in-process boolean in
+  // instrumentation.node.ts sees neither a second container nor the HTTP cron
+  // route. A status-guarded `updateMany` on this column is the claim (the house
+  // pattern), which needs no advisory lock: a session-scoped lock cannot be used
+  // safely here because Prisma pools connections and the unlock could land on a
+  // different one, and an xact-scoped lock would mean holding a transaction open
+  // across the central server's HTTP calls.
+  otherLodgesSyncStartedAt  DateTime?
+
+  updatedByMemberId String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @default(now()) @updatedAt
+
+  @@index([updatedByMemberId])
 }
 
 model LodgeSettings {

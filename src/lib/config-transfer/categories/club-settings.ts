@@ -273,6 +273,17 @@ export const SINGLETONS: SingletonSpec[] = [
         "SEPARATE admin-only PAID product gated on a deployment-local dedicated " +
         "Anthropic credential + positive spend budget (both non-travelling); a " +
         "per-install decision, not portable club config (AID-2, #2371)",
+      // Alpine Central Server: NON-TRAVELLING on the same reasoning as
+      // aiDiagnostics. The module is inert without an encrypted per-install
+      // ServerNZ API key and a base URL pointing at the central server, neither
+      // of which travels — and unlike a merely inert toggle, an imported `true`
+      // would advertise an outward data-sharing arrangement the target club has
+      // not entered into. A fresh import keeps the target's own value (default
+      // OFF) and its admin turns it on after being issued a key.
+      alpineCentralServer:
+        "outward data-sharing integration gated on a deployment-local encrypted " +
+        "ServerNZ API key and per-install central-server base URL (both " +
+        "non-travelling); a per-install decision, not portable club config",
     },
     // Every travelling column is a non-null Boolean toggle (schema @default),
     // so a present null fails the dry-run (#2200 model-level nullability audit).

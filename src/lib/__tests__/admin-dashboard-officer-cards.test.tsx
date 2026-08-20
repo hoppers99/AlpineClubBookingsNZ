@@ -14,6 +14,7 @@ vi.mock("@/lib/prisma", () => ({
     memberLifecycleActionRequest: { count: vi.fn() },
     deletionRequest: { count: vi.fn() },
     bookingChangeRequest: { count: vi.fn() },
+    lodge: { count: vi.fn() },
   },
 }));
 
@@ -21,7 +22,12 @@ vi.mock("@/lib/auth", () => ({
   auth: vi.fn(),
 }));
 
-vi.mock("@/lib/hut-leader-coverage", () => ({
+// Partial mock: only the query is faked. coverageNeedsLodgeContext and
+// coverageLodgeLabel are pure functions over the rows and the lodge count this
+// suite supplies, so mocking them would only let the suite disagree with
+// production about when a lodge name is shown (#2917).
+vi.mock("@/lib/hut-leader-coverage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/hut-leader-coverage")>()),
   getUnassignedHutLeaderDates: vi.fn(),
 }));
 
@@ -138,6 +144,10 @@ function mockStats() {
   vi.mocked(prisma.memberLifecycleActionRequest.count).mockResolvedValue(0);
   vi.mocked(prisma.deletionRequest.count).mockResolvedValue(0);
   vi.mocked(prisma.bookingChangeRequest.count).mockResolvedValue(0);
+  // A single-lodge club unless a test says otherwise: the Presentation Rule is
+  // keyed on the club's active-lodge count (#2917 review), so this is what
+  // decides whether the card names lodges at all.
+  vi.mocked(prisma.lodge.count).mockResolvedValue(1);
   // Empty so the "assignment required" attention card stays hidden — this suite
   // isolates the officer key cards, and /admin/hut-leaders would otherwise also
   // be linked from that attention card.
@@ -233,5 +243,96 @@ describe("admin dashboard officer key cards", () => {
     expect(html).not.toContain("Bed Allocation");
     expect(html).not.toContain("checking in within 7 days");
     expect(html).not.toContain("Revenue This Month");
+  });
+});
+
+/**
+ * The officer-facing half of #2917: the coverage result is now one row per
+ * uncovered LODGE-night, and the card has to be readable for both club shapes.
+ */
+describe("admin dashboard hut-leader coverage card", () => {
+  function uncoveredLodgeNight(
+    date: string,
+    lodgeId: string,
+    lodgeName: string,
+    lodgeActive = true,
+  ) {
+    return {
+      date,
+      lodgeId,
+      lodgeName,
+      lodgeActive,
+      bookingCount: 1,
+      guestCount: 2,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockStats();
+    mockActorMatrix({ overview: "view" });
+  });
+
+  it("names each lodge and counts lodge-nights when two lodges are uncovered on one night", async () => {
+    vi.mocked(prisma.lodge.count).mockResolvedValue(2);
+    vi.mocked(getUnassignedHutLeaderDates).mockResolvedValue([
+      uncoveredLodgeNight("2026-07-05", "lodge-a", "Alpine Lodge"),
+      uncoveredLodgeNight("2026-07-05", "lodge-b", "Basin Lodge"),
+    ]);
+
+    const html = renderToStaticMarkup(await AdminDashboardPage());
+
+    // One night, two lodges, two pieces of work — and the officer is told
+    // where to send someone rather than just how many.
+    expect(html).toContain("2 upcoming lodge-nights");
+    expect(html).toContain("2026-07-05 (Alpine Lodge), 2026-07-05 (Basin Lodge)");
+  });
+
+  it("STILL NAMES THE LODGE ON A MULTI-LODGE CLUB WHOSE GAPS ALL SIT AT ONE LODGE", async () => {
+    // Three active lodges; Basin and Ridge are covered for the whole lookahead,
+    // so every row is Alpine's. Keying the label on the result would print bare
+    // dates here — the rejected Option B outcome — and would flip the wording the
+    // moment Basin lost cover (#2917 review). It is keyed on the club instead.
+    vi.mocked(prisma.lodge.count).mockResolvedValue(3);
+    vi.mocked(getUnassignedHutLeaderDates).mockResolvedValue([
+      uncoveredLodgeNight("2026-07-05", "lodge-a", "Alpine Lodge"),
+      uncoveredLodgeNight("2026-07-06", "lodge-a", "Alpine Lodge"),
+    ]);
+
+    const html = renderToStaticMarkup(await AdminDashboardPage());
+
+    expect(html).toContain("2 upcoming lodge-nights");
+    expect(html).toContain("2026-07-05 (Alpine Lodge), 2026-07-06 (Alpine Lodge)");
+  });
+
+  it("marks a night at an ARCHIVED lodge, even on a club with one active lodge", async () => {
+    // The lodge was deactivated with `force` while it still had future bookings,
+    // so its guests still arrive and still need a leader — and the workspace's
+    // lodge selector cannot offer it, which is why the label says so.
+    vi.mocked(prisma.lodge.count).mockResolvedValue(1);
+    vi.mocked(getUnassignedHutLeaderDates).mockResolvedValue([
+      uncoveredLodgeNight("2026-07-05", "lodge-b", "Basin Lodge", false),
+    ]);
+
+    const html = renderToStaticMarkup(await AdminDashboardPage());
+
+    expect(html).toContain("2026-07-05 (Basin Lodge, archived)");
+  });
+
+  it("shows a single-lodge club the bare dates and the plain wording it saw before", async () => {
+    vi.mocked(prisma.lodge.count).mockResolvedValue(1);
+    vi.mocked(getUnassignedHutLeaderDates).mockResolvedValue([
+      uncoveredLodgeNight("2026-07-05", "lodge-a", "Alpine Lodge"),
+      uncoveredLodgeNight("2026-07-06", "lodge-a", "Alpine Lodge"),
+    ]);
+
+    const html = renderToStaticMarkup(await AdminDashboardPage());
+
+    expect(html).toContain("2 upcoming dates");
+    expect(html).toContain("2026-07-05, 2026-07-06");
+    // ADR-002 Presentation Rule: a club with one lodge is never shown a lodge
+    // name it cannot act on, and never the multi-lodge noun.
+    expect(html).not.toContain("Alpine Lodge");
+    expect(html).not.toContain("lodge-night");
   });
 });

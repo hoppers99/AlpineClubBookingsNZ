@@ -38,12 +38,53 @@ export const ALLOWED_IMAGE_EXTS = new Set([
   ".avif",
 ]);
 
+// Characters a directory name may never contain: path separators (which would
+// make one name into several) plus the Windows-reserved set and control
+// characters (which produce names the storage volume cannot represent).
+const UNSAFE_DIRECTORY_NAME_CHARS = /[/\\<>:"|?*\x00-\x1F]/;
+
+// A name made only of dots. `.` and `..` are not names at all — they are path
+// operators, and `path.join` expands them: measured, `path.join(root, "..")`
+// yields the PARENT of root and `path.join(root, ".")` yields root itself.
+//
+// Longer runs (`...`, `....`) are NOT expanded — measured, they join as literal
+// segments — and are rejected anyway. Two reasons, neither of them traversal:
+// they cost nothing to give up (no real album is named "..."), and Windows
+// silently strips trailing dots from a name, so such a directory could be
+// created under one name and then not be found under it.
+const DOT_ONLY_NAME = /^\.+$/;
+
+/**
+ * Whether a client-supplied directory name may be used as a single path
+ * segment. This is the ONE statement of that rule — the Image Manager's create
+ * and rename endpoints both call it rather than repeating a regex, so the two
+ * cannot drift apart.
+ *
+ * The dot-only rejection is the part added by #2841 (CodeQL `js/path-injection`
+ * alerts 32/33/34 on the directories route). The charset filter alone banned
+ * separators but not dots, so `..` reached `path.join` and the downstream
+ * containment check was the only thing left standing. It held for create
+ * (mkdir got a harmless EEXIST) but not for rename, where `newName: "."`
+ * resolved a nested directory onto its own parent, passed containment, and
+ * reached `fs.rename` — which fails at the OS layer, so it produced a 500
+ * where a 400 belongs. A name is now rejected before any path is built.
+ */
+export function isSafeDirectoryName(name: string): boolean {
+  if (name.length === 0) return false;
+  if (UNSAFE_DIRECTORY_NAME_CHARS.test(name)) return false;
+  if (DOT_ONLY_NAME.test(name)) return false;
+  return true;
+}
+
 // Resolve a client-supplied relative path safely inside IMAGES_ROOT.
 // Returns null if the path would escape the images root (path traversal).
 export function resolveInImagesRoot(rel: string): string | null {
   const normalized = path.normalize(rel);
   // This function IS the path-traversal containment check: it resolves under a
   // trusted constant root and returns null (below) for anything that escapes.
+  // Why that satisfies both Semgrep and CodeQL's six `js/path-injection`
+  // alerts is recorded once in docs/SECURITY-ATTACK-SURFACE.md ->
+  // "Image Manager path containment" (#2841).
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   const resolved = path.resolve(IMAGES_ROOT, normalized);
   if (

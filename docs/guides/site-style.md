@@ -26,6 +26,16 @@ addresses the app talks to all keep working normally throughout. After the first
 save, edits take effect as soon as you save. It is edited under the **content**
 permission area.
 
+Your saved colours also travel to the club's automated **emails**, which are
+built on the server from this same style. Every message is coloured from it —
+including the very first one sent after a restart or a deployment — so two emails
+about the same action can never arrive in two different brands. If the style
+genuinely cannot be read at the moment a message is built (a brief database
+fault), the email is still sent rather than held back, in the platform's default
+colours, and the server log says plainly that the style was unreadable instead of
+treating the default as your club's choice. Later emails pick your colours back
+up on their own.
+
 ## When you'd use it
 
 - You've just forked the platform and need to complete the style before the
@@ -117,6 +127,7 @@ permission area.
 | A saved style change hasn't reached the public home page yet | The home page is cached for up to a minute for logged-out visitors | Wait a minute and reload, or check while signed in — signed-in views are never cached |
 | The logo upload is refused | The file is over 2MB, is an SVG, or is not a real image | Export a PNG, JPEG, WebP, or GIF under 2MB; it does not need to be small, it is resized for you |
 | The new logo doesn't replace the old one everywhere | The page is still showing a cached copy | Reload after a minute; the stored logo itself is replaced immediately on save |
+| An email arrived in the platform's default teal instead of our colours | The saved style could not be read at the moment that message was built — normally a brief database fault. The email is sent rather than withheld, and one warning naming the style as unreadable is written to the server log | Nothing needs re-saving. Check the server log for that warning and the database's health. Messages sent in the half-minute after a failed read also go out in the default colours rather than each waiting on the database again; your colours return on the first message after that |
 
 ## Related links
 

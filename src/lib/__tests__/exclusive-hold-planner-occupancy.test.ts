@@ -49,8 +49,10 @@ vi.mock("@/lib/lodge-capacity", () => ({
 
 import {
   getBedAllocationDashboard,
+} from "@/lib/bed-allocation-board";
+import {
   parseBedAllocationDateRange,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-date-range";
 import { buildFirstFitBedAllocationPlan } from "@/lib/bed-allocation";
 import { BED_ALLOCATION_PRIORITY_VOCABULARY } from "@/lib/bed-allocation-settings";
 import { reconcileBedAllocationsForBookingWithLodgeLockHeld as reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";

@@ -96,6 +96,7 @@ const effectiveModulesOn = {
   eventsCalendar: true,
   memberGuests: false,
   aiDiagnostics: false,
+  alpineCentralServer: false,
 };
 
 describe("AdminBookingsPage", () => {

@@ -408,6 +408,22 @@ export function getAdminCronJobDefinitions(
     ),
     defineCronJob(
       {
+        // Bidirectional Other Clubs sync with the Alpine Central Server. Listed
+        // unconditionally like every other optional-module cron: the job reports
+        // SKIPPED while Other Clubs sync is disabled or the server is not
+        // configured, and an operator seeing the row is how they know the daily
+        // reconciliation is (or is not) running.
+        jobName: "alpine-server-other-lodges-sync",
+        label: "Alpine Central Server Other Clubs sync",
+        schedule: "0 3 * * *",
+        timezone: nzTimezone,
+        expectedLocalTime: "03:00 NZT/NZDT daily",
+        staleAfterMinutes: DAILY_STALE_AFTER_MINUTES,
+      },
+      globalDisabledReason
+    ),
+    defineCronJob(
+      {
         jobName: "data-pruning",
         label: "Data pruning",
         schedule: "30 3 * * *",

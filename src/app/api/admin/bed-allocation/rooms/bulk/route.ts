@@ -4,7 +4,7 @@ import {
   MAX_BULK_BEDS_PER_ROOM,
   MAX_BULK_ROOMS,
   createBedAllocationRoomsBulk,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-rooms";
 import {
   bedAllocationErrorResponse,
   requireBedInventoryWrite,

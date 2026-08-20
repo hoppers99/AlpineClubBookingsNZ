@@ -38,8 +38,10 @@ export async function register() {
     // #1912: warm the HTML-email brand palette from the persisted Site Style
     // theme so the first email after a cold start uses the configured colours,
     // not the built-in default. Best-effort and runs regardless of cron config;
-    // never blocks or fails startup (emailPalette() also self-warms on first
-    // use as a fallback).
+    // it never blocks or fails startup. Since #2900 it is an optimisation, not
+    // the guarantee: if it fails, the render gate (`renderEmailHtml`) loads the
+    // palette before any themed HTML is built, so a failed prime costs the
+    // first email a bounded wait rather than the wrong brand.
     try {
       const { primeEmailPalette } = await import("./lib/email-theme");
       await primeEmailPalette();
@@ -828,6 +830,83 @@ export async function register() {
     }, { timezone: CRON_TIMEZONE });
 
     logger.info({ job: "data-pruning" }, "Scheduled data pruning (daily at 3:30 AM NZST)");
+
+    // Alpine Central Server Other Clubs sync (daily at 3:00 AM NZST). Bidirectional:
+    // uploads local rows changed since the last upload watermark, then downloads the
+    // centrally-distributed rows changed since the last cursor. Both directions are
+    // incremental, so a quiet day makes at most one cheap request each way.
+    //
+    // Registration is UNCONDITIONAL and the opt-in / connection state is checked at
+    // run time, so enabling Other Clubs sync (Admin → Alpine Central Server) takes
+    // effect on the next tick without a restart. With sync off or the server not
+    // configured the job reports SKIPPED, keeping the background-jobs health view
+    // honest rather than showing a stale "last ran never".
+    let isAlpineServerSyncRunning = false;
+    cron.default.schedule("0 3 * * *", async () => {
+      if (isAlpineServerSyncRunning) {
+        logger.info({ job: "alpine-server-other-lodges-sync" }, "Already running, skipping");
+        return;
+      }
+      isAlpineServerSyncRunning = true;
+      const startedAt = new Date();
+      logger.info(
+        { job: "alpine-server-other-lodges-sync" },
+        "Running Alpine Central Server Other Clubs sync",
+      );
+
+      const checkInId = Sentry.captureCheckIn(
+        { monitorSlug: "alpine-server-other-lodges-sync", status: "in_progress" },
+        sentryCronMonitorConfig("0 3 * * *", { checkinMargin: 10, maxRuntime: 15 })
+      );
+
+      try {
+        const { syncOtherClubsWithServer } = await import(
+          "./lib/cron-alpine-server-sync"
+        );
+        const result = await syncOtherClubsWithServer();
+        logger.info(
+          { job: "alpine-server-other-lodges-sync", result },
+          "Alpine Central Server Other Clubs sync complete",
+        );
+        await recordCronRun(
+          "alpine-server-other-lodges-sync",
+          startedAt,
+          result.status === "skipped" ? "SKIPPED" : "SUCCESS",
+          { ...result },
+        );
+        Sentry.captureCheckIn({
+          checkInId,
+          monitorSlug: "alpine-server-other-lodges-sync",
+          status: "ok",
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        reportCronError({
+          tag: "alpine-server-other-lodges-sync",
+          err,
+          message: "Error running Alpine Central Server Other Clubs sync",
+        });
+        await recordCronRun(
+          "alpine-server-other-lodges-sync",
+          startedAt,
+          "FAILURE",
+          undefined,
+          message,
+        );
+        Sentry.captureCheckIn({
+          checkInId,
+          monitorSlug: "alpine-server-other-lodges-sync",
+          status: "error",
+        });
+      } finally {
+        isAlpineServerSyncRunning = false;
+      }
+    }, { timezone: CRON_TIMEZONE });
+
+    logger.info(
+      { job: "alpine-server-other-lodges-sync" },
+      "Scheduled Alpine Central Server Other Clubs sync (daily at 3:00 AM NZST)",
+    );
 
     // Draft expiry cleanup (daily at 4:00 AM NZST)
     let isDraftCleanupRunning = false;

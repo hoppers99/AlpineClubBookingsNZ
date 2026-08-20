@@ -35,9 +35,17 @@ interface CreatedDetails {
 export function GroupJoinVerifyPageClient({
   club,
   token,
+  lodgeName = null,
 }: {
   club: ClubIdentity;
   token: string;
+  /**
+   * The lodge this group is actually staying at (#2919), resolved server-side
+   * from the token. Null when the token is unknown or malformed, which reads as
+   * the club's default lodge — the same wording the page has always shown, so
+   * the copy never becomes a "does this token exist?" oracle.
+   */
+  lodgeName?: string | null;
 }) {
   const [outcome, setOutcome] = useState<Outcome>("idle");
   const [details, setDetails] = useState<CreatedDetails>({});
@@ -106,7 +114,8 @@ export function GroupJoinVerifyPageClient({
           {outcome === "idle" || outcome === "submitting" ? (
             <>
               <p className="text-sm text-muted-foreground">
-                Confirm your email to finalise your spot at {club.lodgeName}. We&apos;ll
+                Confirm your email to finalise your spot at{" "}
+                {lodgeName ?? club.lodgeName}. We&apos;ll
                 then take you to a secure page to pay for your stay.
               </p>
               <Button onClick={confirm} disabled={outcome === "submitting"}>

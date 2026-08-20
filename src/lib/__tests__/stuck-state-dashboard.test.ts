@@ -36,6 +36,7 @@ const modulesOn: FeatureFlags = {
   eventsCalendar: true,
   memberGuests: false,
   aiDiagnostics: false,
+  alpineCentralServer: false,
 };
 
 function emptyEmailResponses() {
@@ -76,6 +77,23 @@ function emptyEmailResponses() {
       recentlyReissued: [],
     },
   };
+}
+
+/**
+ * `count` uncovered lodge-nights at ONE lodge (#2917) — the shape a single-lodge
+ * club produces, and what these totals assertions have always meant. Real rows,
+ * not `Array.from({ length: n })`: the rows carry a lodge and an active flag the
+ * tile can read, so a bare-length stand-in would no longer model the real result.
+ */
+function uncoveredLodgeNights(count: number, lodgeId = "lodge-1") {
+  return Array.from({ length: count }, (_unused, index) => ({
+    date: `2026-07-${String(index + 1).padStart(2, "0")}`,
+    lodgeId,
+    lodgeName: `Lodge ${lodgeId}`,
+    lodgeActive: true,
+    bookingCount: 1,
+    guestCount: 1,
+  }));
 }
 
 function buildDeps(overrides?: Partial<StuckStateDashboardDependencies>) {
@@ -152,6 +170,10 @@ function buildDeps(overrides?: Partial<StuckStateDashboardDependencies>) {
     }),
     getUnassignedHutLeaderDates: vi.fn().mockResolvedValue([]),
     loadHutLeaderLookaheadDays: vi.fn().mockResolvedValue(14),
+    // A single-lodge club unless a test says otherwise: the hut-leader tile's
+    // unit and wording are keyed on the CLUB's active-lodge count (#2917
+    // review), not on how many lodges its rows happen to span.
+    countActiveLodges: vi.fn().mockResolvedValue(1),
   };
 
   return {
@@ -287,7 +309,7 @@ describe("getStuckStateDashboard", () => {
       }),
       getUnassignedHutLeaderDates: vi
         .fn()
-        .mockResolvedValue(Array.from({ length: 16 })),
+        .mockResolvedValue(uncoveredLodgeNights(16)),
     });
 
     const dashboard = await getStuckStateDashboard({
@@ -362,7 +384,7 @@ describe("getStuckStateDashboard", () => {
   it("uses configured hut-leader lookahead for lodge stuck-state counts", async () => {
     const getUnassignedHutLeaderDates = vi
       .fn()
-      .mockResolvedValue(Array.from({ length: 3 }));
+      .mockResolvedValue(uncoveredLodgeNights(3));
     const deps = buildDeps({
       loadHutLeaderLookaheadDays: vi.fn().mockResolvedValue(21),
       getUnassignedHutLeaderDates,
@@ -384,9 +406,75 @@ describe("getStuckStateDashboard", () => {
     expect(
       dashboard.items.find((item) => item.id === "lodge-unassigned-hut-leaders"),
     ).toMatchObject({
+      // Title and summary must name the SAME unit: a heading saying "dates"
+      // over a count of lodge-nights is the conflation #2917 removes.
+      title: "Unassigned hut leader lodge dates",
       count: 3,
       summary:
         "3 upcoming lodge dates in the next 21 days with bookings have no hut leader assigned.",
+    });
+  });
+
+  it("counts uncovered LODGE-nights and says so on a multi-lodge club (#2917)", async () => {
+    // Two lodges uncovered on the same two nights: four lodge-nights of work,
+    // which the tile must not collapse to two dates.
+    const getUnassignedHutLeaderDates = vi.fn().mockResolvedValue([
+      ...uncoveredLodgeNights(2, "lodge-1"),
+      ...uncoveredLodgeNights(2, "lodge-2"),
+    ]);
+    const deps = buildDeps({
+      loadHutLeaderLookaheadDays: vi.fn().mockResolvedValue(21),
+      getUnassignedHutLeaderDates,
+      countActiveLodges: vi.fn().mockResolvedValue(2),
+    });
+    vi.mocked(deps.db.paymentRecoveryOperation.count)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0);
+
+    const dashboard = await getStuckStateDashboard({
+      deps,
+      now: new Date("2026-06-22T00:00:00.000Z"),
+    });
+
+    expect(
+      dashboard.items.find((item) => item.id === "lodge-unassigned-hut-leaders"),
+    ).toMatchObject({
+      title: "Unassigned hut leader lodge-nights",
+      count: 4,
+      summary:
+        "4 upcoming lodge-nights in the next 21 days with bookings have no hut leader assigned.",
+    });
+  });
+
+  it("USES THE LODGE-NIGHT UNIT ON A MULTI-LODGE CLUB WHOSE ROWS ALL SIT AT ONE LODGE (#2917)", async () => {
+    // Three active lodges, two of them covered for the whole lookahead. Keying
+    // the unit on the rows would call these two rows "lodge dates" today and
+    // "lodge-nights" tomorrow, for the same tile on the same club (#2917 review).
+    const deps = buildDeps({
+      loadHutLeaderLookaheadDays: vi.fn().mockResolvedValue(21),
+      getUnassignedHutLeaderDates: vi
+        .fn()
+        .mockResolvedValue(uncoveredLodgeNights(2, "lodge-1")),
+      countActiveLodges: vi.fn().mockResolvedValue(3),
+    });
+    vi.mocked(deps.db.paymentRecoveryOperation.count)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0);
+
+    const dashboard = await getStuckStateDashboard({
+      deps,
+      now: new Date("2026-06-22T00:00:00.000Z"),
+    });
+
+    expect(
+      dashboard.items.find((item) => item.id === "lodge-unassigned-hut-leaders"),
+    ).toMatchObject({
+      title: "Unassigned hut leader lodge-nights",
+      count: 2,
+      summary:
+        "2 upcoming lodge-nights in the next 21 days with bookings have no hut leader assigned.",
     });
   });
 

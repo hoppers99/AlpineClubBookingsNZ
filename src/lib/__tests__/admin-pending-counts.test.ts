@@ -87,9 +87,26 @@ describe("getAdminPendingCounts", () => {
     mocks.deletionRequestCount.mockResolvedValue(10);
     mocks.getPendingMemberDeleteReviewCount.mockResolvedValue(14);
     mocks.issueReportCount.mockResolvedValue(11);
+    // Uncovered lodge-nights (#2917), not bare dates: the SAME night at two
+    // lodges is two rows, and the badge counts two — the sidebar number is
+    // pieces of work, not calendar days.
     mocks.getUnassignedHutLeaderDates.mockResolvedValue([
-      "2026-07-04",
-      "2026-07-05",
+      {
+        date: "2026-07-04",
+        lodgeId: "lodge-a",
+        lodgeName: "Alpine Lodge",
+        lodgeActive: true,
+        bookingCount: 1,
+        guestCount: 2,
+      },
+      {
+        date: "2026-07-04",
+        lodgeId: "lodge-b",
+        lodgeName: "Basin Lodge",
+        lodgeActive: true,
+        bookingCount: 1,
+        guestCount: 1,
+      },
     ]);
   });
 

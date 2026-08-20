@@ -31,6 +31,12 @@ import {
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { ApiError } from "@/lib/api-error";
 import {
+  assertOtherLodgeExists,
+  OTHER_LODGE_RATE_IN_PROGRESS_MESSAGE,
+  resolveOtherLodgeRateElection,
+  type OtherLodgeRateElection,
+} from "@/lib/booking-other-lodge-rate";
+import {
   aggregatePolicyExceptionViolations,
   type AggregatedPolicyExceptions,
 } from "@/lib/booking-policy-exceptions";
@@ -171,6 +177,11 @@ const modifyQuoteSchema = z.object({
     )
     .max(60)
     .optional(),
+  // Other Lodges epic: mirror of the apply route's reciprocal other-club rate
+  // election, so the preview prices the tick exactly as the save will charge it.
+  // Both fields are an END STATE, never a delta — see booking-other-lodge-rate.ts.
+  otherLodgeId: z.string().min(1).nullable().optional(),
+  otherLodgeMemberGuestIds: z.array(z.string().min(1)).max(200).optional(),
   promoCode: z.string().optional(),
   // #2266 (MED-4): beneficiaries for guest-targeted promo codes, mirroring the
   // apply route — EXISTING guests bind by bookingGuestId (a stale id refuses
@@ -209,6 +220,9 @@ const OVERRIDE_DATE_ONLY_QUOTE_FIELDS = [
   "guestUpdates",
   // #2337: a placeholder→member link is a guest change, never a date override.
   "linkGuestToMember",
+  // The other-lodge rate election re-rates guests, so it is a guest change too.
+  "otherLodgeId",
+  "otherLodgeMemberGuestIds",
   "promoCode",
   "promoGuestIds",
   "promoAddedGuestIndexes",
@@ -470,6 +484,8 @@ export async function POST(
     guestStayRanges,
     guestUpdates,
     linkGuestToMember,
+    otherLodgeId: requestedOtherLodgeId,
+    otherLodgeMemberGuestIds,
     promoCode: newPromoCode,
     promoGuestIds,
     promoAddedGuestIndexes,
@@ -526,7 +542,11 @@ export async function POST(
     }) ||
       // #2266: checked explicitly — `Boolean(0)` is false, so a credit
       // election of 0 cents would otherwise slip past the date-only contract.
-      applyCreditCents !== undefined)
+      applyCreditCents !== undefined ||
+      // Same trap, same fix: `otherLodgeId: null` CLEARS the election and is
+      // falsy, so the list membership above would let it through a date-only
+      // override.
+      requestedOtherLodgeId !== undefined)
   ) {
     return NextResponse.json(
       { error: "Admin override edits change dates only" },
@@ -614,6 +634,9 @@ export async function POST(
       // #2337: a link re-rates a guest — structural, so the preview prices it
       // rather than echoing the stored totals.
       linkGuestToMember?.length ||
+      // The other-lodge rate election re-rates guests for the same reason.
+      requestedOtherLodgeId !== undefined ||
+      otherLodgeMemberGuestIds !== undefined ||
       newPromoCode ||
       removePromoCode,
   );
@@ -659,11 +682,41 @@ export async function POST(
       newPromoCode ||
       removePromoCode
     );
+  /**
+   * The other-lodge re-rate is exempt from the quote-priced edit block on the
+   * same terms as the #2337 link, and for the same reason.
+   *
+   * A booking converted from a public request IS quote-priced: its guest rows
+   * carry an even split of the total the officer negotiated (#1032 blocks
+   * ordinary edits so nothing disturbs that basis). But the request path is
+   * exactly where an other-club guest arrives — the public form asks "are you a
+   * member of another lodge?" — and re-rating them afterwards is the officer's
+   * deliberate, audited decision about one named person, not an ordinary edit.
+   * Every guest NOT re-rated keeps their locked split price untouched, because
+   * only the ticked/unticked rows clear their locks.
+   *
+   * Election-only, like the link exemption: pair it with a date change or a
+   * guest add and the ordinary block applies again.
+   */
+  const requestIsOtherLodgeRateExempt =
+    (requestedOtherLodgeId !== undefined ||
+      otherLodgeMemberGuestIds !== undefined) &&
+    isAdmin &&
+    !(
+      newCheckInStr ||
+      newCheckOutStr ||
+      addGuests?.length ||
+      removeGuestIds?.length ||
+      guestStayRanges?.length ||
+      newPromoCode ||
+      removePromoCode
+    );
   const quotePriced = await isQuotePricedBooking(prisma, bookingId);
   if (
     !requestIsIdentityOnly &&
     !requestIsCreditElectionOnly &&
     !requestIsMemberLinkExempt &&
+    !requestIsOtherLodgeRateExempt &&
     quotePriced
   ) {
     return NextResponse.json(
@@ -691,6 +744,27 @@ export async function POST(
   const linkByGuestId = new Map(
     guestMemberLinks.map((link) => [link.guestId, link]),
   );
+
+  // Other Lodges epic: the same resolver the apply path runs, so a refused tick
+  // is refused here with the same message before pricing, and the effective
+  // per-guest flag below is identical to the one the save will persist.
+  let otherLodgeElection: OtherLodgeRateElection;
+  try {
+    otherLodgeElection = resolveOtherLodgeRateElection({
+      booking,
+      input: {
+        otherLodgeId: requestedOtherLodgeId,
+        otherLodgeMemberGuestIds,
+      },
+      role: actorRole,
+    });
+    await assertOtherLodgeExists(prisma, otherLodgeElection.otherLodgeId);
+  } catch (error) {
+    if (error instanceof ApiError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    throw error;
+  }
 
   // #2266: the member's live credit balance rides every non-shift preview, the
   // same field the create-flow quote returns (api/bookings/quote/route.ts) —
@@ -917,6 +991,18 @@ export async function POST(
         { status: 400 }
       );
     }
+    // Other Lodges epic: the same mid-stay refusal, mirrored from the apply path
+    // so preview and save agree — the in-progress plan prices the stored rows,
+    // so an election here would preview a $0 re-rate.
+    if (
+      requestedOtherLodgeId !== undefined ||
+      otherLodgeMemberGuestIds !== undefined
+    ) {
+      return NextResponse.json(
+        { error: OTHER_LODGE_RATE_IN_PROGRESS_MESSAGE },
+        { status: 400 }
+      );
+    }
   } else if (
     !isAdmin &&
     normalizeDateOnlyForTimeZone(finalRequestedCheckIn) <= editPolicy.today
@@ -995,6 +1081,16 @@ export async function POST(
   const proposedGuestRows = [
     ...proposedRemainingGuests.map((entry) => {
       const link = linkByGuestId.get(entry.guest.id);
+      // Other Lodges epic: the flag this guest will carry once saved — the
+      // election's end state when this request carried one, the stored value
+      // otherwise, so an ordinary date change still prices an already-recognised
+      // other-club guest at the member rate.
+      const otherLodgeMember = otherLodgeElection.flaggedGuestIds.has(
+        entry.guest.id,
+      );
+      const otherLodgeRateChanged = otherLodgeElection.repriceGuestIds.has(
+        entry.guest.id,
+      );
       return {
         bookingGuestId: entry.guest.id,
         ageTier: entry.guest.ageTier as AgeTier,
@@ -1002,13 +1098,22 @@ export async function POST(
         // quote prices it at the member rate — matching what the save writes.
         isMember: link ? true : entry.guest.isMember,
         memberId: link ? link.memberId : (entry.guest.memberId ?? null),
+        otherLodgeMember,
         stayStart: entry.stayStart,
         stayEnd: entry.stayEnd,
         nights: entry.nights,
         // Preview with the same locked booked-night prices the mutating
         // endpoints charge (#1036) — but a linked placeholder CLEARS them, exactly
         // as the apply path does, so the preview's re-rate delta equals the save's.
-        lockedNightPrices: link ? [] : lockedNightPricesForGuest(entry.guest),
+        //
+        // A guest whose other-lodge tick CHANGED clears them for the same reason,
+        // in both directions: ticked, the locked non-member prices would pin every
+        // night and the member rate would never apply; unticked, the locked member
+        // prices would pin it the other way and the rate would never come back.
+        lockedNightPrices:
+          link || otherLodgeRateChanged
+            ? []
+            : lockedNightPricesForGuest(entry.guest),
       };
     }),
     ...(normalizedAddGuestsWithRanges ?? []).map((g) => ({
@@ -1561,6 +1666,45 @@ export async function POST(
     }
   }
 
+  /**
+   * The re-rated guests' new fees, and one itemised line each (Other Lodges
+   * epic).
+   *
+   * `guestPrices` is the whole remaining party, not just the re-rated rows: the
+   * edit panel shows a fee beside every name, and a party-wide reprice (a date
+   * change, a group discount that starts or stops qualifying) moves numbers on
+   * rows nobody ticked. Sending only the ticked rows would leave the others
+   * showing their stored price beside a total that no longer matches them.
+   *
+   * Absent on an in-progress edit, which prices through the range planner rather
+   * than this breakdown; the panel then keeps showing the stored fees.
+   */
+  const guestPrices =
+    priceBreakdown
+      ? proposedRemainingGuests.map((entry, index) => ({
+          guestId: entry.guest.id,
+          priceCents: priceBreakdown.guests[index]?.priceCents ?? entry.guest.priceCents,
+        }))
+      : null;
+  if (priceBreakdown && otherLodgeElection.repriceGuestIds.size > 0) {
+    const indexByGuestId = new Map(
+      proposedRemainingGuests.map((entry, index) => [entry.guest.id, index]),
+    );
+    for (const guestId of otherLodgeElection.repriceGuestIds) {
+      const index = indexByGuestId.get(guestId);
+      const guest = remainingGuests.find((g) => g.id === guestId);
+      if (index === undefined || !guest) continue;
+      const newPriceCents = priceBreakdown.guests[index]?.priceCents ?? 0;
+      const nowFlagged = otherLodgeElection.flaggedGuestIds.has(guestId);
+      itemizedChanges.push({
+        label: `${guest.firstName} ${guest.lastName} re-rated at the ${
+          nowFlagged ? "other-lodge member" : "non-member"
+        } rate`,
+        amountCents: newPriceCents - guest.priceCents,
+      });
+    }
+  }
+
   const oldNights = getStayNights(booking.checkIn, booking.checkOut).length;
   const newNights = getStayNights(newCheckIn, newCheckOut).length;
   const datesChanged = targetDatesChanged;
@@ -1939,6 +2083,9 @@ export async function POST(
     promoCoverage,
     promoValidation,
     itemizedChanges,
+    // Other Lodges epic: the per-person fees this edit would write, so the panel
+    // can show each guest's recalculated fee beside their name before saving.
+    ...(guestPrices ? { guestPrices } : {}),
     // #1746: why the partner-shared admission rejected — the UI shows this
     // verbatim; a partner-shared preview never offers the #1668 overbook
     // confirm (leave sharers unflagged to overbook the blunt way).

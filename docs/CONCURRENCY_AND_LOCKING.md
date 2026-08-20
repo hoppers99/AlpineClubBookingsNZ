@@ -1152,9 +1152,9 @@ mispricing a booking.
   would be worse than one that is momentarily stale. Where they do disagree the
   edit panel shows the SAVE's sentence before it closes, so the member reads the
   outcome that was actually applied rather than the one that was previewed.
-- `admin-bed-allocation.ts` locks the owning `LodgeRoom` row with `FOR UPDATE`
-  before checking and changing one room's bunk-group membership. This protocol
-  is independent of the booking/capacity/credit lock cluster.
+- `bed-allocation-bunk-pairing.ts` locks the owning `LodgeRoom` row with
+  `FOR UPDATE` before checking and changing one room's bunk-group membership.
+  This protocol is independent of the booking/capacity/credit lock cluster.
 - **Club-theme logo writer** — `src/lib/club-theme.ts` (`saveClubTheme`, #2322):
   the site-style save transaction locks the `ClubTheme` singleton
   (`$executeRaw`SELECT 1 FROM "ClubTheme" WHERE "id" = 'default' FOR UPDATE``)
@@ -2510,8 +2510,9 @@ and they generalise to any compensating transaction in this codebase:
    10s/15s, `assignBedRange` 10s/30s) because a **member** is watching this
    request — two attempts cap the visible wait near 30s. Raising it further would
    buy little: the longest-lived holder of global `lock(1)` in the tree is
-   `assignBedRange` itself (`admin-bed-allocation.ts:4164` takes `lock(1)` inside
-   a `timeout: 30_000` transaction), so a budget that always beat the worst
+   `assignBedRange` itself (`bed-allocation-range-assign.ts`, whose `runAttempt`
+   takes `lock(1)` inside a `timeout: 30_000` transaction), so a budget that
+   always beat the worst
    contender would mean a member waiting a minute for a failure they cannot act
    on. Rules 2 and 3 exist instead of a bigger number.
 2. **Bounded retry, then a guard that cannot throw.** One retry on P2028/P2034,
@@ -3062,6 +3063,59 @@ archive re-check then refuses to archive the contact over it — that re-check
 reads the credit operation's **recorded outcome**, not a recomputed "would this
 credit?", precisely so a one-shot operation that already skipped can never
 excuse the invoice again.
+
+## Stripe refund-note link repair: deliberately lock-free (#2901)
+
+`applyStripeRefundNoteLinkRepairs` (`src/lib/xero-refund-note-link-repair.ts`,
+operator CLI `scripts/xero-refund-note-link-repair.ts`) flips
+`XeroObjectLink.active` on a Stripe payment's `REFUND_CREDIT_NOTE` links —
+local mirror rows only, no money column, no booking status, no provider call.
+Under `INV-LOCK-001` that composes no settlement-money or capacity transition,
+so it joins no lock cohort; this section is its registration as an explicitly
+lock-free money-adjacent writer (the advisory-lock census only enumerates
+sites that DO take a lock, so it is structurally blind to this class).
+
+The counterpart that makes it dangerous anyway is the outbox executor:
+`createXeroCreditNote` reads `sumCoveredRefundCreditNoteCents` **outside any
+transaction and under no lock**, then spends multi-second provider time before
+creating the note. Joining global `lock(1)` here would therefore exclude
+nothing — cohort membership only serialises against writers that take the same
+key — and holding a transaction open across the executor's provider calls is
+the shape this document forbids. The mechanisms that do the work instead:
+
+- **Still-executable-operation refusal**: a payment is refused at plan time —
+  and the check repeated inside the apply transaction — while ANY outbound
+  `CREDIT_NOTE` operation row that could still drive `createXeroCreditNote`
+  exists for it: a `CREATE` in PENDING/RUNNING/WAITING_PAYMENT (the outbox
+  executor's lifecycle, which never reads `replayable`), a still-`replayable`
+  `CREATE` in FAILED/PARTIAL (manual retry and requeue accept exactly that
+  combination, and the credit-note retry branch performs no claim-first
+  status flip, so it mints while the row still reads FAILED/PARTIAL), or a
+  `REQUEUE` row in PENDING/RUNNING (the background retry drain executes the
+  ORIGINAL operation while the original's own row never changes status).
+  Every mint path therefore holds a matching row for the whole provider
+  call. A FAILED/PARTIAL `CREATE` marked non-replayable is terminally dead —
+  nothing can execute it again — and does not block, which matters because
+  no operator action ever moves it out of FAILED/PARTIAL;
+  SUCCEEDED/CANCELLED rows cannot re-execute and never block either.
+- **Exact-count status-guarded claims**: the `updateMany` claims pin
+  `active: true/false` and the matched counts must equal the plan exactly; a
+  row a concurrent writer already flipped rolls the whole payment back.
+- **Post-claim coverage verification**: the transaction re-sums coverage
+  through `sumCoveredRefundCreditNoteCents` after its claims and must land on
+  the plan's promised total, so a link a concurrent writer *inserted* after
+  the in-transaction re-plan (the executor completing) also rolls the payment
+  back rather than compounding with it.
+- **Operator window**: the runbook has the operator hold the Xero outbox/cron
+  drain during `--apply`. The residual sub-second window (executor past its
+  coverage read but not yet committed when the repair commits) is accepted and
+  is no longer silent: the reconciliation report's
+  `overCoveredStripeRefundPayments` drift class flags the outcome for repair.
+
+The tolerated counterpart reads are additive-only: every other refund-note
+writer only ever ADDS active coverage, whose worst case (coverage above the
+target) suppresses further enqueues and is now reported as drift, never
+compounded by this repair.
 
 ## Rules of thumb when working here
 

@@ -235,6 +235,30 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     exemptPaths: ["/api/admin/ai-diagnostics/readiness"],
   },
   {
+    // Alpine Central Server (ServerNZ). Admin -> Modules is the master switch,
+    // and for THIS module that is load-bearing rather than tidy: the feature
+    // uploads club and booking-officer contact details to a third party which
+    // redistributes them to every connected club. An off switch that leaves the
+    // nightly sync running is not an off switch (INV-CONFIG-001).
+    //
+    // The whole subtree is gated with no exemption. There is no setup surface to
+    // keep reachable here: the module is turned on from Admin -> Modules, and
+    // with it off there is nothing on the setup page an operator could usefully
+    // do — unlike AI Diagnostics, whose readiness endpoint must stay reachable to
+    // explain WHY it is not ready.
+    //
+    // Deliberately NOT "/admin/integrations": that is the shared hub Xero,
+    // Stripe, Google and Backups also live on, and gating it would 404 the whole
+    // hub for a club that simply has this off — the mistake #2216 made. The hub's
+    // CARD is hidden behind the same flag instead.
+    //
+    // The cron endpoint is NOT under these prefixes and cannot be — it is called
+    // with a secret, not a session — so `syncOtherClubsWithServer` re-checks the
+    // flag itself and reports SKIPPED.
+    flag: "alpineCentralServer",
+    prefixes: ["/admin/alpine-server", "/api/admin/alpine-server"],
+  },
+  {
     // Google Analytics integration configuration (#2573). Admin -> Modules is the
     // master switch (owner decision section 1), so with the module off this whole
     // subtree 404s: the club cannot read or write the configuration, and the

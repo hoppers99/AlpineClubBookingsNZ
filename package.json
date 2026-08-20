@@ -34,6 +34,7 @@
     "knip": "knip",
     "agent:context": "tsx scripts/agent-context.ts",
     "issue": "node scripts/issue-thread.mjs",
+    "stale-containers": "node scripts/stale-containers.mjs",
     "pr:check": "node scripts/ci/check-pr-body.mjs",
     "ci:workflowcheck": "node scripts/ci/check-workflow-suite-checkout-depth.mjs",
     "test": "vitest run",

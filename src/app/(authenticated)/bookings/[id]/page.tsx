@@ -84,7 +84,7 @@ import {
 } from "@/lib/booking-status";
 import {
   isBookingBedAllocationLocked,
-} from "@/lib/admin-bed-allocation";
+} from "@/lib/bed-allocation-approval";
 import { BED_ALLOCATABLE_BOOKING_STATUSES } from "@/lib/bed-allocation-lifecycle";
 import { formatDateOnly } from "@/lib/date-only";
 import {
@@ -125,6 +125,7 @@ import { classifyMemberGuestConsent } from "@/lib/member-guest-consent";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import { loadMemberGuestSettings } from "@/lib/member-guest-settings";
 import { resolveMemberGuestNameSearchAccess } from "@/lib/member-guest-find";
+import { getPublicOtherLodges } from "@/lib/booking-request";
 import { eachDateOnlyInRange, getTodayDateOnly } from "@/lib/date-only";
 import {
   bookingManagementAuthorizationRole,
@@ -471,11 +472,16 @@ export default async function BookingDetailPage({
           isQuotePriced: consentIsQuotePriced,
         })
       : consentCandidate;
-  // The ask card names the lodge the way the request email does — the
-  // booking's own lodge identity. Loaded only when the card renders.
+  // THIS booking's lodge identity, not the club default's. The ask card, the
+  // arrival instructions and the booking-message merge data (#2919) all want it
+  // and the last is unconditional, so it is loaded once rather than twice.
+  const bookingLodgeEmailSettings = await loadEmailMessageSettingsForLodge(
+    booking.lodgeId,
+  );
+  // The ask card names the lodge the way the request email does.
   const consentLodgeName =
     consentCard?.kind === "PENDING_ASK"
-      ? (await loadEmailMessageSettingsForLodge(booking.lodgeId)).lodgeName
+      ? bookingLodgeEmailSettings.lodgeName
       : null;
   const viewerConsentGuest =
     consentCard?.kind === "PENDING_ASK"
@@ -870,6 +876,10 @@ export default async function BookingDetailPage({
       stayStart: formatDateOnly(g.stayStart),
       stayEnd: formatDateOnly(g.stayEnd),
       priceCents: g.priceCents,
+      // Other Lodges epic: the reciprocal other-club rate tick. Sent to every
+      // viewer because it is not a secret — it is what a non-member row is being
+      // charged — but only an admin is offered the control that changes it.
+      otherLodgeMember: g.otherLodgeMember,
       nights: g.nights.map((n) => formatDateOnly(n.stayDate)),
       // #2307 (MG2-M-2): null for family and non-member rows — no badge, no
       // layout change. A conditional spread so those rows' serialised payload
@@ -926,6 +936,19 @@ export default async function BookingDetailPage({
     ...(viewerAuthorizationRole === "ADMIN" &&
     (await isMemberWholeLodgeBooking(prisma, booking.id))
       ? { memberWholeLodge: true }
+      : {}),
+    // Other Lodges epic: the partner lodge this booking claims, plus the
+    // registry the officer picks from.
+    //
+    // The LIST is admin-only and a conditional spread, on the same reasoning as
+    // `noEmails` above: this object is serialised into the RSC payload of a
+    // client component, and React Flight ships the key as well as the value, so
+    // a member reading the wire would otherwise learn the whole other-lodge
+    // registry exists and what is in it. The stored ELECTION rides the guest
+    // rows either way, because it is what the member is being charged.
+    otherLodgeId: booking.otherLodgeId,
+    ...(viewerAuthorizationRole === "ADMIN"
+      ? { otherLodges: await getPublicOtherLodges(prisma) }
       : {}),
     // #2104: an already-flagged/reviewed booking must not re-prompt the member
     // for a justification when the guest list shuffles — the edit panel keys the
@@ -998,9 +1021,10 @@ export default async function BookingDetailPage({
         isOperationallyPresentConsent(viewerGuestRow?.consentStatus))) &&
     ["CONFIRMED", "PAID"].includes(booking.status);
   // Arrival instructions must carry THIS booking's lodge identity (door
-  // code, travel note), not the default lodge's.
+  // code, travel note), not the default lodge's — and stay null, so the door
+  // code never reaches the page at all, whenever the gate above says no.
   const memberArrivalInstructions = showMemberArrivalInstructions
-    ? await loadEmailMessageSettingsForLodge(booking.lodgeId)
+    ? bookingLodgeEmailSettings
     : null;
 
   // Split-booking group presentation (#738). Genuine split children only:
@@ -1153,6 +1177,13 @@ export default async function BookingDetailPage({
     holdDays: "",
     minimumDaysBeforeCheckIn: "",
     bookingStatus: booking.status,
+    // #2919: the four club-level tokens the admin preview renders and this page
+    // supplied none of, so an inserted {{CLUB_LODGE_NAME}} showed a lodge name
+    // in preview and a blank to the member. Resolved from THIS booking's lodge.
+    CLUB_LODGE_NAME: bookingLodgeEmailSettings.lodgeName,
+    CLUB_NAME: bookingLodgeEmailSettings.clubName,
+    BASE_URL: bookingLodgeEmailSettings.publicUrl,
+    SUPPORT_EMAIL: bookingLodgeEmailSettings.supportEmail,
   };
   const renderBookingMessage = (key: keyof typeof bookingMessages) =>
     renderBookingMessageTemplate(bookingMessages[key], bookingMessageData);
@@ -1726,6 +1757,9 @@ export default async function BookingDetailPage({
             bookingId={booking.id}
             canOpenGroup={canOpenGroup}
             group={organiserGroupState}
+            /* #2919: the card renders booking-message bodies of its own, so it
+               needs THIS booking's lodge for {{CLUB_LODGE_NAME}} too. */
+            lodgeName={bookingLodgeEmailSettings.lodgeName}
           />
         </section>
       )}

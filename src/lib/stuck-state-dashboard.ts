@@ -9,7 +9,11 @@ import { groupSettlementReapDeadline } from "@/lib/cron-group-settlement-reaper"
 import { getAdminAlertDeliveryEscalations } from "@/lib/email-admin-alert-escalation";
 import { getExhaustedEmailFailureReviewQueue } from "@/lib/email-failure-review";
 import { getEmailDeliverabilityTelemetry } from "@/lib/email-suppression";
-import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
+import {
+  coverageNeedsLodgeContext,
+  getUnassignedHutLeaderDates,
+} from "@/lib/hut-leader-coverage";
+import { countActiveLodges } from "@/lib/lodges";
 import {
   getUnreachableMemberSummary,
   UNREACHABLE_MEMBER_REASON_LABEL,
@@ -25,10 +29,8 @@ import {
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
 import { prisma } from "@/lib/prisma";
 import { formatBookingReference } from "@/lib/booking-reference";
-import {
-  getBedAllocationDashboard,
-  parseBedAllocationDateRange,
-} from "@/lib/admin-bed-allocation";
+import { getBedAllocationDashboard } from "@/lib/bed-allocation-board";
+import { parseBedAllocationDateRange } from "@/lib/bed-allocation-date-range";
 import { getTokenEmailRecoveryQueue } from "@/lib/token-email-recovery";
 import { getWaitlistOfferEmailDeliveries } from "@/lib/waitlist-offer-email-visibility";
 import {
@@ -142,6 +144,13 @@ export interface StuckStateDashboardDependencies {
   getBedAllocationDashboard: typeof getBedAllocationDashboard;
   getUnassignedHutLeaderDates: typeof getUnassignedHutLeaderDates;
   loadHutLeaderLookaheadDays: typeof loadHutLeaderLookaheadDays;
+  /**
+   * The club's active-lodge count, for the ADR-002 Presentation Rule on the
+   * hut-leader tile (#2917). A bound thunk rather than `typeof
+   * countActiveLodges`, because that helper deliberately takes an explicit
+   * Prisma client and this module's injected `db` is a narrowed shape.
+   */
+  countActiveLodges: () => Promise<number>;
 }
 
 const DOMAIN_LABELS: Record<StuckStateDomain, string> = {
@@ -185,6 +194,7 @@ const defaultDependencies: StuckStateDashboardDependencies = {
   getBedAllocationDashboard,
   getUnassignedHutLeaderDates,
   loadHutLeaderLookaheadDays,
+  countActiveLodges: () => countActiveLodges(prisma),
 };
 
 function plural(count: number, singular: string, pluralForm = `${singular}s`) {
@@ -724,30 +734,46 @@ async function addLodgeItems(
   items: StuckStateItem[],
   deps: StuckStateDashboardDependencies,
 ) {
-  const [hutLeaderLookaheadDays, openIssueReports] = await Promise.all([
-    deps.loadHutLeaderLookaheadDays(),
-    deps.db.issueReport.count({
-      where: {
-        resolvedAt: null,
-      },
-    }),
-  ]);
+  const [hutLeaderLookaheadDays, openIssueReports, activeLodgeCount] =
+    await Promise.all([
+      deps.loadHutLeaderLookaheadDays(),
+      deps.db.issueReport.count({
+        where: {
+          resolvedAt: null,
+        },
+      }),
+      deps.countActiveLodges(),
+    ]);
   const unassignedDates = await deps.getUnassignedHutLeaderDates({
     lookAheadDays: hutLeaderLookaheadDays,
     scope: { kind: "all" },
   });
 
+  // Uncovered LODGE-nights (#2917): two lodges uncovered on one night is two
+  // rows. The noun follows the CLUB, not the rows — a multi-lodge club counts
+  // lodge-nights even on a day when only one lodge is short — so a single-lodge
+  // tile is unchanged and a multi-lodge one never changes noun between loads.
+  const unassignedNoun = coverageNeedsLodgeContext({
+    activeLodgeCount,
+    rows: unassignedDates,
+  })
+    ? "lodge-night"
+    : "lodge date";
+
   addItem(items, {
     id: "lodge-unassigned-hut-leaders",
     domain: "lodge",
-    title: `Unassigned ${CLUB_HUT_LEADER_LABEL.toLowerCase()} dates`,
+    // The title carries the same unit as the summary below it (#2917 review):
+    // a heading saying "dates" above a count of lodge-nights is the very
+    // conflation this issue exists to remove.
+    title: `Unassigned ${CLUB_HUT_LEADER_LABEL.toLowerCase()} ${unassignedNoun}s`,
     severity: "warning",
     owner: "Lodge",
     count: unassignedDates.length,
     href: "/admin/hut-leaders",
-    summary: `${unassignedDates.length} upcoming lodge ${plural(
+    summary: `${unassignedDates.length} upcoming ${plural(
       unassignedDates.length,
-      "date",
+      unassignedNoun,
     )} in the next ${hutLeaderLookaheadDays} days with bookings have no ${CLUB_HUT_LEADER_LABEL.toLowerCase()} assigned.`,
   });
   addItem(items, {

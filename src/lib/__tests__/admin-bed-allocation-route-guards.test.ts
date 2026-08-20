@@ -11,7 +11,7 @@ vi.mock("@/lib/session-guards", () => ({
 vi.mock("@/lib/admin-modules", () => ({
   isEffectiveModuleEnabled: mocks.isEffectiveModuleEnabled,
 }));
-vi.mock("@/lib/admin-bed-allocation", () => ({
+vi.mock("@/lib/bed-allocation-admin-contract", () => ({
   BedAllocationAdminError: class BedAllocationAdminError extends Error {},
 }));
 vi.mock("@/lib/bed-allocation-settings", () => ({

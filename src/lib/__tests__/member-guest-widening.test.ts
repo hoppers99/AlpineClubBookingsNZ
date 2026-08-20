@@ -787,7 +787,7 @@ describe("consent columns have exactly one writer", () => {
       // The tenth D-12 site, and the one an officer can reach by hand: the
       // manual bed-write chokepoint refuses a guest who has not consented, so a
       // hand-typed guest id cannot write bed rows the next reconcile sweeps away.
-      "src/lib/admin-bed-allocation.ts":
+      "src/lib/bed-allocation-placement.ts":
         "D-12: the manual bed-allocation chokepoint refuses an unconsented guest",
       // --- MG3's wizard surface (#2308). A READER, and barely that: it builds
       // the two consent-column shapes the wizard's badge PREDICTS before
