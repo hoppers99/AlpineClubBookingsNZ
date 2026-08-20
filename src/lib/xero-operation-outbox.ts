@@ -5,6 +5,7 @@ import {
   syncXeroMembershipCancellationContact,
 } from "@/lib/membership-cancellation-xero";
 import { prisma } from "@/lib/prisma";
+import { resolveStripeCashRefundEvidence } from "@/lib/stripe-cash-refund-evidence";
 import { claimXeroSyncOperationToRunning } from "@/lib/xero-operation-claim";
 import { getSeasonYear } from "@/lib/utils";
 import {
@@ -721,6 +722,7 @@ export async function enqueueXeroRefundCreditNoteOperation(
     where: { id: paymentId },
     select: {
       id: true,
+      bookingId: true,
       source: true,
       refundedAmountCents: true,
       xeroRefundCreditNoteId: true,
@@ -743,21 +745,28 @@ export async function enqueueXeroRefundCreditNoteOperation(
   let watermarkCents = refundAmountCents;
 
   if (payment.source === PaymentSource.STRIPE) {
-    // Stripe payments can be refunded in several steps, and each step needs its
-    // own credit note for the still-uncovered delta. `payment.refundedAmountCents`
-    // is the cumulative refund ledger and already includes this delta at enqueue
-    // time, so capping the note to `refundedAmountCents - coveredCents` yields
-    // this delta while replays of an already-covered state cap at zero.
+    // Stripe payments can be refunded in several steps, and each step needs
+    // its own credit note for the still-uncovered delta. The cumulative total
+    // a refund note may cover is the provider-backed CASH evidence (#2902,
+    // INV-PAY-050: succeeded PaymentRefund rows, with the pre-ledger legacy
+    // fallback) — NEVER the raw refundedAmountCents mirror, which also counts
+    // account-credit dispositions. The evidence already includes this delta
+    // at enqueue time (the cash paths record the ledger row before enqueuing),
+    // so capping the note to `cashRefundCents - coveredCents` yields this
+    // delta while replays of an already-covered state — and account-credit
+    // cancellations, whose cash evidence is zero — cap at zero.
     const coveredCents = await sumCoveredRefundCreditNoteCents(paymentId, db);
+    const evidence = await resolveStripeCashRefundEvidence(payment, db);
     noteAmountCents = Math.max(
       0,
-      Math.min(refundAmountCents, payment.refundedAmountCents - coveredCents)
+      Math.min(refundAmountCents, evidence.cashRefundCents - coveredCents)
     );
     watermarkCents = coveredCents + noteAmountCents;
     if (noteAmountCents <= 0) {
       return {
         queueOperationId: null,
-        message: "Refund credit notes already cover this payment's refunded amount.",
+        message:
+          "No provider-backed Stripe cash refund remains uncovered by refund credit notes for this payment.",
       };
     }
   } else if (canonicalLink) {

@@ -2,7 +2,10 @@
  * Operator-reviewed repair for Stripe per-delta refund credit-note links that
  * the pre-#2901 canonical cleanup wrongly deactivated (and for the local
  * aftermath of cleaning up the Xero-side duplicate notes the resulting loop
- * created).
+ * created). Since #2902 it is also the dry-run-first operator REPORT for
+ * payments whose refund-note coverage exceeds their provider-backed cash
+ * refunds — the fictitious notes (each usually settled by a Stripe-bank
+ * payment) that account-credit cancellations used to mint (INV-PAY-050).
  *
  * What it does — LOCAL ledger rows only, never a provider WRITE (the optional
  * status recorder in `xero-refund-note-status-recorder.ts` performs read-only
@@ -16,8 +19,13 @@
  * - Reactivates inactive `Payment`/`REFUND_CREDIT_NOTE` links on
  *   `source: STRIPE` payments, oldest first, while doing so cannot push the
  *   active covered cents past the payment's coverage target
- *   (`getRefundNoteCoverageTargetCents`, today `refundedAmountCents` —
- *   INV-ADDPAY-020). A link is reactivated only when its note's live status
+ *   (`getRefundNoteCoverageTargetCents` — INV-ADDPAY-020). Since #2902 that
+ *   target is the provider-backed CASH refund evidence
+ *   (`resolveStripeCashRefundEvidence`, INV-PAY-050): succeeded
+ *   `PaymentRefund` cents when the payment has ledger rows, else the
+ *   pre-ledger legacy fallback (`refundedAmountCents` minus its
+ *   account-credit disposition) — never the raw mirror, which also counts
+ *   account credit. A link is reactivated only when its note's live status
  *   has been RECORDED locally and is not cancelled (#2901 review F3): inbound
  *   reconciliation structurally cannot stamp a status onto an inactive link,
  *   so an unrecorded status must be treated as "possibly voided" and refused —
@@ -25,9 +33,16 @@
  * - When the plan lands SHORT of the target, the planned writes still apply:
  *   once the ledger is honest the daily credit-reconciliation self-heal issues
  *   one note for exactly the uncovered remainder (the executor recomputes
- *   amounts from execution-time coverage), so refusing the honest state would
- *   only preserve the phantom coverage. Landing short is reported, never
- *   silently absorbed.
+ *   amounts from execution-time cash evidence and coverage), so refusing the
+ *   honest state would only preserve the phantom coverage. Landing short is
+ *   reported, never silently absorbed.
+ * - Reports (manual review, no automatic action) payments whose active,
+ *   non-cancelled coverage EXCEEDS the cash target — including the #2902
+ *   shape: an account-credit-only cancellation carrying a refund note no
+ *   Stripe transaction backs. The operator voids the surplus notes (and their
+ *   Stripe-bank refund payments) in Xero, records statuses
+ *   (`--record-statuses`), and the next apply run deactivates the local
+ *   mirrors.
  *
  * What it refuses, structurally:
  *
@@ -97,6 +112,10 @@ import { PaymentSource, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 import {
+  resolveStripeCashRefundEvidence,
+  type StripeCashRefundEvidence,
+} from "@/lib/stripe-cash-refund-evidence";
+import {
   isIncludedRefundCreditNoteStatus,
   readRefundCreditNoteLinkStatus,
 } from "@/lib/xero-refund-note-status";
@@ -128,9 +147,18 @@ export interface StripeRefundNoteLinkAssessment {
 export interface StripeRefundNoteLinkRepairPlan {
   paymentId: string;
   bookingId: string;
+  /** The aggregate settlement mirror (cash + account-credit dispositions). */
   refundedAmountCents: number;
-  /** The cents active coverage must equal — see getRefundNoteCoverageTargetCents. */
+  /**
+   * The cents active coverage must equal — see
+   * getRefundNoteCoverageTargetCents. Since #2902 this is the provider-backed
+   * CASH refund target (INV-PAY-050): succeeded PaymentRefund cents when
+   * ledger rows exist, else the pre-ledger legacy fallback (mirror minus
+   * account-credit disposition).
+   */
   coverageTargetCents: number;
+  /** Which rule produced the target ("provider-ledger" | "legacy-mirror"). */
+  cashEvidenceSource: StripeCashRefundEvidence["source"];
   /** Active covered cents exactly as `sumCoveredRefundCreditNoteCents` sees them today. */
   activeCoveredCents: number;
   /** Active covered cents after the planned actions. */
@@ -193,15 +221,17 @@ interface RepairPayment {
 
 /**
  * The cents this payment's ACTIVE refund-note coverage must equal
- * (INV-ADDPAY-020). THE named seam for the target figure: #2902 extends this
- * to a cash-evidence figure, so every comparison in this module must go
- * through it and nothing may read `refundedAmountCents` directly for a
- * target.
+ * (INV-ADDPAY-020). THE named seam for the target figure: since #2902 it is
+ * the provider-backed CASH refund evidence (INV-PAY-050, resolved by
+ * `resolveStripeCashRefundEvidence` — already capped at the mirror and never
+ * negative), NOT `refundedAmountCents`, which also counts account-credit
+ * dispositions. Every comparison in this module must go through it and
+ * nothing may read `refundedAmountCents` directly for a target.
  */
-function getRefundNoteCoverageTargetCents(payment: {
-  refundedAmountCents: number;
-}): number {
-  return payment.refundedAmountCents;
+function getRefundNoteCoverageTargetCents(
+  evidence: StripeCashRefundEvidence
+): number {
+  return evidence.cashRefundCents;
 }
 
 function isCancelledStatus(status: string | null): boolean {
@@ -230,15 +260,19 @@ async function assessLinks(
 
 /**
  * Pure planner over an assessed snapshot. Deterministic: given the same
- * payment state it always produces the same plan, which is what lets apply
- * rebuild it inside the transaction and refuse when the state moved.
+ * payment state (including its cash-evidence resolution) it always produces
+ * the same plan, which is what lets apply rebuild it inside the transaction
+ * and refuse when the state moved.
  */
 function buildPlan(
   payment: RepairPayment,
   assessedLinks: AssessedLink[],
-  options: { pendingOperationId: string | null }
+  options: {
+    pendingOperationId: string | null;
+    evidence: StripeCashRefundEvidence;
+  }
 ): StripeRefundNoteLinkRepairPlan {
-  const target = getRefundNoteCoverageTargetCents(payment);
+  const target = getRefundNoteCoverageTargetCents(options.evidence);
   const ordered = [...assessedLinks].sort(
     (left, right) =>
       left.createdAt.getTime() - right.createdAt.getTime() ||
@@ -284,6 +318,7 @@ function buildPlan(
       bookingId: payment.bookingId,
       refundedAmountCents: payment.refundedAmountCents,
       coverageTargetCents: target,
+      cashEvidenceSource: options.evidence.source,
       activeCoveredCents,
       plannedCoveredCents: activeCoveredCents,
       repairable: false,
@@ -336,7 +371,7 @@ function buildPlan(
 
   // Step 2: inactive links, oldest first. Reactivate only notes whose live
   // status is recorded and not cancelled, and only while doing so cannot push
-  // coverage past the target.
+  // coverage past the cash refund-note target.
   let plannedCoveredCents = baselineCents;
   for (const link of ordered) {
     if (link.active) {
@@ -361,7 +396,7 @@ function buildPlan(
       reason = "Reactivated to restore the per-delta coverage this note settles.";
     } else {
       reason =
-        "Reactivating this note would push coverage past the refunded total (a Xero-side duplicate to void manually in Xero).";
+        "Reactivating this note would push coverage past the provider-backed cash refund target (a Xero-side duplicate to void manually in Xero).";
     }
     assessments.push({
       linkId: link.id,
@@ -384,12 +419,14 @@ function buildPlan(
     // Only reachable through the baseline: the greedy step never exceeds the
     // target, so active, non-cancelled coverage is already above it.
     manualReviewReason =
-      "Active, non-cancelled coverage exceeds the refunded total. Verify the notes in Xero and void the surplus duplicates THERE (nothing is voided automatically), record statuses (--record-statuses), then re-run. Until then Xero over-credits the member and further refund notes are suppressed.";
+      target === 0
+        ? "This payment's refunded amount is an account-credit disposition, not Stripe cash (no provider-backed refund evidence), yet active refund notes exist — the #2902 fictitious cash documents. Verify in Xero and void those notes and their Stripe-bank refund payments THERE (nothing is voided automatically), record statuses (--record-statuses), then re-run."
+        : "Active, non-cancelled coverage exceeds the provider-backed cash refund target. Verify the notes in Xero and void the surplus duplicates THERE (nothing is voided automatically), record statuses (--record-statuses), then re-run. Until then Xero over-credits the member and further refund notes are suppressed.";
   } else if (plannedCoveredCents < target) {
     const remainderCents = target - plannedCoveredCents;
     manualReviewReason = repairable
-      ? `Planned coverage still lands ${remainderCents} cents short of the refunded total; no recoverable local note fills it. The planned changes are safe to apply — once the ledger is honest, the daily credit-reconciliation self-heal issues one note for exactly the uncovered remainder. Never void anything to force an exact landing.`
-      : `Active coverage is ${remainderCents} cents short of the refunded total and no recoverable inactive note fills it. If the notes exist in Xero, record their statuses (--record-statuses) and re-run; otherwise the daily credit-reconciliation self-heal issues the missing note.`;
+      ? `Planned coverage still lands ${remainderCents} cents short of the provider-backed cash refund target; no recoverable local note fills it. The planned changes are safe to apply — once the ledger is honest, the daily credit-reconciliation self-heal issues one note for exactly the uncovered remainder. Never void anything to force an exact landing.`
+      : `Active coverage is ${remainderCents} cents short of the provider-backed cash refund target and no recoverable inactive note fills it. If the notes exist in Xero, record their statuses (--record-statuses) and re-run; otherwise the daily credit-reconciliation self-heal issues the missing note.`;
   }
 
   return {
@@ -397,6 +434,7 @@ function buildPlan(
     bookingId: payment.bookingId,
     refundedAmountCents: payment.refundedAmountCents,
     coverageTargetCents: target,
+    cashEvidenceSource: options.evidence.source,
     activeCoveredCents,
     plannedCoveredCents,
     repairable,
@@ -513,18 +551,19 @@ async function planForPayment(
     payment.id,
     db
   );
+  const evidence = await resolveStripeCashRefundEvidence(payment, db);
   const links = await db.xeroObjectLink.findMany({
     where: REFUND_NOTE_LINK_WHERE(payment.id),
     select: LINK_SELECT,
   });
   const assessed = await assessLinks(payment.id, links, db);
-  return buildPlan(payment, assessed, { pendingOperationId });
+  return buildPlan(payment, assessed, { pendingOperationId, evidence });
 }
 
 /**
  * True when this payment needs to appear in the operator report at all:
- * either the planner proposes actions, or coverage diverges from the target
- * with nothing automatic to do about it.
+ * either the planner proposes actions, or coverage diverges from the cash
+ * refund-note target with nothing automatic to do about it.
  */
 function planNeedsAttention(plan: StripeRefundNoteLinkRepairPlan): boolean {
   return (
@@ -769,8 +808,10 @@ export async function applyStripeRefundNoteLinkRepairs(options?: {
         reactivatedLinks: outcome.reactivated,
         deactivatedLinks: outcome.deactivated,
         refundedAmountCents: plan.refundedAmountCents,
+        coverageTargetCents: plan.coverageTargetCents,
+        cashEvidenceSource: plan.cashEvidenceSource,
       },
-      "Repaired Stripe refund credit-note link coverage (#2901)"
+      "Repaired Stripe refund credit-note link coverage (#2901/#2902)"
     );
   }
 
@@ -805,7 +846,7 @@ export function formatStripeRefundNoteLinkRepairReport(
         : "REPAIRABLE"
       : `MANUAL REVIEW: ${plan.manualReviewReason ?? "see links"}`;
     lines.push(
-      `Payment ${plan.paymentId} (booking ${plan.bookingId}): refunded ${formatCents(plan.refundedAmountCents)}, active coverage ${formatCents(plan.activeCoveredCents)}, planned coverage ${formatCents(plan.plannedCoveredCents)} — ${status}`
+      `Payment ${plan.paymentId} (booking ${plan.bookingId}): refunded mirror ${formatCents(plan.refundedAmountCents)}, cash refund-note target ${formatCents(plan.coverageTargetCents)} (${plan.cashEvidenceSource}), active coverage ${formatCents(plan.activeCoveredCents)}, planned coverage ${formatCents(plan.plannedCoveredCents)} — ${status}`
     );
     for (const link of plan.links) {
       lines.push(

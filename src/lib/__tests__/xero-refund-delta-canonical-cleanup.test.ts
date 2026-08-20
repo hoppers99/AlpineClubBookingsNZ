@@ -58,6 +58,21 @@ const state = vi.hoisted(() => ({
     requestPayload: unknown;
     createdAt: Date;
   }>,
+  // #2902 cash-evidence inputs. Empty by default: no PaymentRefund ledger
+  // rows and no account-credit disposition resolves through the legacy-mirror
+  // fallback to cash target === refundedAmountCents — the pre-#2902 meaning
+  // of every #2901 scenario.
+  paymentRefunds: [] as Array<{
+    paymentId: string;
+    status: string;
+    amountCents: number;
+  }>,
+  memberCredits: [] as Array<{
+    sourceBookingId: string;
+    type: string;
+    amountCents: number;
+    restoredFromBookingId: string | null;
+  }>,
   linkIdCounter: 0,
 }));
 
@@ -104,6 +119,47 @@ const fakePrisma = vi.hoisted(() => {
     memberCredit: {
       groupBy: async () => [],
       count: async () => 0,
+      // #2902 legacy fallback: the account-credit disposition sourced from
+      // the payment's booking, excluding restore rows.
+      aggregate: async (args: {
+        where: {
+          sourceBookingId: string;
+          type: { in: string[] };
+          amountCents: { gt: number };
+          restoredFromBookingId: null;
+        };
+      }) => {
+        const sum = state.memberCredits
+          .filter(
+            (row) =>
+              row.sourceBookingId === args.where.sourceBookingId &&
+              args.where.type.in.includes(row.type) &&
+              row.amountCents > args.where.amountCents.gt &&
+              row.restoredFromBookingId === null
+          )
+          .reduce((total, row) => total + row.amountCents, 0);
+        return { _sum: { amountCents: sum > 0 ? sum : null } };
+      },
+    },
+    paymentRefund: {
+      // Mirrors resolveStripeCashRefundEvidence's groupBy(["status"]) shape.
+      groupBy: async (args: { by: string[]; where: { paymentId: string } }) => {
+        const rows = state.paymentRefunds.filter(
+          (row) => row.paymentId === args.where.paymentId
+        );
+        const byStatus = new Map<string, { sum: number; count: number }>();
+        for (const row of rows) {
+          const bucket = byStatus.get(row.status) ?? { sum: 0, count: 0 };
+          bucket.sum += row.amountCents;
+          bucket.count += 1;
+          byStatus.set(row.status, bucket);
+        }
+        return [...byStatus.entries()].map(([status, bucket]) => ({
+          status,
+          _sum: { amountCents: bucket.sum },
+          _count: { _all: bucket.count },
+        }));
+      },
     },
     payment: {
       findMany: async (args: { where: Record<string, unknown> }) => {
@@ -275,6 +331,8 @@ beforeEach(() => {
   state.linkIdCounter = 0;
   state.links = [];
   state.operations = [];
+  state.paymentRefunds = [];
+  state.memberCredits = [];
   state.payments = [
     {
       id: "pay_1",
@@ -425,14 +483,17 @@ describe("Stripe per-delta refund notes vs canonical cleanup and reconciliation 
     expect(missing.payments[0]).toMatchObject({
       paymentId: "pay_1",
       refundedAmountCents: 100,
+      cashRefundedCents: 100,
       uncoveredCents: 10,
     });
 
+    // #2902: the self-heal asks for the CASH uncovered delta (10), never the
+    // full mirror; the enqueue re-caps against cash evidence either way.
     await reconcileCreditBalances();
     expect(outboxMocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledTimes(1);
     expect(outboxMocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith(
       "pay_1",
-      100
+      10
     );
   });
 
@@ -472,7 +533,7 @@ describe("Stripe per-delta refund notes vs canonical cleanup and reconciliation 
     await reconcileCreditBalances();
     expect(outboxMocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith(
       "pay_1",
-      100
+      10
     );
   });
 
@@ -491,5 +552,141 @@ describe("Stripe per-delta refund notes vs canonical cleanup and reconciliation 
     expect(cleanup.byCategory.paymentRefundCreditNotes).toBe(1);
     expect(activeRefundNoteIds()).toEqual(["cn_90"]);
     expect(await sumCoveredRefundCreditNoteCents("pay_1")).toBe(90);
+  });
+
+  it("an account-credit-only cancellation queues NO refund note across repeated reconciliation cycles (#2902 acceptance)", async () => {
+    // The anonymised production shape: the cancellation held the whole value
+    // as member account credit. applyLocalRefundAllocation moved the mirror
+    // (341.00), an ACCOUNT_CREDIT_NOTE documents the credit in Xero, and NO
+    // PaymentRefund row exists because no Stripe cash ever moved. Pre-#2902
+    // every reconciliation run read the mirror as missing Stripe cash and
+    // minted a fictitious REFUND_CREDIT_NOTE plus a Stripe-bank payment.
+    state.payments[0].refundedAmountCents = 34100;
+    state.memberCredits.push({
+      sourceBookingId: "book_1",
+      type: "CANCELLATION_REFUND",
+      amountCents: 34100,
+      restoredFromBookingId: null,
+    });
+    await upsertXeroObjectLink({
+      localModel: "MemberCredit",
+      localId: "credit_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_account_credit",
+      role: "ACCOUNT_CREDIT_NOTE",
+    });
+
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      const missing = await getRefundsMissingXeroCreditNotes();
+      expect(missing.count).toBe(0);
+
+      const reconciliation = await reconcileCreditBalances();
+      expect(reconciliation.refundsMissingXeroCreditNotes).toBe(0);
+      expect(
+        outboxMocks.enqueueXeroRefundCreditNoteOperation
+      ).not.toHaveBeenCalled();
+    }
+
+    // The account-credit document is untouched and no REFUND_CREDIT_NOTE
+    // link ever appeared for the payment.
+    const accountCreditLink = state.links.find(
+      (link) => link.role === "ACCOUNT_CREDIT_NOTE"
+    );
+    expect(accountCreditLink?.active).toBe(true);
+    expect(activeRefundNoteIds()).toEqual([]);
+  });
+
+  it("a genuine Stripe refund with provider-ledger evidence self-heals exactly once, summing stepped PaymentRefund rows (#2902 acceptance)", async () => {
+    // Modern shape: two stepped Stripe cash refunds (90c + 10c) each recorded
+    // a succeeded PaymentRefund row BEFORE its enqueue; only the 90c note
+    // ever settled. A failed refund attempt must not count.
+    state.paymentRefunds.push(
+      { paymentId: "pay_1", status: "succeeded", amountCents: 90 },
+      { paymentId: "pay_1", status: "succeeded", amountCents: 10 },
+      { paymentId: "pay_1", status: "failed", amountCents: 500 }
+    );
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "pay_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_90",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { amountCents: 90, watermarkCents: 90 },
+    });
+    state.payments[0].xeroRefundCreditNoteId = "cn_90";
+    outboxMocks.enqueueXeroRefundCreditNoteOperation.mockResolvedValue({
+      queueOperationId: "op_selfheal",
+    });
+
+    const missing = await getRefundsMissingXeroCreditNotes();
+    expect(missing.count).toBe(1);
+    expect(missing.payments[0]).toMatchObject({
+      paymentId: "pay_1",
+      refundedAmountCents: 100,
+      cashRefundedCents: 100,
+      uncoveredCents: 10,
+    });
+
+    await reconcileCreditBalances();
+    expect(
+      outboxMocks.enqueueXeroRefundCreditNoteOperation
+    ).toHaveBeenCalledTimes(1);
+    expect(outboxMocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith(
+      "pay_1",
+      10
+    );
+
+    // The healed note lands; repeat runs flag nothing and queue nothing more —
+    // the self-heal fires exactly once.
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "pay_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_10",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { amountCents: 10, watermarkCents: 100 },
+    });
+    outboxMocks.enqueueXeroRefundCreditNoteOperation.mockClear();
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      const healed = await getRefundsMissingXeroCreditNotes();
+      expect(healed.count).toBe(0);
+      await reconcileCreditBalances();
+      expect(
+        outboxMocks.enqueueXeroRefundCreditNoteOperation
+      ).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a mixed cash + account-credit refund flags only the cash remainder (#2902)", async () => {
+    // 100c mirror = 60c Stripe cash (ledger row) + 40c account credit. The
+    // ledger rows exist, so the provider-ledger rule wins outright and the
+    // credit disposition is not even consulted; only 60c of notes are owed.
+    state.paymentRefunds.push({
+      paymentId: "pay_1",
+      status: "succeeded",
+      amountCents: 60,
+    });
+    state.memberCredits.push({
+      sourceBookingId: "book_1",
+      type: "CANCELLATION_REFUND",
+      amountCents: 40,
+      restoredFromBookingId: null,
+    });
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "pay_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_60",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { amountCents: 60, watermarkCents: 60 },
+    });
+
+    const missing = await getRefundsMissingXeroCreditNotes();
+    expect(missing.count).toBe(0);
+
+    await reconcileCreditBalances();
+    expect(
+      outboxMocks.enqueueXeroRefundCreditNoteOperation
+    ).not.toHaveBeenCalled();
   });
 });

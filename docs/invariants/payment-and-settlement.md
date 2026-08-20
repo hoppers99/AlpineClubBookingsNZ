@@ -310,6 +310,35 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 - Both directions are audited with the acting admin and the previous status;
   marking paid also records the #2260 email decision BOTH ways.
 
+## INV-PAY-050
+
+- A Xero Stripe refund credit note (and its Stripe-bank refund payment)
+  documents PROVIDER-BACKED CASH only, never account credit. The amount those
+  documents may cover is `resolveStripeCashRefundEvidence`
+  (`src/lib/stripe-cash-refund-evidence.ts`): the payment's `PaymentRefund`
+  cents excluding only `failed` and `canceled` rows when any ledger rows exist,
+  else the pre-ledger fallback of `refundedAmountCents` minus its
+  account-credit disposition —
+  never the raw `refundedAmountCents` mirror, which deliberately tracks both
+  dispositions (#1031) and stays authoritative for settlement and
+  conservation maths. Bound at every surface that can mint or size a refund
+  note: health detection (`getRefundsMissingXeroCreditNotes`), the daily
+  self-heal enqueue amount, the STRIPE enqueue cap, the execution-time delta
+  recompute in `createXeroCreditNote` (which also completes a queued
+  fictitious operation without billing Xero), and the #2901 link-repair
+  coverage target. An account-credit cancellation therefore keeps exactly its
+  `ACCOUNT_CREDIT_NOTE` and never grows a refund note (#2902).
+- The exclusion list is deliberately the SAME as the `refundedAmountCents`
+  mirror's (`EXCLUDED_LEDGER_REFUND_STATUSES`), so a refund Stripe has accepted
+  but not yet settled keeps counting as cash exactly as it did before #2902
+  (owner decision, 21 Aug 2026). Counting only `succeeded` would fix the
+  account-credit defect while introducing the opposite reporting error — a
+  still-settling refund resolving to zero cash, so the note UNDER-states what
+  went back until somebody re-runs the report. The accepted cost is the one
+  non-fail-safe limit in this module: a refund that is accepted and later
+  `failed` counts as cash between those two events, bounded by the
+  `refundedAmountCents` clamp and corrected by the next run.
+
 ## INV-PAY-002
 
 - Account credit is consumed only by a booking that is actually reaching

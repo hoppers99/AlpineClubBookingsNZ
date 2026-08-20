@@ -173,20 +173,27 @@ describe("reconcileCreditBalances", () => {
     );
   });
 
-  it("re-enqueues the uncovered delta for each flagged payment so swallowed refunds self-heal (#1354)", async () => {
+  it("re-enqueues the CASH uncovered delta — never the refundedAmountCents mirror — for each flagged payment (#1354, #2902)", async () => {
     mocks.getRefundsMissingXeroCreditNotes.mockResolvedValue({
       count: 2,
       payments: [
         {
           paymentId: "pay_1",
           bookingId: "booking_1",
+          // Mirror, cash and uncovered all differ: the amount enqueued must
+          // be the cash uncovered delta (#2902, INV-PAY-050), because the
+          // mirror also counts account-credit dispositions.
           refundedAmountCents: 8000,
+          cashRefundedCents: 6000,
+          uncoveredCents: 5000,
           refundedAt: new Date("2026-07-01T00:00:00.000Z"),
         },
         {
           paymentId: "pay_2",
           bookingId: "booking_2",
           refundedAmountCents: 3000,
+          cashRefundedCents: 3000,
+          uncoveredCents: 3000,
           refundedAt: new Date("2026-07-02T00:00:00.000Z"),
         },
       ],
@@ -195,13 +202,13 @@ describe("reconcileCreditBalances", () => {
 
     await reconcileCreditBalances();
 
-    // The enqueue is delta-capped internally (covered cents are subtracted at
-    // enqueue AND recomputed at execution), so passing the full refunded
-    // total re-enqueues exactly the uncovered remainder; repeats collapse
-    // into the existing PENDING operation via the correlation-key dedup.
+    // The enqueue re-caps against the cash evidence internally (and the
+    // execution path recomputes again), so passing the cash uncovered delta
+    // re-enqueues exactly the missing note; repeats collapse into the
+    // existing PENDING operation via the correlation-key dedup.
     expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith(
       "pay_1",
-      8000
+      5000
     );
     expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith(
       "pay_2",
