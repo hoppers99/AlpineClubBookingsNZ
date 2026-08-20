@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   findMany: vi.fn(),
   sumCovered: vi.fn(),
+  resolveEvidence: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -21,6 +22,14 @@ vi.mock("@/lib/xero-sync", () => ({
   sumCoveredRefundCreditNoteCents: mocks.sumCovered,
 }));
 
+// #2902: the flagged amount is the provider-backed cash refund evidence, not
+// the refundedAmountCents mirror. Resolution rules are unit-tested in
+// stripe-cash-refund-evidence.test.ts; here it defaults to cash === mirror so
+// the pre-#2902 scenarios keep their meaning.
+vi.mock("@/lib/stripe-cash-refund-evidence", () => ({
+  resolveStripeCashRefundEvidence: mocks.resolveEvidence,
+}));
+
 import {
   REFUND_CREDIT_NOTE_GRACE_HOURS,
   getRefundsMissingXeroCreditNotes,
@@ -29,6 +38,15 @@ import {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.sumCovered.mockResolvedValue(0);
+  mocks.resolveEvidence.mockImplementation(
+    async (payment: { refundedAmountCents: number }) => ({
+      cashRefundCents: payment.refundedAmountCents,
+      succeededRefundCents: payment.refundedAmountCents,
+      refundLedgerRowCount: 1,
+      accountCreditCents: 0,
+      source: "provider-ledger",
+    })
+  );
 });
 
 describe("getRefundsMissingXeroCreditNotes (issue #818/#1162)", () => {
@@ -78,6 +96,7 @@ describe("getRefundsMissingXeroCreditNotes (issue #818/#1162)", () => {
       memberName: "Sam Lee",
       memberEmail: "sam@example.com",
       refundedAmountCents: 4200,
+      cashRefundedCents: 4200,
       uncoveredCents: 4200,
       refundedAt: "2026-06-19T00:00:00.000Z",
     });
@@ -118,6 +137,69 @@ describe("getRefundsMissingXeroCreditNotes (issue #818/#1162)", () => {
         memberName: "Sam Lee",
         memberEmail: "sam@example.com",
         refundedAmountCents: 8000,
+        cashRefundedCents: 8000,
+        uncoveredCents: 3000,
+        refundedAt: "2026-06-19T00:00:00.000Z",
+      },
+    ]);
+  });
+
+  it("excludes account-credit-only cancellations and flags only the cash-uncovered remainder (#2902)", async () => {
+    mocks.findMany.mockResolvedValue([
+      {
+        // Account-credit-only cancellation: mirror > 0, cash evidence 0.
+        id: "pay_credit_only",
+        bookingId: "book_credit",
+        refundedAmountCents: 34100,
+        updatedAt: new Date("2026-06-19T00:00:00.000Z"),
+        booking: {
+          member: { firstName: "Ana", lastName: "Ito", email: "ana@example.com" },
+        },
+      },
+      {
+        // Mixed disposition: 9000 mirror of which only 4000 was Stripe cash.
+        id: "pay_mixed",
+        bookingId: "book_mixed",
+        refundedAmountCents: 9000,
+        updatedAt: new Date("2026-06-19T00:00:00.000Z"),
+        booking: {
+          member: { firstName: "Sam", lastName: "Lee", email: "sam@example.com" },
+        },
+      },
+    ]);
+    mocks.resolveEvidence.mockImplementation(async (payment: { id: string }) =>
+      payment.id === "pay_credit_only"
+        ? {
+            cashRefundCents: 0,
+            succeededRefundCents: 0,
+            refundLedgerRowCount: 0,
+            accountCreditCents: 34100,
+            source: "legacy-mirror",
+          }
+        : {
+            cashRefundCents: 4000,
+            succeededRefundCents: 4000,
+            refundLedgerRowCount: 1,
+            accountCreditCents: 0,
+            source: "provider-ledger",
+          }
+    );
+    mocks.sumCovered.mockResolvedValue(1000);
+
+    const result = await getRefundsMissingXeroCreditNotes();
+
+    // The credit-only payment never reaches the coverage query at all.
+    expect(mocks.sumCovered).toHaveBeenCalledTimes(1);
+    expect(mocks.sumCovered).toHaveBeenCalledWith("pay_mixed");
+    expect(result.count).toBe(1);
+    expect(result.payments).toEqual([
+      {
+        paymentId: "pay_mixed",
+        bookingId: "book_mixed",
+        memberName: "Sam Lee",
+        memberEmail: "sam@example.com",
+        refundedAmountCents: 9000,
+        cashRefundedCents: 4000,
         uncoveredCents: 3000,
         refundedAt: "2026-06-19T00:00:00.000Z",
       },

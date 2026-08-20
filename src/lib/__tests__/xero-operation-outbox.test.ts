@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   failXeroSyncOperation: vi.fn(),
   findCanonicalPaymentRefundCreditNote: vi.fn(),
   sumCoveredRefundCreditNoteCents: vi.fn(),
+  resolveStripeCashRefundEvidence: vi.fn(),
   upsertXeroObjectLink: vi.fn(),
   getEntranceFeeContext: vi.fn(),
   createUnappliedXeroCreditNote: vi.fn(),
@@ -90,6 +91,14 @@ vi.mock("@/lib/xero-sync", () => ({
   findCanonicalPaymentRefundCreditNote: mocks.findCanonicalPaymentRefundCreditNote,
   sumCoveredRefundCreditNoteCents: mocks.sumCoveredRefundCreditNoteCents,
   upsertXeroObjectLink: mocks.upsertXeroObjectLink,
+}));
+
+// #2902: the STRIPE enqueue cap reads provider-backed cash evidence, never
+// the refundedAmountCents mirror. Resolution rules are unit-tested in
+// stripe-cash-refund-evidence.test.ts; the default here (cash === mirror)
+// keeps the pre-#2902 stepped-refund scenarios meaning what they said.
+vi.mock("@/lib/stripe-cash-refund-evidence", () => ({
+  resolveStripeCashRefundEvidence: mocks.resolveStripeCashRefundEvidence,
 }));
 
 vi.mock("@/lib/xero-group-settlement-invoices", () => ({
@@ -590,6 +599,17 @@ describe("enqueueXeroRefundCreditNoteOperation", () => {
     mocks.findFirstOperation.mockResolvedValue(null);
     mocks.findCanonicalPaymentRefundCreditNote.mockResolvedValue(null);
     mocks.sumCoveredRefundCreditNoteCents.mockResolvedValue(0);
+    // Default: every refunded cent is provider-backed cash, so pre-#2902
+    // scenarios keep their arithmetic. #2902 cases override per test.
+    mocks.resolveStripeCashRefundEvidence.mockImplementation(
+      async (payment: { refundedAmountCents: number }) => ({
+        cashRefundCents: payment.refundedAmountCents,
+        succeededRefundCents: payment.refundedAmountCents,
+        refundLedgerRowCount: 1,
+        accountCreditCents: 0,
+        source: "provider-ledger",
+      })
+    );
     mocks.startXeroSyncOperation.mockResolvedValue({ id: "op_credit_note_1" });
   });
 
@@ -717,10 +737,74 @@ describe("enqueueXeroRefundCreditNoteOperation", () => {
       enqueueXeroRefundCreditNoteOperation("payment_1", 3000)
     ).resolves.toEqual({
       queueOperationId: null,
-      message: "Refund credit notes already cover this payment's refunded amount.",
+      message:
+        "No provider-backed Stripe cash refund remains uncovered by refund credit notes for this payment.",
     });
 
     expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
+  it("enqueues nothing for an account-credit-only cancellation whose cash evidence is zero (#2902)", async () => {
+    mocks.findUniquePayment.mockResolvedValue({
+      id: "payment_1",
+      bookingId: "booking_1",
+      source: "STRIPE",
+      // The mirror moved (the cancellation ran applyLocalRefundAllocation)
+      // but no Stripe cash ever did.
+      refundedAmountCents: 34100,
+      xeroRefundCreditNoteId: null,
+    });
+    mocks.sumCoveredRefundCreditNoteCents.mockResolvedValue(0);
+    mocks.resolveStripeCashRefundEvidence.mockResolvedValue({
+      cashRefundCents: 0,
+      succeededRefundCents: 0,
+      refundLedgerRowCount: 0,
+      accountCreditCents: 34100,
+      source: "legacy-mirror",
+    });
+
+    await expect(
+      enqueueXeroRefundCreditNoteOperation("payment_1", 34100)
+    ).resolves.toEqual({
+      queueOperationId: null,
+      message:
+        "No provider-backed Stripe cash refund remains uncovered by refund credit notes for this payment.",
+    });
+
+    expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
+  it("caps a mixed-disposition delta at the cash evidence, not the mirror (#2902)", async () => {
+    mocks.findUniquePayment.mockResolvedValue({
+      id: "payment_1",
+      bookingId: "booking_1",
+      source: "STRIPE",
+      // 9000 mirror = 4000 Stripe cash + 5000 account credit.
+      refundedAmountCents: 9000,
+      xeroRefundCreditNoteId: null,
+    });
+    mocks.sumCoveredRefundCreditNoteCents.mockResolvedValue(1000);
+    mocks.resolveStripeCashRefundEvidence.mockResolvedValue({
+      cashRefundCents: 4000,
+      succeededRefundCents: 4000,
+      refundLedgerRowCount: 2,
+      accountCreditCents: 0,
+      source: "provider-ledger",
+    });
+
+    await enqueueXeroRefundCreditNoteOperation("payment_1", 9000);
+
+    // min(requested 9000, cash 4000 − covered 1000) = 3000 — never the
+    // mirror-based 8000. The watermark stays covered + note.
+    expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestPayload: {
+          queueType: "REFUND_CREDIT_NOTE",
+          refundAmountCents: 3000,
+          watermarkCents: 4000,
+        },
+      })
+    );
   });
 
   it("gives two equal Stripe deltas distinct watermark correlation keys", async () => {
