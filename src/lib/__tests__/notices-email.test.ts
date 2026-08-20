@@ -18,7 +18,14 @@ vi.mock("@/lib/email-templates/communications", () => ({
 }));
 vi.mock("@/lib/app-url", () => ({ getAppBaseUrl: mocks.getAppBaseUrl }));
 vi.mock("@/lib/audit", () => ({ createAuditLog: mocks.createAuditLog }));
-vi.mock("@/lib/logger", () => ({ default: { error: vi.fn() } }));
+// `warn` is load-bearing, not padding: the real `email-theme` module is used
+// here, and the #2900 render gate warns when it cannot read the club theme —
+// which is exactly what happens with this file's narrow `prisma` mock. A logger
+// mock without `warn` made that warning throw, the per-recipient catch swallowed
+// it, and the notice silently emailed nobody.
+vi.mock("@/lib/logger", () => ({
+  default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}));
 vi.mock("@/lib/notices", () => ({ resolveNoticeAudienceMembers: mocks.resolveAudience }));
 vi.mock("@/lib/prisma", () => ({
   prisma: {

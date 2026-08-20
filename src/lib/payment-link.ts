@@ -133,6 +133,7 @@ type ResolvedPaymentLink = Prisma.PaymentLinkGetPayload<{
         guests: true;
         payment: true;
         groupBookingJoin: { select: { id: true } };
+        lodge: { select: { name: true } };
       };
     };
   };
@@ -163,6 +164,10 @@ async function loadPaymentLinkRecord(token: string): Promise<ResolvedPaymentLink
           // #1967: lets link flows tell a genuine split child (#738) apart
           // from a #796 group joiner (which always has a join row).
           groupBookingJoin: { select: { id: true } },
+          // #2919: the public pay page names the lodge the booking is actually
+          // at. Name only - never the door code or travel note, which this
+          // token-authenticated public surface has no business carrying.
+          lodge: { select: { name: true } },
         },
       },
     },
@@ -225,6 +230,12 @@ export interface PaymentLinkContext {
   payable: PaymentLinkPayable | null;
   /** True when the page should offer the "email me a fresh link" action. */
   canRequestFreshLink: boolean;
+  /**
+   * Name of the lodge THIS booking is at (#2919), so the public pay page's
+   * confirmation copy names the right property in a multi-lodge club instead of
+   * falling back to the club's default lodge. Single-lodge clubs see no change.
+   */
+  lodgeName: string;
 }
 
 /**
@@ -321,6 +332,7 @@ export async function getPaymentLinkContext(token: string): Promise<PaymentLinkC
     firstName: booking.member.firstName,
     payable,
     canRequestFreshLink: narrative.state === "expired_payable",
+    lodgeName: booking.lodge.name,
   };
 }
 

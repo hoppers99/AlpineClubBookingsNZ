@@ -53,6 +53,7 @@ import {
   FINANCE_DASHBOARD_RANGE_OPTIONS,
   FINANCE_DASHBOARD_VIEW_LABELS,
   FINANCE_DASHBOARD_VIEWS,
+  financeDashboardViewUsesLodgeScope,
 } from "@/lib/finance-dashboard-ranges";
 import type { FinanceDashboardPageModel } from "@/lib/finance-dashboard-page";
 import {
@@ -231,9 +232,11 @@ export function FinanceDashboardClient({
                 ))}
               </select>
             </div>
+            {/* The lodge scope applies to booking-derived reads only, so the
+                selector appears on exactly those views — the same rule the
+                server reads when it scopes the seasons (#2919). */}
             {model.lodges.length > 0 &&
-            (model.selection.view === "bookings" ||
-              model.selection.view === "pricing-sensitivity") ? (
+            financeDashboardViewUsesLodgeScope(model.selection.view) ? (
               <div className="space-y-1.5">
                 <Label htmlFor="finance-lodge">Lodge (occupancy)</Label>
                 <select

@@ -471,11 +471,16 @@ export default async function BookingDetailPage({
           isQuotePriced: consentIsQuotePriced,
         })
       : consentCandidate;
-  // The ask card names the lodge the way the request email does — the
-  // booking's own lodge identity. Loaded only when the card renders.
+  // THIS booking's lodge identity, not the club default's. The ask card, the
+  // arrival instructions and the booking-message merge data (#2919) all want it
+  // and the last is unconditional, so it is loaded once rather than twice.
+  const bookingLodgeEmailSettings = await loadEmailMessageSettingsForLodge(
+    booking.lodgeId,
+  );
+  // The ask card names the lodge the way the request email does.
   const consentLodgeName =
     consentCard?.kind === "PENDING_ASK"
-      ? (await loadEmailMessageSettingsForLodge(booking.lodgeId)).lodgeName
+      ? bookingLodgeEmailSettings.lodgeName
       : null;
   const viewerConsentGuest =
     consentCard?.kind === "PENDING_ASK"
@@ -998,9 +1003,10 @@ export default async function BookingDetailPage({
         isOperationallyPresentConsent(viewerGuestRow?.consentStatus))) &&
     ["CONFIRMED", "PAID"].includes(booking.status);
   // Arrival instructions must carry THIS booking's lodge identity (door
-  // code, travel note), not the default lodge's.
+  // code, travel note), not the default lodge's — and stay null, so the door
+  // code never reaches the page at all, whenever the gate above says no.
   const memberArrivalInstructions = showMemberArrivalInstructions
-    ? await loadEmailMessageSettingsForLodge(booking.lodgeId)
+    ? bookingLodgeEmailSettings
     : null;
 
   // Split-booking group presentation (#738). Genuine split children only:
@@ -1153,6 +1159,13 @@ export default async function BookingDetailPage({
     holdDays: "",
     minimumDaysBeforeCheckIn: "",
     bookingStatus: booking.status,
+    // #2919: the four club-level tokens the admin preview renders and this page
+    // supplied none of, so an inserted {{CLUB_LODGE_NAME}} showed a lodge name
+    // in preview and a blank to the member. Resolved from THIS booking's lodge.
+    CLUB_LODGE_NAME: bookingLodgeEmailSettings.lodgeName,
+    CLUB_NAME: bookingLodgeEmailSettings.clubName,
+    BASE_URL: bookingLodgeEmailSettings.publicUrl,
+    SUPPORT_EMAIL: bookingLodgeEmailSettings.supportEmail,
   };
   const renderBookingMessage = (key: keyof typeof bookingMessages) =>
     renderBookingMessageTemplate(bookingMessages[key], bookingMessageData);
@@ -1726,6 +1739,9 @@ export default async function BookingDetailPage({
             bookingId={booking.id}
             canOpenGroup={canOpenGroup}
             group={organiserGroupState}
+            /* #2919: the card renders booking-message bodies of its own, so it
+               needs THIS booking's lodge for {{CLUB_LODGE_NAME}} too. */
+            lodgeName={bookingLodgeEmailSettings.lodgeName}
           />
         </section>
       )}

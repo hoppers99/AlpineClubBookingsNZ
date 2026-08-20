@@ -482,11 +482,16 @@ async function readRefundPosture(
           take: RECOVERY_OPERATION_CEILING + 1,
         })
       : Promise.resolve([]),
-    paymentId
-      ? tx.manualRefundTask.count({
-          where: { paymentId, status: "OPEN" },
-        })
-      : Promise.resolve(0),
+    // #2797 (criterion 15): count OPEN manual-refund tasks by BOOKING, not by
+    // payment. An EDIT_FINANCIAL_REVIEW task raised for an unpriceable edit can
+    // be credit-only (`paymentId` null, owner decision D2), so keying on the
+    // booking's payment would miss exactly the pending financial adjustment this
+    // posture exists to surface — a reconciliation reader would then mistake a
+    // booking with money held for review for a settled one. Booking-scoped
+    // catches both the payment-linked and the credit-only task.
+    tx.manualRefundTask.count({
+      where: { bookingId, status: "OPEN" },
+    }),
     tx.refundRequest.count({
       where: { bookingId, status: "PENDING" },
     }),

@@ -796,6 +796,189 @@ describe("finance dashboard page model", () => {
     );
   });
 
+  // #2919. The seasons that drive the "Rest of Season" forward window were read
+  // with no lodge filter and no lodge column, so at a two-lodge club one lodge's
+  // season could silently define the other lodge's forward range.
+  describe("the Rest of Season forward window honours the reporting lodge", () => {
+    // The suite runs with today frozen at 2026-07-01, so both of these are
+    // active-or-upcoming for good.
+    const alphaSeason = {
+      name: "Alpha Winter",
+      startDate: new Date("2026-06-01T00:00:00.000Z"),
+      endDate: new Date("2026-08-31T00:00:00.000Z"),
+      active: true,
+      lodge: { name: "Alpha Lodge" },
+    };
+    const bravoSeason = {
+      name: "Bravo Winter",
+      startDate: new Date("2026-07-15T00:00:00.000Z"),
+      endDate: new Date("2026-09-30T00:00:00.000Z"),
+      active: true,
+      lodge: { name: "Bravo Lodge" },
+    };
+
+    function twoLodges() {
+      mockLodgeFindMany.mockResolvedValue([
+        { id: "lodge-a", name: "Alpha Lodge" },
+        { id: "lodge-b", name: "Bravo Lodge" },
+      ]);
+    }
+
+    it("reads only the selected lodge's seasons, and says nothing new on screen", async () => {
+      twoLodges();
+      mockSeasonFindMany.mockResolvedValue([bravoSeason]);
+
+      const model = await buildFinanceDashboardPageModel({
+        member: financeManager(),
+        searchParams: {
+          view: "bookings",
+          lodgeId: "lodge-b",
+          forward: "rest-of-season",
+        },
+      });
+
+      expect(mockSeasonFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { active: true, lodge: { active: true }, lodgeId: "lodge-b" },
+        })
+      );
+      // Scoped to one lodge there is nothing to disambiguate, so the header
+      // keeps the dates-only wording it has always had — while the Forward
+      // demand card's footnote still names the season, exactly as before, and
+      // without a lodge name it has no use for.
+      expect(model.selectionLabels.forwardWindow).toBe(
+        "15 Jul 2026 to 30 Sept 2026"
+      );
+      expect(model.selection.forwardWindow.label).toBe(
+        "Bravo Winter: 15 Jul 2026 to 30 Sept 2026"
+      );
+      expect(model.selection.forwardWindow.to).toBe("2026-09-30");
+    });
+
+    it("labels the season with its lodge when All Lodges is selected", async () => {
+      twoLodges();
+      // Both lodges' seasons come back; the earliest-starting one wins, and it
+      // is not the lodge the reader is looking at unless it says so.
+      mockSeasonFindMany.mockResolvedValue([alphaSeason, bravoSeason]);
+
+      const model = await buildFinanceDashboardPageModel({
+        member: financeManager(),
+        searchParams: { view: "bookings", forward: "rest-of-season" },
+      });
+
+      expect(model.selectedLodgeId).toBeNull();
+      expect(mockSeasonFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { active: true, lodge: { active: true } },
+        })
+      );
+      expect(model.selectionLabels.forwardWindow).toBe(
+        "Alpha Lodge — Alpha Winter: 1 Jul 2026 to 31 Aug 2026"
+      );
+      // One construction only: the header reuses the label the range resolver
+      // built, so the two can never drift apart (review finding, #2919).
+      expect(model.selectionLabels.forwardWindow).toBe(
+        model.selection.forwardWindow.label
+      );
+      expect(model.selection.forwardWindow.to).toBe("2026-08-31");
+    });
+
+    it("leaves a single-lodge club's wording untouched (ADR-002)", async () => {
+      // Default beforeEach: one active lodge, so there is no selector and
+      // nothing to disambiguate.
+      mockSeasonFindMany.mockResolvedValue([alphaSeason]);
+
+      const model = await buildFinanceDashboardPageModel({
+        member: financeManager(),
+        searchParams: { view: "bookings", forward: "rest-of-season" },
+      });
+
+      expect(mockSeasonFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { active: true, lodge: { active: true } },
+        })
+      );
+      // Untouched means untouched: the dates alone, with neither the season
+      // name nor a lodge name added to what a one-lodge club used to read.
+      expect(model.selectionLabels.forwardWindow).toBe(
+        "1 Jul 2026 to 31 Aug 2026"
+      );
+      expect(model.selectionLabels.forwardWindow).not.toContain("Alpha Winter");
+      expect(model.selectionLabels.forwardWindow).not.toContain("Alpha Lodge");
+    });
+
+    // Review finding (#2919): the view select and the lodge select share one GET
+    // form, so switching to an accounting view resubmits the lodgeId the previous
+    // view had — on a page that renders no lodge selector. Honouring it there
+    // would scope the window, or raise the "configure seasons" warning, with no
+    // control on screen to explain or clear it.
+    it("ignores a lodgeId carried over onto a view that shows no lodge selector", async () => {
+      twoLodges();
+      mockSeasonFindMany.mockResolvedValue([alphaSeason, bravoSeason]);
+
+      const model = await buildFinanceDashboardPageModel({
+        member: financeManager(),
+        searchParams: {
+          view: "revenue",
+          lodgeId: "lodge-b",
+          forward: "rest-of-season",
+        },
+      });
+
+      expect(mockSeasonFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { active: true, lodge: { active: true } },
+        })
+      );
+      expect(model.warnings).not.toContain(
+        "Rest of Season needs an active or upcoming configured season. Configure seasons before using this forward window."
+      );
+    });
+
+    it("raises no spurious warning on an accounting view when the carried lodge has no season", async () => {
+      twoLodges();
+      // Club-wide there IS a season; only lodge-b lacks one. The mock filters
+      // the way Postgres would, so scoping the read to the invisible
+      // carried-over lodge really does come back empty.
+      mockSeasonFindMany.mockImplementation(
+        async (args: { where?: { lodgeId?: string } }) =>
+          args.where?.lodgeId ? [] : [alphaSeason]
+      );
+
+      const model = await buildFinanceDashboardPageModel({
+        member: financeManager(),
+        searchParams: {
+          view: "balance-sheet",
+          lodgeId: "lodge-b",
+          forward: "rest-of-season",
+        },
+      });
+
+      expect(model.warnings).not.toContain(
+        "Rest of Season needs an active or upcoming configured season. Configure seasons before using this forward window."
+      );
+      expect(model.selection.forwardWindow.to).toBe("2026-08-31");
+    });
+
+    it("warns rather than borrowing another lodge's season when the selected lodge has none", async () => {
+      twoLodges();
+      mockSeasonFindMany.mockResolvedValue([]);
+
+      const model = await buildFinanceDashboardPageModel({
+        member: financeManager(),
+        searchParams: {
+          view: "bookings",
+          lodgeId: "lodge-b",
+          forward: "rest-of-season",
+        },
+      });
+
+      expect(model.warnings).toContain(
+        "Rest of Season needs an active or upcoming configured season. Configure seasons before using this forward window."
+      );
+    });
+  });
+
   it("surfaces missing stored monthly data as a compact warning", async () => {
     mockBuildFinanceMonthlyBalanceSeries.mockResolvedValue({
       points: [],

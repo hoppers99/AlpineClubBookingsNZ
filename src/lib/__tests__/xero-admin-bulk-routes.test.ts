@@ -179,6 +179,7 @@ describe("Xero admin bulk routes", () => {
     });
     mocks.cleanupStaleCanonicalXeroObjectLinks.mockResolvedValue({
       deactivatedLinks: 2,
+      preservedStripeRefundCreditNoteLinks: 3,
     });
   });
 
@@ -357,8 +358,10 @@ describe("Xero admin bulk routes", () => {
       },
       cleanup: {
         deactivatedLinks: 2,
+        preservedStripeRefundCreditNoteLinks: 3,
       },
-      message: "Backfilled 1 missing canonical Xero link and deactivated 2 stale canonical links.",
+      message:
+        "Backfilled 1 missing canonical Xero link, deactivated 2 stale canonical links, and preserved 3 live Stripe per-delta refund note links (#2901).",
     });
   });
 
