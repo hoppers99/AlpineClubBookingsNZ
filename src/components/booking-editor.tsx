@@ -37,6 +37,10 @@ interface Guest {
   stayEnd?: string | null;
   nights?: string[] | null;
   priceCents: number;
+  // Other Lodges epic: true when this NON-MEMBER guest is priced at the club's
+  // own member rate as a recognised member of the booking's partner lodge.
+  // Optional so pre-existing fixtures stay valid.
+  otherLodgeMember?: boolean;
   // #2307 (owner decision MG2-M-2): the member-guest consent badge, composed
   // server-side (`describeMemberGuestConsentBadge`). Absent — not null-valued —
   // for family and non-member rows, which get no badge and no layout change.
@@ -133,6 +137,14 @@ export interface BookingEditorData {
   // audience and booking class the placeholder→member link is fenced to.
   // Server-computed on the booking page and threaded through unchanged.
   memberWholeLodge?: boolean;
+  // Other Lodges epic: the partner lodge this booking claims, or null. Optional
+  // so pre-existing fixtures stay valid.
+  otherLodgeId?: string | null;
+  // Other Lodges epic: the partner-lodge registry the officer picks from, in
+  // name order. ADMIN-ONLY and absent — not empty-valued — for every other
+  // viewer, so a member's payload never carries the club list. Its presence is
+  // what offers the "Member of Other Lodge" control at all.
+  otherLodges?: Array<{ id: string; name: string }>;
 }
 
 
@@ -191,6 +203,8 @@ export function BookingEditor({
           lodgeId: booking.lodgeId,
           memberGuest: booking.memberGuest,
           memberWholeLodge: booking.memberWholeLodge,
+          otherLodgeId: booking.otherLodgeId,
+          otherLodges: booking.otherLodges,
         }}
         canAdminOverride={canAdminOverride}
         replaceExceptionRequestId={replaceExceptionRequestId}
@@ -278,6 +292,15 @@ export function BookingEditor({
                   </p>
                   <p className="text-sm text-muted-foreground">
                     {guest.ageTier} &middot; {guest.isMember ? "Member" : "Non-member"}
+                    {/*
+                      Other Lodges epic: a non-member the booking officer has
+                      recognised as a member of the club's partner lodge, and who
+                      is therefore charged this club's member rate. Said here, on
+                      the rate category, because this line is the only thing on
+                      the read view that explains why the fee beside it is not
+                      the non-member one.
+                    */}
+                    {guest.otherLodgeMember ? " (Other Club Member)" : ""}
                   </p>
                   {(guest.stayStart && guest.stayStart !== booking.checkIn) ||
                   (guest.stayEnd && guest.stayEnd !== booking.checkOut) ? (

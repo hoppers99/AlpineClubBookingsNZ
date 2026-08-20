@@ -321,26 +321,43 @@ const NOTICE = "AdminViewOnlyNotice";
   to re-measure and update every place together — never to loosen an assertion.
 */
 const FIGURES = {
-  /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 319,
+  /**
+   * Every `<ViewOnlyActionButton>` render site in the admin tree.
+   *
+   * 324 -> 327 (local database backups): the Local backup panel's Edit, Save and
+   * Manual Backup buttons. The panel is its own file because the backups page's
+   * shell is already the largest in that area, which is also why all three are
+   * VOUCHED rather than static — see `vouchedOptOuts`.
+   */
+  callSites: 327,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 268,
+  optOuts: 274,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 237,
-  /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
-  vouchedOptOuts: 31,
+  staticOptOuts: 240,
+  /**
+   * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
+   *
+   * 31 -> 34 (local database backups). The three new buttons live in a CHILD
+   * file while `BackupsClient` renders the one banner for the page, which is
+   * exactly the shape #2168 added the vouch for. They were written as static
+   * `describeReason={false}` first, copying the sibling S3 panel where the
+   * banner IS in the same file — and this contract caught it: an opt-out with no
+   * covering banner in its own file deletes the explanation outright for anyone
+   * who later renders the card somewhere else.
+   */
+  vouchedOptOuts: 34,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
-  renderSiteVouchedOptOuts: 26,
+  renderSiteVouchedOptOuts: 29,
   /** …of the vouched: proved through the wizard shell's channel (#2324). */
   shellVouchedOptOuts: 5,
   /** Controls that KEEP the per-button reason, and the files holding them. */
-  exceptions: 51,
-  exceptionFiles: 28,
+  exceptions: 53,
+  exceptionFiles: 29,
   /** The remainder bucket: neither a member detail card nor dialog-only. */
-  leafControls: 37,
-  leafFiles: 22,
+  leafControls: 39,
+  leafFiles: 23,
   /** Components that render an `AdminViewOnlySectionBanner`. */
-  bannerComponents: 84,
+  bannerComponents: 85,
   /**
    * Admin files that render an `AdminViewOnlyNotice` and NO
    * `ViewOnlyActionButton` — the first of the three cases in which the older
@@ -1408,6 +1425,29 @@ describe("view-only section banner coverage (#2160)", () => {
                no banner of its own (the page's covers it). Re-measured with
                `npx vitest run view-only-banner-contract`, which reports
                319 / 268 / 237. READ NOTHING FROM THIS COLUMN; run the suite.
+          324  +5  the Alpine Central Server setup page
+               (`alpine-server/setup/alpine-server-setup.tsx`), added in review of
+               PR #2949 — the page shipped with FIVE mutating controls as plain
+               `Button`s and no banner at all, which this suite could not see:
+               its per-file rules only inspect files that already render a
+               ViewOnlyActionButton, so a page with zero gated controls is
+               structurally invisible to it.
+
+               The five split 3/2, and the split is the point. Enable/Disable,
+               Upload and Download are finance-gated, matching the section
+               banner directly above them, so they are STATIC opt-outs and hand
+               their explanation to it (staticOptOuts 237 -> 240, optOuts
+               268 -> 271). The server address and the API key KEEP their own
+               reason, because they need FULL ADMIN and the banner describes the
+               finance area — the exact case
+               `ADMIN_FULL_ADMIN_ONLY_ACTION_REASON` exists for, and the same
+               shape as the Xero/Google credential controls (exceptions
+               51 -> 53, exceptionFiles 28 -> 29). The page renders two banners
+               of its own, one per Card, so bannerComponents 84 -> 85 (a file is
+               counted once however many banners it holds). Vouched opt-outs are
+               untouched: nothing here is a child taking a parent's vouch.
+               Re-measured with `npx vitest run view-only-banner-contract`,
+               which reports 324 / 271 / 240.
 
       */
       // #2259 adds the per-booking "No emails"

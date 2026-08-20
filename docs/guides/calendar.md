@@ -230,7 +230,7 @@ per page load and the signing key never reaches the browser.
 
 | Variable                                          | What it is                                                                                                                                      |
 | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MIRO_JWT_KEY`                                    | Must equal MiroTalk's own `JWT_KEY`.                                                                                                            |
+| `MIRO_JWT_KEY`                                    | Must equal MiroTalk's own `JWT_KEY`, and must be a generated secret of at least 32 characters — see "Choosing the signing key" below.            |
 | `MIRO_MEETING_USERNAME` / `MIRO_MEETING_PASSWORD` | Must match one entry in MiroTalk's `HOST_USERS` (MiroTalk re-checks these).                                                                     |
 | `MIRO_MEETING_PRESENTER`                          | `true` (default) = the clicker joins as host so the meeting starts immediately; `false` leaves joiners on MiroTalk's "waiting for host" screen. |
 | `MIRO_JWT_EXP`                                    | Token lifetime — `1h` (default), `30m`, `900` (seconds), etc. Minted fresh on each page load, so this only bounds a link left unopened.         |
@@ -244,6 +244,36 @@ username/password/presenter payload inside an HS256 JWT), so a matching key is
 all MiroTalk needs to accept it.
 
 Leave these unset to keep the plain link (MiroTalk shows its own login prompt).
+
+#### Choosing the signing key
+
+`MIRO_JWT_KEY` is the whole security of this feature, so it is worth thirty
+seconds of care. It does two jobs at once: it signs every join token, and it
+encrypts the host username and password that sit inside that token. Anyone who
+knows the key can therefore mint a token your MiroTalk accepts **as a host**,
+without ever seeing one of your links.
+
+Generate one and use the same value on both sides:
+
+```bash
+openssl rand -base64 32
+```
+
+- **At least 32 characters, generated — not typed.** A phrase you invented is
+  guessable in a way a random string is not.
+- **Never keep the value MiroTalk ships** in its own `.env.template`. It is
+  published in MiroTalk's repository, so leaving it in place is the same as
+  having no key at all. This is the most common way the feature ends up
+  insecure, precisely because "make the two match" is the only instruction most
+  operators read.
+- **Rotate it on both sides together.** They must always be equal; tokens are
+  minted per page load, so there is nothing cached to expire.
+
+If the key looks weak — too short, too repetitive, or recognisable as an example
+value — the app logs one warning per key on the server and **still issues working
+links**. That is deliberate: a meeting link that silently stopped working would
+be a worse failure for the club than a warning nobody has actioned yet. Grep the
+container logs for `MIRO_JWT_KEY` after a deploy to see whether yours tripped it.
 
 ## Settings reference
 

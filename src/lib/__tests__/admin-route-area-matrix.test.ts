@@ -103,6 +103,11 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/access-roles": "support",
   "/api/admin/access-roles/[id]": "support",
   "/api/admin/age-tier-settings": "bookings",
+  // Alpine Central Server (ServerNZ) integration lives on the Integrations hub
+  // (finance), matching the "/api/admin/alpine-server" prefix in admin-permissions.
+  "/api/admin/alpine-server/other-lodges/download": "finance",
+  "/api/admin/alpine-server/other-lodges/upload": "finance",
+  "/api/admin/alpine-server/settings": "finance",
   "/api/admin/ai-assistant/settings": "support",
   "/api/admin/ai-assistant/usage": "support",
   // AI Diagnostics (AID-2, #2371): a separate admin-only paid capability. Its
@@ -123,6 +128,11 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/ai-diagnostics/settings": "support",
   "/api/admin/audit-log": "support",
   "/api/admin/backups/config": "support",
+  // The `support` AREA, with a Full-Admin gate inside the handler — the same
+  // shape the destination fields on the config route carry. Restoring over the
+  // live database is not a support:edit action; the area only decides who can
+  // reach the route at all.
+  "/api/admin/backups/restore": "support",
   "/api/admin/backups/run": "support",
   "/api/admin/backups/status": "support",
   "/api/admin/bed-allocation": "bookings",

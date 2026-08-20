@@ -125,6 +125,7 @@ import { classifyMemberGuestConsent } from "@/lib/member-guest-consent";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import { loadMemberGuestSettings } from "@/lib/member-guest-settings";
 import { resolveMemberGuestNameSearchAccess } from "@/lib/member-guest-find";
+import { getPublicOtherLodges } from "@/lib/booking-request";
 import { eachDateOnlyInRange, getTodayDateOnly } from "@/lib/date-only";
 import {
   bookingManagementAuthorizationRole,
@@ -875,6 +876,10 @@ export default async function BookingDetailPage({
       stayStart: formatDateOnly(g.stayStart),
       stayEnd: formatDateOnly(g.stayEnd),
       priceCents: g.priceCents,
+      // Other Lodges epic: the reciprocal other-club rate tick. Sent to every
+      // viewer because it is not a secret — it is what a non-member row is being
+      // charged — but only an admin is offered the control that changes it.
+      otherLodgeMember: g.otherLodgeMember,
       nights: g.nights.map((n) => formatDateOnly(n.stayDate)),
       // #2307 (MG2-M-2): null for family and non-member rows — no badge, no
       // layout change. A conditional spread so those rows' serialised payload
@@ -931,6 +936,19 @@ export default async function BookingDetailPage({
     ...(viewerAuthorizationRole === "ADMIN" &&
     (await isMemberWholeLodgeBooking(prisma, booking.id))
       ? { memberWholeLodge: true }
+      : {}),
+    // Other Lodges epic: the partner lodge this booking claims, plus the
+    // registry the officer picks from.
+    //
+    // The LIST is admin-only and a conditional spread, on the same reasoning as
+    // `noEmails` above: this object is serialised into the RSC payload of a
+    // client component, and React Flight ships the key as well as the value, so
+    // a member reading the wire would otherwise learn the whole other-lodge
+    // registry exists and what is in it. The stored ELECTION rides the guest
+    // rows either way, because it is what the member is being charged.
+    otherLodgeId: booking.otherLodgeId,
+    ...(viewerAuthorizationRole === "ADMIN"
+      ? { otherLodges: await getPublicOtherLodges(prisma) }
       : {}),
     // #2104: an already-flagged/reviewed booking must not re-prompt the member
     // for a justification when the guest list shuffles — the edit panel keys the

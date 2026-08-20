@@ -6,6 +6,8 @@ import {
   coerceWhakapapaSectionVisibility,
   coerceWhakapapaSourceConfig,
   emptyWhakapapaSectionVisibility,
+  resolveWhakapapaRedirectTarget,
+  validateWhakapapaSourceUrl,
   WHAKAPAPA_DEFAULT_SELECTORS,
   WHAKAPAPA_DEFAULT_SOURCE_URL,
   WHAKAPAPA_SELECTOR_KEYS,
@@ -294,5 +296,85 @@ describe("selector-defaults seed migration", () => {
       SEED_SQL.match(/\$wsel\$([\s\S]*?)\$wsel\$/)![1],
     );
     expect(seeded).toEqual(WHAKAPAPA_DEFAULT_SELECTORS);
+  });
+});
+
+// #2841 (CodeQL js/request-forgery, alert 29). The allowlist is the barrier for
+// the server-side report fetch, so it has to hold on every redirect hop as well
+// as on the URL an admin saved. These cases are the bypasses that were tried
+// against it.
+describe("validateWhakapapaSourceUrl", () => {
+  it("accepts the allowlisted hosts and their subdomains", () => {
+    for (const url of [
+      "https://whakapapa.com/report",
+      "https://www.whakapapa.com/report",
+      "https://snow.nz/report",
+      "https://www.snow.nz/report",
+    ]) {
+      expect(validateWhakapapaSourceUrl(url).ok, url).toBe(true);
+    }
+  });
+
+  it("refuses the standard allowlist bypasses", () => {
+    for (const url of [
+      // Suffix confusion: the check must be anchored on a dot, not endsWith.
+      "https://evilwhakapapa.com/report",
+      "https://whakapapa.com.evil.example/report",
+      // Credentials confusion: the host is evil.example, not whakapapa.com.
+      "https://whakapapa.com@evil.example/report",
+      "https://user:pass@evil.example/report",
+      // Scheme downgrades and non-http schemes.
+      "http://www.whakapapa.com/report",
+      "file:///etc/passwd",
+      // Cloud metadata, in the encodings that usually slip past a regex.
+      "https://169.254.169.254/latest/meta-data/",
+      "https://0xa9fea9fe/latest/meta-data/",
+      "https://[::ffff:169.254.169.254]/latest/meta-data/",
+      "https://localhost/",
+    ]) {
+      expect(validateWhakapapaSourceUrl(url).ok, url).toBe(false);
+    }
+  });
+});
+
+describe("resolveWhakapapaRedirectTarget", () => {
+  const from = "https://www.whakapapa.com/report";
+
+  it("resolves a relative Location against the hop that issued it", () => {
+    const result = resolveWhakapapaRedirectTarget("/report/summer", from);
+    expect(result).toEqual({
+      ok: true,
+      url: "https://www.whakapapa.com/report/summer",
+    });
+  });
+
+  it("accepts an absolute Location that stays on an allowlisted host", () => {
+    const result = resolveWhakapapaRedirectTarget(
+      "https://www.snow.nz/report",
+      from,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("refuses a Location that leaves the allowlist", () => {
+    for (const location of [
+      "http://169.254.169.254/latest/meta-data/",
+      "https://evil.example/report",
+      // Protocol-relative: keeps the scheme, swaps the host.
+      "//evil.example/report",
+      // Suffix confusion again, this time arriving as a redirect.
+      "https://evilwhakapapa.com/report",
+    ]) {
+      expect(resolveWhakapapaRedirectTarget(location, from).ok, location).toBe(
+        false,
+      );
+    }
+  });
+
+  it("refuses a missing, blank or unparseable Location", () => {
+    expect(resolveWhakapapaRedirectTarget(null, from).ok).toBe(false);
+    expect(resolveWhakapapaRedirectTarget(undefined, from).ok).toBe(false);
+    expect(resolveWhakapapaRedirectTarget("   ", from).ok).toBe(false);
+    expect(resolveWhakapapaRedirectTarget("http://", from).ok).toBe(false);
   });
 });

@@ -1423,7 +1423,18 @@ describe("tracked citation source extensions", () => {
     // returning an illustrative id and sending the next invariant to the wrong
     // number. Misleading a grep by one — which density then catches — is the
     // smallest lie this test can tell. See this file's fixture rule above.
-    const planted = "INV-MOD-027";
+    //
+    // THEREFORE THIS NUMBER MOVES UP WHENEVER AN INV-MOD INVARIANT SHIPS, and
+    // whoever ships one has to move it. Being one above the maximum is the whole
+    // fixture: the moment the planted id becomes a real invariant it RESOLVES,
+    // the audit reports nothing, and this case fails with a bare "expected 1,
+    // got 0" that says nothing about why. The assertion below turns that into a
+    // readable failure, and it was earned — INV-MOD-027 shipped and this case
+    // went red on a branch whose author had no reason to look here.
+    const planted = "INV-MOD-028";
+    // The precondition the fixture rests on. When this fails, `planted` has been
+    // taken by a real invariant: move it up one, and no further.
+    expect(files.get("docs/DOMAIN_INVARIANTS.md")).not.toContain(planted);
     files.set(ledger, files.get(ledger).replace("INV-MOD-026", planted));
 
     // Derived, not pinned: any row inserted above it by an unrelated PR would
