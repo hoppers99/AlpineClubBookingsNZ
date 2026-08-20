@@ -341,6 +341,11 @@ providers, and fell four behind as the rest landed. Anything that turns on
 - `anthropic` — the AI help assistant's API key (#2211).
 - `anthropic-diagnostics` — the AI Diagnostics API key, deliberately a
   **separate** namespace so the two are never shared or confused (#2371).
+- `servernz` — the Alpine Central Server API key, issued by the central server
+  to this club. Stranding it stops the nightly Other Clubs sync (upload and
+  download) until an admin re-enters it under Admin → Integrations → Alpine
+  Central Server; the non-secret connection settings (base URL, opt-in flag,
+  sync cursor) live in `ServerNzSettings` and survive rotation untouched.
 
 The authority is `WRITABLE_CREDENTIALS` in
 `src/app/api/admin/integrations/credentials/route.ts`, which is the allowlist
@@ -358,7 +363,7 @@ behind the code again the way the runbook did.
   state — that is the correct, safe outcome, not a bug. If a clone shared prod's
   secret it would silently hold live, decryptable credentials.
 - **Rotation blast radius.** Rotating the auth secret strands the credentials of
-  **every** provider in the list above — all six namespaces, not just the two an
+  **every** provider in the list above — all seven namespaces, not just the two an
   operator is likely to be thinking about — plus the wrapped Xero token key, on
   top of dropping sessions and all 2FA enrolments/recovery codes. See the
   auth-secret rotation runbook in `DEPLOYMENT.md`, which sequences the re-entry

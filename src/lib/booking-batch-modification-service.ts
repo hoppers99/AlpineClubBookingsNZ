@@ -698,6 +698,10 @@ export async function modifyBookingBatch({
       guestMemberLinks: linkWriteByGuestId,
       priceBreakdown: pricing.priceBreakdown,
       inProgressPlan: pricing.inProgressPlan,
+      // Other Lodges epic: the election these rows were priced against, so the
+      // per-guest flag is written from the same decision that cleared their
+      // locked nights.
+      otherLodgeElection: guestPlan.otherLodgeElection,
     });
 
     const choreWarnings = await applyChoreCleanup(tx, {
@@ -790,6 +794,13 @@ export async function modifyBookingBatch({
         // an edit that carried no credit input leaves the column untouched.
         ...(creditElectionCentsUpdate !== undefined
           ? { creditElectionCents: creditElectionCentsUpdate }
+          : {}),
+        // Other Lodges epic: the partner lodge this booking now claims. A
+        // conditional spread on the same terms — an edit that said nothing about
+        // the other-lodge rate leaves the column exactly as it was.
+        ...(guestPlan.otherLodgeElection.requested &&
+        guestPlan.otherLodgeElection.otherLodgeIdChanged
+          ? { otherLodgeId: guestPlan.otherLodgeElection.otherLodgeId }
           : {}),
       },
       include: { guests: true, payment: true },

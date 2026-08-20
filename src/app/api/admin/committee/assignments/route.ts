@@ -11,6 +11,7 @@ import {
   normalizeCommitteeText,
   serializeCommitteeAssignment,
 } from "@/lib/committee";
+import { syncBookingOfficerForRole } from "@/lib/committee-booking-officer-sync";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
 
@@ -186,6 +187,10 @@ export async function POST(request: Request) {
         request: getAuditRequestContext(request),
       }),
     );
+
+    // If this is the Booking Officer role, refresh the OtherLodge registry's
+    // booking-officer contact from the current holder (no-op for other roles).
+    await syncBookingOfficerForRole(tx, parsed.data.committeeRoleId);
 
     return assignment;
   });

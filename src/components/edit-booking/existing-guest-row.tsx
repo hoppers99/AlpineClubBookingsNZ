@@ -43,6 +43,8 @@ export function ExistingGuestRow({
   onUndoRemove,
   onStartLink,
   onUnlink,
+  otherLodgeRate,
+  quotedPriceCents,
 }: {
   guest: Guest;
   isRemoved: boolean;
@@ -67,6 +69,25 @@ export function ExistingGuestRow({
   onUpdateRange: (field: "stayStart" | "stayEnd", value: string) => void;
   onRemove: () => void;
   onUndoRemove: () => void;
+  /**
+   * Other Lodges epic: this row's other-club rate tick. Undefined when the
+   * viewer is not offered the control at all (a member, an override edit, an
+   * in-progress edit), which is what keeps their row byte-identical to before.
+   * `offered: false` is the other half — a MEMBER row inside an offered card,
+   * which gets an empty tick column so the names stay in one line.
+   */
+  otherLodgeRate?: {
+    offered: boolean;
+    enabled: boolean;
+    checked: boolean;
+    onChange: (checked: boolean) => void;
+  };
+  /**
+   * The fee the pending edit would write for this guest, from the quote.
+   * Undefined until a quote lands, and on an in-progress edit — the row then
+   * shows the stored fee, which is what it always showed.
+   */
+  quotedPriceCents?: number;
   onStartLink: () => void;
   onUnlink: () => void;
 }) {
@@ -95,7 +116,36 @@ export function ExistingGuestRow({
         isRemoved ? "opacity-40 line-through" : ""
       }`}
     >
-      <div>
+      {/*
+        Other Lodges epic: the other-club rate tick, in its own column to the
+        LEFT of the name so the ticks line up down the list rather than hiding
+        at the end of names of different lengths.
+
+        A MEMBER row renders the column EMPTY rather than skipping it: dropping
+        the box would shift that one name left and break the column the ticks
+        are here to form. `aria-label` names the person, because a bare
+        checkbox in a list of people is unreadable to a screen reader.
+      */}
+      {otherLodgeRate ? (
+        <div className="flex w-8 shrink-0 items-center justify-center self-start pt-1">
+          {otherLodgeRate.offered ? (
+            <input
+              type="checkbox"
+              className="h-4 w-4"
+              checked={otherLodgeRate.checked}
+              disabled={!otherLodgeRate.enabled}
+              onChange={(e) => otherLodgeRate.onChange(e.target.checked)}
+              aria-label={`Price ${guest.firstName} ${guest.lastName} at the other-lodge member rate`}
+            />
+          ) : null}
+        </div>
+      ) : null}
+      {/*
+        `flex-1` so the name block takes the space the new tick column leaves,
+        keeping the fee hard against the right edge. Without it `justify-between`
+        spreads THREE children and the name drifts into the middle of the row.
+      */}
+      <div className="flex-1">
         {canEditGuestName ? (
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
@@ -194,7 +244,25 @@ export function ExistingGuestRow({
         ) : null}
       </div>
       <div className="flex items-center gap-3">
-        <span className="text-sm">{formatCents(guest.priceCents)}</span>
+        {/*
+          The stored fee, or — once the quote has priced this edit — what this
+          person WILL be charged, with the old figure struck through beside it.
+          Read straight off the quote (never recomputed here), so the number in
+          the row and the total in the summary can never disagree.
+        */}
+        {quotedPriceCents !== undefined &&
+        quotedPriceCents !== guest.priceCents ? (
+          <span className="text-sm">
+            <span className="text-muted-foreground line-through">
+              {formatCents(guest.priceCents)}
+            </span>{" "}
+            <span className="font-medium text-success-11">
+              {formatCents(quotedPriceCents)}
+            </span>
+          </span>
+        ) : (
+          <span className="text-sm">{formatCents(guest.priceCents)}</span>
+        )}
         {/* #2337: link an unnamed placeholder to a member (admin, member
             whole-lodge only). Unlink reverts to the placeholder. */}
         {isLinked ? (
