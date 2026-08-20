@@ -17,6 +17,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import StripeProvider from "@/components/stripe/StripeProvider";
 import PaymentForm from "@/components/stripe/PaymentForm";
+import {
+  renderClientBookingMessage,
+  type BookingMessageClubTokens,
+} from "@/lib/booking-message-definitions";
 import { formatCents } from "@/lib/utils";
 import { formatNZDate } from "@/lib/nzst-date";
 import { bookingStatusLabel } from "@/lib/status-colors";
@@ -83,10 +87,18 @@ export function OrganiserGroupBookingCard({
   bookingId,
   canOpenGroup,
   group: initialGroup,
+  lodgeName = null,
 }: {
   bookingId: string;
   canOpenGroup: boolean;
   group: OrganiserGroupState | null;
+  /**
+   * The lodge this booking is at (#2919 review), supplied by the server page
+   * that renders the card. It stands in for `{{CLUB_LODGE_NAME}}` in the two
+   * group messages below, so an organiser at a non-default lodge is not told
+   * about the club's default one. Null falls back to the club-level value.
+   */
+  lodgeName?: string | null;
 }) {
   const [group, setGroup] = useState<OrganiserGroupState | null>(initialGroup);
 
@@ -112,6 +124,10 @@ export function OrganiserGroupBookingCard({
   const [settleMethod, setSettleMethod] = useState<SettlePaymentMethod>("stripe");
   const [settleReference, setSettleReference] = useState<string | null>(null);
   const [bookingMessages, setBookingMessages] = useState<Record<string, string>>({});
+  // #2919 review: what this card's message tokens resolve to. Without them an
+  // operator's {{CLUB_LODGE_NAME}} reached the organiser as literal braces.
+  const [messageTokens, setMessageTokens] =
+    useState<BookingMessageClubTokens | null>(null);
 
   // Internet Banking is an optional module; only offer it when it's on.
   useEffect(() => {
@@ -128,8 +144,14 @@ export function OrganiserGroupBookingCard({
   useEffect(() => {
     fetch("/api/booking-messages")
       .then((res) => (res.ok ? res.json() : null))
-      .then((data) => setBookingMessages(data?.messages ?? {}))
-      .catch(() => setBookingMessages({}));
+      .then((data) => {
+        setBookingMessages(data?.messages ?? {});
+        setMessageTokens(data?.tokens ?? null);
+      })
+      .catch(() => {
+        setBookingMessages({});
+        setMessageTokens(null);
+      });
   }, []);
 
   const [shareUrl, setShareUrl] = useState("");
@@ -482,10 +504,17 @@ export function OrganiserGroupBookingCard({
                   </p>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  {(
-                    bookingMessages["groupBooking.invoiceSent.description"] ??
-                    "The organiser invoice has been emailed. The group booking stays confirmed while Xero reconciles the payment."
-                  ).replaceAll("{{paymentReference}}", settleReference)}
+                  {/* #2919 review: every token this body may carry, not just the
+                      payment reference, and this booking's own lodge. */}
+                  {renderClientBookingMessage({
+                    template:
+                      bookingMessages["groupBooking.invoiceSent.description"],
+                    fallback:
+                      "The organiser invoice has been emailed. The group booking stays confirmed while Xero reconciles the payment.",
+                    clubTokens: messageTokens,
+                    lodgeName,
+                    data: { paymentReference: settleReference },
+                  })}
                 </p>
                 <div className="rounded-md border border-border p-3 text-sm">
                   <p className="font-medium text-foreground">Payment reference</p>
@@ -561,8 +590,16 @@ export function OrganiserGroupBookingCard({
                         <span>
                           <span className="block font-medium">Internet Banking</span>
                           <span className="block text-xs opacity-80">
-                            {bookingMessages["groupBooking.internetBanking.description"] ??
-                              "Receive one Xero invoice by email for the organiser-settled group bookings."}
+                            {renderClientBookingMessage({
+                              template:
+                                bookingMessages[
+                                  "groupBooking.internetBanking.description"
+                                ],
+                              fallback:
+                                "Receive one Xero invoice by email for the organiser-settled group bookings.",
+                              clubTokens: messageTokens,
+                              lodgeName,
+                            })}
                           </span>
                         </span>
                       </button>

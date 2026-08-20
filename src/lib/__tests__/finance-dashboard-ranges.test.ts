@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  FINANCE_DASHBOARD_LODGE_SCOPED_VIEWS,
+  FINANCE_DASHBOARD_VIEWS,
   financeDashboardMonthCount,
+  financeDashboardViewUsesLodgeScope,
   financeDashboardWindowDetail,
   financeDashboardWindowMonths,
   resolveComparisonFinanceRange,
   resolveFinanceDashboardSelection,
+  resolveFinanceDashboardView,
   resolvePrimaryFinanceRange,
 } from "@/lib/finance-dashboard-ranges";
 import { parseDateOnly } from "@/lib/date-only";
@@ -264,5 +268,50 @@ describe("month window helpers", () => {
       "2026-01",
       "2026-02",
     ]);
+  });
+});
+
+// #2919 review. The page builder has to know the view BEFORE it reads the
+// seasons (the seasons' lodge scope depends on it), and the client has to know
+// which views render the lodge selector. Both now ask these two helpers, so the
+// rules have one definition each — these tests are what stops the standalone
+// view resolver drifting from the one inside the selection resolver.
+describe("the view resolver and the lodge-scope predicate", () => {
+  it("resolves the view identically to the full selection resolver", () => {
+    const cases: Array<Record<string, string | string[] | undefined> | undefined> =
+      [
+        undefined,
+        {},
+        { view: "revenue" },
+        { view: "pricing-sensitivity" },
+        { view: "balance-sheet" },
+        { view: "not-a-view" },
+        { view: ["cash", "revenue"] },
+      ];
+
+    for (const searchParams of cases) {
+      expect(resolveFinanceDashboardView(searchParams)).toBe(
+        resolveFinanceDashboardSelection({
+          searchParams,
+          today: TODAY,
+          financialYearEndMonth: MARCH_YEAR_END,
+        }).view
+      );
+    }
+  });
+
+  it("reads no seasons, so a caller may resolve it before it loads any", () => {
+    // The whole point: no `seasons` argument exists to pass.
+    expect(resolveFinanceDashboardView({ view: "cash" })).toBe("cash");
+    expect(resolveFinanceDashboardView({ view: "bogus" })).toBe("bookings");
+  });
+
+  it("scopes only the two booking-derived views to a lodge", () => {
+    const scoped = FINANCE_DASHBOARD_VIEWS.filter(
+      financeDashboardViewUsesLodgeScope
+    );
+
+    expect(scoped).toEqual(["bookings", "pricing-sensitivity"]);
+    expect(FINANCE_DASHBOARD_LODGE_SCOPED_VIEWS).toEqual(scoped);
   });
 });

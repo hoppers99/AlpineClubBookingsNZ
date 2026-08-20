@@ -46,7 +46,11 @@ import {
 import { PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE } from "@/lib/policies/minimum-stay";
 import { PUBLIC_GROUP_JOIN_ADULT_MEMBER_HOSTING_MESSAGE } from "@/lib/policies/adult-member-hosting";
 import { prisma } from "@/lib/prisma";
-import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
+import {
+  hashActionToken,
+  isActionTokenFormat,
+  issueActionToken,
+} from "@/lib/action-tokens";
 import {
   sendBookingRequestApprovedEmail,
   sendGroupBookingJoinVerificationEmail,
@@ -538,6 +542,43 @@ export async function resolveGroupBookingByCode(
     return null;
   }
   return toGroupBookingSummary(group);
+}
+
+/**
+ * Public, read-only: the lodge behind a group-join VERIFICATION token (#2919),
+ * so the confirmation page names the lodge the group is actually staying at.
+ * Resolved server-side rather than by the verify endpoint, which is a POST
+ * because it creates the booking and so only answers AFTER the joiner has read
+ * that copy. The name only — never the travel note or door code — and null for
+ * a malformed or unknown token, so the caller falls back to the club default
+ * exactly as before.
+ *
+ * That fallback is NOT indistinguishable from a hit, and the docblock used to
+ * claim it was (review finding, #2919). Whenever the resolved lodge name differs
+ * from the club-level default — a club that renamed its lodge, or a group at a
+ * non-default lodge — the copy reads differently for a valid token than for an
+ * unknown one. What protects the token is its own entropy: 64 hex characters,
+ * looked up by hash, with the format gate rejecting anything else before a query
+ * runs. Do not add anything else to this projection on the assumption that the
+ * response is uniform.
+ */
+export async function resolveGroupJoinVerificationLodgeName(
+  token: string
+): Promise<string | null> {
+  if (!isActionTokenFormat(token)) {
+    return null;
+  }
+  const join = await prisma.groupBookingJoin.findUnique({
+    where: { verificationTokenHash: hashActionToken(token) },
+    select: {
+      groupBooking: {
+        select: {
+          organiserBooking: { select: { lodge: { select: { name: true } } } },
+        },
+      },
+    },
+  });
+  return join?.groupBooking.organiserBooking.lodge.name ?? null;
 }
 
 // ---------------------------------------------------------------------------
