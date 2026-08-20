@@ -162,6 +162,7 @@ finishes or fails — so a restore is always traceable even if it dies part-way.
 | "That path is inside the application directory…" | The directory would sit where the web server can serve files from | Choose a path outside the app, such as `/var/backups/tacbookings` |
 | Local backups configured but the directory is empty after a deploy | The path is inside the container rather than on a mounted volume | Mount a host directory or named volume at that path |
 | "A backup is running. Wait for it to finish before restoring." | A backup and a restore cannot run at once | Wait for the run to finish, then retry |
+| "pg_dump is not installed on the server" (or psql / gunzip / aws) | The host is missing the PostgreSQL client tools or the AWS CLI | The app's Docker image installs both (`postgresql16-client`, `aws-cli`). A server or development machine running the app OUTSIDE that image needs them installed and on `PATH` — on Windows, install the PostgreSQL client tools and add their `bin` directory to `PATH`, or run the app through Docker |
 
 ## Related links
 

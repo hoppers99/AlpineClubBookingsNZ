@@ -9,6 +9,7 @@ import {
   BACKUP_COMMAND_MAX_BUFFER_BYTES,
   BACKUP_COMMAND_TIMEOUT_MS,
   buildPostgresEnvironment,
+  describeMissingCommand,
   sanitizePostgresUrlForPgDump,
   splitPostgresPassword,
 } from "@/lib/backup";
@@ -70,6 +71,23 @@ export async function restoreLocalBackup(filename: string): Promise<LocalRestore
   }
 
   const sourcePath = resolveLocalBackupFile(config.localPath, filename);
+
+  // Fail on a missing tool BEFORE anything is dropped, with a message that says
+  // what to install: a restore that discovers `psql` is absent halfway through
+  // has already destroyed the schema it was restoring into.
+  for (const command of ["gunzip", "psql"]) {
+    try {
+      execFileSync(command, ["--version"], {
+        timeout: BACKUP_COMMAND_TIMEOUT_MS,
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+    } catch (err) {
+      const missing = describeMissingCommand(err);
+      if (missing) throw new Error(missing);
+      // A non-ENOENT failure here (a tool that exists but refuses --version) is
+      // not worth blocking on; the real invocation below reports it properly.
+    }
+  }
 
   const { argvUrl, password } = splitPostgresPassword(
     sanitizePostgresUrlForPgDump(databaseUrl),

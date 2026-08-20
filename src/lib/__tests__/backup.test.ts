@@ -47,6 +47,7 @@ vi.mock("@/lib/backup-config", async (importOriginal) => {
 import {
   applyLegacyBackupEnvGate,
   buildBackupCronOutcome,
+  describeMissingCommand,
   LEGACY_BACKUP_ENV_UNMIGRATED_MESSAGE,
   runDatabaseBackup,
   sanitizePostgresUrlForPgDump,
@@ -470,6 +471,58 @@ describe("backup", () => {
     expect(parsed.searchParams.get("pgbouncer")).toBeNull();
     expect(parsed.searchParams.get("schema")).toBeNull();
     expect(parsed.searchParams.get("sslmode")).toBe("require");
+  });
+
+  it("says WHICH tool is missing when pg_dump is not installed", async () => {
+    // The reported failure was `pg_dump failed: spawnSync pg_dump ENOENT`, which
+    // names no package, suggests a code fault, and lands on the disaster-recovery
+    // screen. The image ships postgresql16-client, so this fires on a host that
+    // does not — where the reader needs to be told what to install.
+    vi.mocked(resolveBackupConfig).mockResolvedValue(makeConfig());
+    vi.mocked(existsSync).mockReturnValue(true);
+    const enoent = Object.assign(new Error("spawnSync pg_dump ENOENT"), {
+      code: "ENOENT",
+      syscall: "spawnSync pg_dump",
+      path: "pg_dump",
+    });
+    vi.mocked(execFileSync).mockImplementation(() => {
+      throw enoent;
+    });
+
+    const result = await runDatabaseBackup();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("pg_dump is not installed on the server");
+    expect(result.error).toContain("PostgreSQL client tools");
+    // The raw spawn text is gone rather than appended.
+    expect(result.error).not.toContain("spawnSync");
+  });
+
+  it("does not mislabel a missing FILE as a missing command", () => {
+    // ENOENT is also what a missing backup file reports. Only a failed LAUNCH
+    // (`syscall: spawnSync …`) is a missing executable.
+    expect(
+      describeMissingCommand(
+        Object.assign(new Error("ENOENT: no such file"), {
+          code: "ENOENT",
+          syscall: "open",
+          path: "/var/backups/gone.sql.gz",
+        }),
+      ),
+    ).toBeNull();
+    expect(describeMissingCommand(new Error("boom"))).toBeNull();
+  });
+
+  it("names the AWS CLI rather than postgres when the aws command is missing", () => {
+    expect(
+      describeMissingCommand(
+        Object.assign(new Error("spawnSync aws ENOENT"), {
+          code: "ENOENT",
+          syscall: "spawnSync aws",
+          path: "aws",
+        }),
+      ),
+    ).toContain("the AWS CLI");
   });
 
   it("fails closed when pg_dump exits non-zero", async () => {

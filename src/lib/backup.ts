@@ -295,6 +295,11 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
       sizeBytes: stats.size,
     };
   } catch (err) {
+    const missing = describeMissingCommand(err);
+    if (missing) {
+      logger.error({ err, job: "backup" }, "Backup command is not installed");
+      return { success: false, error: missing };
+    }
     const message = err instanceof Error ? err.message : String(err);
     logger.error({ err, job: "backup" }, "pg_dump failed");
     return { success: false, error: `pg_dump failed: ${message}` };
@@ -491,6 +496,42 @@ export function buildPostgresEnvironment(password?: string): NodeJS.ProcessEnv {
     delete env.PGPASSWORD;
   }
   return env;
+}
+
+/**
+ * Turn a "command not found" spawn failure into a message that says what is
+ * missing and where it comes from.
+ *
+ * Backups shell out to four external tools — `pg_dump`, `psql`, `gunzip` and
+ * `aws`. When one is absent Node reports `spawnSync pg_dump ENOENT`, which tells
+ * an operator nothing: it names no tool an admin would recognise, suggests a
+ * code fault rather than a missing package, and arrives on the one screen whose
+ * job is disaster recovery. The application's own Docker image installs
+ * `postgresql16-client` and `aws-cli`, so in a normal deployment this never
+ * fires; it fires on a hand-rolled host or a developer machine, which is exactly
+ * where the person reading it needs to be told what to install.
+ *
+ * Returns null for anything that is NOT a missing executable, so a genuine
+ * ENOENT on a backup FILE keeps its own error rather than being mislabelled.
+ */
+export function describeMissingCommand(err: unknown): string | null {
+  const error = err as NodeJS.ErrnoException & { syscall?: string; path?: string };
+  if (error?.code !== "ENOENT") return null;
+  // `spawnSync <cmd>` is the syscall on a failed LAUNCH; a missing file reports
+  // `open` or `copyfile` instead. That distinction is the whole guard.
+  if (!error.syscall?.startsWith("spawnSync")) return null;
+
+  const command = error.path ?? error.syscall.replace("spawnSync ", "").trim();
+  const provider =
+    command === "aws"
+      ? "the AWS CLI"
+      : "the PostgreSQL client tools (pg_dump, psql)";
+  return (
+    `${command} is not installed on the server, so the backup could not run. ` +
+    `This needs ${provider}. The application's Docker image includes them — a ` +
+    `server or development machine running outside that image needs them ` +
+    `installed and on PATH.`
+  );
 }
 
 function runPgDump(filepath: string, sanitizedDatabaseUrl: string) {
