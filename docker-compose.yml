@@ -74,6 +74,13 @@ x-app-environment: &app-environment
   # BACKUP_RETENTION_DAYS / BACKUP_RESTORE_VALIDATION_URL vars are no longer read
   # and are intentionally not passed through.
   BACKUP_CRON_SCHEDULE: ${BACKUP_CRON_SCHEDULE:-0 3 * * *}
+  # Where local database backups are written INSIDE the container — the path an
+  # admin enters on /admin/backups, and the default that page pre-fills. It must
+  # match the mount target on the app service below, which is why both read the
+  # same variable. The HOST side of that mount is BACKUP_LOCAL_HOST_DIR, which
+  # the app never sees and must never be given: a host path is not visible from
+  # inside the container.
+  BACKUP_LOCAL_DIR: ${BACKUP_LOCAL_DIR:-/backups}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   SENTRY_DSN: ${SENTRY_DSN:-}
   NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
@@ -116,6 +123,12 @@ x-app-service: &app-service
       # knowledge-bundle generator stamps a verified, reproducible bundle.
       GIT_COMMIT_SHA: ${GIT_COMMIT_SHA:-}
       KNOWLEDGE_BUNDLE_OBSERVED_AT: ${KNOWLEDGE_BUNDLE_OBSERVED_AT:-}
+      # Optional Node flags for the BUILD only — see the ARG in the Dockerfile.
+      # Empty unless an operator sets NODE_BUILD_OPTIONS, so this changes nothing
+      # for a deployment that does not need it. Typical use is raising the heap
+      # on a small server whose `next build` is being OOM-killed:
+      #   NODE_BUILD_OPTIONS=--max-old-space-size=4096
+      NODE_OPTIONS: ${NODE_BUILD_OPTIONS:-}
       # #2352 D1: the release identifier the per-release public-website CSP nonce
       # is derived from. A BUILD arg, not a runtime env var, deliberately — the
       # value has to be fixed for the life of the image so a page stored by one
@@ -154,6 +167,19 @@ x-app-service: &app-service
   # first init (see Dockerfile), so the app user can write to it.
   volumes:
     - image_uploads:/app/public/images
+    # Local database backups (see BACKUP_LOCAL_DIR above). The default is a NAMED
+    # VOLUME, so a club that never enables local backups gets no stray directory
+    # on the host and no ownership to fix — Docker treats a value with no slash
+    # as a volume name. Set BACKUP_LOCAL_HOST_DIR to an absolute host path and
+    # the same line becomes a bind mount, which is what you want when the files
+    # have to be copied off the machine.
+    #
+    # A bind-mounted host directory must be owned by uid 1001, the user the app
+    # runs as (`sudo chown -R 1001:1001 <dir>`); the named-volume default
+    # inherits that ownership from /backups in the image, exactly as
+    # image_uploads does. The read-only root filesystem does not block either:
+    # `read_only: true` applies to the image layers, never to a mount.
+    - ${BACKUP_LOCAL_HOST_DIR:-backup_data}:${BACKUP_LOCAL_DIR:-/backups}
   security_opt:
     - no-new-privileges:true
   mem_limit: 1g
@@ -311,6 +337,10 @@ services:
 
 volumes:
   postgres_data:
+  # Default destination for local database backups when BACKUP_LOCAL_HOST_DIR
+  # names no host directory. Deliberately NOT pruned by any tooling here: it
+  # holds the club's own backups.
+  backup_data:
   caddy_data:
   caddy_config:
   image_uploads:

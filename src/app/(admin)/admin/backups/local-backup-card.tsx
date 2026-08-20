@@ -288,9 +288,16 @@ export function LocalBackupCard({
             {...pathHint.fieldProps}
           />
           <FieldHint {...pathHint.hintProps}>
-            A full path outside the application directory, on a volume that
-            survives a restart. Example: /var/backups/tacbookings
+            The path INSIDE the container, not on the host — this application
+            runs in a container and can only write to a mounted directory. Your
+            deployment sets it with BACKUP_LOCAL_DIR in .env.
           </FieldHint>
+          {status.localPathFromEnv ? (
+            <p className="text-xs text-muted-foreground">
+              Filled in from this deployment&apos;s configuration
+              (BACKUP_LOCAL_DIR). Leave it as it is unless the mount has moved.
+            </p>
+          ) : null}
           {section.editing && !canManageDestination ? (
             <p className="text-xs text-muted-foreground">
               Changing the backup directory requires Full Admin access.
