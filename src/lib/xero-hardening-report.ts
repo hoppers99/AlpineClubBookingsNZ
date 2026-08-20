@@ -33,6 +33,7 @@ import {
   findStripeSourcePaymentIds,
   isStripePerDeltaRefundCreditNoteLink,
 } from "./xero-hardening-canonical-links";
+import { resolveStripeCashRefundEvidence } from "@/lib/stripe-cash-refund-evidence";
 import { isRefundCreditNoteLinkCancelledInXero } from "@/lib/xero-refund-note-status";
 import { sumCoveredRefundCreditNoteCents } from "@/lib/xero-sync";
 
@@ -696,20 +697,25 @@ export async function buildXeroReconciliationReport(options?: {
   // cleanup and the classes above deliberately exempt live Stripe per-delta
   // links, and the outbox enqueue/executor silently cap an over-covered
   // payment's next refund note at zero — so without this count a payment whose
-  // active, non-cancelled notes exceed the refunded total over-credits the
-  // member in Xero indefinitely with no signal anywhere. Coverage is summed
-  // through the same status-aware seam every other valuation uses.
+  // active, non-cancelled notes exceed the cash refund-note target
+  // over-credits the member in Xero indefinitely with no signal anywhere.
+  // Coverage is summed through the same status-aware seam every other
+  // valuation uses, and the target is the provider-backed cash evidence
+  // (#2902, INV-PAY-050), never the refundedAmountCents mirror — an
+  // account-credit-only cancellation whose fictitious note exactly equals the
+  // mirror is over-covered against a cash target of ZERO and must show here.
   const stripeRefundPaymentRows =
     stripePaymentIds.size > 0
       ? await prisma.payment.findMany({
           where: { id: { in: Array.from(stripePaymentIds) } },
-          select: { id: true, refundedAmountCents: true },
+          select: { id: true, bookingId: true, refundedAmountCents: true },
         })
       : [];
   const overCoveredStripeRefundItems: XeroReconciliationIssueItem[] = [];
   for (const payment of stripeRefundPaymentRows) {
     const coveredCents = await sumCoveredRefundCreditNoteCents(payment.id);
-    if (coveredCents > payment.refundedAmountCents) {
+    const evidence = await resolveStripeCashRefundEvidence(payment);
+    if (coveredCents > evidence.cashRefundCents) {
       overCoveredStripeRefundItems.push({
         label: `Payment ${payment.id}`,
         localModel: "Payment",
@@ -723,7 +729,7 @@ export async function buildXeroReconciliationReport(options?: {
         operationStatus: null,
         operationType: null,
         correlationKey: null,
-        detail: `Active refund credit-note coverage is ${coveredCents} cents against a refunded total of ${payment.refundedAmountCents} cents, so Xero over-credits this member and any further refund on this payment gets no credit note.`,
+        detail: `Active refund credit-note coverage is ${coveredCents} cents against a provider-backed cash refund target of ${evidence.cashRefundCents} cents (${evidence.source}; refunded mirror ${payment.refundedAmountCents} cents), so Xero over-credits this member and any further refund on this payment gets no credit note.`,
         latestErrorMessage: null,
         createdAt: null,
       });

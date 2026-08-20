@@ -91,6 +91,7 @@ const mocks = vi.hoisted(() => {
     failXeroSyncOperation: vi.fn(),
     findCanonicalPaymentRefundCreditNote: vi.fn(),
     upsertXeroObjectLink: vi.fn(),
+    resolveStripeCashRefundEvidence: vi.fn(),
     recordXeroApiUsage: vi.fn(),
     // #1641 — the card-path applied-credit allocation engine, dynamically imported
     // by createXeroInvoiceForBooking. Mocked so we assert the gate + placement
@@ -155,6 +156,14 @@ vi.mock("@/lib/logger", () => ({
 
 vi.mock("@/lib/xero-api-usage", () => ({
   recordXeroApiUsage: mocks.recordXeroApiUsage,
+}));
+
+// #2902: delta-mode createXeroCreditNote recomputes its uncovered amount from
+// provider-backed cash evidence, never the refundedAmountCents mirror.
+// Resolution rules are unit-tested in stripe-cash-refund-evidence.test.ts;
+// the default (cash === mirror) keeps the pre-#2902 scenarios intact.
+vi.mock("@/lib/stripe-cash-refund-evidence", () => ({
+  resolveStripeCashRefundEvidence: mocks.resolveStripeCashRefundEvidence,
 }));
 
 vi.mock("@/lib/xero-links", () => ({
@@ -1471,6 +1480,17 @@ describe("createXeroCreditNote", () => {
     vi.stubEnv("XERO_CLIENT_SECRET", "client-secret");
     mocks.findCanonicalPaymentRefundCreditNote.mockResolvedValue(null);
     mocks.prisma.xeroObjectLink.findMany.mockResolvedValue([]);
+    // Default: every refunded cent is provider-backed cash (#2902 cases
+    // override per test), so the pre-#2902 arithmetic is unchanged.
+    mocks.resolveStripeCashRefundEvidence.mockImplementation(
+      async (payment: { refundedAmountCents: number }) => ({
+        cashRefundCents: payment.refundedAmountCents,
+        countedRefundCents: payment.refundedAmountCents,
+        refundLedgerRowCount: 1,
+        accountCreditCents: 0,
+        source: "provider-ledger",
+      })
+    );
   });
 
   it("reuses an existing refund credit note link before attempting a new create", async () => {
@@ -1792,6 +1812,46 @@ describe("createXeroCreditNote", () => {
       expect(
         mocks.xeroClientInstance.accountingApi.createCreditNotes
       ).toHaveBeenCalledTimes(2);
+    });
+
+    it("completes a queued account-credit-only operation without billing Xero (#2902)", async () => {
+      // The pre-#2902 defect: an account-credit cancellation moved the mirror
+      // (34100) with no Stripe cash, a fictitious delta op was queued, and
+      // execution minted a real Xero note plus a Stripe-bank payment. The
+      // execution-time recompute now reads the cash evidence (zero), so an
+      // already-queued fictitious operation completes as a no-op.
+      armCreatePath(34100, []);
+      mocks.resolveStripeCashRefundEvidence.mockResolvedValue({
+        cashRefundCents: 0,
+        countedRefundCents: 0,
+        refundLedgerRowCount: 0,
+        accountCreditCents: 34100,
+        source: "legacy-mirror",
+      });
+
+      await expect(
+        createXeroCreditNote("pay_1", 34100, {
+          watermarkCents: 34100,
+          syncOperationId: "op_delta_x",
+        })
+      ).resolves.toBe("");
+
+      expect(
+        mocks.xeroClientInstance.accountingApi.createCreditNotes
+      ).not.toHaveBeenCalled();
+      expect(
+        mocks.xeroClientInstance.accountingApi.createPayments
+      ).not.toHaveBeenCalled();
+      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+        "op_delta_x",
+        expect.objectContaining({
+          responsePayload: expect.objectContaining({
+            skippedNothingUncovered: true,
+            cashRefundCents: 0,
+            cashEvidenceSource: "legacy-mirror",
+          }),
+        })
+      );
     });
   });
 });

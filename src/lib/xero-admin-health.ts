@@ -1,6 +1,7 @@
 import type { BookingStatus } from "@prisma/client";
 import { getXeroMemberGroupingSnapshot } from "@/lib/xero-member-grouping-resync";
 import { prisma } from "@/lib/prisma";
+import { resolveStripeCashRefundEvidence } from "@/lib/stripe-cash-refund-evidence";
 import { getFailedXeroOperationOverview } from "@/lib/xero-admin-failures";
 import { getTodaysXeroUsageSummary } from "@/lib/xero-api-usage";
 import { getXeroContactLinkMismatchSnapshot } from "@/lib/xero-contact-link-mismatches";
@@ -44,8 +45,15 @@ interface RefundMissingCreditNote {
   bookingId: string;
   memberName: string;
   memberEmail: string;
+  /** The aggregate settlement mirror (cash + account-credit dispositions). */
   refundedAmountCents: number;
-  // Refunded cents not yet covered by any active refund credit note (#1162).
+  /**
+   * Provider-backed Stripe CASH refund cents (#2902): succeeded PaymentRefund
+   * rows, with the pre-ledger legacy fallback — never the raw mirror.
+   */
+  cashRefundedCents: number;
+  // Cash-refunded cents not yet covered by any active refund credit note
+  // (#1162, #2902).
   uncoveredCents: number;
   refundedAt: string;
 }
@@ -229,6 +237,14 @@ export async function getMissingXeroInvoiceBookings(options?: {
  * refunded amount against the cents already covered by active refund credit
  * notes and flag only the still-uncovered remainder. This surfaces the "money
  * refunded but accounting follow-up failed" divergence the operator can't see.
+ *
+ * #2902 (INV-PAY-050): the amount compared against coverage is the
+ * provider-backed CASH refund evidence (`resolveStripeCashRefundEvidence`),
+ * never the raw `refundedAmountCents` mirror. The mirror also counts value
+ * held as member account credit, so an account-credit-only cancellation used
+ * to read as a missing Stripe cash refund here and the reconciliation
+ * self-heal minted a fictitious refund note plus a Stripe-bank payment.
+ * Account-credit-only payments now resolve to zero cash and are excluded.
  */
 export async function getRefundsMissingXeroCreditNotes(options?: {
   limit?: number;
@@ -264,8 +280,14 @@ export async function getRefundsMissingXeroCreditNotes(options?: {
 
   const formatted: RefundMissingCreditNote[] = [];
   for (const payment of payments) {
+    // #2902: cash evidence first — an account-credit-only cancellation
+    // resolves to zero cash and is excluded before any coverage query runs.
+    const evidence = await resolveStripeCashRefundEvidence(payment);
+    if (evidence.cashRefundCents <= 0) {
+      continue;
+    }
     const coveredCents = await sumCoveredRefundCreditNoteCents(payment.id);
-    if (payment.refundedAmountCents <= coveredCents) {
+    if (evidence.cashRefundCents <= coveredCents) {
       continue;
     }
     formatted.push({
@@ -276,7 +298,8 @@ export async function getRefundsMissingXeroCreditNotes(options?: {
         : "Unknown",
       memberEmail: payment.booking?.member?.email ?? "",
       refundedAmountCents: payment.refundedAmountCents,
-      uncoveredCents: payment.refundedAmountCents - coveredCents,
+      cashRefundedCents: evidence.cashRefundCents,
+      uncoveredCents: evidence.cashRefundCents - coveredCents,
       refundedAt: payment.updatedAt.toISOString(),
     });
   }

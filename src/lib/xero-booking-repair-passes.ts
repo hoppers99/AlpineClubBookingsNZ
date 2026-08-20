@@ -252,7 +252,9 @@ async function applyLateCaptureRefundRepair(
     // consistent with what actually moved instead of understating refunds
     // until the amount-mismatch arm surfaces the drift. The note is sized from
     // the recorded refund ledger by enqueueXeroRefundCreditNoteOperation
-    // (capped at refundedAmountCents - already-covered), so passing the
+    // (capped at the provider-backed cash evidence minus already-covered —
+    // resolveStripeCashRefundEvidence, #2902/INV-PAY-050; the slices just
+    // recorded ARE that evidence here), so passing the
     // completed portion produces exactly the delta that moved; the operator's
     // re-run for the remainder then enqueues only the still-uncovered slice
     // under a distinct cumulative-watermark correlation key, never double-noting.
