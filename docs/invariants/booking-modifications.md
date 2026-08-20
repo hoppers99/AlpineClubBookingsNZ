@@ -161,9 +161,10 @@ branches included, and locks still win over it in both states of the switch.
 
 ## INV-MOD-027
 
-A booking officer may price a **non-member** at the club's own member rate as a
-recognised member of a partner lodge, and that election changes the RATE and
-nothing else (Other Lodges epic, follow-up to #2749).
+A booking officer may price a guest who is **currently on the club's non-member
+rate** at the club's own member rate instead, as a recognised member of a partner
+lodge, and that election changes the RATE and nothing else (Other Lodges epic,
+follow-up to #2749; eligibility widened by #2978).
 
 `Booking.otherLodgeId` names the partner lodge for the whole booking;
 `BookingGuest.otherLodgeMember` is the per-person opt-in. A flagged guest
@@ -172,14 +173,35 @@ resolves to the built-in `FULL` type's rate rows with `rateSource`
 `resolveGuestRateMembershipTypes`, the one gate every pricing path already
 passes through (INV-MOD-007), so no write path can be missing the rule.
 
-**`isMember` stays false, permanently and deliberately.** The person is a member
-of ANOTHER club, not of this one, so adult-member hosting (`INV-HOST`), the
-non-member hold, split bookings, `Booking.hasNonMembers`, the member-guest
-subscription gate and member-only promotions must all keep seeing a non-member.
+**WHO MAY BE ELECTED IS A RATE QUESTION, NOT AN `isMember` QUESTION (#2978).**
+The eligible set is everyone the club currently charges its non-member rate, and
+that is NOT the same as everyone with `isMember` false: a non-member contact
+created by book-on-behalf and later re-added through the member-guest finder
+carries `isMember` true while resolving to the built-in `NON_MEMBER` type, and
+those people are exactly who a reciprocal rate is for. `resolveOtherLodgeRateEligibleGuestIds`
+(`src/lib/membership-type-policy.ts`) is the single answer: the edit panel decides
+which rows get a tick box from it, and `resolveOtherLodgeRateElection` refuses a
+tick on anybody outside it, so the screen can never offer a control whose save is
+refused.
+
+**One class is excluded on purpose: a member repriced by the `INV-LOCKOUT`
+unpaid-subscription rule.** They are `isMember` with `NON_MEMBER_DEFAULT` — the
+same rate source a true non-member carries, deliberately, so the group discount
+treats them alike (see the note in `resolveGuestRateMembershipTypes`) — so the
+rate source alone cannot separate them and `isMember` plus the unpaid set does.
+Electing them would restore the member rate and silently undo a lockout the club
+configured on purpose, which is a money outcome, so both the API boundary and the
+rate resolver refuse it.
+
+**`isMember` is never written by this election, permanently and deliberately.**
+The tick records that somebody is a member of ANOTHER club and says nothing about
+their standing in this one, so adult-member hosting (`INV-HOST`), the non-member
+hold, split bookings, `Booking.hasNonMembers`, the member-guest subscription gate
+and member-only promotions all keep seeing exactly what they saw before it.
 Only the rate resolver reads the flag, which is what confines the blast radius to
-price. The resolver additionally refuses to apply the flag to a member row at
-all, so a row that somehow carries both still resolves through that member's own
-membership type — the API refusal is the first fence, not the only one.
+price — and the resolver re-checks eligibility itself, so a row that somehow
+carries the flag without qualifying still resolves through the ordinary rules.
+The API refusal is the first fence, not the only one.
 
 **The election is an END STATE, and the guests whose flag CHANGES are exactly the
 guests whose locked nights are cleared.** `resolveOtherLodgeRateElection`

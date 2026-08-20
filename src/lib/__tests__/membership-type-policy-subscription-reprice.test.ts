@@ -46,6 +46,7 @@ vi.mock("@/lib/age-tier", () => ({
 import {
   priceBookingGuestsWithMembershipTypePolicy,
   resolveGuestRateMembershipTypes,
+  resolveOtherLodgeRateEligibleGuestIds,
 } from "@/lib/membership-type-policy";
 import { selectPromoDiscountGuests } from "@/lib/policies/pricing";
 
@@ -587,5 +588,202 @@ describe("membership, not the subscription, gates member-only promotions (#2543)
 
     expect(selected).toHaveLength(1);
     expect(selected[0].guest.memberId).toBe("m-unpaid");
+  });
+  /**
+   * #2978, and the pair below is deliberately a PAIR: the widened fence has to
+   * let the right people through AND keep the lockout class out, and only a type
+   * that is `NON_MEMBER_RATE` for booking while `REQUIRED` for subscriptions can
+   * tell those two apart. Under the club's ordinary FULL type the lockout guard
+   * is never reached, because the MEMBER_RATE test excludes the member first -
+   * which is exactly how the first version of this test passed with the guard
+   * deleted.
+   */
+  const associateType: TestMembershipType = {
+    id: "type-associate",
+    key: "ASSOCIATE",
+    name: "Associate",
+    isActive: true,
+    isBuiltIn: false,
+    // Pays non-member rates, and still owes a subscription. This is the only
+    // shape where "priced at the non-member rate" and "locked out" can disagree.
+    bookingBehavior: "NON_MEMBER_RATE",
+    subscriptionBehavior: "REQUIRED",
+  };
+
+  it("honours an other-lodge tick for a member whose TYPE prices them as a non-member", async () => {
+    mocks.peekSubscriptionLockoutMode.mockResolvedValue("NON_MEMBER_PRICING");
+    // Paid up, so no lockout is in play - the only reason they are on
+    // non-member rates is the type their club gave them.
+    const db = makeDb({
+      members: ["m-associate"],
+      subscriptions: [{ memberId: "m-associate", status: "PAID" }],
+      type: associateType,
+    });
+
+    const rated = await resolveGuestRateMembershipTypes(db, {
+      seasonYear: 2026,
+      subscriptionLockoutMode: "NON_MEMBER_PRICING",
+      guests: [
+        {
+          ageTier: "ADULT" as const,
+          isMember: true,
+          memberId: "m-associate",
+          otherLodgeMember: true,
+        },
+      ],
+    });
+
+    // The whole point of #2978: `isMember` is true, and the tick still applies,
+    // because what governs is the RATE they are on.
+    expect(rated[0]).toMatchObject({
+      rateMembershipTypeId: fullType.id,
+      rateSource: "OTHER_LODGE_MEMBER",
+    });
+  });
+
+  /**
+   * The other half. A member repriced by #2543 has been put on non-member rates
+   * ON PURPOSE, because their subscription is unpaid - so a tick that reached
+   * them would hand back the member rate and undo the lockout silently.
+   *
+   * `rateSource` cannot separate these two: a repriced member and a true
+   * non-member are both `NON_MEMBER_DEFAULT`, deliberately, so the group
+   * discount treats them alike. `isMember` plus the unpaid set is what does.
+   */
+  it("never lets an other-lodge tick undo an unpaid-subscription reprice", async () => {
+    mocks.peekSubscriptionLockoutMode.mockResolvedValue("NON_MEMBER_PRICING");
+    // Same type as the case above, so the ONLY difference between the two is the
+    // unpaid subscription. That is what makes this a test of the lockout guard
+    // rather than of the type rule.
+    const db = makeDb({
+      members: ["m-associate-unpaid"],
+      subscriptions: [],
+      type: associateType,
+    });
+
+    const rated = await resolveGuestRateMembershipTypes(db, {
+      seasonYear: 2026,
+      subscriptionLockoutMode: "NON_MEMBER_PRICING",
+      guests: [
+        {
+          ageTier: "ADULT" as const,
+          isMember: true,
+          memberId: "m-associate-unpaid",
+          otherLodgeMember: true,
+        },
+      ],
+    });
+
+    expect(rated[0].rateSource).not.toBe("OTHER_LODGE_MEMBER");
+    expect(rated[0]).toMatchObject({
+      rateMembershipTypeId: nonMemberType.id,
+      rateSource: "NON_MEMBER_DEFAULT",
+    });
+  });
+});
+
+
+/**
+ * #2978: the single answer to "who may be ticked as an other-lodge member",
+ * shared by the edit panel (which rows get a tick box) and both write paths
+ * (which ticks are accepted). Tested directly, because a screen and a save that
+ * derive this separately is precisely the bug it exists to prevent.
+ */
+describe("resolveOtherLodgeRateEligibleGuestIds (#2978)", () => {
+  const associateType: TestMembershipType = {
+    id: "type-associate",
+    key: "ASSOCIATE",
+    name: "Associate",
+    isActive: true,
+    isBuiltIn: false,
+    bookingBehavior: "NON_MEMBER_RATE",
+    subscriptionBehavior: "REQUIRED",
+  };
+
+  it("costs no query at all when nobody on the booking is a member", async () => {
+    const db = makeDb({ members: [], subscriptions: [] });
+
+    const eligible = await resolveOtherLodgeRateEligibleGuestIds(db, {
+      seasonYear: 2026,
+      guests: [
+        { id: "g-1", isMember: false, memberId: null },
+        { id: "g-2", isMember: false, memberId: null },
+      ],
+    });
+
+    expect([...eligible].sort()).toEqual(["g-1", "g-2"]);
+    // The ordinary non-member booking is the common case and must not pay for
+    // this feature: no policy read, no subscription read.
+    expect(db.member.findMany).not.toHaveBeenCalled();
+    expect(db.memberSubscription.findMany).not.toHaveBeenCalled();
+  });
+
+  it("excludes a member who is already on this club's member rate", async () => {
+    const db = makeDb({
+      members: ["m-full"],
+      subscriptions: [{ memberId: "m-full", status: "PAID" }],
+    });
+
+    const eligible = await resolveOtherLodgeRateEligibleGuestIds(db, {
+      seasonYear: 2026,
+      subscriptionLockoutMode: "HARD_BLOCK",
+      guests: [{ id: "g-full", isMember: true, memberId: "m-full" }],
+    });
+
+    // Nothing to re-rate: they already pay the rate the tick would give them.
+    expect(eligible.size).toBe(0);
+  });
+
+  it("includes a member whose TYPE prices them at the non-member rate", async () => {
+    const db = makeDb({
+      members: ["m-associate"],
+      subscriptions: [{ memberId: "m-associate", status: "PAID" }],
+      type: associateType,
+    });
+
+    const eligible = await resolveOtherLodgeRateEligibleGuestIds(db, {
+      seasonYear: 2026,
+      subscriptionLockoutMode: "HARD_BLOCK",
+      guests: [{ id: "g-associate", isMember: true, memberId: "m-associate" }],
+    });
+
+    expect([...eligible]).toEqual(["g-associate"]);
+  });
+
+  it("excludes a member the unpaid-subscription lockout has repriced", async () => {
+    mocks.peekSubscriptionLockoutMode.mockResolvedValue("NON_MEMBER_PRICING");
+    // Same type as the case above; the ONLY difference is the unpaid
+    // subscription, so this isolates the lockout rule from the type rule.
+    const db = makeDb({
+      members: ["m-associate-unpaid"],
+      subscriptions: [],
+      type: associateType,
+    });
+
+    const eligible = await resolveOtherLodgeRateEligibleGuestIds(db, {
+      seasonYear: 2026,
+      subscriptionLockoutMode: "NON_MEMBER_PRICING",
+      guests: [
+        { id: "g-unpaid", isMember: true, memberId: "m-associate-unpaid" },
+      ],
+    });
+
+    expect(eligible.size).toBe(0);
+  });
+
+  it("still includes the true non-members standing beside an excluded member", async () => {
+    mocks.peekSubscriptionLockoutMode.mockResolvedValue("NON_MEMBER_PRICING");
+    const db = makeDb({ members: ["m-unpaid"], subscriptions: [] });
+
+    const eligible = await resolveOtherLodgeRateEligibleGuestIds(db, {
+      seasonYear: 2026,
+      subscriptionLockoutMode: "NON_MEMBER_PRICING",
+      guests: [
+        { id: "g-visitor", isMember: false, memberId: null },
+        { id: "g-unpaid", isMember: true, memberId: "m-unpaid" },
+      ],
+    });
+
+    expect([...eligible]).toEqual(["g-visitor"]);
   });
 });

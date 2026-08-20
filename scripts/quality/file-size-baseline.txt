@@ -81,7 +81,7 @@ src/app/(admin)/admin/xero/member-grouping/page.tsx 695 route-page-shell
 src/app/(authenticated)/book/_components/review-step.tsx 969 domain-module
 src/app/(authenticated)/book/_hooks/use-booking-wizard.ts 1951 domain-module
 src/app/(authenticated)/book/page.tsx 680 route-page-shell
-src/app/(authenticated)/bookings/[id]/page.tsx 2529 route-page-shell
+src/app/(authenticated)/bookings/[id]/page.tsx 2546 route-page-shell
 src/app/(authenticated)/dashboard/page.tsx 864 route-page-shell
 src/app/(authenticated)/profile/family-group-section.tsx 1142 domain-module
 src/app/(authenticated)/profile/page.tsx 667 route-page-shell
@@ -145,7 +145,7 @@ src/app/api/bookings/[id]/exception-requests/route.ts 286 route-handler
 src/app/api/bookings/[id]/guests/[guestId]/route.ts 502 route-handler
 src/app/api/bookings/[id]/guests/route.ts 1208 route-handler
 src/app/api/bookings/[id]/modify-dates/route.ts 334 route-handler
-src/app/api/bookings/[id]/modify-quote/route.ts 2292 route-handler
+src/app/api/bookings/[id]/modify-quote/route.ts 2315 route-handler
 src/app/api/bookings/[id]/modify/route.ts 468 route-handler
 src/app/api/bookings/[id]/refund-request/route.ts 256 route-handler
 src/app/api/bookings/[id]/waitlist-confirm/route.ts 566 route-handler
@@ -184,7 +184,7 @@ src/components/admin/xero-record-activity-panel.tsx 717 domain-module
 src/components/analytics-consent.tsx 737 domain-module
 src/components/book/member-guest-find-panel.tsx 713 domain-module
 src/components/calendar/event-dialog.tsx 991 domain-module
-src/components/edit-booking-panel.tsx 1878 domain-module
+src/components/edit-booking-panel.tsx 1879 domain-module
 src/components/website/skifield-whakapapa-widget.tsx 730 domain-module
 src/instrumentation.node.ts 1513 domain-module
 src/lib/admin-bookings-service.ts 1288 domain-module
@@ -216,7 +216,7 @@ src/lib/booking-exception-request-service.ts 2125 domain-module
 src/lib/booking-exception-requests.ts 720 domain-module
 src/lib/booking-guest-removal-service.ts 995 domain-module
 src/lib/booking-guests.ts 811 domain-module
-src/lib/booking-modify-plan.ts 2273 domain-module
+src/lib/booking-modify-plan.ts 2294 domain-module
 src/lib/booking-request-quotes.ts 1694 domain-module
 src/lib/booking-request.ts 2851 domain-module
 src/lib/capacity.ts 1045 domain-module
@@ -271,7 +271,7 @@ src/lib/membership-cancellation-admin.ts 1143 domain-module
 src/lib/membership-cancellation-requests.ts 1316 domain-module
 src/lib/membership-cancellation-xero.ts 1364 domain-module
 src/lib/membership-subscription-billing.ts 1402 domain-module
-src/lib/membership-type-policy.ts 1136 domain-module
+src/lib/membership-type-policy.ts 1229 domain-module
 src/lib/nomination.ts 2448 domain-module
 src/lib/notices.ts 708 domain-module
 src/lib/payment-link.ts 1180 domain-module

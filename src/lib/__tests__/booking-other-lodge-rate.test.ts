@@ -6,7 +6,7 @@ import {
   OTHER_LODGE_RATE_GUEST_NOT_ON_BOOKING_MESSAGE,
   OTHER_LODGE_RATE_LODGE_NOT_FOUND_MESSAGE,
   OTHER_LODGE_RATE_LODGE_REQUIRED_MESSAGE,
-  OTHER_LODGE_RATE_MEMBER_GUEST_MESSAGE,
+  OTHER_LODGE_RATE_INELIGIBLE_GUEST_MESSAGE,
   resolveOtherLodgeRateElection,
   type OtherLodgeRateBooking,
 } from "@/lib/booking-other-lodge-rate";
@@ -39,9 +39,31 @@ function makeBooking(
   };
 }
 
+/**
+ * The resolver under test, with eligibility defaulted to "every non-member on
+ * this booking" - which is exactly the set the pre-#2978 fence hard-coded. Every
+ * pre-existing case therefore keeps its original meaning, and the cases that
+ * exercise the WIDENED rule pass their own set explicitly.
+ */
+function elect(args: {
+  booking: OtherLodgeRateBooking;
+  input: Parameters<typeof resolveOtherLodgeRateElection>[0]["input"];
+  role: Role;
+  eligibleGuestIds?: ReadonlySet<string>;
+}) {
+  return resolveOtherLodgeRateElection({
+    ...args,
+    eligibleGuestIds:
+      args.eligibleGuestIds ??
+      new Set(
+        args.booking.guests.filter((guest) => !guest.isMember).map((guest) => guest.id),
+      ),
+  });
+}
+
 describe("resolveOtherLodgeRateElection", () => {
   it("is inert when the request says nothing about the rate, and reports the stored state", () => {
-    const election = resolveOtherLodgeRateElection({
+    const election = elect({
       booking: makeBooking({
         otherLodgeId: "lodge-1",
         guests: [
@@ -64,7 +86,7 @@ describe("resolveOtherLodgeRateElection", () => {
 
   it("refuses a non-admin actor who does carry an election", () => {
     expect(() =>
-      resolveOtherLodgeRateElection({
+      elect({
         booking: makeBooking(),
         input: { otherLodgeId: "lodge-1", otherLodgeMemberGuestIds: ["guest-nonmember"] },
         role: MEMBER,
@@ -79,7 +101,7 @@ describe("resolveOtherLodgeRateElection", () => {
 
   it("refuses a tick naming a guest who is not on this booking", () => {
     expect(() =>
-      resolveOtherLodgeRateElection({
+      elect({
         booking: makeBooking(),
         input: { otherLodgeId: "lodge-1", otherLodgeMemberGuestIds: ["guest-elsewhere"] },
         role: ADMIN,
@@ -92,16 +114,56 @@ describe("resolveOtherLodgeRateElection", () => {
     );
   });
 
-  it("refuses a tick on a member of this club, who already prices at their own rate", () => {
+  it("refuses a tick on somebody already priced at this club's member rate", () => {
     expect(() =>
-      resolveOtherLodgeRateElection({
+      elect({
         booking: makeBooking(),
         input: { otherLodgeId: "lodge-1", otherLodgeMemberGuestIds: ["guest-member"] },
         role: ADMIN,
       }),
     ).toThrowError(
       expect.objectContaining({
-        message: OTHER_LODGE_RATE_MEMBER_GUEST_MESSAGE,
+        message: OTHER_LODGE_RATE_INELIGIBLE_GUEST_MESSAGE,
+        status: 400,
+      }),
+    );
+  });
+
+  /**
+   * #2978. The fence is the server's eligibility set, not `isMember`, so a
+   * member-flagged guest who prices at the non-member rate is accepted here -
+   * the case the old fence refused and the screen therefore never offered.
+   */
+  it("accepts a tick on a member-flagged guest the eligibility set includes", () => {
+    const election = elect({
+      booking: makeBooking(),
+      input: { otherLodgeId: "lodge-1", otherLodgeMemberGuestIds: ["guest-member"] },
+      role: ADMIN,
+      eligibleGuestIds: new Set(["guest-nonmember", "guest-member"]),
+    });
+
+    expect([...election.flaggedGuestIds]).toEqual(["guest-member"]);
+    // And they are repriced, because their stored flag changed.
+    expect([...election.repriceGuestIds]).toEqual(["guest-member"]);
+  });
+
+  it("refuses a tick on anybody the eligibility set leaves out, member or not", () => {
+    // The set is the whole rule: a NON-member the server withheld is refused
+    // just as firmly as a member. That is what stops a stale screen - or a
+    // hand-made request - from re-rating somebody the server judged ineligible.
+    expect(() =>
+      elect({
+        booking: makeBooking(),
+        input: {
+          otherLodgeId: "lodge-1",
+          otherLodgeMemberGuestIds: ["guest-nonmember"],
+        },
+        role: ADMIN,
+        eligibleGuestIds: new Set<string>(),
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        message: OTHER_LODGE_RATE_INELIGIBLE_GUEST_MESSAGE,
         status: 400,
       }),
     );
@@ -109,7 +171,7 @@ describe("resolveOtherLodgeRateElection", () => {
 
   it("refuses ticks with no lodge behind them", () => {
     expect(() =>
-      resolveOtherLodgeRateElection({
+      elect({
         booking: makeBooking(),
         input: { otherLodgeId: null, otherLodgeMemberGuestIds: ["guest-nonmember"] },
         role: ADMIN,
@@ -123,7 +185,7 @@ describe("resolveOtherLodgeRateElection", () => {
   });
 
   it("reprices a guest the officer has just ticked", () => {
-    const election = resolveOtherLodgeRateElection({
+    const election = elect({
       booking: makeBooking(),
       input: { otherLodgeId: "lodge-1", otherLodgeMemberGuestIds: ["guest-nonmember"] },
       role: ADMIN,
@@ -137,7 +199,7 @@ describe("resolveOtherLodgeRateElection", () => {
   });
 
   it("reprices a guest the officer has just UNticked — the direction a delta would miss", () => {
-    const election = resolveOtherLodgeRateElection({
+    const election = elect({
       booking: makeBooking({
         otherLodgeId: "lodge-1",
         guests: [{ id: "guest-a", isMember: false, otherLodgeMember: true }],
@@ -154,7 +216,7 @@ describe("resolveOtherLodgeRateElection", () => {
   });
 
   it("clearing the lodge unticks everybody, and reprices them", () => {
-    const election = resolveOtherLodgeRateElection({
+    const election = elect({
       booking: makeBooking({
         otherLodgeId: "lodge-1",
         guests: [
@@ -176,7 +238,7 @@ describe("resolveOtherLodgeRateElection", () => {
     // The panel sends the fields only when they differ, but a client that
     // re-asserts the stored election must still be a no-op: repricing here would
     // re-rate settled guests at today's season rates on an unrelated save.
-    const election = resolveOtherLodgeRateElection({
+    const election = elect({
       booking: makeBooking({
         otherLodgeId: "lodge-1",
         guests: [{ id: "guest-a", isMember: false, otherLodgeMember: true }],

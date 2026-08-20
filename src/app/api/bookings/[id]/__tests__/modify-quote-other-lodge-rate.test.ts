@@ -83,6 +83,18 @@ vi.mock("@/lib/lodge-capacity", async (importOriginal) => {
 // makes of the flag is unit-tested in `booking-other-lodge-rate.test.ts`.
 vi.mock("@/lib/membership-type-policy", () => ({
   assertMembershipTypeBookingAllowed: vi.fn().mockResolvedValue(undefined),
+  // #2978: every guest on this suite's fixtures is a plain non-member, so the
+  // real helper would return all of them. Stubbed rather than run for real
+  // because this file mocks the module wholesale and has no membership-type or
+  // subscription fixtures behind it; WHO is eligible is tested against the real
+  // resolver in `membership-type-policy-subscription-reprice.test.ts`, and the
+  // FENCE against that answer in `booking-other-lodge-rate.test.ts`. What this
+  // file tests is the quote route's behaviour once eligibility is settled.
+  resolveOtherLodgeRateEligibleGuestIds: vi
+    .fn()
+    .mockImplementation((_db: unknown, { guests }: { guests: Array<{ id: string }> }) =>
+      Promise.resolve(new Set(guests.map((guest) => guest.id))),
+    ),
   resolveGuestRateMembershipTypes: vi
     .fn()
     .mockImplementation((_db: unknown, { guests }: { guests: Array<Record<string, unknown>> }) =>
