@@ -298,8 +298,8 @@ src/lib/xero-contact-create-recovery.ts 830 domain-module
 src/lib/xero-contact-groups.ts 853 domain-module
 src/lib/xero-contacts.ts 1700 domain-module
 src/lib/xero-credit-notes.ts 932 domain-module
-src/lib/xero-hardening-report.ts 959 domain-module
-src/lib/xero-inbound/credit-note-repairs.ts 979 domain-module
+src/lib/xero-hardening-report.ts 1080 domain-module
+src/lib/xero-inbound/credit-note-repairs.ts 980 domain-module
 src/lib/xero-inbound/invoice-paid-effects.ts 1525 domain-module
 src/lib/xero-invoice-rounding-audit.ts 743 domain-module
 src/lib/xero-member-grouping-resync.ts 794 domain-module
@@ -309,5 +309,6 @@ src/lib/xero-operation-outbox.ts 2422 domain-module
 src/lib/xero-operation-retry.ts 1311 domain-module
 src/lib/xero-organisation.ts 983 domain-module
 src/lib/xero-record-activity.ts 726 domain-module
-src/lib/xero-sync.ts 833 domain-module
+src/lib/xero-refund-note-link-repair.ts 819 domain-module
+src/lib/xero-sync.ts 872 domain-module
 src/proxy.ts 1199 domain-module

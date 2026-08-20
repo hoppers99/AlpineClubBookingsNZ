@@ -65,6 +65,7 @@ export interface XeroReconciliationReportEmail {
     mismatchedCanonicalLinks: number;
     staleCanonicalLinks: number;
     duplicateActiveCanonicalLinks: number;
+    overCoveredStripeRefundPayments: number;
     stalePendingOperations: number;
     recentFailedOperations: number;
     recentPartialOperations: number;
@@ -230,6 +231,7 @@ export function adminXeroReconciliationReportTemplate(report: XeroReconciliation
     { label: "Mismatched canonical links", value: String(report.summary.mismatchedCanonicalLinks) },
     { label: "Stale canonical links", value: String(report.summary.staleCanonicalLinks) },
     { label: "Duplicate active canonical links", value: String(report.summary.duplicateActiveCanonicalLinks) },
+    { label: "Stripe refunds over-covered by credit notes", value: String(report.summary.overCoveredStripeRefundPayments) },
     { label: "Stale pending/running operations", value: String(report.summary.stalePendingOperations) },
     { label: "Recent failed operations", value: String(report.summary.recentFailedOperations) },
     { label: "Recent partial operations", value: String(report.summary.recentPartialOperations) },
