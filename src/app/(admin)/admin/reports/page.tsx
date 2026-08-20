@@ -200,13 +200,9 @@ export default function ReportsPage() {
     needs it. `lodges.length > 1` is false for a FAILED or FORBIDDEN list too,
     and `/admin/reports` is in the FINANCE area — `FINANCE_ADMIN`,
     `FINANCE_USER` and `ADMIN_MEMBERSHIP` all hold no `lodge` entry, so
-    `/api/admin/lodges` was a permanent 403 for them until #2925 relaxed it to
-    any admitted admin. The occupancy card and chart title then read "Occupancy
-    Rate" with no scope, and a club-wide figure is indistinguishable from one
-    lodge's.
-
-    The handling below stays: `failed` is unchanged, and a custom role holding
-    `finance: "view"` with `overview: "none"` is still refused.
+    `/api/admin/lodges` 403'd for them until #2925 relaxed it — the card then
+    read "Occupancy Rate" with no scope. The handling below stays regardless:
+    `failed` is unchanged, and a role with `overview: "none"` is still refused.
 
     Unknown plurality is labelled as unknown rather than left blank. The
     selector is not rendered in that state, so the scope really is whatever the

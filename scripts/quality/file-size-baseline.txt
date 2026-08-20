@@ -55,7 +55,7 @@ src/app/(admin)/admin/image-manager/image-manager-client.tsx 727 domain-module
 src/app/(admin)/admin/lockers/page.tsx 744 route-page-shell
 src/app/(admin)/admin/lodge/page.tsx 559 route-page-shell
 src/app/(admin)/admin/lodges/[id]/page.tsx 602 route-page-shell
-src/app/(admin)/admin/lodges/[id]/setup/page.tsx 913 route-page-shell
+src/app/(admin)/admin/lodges/[id]/setup/page.tsx 916 route-page-shell
 src/app/(admin)/admin/member-applications/_components/approval-mapping-panel.tsx 736 domain-module
 src/app/(admin)/admin/member-applications/page.tsx 790 route-page-shell
 src/app/(admin)/admin/members/[id]/_components/member-dependent-dialog.tsx 712 domain-module
