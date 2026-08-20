@@ -198,3 +198,152 @@ export function resolveBaseSizes(root: string, ref: string): BaseResolution {
   }
   return { ok: true, ref: base.sha, sizes };
 }
+
+/* ------------------------------------------------------------------------- *
+ * Evaluation
+ * ------------------------------------------------------------------------- */
+
+export type ComputedFindingKind =
+  | "base-unresolvable"
+  | "new-over-budget"
+  | "grown-beyond-base"
+  | "unclassified-source-file";
+
+export type ComputedFinding = {
+  severity: "regression" | "unusable";
+  kind: ComputedFindingKind;
+  file: string | null;
+  budget: string | null;
+  /** Length on the base ref, or null for a file that is new there. */
+  previous: string | null;
+  current: string | null;
+  problem: string;
+  action: string;
+};
+
+export type ComputedResult = {
+  findings: ComputedFinding[];
+  /** The commit compared against, or null when it could not be resolved. */
+  baseSha: string | null;
+  /** Production files this run actually judged. */
+  checkedFiles: number;
+};
+
+/**
+ * Judge only the files this change touched, against their length on the base.
+ *
+ * THE RULE IS UNCHANGED from the stored-ledger version: a file not previously
+ * over budget may not go over it, and a file already over may not grow. What
+ * changes is that "already over, and by how much" is read from the base ref.
+ *
+ * TWO PROPERTIES THIS GAINS, both of which the ledger needed machinery to fake:
+ *
+ * 1. **No ceiling drift, for free.** The ledger enforced exact equality with the
+ *    tree precisely because a merely-not-worse ledger rots: a file could shrink
+ *    to 100 lines, keep a 900-line ceiling, and grow back to 900 with nothing to
+ *    show for it. Here the ceiling IS the base ref, so a file that shrank on one
+ *    change has the smaller number as its ceiling on the next. Drift is not
+ *    prevented, it is unrepresentable.
+ * 2. **A rename cannot launder debt**, because the previous length is looked up
+ *    under the old path that git reports, not under a key that no longer exists.
+ *
+ * WHAT IT DELIBERATELY STOPS DOING: it no longer judges files the change did not
+ * touch. An untouched file cannot have grown, so there is nothing to catch — and
+ * scanning them was the only reason the whole tree's debt had to be written down.
+ * The aggregate figure is now a report you ask for, not a file you maintain.
+ */
+export function evaluateComputedRatchet(input: {
+  root: string;
+  baseRef: string;
+  /** Files whose classification the scan could not determine. */
+  unclassified: ReadonlyArray<{ file: string; reason: string }>;
+  isProductionFile: (file: string) => boolean;
+  budgetForFile: (file: string) => { category: string; limit: number };
+  countLines: (root: string, file: string) => number;
+}): ComputedResult {
+  const findings: ComputedFinding[] = [];
+
+  for (const { file, reason } of input.unclassified) {
+    findings.push({
+      severity: "unusable",
+      kind: "unclassified-source-file",
+      file,
+      budget: null,
+      previous: null,
+      current: null,
+      problem: reason,
+      action:
+        "give the file a path this check can classify, or correct the " +
+        "classification rules — an unclassifiable source file is a hole in the " +
+        "gate, not a file it may skip",
+    });
+  }
+
+  const resolved = resolveBaseSizes(input.root, input.baseRef);
+  if (!resolved.ok) {
+    findings.push({
+      severity: "unusable",
+      kind: "base-unresolvable",
+      file: null,
+      budget: null,
+      previous: null,
+      current: null,
+      problem: resolved.error,
+      action: "fetch the base ref, or pass one that exists, then re-run",
+    });
+    return { findings, baseSha: null, checkedFiles: 0 };
+  }
+
+  let checkedFiles = 0;
+  for (const [file, previous] of [...resolved.sizes.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    if (!input.isProductionFile(file)) continue;
+    checkedFiles += 1;
+
+    const budget = input.budgetForFile(file);
+    const current = input.countLines(input.root, file);
+    const describe = `${budget.category}, <= ${budget.limit} LOC`;
+
+    if (previous.kind === "absent") {
+      if (current > budget.limit) {
+        findings.push({
+          severity: "regression",
+          kind: "new-over-budget",
+          file,
+          budget: describe,
+          previous: null,
+          current: `${current} LOC, over by ${current - budget.limit}`,
+          problem: "a NEW file is over its budget",
+          action: "split it, or bring it under the budget before it lands",
+        });
+      }
+      continue;
+    }
+
+    // An already-over file keeps its own length as the ceiling; an under-budget
+    // one keeps the budget. Taking the max is what lets existing debt stay while
+    // refusing growth, without a stored list of exceptions.
+    const ceiling = Math.max(budget.limit, previous.lines);
+    if (current > ceiling) {
+      const renamedNote = previous.from ? ` (renamed from ${previous.from})` : "";
+      findings.push({
+        severity: "regression",
+        kind: "grown-beyond-base",
+        file,
+        budget: describe,
+        previous: `${previous.lines} LOC on the base ref${renamedNote}`,
+        current: `${current} LOC, +${current - ceiling} beyond its ceiling`,
+        problem:
+          previous.lines > budget.limit
+            ? "an already-oversized file grew"
+            : "the file grew past its budget",
+        action:
+          "split or reduce it; if the increase is genuinely necessary, say in " +
+          "the PR body why splitting is worse here — there is no baseline file " +
+          "to regenerate any more, so an accepted increase is explained rather " +
+          "than recorded",
+      });
+    }
+  }
+
+  return { findings, baseSha: resolved.ref, checkedFiles };
+}
