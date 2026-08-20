@@ -143,7 +143,12 @@ export function MaintenanceQrSection() {
       return;
     }
     let cancelled = false;
-    void toDataURL(minted.signUrl, { width: 512, margin: 1 })
+    // margin: 4 bakes the QR spec's recommended 4-module white quiet zone INTO
+    // the (opaque-white) bitmap, so the code stays scannable without a raw white
+    // background utility behind it — which would not follow the club theme
+    // (brand-color contract). The preview img below therefore needs no raw
+    // neutral and rides on a theme-token border alone.
+    void toDataURL(minted.signUrl, { width: 512, margin: 4 })
       .then((url) => {
         if (!cancelled) setQrDataUrl(url);
       })
@@ -253,7 +258,7 @@ export function MaintenanceQrSection() {
                 <img
                   src={qrDataUrl}
                   alt={`QR code for reporting a maintenance issue at ${minted.lodgeName}`}
-                  className="h-56 w-56 rounded-md border bg-white p-2"
+                  className="h-56 w-56 rounded-md border"
                 />
               </div>
             ) : (
