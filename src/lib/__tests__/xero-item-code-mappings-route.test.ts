@@ -552,12 +552,6 @@ describe("Xero item-code mappings route", () => {
 // the file green.
 // ---------------------------------------------------------------------------
 describe("per-area gate on /api/admin/xero/item-code-mappings (#2921)", () => {
-  function getRequest() {
-    return new NextRequest(
-      "http://localhost/api/admin/xero/item-code-mappings",
-    );
-  }
-
   beforeEach(() => {
     vi.clearAllMocks();
     mockPrisma.member.count.mockResolvedValue(1);
@@ -569,7 +563,7 @@ describe("per-area gate on /api/admin/xero/item-code-mappings (#2921)", () => {
   it("admits a view-only admin on the finance:view read", async () => {
     mockAuth.mockResolvedValue(readOnlyAdminSession);
 
-    const response = await getItemCodeMappings(getRequest());
+    const response = await getItemCodeMappings();
 
     expect(response.status).toBe(200);
   });
@@ -589,7 +583,7 @@ describe("per-area gate on /api/admin/xero/item-code-mappings (#2921)", () => {
   it("refuses an admin with no finance access on both handlers", async () => {
     mockAuth.mockResolvedValue(contentAdminSession);
 
-    const read = await getItemCodeMappings(getRequest());
+    const read = await getItemCodeMappings();
     const write = await putItemCodeMappings(
       makePutRequest({ entranceFees: {} }),
     );

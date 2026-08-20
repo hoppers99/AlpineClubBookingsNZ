@@ -25,11 +25,15 @@ import type { AppAccessRole } from "@/lib/access-roles";
  *   `overview: view`, and nothing else at all. It pins the **area**: it must be
  *   refused by every route outside `content`. Re-point a route at the
  *   `overview` catch-all — the #2949 shape — and its denial flips too.
- * - `financeAdminSession` (`FINANCE_ADMIN`) and `membershipAdminSession`
- *   (`ADMIN_MEMBERSHIP`) are the positive controls. A gate test built only from
+ * - `financeAdminSession` (`FINANCE_ADMIN`) and `bookingsAdminSession`
+ *   (`ADMIN_BOOKINGS`) are the positive controls. A gate test built only from
  *   denials passes just as well when the route is broken shut as when it is
  *   correct, so assert at least one admission by a role that holds exactly the
  *   declared permission and no more.
+ *
+ * Only the roles a suite actually uses live here — the dead-code gate removes an
+ * unused fixture, so add the bundle you need (they are all in
+ * `ADMIN_ROLE_BUNDLES`) at the point you write the test that needs it.
  *
  * ## How to use them
  *
@@ -65,9 +69,6 @@ function sessionFor(id: string, roles: AppAccessRole[]) {
   };
 }
 
-/** `edit` on every area. The historical "is this an admin at all" fixture. */
-export const fullAdminSession = sessionFor("gate-full-admin", ["ADMIN"]);
-
 /** `view` on every area, `edit` on none. Pins the level half of a requirement. */
 export const readOnlyAdminSession = sessionFor("gate-readonly-admin", [
   "ADMIN_READONLY",
@@ -81,11 +82,6 @@ export const contentAdminSession = sessionFor("gate-content-admin", [
 /** `finance: edit`, plus `view` on bookings/membership/support/overview. */
 export const financeAdminSession = sessionFor("gate-finance-admin", [
   "FINANCE_ADMIN",
-]);
-
-/** `membership: edit`, plus `view` on bookings/finance/support/overview. */
-export const membershipAdminSession = sessionFor("gate-membership-admin", [
-  "ADMIN_MEMBERSHIP",
 ]);
 
 /**
