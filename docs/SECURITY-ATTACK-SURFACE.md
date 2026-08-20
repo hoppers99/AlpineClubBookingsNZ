@@ -3168,7 +3168,7 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   flow, which this PR's scope excludes — and it would trade a bounded disclosure for
   regression risk across the flows this PR has just corrected. It is therefore a
   named, deferred fix the owner has accepted, recorded here and in the module
-  docblock; it is deliberately **not** filed as an issue.
+  docblock, and **tracked as issue #2974** for a later supervised, gated PR.
 
   An absent or expired cookie degrades to the member's ordinary landing rather
   than to an error — as does a browser too old to send `Sec-Fetch-*` — and the

@@ -72,7 +72,7 @@ import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
  * hops; the owner chose (19 Aug 2026) to shorten the window rather than build that
  * in a PR whose scope excludes the login flow, and
  * `docs/SECURITY-ATTACK-SURFACE.md` records it as an accepted, bounded residual
- * with its named fix.
+ * with its named fix, tracked as issue #2974.
  *
  * ## Why the shape check is this narrow
  *
