@@ -93,11 +93,14 @@ as well as — or instead of — uploading it to S3.
    leave it alone unless the mount has moved. It must be a full path (starting
    with `/`) outside the application directory.
 
-   **It is the path inside the container, not on the host.** The application
-   runs in a container with a read-only filesystem, so it can only write to a
-   directory that has been mounted into it. Typing a host path such as
-   `/home/lwtc_lodge/db_backup` fails, because that path does not exist in the
-   container's filesystem and cannot be created there.
+   **If you run the application in a container — which the shipped Docker
+   Compose stack does — this is the path inside the container, not on the
+   host.** That container has a read-only filesystem, so it can only write to a
+   directory mounted into it. Typing a host path such as
+   `/home/alpineclub/db_backup` fails there, because that path does not exist in
+   the container's filesystem and cannot be created inside it. Running the
+   application directly on a server instead? Then it is simply a path on that
+   server, and the rest of this section's mount setup does not apply to you.
 4. **Save**. The directory is created if it does not exist, and the save is
    refused if the application cannot write to it — so a path that will not work
    is rejected while you are looking at the screen, not at 3am.
@@ -119,11 +122,11 @@ To use a host directory:
 
 ```bash
 # 1. Create it, and give it to the user the app runs as (uid 1001)
-sudo mkdir -p /home/lwtc_lodge/db_backup
-sudo chown -R 1001:1001 /home/lwtc_lodge/db_backup
+sudo mkdir -p /srv/alpineclub/db_backup
+sudo chown -R 1001:1001 /srv/alpineclub/db_backup
 
 # 2. Point .env at it
-#    BACKUP_LOCAL_HOST_DIR=/home/lwtc_lodge/db_backup
+#    BACKUP_LOCAL_HOST_DIR=/srv/alpineclub/db_backup
 #    BACKUP_LOCAL_DIR=/backups
 
 # 3. Recreate the container so the mount exists (a restart is not enough)
@@ -134,7 +137,7 @@ docker compose exec app sh -c 'touch /backups/.probe && rm /backups/.probe && ec
 ```
 
 Then open the Backups page: the backup directory is already `/backups`, and the
-files appear on the host in `/home/lwtc_lodge/db_backup`.
+files appear on the host in `/srv/alpineclub/db_backup`.
 
 **Two things to get right before relying on this.**
 

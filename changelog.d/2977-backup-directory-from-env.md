@@ -2,14 +2,16 @@
   works (#2977).** Two things went wrong for the first operator who tried
   it, and both are fixed.
 
-  The backup directory is the path **inside the container**, not on the server,
-  because the application runs in a container with a read-only filesystem and
-  can only write to a directory mounted into it. Entering a host path such as
-  `/home/lwtc_lodge/db_backup` failed with `Could not create that directory:
-  ENOENT` — accurate and useless. The message now explains that the application
-  is containerised, names the mounted path when there is one, and otherwise
-  gives the two steps needed to create it, including the ownership change most
-  people would hit next.
+  On a containerised deployment — which the shipped Docker Compose stack is —
+  the backup directory is the path **inside the container**, not on the server,
+  because that container has a read-only filesystem and can only write to a
+  directory mounted into it. Entering a host path such as
+  `/home/alpineclub/db_backup` failed with `Could not create that directory:
+  ENOENT` — accurate and useless. The message now says so when the application
+  really is containerised, names the mounted path when there is one, and
+  otherwise gives the two steps needed to create it, including the ownership
+  change most people would hit next. Running the application directly on a
+  server? Nothing here changes for you.
 
   The directory is also configurable per deployment now, so each club can put it
   where their server has room. Set `BACKUP_LOCAL_HOST_DIR` in `.env` to a host

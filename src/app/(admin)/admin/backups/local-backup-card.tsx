@@ -287,10 +287,27 @@ export function LocalBackupCard({
             onChange={(e) => section.setDraft({ localPath: e.target.value })}
             {...pathHint.fieldProps}
           />
+          {/*
+            Deployment-NEUTRAL on purpose (INV-CONFIG-001). An earlier draft of
+            this hint asserted "this application runs in a container", which is
+            true of one deployment and false for an adopter running the app
+            directly on a host - and it told that adopter they cannot write
+            where in fact they can. The container case is stated as a condition
+            they can evaluate, not as a fact about their system.
+
+            The "outside the application directory" clause is load-bearing, not
+            padding: `resolveLocalBackupDirectory` REFUSES such a path, because
+            anything under the app root risks being served over the web. Saying
+            so here is what stops the officer discovering the rule as a refusal.
+
+            Where the value came from is NOT stated here. The paragraph below
+            says it, and only when `status.localPathFromEnv` says it is true.
+          */}
           <FieldHint {...pathHint.hintProps}>
-            The path INSIDE the container, not on the host — this application
-            runs in a container and can only write to a mounted directory. Your
-            deployment sets it with BACKUP_LOCAL_DIR in .env.
+            A full path outside the application directory, on a volume that
+            survives a restart. If this deployment runs in a container, it must
+            be a path inside the container — a directory mounted into it, not a
+            path on the host.
           </FieldHint>
           {status.localPathFromEnv ? (
             <p className="text-xs text-muted-foreground">
