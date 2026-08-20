@@ -24,6 +24,10 @@ accounting, membership, and booking risk.
     Critical/High-risk PR for explicit owner approval. Never squash or
     force-push. Delete the branch after merge; a linked issue closes only when
     its PR is eligible and merged.
+13. Tear down any Docker infrastructure this lane created — on an abandoned or
+    failed lane too, not only a merged one. See "Lane-owned Docker
+    infrastructure" below for the naming convention, the teardown commands, and
+    `npm run stale-containers`.
 
 ## Planning Mode
 
@@ -243,6 +247,137 @@ The `agent-workflow-contract.test.ts` verification test pins these entry-point
 links and PR evidence fields. A change that removes or contradicts the shared
 workflow must update the canonical contract deliberately instead of allowing
 agent-specific guidance to drift silently.
+
+## Lane-owned Docker infrastructure
+
+A lane that starts Docker infrastructure owns removing it. This is a close-out
+responsibility, not a courtesy (owner decision, 11 Aug 2026, #2794).
+
+The reason is not tidiness. A healthy idle container produces no symptom at all,
+so nobody discovers abandoned debris — they discover a host that seems busy.
+#2663's CPU measurement refuses to start unless the host carries exactly its four
+approved measurement containers, and it was blocked for over a week by nine
+containers belonging to five issues that had already closed.
+
+### Name it so a check can find its owner
+
+Put the owning issue in the name when you create the container or Compose
+project, using the `issue<n>` token:
+
+```text
+pg-issue2794                     # standalone container
+tacbookings-issue2794            # Compose project -> tacbookings-issue2794-app-1
+```
+
+A bare number (`pg-2794`, `drift-2794`) is also recognised, because that is what
+existing lanes wrote — but only in a name whose **first segment** is one of the
+agent-owned families `pg-`, `drift-`, `wt-` or `tacbookings-`. That anchor is
+deliberate: without it any container on the host carrying a 3-7 digit run inside
+this repository's issue range was claimed, and `zookeeper-2181`, `etcd-2379` and
+`pgdata-2026` were each printed as debris with a `docker rm -f` line. So a bare
+number in any other name — including a year or a port — reports as **unclassified**
+rather than as somebody's lane.
+
+Prefer the explicit token whatever your name looks like: it needs no anchor at
+all, and it survives a name that also contains a port, a shard or a size. Two
+further consequences of the same conservatism:
+
+- A **bare number inside a reserved family** (`tacbookings-2026`) is refused as
+  ambiguous, because a deployment can be configured to use exactly that name (see
+  the reserved-project rule below). Declare such a stack with the token or a label.
+- The report's `OWNER FROM` column says which way each row's owner was
+  established — `label`, `issue<n>`, `name digits` or `reserved`. A
+  `name digits` row is the weakest claim on the table and is the one to read twice
+  before running anything.
+
+Better still, label the container at creation — a label beats any name-shaped
+guess, and it is the only form that cannot be confused by an unrelated digit run:
+
+```text
+docker run --label agent-lane.issue=2794 ...
+docker run --label agent-lane.shared=true ...   # deliberately shared, not per-issue
+```
+
+Two rules make the check trustworthy rather than merely convenient:
+
+- **Never give per-issue infrastructure a shared name.** `tacbookings`,
+  `tacbookings-staging` and `tacbookings-measure` are reserved Compose projects —
+  production/local, the E2E stack, and #2663's measurement stack. The reporter
+  treats all three as shared and will never offer them for removal, and it adds
+  this host's own `COMPOSE_PROJECT_NAME` and `E2E_COMPOSE_PROJECT` to that set,
+  because both defaults are environment-configurable.
+- **If a stack is deliberately shared across lanes, label it
+  `agent-lane.shared=true`** and say so in the issue, rather than letting it look
+  like debris somebody may eventually clear. Surrounding whitespace and casing are
+  tolerated, `1` and `yes` also count, and a value that is neither yes-like nor
+  no-like is reported as unclassified rather than guessed from the name.
+
+### Record the teardown command when you create it
+
+Write the exact teardown command into the lane's checkpoint at the moment the
+infrastructure is created, not from memory at the end:
+
+```text
+docker compose -p <project> down -v --remove-orphans   # a whole Compose project
+docker rm -f <container>                               # a standalone container
+npm run test:e2e:down                                  # the E2E stack this repo ships
+```
+
+Use `down -v` only for a disposable lane project, where the volumes exist solely
+for that lane. Removing a whole Compose project also removes its network and its
+named volumes, which is most of the disk the debris was holding — removing only
+the containers leaves those behind.
+
+### Run it when the lane ends — including when it ends badly
+
+Teardown is due on **every** ending, not just the happy one: a merged and closed
+issue, a lane abandoned or replaced, and a failed experiment nobody is
+investigating any more. The abandoned cases are the ones that actually produced
+this problem, because there is no merge step to hang the habit on.
+
+Never remove shared staging or developer services you did not create, and never
+remove a container belonging to somebody else's open lane.
+
+### See what is already there
+
+```text
+npm run stale-containers               # human-readable report
+npm run stale-containers -- -- --json  # same data for an orchestrator or a preflight
+node scripts/stale-containers.mjs --json   # bypasses npm entirely; always exact
+```
+
+The doubled `--` on the JSON line is the same portable form
+[`SCOPED_CONTEXT.md`](SCOPED_CONTEXT.md) uses for `npm run agent:context`, and the
+reporter's parser skips a literal `--` so the one line is right in PowerShell, Git
+Bash and CI alike. **What must not be written is `npm run stale-containers --json`
+with no separator at all**: measured on this repository, npm consumes `--json` as
+its own flag, the script receives nothing, and it prints the human table and exits
+0 — so a preflight or orchestrator parsing that output either fails at `JSON.parse`
+or silently misreads a padded table. When in doubt, run the `node` form.
+
+It lists agent-owned containers with their owning issue, how that owner was
+established, the issue's state, the container's state and age, and whether it is
+safe to review as stale. Four properties are deliberate and should not be traded
+away:
+
+- **It never removes anything.** There is no `--remove` and no `--prune`. The
+  owner ruled out a background garbage collector and any age-based expiry: a
+  long-running but still-active lane must not lose its database because a timer
+  fired.
+- **Failure reads "unknown", never "safe to remove".** A name with no issue
+  number in it, a name with two, a digit run in a name that is not agent-owned, a
+  number that turns out to be a pull request rather than an issue, an issue GitHub
+  could not resolve, and `gh` being absent or logged out all report as unknown.
+  Docker being unreachable exits non-zero rather than printing an empty,
+  clean-looking table.
+- **A printed teardown never exceeds the rows you just read.** The
+  `docker compose -p <project> down -v` form removes every container in the
+  project plus its network and named volumes, so it is offered only when *every*
+  container in that project is stale and they name one owning issue. A partly
+  stale project gets `docker rm -f` for its stale members and a warning naming the
+  siblings being left alone.
+- **Reported is not removed.** Read each target, confirm no open lane is using
+  it, then run the teardown it prints.
 
 ## Stop Conditions
 
