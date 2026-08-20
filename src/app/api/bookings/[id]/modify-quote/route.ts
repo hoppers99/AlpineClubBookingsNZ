@@ -750,6 +750,16 @@ export async function POST(
   // Other Lodges epic: the same resolver the apply path runs, so a refused tick
   // is refused here with the same message before pricing, and the effective
   // per-guest flag below is identical to the one the save will persist.
+  // #2543 — resolved ONCE for this request. The member-guest refusal, the
+  // paid-up-adult requirement, the pricing calls and (since #2978) the
+  // other-lodge eligibility fence must all branch on the same answer: an admin
+  // saving the lockout panel mid-request could otherwise have one of them
+  // decide under one regime and another under the other, and this route
+  // differences two pricing calls into the member's settlement delta. Hoisted
+  // to here rather than resolved twice, which is what
+  // `subscription-lockout-call-sites.test.ts` exists to catch.
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
+
   let otherLodgeElection: OtherLodgeRateElection;
   try {
     // #2978: who may be ticked is a RATE question, so it needs the season's
@@ -772,7 +782,7 @@ export async function POST(
       ? await resolveOtherLodgeRateEligibleGuestIds(prisma, {
           seasonYear: getSeasonYear(booking.checkIn),
           guests: booking.guests,
-          subscriptionLockoutMode: await resolveSubscriptionLockoutMode(),
+          subscriptionLockoutMode,
         })
       : new Set<string>();
     otherLodgeElection = resolveOtherLodgeRateElection({
@@ -1283,10 +1293,6 @@ export async function POST(
     }
     throw error;
   }
-
-  // #2543 — resolved once for this request; the member-guest refusal and the
-  // paid-up-adult requirement below must branch on the same answer.
-  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
 
   if (!isAdmin) {
     // D-8: throws the neutral refusal for a cross-family guest rather than
