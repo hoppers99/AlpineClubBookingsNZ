@@ -15,11 +15,16 @@ import { WeakAuthSecretError } from "@/lib/integration-crypto";
 import {
   BACKUP_PROVIDER,
   BACKUP_CREDENTIAL_KEYS,
+  resolveBackupConfig,
   isValidS3Bucket,
   isValidS3Region,
   MIN_BACKUP_RETENTION_DAYS,
   MAX_BACKUP_RETENTION_DAYS,
 } from "@/lib/backup-config";
+import {
+  LocalBackupPathError,
+  resolveLocalBackupSelection,
+} from "@/lib/backup-local";
 import logger from "@/lib/logger";
 
 // POST /api/admin/backups/config — write non-secret backup configuration.
@@ -49,12 +54,29 @@ const bodySchema = z
     // A blank string clears the destination (back to local-only).
     bucket: z.string().max(255).optional(),
     region: z.string().max(64).optional(),
+    // Local (on-host) destination. A blank path clears it.
+    localEnabled: z.boolean().optional(),
+    localPath: z.string().max(4096).optional(),
   })
   .strict();
 
-/** Destination keys are Full-Admin only even at support:edit. */
+/**
+ * Destination keys are Full-Admin only even at support:edit.
+ *
+ * `localPath` is one of them, and for the identical reason the bucket is:
+ * whoever chooses where the dump lands can send the entire database somewhere
+ * they can read it. A local directory makes that easier, not harder — point it
+ * inside the app's own tree and the dump is served over HTTP — so it carries
+ * the same privilege rather than the lower one its "just a setting" appearance
+ * suggests. `localEnabled` stays support:edit, like `enabled`: turning a
+ * configured destination on and off is operational.
+ */
 function touchesDestination(body: z.infer<typeof bodySchema>): boolean {
-  return body.bucket !== undefined || body.region !== undefined;
+  return (
+    body.bucket !== undefined ||
+    body.region !== undefined ||
+    body.localPath !== undefined
+  );
 }
 
 export async function POST(request: Request) {
@@ -112,6 +134,23 @@ export async function POST(request: Request) {
     }
   }
 
+  // Both local fields are validated together, against the state the save would
+  // LEAVE BEHIND rather than just what this request carries — see
+  // `resolveLocalBackupSelection`.
+  let resolvedLocalPath: string | undefined;
+  try {
+    resolvedLocalPath = await resolveLocalBackupSelection({
+      localEnabled: body.localEnabled,
+      localPath: body.localPath,
+      storedPath: async () => (await resolveBackupConfig()).localPath,
+    });
+  } catch (err) {
+    if (err instanceof LocalBackupPathError) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    throw err;
+  }
+
   const changedKeys: string[] = [];
   try {
     if (body.enabled !== undefined) {
@@ -163,6 +202,31 @@ export async function POST(request: Request) {
         });
       }
       changedKeys.push(BACKUP_CREDENTIAL_KEYS.region);
+    }
+    if (body.localPath !== undefined) {
+      if (resolvedLocalPath === undefined) {
+        await deleteIntegrationCredential(
+          BACKUP_PROVIDER,
+          BACKUP_CREDENTIAL_KEYS.localPath,
+        );
+      } else {
+        await setIntegrationCredential({
+          provider: BACKUP_PROVIDER,
+          key: BACKUP_CREDENTIAL_KEYS.localPath,
+          value: resolvedLocalPath,
+          updatedByUserId: guard.session.user.id,
+        });
+      }
+      changedKeys.push(BACKUP_CREDENTIAL_KEYS.localPath);
+    }
+    if (body.localEnabled !== undefined) {
+      await setIntegrationCredential({
+        provider: BACKUP_PROVIDER,
+        key: BACKUP_CREDENTIAL_KEYS.localEnabled,
+        value: body.localEnabled ? "true" : "false",
+        updatedByUserId: guard.session.user.id,
+      });
+      changedKeys.push(BACKUP_CREDENTIAL_KEYS.localEnabled);
     }
   } catch (error) {
     if (error instanceof WeakAuthSecretError) {

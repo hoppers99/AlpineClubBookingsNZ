@@ -87,6 +87,7 @@ const MODULES_OFF = {
   memberGuests: false,
   aiDiagnostics: true,
   maintenanceReports: true,
+  alpineCentralServer: false,
 };
 
 /** Depth-first walk for the publisher element, wherever the page puts it. */

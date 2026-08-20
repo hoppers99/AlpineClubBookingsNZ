@@ -579,6 +579,12 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   "NotificationDeliveryPolicy.updatedByMemberId",
   "PageContent.updatedByMemberId",
   "PublicContentSettings.updatedByMemberId",
+  // Alpine Central Server connection singleton: records WHO last set this
+  // install's central-server connection, a bare FK-less String exactly like
+  // every other `*.updatedByMemberId` audit column here. Keeps the loser's id as
+  // immutable history on merge. (Detectable: `updatedByMemberId` is a Member FK
+  // column name elsewhere in the schema.)
+  "ServerNzSettings.updatedByMemberId",
   "SetupProgress.completedByMemberId",
   "SiteBanner.createdByMemberId",
   "SiteBanner.updatedByMemberId",

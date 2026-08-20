@@ -50,9 +50,9 @@ vi.mock("@/lib/auth", () => ({
   auth: mocks.auth,
 }));
 
-vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: async () =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(),
+vi.mock("@/lib/session-guards", async () => ({
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
 
@@ -132,11 +132,16 @@ describe("Admin modules schema contract", () => {
     // relation, whose model name contains "token" and tripped the guard on a model
     // it was never meant to police. Bounding the slice to ClubModuleSettings keeps
     // the real guarantee intact and precise.
-    const model = sliceFrom(
-      schema,
-      "model ClubModuleSettings",
-      "\n// A physical lodge property",
-    );
+    // Both sides of this merge fixed the same over-wide slice independently.
+    // Main's bound is the tighter one and subsumes this branch's, so it is kept.
+    // End the slice at the model's own closing brace, not at a distant section
+    // banner. The banner sat hundreds of lines past ClubModuleSettings, so every
+    // model declared in between was scanned as if it belonged to it — and the
+    // `not.toMatch(/secret|.../)` guard below then fired on a NEIGHBOUR's docblock
+    // (ServerNzSettings, whose comment exists to say its API key is NOT stored
+    // there) rather than on anything ClubModuleSettings persists. A Prisma model
+    // body holds no nested braces, so the first line-initial `}` ends it.
+    const model = sliceFrom(schema, "model ClubModuleSettings", "\n}");
     const migration = readRepoFile(
       "prisma/migrations/20260518113000_add_club_module_settings/migration.sql",
     );

@@ -757,6 +757,8 @@ async function resolveUnpaidSubscriptionRepricedMemberIds(
 /**
  * Resolve every guest's rate membership type + rateSource (#1930, E4, D3).
  * This REPLACES the old `applyMembershipTypeRatePolicyToGuests` boolean flip:
+ *   - a non-member flagged as a partner-lodge member -> the built-in FULL type
+ *     (OTHER_LODGE_MEMBER), which is the club's own member rate,
  *   - a true non-member  -> the built-in NON_MEMBER type (NON_MEMBER_DEFAULT),
  *   - a MEMBER_RATE member -> their own type (OWN_TYPE),
  *   - a member whose type forces the non-member rate (NON_MEMBER_RATE) or is
@@ -803,7 +805,16 @@ async function resolveUnpaidSubscriptionRepricedMemberIds(
  * that are not `NON_MEMBER_PRICING`.
  */
 export async function resolveGuestRateMembershipTypes<
-  Guest extends { isMember: boolean; memberId?: string | null },
+  Guest extends {
+    isMember: boolean;
+    memberId?: string | null;
+    /**
+     * The reciprocal other-club rate opt-in (Other Lodges epic). Optional on the
+     * constraint so every existing caller compiles unchanged: a caller that does
+     * not carry the flag resolves exactly as it did before this field existed.
+     */
+    otherLodgeMember?: boolean | null;
+  },
 >(
   db: unknown,
   params: {
@@ -893,6 +904,25 @@ export async function resolveGuestRateMembershipTypes<
   const fullTypeId = () => requireTypeId(typeIdByKey.get("FULL"), "FULL");
 
   return params.guests.map((guest) => {
+    // Other Lodges epic: a non-member the booking officer has recognised as a
+    // member of the booking's partner lodge prices from the built-in FULL type's
+    // rows — the club's own member rate, at this guest's own age tier.
+    //
+    // FIRST, and deliberately so. It is an explicit, audited human decision about
+    // one named person on one booking, so it outranks every rule below, all of
+    // which are derived from the guest's own record. It is fenced to
+    // `!isMember`: a member of THIS club already resolves through their own
+    // membership type, and letting the flag reach them would silently override
+    // both their type's policy and the #2543 unpaid-subscription reprice. The
+    // API boundary refuses the combination too — this is the second fence, not
+    // the only one.
+    if (!guest.isMember && guest.otherLodgeMember) {
+      return {
+        ...guest,
+        rateMembershipTypeId: fullTypeId(),
+        rateSource: "OTHER_LODGE_MEMBER" as const,
+      };
+    }
     if (!guest.isMember) {
       // True non-member: the only class the group discount may substitute.
       return {

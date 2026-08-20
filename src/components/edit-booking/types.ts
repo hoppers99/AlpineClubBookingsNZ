@@ -24,6 +24,12 @@ export interface Guest {
   nights?: string[] | null;
   priceCents: number;
   /**
+   * Other Lodges epic: true when this NON-MEMBER guest is priced at the club's
+   * own member rate as a recognised member of the booking's partner lodge.
+   * Optional so pre-existing fixtures stay valid; absent reads as false.
+   */
+  otherLodgeMember?: boolean;
+  /**
    * The member-guest consent badge, composed server-side (#2307) and threaded
    * through unchanged. MG4 (#2309) reads only its TONE, and only to name the
    * remove control honestly: taking a row off while its consent request is
@@ -146,6 +152,17 @@ export interface BookingData {
    * false-valued — on every other booking, so their payload is unchanged.
    */
   memberWholeLodge?: boolean;
+  /**
+   * Other Lodges epic: the partner lodge this booking claims, or null/absent.
+   */
+  otherLodgeId?: string | null;
+  /**
+   * Other Lodges epic: the partner-lodge registry, in name order — ADMIN-ONLY
+   * and absent for every other viewer (see the booking page's conditional
+   * spread). Its presence is what offers the "Member of Other Lodge" control:
+   * the panel never guesses the audience, exactly as with `memberWholeLodge`.
+   */
+  otherLodges?: Array<{ id: string; name: string }>;
 }
 
 // #2266: an eligible promo chip, as returned by GET /api/promo-codes/available
@@ -243,6 +260,18 @@ export interface QuoteResult {
     promoAdjustmentCents?: number;
   } | null;
   itemizedChanges: ItemizedChange[];
+  /**
+   * Other Lodges epic: the per-person fees this edit would write, keyed by
+   * existing guest id, so each name can show its recalculated fee before the
+   * officer saves.
+   *
+   * The WHOLE remaining party, not only the re-rated rows — a party-wide reprice
+   * moves numbers on rows nobody ticked, and showing stored fees beside a new
+   * total is how a screen starts lying. Absent on an in-progress edit, which
+   * prices through the range planner rather than this breakdown; the panel then
+   * keeps showing the stored fees.
+   */
+  guestPrices?: { guestId: string; priceCents: number }[];
   nightDetails?: { date: string; availableBeds: number }[];
   // Issue #1668: set under an admin override when the target nights are over
   // capacity — the UI shows a warning and an explicit confirm rather than a

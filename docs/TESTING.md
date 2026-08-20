@@ -473,6 +473,43 @@ FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '+366d' \
   npm test -- --testTimeout=30000 --hookTimeout=30000 --retry=2
 ```
 
+### Any workflow that runs the suite must check out full git history
+
+Part of the unit suite shells out to `git` against **this repository's own
+commits**. `scripts/ci/check-doc-index-integrity.test.mjs` is the clearest case:
+it builds a real `pull_request` payload out of `HEAD^1` and `origin/main` so the
+doc-index CLI is exercised against commits that exist rather than against a
+fixture. `actions/checkout` clones at depth 1 by default, and a depth-1 clone has
+neither — no second commit, and no remote-tracking `origin/main`.
+
+When that happens the tests fail with a raw
+`fatal: ambiguous argument 'HEAD^1': unknown revision or path not in the working
+tree`, several frames inside a helper, naming nothing that points at the
+checkout. So the failure reads as a bug in whatever commit triggered it.
+
+It has happened. The canary ran the suite on a depth-1 clone while `verify`
+checked out in full, so the breakage passed all eight required checks, merged,
+and reddened `main` — once per clock offset in the matrix (#2907). Nothing then
+stopped the two diverging again, and the divergence is invisible everywhere
+anyone would look: the canary has no `pull_request` trigger, so no PR check sees
+it, and a developer's clone has full history exactly like `ci.yml`, so a local
+run cannot see it either.
+
+`npm run ci:workflowcheck` (`scripts/ci/check-workflow-suite-checkout-depth.mjs`,
+a step in the `verify` job) is what keeps them matched. It parses
+`.github/workflows/*.yml`, works out from the parsed shell command which jobs run
+the **whole** suite — wrapped invocations included, which is why the canary's
+`faketime -f '${{ matrix.offset }}' npm test -- …` counts — and fails when such a
+job has no `actions/checkout` step with `fetch-depth: 0`. A job that runs only
+**targeted** files (`npx vitest run <path>`) needs full history only when one of
+those files reads the repository's own history, which is why `migration-drift`
+and `data-migration-verification` are correct checking out shallow.
+
+The fix when it fails is `fetch-depth: 0` on that job's checkout step. It is
+**not** making the test skip when history is missing: a test that quietly
+disappears in one workflow is how this whole class of gap hides, and the
+surviving workflow's green then certifies nothing about it (#2907, #2909).
+
 ### Moving the frozen instant locally
 
 Separately from the canary, two environment variables move the **frozen** instant
@@ -681,3 +718,97 @@ So:
    entries by name puts two concurrent additions on the same lines, so git
    raises a conflict and a human classifies both — which is exactly the review a
    bare integer skipped.
+
+## Mocking `requireAdmin`: reference the helper, never wrap it
+
+A fourth convention in the same family — written the obvious way, a suite that
+mocks the admin guard reports green on something other than what it claims.
+
+`src/lib/__tests__/helpers/require-admin-mock.ts` is the shared `requireAdmin`
+stand-in. Wire it in as a **bare reference**, from an `async` factory:
+
+```ts
+vi.mock("@/lib/session-guards", async () => ({
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
+  requireActiveSessionUser: mocks.requireActiveSessionUser,
+}));
+```
+
+Not as a wrapper. A route tells the guard which area and level it needs by
+passing `{ permission: { area, level } }`, and the helper can only honour that if
+the value reaches it. An arrow that takes no parameter throws it away, the helper
+falls back to `hasAdminPortalAccess` — "is this person in the admin portal at
+all", a check the real guard has never performed — and **every per-area
+assertion in that file becomes vacuous**. A `lodge:view` route and a
+`lodge:edit` route stop being distinguishable.
+
+That is not hypothetical. It was found (#2921) when a suite passed a mutation its
+author had just written it to catch, and the sweep that followed found 50 more
+files in the same state. The bare reference is preferred over "remember to
+forward `options`" for one reason: every wrapper is a place the argument can be
+dropped again, and the reference has no argument to drop. Keep a wrapper only
+where one is load-bearing — a `vi.fn()` spy whose implementation is installed
+later — and forward its own first parameter:
+
+```ts
+mockRequireAdmin.mockImplementation(async (options) =>
+  (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(
+    options,
+  ),
+);
+```
+
+Two controls enforce this, and they are complementary rather than redundant:
+
+- the helper's parameter is **required** (it accepts `undefined`, because a route
+  that passes no options is legitimate), so a bare `evaluateRequireAdminMock()`
+  is a compile error that `npm run typecheck` catches;
+- `require-admin-mock-forwarding-contract.test.ts` parses every test file that
+  mentions the helper and fails on the shapes the type system cannot see —
+  `evaluateRequireAdminMock({})` compiles cleanly and is just as inert. It reads
+  `src/` from disk, so it has no import edge to the suites it scans and
+  `npm run test:related` will not select it. Run it directly.
+
+### Prove the gate, not the guard
+
+Forwarding makes the gates live; it does not exercise them. Before #2921 almost
+every admin suite signed in as `ADMIN` (which holds `edit` on every area) or
+`USER` (which holds nothing), and a pair of fixtures like that can only ever
+answer "is this person an admin at all".
+
+`helpers/admin-area-gate-sessions.ts` carries the role fixtures for asserting the
+real thing. Pin **both halves** of a requirement, plus one admission so a gate
+broken shut is not mistaken for a gate that works:
+
+- a view-only admin must be refused by an `:edit` route and admitted by a
+  `:view` one — that pins the **level**;
+- an admin with no access to the area at all must be refused outright — that
+  pins the **area**, and it is the half that catches a route re-pointed at the
+  `overview` catch-all;
+- a role holding exactly the declared permission must get through.
+
+Denials need no other setup: the guard answers before the handler touches the
+database, so assert the status *and* that the write mock was never called.
+
+The area half is worth the extra assertion. On fork PR #2949 three routes were
+moved from `{ area: "finance", level: "edit" }` to
+`{ area: "overview", level: "view" }` — a real privilege downgrade on
+money-moving routes — and 83 tests still passed. Reproduced on this tree against
+`main`'s pre-sweep suites, the same downgrade left all 32 of their tests green;
+with the sweep and these fixtures in place it fails six assertions.
+
+### The larger surface this does not cover
+
+Two limits, stated rather than implied:
+
+1. **A route that passes no explicit `permission` is still tested as "is this an
+   admin at all".** The real guard falls back to `getAdminRouteRequirement()`
+   keyed on the request path; a unit test calls the handler directly, so there is
+   no path for the mock to resolve. 170 of 287 `/api/admin` routes pass an
+   explicit literal and are covered; the rest resolve by prefix and are not.
+   `admin-route-area-matrix.test.ts` pins that prefix map separately.
+2. **188 test files mock `@/lib/session-guards` without this helper at all**,
+   typically resolving `requireAdmin` straight to `{ ok: true, session }`. Those
+   bypass the permission check entirely rather than degrading it, and neither
+   control above says anything about them.

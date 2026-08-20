@@ -242,6 +242,7 @@ describe("featureFlagsSchema", () => {
         memberGuests: false,
         aiDiagnostics: false,
         maintenanceReports: true,
+        alpineCentralServer: false,
       }),
     ).toBeDefined();
   });

@@ -16,6 +16,7 @@ import {
 } from "@prisma/client";
 
 import { ApiError } from "@/lib/api-error";
+import { OTHER_LODGE_RATE_IN_PROGRESS_MESSAGE } from "@/lib/booking-other-lodge-rate";
 import {
   getBookingEditPolicy,
   canModifyBookingStatusForRole,
@@ -71,6 +72,21 @@ export type BatchModifyInput = {
   // `resolveGuestMemberLinks` (admin-only, whole-lodge-only, placeholder-only) and
   // by the member-origin check on the apply/quote paths.
   linkGuestToMember?: Array<{ guestId: string; memberId: string }>;
+  /**
+   * The reciprocal "other club member" rate election (Other Lodges epic,
+   * follow-up to #2749): the partner lodge for the whole booking, and the
+   * complete END-STATE set of NON-MEMBER guests to price at the club's own
+   * member rate.
+   *
+   * Both are absent on an edit that says nothing about the rate, which leaves
+   * the stored election exactly as it is. `otherLodgeId: null` clears the lodge
+   * and, with it, every guest tick. `otherLodgeMemberGuestIds` is a SET, not a
+   * delta — a guest missing from a present array is unticked and reprices back
+   * to the non-member rate. Gated by `resolveOtherLodgeRateElection`
+   * (admin-only, non-member guests only, lodge required).
+   */
+  otherLodgeId?: string | null;
+  otherLodgeMemberGuestIds?: string[];
   promoCode?: string;
   // #2266 (MED-4): a guest-targeted promo's beneficiaries. EXISTING guests are
   // bound by bookingGuestId — a positional index would be re-bound to whatever
@@ -353,6 +369,15 @@ export function resolveTargetDates({
     // escape hatch — see GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE.)
     if (input.linkGuestToMember?.length) {
       throw new ApiError(GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE, 400);
+    }
+    // Other Lodges epic: the same hazard, the same refusal. The in-progress plan
+    // prices the STORED guest rows, so a mid-stay election would stamp the flag
+    // and settle $0 — see OTHER_LODGE_RATE_IN_PROGRESS_MESSAGE.
+    if (
+      input.otherLodgeId !== undefined ||
+      input.otherLodgeMemberGuestIds !== undefined
+    ) {
+      throw new ApiError(OTHER_LODGE_RATE_IN_PROGRESS_MESSAGE, 400);
     }
   } else if (
     role !== "ADMIN" &&

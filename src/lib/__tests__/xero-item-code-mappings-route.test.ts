@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import {
+  contentAdminSession,
+  financeAdminSession,
+  readOnlyAdminSession,
+} from "./helpers/admin-area-gate-sessions";
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -19,9 +24,9 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/auth", () => ({ auth: vi.fn() }));
 const mockRequireActiveSessionUser = vi.fn<(...args: unknown[]) => Promise<Response | null>>(async () => null);
-vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: async () =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(),
+vi.mock("@/lib/session-guards", async () => ({
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
   requireActiveSessionUser: (...args: Parameters<typeof mockRequireActiveSessionUser>) => mockRequireActiveSessionUser(...args),
 }));
 vi.mock("@/lib/audit", () => ({ logAudit: vi.fn() }));
@@ -535,5 +540,67 @@ describe("Xero item-code mappings route", () => {
     expect(data.error).toContain("does not carry its own hut fees");
     expect(mockPrisma.xeroItemCodeMapping.upsert).not.toHaveBeenCalled();
     expect(mockPrisma.xeroItemCodeMapping.create).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-area gate (#2921 / the fork PR #2949 shape). GET declares
+// `{ area: "finance", level: "view" }` and PUT declares
+// `{ area: "finance", level: "edit" }`. Before the sweep the mock never received
+// either, so every test above proved only that the actor was *some* admin, and
+// re-pointing a literal at `{ area: "overview", level: "view" }` would have left
+// the file green.
+// ---------------------------------------------------------------------------
+describe("per-area gate on /api/admin/xero/item-code-mappings (#2921)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPrisma.member.count.mockResolvedValue(1);
+    mockPrisma.membershipType.findMany.mockResolvedValue([]);
+    mockPrisma.xeroItemCodeMapping.findMany.mockResolvedValue([]);
+    mockPrisma.xeroItemCodeMapping.upsert.mockResolvedValue({});
+  });
+
+  it("admits a view-only admin on the finance:view read", async () => {
+    mockAuth.mockResolvedValue(readOnlyAdminSession);
+
+    const response = await getItemCodeMappings();
+
+    expect(response.status).toBe(200);
+  });
+
+  it("refuses a view-only admin on the finance:edit write", async () => {
+    mockAuth.mockResolvedValue(readOnlyAdminSession);
+
+    const response = await putItemCodeMappings(
+      makePutRequest({ entranceFees: {} }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(mockPrisma.xeroItemCodeMapping.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.xeroItemCodeMapping.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("refuses an admin with no finance access on both handlers", async () => {
+    mockAuth.mockResolvedValue(contentAdminSession);
+
+    const read = await getItemCodeMappings();
+    const write = await putItemCodeMappings(
+      makePutRequest({ entranceFees: {} }),
+    );
+
+    expect(read.status).toBe(403);
+    expect(write.status).toBe(403);
+    expect(mockPrisma.xeroItemCodeMapping.findMany).not.toHaveBeenCalled();
+    expect(mockPrisma.xeroItemCodeMapping.upsert).not.toHaveBeenCalled();
+  });
+
+  it("admits a finance-editing admin on the finance:edit write", async () => {
+    mockAuth.mockResolvedValue(financeAdminSession);
+
+    const response = await putItemCodeMappings(
+      makePutRequest({ entranceFees: {} }),
+    );
+
+    expect(response.status).toBe(200);
   });
 });

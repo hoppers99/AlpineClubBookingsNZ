@@ -204,6 +204,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-047` | The generalised ledger mirror: every cent is collected, paid with credit, or still owed |
 | `INV-PAY-048` | A stored unconsumed credit election is cleared, recorded and reported, never stranded |
 | `INV-PAY-049` | Both directions are audited with the acting admin and the previous status |
+| `INV-PAY-050` | Xero Stripe refund notes cover provider-backed cash evidence, never the refunded-amount mirror |
 | `INV-PAY-002` | Account credit is consumed only at `PAYMENT_PENDING`; a draft stores an election and spends nothing |
 | `INV-PAY-003` | The edit path may write an election only onto DRAFT, AWAITING_REVIEW and PAYMENT_PENDING |
 | `INV-PAY-004` | Members may edit their own drafts; a draft edit moves no money and claims no capacity |
@@ -292,6 +293,7 @@ Prefix `INV-MOD`.
 | `INV-MOD-005` | Nightly prices lock at booking time; only changed guests and nights price at current rates |
 | `INV-MOD-006` | Every edit path passes the default group discount into pricing; locked nights win over it |
 | `INV-MOD-026` | One club switch, applied at one chokepoint, decides whether a later edit's new nights earn the group discount; default on, locked nights untouched either way |
+| `INV-MOD-027` | An officer may price a non-member at the club's member rate as a partner-lodge member; it changes the rate only, and the guests whose tick changed are exactly the ones repriced |
 | `INV-MOD-007` | Hut nightly rates key on membership type and optional age tier, never a member boolean |
 | `INV-MOD-008` | An unpaid member repriced under `NON_MEMBER_PRICING` is `NON_MEMBER_DEFAULT`, not forced |
 | `INV-MOD-009` | Membership, not the subscription, gates member-only promotions; a repriced member stays eligible |

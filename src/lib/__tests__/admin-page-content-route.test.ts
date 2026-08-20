@@ -39,11 +39,9 @@ vi.mock("@/lib/auth", () => ({
 // The route's own permission requirement is forwarded to the mock (#2352
 // MC-03D) so a content view-only officer's refusal is exercised for real,
 // rather than only the no-session case.
-vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: async (options?: unknown) =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(
-      options as never,
-    ),
+vi.mock("@/lib/session-guards", async () => ({
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
 

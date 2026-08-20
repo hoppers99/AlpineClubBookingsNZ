@@ -93,6 +93,7 @@ const MODULES_ON = {
   memberGuests: true,
   aiDiagnostics: false,
   maintenanceReports: true,
+  alpineCentralServer: false,
 };
 
 function exceptionRow(overrides: Record<string, unknown> = {}) {

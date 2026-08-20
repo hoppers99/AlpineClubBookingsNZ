@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import {
+  contentAdminSession,
+  readOnlyAdminSession,
+} from "./helpers/admin-area-gate-sessions";
 
 const mocks = vi.hoisted(() => ({
   enqueueRefundRequestRefundRecovery: vi.fn(),
@@ -26,9 +30,9 @@ vi.mock("@/lib/auth", () => ({
   auth: mocks.auth,
 }));
 
-vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: async () =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(),
+vi.mock("@/lib/session-guards", async () => ({
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
 
@@ -605,5 +609,60 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
       expect(mocks.sendEmail).not.toHaveBeenCalled();
       expect(mocks.createAuditLog).not.toHaveBeenCalled();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-area gate (#2921 / the fork PR #2949 shape). This route declares
+// `{ area: "finance", level: "edit" }` and moves member money. Before the sweep
+// the mock never received that requirement, so every test above proved only that
+// the actor was *some* admin — and re-pointing the literal at
+// `{ area: "overview", level: "view" }` would have left the whole file green.
+//
+// Denials need no fixtures: `requireAdmin` answers before the handler reads the
+// refund request, so a 403 plus an untouched transaction is the whole assertion.
+// The positive control is every test above, which approves refunds as a full
+// ADMIN and does hold `finance: edit`.
+// ---------------------------------------------------------------------------
+describe("per-area gate on PUT /api/admin/refund-requests/[id] (#2921)", () => {
+  function approveRequest() {
+    return new NextRequest(
+      "http://localhost/api/admin/refund-requests/refund_1",
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "x-forwarded-for": "127.0.0.1",
+        },
+        body: JSON.stringify({ status: "APPROVED", approvedAmountCents: 2500 }),
+      },
+    );
+  }
+
+  const routeParams = { params: Promise.resolve({ id: "refund_1" }) };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.requireActiveSessionUser.mockResolvedValue(null);
+  });
+
+  it("refuses a view-only admin, so the level half of finance:edit is real", async () => {
+    mocks.auth.mockResolvedValue(readOnlyAdminSession);
+
+    const response = await PUT(approveRequest(), routeParams);
+
+    expect(response.status).toBe(403);
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+  });
+
+  it("refuses an admin with no finance access, so the area half is real", async () => {
+    mocks.auth.mockResolvedValue(contentAdminSession);
+
+    const response = await PUT(approveRequest(), routeParams);
+
+    expect(response.status).toBe(403);
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
   });
 });

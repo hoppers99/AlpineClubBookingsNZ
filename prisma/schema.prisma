@@ -1826,11 +1826,27 @@ model Booking {
   // the shortfall is surfaced in the pay-step response — never silently
   // swallowed. See consumeStoredCreditElection in booking-credit-election.ts.
   creditElectionCents          Int?
+  // Reciprocal "other club member" rate (Other Lodges epic, follow-up to
+  // #2749). The partner lodge the booking officer named on this booking, so the
+  // non-member guests ticked below can be priced at the club's own member rate.
+  // NULL — the default and the state of every booking made before this column —
+  // means no other lodge is claimed, and every guest prices exactly as it did.
+  //
+  // The booking carries the LODGE; the per-person opt-in is
+  // BookingGuest.otherLodgeMember, because a party can mix a visiting club
+  // member with their own non-member family. Clearing this column clears every
+  // guest flag with it (enforced at the API boundary), so a guest can never be
+  // priced as an other-club member with no club recorded against them.
+  //
+  // FK is Restrict, exactly like BookingRequest.otherLodgeId: an OtherLodge
+  // cited by a priced booking cannot be deleted out from under it.
+  otherLodgeId                 String?
   createdAt                 DateTime           @default(now())
   updatedAt                 DateTime           @updatedAt
 
   member                      Member                          @relation(fields: [memberId], references: [id], onDelete: Restrict)
   lodge                       Lodge                           @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  otherLodge                  OtherLodge?                     @relation(fields: [otherLodgeId], references: [id], onDelete: Restrict)
   waitlistOfferedLodge        Lodge?                          @relation("BookingWaitlistOfferedLodge", fields: [waitlistOfferedLodgeId], references: [id], onDelete: SetNull)
   waitlistAlternateLodges     BookingWaitlistAlternateLodge[]
   createdBy                   Member?                         @relation("BookingsCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
@@ -1897,6 +1913,7 @@ model Booking {
   @@index([requestedRoomId])
   @@index([parentBookingId])
   @@index([lodgeId])
+  @@index([otherLodgeId])
 }
 
 // Durable booking-lifecycle event store (issue #740). One row per transition
@@ -1957,6 +1974,23 @@ model BookingGuest {
   // forever. Deliberately a bare column (no FK): the snapshot must survive
   // even if a custom type is later deleted.
   rateMembershipTypeId String?
+  // Reciprocal "other club member" rate (Other Lodges epic, follow-up to
+  // #2749). TRUE when the booking officer has recognised this NON-MEMBER guest
+  // as a member of the booking's Booking.otherLodgeId, which prices them from
+  // the built-in FULL member rate rows instead of NON_MEMBER's.
+  //
+  // IT CHANGES THE RATE AND NOTHING ELSE. `isMember` stays FALSE, deliberately
+  // and permanently: the person is not a member of THIS club, so adult-member
+  // hosting, the non-member hold, split bookings, `Booking.hasNonMembers`, the
+  // subscription gate and member-only promotions must all keep seeing a
+  // non-member. Only the rate resolver reads this flag
+  // (resolveGuestRateMembershipTypes), which is what keeps the blast radius to
+  // pricing.
+  //
+  // Additive/expand-only; default false leaves every existing guest priced
+  // exactly as before. Never true on a member row (refused at the API
+  // boundary), and never true while the booking names no other lodge.
+  otherLodgeMember     Boolean   @default(false)
   // Member-guest consent (epic #2305, decision D-7). The approval state of a
   // MEMBER added as somebody else's guest lives here, on the guest row itself,
   // not in a side table.
@@ -4392,6 +4426,10 @@ model ClubModuleSettings {
   // a separate, default-OFF switch on MaintenanceReportSettings, because an
   // endpoint anybody can post to must be opted into deliberately.
   maintenanceReports      Boolean  @default(true)
+  // Alpine Central Server (ServerNZ) integration — connect this club to the
+  // central hub to upload/download shared data. Off by default; configured
+  // under Admin → Integrations → Alpine Central Server.
+  alpineCentralServer     Boolean  @default(false)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @default(now()) @updatedAt
@@ -4505,6 +4543,41 @@ model OtherLodge {
   updatedAt           DateTime @updatedAt
 
   bookingRequests     BookingRequest[]
+  bookings            Booking[]
+}
+
+// Alpine Central Server (ServerNZ) connection — non-secret settings only. The
+// API key is NOT here; it lives in the encrypted IntegrationCredential store
+// (provider "servernz"). Singleton row keyed on the fixed id "default", mirroring
+// LodgeSettings. Per-shared-item enable flags and last-sync bookkeeping live
+// here so the setup page can render status without touching the secret store.
+model ServerNzSettings {
+  id      String  @id @default("default")
+  // Base URL of the central server, e.g. https://central.alpineclub.nz
+  baseUrl String? @db.VarChar(500)
+
+  // Shared item: "Other Clubs" details (the OtherLodge registry).
+  otherLodgesEnabled        Boolean   @default(false)
+  otherLodgesLastUploadAt   DateTime?
+  otherLodgesLastDownloadAt DateTime?
+  // Opaque cursor returned by the server's pull endpoint for incremental sync.
+  otherLodgesCursor         String?   @db.VarChar(64)
+
+  // Single-flight claim for a sync pass. The nightly cron and the admin
+  // Upload/Download buttons drive the same writers, and the in-process boolean in
+  // instrumentation.node.ts sees neither a second container nor the HTTP cron
+  // route. A status-guarded `updateMany` on this column is the claim (the house
+  // pattern), which needs no advisory lock: a session-scoped lock cannot be used
+  // safely here because Prisma pools connections and the unlock could land on a
+  // different one, and an xact-scoped lock would mean holding a transaction open
+  // across the central server's HTTP calls.
+  otherLodgesSyncStartedAt  DateTime?
+
+  updatedByMemberId String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @default(now()) @updatedAt
+
+  @@index([updatedByMemberId])
 }
 
 model LodgeSettings {

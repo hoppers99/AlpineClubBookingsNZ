@@ -22,6 +22,15 @@ const mocks = vi.hoisted(() => ({
   notificationDeliveryPolicyFindUnique: vi.fn(),
   sendRepeatedFailureAlert: vi.fn(),
   sendReconciliationReportAlert: vi.fn(),
+  resolveStripeCashRefundEvidence: vi.fn(),
+}));
+
+// #2902: the over-coverage drift class compares coverage against the
+// provider-backed cash refund target, never the refundedAmountCents mirror.
+// Resolution rules are unit-tested in stripe-cash-refund-evidence.test.ts;
+// the default here (cash === mirror) keeps the pre-#2902 scenarios intact.
+vi.mock("@/lib/stripe-cash-refund-evidence", () => ({
+  resolveStripeCashRefundEvidence: mocks.resolveStripeCashRefundEvidence,
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -159,6 +168,15 @@ describe("buildXeroReconciliationReport", () => {
     vi.clearAllMocks();
     mocks.inboundEventCount.mockResolvedValue(0);
     mocks.inboundEventFindMany.mockResolvedValue([]);
+    mocks.resolveStripeCashRefundEvidence.mockImplementation(
+      async (payment: { refundedAmountCents: number }) => ({
+        cashRefundCents: payment.refundedAmountCents,
+        countedRefundCents: payment.refundedAmountCents,
+        refundLedgerRowCount: 1,
+        accountCreditCents: 0,
+        source: "provider-ledger",
+      })
+    );
   });
 
   it("summarises canonical drift, repeated failures, and unsupported partials", async () => {
@@ -616,6 +634,70 @@ describe("buildXeroReconciliationReport", () => {
     expect(section?.severity).toBe("critical");
     expect(section?.items?.[0]?.detail).toContain("190 cents");
     expect(section?.items?.[0]?.detail).toContain("100 cents");
+  });
+
+  it("flags an account-credit-only cancellation's fictitious note as over-coverage against a ZERO cash target (#2902)", async () => {
+    mocks.memberFindMany.mockResolvedValue([]);
+    mocks.operationFindFirst.mockResolvedValue(null);
+    mocks.paymentFindMany.mockImplementation(
+      async (args?: {
+        where?: { source?: string };
+        select?: { refundedAmountCents?: boolean };
+      }) => {
+        if (args?.select?.refundedAmountCents) {
+          return [
+            { id: "pay_credit", bookingId: "book_1", refundedAmountCents: 100 },
+          ];
+        }
+        if (args?.where?.source === "STRIPE") {
+          return [{ id: "pay_credit" }];
+        }
+        return [
+          {
+            id: "pay_credit",
+            xeroInvoiceId: null,
+            xeroRefundCreditNoteId: "cn_fict",
+          },
+        ];
+      }
+    );
+    mocks.subscriptionFindMany.mockResolvedValue([]);
+    // Coverage exactly EQUALS the mirror — the pre-#2902 comparison saw no
+    // over-coverage at all, which is precisely how the fictitious note hid.
+    mocks.linkFindMany.mockResolvedValue([
+      {
+        localModel: "Payment",
+        localId: "pay_credit",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_fict",
+        role: "REFUND_CREDIT_NOTE",
+        metadata: { amountCents: 100, status: "AUTHORISED" },
+      },
+    ]);
+    mocks.operationFindMany.mockResolvedValue([]);
+    mocks.operationCount.mockResolvedValue(0);
+    mocks.resolveStripeCashRefundEvidence.mockResolvedValue({
+      cashRefundCents: 0,
+      countedRefundCents: 0,
+      refundLedgerRowCount: 0,
+      accountCreditCents: 100,
+      source: "legacy-mirror",
+    });
+
+    const report = await buildXeroReconciliationReport({
+      now: new Date("2026-04-13T12:00:00Z"),
+    });
+
+    expect(report.summary).toEqual(
+      expect.objectContaining({ overCoveredStripeRefundPayments: 1 })
+    );
+    const section = report.issueSections.find(
+      (issueSection) => issueSection.id === "stripe-refund-over-coverage"
+    );
+    expect(section?.items?.[0]?.detail).toContain(
+      "cash refund target of 0 cents"
+    );
+    expect(section?.items?.[0]?.detail).toContain("legacy-mirror");
   });
 
   it("still counts duplicate drift for malformed rows sharing a Stripe refund-note scope (#2901 fix round)", async () => {

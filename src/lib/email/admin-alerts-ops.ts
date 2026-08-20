@@ -88,7 +88,7 @@ export async function sendAdminMaintenanceReportAlert(data: {
 
   await sendToAdmins({
     subject: `Maintenance report: ${data.lodgeName}`,
-    html: adminMaintenanceReportTemplate(data),
+    html: await renderEmailHtml(() => adminMaintenanceReportTemplate(data)),
     templateName: "admin-maintenance-report",
     templateData: {
       lodgeName: data.lodgeName,

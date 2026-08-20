@@ -68,6 +68,7 @@ import {
   type HostingOverrideState,
 } from "@/components/edit-booking/hooks/use-hosting-coverage-override";
 import { useMemberGuestFinder } from "@/components/edit-booking/hooks/use-member-guest-finder";
+import { useOtherLodgeRate } from "@/components/edit-booking/hooks/use-other-lodge-rate";
 import {
   useDebouncedModificationQuote,
   useModificationQuoteState,
@@ -227,6 +228,28 @@ export function EditBookingPanel({
   // writes it is armed further down, once the payload exists.
   const quoteState = useModificationQuoteState();
   const { quote, quoteLoading, quoteError } = quoteState;
+  // Other Lodges epic: the reciprocal other-club rate election. Offered only when
+  // the server shipped the partner-lodge registry, which it does for admins.
+  const otherLodgeRate = useOtherLodgeRate(booking);
+  /**
+   * The per-person fees the pending edit would write, keyed by guest id.
+   *
+   * Straight off the quote — never recomputed here — so the fee shown beside a
+   * name is the one the save will charge, for the same reason the totals are
+   * read off the quote rather than added up on the client. Empty while no quote
+   * has landed, and on an in-progress edit, where the guest rows keep showing
+   * their stored fees.
+   */
+  const quotedGuestPriceCents = useMemo(
+    () =>
+      new Map(
+        (quote?.guestPrices ?? []).map((entry) => [
+          entry.guestId,
+          entry.priceCents,
+        ]),
+      ),
+    [quote],
+  );
   const [settlementMethod, setSettlementMethod] = useState<"card" | "credit" | null>(null);
   /**
    * #2562 — the server-confirmed offer to ask a Booking Officer, or null.
@@ -547,6 +570,7 @@ export function EditBookingPanel({
     guestNightsChanged ||
     guestNamesChanged ||
     promoAction.type !== "keep" ||
+    otherLodgeRate.changed ||
     creditChanged;
 
   const buildModificationPayload = useCallback(() => {
@@ -678,6 +702,10 @@ export function EditBookingPanel({
     if (guestNameUpdates.length > 0) {
       body.guestUpdates = guestNameUpdates;
     }
+    // Other Lodges epic: the other-club rate election, sent only when this edit
+    // actually proposes a change to it — an unchanged election must not travel,
+    // or every ordinary edit would re-assert it and re-reprice those guests.
+    Object.assign(body, otherLodgeRate.payloadFields());
     // #2337: the placeholder→member links, keyed to existing guest rows.
     const links = Object.entries(linkedGuestMembers).map(
       ([guestId, candidate]) => ({ guestId, memberId: candidate.memberId }),
@@ -731,6 +759,7 @@ export function EditBookingPanel({
     getExistingGuestRange,
     guestNameUpdates,
     linkedGuestMembers,
+    otherLodgeRate,
     isInProgressEdit,
     perGuestDatesEnabled,
     multiDateRangesEnabled,
@@ -1027,6 +1056,9 @@ export function EditBookingPanel({
       setUseCredit(storedElectionCents > 0);
       setCreditTouched(false);
       setShowAddForm(false);
+      // An override edit is date-only, and the other-club rate election is a
+      // guest change — discarded here with the rest of them.
+      otherLodgeRate.reset();
     } else {
       setOverridePricingMode(null);
       setConfirmOverCapacity(false);
@@ -1493,6 +1525,18 @@ export function EditBookingPanel({
             closeMemberGuestFinder();
           },
           onCancel: closeMemberGuestFinder,
+        }}
+        otherLodge={{
+          available: otherLodgeRate.available,
+          lodges: otherLodgeRate.lodges,
+          enabled: otherLodgeRate.enabled,
+          lodgeId: otherLodgeRate.lodgeId,
+          flaggedGuestIds: otherLodgeRate.flaggedGuestIds,
+          guestTicksEnabled: otherLodgeRate.guestTicksEnabled,
+          quotedGuestPriceCents,
+          onEnabledChange: otherLodgeRate.onEnabledChange,
+          onLodgeIdChange: otherLodgeRate.onLodgeIdChange,
+          onGuestToggle: otherLodgeRate.onGuestToggle,
         }}
         memberLink={{
           linkFinderGuestId,

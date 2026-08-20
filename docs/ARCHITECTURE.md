@@ -1119,18 +1119,18 @@ Booking Policies sections (#2142) and is now the **default across the admin
 tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left.
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
-figures rather than trusting a hand count: **88 components render a banner, and
-279 of the 330 `ViewOnlyActionButton` call sites opt out** of the per-button
+figures rather than trusting a hand count: **89 components render a banner, and
+285 of the 338 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 279 split by WHICH rule
-covers them: **248** pass the literal
-`describeReason={false}` and are covered by a banner in the same file, and **31**
+test currently pins, which is the only authority.) Those 268 split by WHICH rule
+covers them: **251** pass the literal
+`describeReason={false}` and are covered by a banner in the same file, and **34**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
-verified vouching parent — 26 by a parent's own JSX render site (#2168), 5 by the
+verified vouching parent — 29 by a parent's own JSX render site (#2168), 5 by the
 guided-setup shell (#2324); see *Vouching for a child's coverage* and *Vouching
 through the wizard shell* below. The
-remaining **51 controls across 28 files deliberately keep the per-button
+remaining **53 controls across 29 files deliberately keep the per-button
 default** (`describeReason` left at `true`), in three shapes:
 
 - **Controls inside a dialog, sheet, popover, or dropdown menu.** These live in
@@ -1145,7 +1145,7 @@ default** (`describeReason` left at `true`), in three shapes:
   the booking capacity/exclusive hold controls, the family-group login-holder
   and request-review sub-sections, and the non-member contact form). Nothing
   local proves an ancestor renders a banner above them, so the reason stays on
-  the control. (37 controls across 22 files.) Nine of those 37 sit inside a
+  the control. (39 controls across 23 files.) Nine of those 39 sit inside a
   setup wizard and are **scope** exceptions rather than indirection ones: each is
   gated on a permission NARROWER than the banner its shell renders, so an admin
   who has the wizard's area but not that narrower one meets no banner at all.

@@ -87,6 +87,8 @@ describe("resolveBackupConfig", () => {
       accessKeyId: "AKIA",
       secretAccessKey: "secret",
       restoreValidationUrl: "postgresql://x/shadow",
+      localEnabled: false,
+      localPath: null,
       needsReentry: false,
     });
   });
@@ -102,7 +104,33 @@ describe("resolveBackupConfig", () => {
       accessKeyId: null,
       secretAccessKey: null,
       restoreValidationUrl: null,
+      // Local backups default OFF with no directory: a club that never opened
+      // the panel keeps exactly the behaviour it had before the feature existed.
+      localEnabled: false,
+      localPath: null,
       needsReentry: false,
+    });
+  });
+
+  it("resolves a configured local destination", async () => {
+    valueMap({
+      [BACKUP_CREDENTIAL_KEYS.localEnabled]: "true",
+      [BACKUP_CREDENTIAL_KEYS.localPath]: "/var/backups/tacbookings",
+    });
+
+    const config = await resolveBackupConfig();
+
+    expect(config.localEnabled).toBe(true);
+    expect(config.localPath).toBe("/var/backups/tacbookings");
+  });
+
+  it("reads the local switch as off for anything but the literal 'true'", async () => {
+    // The store holds strings; "1" or "yes" must not silently enable a
+    // destination, the same rule the S3 `enabled` switch follows.
+    valueMap({ [BACKUP_CREDENTIAL_KEYS.localEnabled]: "1" });
+
+    await expect(resolveBackupConfig()).resolves.toMatchObject({
+      localEnabled: false,
     });
   });
 

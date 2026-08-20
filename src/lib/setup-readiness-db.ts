@@ -69,6 +69,7 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
         memberGuests: true,
         aiDiagnostics: true,
         maintenanceReports: true,
+        alpineCentralServer: true,
       },
     }),
     prisma.ageTierSetting.count(),

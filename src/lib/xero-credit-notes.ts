@@ -19,6 +19,7 @@ import { CreditNote, LineAmountTypes, type LineItem } from "xero-node";
 import { CreditType } from "@prisma/client";
 import { prisma } from "./prisma";
 import logger from "@/lib/logger";
+import { resolveStripeCashRefundEvidence } from "@/lib/stripe-cash-refund-evidence";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
   buildXeroIdempotencyKey,
@@ -108,11 +109,18 @@ export async function createXeroCreditNote(
   // watermark can be stale: two Stripe refunds inside one outbox interval
   // give the second operation a LOWER watermark than the first, and
   // oldest-first execution then treated the first note as covering — the
-  // second delta was marked SUCCEEDED without creating anything. The
-  // payment's refundedAmountCents is monotonic under inbound reconcile since
-  // #1353, so `refundedAmountCents − sum(covered notes)` is the true
-  // uncovered amount at the moment this runs, whatever order operations
-  // execute or replay in.
+  // second delta was marked SUCCEEDED without creating anything.
+  // #2902 (INV-PAY-050): the cumulative total a refund note may cover is the
+  // provider-backed CASH refund evidence (`resolveStripeCashRefundEvidence`),
+  // never the raw refundedAmountCents mirror — the mirror also counts
+  // account-credit dispositions, so using it here is what minted fictitious
+  // refund notes (each settled by a Stripe-bank payment) for cancellations
+  // that returned no cash. Recomputing the evidence here also neutralises any
+  // already-queued fictitious operation: it completes without billing Xero.
+  // `cashRefundCents − sum(covered notes)` is the true uncovered amount at
+  // the moment this runs, whatever order operations execute or replay in
+  // (refundedAmountCents stays monotonic under inbound reconcile since #1353,
+  // and succeeded PaymentRefund rows are never deleted).
   let effectiveRefundAmountCents = refundAmountCents;
   let effectiveWatermarkCents: number | null = null;
 
@@ -138,9 +146,14 @@ export async function createXeroCreditNote(
     });
 
     const coveredCents = await sumCoveredRefundCreditNoteCents(paymentId);
+    const evidence = await resolveStripeCashRefundEvidence({
+      id: payment.id,
+      bookingId: payment.bookingId,
+      refundedAmountCents: payment.refundedAmountCents,
+    });
     const uncoveredCents = Math.max(
       0,
-      payment.refundedAmountCents - coveredCents
+      evidence.cashRefundCents - coveredCents
     );
 
     if (uncoveredCents <= 0) {
@@ -159,18 +172,27 @@ export async function createXeroCreditNote(
         existingCreditNoteId = coveringLink.xeroObjectId;
         existingCreditNoteNumber = coveringLink.xeroObjectNumber ?? null;
       } else {
-        // Unreachable in practice (uncovered can only be 0 with no active
-        // note when the refund ledger is empty, and delta enqueues require a
-        // positive delta) — but never bill Xero for a covered request.
+        // Reached when no cash remains uncovered AND no active note exists —
+        // notably a queued operation for an account-credit-only cancellation
+        // (#2902): its cash evidence is zero, so the operation completes
+        // WITHOUT billing Xero. Never bill Xero for a covered request.
         logger.warn(
-          { paymentId, refundAmountCents, coveredCents },
-          "Refund credit note delta already covered with no active link; completing without creating"
+          {
+            paymentId,
+            refundAmountCents,
+            coveredCents,
+            cashRefundCents: evidence.cashRefundCents,
+            cashEvidenceSource: evidence.source,
+          },
+          "No uncovered provider-backed Stripe cash refund at execution time; completing without creating a Xero refund credit note"
         );
         if (queuedOperationId) {
           await completeXeroSyncOperation(queuedOperationId, {
             responsePayload: {
               skippedNothingUncovered: true,
               coveredCents,
+              cashRefundCents: evidence.cashRefundCents,
+              cashEvidenceSource: evidence.source,
             },
           });
         }

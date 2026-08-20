@@ -36,6 +36,7 @@
     "issue": "node scripts/issue-thread.mjs",
     "stale-containers": "node scripts/stale-containers.mjs",
     "pr:check": "node scripts/ci/check-pr-body.mjs",
+    "ci:workflowcheck": "node scripts/ci/check-workflow-suite-checkout-depth.mjs",
     "test": "vitest run",
     "test:related": "vitest related --run",
     "test:policy": "vitest run src/lib/policies/__tests__",

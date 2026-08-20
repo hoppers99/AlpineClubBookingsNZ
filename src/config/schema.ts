@@ -152,6 +152,7 @@ export const featureFlagsSchema = z
     memberGuests: z.boolean(),
     aiDiagnostics: z.boolean(),
     maintenanceReports: z.boolean(),
+    alpineCentralServer: z.boolean(),
   })
   .strict();
 

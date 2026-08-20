@@ -12,11 +12,9 @@ vi.mock("@/lib/auth", () => ({
   auth: mocks.auth,
 }));
 
-vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: async (options?: {
-    permission?: { area: "finance"; level: "edit" };
-  }) =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(options),
+vi.mock("@/lib/session-guards", async () => ({
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
 
