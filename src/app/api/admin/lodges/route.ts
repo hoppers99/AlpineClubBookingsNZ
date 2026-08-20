@@ -44,10 +44,26 @@ const createSchema = z
   route alone, not to add `lodge:view` to those presets, which would widen
   eighteen other read endpoints on upgrade.
 
-  `permission: { area: "overview", level: "view" }` is the documented shape for
-  "any admitted admin" (see `ai-diagnostics/ask/route.ts`): every admin
-  access-role grid carries `overview`, and it is the same default requirement
-  the admin layout applies to a path with no more specific rule.
+  `permission: "any-admin"` is what expresses this, and it is what the issue
+  asked for in so many words. An earlier cut of this change used
+  `permission: { area: "overview", level: "view" }` on the stated grounds that
+  "every admin access-role grid carries `overview`". THAT IS FALSE, and review
+  measured it against the shipped presets: `FINANCE_USER` ("Finance Viewer",
+  `access-role-definitions.ts`) ships `overviewLevel: "NONE"` and
+  `lodgeLevel: "NONE"`, so it was 403 under the old gate AND under the new one -
+  while still being admitted to the finance area. The issue exists to stop
+  shipped presets losing whole pages, so leaving one of them refused would have
+  missed the point of it.
+
+  It was also a REGRESSION for a second class, reachable through a custom grid
+  rather than a preset: a role holding `lodge:view` without `overview:view`
+  previously got the full list and would have started getting a 403.
+
+  `"any-admin"` resolves to `hasAdminPortalAccess`, i.e. admitted to the admin
+  portal at all - which is the honest statement of "any admin may read the lodge
+  names". It is safe HERE because of the payload split below and only because of
+  it: a caller without `lodge:view` receives id, name, slug and active, and
+  nothing else.
 
   IT MUST BE EXPLICIT. The first attempt (PR #2885) wrote a bare
   `requireAdmin()` and was INERT: with no `permission`,
@@ -71,9 +87,7 @@ const createSchema = z
   this changes who may READ the lodge names, and nothing about who may write.
 */
 export async function GET() {
-  const guard = await requireAdmin({
-    permission: { area: "overview", level: "view" },
-  });
+  const guard = await requireAdmin({ permission: "any-admin" });
   if (!guard.ok) return guard.response;
 
   /*

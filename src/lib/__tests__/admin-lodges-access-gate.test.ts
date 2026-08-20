@@ -88,6 +88,41 @@ function signInAs(...roles: AppAccessRole[]) {
   });
 }
 
+/**
+ * Sign in with a CUSTOM access-role grid rather than a shipped preset.
+ *
+ * Needed because no shipped preset holds `lodge` without `overview`, and that
+ * combination is the one the `overview:view` gate regressed: such a caller
+ * previously got the full list and would have started getting a 403. An
+ * administrator can build exactly that grid on the Access Roles screen, so it is
+ * reachable in a real deployment even though no preset ships it.
+ */
+function signInWithGrid(grid: {
+  overviewLevel: "NONE" | "VIEW" | "EDIT";
+  lodgeLevel: "NONE" | "VIEW" | "EDIT";
+}) {
+  const roleDefinition = {
+    overviewLevel: grid.overviewLevel,
+    bookingsLevel: "NONE",
+    membershipLevel: "NONE",
+    financeLevel: "NONE",
+    lodgeLevel: grid.lodgeLevel,
+    contentLevel: "NONE",
+    supportLevel: "NONE",
+  };
+  mocks.auth.mockResolvedValue({
+    user: { id: "member-1", role: "ADMIN", accessRoles: ["ADMIN_CUSTOM"] },
+  });
+  mocks.memberFindUnique.mockResolvedValue({
+    active: true,
+    forcePasswordChange: false,
+    twoFactorEnabled: false,
+    accessRoles: [
+      { role: "ADMIN_CUSTOM", roleDefinitionId: "ardef_custom", roleDefinition },
+    ],
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.lodgeFindMany.mockResolvedValue([FULL_LODGE_ROW]);
@@ -105,6 +140,27 @@ const PRESETS_WITHOUT_LODGE_VIEW = [
   "FINANCE_ADMIN",
   "ADMIN_CONTENT",
 ] as const satisfies readonly AppAccessRole[];
+
+/*
+  FINANCE_USER IS DELIBERATELY NOT IN THAT LIST, and it was reviewed and decided
+  rather than overlooked (#2925, 21 Aug 2026).
+
+  Review reported it as an incomplete fix: "Finance Viewer" ships
+  `overviewLevel: "NONE"` and `lodgeLevel: "NONE"`, so it is refused here while
+  still reaching the finance area. Checked against the issue, that is out of
+  scope: #2925 names exactly two presets, ADMIN_MEMBERSHIP and FINANCE_ADMIN,
+  and its acceptance criterion asks for those two.
+
+  It is also consistent rather than accidental. `hasAdminPortalAccess` excludes
+  `finance` from what counts as portal access, which predates this issue and
+  governs far more than this route. Admitting a finance-only role here would
+  either contradict that or require changing it everywhere.
+
+  Whether a finance-only viewer should read lodge names at all is a real product
+  question - `getFirstAccessibleAdminHref` does send them to /admin/payments, so
+  they are an admin in some sense - but it is a decision about
+  `hasAdminPortalAccess`, not about this endpoint. Filed rather than absorbed.
+*/
 
 describe("GET /api/admin/lodges admits any admitted admin (#2925)", () => {
   it.each(PRESETS_WITHOUT_LODGE_VIEW)(
@@ -248,14 +304,64 @@ describe("the explicit permission is what opens the route, not the bare call", (
     if (!result.ok) expect(result.response.status).toBe(403);
   });
 
-  it("the explicit overview:view requirement admits the same caller", async () => {
+  it("the explicit any-admin permission admits the same caller", async () => {
     signInAs("FINANCE_ADMIN");
 
-    const result = await requireAdmin({
-      permission: { area: "overview", level: "view" },
-    });
+    const result = await requireAdmin({ permission: "any-admin" });
 
     expect(result.ok).toBe(true);
+  });
+
+  it("still refuses a finance-only role, which is not portal access (#2925)", async () => {
+    // Pinned so the boundary is deliberate rather than incidental.
+    // `hasAdminPortalAccess` excludes `finance`, so "any-admin" does not admit a
+    // finance-only grid. That predates this issue and is why FINANCE_USER is not
+    // in PRESETS_WITHOUT_LODGE_VIEW above - see the note there.
+    signInAs("FINANCE_USER");
+
+    const result = await requireAdmin({ permission: "any-admin" });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.response.status).toBe(403);
+  });
+
+  it("any-admin does not regress lodge:view WITHOUT overview:view (#2925 review)", async () => {
+    /*
+      This is the test the first cut of this change lacked, and its absence was
+      measured rather than guessed: with `overview:view` on the route, the whole
+      suite still passed, so nothing distinguished the two gates and the
+      regression was invisible.
+
+      A custom grid holding `lodge` but not `overview` is reachable from the
+      Access Roles screen. Under the old `lodge:view` gate it got the full list;
+      under `overview:view` it would have started getting a 403. Under
+      "any-admin" it is admitted, which is the pre-existing behaviour.
+    */
+    signInWithGrid({ overviewLevel: "NONE", lodgeLevel: "VIEW" });
+
+    const viaOverview = await requireAdmin({
+      permission: { area: "overview", level: "view" },
+    });
+    expect(
+      viaOverview.ok,
+      "overview:view refuses a lodge-only grid - that was the regression",
+    ).toBe(false);
+
+    const viaAnyAdmin = await requireAdmin({ permission: "any-admin" });
+    expect(viaAnyAdmin.ok).toBe(true);
+  });
+
+  it("and such a caller still gets the FULL record, because it holds lodge:view", async () => {
+    signInWithGrid({ overviewLevel: "NONE", lodgeLevel: "VIEW" });
+
+    const response = await GET();
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.lodges[0]).toMatchObject({
+      doorCode: "4821",
+      address: "12 Mountain Road, Ohakune",
+    });
   });
 
   it("permission: false is not 'any admitted admin' either — it falls back to the literal ADMIN role", async () => {

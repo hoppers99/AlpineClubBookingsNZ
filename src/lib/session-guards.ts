@@ -12,6 +12,7 @@ import {
   getAdminPermissionMatrix,
   getAdminRouteRequirement,
   hasAdminAreaAccess,
+  hasAdminPortalAccess,
   type AdminAccessRequirement,
   type AdminPermissionMatrix,
 } from "@/lib/admin-permissions";
@@ -47,10 +48,30 @@ type RequireActiveSessionResult =
   | { ok: true; session: { user: SessionUser } }
   | { ok: false; response: NextResponse };
 
+/**
+ * `permission` has three shapes, and the difference between them is the whole
+ * authorisation decision, so it is spelled out here rather than inferred:
+ *
+ * - an `AdminAccessRequirement` - admit a caller holding that area at that level;
+ * - `false` - admit ONLY a full administrator (`hasAdminAccess`), not merely
+ *   somebody admitted to the portal;
+ * - `"any-admin"` - admit any caller admitted to the admin portal at all
+ *   (`hasAdminPortalAccess`), whatever their grid says. Added for #2925.
+ *
+ * Omitting it infers the requirement from the request path, which is right for
+ * the great majority of routes and is why it is the default.
+ *
+ * `"any-admin"` IS A DELIBERATE WIDENING and must not be reached for casually.
+ * It exists for a read whose payload is safe for every admin, and the route
+ * using it is expected to narrow what it returns by permission itself. Adding it
+ * to a route that returns privileged detail hands that detail to every admin.
+ * Its one current caller, `GET /api/admin/lodges`, returns only id, name, slug
+ * and active to a caller without `lodge:view`.
+ */
 type RequireAdminOptions = {
   unauthenticatedResponse?: () => NextResponse;
   forbiddenResponse?: () => NextResponse;
-  permission?: AdminAccessRequirement | false;
+  permission?: AdminAccessRequirement | false | "any-admin";
 };
 
 type RequireActiveSessionOptions = RequireActiveSessionUserOptions & {
@@ -145,6 +166,12 @@ async function inferAdminAccessRequirement(
   options: RequireAdminOptions,
 ): Promise<AdminAccessRequirement | null> {
   if (options.permission === false) return null;
+  // #2925: "any-admin" is decided at the call below, NOT by inferring a
+  // requirement from the path. Returning null here is what stops it falling
+  // through to `getAdminRouteRequirement`, which maps this route to
+  // `area: "lodge"` and was exactly how PR #2885's bare `requireAdmin()`
+  // reinstated the 403 it existed to remove.
+  if (options.permission === "any-admin") return null;
   if (options.permission) return options.permission;
 
   try {
@@ -212,7 +239,9 @@ export async function requireAdmin(
 
   const hasRequiredAccess = requirement
     ? hasAdminAreaAccess(member, requirement)
-    : hasAdminAccess(member);
+    : options.permission === "any-admin"
+      ? hasAdminPortalAccess(member)
+      : hasAdminAccess(member);
 
   if (!hasRequiredAccess) {
     return {

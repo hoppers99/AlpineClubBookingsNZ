@@ -6,7 +6,7 @@ import {
 } from "@/lib/admin-permissions";
 
 export type RequireAdminMockOptions = {
-  permission?: AdminAccessRequirement | false;
+  permission?: AdminAccessRequirement | false | "any-admin";
 };
 
 /**
@@ -79,7 +79,13 @@ export async function evaluateRequireAdminMock(
     };
   }
   const permission = options?.permission;
-  const requirement = permission === false ? null : (permission ?? null);
+  // #2925: "any-admin" carries NO area requirement, and the null branch below
+  // already resolves to hasAdminPortalAccess - which is precisely what
+  // "any-admin" means in the real guard, so the two agree by construction.
+  const requirement =
+    permission === false || permission === "any-admin"
+      ? null
+      : (permission ?? null);
   const hasAccess = requirement
     ? hasAdminAreaAccess(session.user, requirement)
     : hasAdminPortalAccess(session.user);
