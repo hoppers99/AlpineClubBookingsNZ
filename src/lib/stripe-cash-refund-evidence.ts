@@ -35,10 +35,22 @@
  *   mirror). Pre-ledger genuine cash refunds keep self-healing; pre-ledger
  *   account-credit cancellations are excluded.
  *
- * Stated limit: a payment refunded partly before and partly after the ledger
- * existed resolves from its (partial) ledger rows and can under-state cash;
- * the health check then under-flags rather than minting a document, which is
- * the fail-safe direction for provider accounting.
+ * Stated limits (both fail-safe: they can only UNDER-state cash, so the
+ * pipeline under-flags a genuine refund note — it can never mint one):
+ *
+ * - A payment refunded partly before and partly after the ledger existed
+ *   resolves from its (partial) ledger rows and can under-state cash.
+ * - The legacy fallback subtracts the BOOKING's whole account-credit
+ *   disposition from EACH per-payment mirror, because `MemberCredit` records
+ *   only `sourceBookingId` — no payment linkage exists anywhere on the credit
+ *   trail (the writer, `applyLocalRefundAllocation`, knows the payment at
+ *   write time but persists nothing per payment, and the pre-ledger rows this
+ *   fallback exists for could never be backfilled with an attribution that
+ *   was never recorded). On the rare multi-Payment booking mixing a genuine
+ *   pre-ledger cash refund on one payment with an account-credit disposition
+ *   on another, the cash payment's evidence can clamp to zero and its refund
+ *   note is under-flagged rather than self-healed; the operator repair's
+ *   dry-run report still shows the divergence for manual review.
  */
 import { CreditType, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";

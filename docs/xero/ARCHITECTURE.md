@@ -642,12 +642,18 @@ self-heal enqueue amount and the STRIPE enqueue cap
 (`enqueueXeroRefundCreditNoteOperation`), the execution-time delta recompute
 in `createXeroCreditNote` — which completes an already-queued fictitious
 operation WITHOUT billing Xero — and the #2901 repair's coverage target
-above. Stated limit: a payment refunded partly before and partly after the
-`PaymentRefund` ledger existed resolves from its partial ledger rows and can
-under-state cash; the pipeline then under-flags rather than minting a
-document, the fail-safe direction. Fictitious notes minted BEFORE #2902 are
-found by the dry-run report above and cleaned through the same operator
-void-then-apply loop.
+above. Two stated limits, both fail-safe — they can only UNDER-state cash, so
+the pipeline under-flags a genuine refund note and never mints one: a payment
+refunded partly before and partly after the `PaymentRefund` ledger existed
+resolves from its partial ledger rows; and the legacy fallback subtracts the
+booking's WHOLE account-credit disposition from each per-payment mirror,
+because `MemberCredit` records only the source booking — no per-payment
+attribution was ever persisted, so on a rare multi-Payment booking mixing a
+genuine pre-ledger cash refund on one payment with an account-credit
+disposition on another, the cash payment's note is under-flagged (the
+repair's dry-run report still shows the divergence for manual review).
+Fictitious notes minted BEFORE #2902 are found by the dry-run report above
+and cleaned through the same operator void-then-apply loop.
 
 Admin triage complements this: the failures overview groups FAILED operations
 into actionable states (retryable, requeued, manually resolved,
