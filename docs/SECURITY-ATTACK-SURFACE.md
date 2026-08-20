@@ -3199,6 +3199,77 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   `src/app/(public)/login/__tests__/two-factor-detour-landing.test.tsx` — and the
   proxy's `Set-Cookie` writer census in `src/lib/__tests__/csp-proxy.test.ts` is
   now the set of two described under #2578 above.
+### The hero header: one HTML sink, and only stored CMS text may reach it (#2818 D6, #2819)
+
+Every public page hero renders its header the same way, and the rule for that one
+element is now uniform across all five code-backed pages:
+
+> Only a genuine non-empty `PageContent.headerText` — admin HTML, sanitised on
+> write and again on read by `getPublishedPageContentByPath()` — may be rendered
+> through `dangerouslySetInnerHTML`. The fallback sentence the page composes when
+> that field is empty or the row is missing renders as an ordinary escaped React
+> text child.
+
+**This changed which element the fallback renders in, and nothing else an operator
+can see.** Each page now tests `headerText.trim()` rather than the field's bare
+truthiness, and on every input a deployment can actually produce the two agree:
+`sanitizePageContentHtml()` ends in `.trim()`, the admin write path
+(`src/app/api/admin/page-content/route.ts`) stores that sanitised value, and
+`getPublishedPageContentByPath()` sanitises again on read — so a header of nothing
+but whitespace can be neither saved nor read, and clearing the field stores `""`,
+which fell through to the fallback before this change too. The page-level `.trim()`
+is defence in depth against some future reader that skips that sanitiser
+(`listEditablePageContent()` does not trim), not a behaviour change: no existing
+deployment renders anything differently, and there is no whitespace case for an
+operator to reproduce.
+
+The distinction is not cosmetic. A composed fallback interpolates **club identity**
+(`name`, `lodgeName`), which is free text an admin types into Site Appearance &
+Content and which no sanitiser has ever seen — so the branch that runs when a
+deployment has no CMS row was the branch handing unsanitised settings text to an
+HTML sink. #2818 fixed `/booking-requests` and `/school-bookings` while creating
+them; #2819 removed the same latent branch from `/join`, `/join/apply` and
+`/contact`, which had carried it since they were written.
+
+It was latent rather than exploitable: every one of those pages ships a seeded row
+with non-empty `headerText`, so a normal deployment has always been on the
+sanitised branch, and reaching the other one takes an admin blanking the field or a
+deployment that has not been seeded. It is also not a privilege escalation on its
+own — the identity fields are admin-writable — but it turns a settings field into
+script on an anonymous public page, which is a different blast radius from the
+admin surface the writer already had.
+
+Pinned by `src/lib/__tests__/website-page-header-fallback-render.test.tsx` (the
+three established pages) and `booking-request-pages-fallback-render.test.tsx` (the
+two form pages). Both deliberately clear or remove the row rather than trusting
+starter data, feed a markup-shaped club identity through it, and assert the markup
+is serialised escaped with no element created. Each file also keeps a positive case
+proving stored CMS header HTML still renders as HTML. The two form pages' assertions
+read the hero element, not the whole page: both forms restate the hero's sentence in
+their own copy, interpolating the same club-set lodge name, so a page-wide "the
+payload is visible as text" read would pass even with the hero's sink restored.
+
+Rendered DOM cannot state the rule exactly, though, and `/contact` is where that
+bites: its fallback interpolates nothing, so a sink handed that sentence produces
+DOM identical to an escaped text child apart from the element tag, and no escaping
+assertion can see the difference. The rule itself is therefore pinned over the page
+**source**, for all five heroes at once, in
+`src/app/__tests__/website-hero-header-sink-contract.test.ts`: the expression each
+page hands to `__html` must be the stored field, and may never name the composed
+sentence — which must itself appear in JSX child position on the page, so a hero
+cannot pass the sentence to a helper component where the scan would lose sight of
+what happens to it. Its five-page list is not hand-maintained on trust either: a
+walk of both website route groups must agree with it in both directions, so a sixth
+page composing a fallback cannot quietly skip the contract. And because that scan
+reads a literal `__html:` key, a hero may not spell the key any other way — quoted,
+computed or shorthand — and every `dangerouslySetInnerHTML` attribute on the page
+must have yielded an expression the scan could read, so a second sink cannot hide
+behind a spelling.
+
+`(website)/page.tsx`, `(website)/[...slug]/page.tsx` and the `/404` boundary in
+`src/app/not-found.tsx` compose no fallback at all — they render the stored field
+or a wholly separate hardcoded block — so the rule reaches them with nothing to
+change.
 
 ## Follow-Up Mapping
 
