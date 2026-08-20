@@ -96,7 +96,7 @@ const BUDGET_LOCK_NAME = "diagnostics-budget-reserve";
  *     make both reservers die with P2028 → `metering_unavailable` and report the
  *     useless "0 winners" instead of naming the lock.
  *   - Vitest's own per-test timeout, which defaults to 5000ms because
- *     `vitest.config.ts` sets none. The race `describe` below therefore declares
+ *     `vitest.config.mts` sets none. The race `describe` below therefore declares
  *     an explicit 20s timeout (the sibling harness does the same at
  *     `concurrency-lock-races.realdb.test.ts`), so the barrier's named
  *     diagnostic is never pre-empted by a generic "Test timed out in 5000ms".

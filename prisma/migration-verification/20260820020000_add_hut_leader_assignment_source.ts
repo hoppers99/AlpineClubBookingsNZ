@@ -77,7 +77,7 @@ const ASSIGNMENT_COLUMNS = `
 `;
 
 const verification: DataMigrationVerification = {
-  migration: "20260819130000_add_hut_leader_assignment_source",
+  migration: "20260820020000_add_hut_leader_assignment_source",
   intent:
     "Give every existing HutLeaderAssignment a provenance value: SCHOOL_BOOKING for the rows the school-approval path created — recognised, this once only, by their member being a non-login SCHOOL record — and MANUAL for every other row, including a row held by a member an admin has since reclassified as an organisation. Change no other column on any row.",
   // The migration contains CREATE TYPE and ADD COLUMN, neither of which is

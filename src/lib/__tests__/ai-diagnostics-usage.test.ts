@@ -582,7 +582,7 @@ describe("real-Postgres over-budget race proof stays wired into CI (#2532)", () 
     // against that. A barrier budget close to 5s means a loaded runner reports
     // "0 winners" from two P2028 timeouts instead of naming the missing lock.
     expect(barrierMs).toBeLessThanOrEqual(2_500);
-    // Vitest's per-test default is 5000ms (vitest.config.ts sets none), so the
+    // Vitest's per-test default is 5000ms (vitest.config.mts sets none), so the
     // race describe must declare its own, comfortably above the barrier, or a
     // generic "Test timed out" pre-empts the named diagnostic.
     expect(suiteMs).toBeGreaterThanOrEqual(barrierMs * 4);

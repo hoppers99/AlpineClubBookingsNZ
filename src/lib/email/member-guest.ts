@@ -30,6 +30,7 @@ import {
 import { formatNZDate } from "../nzst-date";
 import { sendEmail, type EmailSendOutcome } from "./core";
 import type { BookingEmailRecipient } from "@/lib/booking-email-contract";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 /**
  * The six member-guest emails (epic #2305, MG2 #2307 and MG4 #2309).
@@ -118,7 +119,7 @@ export async function sendMemberGuestConsentRequestEmail(
     // because it is the one line that is true for a delegate as well as for the
     // member being added.
     subject: ask.heading,
-    html: memberGuestConsentRequestTemplate({
+    html: await renderEmailHtml(() => memberGuestConsentRequestTemplate({
       firstName: params.firstName,
       bookerName: params.bookerName,
       askHeading: ask.heading,
@@ -130,7 +131,7 @@ export async function sendMemberGuestConsentRequestEmail(
       consentExpiresAt: params.consentExpiresAt,
       consentUrl: params.consentUrl,
       partyList,
-    }),
+    })),
     bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-consent-request",
     templateData: {
@@ -203,7 +204,7 @@ export async function sendMemberGuestAddedEmail(
   return sendEmail({
     to: params.email,
     subject: `${added.heading} - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: memberGuestAddedTemplate({
+    html: await renderEmailHtml(() => memberGuestAddedTemplate({
       firstName: params.firstName,
       addedHeading: added.heading,
       addedContextNote: added.contextNote,
@@ -216,7 +217,7 @@ export async function sendMemberGuestAddedEmail(
       nightsLabel: audience.kind === "TARGET" ? "Your nights" : "Nights",
       partyList,
       removalNote,
-    }),
+    })),
     bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-added",
     templateData: {
@@ -273,14 +274,14 @@ export async function sendMemberGuestRequestWithdrawnEmail(
   return sendEmail({
     to: params.email,
     subject: `${copy.heading} - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: memberGuestRequestWithdrawnTemplate({
+    html: await renderEmailHtml(() => memberGuestRequestWithdrawnTemplate({
       firstName: params.firstName,
       withdrawnHeading: copy.heading,
       withdrawnContextNote: copy.contextNote,
       lodgeName: settings.lodgeName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
-    }),
+    })),
     bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-request-withdrawn",
     templateData: {
@@ -319,13 +320,13 @@ export async function sendMemberGuestConsentOutcomeEmail(
   return sendEmail({
     to: params.email,
     subject: `${copy.heading} - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: memberGuestConsentOutcomeTemplate({
+    html: await renderEmailHtml(() => memberGuestConsentOutcomeTemplate({
       firstName: params.firstName,
       outcomeHeading: copy.heading,
       outcomeSentence: copy.sentence,
       consequenceNote: copy.consequenceNote,
       bookingId: params.bookingId,
-    }),
+    })),
     bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-consent-outcome",
     templateData: {
@@ -375,12 +376,12 @@ export async function sendMemberGuestConsentAnsweredEmail(
   return sendEmail({
     to: params.email,
     subject: `${copy.heading} - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: memberGuestConsentAnsweredTemplate({
+    html: await renderEmailHtml(() => memberGuestConsentAnsweredTemplate({
       firstName: params.firstName,
       answeredHeading: copy.heading,
       answeredSentence: copy.sentence,
       answeredNote: copy.note,
-    }),
+    })),
     bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-consent-answered",
     templateData: {
@@ -408,13 +409,13 @@ export async function sendMemberGuestConsentExpiredEmail(
   return sendEmail({
     to: params.email,
     subject: "The request to add you to a lodge booking has lapsed",
-    html: memberGuestConsentExpiredTemplate({
+    html: await renderEmailHtml(() => memberGuestConsentExpiredTemplate({
       firstName: params.firstName,
       bookerName: params.bookerName,
       lodgeName: settings.lodgeName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
-    }),
+    })),
     bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-consent-expired",
     templateData: {

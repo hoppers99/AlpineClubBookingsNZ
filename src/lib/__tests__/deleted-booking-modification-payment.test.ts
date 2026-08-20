@@ -217,10 +217,18 @@ describe("raiseDeletedBookingModificationRefundTask (#2700)", () => {
     expect(Object.keys(created.data).sort()).toEqual([
       "amountCents",
       "bookingId",
+      // #2797: the task now carries a typed kind and the amount it was raised
+      // with, so a consumer classifies it without sniffing the reason string.
+      "kind",
       "paymentId",
+      "raisedAmountCents",
       "reason",
       "status",
     ]);
+    // #2797: typed as the deleted-booking late-capture kind, and raised with the
+    // captured amount (never amended for this kind).
+    expect(created.data.kind).toBe("DELETED_BOOKING_LATE_CAPTURE");
+    expect(created.data.raisedAmountCents).toBe(created.data.amountCents);
     // Nothing here completes the task or records that money went back.
     expect(created.data.completedAt).toBeUndefined();
     expect(created.data.completedByMemberId).toBeUndefined();
