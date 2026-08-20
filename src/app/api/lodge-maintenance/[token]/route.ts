@@ -7,6 +7,7 @@ import logger from "@/lib/logger";
 import { resolveMaintenanceAlertPayload } from "@/lib/maintenance-report-alert";
 import { MAX_MAINTENANCE_PHOTO_DATA_URL_LENGTH } from "@/lib/maintenance-report-photo";
 import { loadMaintenanceReportSettings } from "@/lib/maintenance-report-settings";
+import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import {
   MAX_MAINTENANCE_QUESTIONS,
   MAX_MAINTENANCE_REPORTER_CONTACT_LENGTH,
@@ -39,9 +40,12 @@ import { getClientIp, applyRateLimit, rateLimiters } from "@/lib/rate-limit";
  * the token and its lodge must be active. Every failure returns the identical
  * generic 404 with no body detail, so the endpoint is not an oracle for "is this
  * a real token" or "does this club have the feature on". The module gate answers
- * upstream in `src/proxy.ts` from `FEATURE_ROUTE_RULES`; the other three answer
- * here, and `resolveLodgeForMaintenanceToken` collapses its own several failure
- * reasons to one `null` before this file ever sees them.
+ * upstream in `src/proxy.ts` from `FEATURE_ROUTE_RULES` (its matcher lists this
+ * prefix) AND again here in `resolveGate` as defence in depth — a module gate
+ * that lived only in middleware shipped bypassed once already (the matcher was
+ * missing this prefix), so it is enforced in both places now. The other three
+ * gates answer here, and `resolveLodgeForMaintenanceToken` collapses its own
+ * several failure reasons to one `null` before this file ever sees them.
  *
  * THE TOKEN IS NEVER ECHOED. It is read from the path, hashed, and dropped. It is
  * not returned in any response body, not logged (the shared redaction layer
@@ -123,6 +127,18 @@ const submitSchema = z
  * would itself be the oracle this design avoids.
  */
 async function resolveGate(rawToken: string) {
+  // MODULE GATE, IN-HANDLER (defence in depth, #2780 security review). The proxy
+  // matcher also runs the upstream module gate on this prefix, but a module gate
+  // that lives ONLY in middleware is one matcher edit from being bypassed — which
+  // is exactly the regression this route shipped with. So the closure is enforced
+  // here too: with `maintenanceReports` off, both GET and POST 404 regardless of
+  // `anonymousReportsEnabled`. `loadEffectiveModuleFlags` fails closed (false) on
+  // a read error, so an outage refuses the anonymous door rather than opening it.
+  const modules = await loadEffectiveModuleFlags();
+  if (!modules.maintenanceReports) {
+    return null;
+  }
+
   const settings = await loadMaintenanceReportSettings();
   if (!settings.anonymousReportsEnabled) {
     return null;

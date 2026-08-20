@@ -8,6 +8,7 @@ import {
   MAX_MAINTENANCE_PHOTO_DATA_URL_LENGTH,
 } from "@/lib/maintenance-report-photo";
 import { loadMaintenanceReportSettings } from "@/lib/maintenance-report-settings";
+import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import {
   MAX_MAINTENANCE_QUESTIONS,
   MAX_MAINTENANCE_SUMMARY_LENGTH,
@@ -34,7 +35,27 @@ import { resolveMaintenanceAlertPayload } from "@/lib/maintenance-report-alert";
  * that may be reported against, and whether a photo may be attached. It is a
  * member-only read and returns nothing about tokens, settings the member cannot
  * act on, or other people's reports.
+ *
+ * THE MODULE GATE IS ENFORCED HERE AS WELL AS UPSTREAM. `src/proxy.ts`'s matcher
+ * lists this prefix so the feature-route rule 404s both methods when
+ * `maintenanceReports` is off, but a module gate that lived only in middleware
+ * shipped bypassed once already on the sibling QR route — so both GET and POST
+ * re-check the flag directly (defence in depth, #2780 security review) and 404 an
+ * off module. `loadEffectiveModuleFlags` fails closed on a read error.
  */
+
+/**
+ * 404 when the module is off, mirroring the feature-route gate's own response so
+ * a member with the module off cannot tell this route apart from one that does
+ * not exist. Returns null when the module is on.
+ */
+async function maintenanceModuleGate() {
+  const modules = await loadEffectiveModuleFlags();
+  if (!modules.maintenanceReports) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  return null;
+}
 
 const submitSchema = z
   .object({
@@ -65,6 +86,9 @@ export async function GET() {
   const guard = await requireActiveSession();
   if (!guard.ok) return guard.response;
 
+  const moduleOff = await maintenanceModuleGate();
+  if (moduleOff) return moduleOff;
+
   const [questions, settings, lodges] = await Promise.all([
     loadActiveMaintenanceQuestions(),
     loadMaintenanceReportSettings(),
@@ -89,6 +113,9 @@ export async function POST(request: NextRequest) {
   const guard = await requireActiveSession();
   if (!guard.ok) return guard.response;
   const memberId = guard.session.user.id;
+
+  const moduleOff = await maintenanceModuleGate();
+  if (moduleOff) return moduleOff;
 
   // Member-scoped, with the shared-IP backstop at ten times the budget: a lodge
   // full of members on one wifi must not spend each other's allowance, and one
