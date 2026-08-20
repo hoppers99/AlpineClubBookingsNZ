@@ -147,6 +147,29 @@ describe("sanitizePageContentHtml", () => {
     // Sanitizing an already-sanitized value is a no-op (idempotent).
     expect(sanitizePageContentHtml(sanitized)).toBe(sanitized);
   });
+
+  /**
+   * The trailing `.trim()` is load-bearing for callers, not cosmetic: the public
+   * hero pages decide between the HTML sink and an escaped text child on the
+   * truthiness of the stored header, and it is this guarantee that means a header
+   * of nothing but whitespace can never present itself as content (#2819). Both
+   * the admin write path and the published read path run values through here, so
+   * this is where the rule belongs — the pages' own `.trim()` is defence in depth
+   * against some future reader that skips this function.
+   *
+   * `<p>&nbsp;</p>` is deliberately in the list as a NON-empty case: what a
+   * rich-text editor produces for an "empty" paragraph is real markup, and it
+   * takes the stored branch. The guarantee is about whitespace, not about
+   * emptiness as an author might perceive it.
+   */
+  it("collapses whitespace-only input to the empty string", () => {
+    expect(sanitizePageContentHtml("   ")).toBe("");
+    expect(sanitizePageContentHtml("\t\n ")).toBe("");
+    expect(sanitizePageContentHtml("\r\n")).toBe("");
+    expect(sanitizePageContentHtml("  <script>alert(1)</script>  ")).toBe("");
+    expect(sanitizePageContentHtml("  <p>ok</p>  ")).toBe("<p>ok</p>");
+    expect(sanitizePageContentHtml("<p>&nbsp;</p>")).not.toBe("");
+  });
 });
 
 // Every <img> reaching the DOM through sanitised page content — the
@@ -288,6 +311,28 @@ describe("getSanitizedPageContentByPath", () => {
     // from the src filename ("x") so screen readers do not announce the raw src
     // on the header image path (#1947).
     expect(page?.headerText).toBe('<img src="x" alt="x" />Welcome');
+  });
+
+  // The reader-level half of the whitespace guarantee above, and the reason the
+  // public hero pages never see a whitespace-only header however a row was
+  // written (#2819). `getPublishedPageContentByPath()` returns this same record,
+  // so pinning it here covers both readers.
+  it("reads a whitespace-only stored header back as the empty string", async () => {
+    mocks.pageContentFindUnique.mockResolvedValue({
+      id: "page-1",
+      slug: "join",
+      caption: "Join",
+      menuTitle: "Join",
+      title: "Join",
+      headerText: "   ",
+      path: "/join",
+      sortOrder: 10,
+      contentHtml: "<p>ok</p>",
+    });
+
+    const page = await getSanitizedPageContentByPath("/join");
+
+    expect(page?.headerText).toBe("");
   });
 });
 

@@ -104,6 +104,10 @@ description = "The signed test JWT built by the mirotalk-token suite so it can a
 regexes = ['''^eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJkYXRhIjoiVTJGc2RHVmtYMThBQVFJREJBVUdCOHdmSWF4NHJTaWc3N2txVkVYL210eEZTR05uUytzaHdOOVNsb283b2l4TFpZMm9xMlgvYitJSjAyaFJnNU1lTGJvT1Mvekg4QmtpU1BQT05CYk9OTG89IiwiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDAwMDM2MDB9\.Tpa8rwDsiXuKPVud59TmKAkW_jTuSlIUYiW-d7w06aQ$''']
 
 [[allowlists]]
+description = "The synthetic high-entropy example key the mirotalk-token suite uses (in `describeMirotalkJwtKeyWeakness` and the 'stays silent for a properly generated key' test) to prove a strong MIRO_JWT_KEY draws NO weak-key warning. A hand-built 34-character string — two-letter/one-digit groups whose digits are a permutation of 0-9 — chosen only to clear the 32-char, distinct-character strength check in `mirotalk-token.ts`. It signs nothing real: MIRO_JWT_KEY is a self-hosted deployment's own signing secret, kept only in that deployment's env, and `.env.example` ships it EMPTY. Only this exact literal is forgiven; any other high-entropy value still fails the gate."
+regexes = ['''^Zx7Qb2Lm9Rt4Vy6Kd8Np1Sw3Hj5Cf0Gu2$''']
+
+[[allowlists]]
 description = "A fixture database password in the measurement harness's own self-test, whose value is a hyphenated English phrase naming the UTF-16 test material it exists to exercise. It is a password to nothing."
 regexes = ['''^utf16-secret-material$''']
 

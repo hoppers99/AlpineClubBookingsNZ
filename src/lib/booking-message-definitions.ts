@@ -227,6 +227,55 @@ export function renderBookingMessageTemplate(
   });
 }
 
+/**
+ * The club-level token values a CLIENT surface needs to render a booking
+ * message (#2919 review). `/api/booking-messages` returns them alongside the
+ * message bodies, resolved server-side by exactly the code the admin preview
+ * uses, so the member reads the same substitution the operator previewed.
+ */
+export type BookingMessageClubTokens = Pick<
+  BookingMessageMergeData,
+  "CLUB_NAME" | "CLUB_LODGE_NAME" | "BASE_URL" | "SUPPORT_EMAIL"
+>;
+
+/**
+ * Render a booking message on a client surface (#2919 review).
+ *
+ * Four live surfaces — the public pay page, the booking wizard, the member
+ * group-join panel and the organiser group card — fetch raw message bodies from
+ * `/api/booking-messages` and used to substitute at most `{{paymentReference}}`
+ * by hand. Every message declares ALL tokens as insertable, so an operator who
+ * put `{{CLUB_LODGE_NAME}}` in one of them saw the literal braces reach the
+ * member. This is the one place those surfaces render through, so:
+ *
+ * - every declared token is substituted, and an unknown one blanks (the
+ *   contract `renderBookingMessageTemplate` has always had) rather than showing
+ *   a member a mustache;
+ * - `lodgeName`, where the surface knows which lodge it is talking about,
+ *   overrides the club-level default — the whole point of #2919. It is exactly
+ *   equivalent to a lodge-scoped server resolve, because `lodgeName` is the only
+ *   one of these four values that varies by lodge;
+ * - a failed or older fetch leaves `clubTokens` empty, which blanks rather than
+ *   throws.
+ */
+export function renderClientBookingMessage(input: {
+  /** The effective body from `/api/booking-messages`, if it arrived. */
+  template: string | null | undefined;
+  /** The shipped default body, used until (or unless) the fetch answers. */
+  fallback: string;
+  clubTokens: BookingMessageClubTokens | null | undefined;
+  /** This booking's/group's own lodge, when the surface knows it. */
+  lodgeName?: string | null;
+  /** Surface-specific tokens, e.g. the payment reference. */
+  data?: BookingMessageMergeData;
+}): string {
+  return renderBookingMessageTemplate(input.template ?? input.fallback, {
+    ...input.clubTokens,
+    ...(input.lodgeName ? { CLUB_LODGE_NAME: input.lodgeName } : {}),
+    ...input.data,
+  });
+}
+
 export function getDefaultBookingMessages(): Record<BookingMessageKey, string> {
   return Object.fromEntries(
     BOOKING_MESSAGE_DEFINITIONS.map((definition) => [

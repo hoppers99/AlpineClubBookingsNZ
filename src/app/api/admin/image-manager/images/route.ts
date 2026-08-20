@@ -39,7 +39,8 @@ export async function GET(request: NextRequest) {
   const images = await Promise.all(
     imageFiles.map(async (e) => {
       // absDir is contained under IMAGES_ROOT; e.name comes from readdir of that
-      // directory, not from request input.
+      // directory, not from request input. Justification and the #2841 triage:
+      // docs/SECURITY-ATTACK-SURFACE.md -> "Image Manager path containment".
       // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       const filePath = path.join(absDir, e.name);
       const stat = await fs.stat(filePath);
@@ -103,9 +104,19 @@ export async function DELETE(request: NextRequest) {
 
   // absDir is resolveInImagesRoot-contained and filename is rejected above if it
   // contains a separator; the startsWith check below re-confirms containment.
+  // Justification and the #2841 triage:
+  // docs/SECURITY-ATTACK-SURFACE.md -> "Image Manager path containment".
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   const filePath = path.join(absDir, filename);
-  if (filePath !== absDir && !filePath.startsWith(absDir + path.sep)) {
+  // Strict: the file being deleted is always a child of absDir, never absDir
+  // itself. The dropped `filePath !== absDir &&` escape hatch was the same shape
+  // as the one that let `name: ".."` through on the directories route (#2841).
+  // It is not reachable here — the only names `path.join` treats as operators
+  // are "." and "..", and measured, both give `path.extname` an empty string, so
+  // the image-extension allowlist above has already rejected them — but a check
+  // whose correctness rests on an allowlist two branches away is one refactor
+  // from being wrong, and the strict form needs no such argument.
+  if (!filePath.startsWith(absDir + path.sep)) {
     return NextResponse.json({ error: "Invalid path" }, { status: 400 });
   }
 

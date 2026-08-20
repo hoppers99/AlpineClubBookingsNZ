@@ -153,6 +153,9 @@ jobs:
               --exclude .semgrep/tests \
               --sarif-output /out/semgrep-results.sarif
 
+      # The RAW scan output, suppressed results included. This is the audit
+      # record, and it is what the #2841 triage measured the `suppressions`
+      # field from — so it must stay unfiltered.
       - name: Upload Semgrep SARIF artifact
         if: always()
         uses: actions/upload-artifact@v7
@@ -161,6 +164,36 @@ jobs:
           path: ${{ runner.temp }}/semgrep-output/semgrep-results.sarif
           if-no-files-found: ignore
 
+      # No `cache: npm`: the filter step below uses only Node's own modules, so
+      # nothing installs and there is no npm cache to hit.
+      - name: Set up Node.js
+        if: always()
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+
+      # #2841. Semgrep honours a `nosemgrep` comment and marks the result
+      # `"suppressions": [{"kind": "inSource"}]`, which is why the blocking scan
+      # above passes with two justified raw-SQL exemptions in the tree. GitHub's
+      # SARIF ingest does not act on that field, so those two were filed as
+      # code-scanning alerts that can never be closed and reappear on every scan.
+      # `INV-OPS-014`'s own failure message tells contributors to add such a
+      # comment, so every justified exemption minted another permanent alert — and
+      # a genuinely dangerous new raw-SQL call would have arrived in that list
+      # looking identical to the known-safe ones.
+      #
+      # This cannot weaken the gate: `semgrep scan --error` above already ran on
+      # the unfiltered results and has already passed or failed, and the raw SARIF
+      # is uploaded as the artifact directly above. Only what reaches the Security
+      # tab changes. Delete a `nosemgrep` comment and Semgrep reports the result
+      # unsuppressed again, so the alert comes back.
+      - name: Drop already-suppressed results before publishing alerts
+        if: always()
+        run: |
+          node scripts/ci/filter-suppressed-sarif.mjs \
+            "$RUNNER_TEMP/semgrep-output/semgrep-results.sarif" \
+            "$RUNNER_TEMP/semgrep-output/semgrep-results.published.sarif"
+
       # Surface findings as GitHub code scanning alerts (Security tab) without
       # any Semgrep Cloud dependency. Runs even when the scan step failed the
       # gate on findings so the alerts still publish.
@@ -168,7 +201,7 @@ jobs:
         if: always()
         uses: github/codeql-action/upload-sarif@v4.37.6
         with:
-          sarif_file: ${{ runner.temp }}/semgrep-output/semgrep-results.sarif
+          sarif_file: ${{ runner.temp }}/semgrep-output/semgrep-results.published.sarif
           category: semgrep
 
   # #2686: ONE required secret-scanning gate, replacing the two jobs that used to

@@ -13,6 +13,13 @@ import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
  * configured hut-leader lookahead window at that lodge with paid or operational
  * bookings but no HutLeaderAssignment (the amber upcoming-dates card).
  *
+ * Every row names its lodge (`lodgeId`, `lodgeName`) since #2917, because the
+ * underlying result is one row per uncovered LODGE-night. Here that lodge is
+ * always the requested one — this route is single-lodge by construction — so the
+ * fields are for the client's identity/keying, not for display: the workspace's
+ * lodge selector already names the lodge above the card, and repeating it on
+ * every row would breach the multi-lodge Presentation Rule (ADR-002).
+ *
  * Optional windowing (used to paint one calendar month red on the redesigned
  * assignment page):
  *   ?month=YYYY-MM                — first→last day of that calendar month

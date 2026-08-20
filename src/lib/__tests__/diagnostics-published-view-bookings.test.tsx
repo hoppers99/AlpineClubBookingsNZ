@@ -86,6 +86,7 @@ const MODULES_OFF = {
   eventsCalendar: false,
   memberGuests: false,
   aiDiagnostics: true,
+  alpineCentralServer: false,
 };
 
 /** Depth-first walk for the publisher element, wherever the page puts it. */

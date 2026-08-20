@@ -208,3 +208,149 @@ describe("public payment-link captured-payment recovery", () => {
     },
   );
 });
+
+// #2919: the "your booking is confirmed" line named the CLUB DEFAULT lodge,
+// because the payment-link context carried no lodge at all. It must name the
+// lodge this booking is actually at.
+describe("public payment-link confirmation names the booking's lodge", () => {
+  function installAlreadyPaidFetch(context: Record<string, unknown>) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/pay/public-token" && !init?.method) {
+          return { ok: true, json: async () => context } as Response;
+        }
+        if (url === "/api/booking-messages") {
+          return { ok: true, json: async () => ({ messages: {} }) } as Response;
+        }
+        if (
+          url === "/api/pay/public-token/payment-intent" &&
+          init?.method === "POST"
+        ) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ alreadyPaid: true }),
+          } as Response;
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }) as typeof fetch,
+    );
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
+  });
+
+  it("names the booking's own lodge rather than the club default", async () => {
+    installAlreadyPaidFetch({ ...payableContext, lodgeName: "Second Lodge" });
+    render(<PayByLinkPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+
+    expect(
+      await screen.findByText(/Your booking with Second Lodge is confirmed/i),
+    ).toBeInTheDocument();
+    // The mocked club identity ("Test Lodge") is the default-lodge name this
+    // surface used to print for every booking.
+    expect(screen.queryByText(/Test Lodge is confirmed/i)).toBeNull();
+  });
+
+  // #2919 review: this page printed the internet-banking body with only
+  // {{paymentReference}} substituted, so an operator's {{CLUB_LODGE_NAME}}
+  // reached the member as literal braces on the most-read surface of the four.
+  it("fills in every merge field in an edited internet-banking message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/pay/public-token" && !init?.method) {
+          return {
+            ok: true,
+            json: async () => ({ ...payableContext, lodgeName: "Second Lodge" }),
+          } as Response;
+        }
+        if (url === "/api/booking-messages") {
+          return {
+            ok: true,
+            json: async () => ({
+              messages: {
+                "paymentLink.internetBanking.description":
+                  "Transfer to {{CLUB_LODGE_NAME}} ({{CLUB_NAME}}) using {{paymentReference}}. Help: {{SUPPORT_EMAIL}}.",
+              },
+              tokens: {
+                CLUB_NAME: "Alpine Club",
+                // The club default, which is not this booking's lodge.
+                CLUB_LODGE_NAME: "Test Lodge",
+                SUPPORT_EMAIL: "support@example.test",
+                BASE_URL: "https://example.test",
+              },
+            }),
+          } as Response;
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }) as typeof fetch,
+    );
+
+    render(<PayByLinkPage />);
+
+    expect(
+      await screen.findByText(
+        "Transfer to Second Lodge (Alpine Club) using BOOK-123. Help: support@example.test.",
+      ),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("{{");
+  });
+
+  it("blanks a merge field it has no value for rather than showing braces", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/pay/public-token" && !init?.method) {
+          return { ok: true, json: async () => payableContext } as Response;
+        }
+        // The endpoint answered with bodies but no token values at all (an older
+        // response, or a failed settings read).
+        if (url === "/api/booking-messages") {
+          return {
+            ok: true,
+            json: async () => ({
+              messages: {
+                "paymentLink.internetBanking.description":
+                  "Pay {{CLUB_LODGE_NAME}} with {{paymentReference}}.",
+              },
+            }),
+          } as Response;
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }) as typeof fetch,
+    );
+
+    render(<PayByLinkPage />);
+
+    expect(
+      await screen.findByText(/Or pay by internet banking/),
+    ).toBeInTheDocument();
+    // The blank is the contract: an unsupplied token renders as nothing (hence
+    // the double space), never as `{{CLUB_LODGE_NAME}}` in the member's face.
+    expect(document.body.textContent).toContain("Pay  with BOOK-123.");
+    expect(document.body.textContent).not.toContain("{{");
+  });
+
+  it("falls back to the club lodge name when the context carries none", async () => {
+    installAlreadyPaidFetch(payableContext);
+    render(<PayByLinkPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+
+    expect(
+      await screen.findByText(/Your booking with Test Lodge is confirmed/i),
+    ).toBeInTheDocument();
+  });
+});

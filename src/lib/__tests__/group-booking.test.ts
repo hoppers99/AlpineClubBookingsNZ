@@ -1,10 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AgeTier,
   BookingStatus,
   GroupBookingPaymentMode,
   GroupBookingStatus,
 } from "@prisma/client";
+
+// #2919 only: the pure helpers below touch no database. The verification-token
+// lodge lookup does, so this file stubs the single delegate it reads.
+const { groupBookingJoinFindUnique } = vi.hoisted(() => ({
+  groupBookingJoinFindUnique: vi.fn(),
+}));
+vi.mock("@/lib/prisma", () => ({
+  prisma: { groupBookingJoin: { findUnique: groupBookingJoinFindUnique } },
+}));
+
+import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import {
   generateGroupBookingCode,
   hasGroupStayFullyEnded,
@@ -12,6 +23,7 @@ import {
   isOrganiserBookingActive,
   normaliseJoinCode,
   parseNonMemberJoinGuests,
+  resolveGroupJoinVerificationLodgeName,
   toGroupBookingSummary,
   type GroupBookingRecordForSummary,
 } from "@/lib/group-booking";
@@ -291,5 +303,66 @@ describe("parseNonMemberJoinGuests", () => {
     expect(parseNonMemberJoinGuests(undefined)).toEqual([]);
     expect(parseNonMemberJoinGuests({ firstName: "Sam" })).toEqual([]);
     expect(parseNonMemberJoinGuests([])).toEqual([]);
+  });
+});
+
+// #2919: the group-join confirmation page named the club's DEFAULT lodge for
+// every group, because the page had nothing but a token and the club identity.
+describe("resolveGroupJoinVerificationLodgeName", () => {
+  const RAW_TOKEN = issueActionToken().token;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the lodge the group's organiser booking is actually at", async () => {
+    groupBookingJoinFindUnique.mockResolvedValue({
+      groupBooking: {
+        organiserBooking: { lodge: { name: "Second Lodge" } },
+      },
+    });
+
+    await expect(resolveGroupJoinVerificationLodgeName(RAW_TOKEN)).resolves.toBe(
+      "Second Lodge"
+    );
+    // Looked up by the HASH of the token, never the raw token.
+    expect(groupBookingJoinFindUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { verificationTokenHash: hashActionToken(RAW_TOKEN) },
+      })
+    );
+  });
+
+  it("reads the lodge name and nothing else about the lodge", async () => {
+    groupBookingJoinFindUnique.mockResolvedValue(null);
+
+    await resolveGroupJoinVerificationLodgeName(RAW_TOKEN);
+
+    const args = groupBookingJoinFindUnique.mock.calls[0]?.[0] as {
+      select: {
+        groupBooking: {
+          select: {
+            organiserBooking: { select: { lodge: { select: unknown } } };
+          };
+        };
+      };
+    };
+    // No travel note, no door code: this is an unauthenticated surface.
+    expect(
+      args.select.groupBooking.select.organiserBooking.select.lodge.select
+    ).toEqual({ name: true });
+  });
+
+  it("returns null for an unknown token, so the page falls back to the club default", async () => {
+    groupBookingJoinFindUnique.mockResolvedValue(null);
+
+    await expect(resolveGroupJoinVerificationLodgeName(RAW_TOKEN)).resolves.toBeNull();
+  });
+
+  it("refuses a malformed token without touching the database", async () => {
+    await expect(
+      resolveGroupJoinVerificationLodgeName("not-a-token")
+    ).resolves.toBeNull();
+    expect(groupBookingJoinFindUnique).not.toHaveBeenCalled();
   });
 });

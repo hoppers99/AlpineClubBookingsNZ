@@ -47,9 +47,14 @@ export default async function JoinApplyPage() {
 
   const caption = page?.caption ?? "Membership Application";
   const title = page?.title ?? "Apply for Membership";
-  const headerText =
-    page?.headerText ||
-    `Enter your details, nominate two current ${clubIdentity.name} members, and we will move your application through nomination confirmation and committee approval.`;
+  // Only a GENUINE stored `headerText` may reach the HTML sink. It is admin HTML,
+  // sanitised on write and again on read by the published-row reader used above.
+  const storedHeaderHtml = page?.headerText.trim() ? page.headerText : null;
+  // The fallback is a string this code COMPOSES, and it interpolates a club-set
+  // value (`name`) that no sanitiser has ever seen. It renders as an escaped text
+  // child, never through the HTML sink — the branch a deployment with a blanked
+  // or missing row takes is exactly the branch that must not be one (#2819).
+  const fallbackHeaderText = `Enter your details, nominate two current ${clubIdentity.name} members, and we will move your application through nomination confirmation and committee approval.`;
 
   return (
     <>
@@ -59,10 +64,16 @@ export default async function JoinApplyPage() {
           <h1 className="font-heading text-4xl font-bold tracking-tight sm:text-5xl">
             {title}
           </h1>
-          <div
-            className="mt-4 max-w-3xl text-lg text-brand-snow/80"
-            dangerouslySetInnerHTML={{ __html: headerText }}
-          />
+          {storedHeaderHtml ? (
+            <div
+              className="mt-4 max-w-3xl text-lg text-brand-snow/80"
+              dangerouslySetInnerHTML={{ __html: storedHeaderHtml }}
+            />
+          ) : (
+            <p className="mt-4 max-w-3xl text-lg text-brand-snow/80">
+              {fallbackHeaderText}
+            </p>
+          )}
         </div>
       </section>
 

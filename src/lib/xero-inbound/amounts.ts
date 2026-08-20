@@ -1,6 +1,7 @@
 import { type CreditNote as XeroCreditNote, type Payment as XeroPayment } from "xero-node";
 import { PaymentStatus } from "@prisma/client";
 import { buildXeroIdempotencyKey } from "@/lib/xero-sync";
+import { isIncludedRefundCreditNoteStatus } from "@/lib/xero-refund-note-status";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
 import { type AccountCreditAllocationTarget, type CreditNoteAmounts } from "./types";
 
@@ -56,15 +57,6 @@ export function getJsonRecord(value: unknown): Record<string, unknown> | null {
   }
 
   return value as Record<string, unknown>;
-}
-
-export function isIncludedRefundCreditNoteStatus(status: unknown) {
-  if (typeof status !== "string") {
-    return true;
-  }
-
-  const normalized = status.trim().toUpperCase();
-  return normalized !== "VOIDED" && normalized !== "DELETED";
 }
 
 export function getCreditNoteIdFromAllocationMetadata(metadata: unknown): string | null {

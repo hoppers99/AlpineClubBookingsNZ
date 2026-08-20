@@ -49,7 +49,7 @@ const OPT_OUT_MENTION = /optOutOfFrozenClock\s*\(/;
 /**
  * Mirrors what Vitest actually collects, so the allowlist cannot be dodged by
  * putting an opt-out outside `src/` — `scripts/` carries six suites of its own.
- * `e2e/` and `.claude/` are the two directories `vitest.config.ts` excludes.
+ * `e2e/` and `.claude/` are the two directories `vitest.config.mts` excludes.
  */
 const SKIPPED_DIRECTORIES = new Set([
   "node_modules",
@@ -233,8 +233,29 @@ describe("the setup-file ordering the whole design rests on", () => {
   // because that documented default is never applied, so nothing but this
   // explicit pin stands between the design and a `Promise.all`. Asserted here
   // because a reviewer deleting the config line would otherwise see no failure.
+  // Resolve the config the way vitest itself does — first hit wins across its
+  // ordered candidate list — because `.ts` OUTRANKS `.mts`. Reading
+  // `vitest.config.mts` unconditionally would keep passing against a file
+  // vitest no longer loads if a `vitest.config.ts` ever reappeared beside it
+  // (an init, a fork port, a partial revert), silently reopening the hole.
+  const CONFIG_CANDIDATES = [
+    "vitest.config.ts",
+    "vitest.config.mts",
+    "vitest.config.cts",
+    "vitest.config.js",
+    "vitest.config.mjs",
+    "vitest.config.cjs",
+  ];
+  const resolvedConfigName = CONFIG_CANDIDATES.find((name) =>
+    fs.existsSync(path.join(process.cwd(), name))
+  );
+
+  it("is vitest.config.mts that vitest actually resolves, not a shadowing sibling", () => {
+    expect(resolvedConfigName).toBe("vitest.config.mts");
+  });
+
   const config = fs.readFileSync(
-    path.join(process.cwd(), "vitest.config.ts"),
+    path.join(process.cwd(), resolvedConfigName ?? "vitest.config.mts"),
     "utf8"
   );
 

@@ -15,6 +15,7 @@ import {
   hasBookingDetailHref,
 } from "@/lib/booking-email-html";
 import { adminEmailDeliveryFailedTemplate } from "@/lib/email-templates/admin-ops";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 const MAX_ATTEMPTS = 3;
 const RETRY_FAILURE_ALERT_TEMPLATE = "admin-email-failure";
@@ -118,6 +119,11 @@ export async function retryFailedEmails(): Promise<{
 
   for (const emailLog of failedEmails) {
     const usesBookingRetryBody = emailLog.bookingRetryHtmlBody != null;
+    // Retained HTML, rendered by whichever process first attempted this
+    // message. Its colours are already baked into the stored string, so it is
+    // deliberately NOT re-coloured here and needs no render gate (#2900):
+    // re-theming a replay would change what the member is shown relative to
+    // what the club approved at send time.
     let retryHtml = emailLog.bookingRetryHtmlBody ?? emailLog.htmlBody!;
     // F26 (#1885): a FAILED row can be created before an SNS bounce/complaint
     // suppresses the recipient (the pre-send check in core.ts passed, then the
@@ -452,11 +458,11 @@ export async function retryFailedEmails(): Promise<{
             await sendEmail({
               to: adminEmail,
               subject: "Email delivery permanently failed",
-              html: adminEmailDeliveryFailedTemplate({
+              html: await renderEmailHtml(() => adminEmailDeliveryFailedTemplate({
                 recipient: emailLog.to,
                 templateName: emailLog.templateName,
                 attemptCount: newAttempts,
-              }),
+              })),
               // Admin failure alert: never withheld by a booking flag (#2258).
               bookingContext: "none",
               templateName: RETRY_FAILURE_ALERT_TEMPLATE,

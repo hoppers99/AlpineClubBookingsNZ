@@ -21,6 +21,7 @@ import {
   classifyBookingOwnerContext,
   type BookingEmailSourceContext,
 } from "@/lib/booking-email-contract";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 // ---- Public booking request flow (issue #707) ----
 
@@ -47,14 +48,14 @@ export async function sendBookingRequestVerificationEmail(params: {
     to: params.email,
     lodgeId: params.lodgeId,
     subject: `Confirm your booking request — ${CLUB_NAME}`,
-    html: bookingRequestVerificationTemplate({
+    html: await renderEmailHtml(() => bookingRequestVerificationTemplate({
       firstName: params.firstName,
       verifyUrl,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
       guestCount: params.guestCount,
       expiresAt: params.expiresAt,
-    }),
+    })),
     bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "booking-request-verification",
     templateData: {
@@ -96,7 +97,7 @@ export async function sendBookingRequestApprovedEmail(params: {
     to: params.email,
     lodgeId: params.lodgeId,
     subject: `Your booking request has been approved — ${CLUB_NAME}`,
-    html: bookingRequestApprovedTemplate({
+    html: await renderEmailHtml(() => bookingRequestApprovedTemplate({
       firstName: params.firstName,
       payUrl,
       checkIn: params.checkIn,
@@ -104,7 +105,7 @@ export async function sendBookingRequestApprovedEmail(params: {
       guestCount: params.guestCount,
       priceCents: params.priceCents,
       expiresAt: params.expiresAt,
-    }),
+    })),
     bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "booking-request-approved",
     templateData: {
@@ -152,7 +153,7 @@ export async function sendSplitGuestPaymentLinkEmail(params: {
     to: params.email,
     lodgeId: params.lodgeId,
     subject: `Pay for your guests to confirm their place — ${CLUB_NAME}`,
-    html: splitGuestPaymentLinkTemplate({
+    html: await renderEmailHtml(() => splitGuestPaymentLinkTemplate({
       firstName: params.firstName,
       payUrl,
       checkIn: params.checkIn,
@@ -160,7 +161,7 @@ export async function sendSplitGuestPaymentLinkEmail(params: {
       guestCount: params.guestCount,
       priceCents: params.priceCents,
       expiresAt: params.expiresAt,
-    }),
+    })),
     bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "split-guest-payment-link",
     templateData: {
@@ -208,7 +209,7 @@ export async function sendBookingRequestQuoteEmail(params: {
     subject: params.isReminder
       ? `Reminder: your booking quote expires soon — ${CLUB_NAME}`
       : `Your booking quote is ready — ${CLUB_NAME}`,
-    html: bookingRequestQuoteTemplate({
+    html: await renderEmailHtml(() => bookingRequestQuoteTemplate({
       firstName: params.firstName,
       respondUrl,
       checkIn: params.checkIn,
@@ -219,7 +220,7 @@ export async function sendBookingRequestQuoteEmail(params: {
       expiresAt: params.expiresAt,
       schoolName: params.schoolName,
       isReminder: params.isReminder,
-    }),
+    })),
     bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "booking-request-quote",
     templateData: {
@@ -257,12 +258,12 @@ export async function sendBookingRequestDeclinedEmail(params: {
     to: params.email,
     lodgeId: params.lodgeId,
     subject: `Update on your booking request — ${CLUB_NAME}`,
-    html: bookingRequestDeclinedTemplate({
+    html: await renderEmailHtml(() => bookingRequestDeclinedTemplate({
       firstName: params.firstName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
       reason: params.reason,
-    }),
+    })),
     bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "booking-request-declined",
     templateData: {
@@ -302,11 +303,11 @@ export async function sendBookingRequestPaymentExpiredEmail(params: {
     to: params.email,
     lodgeId: params.lodgeId,
     subject: `Your booking was released — payment not received — ${CLUB_NAME}`,
-    html: bookingRequestPaymentExpiredTemplate({
+    html: await renderEmailHtml(() => bookingRequestPaymentExpiredTemplate({
       firstName: params.firstName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
-    }),
+    })),
     bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "booking-request-payment-expired",
     templateData: {
@@ -344,7 +345,7 @@ export async function sendSchoolAttendeeConfirmationEmail(params: {
     subject: params.isReminder
       ? `Reminder: confirm your attendee list — ${CLUB_NAME}`
       : `Confirm your attendee list — ${CLUB_NAME}`,
-    html: schoolAttendeeConfirmationTemplate({
+    html: await renderEmailHtml(() => schoolAttendeeConfirmationTemplate({
       firstName: params.firstName,
       schoolName: params.schoolName,
       confirmUrl,
@@ -352,7 +353,7 @@ export async function sendSchoolAttendeeConfirmationEmail(params: {
       checkOut: params.checkOut,
       guestCount: params.guestCount,
       isReminder: params.isReminder,
-    }),
+    })),
     bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "school-attendee-confirmation",
     templateData: {

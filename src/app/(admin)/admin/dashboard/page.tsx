@@ -52,7 +52,12 @@ import {
 } from "@/lib/date-only";
 import { countRosterDaysNeedingChores } from "@/lib/roster-status";
 import { countGuestsAwaitingBed } from "@/lib/bed-allocation-board";
-import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
+import {
+  coverageLodgeLabel,
+  coverageNeedsLodgeContext,
+  getUnassignedHutLeaderDates,
+} from "@/lib/hut-leader-coverage";
+import { countActiveLodges } from "@/lib/lodges";
 import { OPEN_DELETION_REQUEST_STATUSES } from "@/lib/deletion-request-decision";
 import {
   buildUnpaidFinishedStaysHref,
@@ -105,6 +110,7 @@ async function getStats() {
     pendingBookingReviews,
     pendingBookingChangeRequests,
     unassignedHutLeaderDates,
+    activeLodgeCount,
     rosterDaysNeedingChores,
     bedGuestsAwaiting,
   ] = await Promise.all([
@@ -203,6 +209,13 @@ async function getStats() {
       where: { status: "REQUESTED" },
     }),
     getUnassignedHutLeaderDates({ scope: { kind: "all" } }),
+    // Whether this club is multi-lodge, for the ADR-002 Presentation Rule below.
+    // Keyed on the CLUB, not on how many lodges happen to be uncovered (#2917
+    // review): a two-lodge club whose gaps all sit at one lodge must still be
+    // told which lodge, and the wording must not flip as lodges gain and lose
+    // cover. Same house predicate as the bookings calendar and quote copy. Cheap:
+    // a single indexed count, batched into this existing round-trip set.
+    countActiveLodges(prisma),
     // Roster Assignment officer card (#2091, D-E2): DAYS in the next 7 days
     // that still need a chore roster. Window-scoped to the roster surface's own
     // needs-roster semantics (days with ≥1 guest in the lodge and no chore
@@ -225,6 +238,10 @@ async function getStats() {
   ]);
 
   const revenueThisMonth = revenueResult._sum.amountCents ?? 0;
+  const unassignedNamesLodges = coverageNeedsLodgeContext({
+    activeLodgeCount,
+    rows: unassignedHutLeaderDates,
+  });
 
   return {
     todayKey,
@@ -239,9 +256,18 @@ async function getStats() {
     unsettledAdditionalFinishedStays,
     unsettledAdditionalUpcomingStays,
     recentBookings,
-    unassignedDatesWithBookings: unassignedHutLeaderDates.map(
-      (item) => item.date,
-    ),
+    // One entry per uncovered LODGE-night (#2917): two lodges uncovered on one
+    // night is two pieces of work. The label names the lodge whenever the club
+    // has more than one active lodge, per the Presentation Rule (ADR-002), so a
+    // single-lodge club sees the same bare dates and count as before while a
+    // multi-lodge club is never handed a date it cannot place.
+    unassignedDatesWithBookings: unassignedHutLeaderDates.map((item) => {
+      const lodgeLabel = unassignedNamesLodges
+        ? coverageLodgeLabel(item)
+        : null;
+      return lodgeLabel ? `${item.date} (${lodgeLabel})` : item.date;
+    }),
+    unassignedNamesLodges,
     pendingRefundAppeals,
     pendingCreditApprovals,
     pendingMembershipCancellations,
@@ -498,7 +524,9 @@ export default async function AdminDashboardPage() {
               <div>
                 <p className="font-medium text-warning-11">{CLUB_HUT_LEADER_LABEL} Assignment Required</p>
                 <p className="text-sm text-warning-11 mt-1">
-                  {stats.unassignedDatesWithBookings.length} upcoming date{stats.unassignedDatesWithBookings.length !== 1 ? "s" : ""} with bookings but no {CLUB_HUT_LEADER_LABEL.toLowerCase()} assigned:{" "}
+                  {stats.unassignedDatesWithBookings.length} upcoming{" "}
+                  {stats.unassignedNamesLodges ? "lodge-night" : "date"}
+                  {stats.unassignedDatesWithBookings.length !== 1 ? "s" : ""} with bookings but no {CLUB_HUT_LEADER_LABEL.toLowerCase()} assigned:{" "}
                   {stats.unassignedDatesWithBookings.slice(0, 5).join(", ")}
                   {stats.unassignedDatesWithBookings.length > 5 ? ` and ${stats.unassignedDatesWithBookings.length - 5} more` : ""}
                 </p>
@@ -548,7 +576,8 @@ export default async function AdminDashboardPage() {
                     {stats.unassignedDatesWithBookings.length}
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
-                    upcoming night
+                    upcoming{" "}
+                    {stats.unassignedNamesLodges ? "lodge-night" : "night"}
                     {stats.unassignedDatesWithBookings.length === 1
                       ? ""
                       : "s"}{" "}

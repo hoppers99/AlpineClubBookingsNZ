@@ -92,6 +92,7 @@ const MODULES_ON = {
   eventsCalendar: true,
   memberGuests: true,
   aiDiagnostics: false,
+  alpineCentralServer: false,
 };
 
 function exceptionRow(overrides: Record<string, unknown> = {}) {

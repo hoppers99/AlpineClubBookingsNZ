@@ -10,24 +10,25 @@ is updated before metric definitions change.
 These carry a required `lodgeId` after phase 2 (see ADR-001 for migration
 sequencing):
 
-| Model | Scoping | Notes |
-| --- | --- | --- |
-| `LodgeRoom` | direct `lodgeId` | `name` unique per lodge, not globally |
-| `LodgeBed` | via `LodgeRoom` | no direct FK |
-| `BedAllocation` | via room/booking | no direct FK |
-| `Locker` | direct `lodgeId` | `name` unique per lodge; lockers gain a lodge link for the first time |
-| `Season` | direct `lodgeId` | lodges may have different season windows |
-| `MembershipTypeSeasonRate` | via `Season` | keeps `[seasonId, membershipTypeId, ageTier]` uniqueness. Replaced the boolean-keyed `SeasonRate` at E4 (#1930); `SeasonRate` itself was dropped by `20260721120000_contract_drop_season_rate` (#2129 step 2) |
-| `Booking` | direct `lodgeId` | denormalised for capacity/availability query performance; always matches the room's lodge when a room is assigned. `waitlistOfferedLodgeId` (nullable) names the alternate lodge of a live cross-lodge waitlist offer (ADR-004) and never changes the entry's own lodge |
-| `BookingWaitlistAlternateLodge` | direct `lodgeId` junction | ADR-004 cross-lodge waitlist opt-in: lodges a waitlisted member would also accept; rows only widen what the processor may offer |
-| `BookingGuest` / `BookingGuestNight` | via `Booking` | no direct FK |
-| `GroupBooking` | via organiser `Booking` | one group = one lodge (ADR-001 open question 1) |
-| `ChoreTemplate` | direct `lodgeId` | roster generation filters by lodge |
-| `LodgeSettings` | per-lodge row | converted from singleton |
-| `BedAllocationSettings` | per-lodge row | converted from singleton |
-| `BookingDefaults` | per-lodge row | converted from singleton |
-| `BookingRequestSettings` | per-lodge row | converted from singleton |
-| Lodge identity fields (`lodgeName`, `doorCode`, `lodgeTravelNote`) | resolve from `Lodge` (default lodge when no `lodgeId` is in scope) | dropped from the `EmailMessageSetting` singleton (migration `20260709130000`) |
+| Model                                                              | Scoping                                                            | Notes                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LodgeRoom`                                                        | direct `lodgeId`                                                   | `name` unique per lodge, not globally                                                                                                                                                                                                                                                                                                                   |
+| `LodgeBed`                                                         | via `LodgeRoom`                                                    | no direct FK                                                                                                                                                                                                                                                                                                                                            |
+| `BedAllocation`                                                    | via room/booking                                                   | no direct FK                                                                                                                                                                                                                                                                                                                                            |
+| `Locker`                                                           | direct `lodgeId`                                                   | `name` unique per lodge; lockers gain a lodge link for the first time                                                                                                                                                                                                                                                                                   |
+| `Season`                                                           | direct `lodgeId`                                                   | lodges may have different season windows                                                                                                                                                                                                                                                                                                                |
+| `MembershipTypeSeasonRate`                                         | via `Season`                                                       | keeps `[seasonId, membershipTypeId, ageTier]` uniqueness. Replaced the boolean-keyed `SeasonRate` at E4 (#1930); `SeasonRate` itself was dropped by `20260721120000_contract_drop_season_rate` (#2129 step 2)                                                                                                                                           |
+| `Booking`                                                          | direct `lodgeId`                                                   | denormalised for capacity/availability query performance; always matches the room's lodge when a room is assigned. `waitlistOfferedLodgeId` (nullable) names the alternate lodge of a live cross-lodge waitlist offer (ADR-004) and never changes the entry's own lodge                                                                                 |
+| `BookingWaitlistAlternateLodge`                                    | direct `lodgeId` junction                                          | ADR-004 cross-lodge waitlist opt-in: lodges a waitlisted member would also accept; rows only widen what the processor may offer                                                                                                                                                                                                                         |
+| `BookingGuest` / `BookingGuestNight`                               | via `Booking`                                                      | no direct FK                                                                                                                                                                                                                                                                                                                                            |
+| `GroupBooking`                                                     | via organiser `Booking`                                            | one group = one lodge (ADR-001 open question 1)                                                                                                                                                                                                                                                                                                         |
+| `ChoreTemplate`                                                    | direct `lodgeId`                                                   | roster generation filters by lodge                                                                                                                                                                                                                                                                                                                      |
+| `LodgeSettings`                                                    | per-lodge row                                                      | converted from singleton                                                                                                                                                                                                                                                                                                                                |
+| `BedAllocationSettings`                                            | per-lodge row                                                      | converted from singleton                                                                                                                                                                                                                                                                                                                                |
+| `BookingDefaults`                                                  | per-lodge row                                                      | converted from singleton                                                                                                                                                                                                                                                                                                                                |
+| `BookingRequestSettings`                                           | per-lodge row                                                      | converted from singleton                                                                                                                                                                                                                                                                                                                                |
+| `ServerNzSettings`                                                 | club-wide singleton (`id = "default"`)                             | NOT converted to a per-lodge row, deliberately: one club holds ONE connection to the central server (one base URL, one API key, one sync cursor), and the registry it exchanges is a list of other CLUBS rather than of this club's buildings. A per-lodge row would imply a lodge could sync independently, which the central server has no concept of |
+| Lodge identity fields (`lodgeName`, `doorCode`, `lodgeTravelNote`) | resolve from `Lodge` (default lodge when no `lodgeId` is in scope) | dropped from the `EmailMessageSetting` singleton (migration `20260709130000`)                                                                                                                                                                                                                                                                           |
 
 ## Club-Wide Defaults With Per-Lodge Overrides
 
@@ -194,7 +195,7 @@ operational documents (which may carry door/emergency access details).
   focus.** Because the API does not take its scope from a `lodgeId` sent beside
   a `bookingId`, an
   admin who arrived on the deep link and then picked a different lodge from the
-  board's own selector would have been served the *booking's* lodge under a
+  board's own selector would have been served the _booking's_ lodge under a
   selector reading the lodge they chose. The board therefore clears the focused
   booking when the admin replaces one non-null lodge with a different one — the
   "Focused booking" badge goes with it, so the change is visible. `LodgeSelect`'s
@@ -245,7 +246,6 @@ operational documents (which may carry door/emergency access details).
   Quiet degradation means the DATA degrades quietly, never the LABEL (#2887).
   The original wording here — "the lodge picker is only an optional filter" —
   did not describe two of the three, and that is how the miss survived review:
-
   - the public booking-requests panel **has no lodge picker at all**. Its lodge
     identity is a per-row badge, and it was gated on `activeLodges.length >= 2`,
     which is also false for a failed or forbidden list. `/admin/booking-requests`
@@ -329,17 +329,17 @@ operational documents (which may carry door/emergency access details).
   show an honest failed state with retry and suppress the affected create or
   audience controls; no non-OK response is rendered as “No lodges”.
 
-  | Admin consumer(s) | Count | Failed-list treatment and reason |
-  | --- | ---: | --- |
-  | Bed-allocation board | 1 | Required explicit error/retry; no dashboard request. A lodge-forbidden viewer gets the separately labelled read-only all-lodges board. |
-  | Admin booking on behalf | 1 | Required visible warning and an always-visible lodge name. The admin may continue through the form, but the strict create boundary refuses an unknown lodge instead of defaulting it. |
-  | Seasons, chores, lockers, hut fees, roster, hut leaders, rooms/beds, lodge capacity | 8 | Required total settled-scope gate. Loading, failure, forbidden and successful-empty states issue no downstream GET and expose no action. Only a lodge id validated by the successful options response is transported. |
-  | Work parties, promo codes | 2 | Required total settled-scope gate. Their legitimate club-wide state is represented by an explicit sentinel, never inferred from an empty list; the same four unresolved states issue no downstream GET and expose no action. A list OUTCOME beats the sentinel, deliberately (#2887): both gate their lodge-RESTRICTION control on `lodges.length > 1`, and the options hook empties the list on a 403 and on any other failure, so treating the sentinel as an answer there would unlock the create while hiding the control that scopes it — a promo code redeemable at every lodge, a work party at every lodge. |
-  | Default cancellation, minimum stay, booking periods, adult-member hosting, lodge instructions | 5 | Required policy gate. A deliberate club-wide choice or validated lodge is settled; resolving/unavailable states issue no policy GET and expose no policy action. |
-  | Member lodge-access card | 1 | Required error/access explanation; its lodge-access GET and every assignment control stop until options resolve. |
-  | Lodge kiosk accounts | 1 | Required explanation, because a failure hides the lodge-binding controls. The club-wide kiosk-account list remains valid and continues to load; create/rebind controls cannot appear without the real options. |
-  | Reports, promo-code redemptions, public booking requests | 3 | Deliberate quiet degradation of the DATA, never of the label (#2887). Each already reads a genuine all-lodges dataset whose figures stay correct without the options. Reports keeps its occupancy scope qualifier and the public booking-requests panel keeps its per-row lodge badge in the failed/forbidden states — both of which previously vanished there, and the booking-requests panel has no picker to call an "optional filter" in the first place. |
-  | **Total admin surfaces** | **22** | Every consumer is classified; none silently treats a failed list as evidence that the club has no lodges. |
+  | Admin consumer(s)                                                                             |  Count | Failed-list treatment and reason                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+  | --------------------------------------------------------------------------------------------- | -----: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Bed-allocation board                                                                          |      1 | Required explicit error/retry; no dashboard request. A lodge-forbidden viewer gets the separately labelled read-only all-lodges board.                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+  | Admin booking on behalf                                                                       |      1 | Required visible warning and an always-visible lodge name. The admin may continue through the form, but the strict create boundary refuses an unknown lodge instead of defaulting it.                                                                                                                                                                                                                                                                                                                                                                                                                               |
+  | Seasons, chores, lockers, hut fees, roster, hut leaders, rooms/beds, lodge capacity           |      8 | Required total settled-scope gate. Loading, failure, forbidden and successful-empty states issue no downstream GET and expose no action. Only a lodge id validated by the successful options response is transported.                                                                                                                                                                                                                                                                                                                                                                                               |
+  | Work parties, promo codes                                                                     |      2 | Required total settled-scope gate. Their legitimate club-wide state is represented by an explicit sentinel, never inferred from an empty list; the same four unresolved states issue no downstream GET and expose no action. A list OUTCOME beats the sentinel, deliberately (#2887): both gate their lodge-RESTRICTION control on `lodges.length > 1`, and the options hook empties the list on a 403 and on any other failure, so treating the sentinel as an answer there would unlock the create while hiding the control that scopes it — a promo code redeemable at every lodge, a work party at every lodge. |
+  | Default cancellation, minimum stay, booking periods, adult-member hosting, lodge instructions |      5 | Required policy gate. A deliberate club-wide choice or validated lodge is settled; resolving/unavailable states issue no policy GET and expose no policy action.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+  | Member lodge-access card                                                                      |      1 | Required error/access explanation; its lodge-access GET and every assignment control stop until options resolve.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+  | Lodge kiosk accounts                                                                          |      1 | Required explanation, because a failure hides the lodge-binding controls. The club-wide kiosk-account list remains valid and continues to load; create/rebind controls cannot appear without the real options.                                                                                                                                                                                                                                                                                                                                                                                                      |
+  | Reports, promo-code redemptions, public booking requests                                      |      3 | Deliberate quiet degradation of the DATA, never of the label (#2887). Each already reads a genuine all-lodges dataset whose figures stay correct without the options. Reports keeps its occupancy scope qualifier and the public booking-requests panel keeps its per-row lodge badge in the failed/forbidden states — both of which previously vanished there, and the booking-requests panel has no picker to call an "optional filter" in the first place.                                                                                                                                                       |
+  | **Total admin surfaces**                                                                      | **22** | Every consumer is classified; none silently treats a failed list as evidence that the club has no lodges.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
   The ten ordinary-editor transport gates are exercised through the real
   components in
@@ -372,6 +372,7 @@ operational documents (which may carry door/emergency access details).
   which `src/lib/__tests__/lodge-scope-committed-ownership.test.tsx` pins for
   each file — that test also carries the full reasoning and is the one home for
   it.
+
 - **The board's lodge scope is five named states, the set is TOTAL, and `null`
   means exactly one thing** (#2701). It used to mean three: a deliberate
   club-wide view, a selector that had not resolved, and a failed
@@ -506,7 +507,27 @@ operational documents (which may carry door/emergency access details).
   rows when present, falling back to the legacy contiguous envelope only when
   none exist; a sparse stay on the 10th and 12th neither occupies nor suggests
   the 11th. Club-wide uncovered-night aggregation retains lodge identity, so an
-  assignment at Lodge A does not suppress the same date at Lodge B. Assignment
+  assignment at Lodge A does not suppress the same date at Lodge B.
+  **An uncovered night is one row PER LODGE** (#2917): `getUnassignedHutLeaderDates`
+  returns `{ date, lodgeId, lodgeName, lodgeActive, bookingCount, guestCount }`
+  ordered by
+  date then lodge name then id, so a night on which two lodges both lack a
+  leader is two rows with each lodge's own counts, and every club-wide consumer
+  — the dashboard attention card, the officer card, the sidebar badge and the
+  stuck-state tile — counts lodge-nights and can name the lodge. The per-lodge
+  trigger is a guest **active on that night** (`isGuestActiveOnNight`), which is
+  deliberately not the auto-assign cron's operational-day, consent-filtered
+  predicate: a departure-morning guest is not a night here, and a consent-pending
+  member guest raises a row here that the cron will not auto-assign for. A
+  `{ kind: "all" }` read is **not** filtered to active lodges: deactivating a
+  lodge that still has future bookings is permitted with `force` and does not
+  cancel them, so those guest nights stay visible with `lodgeActive: false` and
+  are labelled as archived rather than disappearing from every surface at once.
+  A single-lodge club's dates, counts and wording are unchanged; the lodge name
+  and the lodge-night noun appear once the club has **more than one active
+  lodge** — `countActiveLodges`, per the Presentation Rule below, never inferred
+  from how many lodges a result happens to span — or once a row belongs to an
+  archived lodge. Assignment
   creation serializes on the lodge key and repeats member, overlap and optional
   bed checks after acquiring it; overlapping same-lodge role-only/different-bed
   requests cannot both commit, while different lodges remain independent.
@@ -627,7 +648,7 @@ beds or an override exist, so an unconfigured lodge can never be
 overbooked). The per-lodge override is editable in core lodge config on
 the lodge hub (`/admin/lodges/[id]`) regardless of the Bed Allocation
 module, and on `/admin/setup`. Public and admin booking surfaces cap
-guests against the *selected* lodge's capacity (the public booking-request
+guests against the _selected_ lodge's capacity (the public booking-request
 settings endpoint returns each active lodge's capacity), and the server
 re-validates per lodge.
 
