@@ -24,14 +24,22 @@ import {
 } from "@/components/admin/view-only-action";
 import { OtherLodgesPanel } from "./_components/other-lodges-panel";
 
+/**
+ * The three lodge DETAIL fields, which `GET /api/admin/lodges` omits for a
+ * caller holding no `lodge:view` (#2925).
+ */
+const LODGE_DETAIL_FIELDS = ["address", "doorCode", "travelNote"] as const;
+type LodgeDetailField = (typeof LODGE_DETAIL_FIELDS)[number];
+
 type LodgeRecord = {
   id: string;
   name: string;
   slug: string;
   active: boolean;
-  address: string | null;
-  doorCode: string | null;
-  travelNote: string | null;
+  // Optional since #2925: a narrowed payload carries none of the three.
+  address?: string | null;
+  doorCode?: string | null;
+  travelNote?: string | null;
 };
 
 type LodgeFormState = {
@@ -39,6 +47,22 @@ type LodgeFormState = {
   address: string;
   doorCode: string;
   travelNote: string;
+  /**
+   * Which detail fields the record this form was seeded from actually carried
+   * (#2925). A field missing here is OMITTED from the PATCH body rather than
+   * sent as an empty string, because the PATCH route treats an absent key as
+   * "leave unchanged" and a `null` as "clear it" — so seeding a form from a
+   * narrowed record and saving it would otherwise WIPE the door code.
+   *
+   * BELT-AND-BRACES, and worth knowing which: the wipe is already impossible at
+   * the server. The PATCH needs `lodge:edit`, the list narrows below
+   * `lodge:view`, and `edit` outranks `view` in `LEVEL_RANK` — so any caller who
+   * can write here was served the full record. This is kept because it is a few
+   * lines and directly tested; it is deliberately not replicated in the lodge
+   * setup wizard, where a second copy bought no reachable safety and made the
+   * page reject any lodge fixture that omitted `doorCode`.
+   */
+  detailFields: readonly LodgeDetailField[];
 };
 
 const emptyForm: LodgeFormState = {
@@ -46,6 +70,9 @@ const emptyForm: LodgeFormState = {
   address: "",
   doorCode: "",
   travelNote: "",
+  // A create starts from a blank form the admin filled in themselves, so all
+  // three values are theirs to send.
+  detailFields: LODGE_DETAIL_FIELDS,
 };
 
 function formFromLodge(lodge: LodgeRecord): LodgeFormState {
@@ -54,16 +81,21 @@ function formFromLodge(lodge: LodgeRecord): LodgeFormState {
     address: lodge.address ?? "",
     doorCode: lodge.doorCode ?? "",
     travelNote: lodge.travelNote ?? "",
+    detailFields: LODGE_DETAIL_FIELDS.filter((field) => field in lodge),
   };
 }
 
 function formPayload(form: LodgeFormState) {
-  return {
-    name: form.name.trim(),
-    address: form.address.trim() || null,
-    doorCode: form.doorCode.trim() || null,
-    travelNote: form.travelNote.trim() || null,
-  };
+  const payload: {
+    name: string;
+    address?: string | null;
+    doorCode?: string | null;
+    travelNote?: string | null;
+  } = { name: form.name.trim() };
+  for (const field of form.detailFields) {
+    payload[field] = form[field].trim() || null;
+  }
+  return payload;
 }
 
 export default function AdminLodgesPage() {

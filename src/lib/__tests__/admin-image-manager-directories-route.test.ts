@@ -23,11 +23,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
 
-vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: async (options?: unknown) =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(
-      options as never,
-    ),
+vi.mock("@/lib/session-guards", async () => ({
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
 

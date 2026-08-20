@@ -82,7 +82,7 @@ src/app/(authenticated)/book/_components/review-step.tsx 969 domain-module
 src/app/(authenticated)/book/_hooks/use-booking-wizard.ts 1951 domain-module
 src/app/(authenticated)/book/page.tsx 680 route-page-shell
 src/app/(authenticated)/bookings/[id]/page.tsx 2546 route-page-shell
-src/app/(authenticated)/dashboard/page.tsx 864 route-page-shell
+src/app/(authenticated)/dashboard/page.tsx 887 route-page-shell
 src/app/(authenticated)/profile/family-group-section.tsx 1142 domain-module
 src/app/(authenticated)/profile/page.tsx 667 route-page-shell
 src/app/(lodge)/lodge/kiosk/page.tsx 1151 route-page-shell
@@ -109,7 +109,7 @@ src/app/api/admin/family-groups/[id]/login-holder/route.ts 442 route-handler
 src/app/api/admin/family-groups/[id]/route.ts 294 route-handler
 src/app/api/admin/fee-configuration/route.ts 480 route-handler
 src/app/api/admin/hut-leaders/eligible-members/route.ts 327 route-handler
-src/app/api/admin/hut-leaders/route.ts 317 route-handler
+src/app/api/admin/hut-leaders/route.ts 325 route-handler
 src/app/api/admin/image-manager/directories/route.ts 252 route-handler
 src/app/api/admin/induction-templates/[id]/route.ts 253 route-handler
 src/app/api/admin/integrations/credentials/route.ts 288 route-handler
@@ -154,6 +154,7 @@ src/app/api/bookings/route.ts 1355 route-handler
 src/app/api/deploy/warmup/route.ts 387 route-handler
 src/app/api/display/state/route.ts 368 route-handler
 src/app/api/issue-reports/route.ts 255 route-handler
+src/app/api/lodge-maintenance/[token]/route.ts 306 route-handler
 src/app/api/member/data-export/route.ts 335 route-handler
 src/app/api/member/onboarding/route.ts 260 route-handler
 src/app/api/members/[id]/photo/route.ts 558 route-handler
@@ -166,7 +167,7 @@ src/app/api/profile/route.ts 491 route-handler
 src/app/api/promo-codes/validate/route.ts 366 route-handler
 src/app/api/webhooks/xero/route.ts 290 route-handler
 src/app/display/display-screen.tsx 832 domain-module
-src/components/admin-sidebar.tsx 1041 domain-module
+src/components/admin-sidebar.tsx 1054 domain-module
 src/components/admin/analytics-integration-card.tsx 716 domain-module
 src/components/admin/booking-bed-allocation-panel.tsx 1113 domain-module
 src/components/admin/booking-policies/minimum-night-stay-section.tsx 863 domain-module
@@ -192,7 +193,7 @@ src/lib/admin-cron-health.ts 787 domain-module
 src/lib/admin-family-group-requests-service.ts 1574 domain-module
 src/lib/admin-member-detail-service.ts 1657 domain-module
 src/lib/admin-members-service.ts 1726 domain-module
-src/lib/admin-permissions.ts 754 domain-module
+src/lib/admin-permissions.ts 762 domain-module
 src/lib/admin-roster-service.ts 837 domain-module
 src/lib/adult-member-hosting-review.ts 3020 domain-module
 src/lib/audit-query.ts 1170 domain-module
@@ -222,7 +223,7 @@ src/lib/booking-request.ts 2851 domain-module
 src/lib/capacity.ts 1045 domain-module
 src/lib/club-theme-schema.ts 947 domain-module
 src/lib/config-transfer/bootstrap-import.ts 719 domain-module
-src/lib/config-transfer/categories/club-settings.ts 1104 domain-module
+src/lib/config-transfer/categories/club-settings.ts 1112 domain-module
 src/lib/config-transfer/categories/lodge-config.ts 1008 domain-module
 src/lib/config-transfer/categories/membership-fees.ts 1076 domain-module
 src/lib/config-transfer/categories/site-content.ts 953 domain-module
@@ -242,7 +243,7 @@ src/lib/diagnostics/tools/packs/finance-records.ts 1196 domain-module
 src/lib/diagnostics/tools/packs/membership-records.ts 1157 domain-module
 src/lib/diagnostics/tools/provision-role.ts 1132 domain-module
 src/lib/diagnostics/tools/types.ts 733 domain-module
-src/lib/email-message-registry.ts 2001 domain-module
+src/lib/email-message-registry.ts 2019 domain-module
 src/lib/email-message-renderer.ts 848 domain-module
 src/lib/email-message-token-contract.ts 715 domain-module
 src/lib/email/booking.ts 1427 domain-module
@@ -265,7 +266,7 @@ src/lib/member-family-tree.ts 1216 domain-module
 src/lib/member-guest-consent-service.ts 1141 domain-module
 src/lib/member-guest-email-notes.ts 793 domain-module
 src/lib/member-lifecycle-actions.ts 1737 domain-module
-src/lib/member-merge.ts 3714 domain-module
+src/lib/member-merge.ts 3741 domain-module
 src/lib/member-partner-link.ts 1397 domain-module
 src/lib/membership-cancellation-admin.ts 1143 domain-module
 src/lib/membership-cancellation-requests.ts 1316 domain-module
@@ -282,8 +283,8 @@ src/lib/policies/adult-member-hosting.ts 880 domain-module
 src/lib/policies/pricing.ts 825 domain-module
 src/lib/promo.ts 2052 domain-module
 src/lib/public-page-content-tokens.ts 746 domain-module
-src/lib/redact-sensitive-json.ts 828 domain-module
-src/lib/school-booking-request.ts 2497 domain-module
+src/lib/redact-sensitive-json.ts 832 domain-module
+src/lib/school-booking-request.ts 2503 domain-module
 src/lib/seasonal-membership-assignments.ts 1655 domain-module
 src/lib/setup-readiness.ts 1557 domain-module
 src/lib/stripe-webhook-service.ts 1652 domain-module
@@ -299,18 +300,18 @@ src/lib/xero-bulk-contact-sync.ts 705 domain-module
 src/lib/xero-contact-create-recovery.ts 830 domain-module
 src/lib/xero-contact-groups.ts 853 domain-module
 src/lib/xero-contacts.ts 1700 domain-module
-src/lib/xero-credit-notes.ts 932 domain-module
-src/lib/xero-hardening-report.ts 1080 domain-module
+src/lib/xero-credit-notes.ts 954 domain-module
+src/lib/xero-hardening-report.ts 1086 domain-module
 src/lib/xero-inbound/credit-note-repairs.ts 980 domain-module
 src/lib/xero-inbound/invoice-paid-effects.ts 1525 domain-module
 src/lib/xero-invoice-rounding-audit.ts 743 domain-module
 src/lib/xero-member-grouping-resync.ts 794 domain-module
 src/lib/xero-member-import.ts 1209 domain-module
 src/lib/xero-membership-sync.ts 1594 domain-module
-src/lib/xero-operation-outbox.ts 2422 domain-module
+src/lib/xero-operation-outbox.ts 2431 domain-module
 src/lib/xero-operation-retry.ts 1311 domain-module
 src/lib/xero-organisation.ts 983 domain-module
 src/lib/xero-record-activity.ts 726 domain-module
-src/lib/xero-refund-note-link-repair.ts 819 domain-module
+src/lib/xero-refund-note-link-repair.ts 860 domain-module
 src/lib/xero-sync.ts 872 domain-module
-src/proxy.ts 1199 domain-module
+src/proxy.ts 1208 domain-module

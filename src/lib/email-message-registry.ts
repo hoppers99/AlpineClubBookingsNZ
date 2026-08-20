@@ -98,6 +98,12 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   "admin-refund-request",
   "admin-booking-change-request",
   "admin-issue-report",
+  // #2780: a maintenance report was lodged. Ordinary admin alert plumbing -
+  // sendToAdmins, gated by the adminMaintenanceReport preference (Lodge
+  // Operations edit) and by the club-wide delivery rules. Deliberately NOT in
+  // LOCKED_DELIVERY_TEMPLATE_NAMES: no money moves, and a club that would rather
+  // read the queue than the mail must be allowed to mute it.
+  "admin-maintenance-report",
   "admin-membership-cancellation-request",
   "admin-account-deletion-requested",
   "admin-member-archive-requested",
@@ -1921,6 +1927,18 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "xeroLinksNote",
   "xeroObjectUrl",
   "xeroInvoiceNumber",
+  // #2780: the admin maintenance-report alert. `reportedBy` names the member or
+  // "a lodge QR code"; `sourceLabel` says which door it came through; `photoLabel`
+  // says whether a photo is attached; `summary` is the one-line fault; `answersText`
+  // is the composed question/answer block; `maintenanceReportUrl` deep-links the
+  // officer to the queue. All composed by the sender so a club override can move
+  // them, and none carries a bearer token or account secret.
+  "reportedBy",
+  "sourceLabel",
+  "photoLabel",
+  "summary",
+  "answersText",
+  "maintenanceReportUrl",
   "y|ies",
 ] as const;
 

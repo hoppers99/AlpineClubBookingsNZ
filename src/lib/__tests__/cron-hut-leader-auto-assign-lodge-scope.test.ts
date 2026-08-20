@@ -98,7 +98,15 @@ describe("autoAssignHutLeaders lodge scoping (#2915)", () => {
     expect(mockPrisma.hutLeaderAssignment.create).toHaveBeenCalledTimes(1);
     expect(mockPrisma.hutLeaderAssignment.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ memberId: "member-b", lodgeId: "lodge-b" }),
+        data: expect.objectContaining({
+          memberId: "member-b",
+          lodgeId: "lodge-b",
+          // #2926: provenance is stamped by the writer that creates the row. A
+          // CRON row is an ordinary assignment — it blocks and is blocked like a
+          // MANUAL one — but leaving it unstamped would make the column's
+          // meaning depend on which writer remembered to fill it in.
+          source: "CRON",
+        }),
       }),
     );
   });

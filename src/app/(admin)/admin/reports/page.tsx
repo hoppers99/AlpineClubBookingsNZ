@@ -199,10 +199,10 @@ export default function ReportsPage() {
     #2887: the qualifier disappeared in exactly the state where a reader most
     needs it. `lodges.length > 1` is false for a FAILED or FORBIDDEN list too,
     and `/admin/reports` is in the FINANCE area — `FINANCE_ADMIN`,
-    `FINANCE_USER` and `ADMIN_MEMBERSHIP` all hold no `lodge` entry, so for
-    them `/api/admin/lodges` is a permanent 403. The occupancy card and chart
-    title then read "Occupancy Rate" with no scope, and a club-wide figure is
-    indistinguishable from one lodge's.
+    `FINANCE_USER` and `ADMIN_MEMBERSHIP` all hold no `lodge` entry, so
+    `/api/admin/lodges` 403'd for them until #2925 relaxed it — the card then
+    read "Occupancy Rate" with no scope. The handling below stays regardless:
+    `failed` is unchanged, and a role with `overview: "none"` is still refused.
 
     Unknown plurality is labelled as unknown rather than left blank. The
     selector is not rendered in that state, so the scope really is whatever the

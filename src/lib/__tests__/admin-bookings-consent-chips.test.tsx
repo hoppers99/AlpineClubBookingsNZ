@@ -92,6 +92,7 @@ const MODULES_ON = {
   eventsCalendar: true,
   memberGuests: true,
   aiDiagnostics: false,
+  maintenanceReports: true,
   alpineCentralServer: false,
 };
 

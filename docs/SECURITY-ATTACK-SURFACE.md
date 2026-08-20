@@ -2940,7 +2940,7 @@ and `DEPLOYMENT.md`.
   itself is served from the store — so it now fails in seconds rather than only in
   Playwright.
 
-### Admin Raw CSS on the public site: the `data-page-slug` oracle (#2818 D8)
+### Admin Raw CSS on the public site: attribute-selector credential oracles (#2818 D8, #2827)
 
 The public footer stamps a `data-page-slug` attribute so an admin's Site-Style
 **Raw CSS** can target one page (`[data-page-slug="contact"] { … }`). Raw CSS is a
@@ -2973,6 +2973,65 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   left unchanged. The clean fix, if ever wanted, is to render these pages with the
   `appCss` variant (which excludes `rawCss`), as the `(public)` layout did before
   #2818 — not a per-field DOM change.
+
+- **The same oracle, one hop along: the group-join payment link (#2827).** The
+  group-join confirmation page rendered the pay-by-link token into an anchor
+  (`<a href="/pay/<payToken>">`) as a "if you are not redirected" fallback. That
+  token is a **bearer credential** for `/pay/[token]`, so `a[href^="/pay/9f3a"]`
+  read it out the same way. The automatic redirect is unchanged; the fallback is
+  now a button whose click handler navigates from the token held in **component
+  state**, so nothing selectable carries it. No no-JavaScript path was lost —
+  reaching that state at all requires the Confirm button's `fetch`, and only that
+  response carries the token. Pinned in
+  `src/app/(website-dynamic)/join/verify/[token]/__tests__/group-join-verify-pay-token-not-rendered.test.tsx`,
+  which asserts both halves: the navigation still reaches the right address, and
+  no attribute in the rendered tree holds even a probe-length prefix of the token.
+
+- **What #2827's census then found: `data-page-slug` was still stamping the
+  `(public)` group's tokens — and this entry originally overstated what that
+  exposed (corrected 20 Aug 2026 by review).** #2818's fix drives its route shapes
+  from `PER_REQUEST_WEBSITE_ROUTES`, which lists `(website-dynamic)` only — the
+  right boundary for the setup gate, the CSP nonce and the CMS catch-all, and the
+  wrong one here. The same footer is also rendered by
+  `src/app/(public)/layout.tsx`, so every `(public)` route with a `[token]`
+  segment fell through to the raw-pathname branch and stamped its credential into
+  the attribute: `/pay/[token]` — **the payment page, and the destination of the
+  flow above** — plus `/chores/[token]`, `/family-invite/[token]` and
+  `/membership-cancellation/[token]`.
+
+  **What that was NOT is an admin-CSS oracle.** The first version of this entry
+  said that layout "injects the club theme (`rawCss` included) on the same page".
+  It does not: it injects `theme.appCss`, and `buildClubThemeAppCss()` excludes
+  `rawCss` by design — the same fact the accepted-residual bullet above states
+  correctly ("render these pages with the `appCss` variant (which excludes
+  `rawCss`), as the `(public)` layout did"). `buildClubThemeCss()` is the only
+  builder that appends `rawCss`, and its output reaches a page document in three
+  places: `src/components/website/website-chrome.tsx` (the `(website)` and
+  `(website-dynamic)` groups), the lodge display screen and the
+  setup-in-progress screen. So no admin selector ever ran on a `(public)` page,
+  and the two fixes above — the group-join anchor and #2818's shapes — are where
+  the live oracle was.
+
+  The `(public)` half is kept as **defence in depth**, and it is worth having:
+  the attribute stops carrying a bearer credential at all, so the day this group
+  moves under the shared chrome — exactly what #2818 did to `(website-dynamic)` —
+  cannot silently make the oracle real, and closing the group-join anchor while
+  its destination page stamped the same token would have left a stamped credential
+  one hop along. `PUBLIC_GROUP_DYNAMIC_ROUTES` in `website-footer-shell.tsx` folds
+  those routes into the shapes, and because that group has no published census to
+  drive from, the test reads the `src/app/(public)` tree **from disk** and requires
+  equality in both directions — recognising every extension Next's default
+  `pageExtensions` serves, so a `page.ts` route cannot be invisible to the scan
+  while being served normally. Query-string tokens (`/reset-password?token=…`)
+  were never affected: `usePathname()` drops the query.
+
+  Review also found the shape match claiming an address a **static** route owns:
+  `/join/apply`, the membership application form, matched `/join/[code]` on
+  segment count and was stamped `join/[code]`, so an admin rule for either page
+  hit the wrong one. `SHAPE_SHADOWED_STATIC_ROUTES` records the collisions and
+  the same disk scan requires the list to match the tree in both directions. No
+  token is involved either way — it is a styling-correctness bug in a
+  security fix, fixed in the same PR.
 
 ## CodeQL And Semgrep Alert Backlog Triage - 2026-08-19
 

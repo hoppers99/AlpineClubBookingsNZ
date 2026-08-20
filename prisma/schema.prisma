@@ -711,6 +711,10 @@ model Member {
   approvedBedAllocations                     BedAllocation[]                            @relation("BedAllocationApprover")
   refundRequests                             RefundRequest[]
   issueReports                               IssueReport[]
+  // #2780: maintenance reports this member lodged from the members' portal.
+  // onDelete: SetNull rather than Cascade — a deleted account must not take a
+  // still-broken heater off the maintenance officer's queue.
+  maintenanceReportsReported                 MaintenanceReport[]                        @relation("MaintenanceReportReporter")
   adminCreditAdjustmentRequests              AdminCreditAdjustmentRequest[]             @relation("AdminCreditAdjustmentTarget")
   membershipCancellationRequestsRequested    MembershipCancellationRequest[]            @relation("MembershipCancellationRequestRequester")
   membershipCancellationRequestsReviewed     MembershipCancellationRequest[]            @relation("MembershipCancellationRequestReviewer")
@@ -4413,6 +4417,15 @@ model ClubModuleSettings {
   // note in config-transfer/categories/club-settings.ts) — enabling a paid,
   // separately-keyed product is a per-deployment decision like magicLink/googleLogin.
   aiDiagnostics           Boolean  @default(false)
+  // Maintenance reports (#2780). Default ON: a general-purpose module with no
+  // external-account or inventory prerequisite, so it follows the memberNotices
+  // / eventsCalendar precedent rather than the capability-module one. Safe to
+  // add as a defaulted column because every read narrows to
+  // CLUB_MODULE_SETTINGS_COLUMN_SELECT, so a previously deployed client never
+  // names it. Turning it ON does NOT open the unauthenticated QR form — that is
+  // a separate, default-OFF switch on MaintenanceReportSettings, because an
+  // endpoint anybody can post to must be opted into deliberately.
+  maintenanceReports      Boolean  @default(true)
   // Alpine Central Server (ServerNZ) integration — connect this club to the
   // central hub to upload/download shared data. Off by default; configured
   // under Admin → Integrations → Alpine Central Server.
@@ -4502,6 +4515,11 @@ model Lodge {
   // reservations cannot be deleted out from under the capacity view.
   policyExceptionReservationNights PolicyExceptionReservationNight[] @relation("PolicyExceptionReservationLodge")
   newBookingPolicyExceptionRequests NewBookingPolicyExceptionRequest[]
+  // #2780 maintenance reports: both are lodge-scoped by a direct NOT NULL
+  // lodgeId, and both CASCADE — a deleted lodge takes its fault history and its
+  // QR token with it, because neither means anything without the building.
+  maintenanceReports      MaintenanceReport[]
+  maintenanceReportToken  LodgeMaintenanceReportToken?
 }
 
 // Registry of EXTERNAL / partner lodges the club recognises (e.g. for the
@@ -5443,6 +5461,20 @@ model HutLeaderAssignment {
   // onDelete: Restrict is the FK backstop behind the app-level guards: a bed
   // (or its room) can never be deleted out from under a live custodian hold.
   bedId        String?
+  // Which writer created this row (#2926). Stamped ONCE, by the create, and
+  // never recomputed — that is the entire point of the column. The overlap
+  // predicate has to answer "was this row created as part of a school
+  // booking?", and every property of the MEMBER that correlates with the
+  // answer today is admin-writable: `Member.role` is derived from the access
+  // roles (`legacyRoleFromAccessRoles` maps ORG -> SCHOOL), and the access
+  // roles themselves are what the member editor's User Type control writes.
+  // Deriving the exclusion from either means reclassifying a member as an
+  // organisation silently removes their LIVE assignment from the overlap
+  // check — a membership edit breaking a roster invariant it never touched.
+  // Nothing writes this column after the insert, so no membership edit can
+  // move it. See docs/CONCURRENCY_AND_LOCKING.md -> "Composition: lodge
+  // admission, deactivation and hut-leader assignments".
+  source       HutLeaderAssignmentSource @default(MANUAL)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -5454,6 +5486,21 @@ model HutLeaderAssignment {
   @@index([startDate, endDate])
   @@index([lodgeId])
   @@index([bedId])
+}
+
+// Provenance of a HutLeaderAssignment row (#2926). Set by whichever writer
+// created it; there is no other writer and no derivation.
+//
+// MANUAL          POST /api/admin/hut-leaders — an officer assigned this leader.
+// CRON            cron-hut-leader-auto-assign — the nightly sole-adult rule.
+// SCHOOL_BOOKING  school-booking-request.ts — one row per TEACHER when a school
+//                 request is approved. These rows deliberately overlap each
+//                 other (several teachers supervise one group) and are the rows
+//                 the overlap predicate excludes.
+enum HutLeaderAssignmentSource {
+  MANUAL
+  CRON
+  SCHOOL_BOOKING
 }
 
 // Per-lodge access grants (docs/multi-lodge/lodge-scoping-contract.md,
@@ -5761,6 +5808,10 @@ model NotificationPreference {
   adminBookingRequest        Boolean  @default(true)
   adminBookingReviewRequired Boolean  @default(true)
   adminMemberDeleteRequest   Boolean  @default(true)
+  // #2780: a maintenance report was lodged. Audience is Lodge Operations edit
+  // (ADMIN_NOTIFICATION_PREFERENCE_REQUIREMENT), so "the maintenance officer" is
+  // whoever the club has given that area to — never a hard-coded address.
+  adminMaintenanceReport     Boolean  @default(true)
   createdAt                  DateTime @default(now())
   updatedAt                  DateTime @updatedAt
 
@@ -6602,4 +6653,200 @@ model CalendarEventSeries {
   updatedAt   DateTime                    @updatedAt
 
   events CalendarEvent[]
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance Reports (#2780)
+//
+// A member — or, on the QR path, anyone physically at the lodge — reports a
+// physical fault so the maintenance officer hears about it without a phone call.
+//
+// DELIBERATELY SEPARATE FROM `IssueReport`, which is the in-app BUG report
+// (pageUrl, browser info, a screenshot of the app) and is club-wide because a
+// software defect has no lodge. A maintenance report is about a building, so it
+// is lodge-scoped. What IS reused is that feature's proven retention shape: the
+// photo lives in a `@db.Text` data URL beside a
+// capturedAt/expiresAt/deletedAt/deletedById/deleteReason quartet, and the same
+// cron redacts both (`src/lib/issue-report-retention.ts` and
+// `src/lib/maintenance-report-retention.ts`, both driven by
+// POST /api/cron/issue-reports).
+//
+// Lodge scoping is declared in docs/multi-lodge/lodge-scoping-contract.md:
+// `MaintenanceReport` and `LodgeMaintenanceReportToken` are lodge-scoped by a
+// direct NOT NULL `lodgeId`; `MaintenanceReportQuestion` and
+// `MaintenanceReportSettings` are club-wide.
+// ---------------------------------------------------------------------------
+
+enum MaintenanceQuestionType {
+  SHORT_TEXT
+  LONG_TEXT
+  YES_NO
+  SINGLE_CHOICE
+}
+
+enum MaintenanceReportSource {
+  MEMBER_PORTAL
+  LODGE_QR
+}
+
+enum MaintenanceReportStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+}
+
+/// Club-wide singleton. `id` is fixed to "default" like every other settings
+/// singleton in this schema; every read synthesises these defaults on a miss, so
+/// an upgrade that has never opened the admin section still behaves.
+model MaintenanceReportSettings {
+  id String @id @default("default")
+
+  /// Master switch for the UNAUTHENTICATED per-lodge QR form. Default OFF: an
+  /// endpoint anybody on the internet can post to is opt-in, never something an
+  /// upgrade turns on. While it is off every lodge token answers the same
+  /// generic 404 an unknown token gets, so the switch is not an oracle.
+  anonymousReportsEnabled Boolean @default(false)
+  /// Whether a photo may be attached at all, on either path.
+  photosEnabled           Boolean @default(true)
+  /// Whether a photo may be attached on the ANONYMOUS path specifically. A club
+  /// can keep member photos and refuse anonymous ones without losing the QR form.
+  anonymousPhotosEnabled  Boolean @default(true)
+  /// Days a submitted photo and a stored submitter fingerprint are kept before
+  /// the retention cron redacts them. 1-365; 30 matches the issue-report default.
+  photoRetentionDays      Int     @default(30)
+  /// Whether the anonymous form asks for an optional name and contact detail so
+  /// the officer can follow up. Never required — the point of the QR is no login.
+  anonymousContactPrompt  Boolean @default(true)
+
+  updatedAt         DateTime @default(now()) @updatedAt
+  updatedByMemberId String?
+}
+
+/// The admin-configurable question set. Club-wide by design: this is a BOUNDED
+/// editor (label, type, required, order), not a form builder, and a per-lodge
+/// set would double it for no stated need. Making it per-lodge later is an ADR,
+/// not an edit — see docs/multi-lodge/lodge-scoping-contract.md.
+///
+/// Questions are never hard-deleted from the admin UI; they are deactivated, so
+/// a report's answers keep pointing at the row they were asked from. The answer
+/// row snapshots the label anyway (see `MaintenanceReportAnswer.questionLabel`),
+/// which is what actually makes a submitted report survive a later edit.
+model MaintenanceReportQuestion {
+  id        String                  @id @default(cuid())
+  label     String                  @db.VarChar(200)
+  helpText  String?                 @db.VarChar(300)
+  type      MaintenanceQuestionType @default(SHORT_TEXT)
+  required  Boolean                 @default(false)
+  /// Options for SINGLE_CHOICE; empty for every other type.
+  choices   String[]                @default([])
+  sortOrder Int                     @default(0)
+  active    Boolean                 @default(true)
+  createdAt DateTime                @default(now())
+  updatedAt DateTime                @default(now()) @updatedAt
+
+  answers MaintenanceReportAnswer[]
+
+  @@index([active, sortOrder])
+}
+
+/// One submitted report. Lodge-scoped by a direct NOT NULL `lodgeId`.
+model MaintenanceReport {
+  id      String                  @id @default(cuid())
+  lodgeId String
+  source  MaintenanceReportSource
+  status  MaintenanceReportStatus @default(OPEN)
+
+  /// The submitting member on the portal path; ALWAYS null on the QR path, which
+  /// knows nothing about accounts and must never be able to name one.
+  memberId String?
+  /// Optional self-declared contact on the anonymous path only. Free text, never
+  /// resolved against the membership roll — typing a member's name here proves
+  /// nothing and grants nothing.
+  reporterName    String? @db.VarChar(120)
+  reporterContact String? @db.VarChar(200)
+
+  summary String @db.VarChar(200)
+
+  /// Photo, stored exactly like an issue-report screenshot: one base64 data URL,
+  /// redacted in place by the retention cron rather than deleting the report.
+  photoDataUrl      String?   @db.Text
+  photoContentType  String?   @db.VarChar(40)
+  photoCapturedAt   DateTime?
+  photoExpiresAt    DateTime?
+  photoDeletedAt    DateTime?
+  photoDeletedById  String?
+  photoDeleteReason String?   @db.VarChar(300)
+
+  /// SHA-256 of the submitting IP, anonymous path only, kept for the same window
+  /// as the photo and redacted by the same cron. Hashed rather than stored raw
+  /// because its only job is "were these the same source", which equality
+  /// answers without keeping an address.
+  submitterIpHash          String?   @db.VarChar(64)
+  submitterIpHashExpiresAt DateTime?
+  submitterIpHashDeletedAt DateTime?
+
+  resolvedAt     DateTime?
+  resolvedById   String?
+  resolutionNote String?   @db.VarChar(1000)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @default(now()) @updatedAt
+
+  lodge   Lodge                     @relation(fields: [lodgeId], references: [id], onDelete: Cascade)
+  member  Member?                   @relation("MaintenanceReportReporter", fields: [memberId], references: [id], onDelete: SetNull)
+  answers MaintenanceReportAnswer[]
+
+  @@index([lodgeId, status, createdAt])
+  @@index([status, createdAt])
+  @@index([createdAt])
+  @@index([memberId, createdAt])
+  @@index([photoExpiresAt])
+  @@index([submitterIpHashExpiresAt])
+}
+
+/// One answer, carrying the question TEXT AS ASKED.
+///
+/// This is the owner's decision 2 on #2780 made structural: `questionLabel`,
+/// `questionType` and `sortOrder` are SNAPSHOTS taken at submit time, so
+/// renaming, reordering or retiring a question later cannot rewrite what a
+/// reporter was actually asked. `questionId` is a nullable back-reference for
+/// reporting only and is deliberately not load-bearing.
+model MaintenanceReportAnswer {
+  id            String                  @id @default(cuid())
+  reportId      String
+  questionId    String?
+  questionLabel String                  @db.VarChar(200)
+  questionType  MaintenanceQuestionType
+  sortOrder     Int
+  answerText    String                  @db.Text
+  createdAt     DateTime                @default(now())
+
+  report   MaintenanceReport          @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  question MaintenanceReportQuestion? @relation(fields: [questionId], references: [id], onDelete: SetNull)
+
+  @@index([reportId, sortOrder])
+  @@index([questionId])
+}
+
+/// The per-lodge QR bearer token. One live row per lodge (`lodgeId @unique`), so
+/// rotating REPLACES the hash in place and the previous token stops working the
+/// instant an admin rotates — which is the whole point of a rotate button.
+///
+/// Stored hashed (`hashActionToken`, sha256 hex) like every other bearer token
+/// in this schema; the raw value is shown to the admin once at mint time and
+/// lives only on the printed sign after that.
+model LodgeMaintenanceReportToken {
+  id        String  @id @default(cuid())
+  lodgeId   String  @unique
+  tokenHash String  @unique
+  /// Per-lodge off switch, independent of the club-wide setting: a club can
+  /// retire one lodge's sign without disabling the QR path everywhere.
+  active    Boolean @default(true)
+
+  createdAt   DateTime  @default(now())
+  createdById String?
+  rotatedAt   DateTime?
+  rotatedById String?
+  lastUsedAt  DateTime?
+
+  lodge Lodge @relation(fields: [lodgeId], references: [id], onDelete: Cascade)
 }

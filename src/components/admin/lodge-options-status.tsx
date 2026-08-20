@@ -22,10 +22,15 @@ import type { SettledLodgeOptionScope } from "@/lib/lodge-option-scope";
  * — which is the half that actually prevents the wrong write — belongs to each
  * page, because only the page knows which of its controls are lodge-scoped.
  *
- * `forbidden` is not an error and must never be dressed up as one. A role that
- * holds `bookings` but not `lodge:view` (shipped `ADMIN_MEMBERSHIP` and
- * `FINANCE_ADMIN`) gets a 403 as its NORMAL answer, and a retry could only
- * refuse again.
+ * `forbidden` is not an error and must never be dressed up as one: it is a
+ * permissions answer, and a retry could only refuse again.
+ *
+ * Since #2925 it is a NARROWER population than the two shipped presets this
+ * notice was written for. `GET /api/admin/lodges` admits any admitted admin
+ * (`overview:view`) and narrows its payload instead, so `ADMIN_MEMBERSHIP` and
+ * `FINANCE_ADMIN` now get the lodge names. A club-edited or custom role holding
+ * `bookings: "view"` with `overview: "none"` is still refused, which is why this
+ * state and its copy remain.
  */
 export function LodgeOptionsUnavailableNotice({
   failed,

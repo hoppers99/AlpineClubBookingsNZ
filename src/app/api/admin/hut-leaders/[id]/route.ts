@@ -185,6 +185,8 @@ export async function PUT(
         startDate: finalStart,
         endDate: finalEnd,
         excludeAssignmentId: id,
+        // #2926: a DELIBERATE officer action, so the teacher carve-out applies.
+        allowOverlappingSchoolRows: true,
       });
       if (overlap) return { status: 409, error: overlap.error };
 

@@ -41,6 +41,7 @@ import {
   UserX,
   BedDouble,
   Hammer,
+  Wrench,
   Palette,
   UserPlus,
   Plug,
@@ -356,6 +357,18 @@ const navSections: NavSection[] = [
         href: "/admin/lodge-instructions",
         label: "Lodge Instructions",
         icon: BookOpen,
+      },
+      {
+        // Maintenance reports (#2780). No explicit flag needed:
+        // `isFeatureHrefVisible` derives visibility from the href against
+        // FEATURE_ROUTE_RULES, and "/admin/maintenance-reports" is registered
+        // under the `maintenanceReports` rule — so with the module off this entry
+        // disappears from the sidebar and the command palette, matching the 404
+        // the route returns.
+        href: "/admin/maintenance-reports",
+        label: "Lodge Maintenance",
+        icon: Wrench,
+        keywords: ["maintenance", "fault", "repair", "broken", "qr", "fix"],
       },
       // Lobby Display (fork issue #109): one Lodge Operations entry opens the
       // hub landing page (/admin/display), which lays out cards for Devices,

@@ -24,27 +24,27 @@ vi.mock("@/lib/auth", () => ({
 }));
 
 /*
-  The route's `permission` option is FORWARDED to the mock. THIS FILE IS ALREADY
-  DONE for #2921 — the repo-wide sweep can skip it.
-
-  It used to be dropped — `evaluateRequireAdminMock()` was called with no
-  arguments — so every per-area gate in this file was inert: a test could not
-  tell a `lodge:view`-gated route from an ungated one, because the mock's
-  absent-options fallback checks `hasAdminPortalAccess`, which the real guard
-  has never had. Any other file mocking `@/lib/session-guards` this way has the
-  same hole, which is what #2921 sweeps.
+  The route's `permission` option reaches the mock, so every per-area gate in
+  this file is real. This is where #2921 was found: the mock used to be wrapped
+  in an arrow that took no parameter and therefore threw the option away, and a
+  test could not tell a `lodge:view`-gated route from an ungated one, because
+  the mock's absent-options fallback checks `hasAdminPortalAccess` — a check the
+  real guard has never performed. 50 other files had the same hole; #2921 swept
+  all of them onto the bare reference below, which has no argument to drop.
 
   Found while proving a lodge-list access change that has since been reverted to
-  #2925, and kept because the vacuity predates that change: the gates here are
-  only real with the options forwarded. Test-only; no product code depends on it.
+  #2925, and kept because the vacuity predates that change.
+
+  The cost of correcting the fallback was MEASURED while this lane was open, and
+  is recorded here so #2975 does not have to re-derive it: 7 test files and 20
+  tests go red on the correction (Xero, health, family groups, reports,
+  dependents), because each was passing against a gate the mock was not
+  applying. That is a route-by-route sweep, not a side effect of a lodge-list
+  change.
 */
-vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: async (options?: unknown) =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(
-      options as Parameters<
-        typeof import("./helpers/require-admin-mock").evaluateRequireAdminMock
-      >[0],
-    ),
+vi.mock("@/lib/session-guards", async () => ({
+  requireAdmin: (await import("./helpers/require-admin-mock"))
+    .evaluateRequireAdminMock,
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
 vi.mock("@/lib/public-content-revalidation", () => ({

@@ -561,9 +561,12 @@ rolled-back state.
 ### INV-ADDPAY-020
 
 Stepped Stripe refunds settle into Xero as per-delta credit notes whose cents
-must sum exactly to the payment's refunded total (#1354). The amounts billed
-to Xero are derived from EXECUTION-TIME state (`refundedAmountCents` minus the
-sum of active covering notes), never trusted from an enqueue-time watermark —
+must sum exactly to the payment's CASH refund total — since #2902 the
+provider-backed cash evidence of INV-PAY-050, never the `refundedAmountCents`
+mirror, which also counts account-credit dispositions (#1354, #2902). The
+amounts billed to Xero are derived from EXECUTION-TIME state (the cash
+evidence minus the sum of active covering notes), never trusted from an
+enqueue-time watermark —
 so operations executing out of order, replays through the retry stack (which
 re-enters delta mode via the queued payload or the enqueue-time `queueType`
 column), and races between enqueue and execution all converge on the same
@@ -583,8 +586,8 @@ self-heal into an unbounded duplicate-note loop). The exemption is
 status-aware in both directions: a note recorded VOIDED/DELETED in Xero
 counts as ZERO coverage everywhere (`xero-refund-note-status.ts` is the one
 home for that judgement), its still-active local mirror is stale drift that
-cleanup deactivates, and active non-cancelled coverage above the refunded
-total is reported as its own drift class
+cleanup deactivates, and active non-cancelled coverage above the cash
+refund-note target is reported as its own drift class
 (`overCoveredStripeRefundPayments`) because it silently suppresses every
 later refund note. The operator repair for already-damaged links is
 `scripts/xero-refund-note-link-repair.ts`

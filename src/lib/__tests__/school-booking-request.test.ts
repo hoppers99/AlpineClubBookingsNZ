@@ -1442,6 +1442,14 @@ describe("approveSchoolBookingRequest", () => {
     const hutLeaderArgs = vi.mocked(prisma.hutLeaderAssignment.create).mock
       .calls[0][0].data as Record<string, unknown>;
     expect(hutLeaderArgs.lodgeId).toBe("lodge-2");
+    // #2926: the row carries its own provenance, and this is the ONLY writer
+    // that stamps SCHOOL_BOOKING. It is what takes teacher rows out of the
+    // hut-leader overlap predicate, so losing it here silently restores the
+    // asymmetry where a school group blocks every later manual assignment for
+    // those nights. Nothing derives this from the teacher Member, deliberately:
+    // `Member.role` is admin-writable and a membership edit must never move a
+    // live assignment out of the predicate.
+    expect(hutLeaderArgs.source).toBe("SCHOOL_BOOKING");
     // Approval repricing is scoped strictly to the request's lodge too.
     const seasonWhere = mockedSeasonFindMany.mock.calls[0][0]!.where as Record<
       string,

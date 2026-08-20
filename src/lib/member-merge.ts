@@ -308,6 +308,14 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
 
   // --- Reports / lodge / hut leader ---
   spec("IssueReport", "member", "memberId", "move"),
+  // #2780: the maintenance-report REPORTER. Moves to the survivor exactly like
+  // IssueReport.member — a fault the member reported is their own history and
+  // must follow them to the surviving record rather than orphan on the loser.
+  // (The QR path stores memberId: null, so those rows have nothing to move.)
+  // The "who acted on the report" columns — resolvedById, photoDeletedById — and
+  // the QR-token / settings admin-action columns are FK-less scalars left as
+  // immutable history in MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS below.
+  spec("MaintenanceReport", "member", "memberId", "move"),
   spec("HutLeaderAssignment", "member", "memberId", "move"),
   spec("MemberLodgeAccess", "member", "memberId", "resolve", {
     note: "@@unique(memberId,lodgeId,kind)",
@@ -485,6 +493,16 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   // detector cannot see it — documented here by hand. Like every actor column
   // above it keeps the loser's id as immutable history on merge.
   "DiagnosticsUsageEvent.adminMemberId",
+  // #2780: three more actor columns the detector cannot see (their names appear
+  // nowhere in the schema as a Member FK). Who resolved a maintenance report,
+  // who deleted its photo, and who rotated a lodge's QR-sign token — each a bare
+  // FK-less String written from an admin session, kept as immutable history on
+  // merge exactly like IssueReport.resolvedById / screenshotDeletedById above.
+  // (The report's own REPORTER, MaintenanceReport.memberId, is a real relation
+  // classified `move` in the spec registry — it is NOT one of these.)
+  "MaintenanceReport.resolvedById",
+  "MaintenanceReport.photoDeletedById",
+  "LodgeMaintenanceReportToken.rotatedById",
   //
   // A NINTH column found by the same sweep is deliberately NOT here, because it
   // is not a snapshot at all: `BookingRequest.convertedMemberId` is the identity
@@ -542,8 +560,17 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   "IntegrationWizardProgress.updatedByMemberId",
   "InternetBankingPaymentSettings.updatedByMemberId",
   "LodgeInstruction.updatedByMemberId",
+  // #2780: who minted a lodge's QR-sign token. A bare FK-less String written
+  // from the admin session (createdById is a Member FK column name elsewhere, so
+  // the detector sees it); kept as immutable history on merge. The sibling
+  // rotatedById is undetectable and documented by hand in the block above.
+  "LodgeMaintenanceReportToken.createdById",
   "LodgeSettings.updatedByMemberId",
   "LoginSecuritySetting.updatedByMemberId",
+  // #2780: who last saved the maintenance-report policy singleton — the ordinary
+  // settings-audit column, identical in kind to every other `*.updatedByMemberId`
+  // here. Keeps the loser's id as immutable history on merge.
+  "MaintenanceReportSettings.updatedByMemberId",
   "MemberFieldsSettings.updatedByMemberId",
   "MemberInduction.createdByMemberId",
   "MembershipCancellationSetting.updatedByMemberId",
