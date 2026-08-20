@@ -33,6 +33,7 @@ import {
   sendToAdmins,
   sendUnmuteableAdminAlert,
 } from "./admin-alerts-shared";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 /**
  * Stamp the club's Xero organisation onto an outbound deep link, at SEND time
@@ -80,7 +81,7 @@ export async function sendAdminPaymentFailureAlert(data: {
 }) {
   await sendToAdmins({
     subject: `Payment Failed — ${CLUB_BOOKINGS_NAME}`,
-    html: adminPaymentFailureTemplate(data),
+    html: await renderEmailHtml(() => adminPaymentFailureTemplate(data)),
     templateName: "admin-payment-failure",
     templateData: {
       ...data,
@@ -145,7 +146,7 @@ export async function sendAdminLateCaptureAutoRefundAlert(data: {
 
   await sendUnmuteableAdminAlert({
     subject: `Payment refunded automatically — booking ${bookingStateLabel}: ${data.memberName}`,
-    html: adminLateCaptureAutoRefundTemplate({ ...data, reviewUrl }),
+    html: await renderEmailHtml(() => adminLateCaptureAutoRefundTemplate({ ...data, reviewUrl })),
     templateName: "admin-late-capture-auto-refund",
     templateData: {
       memberName: data.memberName,
@@ -217,7 +218,7 @@ export async function sendAdminLateCaptureHandBackConflictAlert(data: {
     // Composed from the SAME source as the {{handBackConflictLabel}} token below,
     // so the sender's subject and an admin's saved override say the same direction.
     subject: `${handBackConflictLabel}: ${data.memberName}`,
-    html: adminLateCaptureHandBackConflictTemplate({ ...data, reviewUrl }),
+    html: await renderEmailHtml(() => adminLateCaptureHandBackConflictTemplate({ ...data, reviewUrl })),
     templateName: "admin-late-capture-hand-back-conflict",
     templateData: {
       memberName: data.memberName,
@@ -272,7 +273,7 @@ export async function sendAdminDuplicateCaptureRefundAlert(data: {
     subject: data.refundFailed
       ? `Duplicate capture auto-refund failed — retry queued: ${data.memberName}`
       : `Duplicate capture auto-refunded: ${data.memberName}`,
-    html: adminDuplicateCaptureRefundTemplate({
+    html: await renderEmailHtml(() => adminDuplicateCaptureRefundTemplate({
       memberName: data.memberName,
       checkIn: data.checkIn,
       checkOut: data.checkOut,
@@ -283,7 +284,7 @@ export async function sendAdminDuplicateCaptureRefundAlert(data: {
       errorMessage: data.errorMessage ?? null,
       reviewUrl,
       refundFailed: data.refundFailed,
-    }),
+    })),
     templateName: "admin-duplicate-capture-refund",
     templateData: {
       memberName: data.memberName,
@@ -338,11 +339,11 @@ export async function sendAdminManualSettlementConflictAlert(data: {
 
   await sendToAdmins({
     subject: `Cash settlement vs Xero payment — reconcile: ${data.memberName}`,
-    html: adminManualSettlementConflictTemplate({
+    html: await renderEmailHtml(() => adminManualSettlementConflictTemplate({
       ...data,
       xeroInvoiceUrl,
       reviewUrl,
-    }),
+    })),
     templateName: "admin-manual-settlement-conflict",
     templateData: {
       memberName: data.memberName,
@@ -377,7 +378,7 @@ export async function sendAdminManualRefundTaskAlert(data: {
 
   await sendToAdmins({
     subject: `Manual refund needed — cash booking cancelled: ${data.memberName}`,
-    html: adminManualRefundTaskTemplate({ ...data, reviewUrl }),
+    html: await renderEmailHtml(() => adminManualRefundTaskTemplate({ ...data, reviewUrl })),
     templateName: "admin-manual-refund-task",
     templateData: {
       memberName: data.memberName,
@@ -401,7 +402,7 @@ export async function sendAdminXeroSyncErrorAlert(data: {
 }) {
   await sendToAdmins({
     subject: `Xero Sync Error — ${CLUB_BOOKINGS_NAME}`,
-    html: adminXeroSyncErrorTemplate(data),
+    html: await renderEmailHtml(() => adminXeroSyncErrorTemplate(data)),
     templateName: "admin-xero-sync-error",
     templateData: {
       ...data,
@@ -432,7 +433,7 @@ export async function sendAdminXeroRepeatedFailureAlert(data: {
 
   await sendToAdmins({
     subject: data.subject,
-    html: adminXeroRepeatedFailureTemplate(stamped),
+    html: await renderEmailHtml(() => adminXeroRepeatedFailureTemplate(stamped)),
     templateName: "admin-xero-repeated-failure",
     templateData: {
       ...stamped,
@@ -513,7 +514,7 @@ export async function sendAdminXeroReconciliationReportAlert(
 
   await sendToAdmins({
     subject,
-    html: adminXeroReconciliationReportTemplate(report),
+    html: await renderEmailHtml(() => adminXeroReconciliationReportTemplate(report)),
     templateName: "admin-xero-reconciliation-report",
     templateData: {
       generatedAt: report.generatedAt.toISOString(),
@@ -552,7 +553,7 @@ export async function sendAdminCreditSyncDriftAlert(
 
   await sendToAdmins({
     subject,
-    html: adminCreditSyncDriftTemplate(stampedReport),
+    html: await renderEmailHtml(() => adminCreditSyncDriftTemplate(stampedReport)),
     templateName: "admin-credit-sync-drift",
     templateData: {
       generatedAt: stampedReport.generatedAt.toISOString(),
@@ -579,7 +580,7 @@ export async function sendAdminRefundRequestAlert(data: {
 }) {
   await sendToAdmins({
     subject: `Refund Appeal: ${data.memberName}`,
-    html: adminRefundRequestTemplate(data),
+    html: await renderEmailHtml(() => adminRefundRequestTemplate(data)),
     templateName: "admin-refund-request",
     templateData: {
       ...data,

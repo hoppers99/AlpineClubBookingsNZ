@@ -1,4 +1,9 @@
-import { ManualRefundTaskStatus, PaymentStatus, Prisma } from "@prisma/client";
+import {
+  ManualRefundTaskKind,
+  ManualRefundTaskStatus,
+  PaymentStatus,
+  Prisma,
+} from "@prisma/client";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -280,7 +285,13 @@ export async function findCompletedHandBackForLateCapture(params: {
   paymentIntentId: string;
 }): Promise<{
   id: string;
-  amountCents: number;
+  // #2797: NULLABLE since `ManualRefundTask.amountCents` became optional (owner
+  // decision D2). This lookup filters to the automatic late-capture hand-back
+  // reasons, whose rows are always written with a concrete amount, so in
+  // practice it is never null here — but the column now permits it, so the type
+  // must. The one propagating sink (`reportWithheldLateCaptureRefund`) and the
+  // admin-finance alert it calls already tolerate a null amount.
+  amountCents: number | null;
   completedAt: Date | null;
   completedByMemberId: string | null;
 } | null> {
@@ -405,6 +416,12 @@ export async function raiseDeletedBookingModificationRefundTask(params: {
         bookingId,
         paymentId,
         amountCents,
+        // #2797: Stripe captured a booking-modification payment against a
+        // booking that had already been deleted (#2700, INV-ADDPAY-036). Typed
+        // so a consumer need not sniff the reason string; `raisedAmountCents`
+        // records the fixed amount this task was raised with.
+        kind: ManualRefundTaskKind.DELETED_BOOKING_LATE_CAPTURE,
+        raisedAmountCents: amountCents,
         reason,
         status: ManualRefundTaskStatus.OPEN,
       },
@@ -760,6 +777,12 @@ export async function recordAutomaticCancelledBookingRefundTask(params: {
           bookingId,
           paymentId,
           amountCents,
+          // #2797: the record of a late capture the webhook refunded
+          // automatically — money already back with the member, kept as a notice
+          // (#2760/#2773). Typed so the finance queue need not match on the
+          // reason string; `raisedAmountCents` records the fixed amount.
+          kind: ManualRefundTaskKind.AUTOMATIC_LATE_CAPTURE_RECORD,
+          raisedAmountCents: amountCents,
           // #2773: the population picks deleted vs cancelled, the capture kind
           // picks "booking modification payment" vs "the booking's own payment".
           // Four sentences, one per (kind, population), each frozen once written.

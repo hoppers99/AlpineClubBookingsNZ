@@ -3,6 +3,7 @@ import {
   adminIssueReportTemplate,
 } from "@/lib/email-templates/admin-ops";
 import { sendToAdmins } from "./admin-alerts-shared";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 // N-13: Admin daily digest
 export async function sendAdminDailyDigestAlert(sections: {
@@ -16,7 +17,7 @@ export async function sendAdminDailyDigestAlert(sections: {
 }) {
   await sendToAdmins({
     subject: `Admin Daily Digest - ${sections.totalAlerts} alert${sections.totalAlerts !== 1 ? "s" : ""} in past 24h`,
-    html: adminDailyDigestTemplate(sections),
+    html: await renderEmailHtml(() => adminDailyDigestTemplate(sections)),
     templateName: "admin-daily-digest",
     templateData: {
       ...sections,
@@ -38,7 +39,7 @@ export async function sendAdminIssueReportAlert(data: {
 }) {
   await sendToAdmins({
     subject: `Issue Report: ${data.memberName}`,
-    html: adminIssueReportTemplate({
+    html: await renderEmailHtml(() => adminIssueReportTemplate({
       memberName: data.memberName,
       memberEmail: data.memberEmail,
       pageUrl: data.pageUrl,
@@ -46,7 +47,7 @@ export async function sendAdminIssueReportAlert(data: {
       description: data.description,
       issueReportUrl: data.issueReportUrl,
       hasScreenshot: data.hasScreenshot,
-    }),
+    })),
     templateName: "admin-issue-report",
     templateData: {
       ...data,

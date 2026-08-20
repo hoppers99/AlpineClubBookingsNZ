@@ -54,6 +54,43 @@ import BookingRequestsPage from "@/app/(website-dynamic)/booking-requests/page";
 import SchoolBookingsPage from "@/app/(website-dynamic)/school-bookings/page";
 
 /**
+ * The hero section — the only part of either page under test here.
+ *
+ * The scoping is load-bearing, and it was measured rather than assumed: both forms
+ * restate the hero's sentence in their own copy, interpolating the same
+ * club-set `lodgeName` (`booking-request-form.tsx:242`,
+ * `school-booking-form.tsx:249`, and again at :227/:236/:389). So the payload
+ * appears in `container.textContent` whether or not the hero rendered its fallback
+ * at all, and a page-wide "contains the payload" assertion would pass vacuously —
+ * including on the very regression this suite exists to catch, where the hero hands
+ * the sentence back to `dangerouslySetInnerHTML`. Reading the hero's own element
+ * makes each assertion about the branch it names.
+ *
+ * Absence of a live `<img>` is still asserted page-wide, because there the whole
+ * document is the claim: no branch anywhere may parse that value as markup.
+ */
+function hero(container: HTMLElement): HTMLElement {
+  const section = container.querySelector<HTMLElement>("section.dynamic-header");
+  expect(section, "the page must render its hero section").not.toBeNull();
+  return section!;
+}
+
+/** A published row, with whatever header text the case under test needs. */
+function publishedRow(headerText: string) {
+  return {
+    slug: "x",
+    caption: "Cap",
+    menuTitle: "",
+    title: "Title",
+    headerText,
+    path: "/x",
+    sortOrder: 1,
+    contentHtml: "",
+    published: true,
+  };
+}
+
+/**
  * What each page does when its `PageContent` row is missing or unpublished
  * (#2818 decisions 1 and 6).
  *
@@ -96,15 +133,17 @@ describe("the form pages render without a PageContent row (#2818)", () => {
     "escapes the composed %s fallback rather than parsing it as HTML",
     async (_label, Page) => {
       const { container } = render(await Page());
+      const header = hero(container);
 
-      // The dangerous half of the club-set value must appear as visible TEXT...
-      expect(container.textContent).toContain("<img src=x");
+      // The dangerous half of the club-set value must appear as visible TEXT in
+      // the hero itself (see `hero()` for why the page-wide read proves nothing)...
+      expect(header.textContent).toContain("<img src=x");
       // ...as ESCAPED markup in the serialised DOM, never as a live element.
       // Asserting on the escaped form rather than on the absence of the string
       // `onerror=` matters: those characters legitimately survive INSIDE the
       // escaped text, and it is the `&lt;` around them that makes them inert.
-      expect(container.innerHTML).toContain("&lt;img src=x");
-      expect(container.innerHTML).not.toContain("<img");
+      expect(header.innerHTML).toContain("&lt;img src=x");
+      expect(header.innerHTML).not.toContain("<img");
       expect(container.querySelector("img")).toBeNull();
     },
   );
@@ -117,48 +156,73 @@ describe("the form pages render without a PageContent row (#2818)", () => {
     async (_label, Page) => {
       // The other branch must keep working: stored `headerText` is admin HTML,
       // sanitised on write and again on read, and clubs format it.
-      mocks.getPublishedPageContentByPath.mockResolvedValue({
-        slug: "x",
-        caption: "Cap",
-        menuTitle: "",
-        title: "Title",
-        headerText: "<p>Real <strong>stored</strong> copy.</p>",
-        path: "/x",
-        sortOrder: 1,
-        contentHtml: "",
-        published: true,
-      });
+      mocks.getPublishedPageContentByPath.mockResolvedValue(
+        publishedRow("<p>Real <strong>stored</strong> copy.</p>"),
+      );
 
       const { container } = render(await Page());
 
-      expect(container.querySelector("strong")?.textContent).toBe("stored");
+      expect(hero(container).querySelector("strong")?.textContent).toBe("stored");
     },
   );
 
+  /**
+   * A row that EXISTS but carries no header — the state a club reaches by clearing
+   * the field in Site Appearance & Content, which the admin API accepts
+   * (`headerText: z.string()`, with no minimum). This is the REACHABLE half of the
+   * empty branch, distinct from the missing-row cases above: the rest of the page
+   * still comes from the row, and only the header falls through. Pinning it is what
+   * makes the security surface doc's claim about a cleared field testable.
+   */
   it.each([
     ["booking requests", BookingRequestsPage],
     ["school bookings", SchoolBookingsPage],
   ])(
-    "does not reach the fallback for a %s row whose header is only whitespace",
+    "falls back to escaped text on a %s row whose header was cleared",
     async (_label, Page) => {
-      // A blanked header is not a request to render raw HTML — it is an empty
-      // field, so the composed sentence takes over, escaped.
-      mocks.getPublishedPageContentByPath.mockResolvedValue({
-        slug: "x",
-        caption: "Cap",
-        menuTitle: "",
-        title: "Title",
-        headerText: "   ",
-        path: "/x",
-        sortOrder: 1,
-        contentHtml: "",
-        published: true,
-      });
+      mocks.getPublishedPageContentByPath.mockResolvedValue(publishedRow(""));
 
       const { container } = render(await Page());
+      const header = hero(container);
 
+      // The row supplied the rest of the hero, so this also proves the fallback is
+      // reached for the header ALONE rather than because the page gave up on the row.
+      expect(header.textContent).toContain("Cap");
+      expect(header.textContent).toContain("<img src=x");
+      expect(header.innerHTML).toContain("&lt;img src=x");
+      expect(header.innerHTML).not.toContain("<img");
       expect(container.querySelector("img")).toBeNull();
-      expect(container.textContent).toContain("<img src=x");
+    },
+  );
+
+  /**
+   * A header of nothing but whitespace. The pages guard the sink with
+   * `headerText.trim()`, and this is the only test of that half — so be exact about
+   * what it proves. The fallback IS reached, which is the point: whitespace is
+   * treated as empty rather than handed to the sink.
+   *
+   * It is not a production state. `getPublishedPageContentByPath()` sanitises
+   * `headerText` on read with `sanitizePageContentHtml()`, which ends in `.trim()`,
+   * and the admin write path sanitises with the same function before storing — so
+   * `'   '` can be neither written nor read. It is kept as defence in depth against
+   * some future reader that skips that sanitiser.
+   */
+  it.each([
+    ["booking requests", BookingRequestsPage],
+    ["school bookings", SchoolBookingsPage],
+  ])(
+    "treats an untrimmed whitespace-only %s header as empty (defence in depth)",
+    async (_label, Page) => {
+      mocks.getPublishedPageContentByPath.mockResolvedValue(publishedRow("   "));
+
+      const { container } = render(await Page());
+      const header = hero(container);
+
+      // A `<p>` holding the payload as text is the fallback branch; the sink branch
+      // renders a `<div>` instead, so the tag is what tells the two apart.
+      expect(header.querySelector("p")?.textContent).toContain("<img src=x");
+      expect(header.innerHTML).toContain("&lt;img src=x");
+      expect(container.querySelector("img")).toBeNull();
     },
   );
 });

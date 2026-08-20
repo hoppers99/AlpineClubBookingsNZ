@@ -276,6 +276,7 @@ const XERO_REPORT_MINIMAL: XeroReconciliationReportEmail = {
     mismatchedCanonicalLinks: 5,
     staleCanonicalLinks: 6,
     duplicateActiveCanonicalLinks: 7,
+    overCoveredStripeRefundPayments: 2,
     stalePendingOperations: 8,
     recentFailedOperations: 9,
     recentPartialOperations: 10,

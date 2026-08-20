@@ -137,7 +137,10 @@ export async function reportWithheldLateCaptureRefund(params: {
   capture: CancelledBookingLateCapture;
   handBack: {
     id: string;
-    amountCents: number;
+    // #2797: nullable, tracking `ManualRefundTask.amountCents` becoming optional
+    // (owner decision D2). The audit JSON, the log line and the admin alert
+    // below all already tolerate a null amount.
+    amountCents: number | null;
     completedAt: Date | null;
     completedByMemberId: string | null;
   };
