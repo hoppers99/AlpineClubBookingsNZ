@@ -1485,7 +1485,7 @@ describe("createXeroCreditNote", () => {
     mocks.resolveStripeCashRefundEvidence.mockImplementation(
       async (payment: { refundedAmountCents: number }) => ({
         cashRefundCents: payment.refundedAmountCents,
-        succeededRefundCents: payment.refundedAmountCents,
+        countedRefundCents: payment.refundedAmountCents,
         refundLedgerRowCount: 1,
         accountCreditCents: 0,
         source: "provider-ledger",
@@ -1823,7 +1823,7 @@ describe("createXeroCreditNote", () => {
       armCreatePath(34100, []);
       mocks.resolveStripeCashRefundEvidence.mockResolvedValue({
         cashRefundCents: 0,
-        succeededRefundCents: 0,
+        countedRefundCents: 0,
         refundLedgerRowCount: 0,
         accountCreditCents: 34100,
         source: "legacy-mirror",

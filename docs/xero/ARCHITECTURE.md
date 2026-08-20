@@ -633,17 +633,19 @@ that no provider transaction backs.
 
 INV-PAY-050 binds every refund-note surface to
 `resolveStripeCashRefundEvidence` (`src/lib/stripe-cash-refund-evidence.ts`)
-instead: `succeeded` `PaymentRefund` cents when the payment has ledger rows
-(recorded before enqueue on every modern cash path, so stepped refunds sum
-naturally, #1162/#1354), else the pre-ledger fallback of the mirror minus the
-booking's account-credit disposition. Bound surfaces: health detection
+instead: `PaymentRefund` cents excluding only `failed` and `canceled` rows when
+the payment has ledger rows (recorded before enqueue on every modern cash path,
+so stepped refunds sum naturally, #1162/#1354), else the pre-ledger fallback of
+the mirror minus the booking's account-credit disposition. That exclusion list
+is deliberately the mirror's own, so a refund Stripe has accepted but not yet
+settled keeps counting as cash (owner decision, 21 Aug 2026). Bound surfaces: health detection
 (`getRefundsMissingXeroCreditNotes`, which also reports the cash figure), the
 self-heal enqueue amount and the STRIPE enqueue cap
 (`enqueueXeroRefundCreditNoteOperation`), the execution-time delta recompute
 in `createXeroCreditNote` — which completes an already-queued fictitious
 operation WITHOUT billing Xero — and the #2901 repair's coverage target
-above. Two stated limits, both fail-safe — they can only UNDER-state cash, so
-the pipeline under-flags a genuine refund note and never mints one: a payment
+above. Three stated limits. Two are fail-safe — they can only UNDER-state cash,
+so the pipeline under-flags a genuine refund note and never mints one: a payment
 refunded partly before and partly after the `PaymentRefund` ledger existed
 resolves from its partial ledger rows; and the legacy fallback subtracts the
 booking's WHOLE account-credit disposition from each per-payment mirror,
@@ -651,7 +653,15 @@ because `MemberCredit` records only the source booking — no per-payment
 attribution was ever persisted, so on a rare multi-Payment booking mixing a
 genuine pre-ledger cash refund on one payment with an account-credit
 disposition on another, the cash payment's note is under-flagged (the
-repair's dry-run report still shows the divergence for manual review).
+repair's dry-run report still shows the divergence for manual review). The
+third is NOT fail-safe in that direction and is the deliberate cost of counting
+in-progress refunds: a refund Stripe has accepted but later `failed` counts as
+cash between those two events, so the note can briefly OVER-state. It is
+bounded — `cashRefundCents` stays clamped to `refundedAmountCents`, so the
+overstatement can never exceed what was actually refunded — and the next
+reconciliation run corrects it once the row lands on `failed`. It was chosen
+over the alternative, which under-states every still-settling refund and is
+both more common and harder to notice.
 Fictitious notes minted BEFORE #2902 are found by the dry-run report above
 and cleaned through the same operator void-then-apply loop.
 

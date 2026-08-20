@@ -171,7 +171,7 @@ describe("buildXeroReconciliationReport", () => {
     mocks.resolveStripeCashRefundEvidence.mockImplementation(
       async (payment: { refundedAmountCents: number }) => ({
         cashRefundCents: payment.refundedAmountCents,
-        succeededRefundCents: payment.refundedAmountCents,
+        countedRefundCents: payment.refundedAmountCents,
         refundLedgerRowCount: 1,
         accountCreditCents: 0,
         source: "provider-ledger",
@@ -678,7 +678,7 @@ describe("buildXeroReconciliationReport", () => {
     mocks.operationCount.mockResolvedValue(0);
     mocks.resolveStripeCashRefundEvidence.mockResolvedValue({
       cashRefundCents: 0,
-      succeededRefundCents: 0,
+      countedRefundCents: 0,
       refundLedgerRowCount: 0,
       accountCreditCents: 100,
       source: "legacy-mirror",

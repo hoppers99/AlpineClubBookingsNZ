@@ -604,7 +604,7 @@ describe("enqueueXeroRefundCreditNoteOperation", () => {
     mocks.resolveStripeCashRefundEvidence.mockImplementation(
       async (payment: { refundedAmountCents: number }) => ({
         cashRefundCents: payment.refundedAmountCents,
-        succeededRefundCents: payment.refundedAmountCents,
+        countedRefundCents: payment.refundedAmountCents,
         refundLedgerRowCount: 1,
         accountCreditCents: 0,
         source: "provider-ledger",
@@ -757,7 +757,7 @@ describe("enqueueXeroRefundCreditNoteOperation", () => {
     mocks.sumCoveredRefundCreditNoteCents.mockResolvedValue(0);
     mocks.resolveStripeCashRefundEvidence.mockResolvedValue({
       cashRefundCents: 0,
-      succeededRefundCents: 0,
+      countedRefundCents: 0,
       refundLedgerRowCount: 0,
       accountCreditCents: 34100,
       source: "legacy-mirror",
@@ -786,7 +786,7 @@ describe("enqueueXeroRefundCreditNoteOperation", () => {
     mocks.sumCoveredRefundCreditNoteCents.mockResolvedValue(1000);
     mocks.resolveStripeCashRefundEvidence.mockResolvedValue({
       cashRefundCents: 4000,
-      succeededRefundCents: 4000,
+      countedRefundCents: 4000,
       refundLedgerRowCount: 2,
       accountCreditCents: 0,
       source: "provider-ledger",

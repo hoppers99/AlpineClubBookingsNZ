@@ -42,7 +42,13 @@ beforeEach(() => {
 });
 
 describe("resolveStripeCashRefundEvidence — provider-ledger rule", () => {
-  it("sums succeeded PaymentRefund rows per payment and ignores other statuses", async () => {
+  it("counts every PaymentRefund row except failed and canceled", async () => {
+    // Owner decision, 21 Aug 2026: a refund Stripe has accepted but not yet
+    // settled counts as cash, matching the refundedAmountCents mirror this
+    // module replaces. `pending` is therefore INCLUDED (6000 + 1000), while
+    // `failed` is not. Counting only `succeeded` would fix #2902's
+    // account-credit defect and introduce the opposite error: a still-settling
+    // refund reported as zero cash, under-stating the note.
     mocks.groupBy.mockResolvedValue([
       { status: "succeeded", _sum: { amountCents: 6000 }, _count: { _all: 2 } },
       { status: "failed", _sum: { amountCents: 4000 }, _count: { _all: 1 } },
@@ -52,8 +58,8 @@ describe("resolveStripeCashRefundEvidence — provider-ledger rule", () => {
     const evidence = await resolveStripeCashRefundEvidence(payment);
 
     expect(evidence).toEqual({
-      cashRefundCents: 6000,
-      succeededRefundCents: 6000,
+      cashRefundCents: 7000,
+      countedRefundCents: 7000,
       refundLedgerRowCount: 4,
       accountCreditCents: 0,
       source: "provider-ledger",
@@ -78,7 +84,7 @@ describe("resolveStripeCashRefundEvidence — provider-ledger rule", () => {
     const evidence = await resolveStripeCashRefundEvidence(payment);
 
     expect(evidence.cashRefundCents).toBe(10000);
-    expect(evidence.succeededRefundCents).toBe(12000);
+    expect(evidence.countedRefundCents).toBe(12000);
     expect(evidence.source).toBe("provider-ledger");
   });
 
@@ -92,10 +98,60 @@ describe("resolveStripeCashRefundEvidence — provider-ledger rule", () => {
 
     expect(evidence).toMatchObject({
       cashRefundCents: 0,
-      succeededRefundCents: 0,
+      countedRefundCents: 0,
       refundLedgerRowCount: 1,
       source: "provider-ledger",
     });
+  });
+
+  it("counts a requires_action refund as cash", async () => {
+    // Stripe can park a refund on requires_action; it is accepted, not failed,
+    // so the mirror counted it and so must this module.
+    mocks.groupBy.mockResolvedValue([
+      {
+        status: "requires_action",
+        _sum: { amountCents: 2500 },
+        _count: { _all: 1 },
+      },
+    ]);
+
+    const evidence = await resolveStripeCashRefundEvidence(payment);
+
+    expect(evidence).toMatchObject({
+      cashRefundCents: 2500,
+      countedRefundCents: 2500,
+      source: "provider-ledger",
+    });
+  });
+
+  it("resolves a canceled-only ledger to ZERO cash", async () => {
+    // canceled joins failed in the exclusion list, so the rows still prove the
+    // ledger era (no legacy fallback) while proving no cash moved.
+    mocks.groupBy.mockResolvedValue([
+      { status: "canceled", _sum: { amountCents: 8000 }, _count: { _all: 2 } },
+    ]);
+
+    const evidence = await resolveStripeCashRefundEvidence(payment);
+
+    expect(evidence).toMatchObject({
+      cashRefundCents: 0,
+      countedRefundCents: 0,
+      refundLedgerRowCount: 2,
+      source: "provider-ledger",
+    });
+  });
+
+  it("still clamps an in-progress overstatement to the mirror", async () => {
+    // The one non-fail-safe limit is bounded: counting in-progress cash can
+    // never claim more than refundedAmountCents actually records.
+    mocks.groupBy.mockResolvedValue([
+      { status: "pending", _sum: { amountCents: 99000 }, _count: { _all: 1 } },
+    ]);
+
+    const evidence = await resolveStripeCashRefundEvidence(payment);
+
+    expect(evidence.cashRefundCents).toBe(10000);
+    expect(evidence.countedRefundCents).toBe(99000);
   });
 
   it("clamps a negative succeeded sum to zero", async () => {
@@ -106,7 +162,7 @@ describe("resolveStripeCashRefundEvidence — provider-ledger rule", () => {
     const evidence = await resolveStripeCashRefundEvidence(payment);
 
     expect(evidence.cashRefundCents).toBe(0);
-    expect(evidence.succeededRefundCents).toBe(0);
+    expect(evidence.countedRefundCents).toBe(0);
   });
 });
 
@@ -118,7 +174,7 @@ describe("resolveStripeCashRefundEvidence — legacy-mirror fallback", () => {
 
     expect(evidence).toEqual({
       cashRefundCents: 6500,
-      succeededRefundCents: 0,
+      countedRefundCents: 0,
       refundLedgerRowCount: 0,
       accountCreditCents: 3500,
       source: "legacy-mirror",

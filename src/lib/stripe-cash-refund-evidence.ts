@@ -35,8 +35,11 @@
  *   mirror). Pre-ledger genuine cash refunds keep self-healing; pre-ledger
  *   account-credit cancellations are excluded.
  *
- * Stated limits (both fail-safe: they can only UNDER-state cash, so the
- * pipeline under-flags a genuine refund note — it can never mint one):
+ * Stated limits. The first two are fail-safe: they can only UNDER-state cash,
+ * so the pipeline under-flags a genuine refund note and can never mint one.
+ * The third is NOT fail-safe in that direction and is the deliberate cost of
+ * the 21 Aug 2026 owner decision recorded on
+ * `EXCLUDED_CASH_REFUND_STATUSES` — read it before changing the filter:
  *
  * - A payment refunded partly before and partly after the ledger existed
  *   resolves from its (partial) ledger rows and can under-state cash.
@@ -51,12 +54,36 @@
  *   on another, the cash payment's evidence can clamp to zero and its refund
  *   note is under-flagged rather than self-healed; the operator repair's
  *   dry-run report still shows the divergence for manual review.
+ *
+ * - A refund Stripe has accepted but later FAILS counts as cash between those
+ *   two events, so the note can briefly OVER-state cash. This is the one limit
+ *   that is not fail-safe, and it is chosen rather than accidental: the
+ *   alternative under-states every still-settling refund, which is both more
+ *   common and harder to notice. `cashRefundCents` stays clamped to
+ *   `refundedAmountCents`, so the overstatement can never exceed what was
+ *   actually refunded, and the next reconciliation run corrects it once the
+ *   row lands on `failed`.
  */
 import { CreditType, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
-/** The one PaymentRefund status that counts as provider-confirmed cash. */
-export const SUCCEEDED_PAYMENT_REFUND_STATUS = "succeeded";
+/**
+ * PaymentRefund statuses that are NOT cash. Deliberately the same exclusion
+ * list as the `refundedAmountCents` mirror this module replaces
+ * (`EXCLUDED_LEDGER_REFUND_STATUSES`, payment-transactions.ts), so a refund
+ * Stripe has accepted but not yet settled keeps counting as cash exactly as it
+ * did before #2902.
+ *
+ * Owner decision, 21 Aug 2026: count a refund still in progress as cash. An
+ * earlier draft of this module counted only `succeeded`, which would have
+ * fixed the account-credit defect while introducing the opposite reporting
+ * error — a still-settling refund resolving to zero cash, so the note
+ * UNDER-states what went back until somebody re-runs the report. Understating
+ * cash in an accounting document was judged the more damaging mistake, and a
+ * refund Stripe has accepted almost always settles. The rare overstatement, if
+ * one later fails, is corrected by the next run.
+ */
+export const EXCLUDED_CASH_REFUND_STATUSES = ["failed", "canceled"] as const;
 
 export interface StripeCashRefundEvidence {
   /**
@@ -64,8 +91,12 @@ export interface StripeCashRefundEvidence {
    * for this payment. Never negative, never above `refundedAmountCents`.
    */
   cashRefundCents: number;
-  /** Sum of `succeeded` PaymentRefund rows (0 when none exist). */
-  succeededRefundCents: number;
+  /**
+   * Sum of PaymentRefund rows whose status is not in
+   * `EXCLUDED_CASH_REFUND_STATUSES` (0 when none exist) — i.e. settled cash
+   * plus cash Stripe has accepted and not yet settled.
+   */
+  countedRefundCents: number;
   /** PaymentRefund rows of any status — 0 means pre-ledger history. */
   refundLedgerRowCount: number;
   /**
@@ -103,14 +134,19 @@ export async function resolveStripeCashRefundEvidence(
     (sum, row) => sum + row._count._all,
     0
   );
-  const succeededRefundCents = grouped
-    .filter((row) => row.status === SUCCEEDED_PAYMENT_REFUND_STATUS)
+  const countedRefundCents = grouped
+    .filter(
+      (row) =>
+        !(EXCLUDED_CASH_REFUND_STATUSES as readonly string[]).includes(
+          row.status
+        )
+    )
     .reduce((sum, row) => sum + Math.max(0, row._sum.amountCents ?? 0), 0);
 
   if (refundLedgerRowCount > 0) {
     return {
-      cashRefundCents: Math.min(mirrorCents, succeededRefundCents),
-      succeededRefundCents,
+      cashRefundCents: Math.min(mirrorCents, countedRefundCents),
+      countedRefundCents,
       refundLedgerRowCount,
       accountCreditCents: 0,
       source: "provider-ledger",
@@ -137,7 +173,7 @@ export async function resolveStripeCashRefundEvidence(
 
   return {
     cashRefundCents: Math.max(0, mirrorCents - accountCreditCents),
-    succeededRefundCents: 0,
+    countedRefundCents: 0,
     refundLedgerRowCount: 0,
     accountCreditCents,
     source: "legacy-mirror",

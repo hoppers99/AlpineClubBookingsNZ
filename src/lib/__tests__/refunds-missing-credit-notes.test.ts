@@ -41,7 +41,7 @@ beforeEach(() => {
   mocks.resolveEvidence.mockImplementation(
     async (payment: { refundedAmountCents: number }) => ({
       cashRefundCents: payment.refundedAmountCents,
-      succeededRefundCents: payment.refundedAmountCents,
+      countedRefundCents: payment.refundedAmountCents,
       refundLedgerRowCount: 1,
       accountCreditCents: 0,
       source: "provider-ledger",
@@ -171,14 +171,14 @@ describe("getRefundsMissingXeroCreditNotes (issue #818/#1162)", () => {
       payment.id === "pay_credit_only"
         ? {
             cashRefundCents: 0,
-            succeededRefundCents: 0,
+            countedRefundCents: 0,
             refundLedgerRowCount: 0,
             accountCreditCents: 34100,
             source: "legacy-mirror",
           }
         : {
             cashRefundCents: 4000,
-            succeededRefundCents: 4000,
+            countedRefundCents: 4000,
             refundLedgerRowCount: 1,
             accountCreditCents: 0,
             source: "provider-ledger",
