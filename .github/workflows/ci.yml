@@ -440,6 +440,22 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node scripts/ci/check-pr-changelog-fragment.mjs
 
+      # #2909: every workflow job that runs the unit suite must check out full
+      # git history, because part of that suite drives git against this
+      # repository's own commits (HEAD^1, origin/main). The clock canary once ran
+      # the suite on a depth-1 clone while this job checked out in full, so the
+      # breakage passed all eight required checks, merged, and reddened `main`
+      # (#2907) — the canary has no `pull_request` trigger and a developer's
+      # clone has full history, so nothing else can see that divergence.
+      #
+      # Reads `.github/workflows/*.yml` and nothing else, so it sits here with
+      # the other pre-install gates and fails in under a second. It stays ABOVE
+      # the doc-index step deliberately: the #2691 contract test reads that step
+      # as everything between its own name and `- name: Install dependencies`,
+      # so a step inserted between the two breaks it.
+      - name: Check workflows that run the suite check out full history
+        run: node scripts/ci/check-workflow-suite-checkout-depth.mjs
+
       # #2691: every `docs/` page is reachable from a front door, and every cited
       # `INV-*` invariant id resolves to a real definition that the index lists.
       # Both properties are what make the routing table in AGENTS.md usable
