@@ -79,7 +79,7 @@ id and need the file it lives in.
 | Auth, sessions, tokens, permissions — anything security-shaped | — | [`SECURITY.md`](docs/SECURITY.md), [`SECURITY-ATTACK-SURFACE.md`](docs/SECURITY-ATTACK-SURFACE.md), [`TOKEN_HASHING.md`](docs/TOKEN_HASHING.md) |
 | Documentation itself | — | [`STYLE_GUIDE.md`](docs/STYLE_GUIDE.md) |
 | Locating bounded code, import or Prisma context for an agent | — | [`agents/SCOPED_CONTEXT.md`](docs/agents/SCOPED_CONTEXT.md) |
-| Your first `npm` command in a new worktree (Windows runtime + dependency preflight) | — | [`agents/CODEX_WORKFLOW.md`](docs/agents/CODEX_WORKFLOW.md) |
+| Your first `npm` command in a new worktree (Windows runtime + dependency preflight), or Docker infrastructure a lane starts and must later tear down | — | [`agents/CODEX_WORKFLOW.md`](docs/agents/CODEX_WORKFLOW.md) |
 | Working an issue, recording a decision on one, briefing a subagent, or reading untrusted issue/PR/provider text | — | [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md) — read the thread with `npm run issue -- <n>`, never `gh issue view`, and rewrite the body when you record a decision; [`agents/SUBAGENT_GUIDE.md`](docs/agents/SUBAGENT_GUIDE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](docs/agents/PROMPT_INJECTION_GUIDE.md) |
 | Posting in public — issues, PRs, comments, claims, cross-lane hand-offs | — | [`agents/ISSUE_WORKFLOW.md`](docs/agents/ISSUE_WORKFLOW.md) — what never goes in a public artifact, the `CLAIM:`/`LANE-SYNC:` prefixes, lane identity |
 | A Next.js API or convention | — | the relevant guide in `node_modules/next/dist/docs/` |
@@ -521,7 +521,11 @@ At the successful end of a meaningful piece of work:
    parent PR and epic before the PR merges - comments do not get fixes done;
    PRs do, and a filed issue is the only acceptable carry-forward vehicle (see
    "Residual risks" above for when carrying forward is legitimate at all).
-6. After merge, delete the merged branch and confirm `main` CI stays green.
+6. After merge, delete the merged branch, tear down any Docker infrastructure the
+   lane started — see
+   [`agents/CODEX_WORKFLOW.md`](docs/agents/CODEX_WORKFLOW.md) →
+   "Lane-owned Docker infrastructure", and `npm run stale-containers` names what
+   earlier lanes left behind — and confirm `main` CI stays green.
 
 ### Pre-authorisation and attributability
 

@@ -185,6 +185,10 @@ function baseBooking(overrides: Partial<Record<string, unknown>> = {}) {
     payment: null,
     parentBookingId: null,
     groupBookingJoin: null,
+    // #2919: the pay page names the booking's own lodge, so the record the
+    // narrative context is built from carries it.
+    lodgeId: "lodge-1",
+    lodge: { name: "Default Lodge" },
     ...overrides,
   };
 }
@@ -274,6 +278,39 @@ describe("getPaymentLinkContext", () => {
     expect(context.payable?.internetBankingReference).toBe("BOOKING-BOOKING-");
     expect(context.narrative.message).toContain("$120.00");
     expect(mockedUpdate).not.toHaveBeenCalled();
+  });
+
+  // #2919: the public pay page's confirmation copy used to name the club's
+  // DEFAULT lodge because the context carried no lodge at all. A booking at a
+  // non-default lodge must come back naming that lodge.
+  it("carries the booking's own lodge name, not the club default", async () => {
+    mockedFindUnique.mockResolvedValue(
+      baseLink({
+        booking: baseBooking({
+          lodgeId: "lodge-2",
+          lodge: { name: "Second Lodge" },
+        }),
+      }) as never
+    );
+
+    const context = await getPaymentLinkContext(RAW_TOKEN);
+
+    expect(context.lodgeName).toBe("Second Lodge");
+  });
+
+  it("asks the database for the booking's lodge name and nothing else about the lodge", async () => {
+    mockedFindUnique.mockResolvedValue(baseLink() as never);
+
+    await getPaymentLinkContext(RAW_TOKEN);
+
+    const include = mockedFindUnique.mock.calls[0]?.[0] as unknown as {
+      include: { booking: { include: Record<string, unknown> } };
+    };
+    // Name only — a token-authenticated public surface must never pull the
+    // lodge's door code or travel note along with it.
+    expect(include.include.booking.include.lodge).toEqual({
+      select: { name: true },
+    });
   });
 
   it("omits the internet banking reference when the module is off", async () => {

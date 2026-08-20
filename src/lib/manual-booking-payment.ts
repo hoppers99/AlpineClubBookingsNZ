@@ -446,14 +446,33 @@ export async function resolveManualRefundTask({
     }
 
     if (resolution === "completed") {
-      // Only NOW does the ledger record that money was returned. Doing this at
-      // task-creation time would have the mirror claiming a refund before the
-      // club had actually handed anything back.
-      await applyLocalRefundAllocation({
-        paymentId: task.paymentId,
-        amountCents: task.amountCents,
-        store: tx,
-      });
+      // #2797 (owner decision D2): a task cannot be COMPLETED without a
+      // confirmed amount. The DB `ManualRefundTask_completed_amount_present`
+      // check enforces the same rule; this throws first with a message an
+      // operator can read. An EDIT_FINANCIAL_REVIEW task raised with no amount
+      // is priced by the admin BEFORE it reaches completion (that flow sets
+      // `amountCents`), so a null here means the queue tried to close an
+      // unpriced task and the caller has a bug, not the operator.
+      if (task.amountCents === null) {
+        throw new ManualBookingPaymentError(
+          "This refund has no confirmed amount yet — price it before completing.",
+          409
+        );
+      }
+      // #2797 (owner decision D2): a credit-only task (`paymentId` null) has no
+      // captured payment to allocate a refund against — the money is returned as
+      // account credit or off-Stripe by hand — so the local refund allocation is
+      // written ONLY when there is a payment to write it against. Only NOW does
+      // the ledger record that money was returned; doing it at creation time
+      // would have the mirror claim a refund before the club handed anything
+      // back.
+      if (task.paymentId !== null) {
+        await applyLocalRefundAllocation({
+          paymentId: task.paymentId,
+          amountCents: task.amountCents,
+          store: tx,
+        });
+      }
     }
 
     await createAuditLog(
