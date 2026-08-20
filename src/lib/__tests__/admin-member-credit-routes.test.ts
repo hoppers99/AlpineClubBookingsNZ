@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import {
+  contentAdminSession,
+  financeAdminSession,
+  readOnlyAdminSession,
+} from "./helpers/admin-area-gate-sessions";
 
 const mocks = vi.hoisted(() => ({
   auth: vi.fn(),
@@ -120,5 +125,71 @@ describe("admin member credit routes", () => {
       requestStatus: "PENDING",
       replayed: true,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-area gate (#2921 / the fork PR #2949 shape). The POST declares
+// `{ area: "finance", level: "edit" }`. Before the sweep the mock never received
+// it, so this route was exercised only as "is this person in the admin portal",
+// and moving the literal to `{ area: "overview", level: "view" }` — the exact
+// downgrade that left 83 tests green on #2949 — would not have been noticed here.
+// ---------------------------------------------------------------------------
+describe("per-area gate on POST /api/admin/members/[id]/credits (#2921)", () => {
+  function creditRequest() {
+    return new NextRequest(
+      "http://localhost/api/admin/members/member-1/credits",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-forwarded-for": "127.0.0.1",
+        },
+        body: JSON.stringify({
+          amountCents: 2500,
+          description: "Goodwill credit",
+          idempotencyKey: "9a13b0af-7ffc-451b-a50b-81f6fb8630f4",
+        }),
+      },
+    );
+  }
+
+  const routeParams = { params: Promise.resolve({ id: "member-1" }) };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.requireActiveSessionUser.mockResolvedValue(null);
+    mocks.getClientIp.mockReturnValue("127.0.0.1");
+    mocks.createAdminAdjustmentRequest.mockResolvedValue({
+      request: { id: "req-1", status: "PENDING" },
+      replayed: false,
+    });
+  });
+
+  it("refuses a view-only admin, so the level half of finance:edit is real", async () => {
+    mocks.auth.mockResolvedValue(readOnlyAdminSession);
+
+    const response = await createAdjustmentRequest(creditRequest(), routeParams);
+
+    expect(response.status).toBe(403);
+    expect(mocks.createAdminAdjustmentRequest).not.toHaveBeenCalled();
+  });
+
+  it("refuses an admin with no finance access, so the area half is real", async () => {
+    mocks.auth.mockResolvedValue(contentAdminSession);
+
+    const response = await createAdjustmentRequest(creditRequest(), routeParams);
+
+    expect(response.status).toBe(403);
+    expect(mocks.createAdminAdjustmentRequest).not.toHaveBeenCalled();
+  });
+
+  it("admits a finance-editing admin, so the gate is not simply shut", async () => {
+    mocks.auth.mockResolvedValue(financeAdminSession);
+
+    const response = await createAdjustmentRequest(creditRequest(), routeParams);
+
+    expect(response.status).toBe(200);
+    expect(mocks.createAdminAdjustmentRequest).toHaveBeenCalled();
   });
 });
