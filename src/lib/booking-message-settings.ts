@@ -3,6 +3,7 @@ import {
   BOOKING_MESSAGE_DEFINITIONS,
   BOOKING_MESSAGE_DEFINITION_BY_KEY,
   getDefaultBookingMessages,
+  type BookingMessageClubTokens,
   type BookingMessageKey,
   type BookingMessageMergeData,
 } from "@/lib/booking-message-definitions";
@@ -75,7 +76,16 @@ export async function loadPublicBookingMessages(): Promise<EffectiveBookingMessa
   return loadEffectiveBookingMessageMap();
 }
 
-async function buildBookingMessageGlobalData(): Promise<BookingMessageMergeData> {
+/**
+ * The four club-level token values every booking message may insert.
+ *
+ * Exported for `/api/booking-messages` (#2919 review): the client surfaces that
+ * fetch message bodies substitute their tokens from exactly this, so a member
+ * reads what the admin preview showed instead of literal `{{braces}}`. Of the
+ * four, only `CLUB_LODGE_NAME` varies by lodge — a surface that knows its own
+ * lodge overrides that one value and needs no lodge-scoped resolve of its own.
+ */
+export async function buildBookingMessageGlobalData(): Promise<BookingMessageClubTokens> {
   const settings = await loadEmailMessageSettings();
   const emailData = buildEmailTemplateGlobalData(settings);
 

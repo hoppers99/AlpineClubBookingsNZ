@@ -195,6 +195,18 @@ rules first written here. #2765 extended it with the measured-audience half.
   `INV-OPS-001` is about what the result is declared to be, and both apply to
   the same call.
 
+  **What adding that `nosemgrep` line does, since this is the rule that tells
+  you to add one.** Semgrep marks the result suppressed rather than dropping it,
+  and GitHub's SARIF ingest used to file every such result as a code-scanning
+  alert no source change could close — so each justified exemption minted
+  permanent noise in the Security tab, which is where a real new raw-SQL call
+  would then have looked identical to the known-safe ones. Since #2841 the
+  `static-analysis` job filters in-source-suppressed results out of what it
+  publishes (`scripts/ci/filter-suppressed-sarif.mjs`), so a new justified
+  exemption no longer leaves an alert behind. The two that predate that filter
+  still need a one-time manual dismissal. Full reasoning:
+  [`SECURITY-ATTACK-SURFACE.md`](../SECURITY-ATTACK-SURFACE.md#the-semgrep-pair-which-outranks-the-critical).
+
 ## INV-OPS-013
 
 - **A `"use client"` module never reaches server-only code (#2686).**

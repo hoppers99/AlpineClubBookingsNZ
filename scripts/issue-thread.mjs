@@ -51,9 +51,10 @@
  * `> **DECIDED …**` header and its option list struck through. That is a binding
  * obligation on whoever records the decision, not a nicety.
  */
-import { execFileSync } from "node:child_process";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+
+import { ghJson } from "./lib/github-cli.mjs";
 
 /** How many `#NNNN` references from the body get a state lookup. */
 export const LINKED_ISSUE_LIMIT = 12;
@@ -336,32 +337,6 @@ export function renderDecisionSummary(assessment) {
 
 const RULE = "=".repeat(78);
 const THIN_RULE = "-".repeat(78);
-
-function ghJson(args) {
-  try {
-    return JSON.parse(
-      execFileSync("gh", args, {
-        encoding: "utf8",
-        maxBuffer: 64 * 1024 * 1024,
-        stdio: ["ignore", "pipe", "pipe"],
-      }),
-    );
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      throw new Error(
-        "The GitHub CLI (`gh`) is not on PATH. Install it from https://cli.github.com/ and run `gh auth login`.",
-      );
-    }
-    const stderr = String(error?.stderr ?? "").trim();
-    if (/auth login|not logged|authentication|HTTP 401/i.test(stderr)) {
-      throw new Error(
-        `GitHub CLI is not authenticated for this repository. Run \`gh auth login\` (or \`gh auth status\` to see why).\n${stderr}`,
-      );
-    }
-    if (stderr) throw new Error(`\`gh ${args.join(" ")}\` failed:\n${stderr}`);
-    throw error;
-  }
-}
 
 /** Accepts `2777`, `#2777`, or the issue URL. Nothing else, and no flags. */
 export function parseIssueArgument(argv) {

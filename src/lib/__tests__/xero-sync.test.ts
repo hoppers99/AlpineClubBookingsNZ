@@ -111,6 +111,20 @@ describe("sumCoveredRefundCreditNoteCents (#1162)", () => {
       })
     );
   });
+
+  it("counts nothing for a link whose recorded Xero status is VOIDED or DELETED (#2901 fix round)", async () => {
+    mocks.linkFindMany.mockResolvedValue([
+      { xeroObjectId: "cn_live", metadata: { amountCents: 9000, status: "AUTHORISED" } },
+      // Status matching is trimmed + case-insensitive, like the inbound math.
+      { xeroObjectId: "cn_voided", metadata: { amountCents: 1000, status: "voided" } },
+      { xeroObjectId: "cn_deleted", metadata: { amountCents: 500, status: " DELETED " } },
+    ]);
+
+    await expect(sumCoveredRefundCreditNoteCents("payment_1")).resolves.toBe(9000);
+    // A cancelled note is excluded outright — never "recovered" from the
+    // create-operation payload either.
+    expect(mocks.operationFindFirst).not.toHaveBeenCalled();
+  });
 });
 
 describe("buildXeroPayloadHash", () => {
@@ -416,6 +430,59 @@ describe("upsertXeroObjectLink", () => {
         }),
       })
     );
+  });
+
+  it("deactivates a Stripe refund-note mirror when the incoming write carries a VOIDED status (#2901 fix round)", async () => {
+    const txLinkFindUnique = vi.fn().mockResolvedValue({
+      metadata: { amountCents: 3000, watermarkCents: 8000 },
+    });
+    mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        payment: {
+          findUnique: mocks.txPaymentFindUnique,
+        },
+        xeroObjectLink: {
+          updateMany: mocks.txLinkUpdateMany,
+          upsert: mocks.txLinkUpsert,
+          findUnique: txLinkFindUnique,
+        },
+      })
+    );
+    mocks.txPaymentFindUnique.mockResolvedValue({
+      source: "STRIPE",
+      xeroRefundCreditNoteId: "cn_delta",
+    });
+
+    // Inbound reconciliation (and the #2901 status recorder) write the live
+    // provider status. A VOIDED note credits nothing, so its mirror must land
+    // INACTIVE — before this, the upsert's update clause forced active: true
+    // and re-armed phantom coverage the repair had just removed.
+    await upsertXeroObjectLink({
+      localModel: "Payment",
+      localId: "payment_1",
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: "cn_delta",
+      xeroObjectNumber: "CN-8",
+      role: "REFUND_CREDIT_NOTE",
+      metadata: { status: "VOIDED", total: 30 },
+      mergeMetadata: true,
+    });
+
+    expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ active: false }),
+        update: expect.objectContaining({
+          active: false,
+          metadata: expect.objectContaining({
+            amountCents: 3000,
+            watermarkCents: 8000,
+            status: "VOIDED",
+          }),
+        }),
+      })
+    );
+    // Sibling per-delta links are untouched either way.
+    expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
   });
 
   it("keeps every Stripe refund credit note link active so per-delta notes coexist (#1162)", async () => {

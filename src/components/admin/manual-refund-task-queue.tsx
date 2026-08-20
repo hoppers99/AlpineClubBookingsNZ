@@ -28,12 +28,24 @@ const NOTE_MAX_LENGTH = 500;
 interface ManualRefundTask {
   id: string;
   bookingId: string;
-  amountCents: number;
+  // #2797 (owner decision D2): NULL on an EDIT_FINANCIAL_REVIEW task whose
+  // amount the club has not yet priced. Rendered as "Awaiting pricing", never
+  // as $0.00 — a magic zero would read as "assessed at nothing".
+  amountCents: number | null;
   reason: string;
   createdAt: string;
   memberName: string;
   checkIn: string;
   checkOut: string;
+}
+
+/**
+ * #2797: how a task's amount reads in the queue. A priced task shows the money;
+ * an unpriced EDIT_FINANCIAL_REVIEW task shows that it is waiting for the club
+ * to price it, so nobody mistakes an unknown amount for a settled $0.00.
+ */
+function formatTaskAmount(amountCents: number | null): string {
+  return amountCents === null ? "Awaiting pricing" : formatCents(amountCents);
 }
 
 /**
@@ -542,7 +554,7 @@ export function ManualRefundTaskQueue() {
                   >
                     <div className="space-y-1 text-sm">
                       <p className="font-medium text-foreground">
-                        {task.memberName} — {formatCents(task.amountCents)}
+                        {task.memberName} — {formatTaskAmount(task.amountCents)}
                       </p>
                       <p className="text-muted-foreground">
                         {formatNZDate(new Date(task.checkIn))} to{" "}
@@ -605,7 +617,7 @@ export function ManualRefundTaskQueue() {
                   <DialogHeader>
                     <DialogTitle>
                       {target.resolution === "completed"
-                        ? `Record ${formatCents(target.task.amountCents)} as paid back to ${target.task.memberName}?`
+                        ? `Record ${formatTaskAmount(target.task.amountCents)} as paid back to ${target.task.memberName}?`
                         : `Dismiss the refund for ${target.task.memberName}?`}
                     </DialogTitle>
                     <DialogDescription>

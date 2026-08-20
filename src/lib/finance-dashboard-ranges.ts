@@ -32,6 +32,22 @@ export const FINANCE_DASHBOARD_VIEWS = [
 
 export type FinanceDashboardView = (typeof FINANCE_DASHBOARD_VIEWS)[number];
 
+/**
+ * The views whose reads honour the page's Lodge (occupancy) scope (#2919), and
+ * therefore the only views that render the lodge selector at all. ONE home for
+ * that rule, read by both the client's render gate and the server's seasons
+ * scope: a `lodgeId` left in the query string by a previous submit must not
+ * scope a view that shows no selector to explain or clear it.
+ */
+export const FINANCE_DASHBOARD_LODGE_SCOPED_VIEWS: readonly FinanceDashboardView[] =
+  ["bookings", "pricing-sensitivity"];
+
+export function financeDashboardViewUsesLodgeScope(
+  view: FinanceDashboardView
+): boolean {
+  return FINANCE_DASHBOARD_LODGE_SCOPED_VIEWS.includes(view);
+}
+
 // The dashboard is month-granular by design: every range is a whole-month
 // window over the monthly fact table. Day-level detail lives in Xero.
 export const FINANCE_DASHBOARD_RANGE_OPTIONS = [
@@ -139,6 +155,13 @@ export interface FinanceDashboardSeasonWindow {
   startDate: Date;
   endDate: Date;
   active: boolean;
+  /**
+   * The lodge this season belongs to (#2919), set only when the dashboard is in
+   * All-Lodges mode at a club with more than one lodge — the one case where the
+   * seasons on offer come from more than one property and the window label would
+   * otherwise name a season without saying whose it is.
+   */
+  lodgeName?: string | null;
 }
 
 export interface FinanceDashboardDateWindow {
@@ -157,6 +180,13 @@ interface FinanceDashboardForwardWindow {
   to: string | null;
   label: string;
   seasonName?: string;
+  /**
+   * The lodge whose season set this window (#2919) — present ONLY in All-Lodges
+   * mode at a club with more than one lodge, which is the one case where the
+   * seasons on offer come from more than one property. Everywhere else it is
+   * null and the window's wording is exactly what it always was.
+   */
+  seasonLodgeName?: string | null;
 }
 
 export interface FinanceDashboardSelection {
@@ -479,11 +509,21 @@ function resolveForwardFinanceWindow(input: {
         ? formatDateOnly(today)
         : formatDateOnly(activeOrUpcoming.startDate);
     const to = formatDateOnly(activeOrUpcoming.endDate);
+    // #2919: in All-Lodges mode at a multi-lodge club the seasons come from more
+    // than one property, so the season that wins says which lodge it belongs to.
+    // Scoped to one lodge (and at a single-lodge club) `lodgeName` is null, the
+    // label keeps its pre-existing season-only shape, and nothing on the page
+    // gains a lodge name it has no use for.
+    const seasonLodgeName = activeOrUpcoming.lodgeName ?? null;
+    const seasonLabel = seasonLodgeName
+      ? `${seasonLodgeName} — ${activeOrUpcoming.name}`
+      : activeOrUpcoming.name;
     return {
       from,
       to,
-      label: `${activeOrUpcoming.name}: ${formatDate(from)} to ${formatDate(to)}`,
+      label: `${seasonLabel}: ${formatDate(from)} to ${formatDate(to)}`,
       seasonName: activeOrUpcoming.name,
+      seasonLodgeName,
     };
   }
 
@@ -499,6 +539,21 @@ function resolveForwardFinanceWindow(input: {
   return { from: custom.from, to: custom.to, label: custom.label };
 }
 
+/**
+ * The requested view, resolved from the query string alone (#2919 review).
+ *
+ * A pure function of `searchParams`: it reads no seasons and no database, so a
+ * caller that must know the view BEFORE it decides how to read seasons can ask
+ * for it without a cycle. `resolveFinanceDashboardSelection` calls this too, so
+ * the unknown-view fallback rule has exactly one definition.
+ */
+export function resolveFinanceDashboardView(
+  searchParams?: SearchParams
+): FinanceDashboardView {
+  const requested = readParam(searchParams, "view");
+  return isOneOf(requested, FINANCE_DASHBOARD_VIEWS) ? requested : "bookings";
+}
+
 export function resolveFinanceDashboardSelection(input: {
   searchParams?: SearchParams;
   today?: Date;
@@ -509,13 +564,10 @@ export function resolveFinanceDashboardSelection(input: {
   const today = input.today ?? getTodayDateOnly();
   const financialYearEndMonth =
     input.financialYearEndMonth ?? getFinancialYearEndMonth();
-  const requestedView = readParam(input.searchParams, "view");
   const requestedRange = readParam(input.searchParams, "range");
   const requestedCompare = readParam(input.searchParams, "compare");
   const requestedForward = readParam(input.searchParams, "forward");
-  const view = isOneOf(requestedView, FINANCE_DASHBOARD_VIEWS)
-    ? requestedView
-    : "bookings";
+  const view = resolveFinanceDashboardView(input.searchParams);
   const range = isOneOf(requestedRange, FINANCE_DASHBOARD_RANGE_OPTIONS)
     ? requestedRange
     : (requestedRange && LEGACY_RANGE_OPTION_MAP[requestedRange]) || "last-month";

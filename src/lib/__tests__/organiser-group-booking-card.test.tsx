@@ -43,9 +43,20 @@ function stubFetch(opts: {
   internetBankingEnabled?: boolean;
   settleBody?: Record<string, unknown>;
   settleOk?: boolean;
+  bookingMessages?: Record<string, string>;
+  bookingMessageTokens?: Record<string, string>;
 }) {
   const fetchMock = vi.fn(async (url: string, init?: { method?: string }) => {
     const u = String(url);
+    if (u.includes("/api/booking-messages")) {
+      return {
+        ok: true,
+        json: async () => ({
+          messages: opts.bookingMessages ?? {},
+          tokens: opts.bookingMessageTokens ?? {},
+        }),
+      } as Response;
+    }
     if (u.includes("/settle") && init?.method === "POST") {
       return {
         ok: opts.settleOk ?? true,
@@ -115,6 +126,61 @@ describe("OrganiserGroupBookingCard settlement", () => {
     expect(
       JSON.parse((settleCall![1] as { body: string }).body).paymentMethod
     ).toBe("internet_banking");
+  });
+
+  // #2919 review: both of this card's message bodies were printed with only
+  // {{paymentReference}} substituted, so an edited body's other merge fields
+  // reached the organiser as literal braces.
+  it("fills in every merge field in the edited group messages, naming this booking's lodge", async () => {
+    stubFetch({
+      internetBankingEnabled: true,
+      settleBody: {
+        outcome: "invoice_sent",
+        amountCents: 4500,
+        childCount: 1,
+        reference: "GROUP-ABCD1234",
+      },
+      bookingMessages: {
+        "groupBooking.internetBanking.description":
+          "One invoice for {{CLUB_LODGE_NAME}}, from {{CLUB_NAME}}.",
+        "groupBooking.invoiceSent.description":
+          "Emailed for {{CLUB_LODGE_NAME}}. Reference {{paymentReference}}; ask {{SUPPORT_EMAIL}}.",
+      },
+      bookingMessageTokens: {
+        CLUB_NAME: "Alpine Club",
+        // The club default, which is NOT the lodge this booking is at.
+        CLUB_LODGE_NAME: "Default Lodge",
+        SUPPORT_EMAIL: "support@example.test",
+        BASE_URL: "https://example.test",
+      },
+    });
+
+    render(
+      <OrganiserGroupBookingCard
+        bookingId="booking-1"
+        canOpenGroup={false}
+        group={group()}
+        lodgeName="Second Lodge"
+      />
+    );
+
+    // The method-choice copy, before settling.
+    expect(
+      await screen.findByText("One invoice for Second Lodge, from Alpine Club.")
+    ).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: /Internet Banking/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /Settle by invoice \(emailed\)/ })
+    );
+
+    expect(
+      await screen.findByText(
+        "Emailed for Second Lodge. Reference GROUP-ABCD1234; ask support@example.test."
+      )
+    ).toBeDefined();
+    expect(document.body.textContent).not.toContain("{{");
+    expect(document.body.textContent).not.toContain("Default Lodge");
   });
 
   it("hides the internet banking option and uses the card flow when the module is off", async () => {
