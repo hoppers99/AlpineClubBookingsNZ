@@ -244,3 +244,59 @@ describe("Type – Tier display helpers (#1445)", () => {
     expect(formatTypeTierLabel("School", "NOT_APPLICABLE")).toBe("School – N/A");
   });
 });
+
+/**
+ * #2978. Booking on behalf of a non-member creates a real `Member` row with role
+ * NON_MEMBER, and such a record has no season membership assignment and never
+ * will. It therefore read "Unassigned – Adult", which is not a blank but a WRONG
+ * answer: it reads as a member whose type nobody has got round to setting, on a
+ * row that is already complete and already correctly priced.
+ */
+describe("Type – Tier names the non-member category (#2978)", () => {
+  afterEach(() => cleanup());
+
+  it("names the built-in type for a non-member category with no assignment", () => {
+    expect(formatTypeTierLabel(null, "ADULT", "NON_MEMBER")).toBe(
+      "Non-Member – Adult",
+    );
+    expect(formatTypeTierLabel(null, "CHILD", "NON_MEMBER")).toBe(
+      "Non-Member – Child",
+    );
+    // The sibling category, fixed with it: leaving one of the pair reading
+    // "Unassigned" would be arbitrary.
+    expect(formatTypeTierLabel(null, "ADULT", "SCHOOL")).toBe("School – Adult");
+  });
+
+  it("still reads Unassigned for a MEMBER-level role, where that is the truth", () => {
+    // An ordinary member with no type assigned really is an administrative
+    // to-do, so the old label is right for them and must not change.
+    expect(formatTypeTierLabel(null, "ADULT", "USER")).toBe("Unassigned – Adult");
+    expect(formatTypeTierLabel(null, "ADULT", "ADMIN")).toBe("Unassigned – Adult");
+    expect(formatTypeTierLabel(null, "ADULT", null)).toBe("Unassigned – Adult");
+  });
+
+  it("never overrides a real assignment, whatever the role", () => {
+    // The fallback is a FALLBACK. A non-member category that has somehow been
+    // given a season type shows the type they were actually given.
+    expect(formatTypeTierLabel("Full", "ADULT", "NON_MEMBER")).toBe("Full – Adult");
+  });
+
+  it("renders it in the members table for a non-member booking contact", () => {
+    renderMemberTable([
+      {
+        ...baseMember,
+        id: "contact-1",
+        firstName: "Vic",
+        lastName: "Visitor",
+        role: "NON_MEMBER",
+        accessRoles: [],
+        canLogin: false,
+        ageTier: "ADULT",
+        currentMembershipType: null,
+      },
+    ]);
+
+    expect(screen.getByText("Non-Member – Adult")).toBeInTheDocument();
+    expect(screen.queryByText("Unassigned – Adult")).not.toBeInTheDocument();
+  });
+});

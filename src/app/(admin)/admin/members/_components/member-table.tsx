@@ -268,6 +268,10 @@ export function MemberTable({
                   {formatTypeTierLabel(
                     member.currentMembershipType?.name,
                     member.ageTier,
+                    // #2978: the role decides the fallback when there is no
+                    // season assignment, so a non-member booking contact reads
+                    // "Non-Member" rather than "Unassigned".
+                    member.role,
                   )}
                 </span>
               </TableCell>
