@@ -28,7 +28,10 @@ import {
 import path from "path";
 import { gzipSync } from "zlib";
 import logger from "@/lib/logger";
-import { resolveBackupConfig } from "@/lib/backup-config";
+import {
+  isAnyBackupDestinationEnabled,
+  resolveBackupConfig,
+} from "@/lib/backup-config";
 import { pruneLocalBackups, storeLocalBackup } from "@/lib/backup-local";
 
 const BACKUP_DIR = "/tmp/tacbookings-backups";
@@ -101,7 +104,7 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
   // a local directory never enabled the S3 switch, and refusing to run for them
   // would make the local feature inert (owner instruction: the existing cron
   // performs the backup when the local option is ticked).
-  if (!config.enabled && !config.localEnabled) {
+  if (!isAnyBackupDestinationEnabled(config)) {
     return {
       success: false,
       skipped: true,

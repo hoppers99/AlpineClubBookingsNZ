@@ -4,7 +4,10 @@ import { NextResponse } from "next/server";
 
 import { createAuditLog, getAuditRequestContext } from "@/lib/audit";
 import { requireAdmin } from "@/lib/session-guards";
-import { resolveBackupConfig } from "@/lib/backup-config";
+import {
+  isAnyBackupDestinationEnabled,
+  resolveBackupConfig,
+} from "@/lib/backup-config";
 import {
   getActiveBackupRun,
   runManagedBackup,
@@ -65,7 +68,10 @@ export async function POST(request: Request) {
       { status: 409 },
     );
   }
-  if (!config.enabled) {
+  // EITHER destination, not just the S3 switch: a club backing up only to a
+  // local directory never turns `enabled` on, and refusing here told them
+  // "Backups are disabled" from the button that would have worked.
+  if (!isAnyBackupDestinationEnabled(config)) {
     return NextResponse.json(
       { error: "Backups are disabled. Enable them before running a backup." },
       { status: 409 },

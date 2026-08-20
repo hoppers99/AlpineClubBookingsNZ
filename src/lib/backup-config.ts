@@ -229,6 +229,24 @@ export async function resolveBackupConfig(): Promise<ResolvedBackupConfig> {
   };
 }
 
+/**
+ * Whether ANY destination is switched on — the one predicate that decides
+ * whether a backup runs at all.
+ *
+ * It exists as a shared function rather than an inline `a || b` because the
+ * question is asked in four places that must agree: the engine, the run-now
+ * route's up-front refusal, the run button's disabled state, and the status
+ * pill. Local backups shipped with the engine updated and the other three still
+ * reading `enabled` alone, so a club with local backups on was told "Backups are
+ * disabled" by the very button that would have worked.
+ */
+export function isAnyBackupDestinationEnabled(config: {
+  enabled: boolean;
+  localEnabled: boolean;
+}): boolean {
+  return config.enabled || config.localEnabled;
+}
+
 // ---------------------------------------------------------------------------
 // Metadata-only setup state (status surfaces + readiness) — NO secret values
 // ---------------------------------------------------------------------------
@@ -246,6 +264,8 @@ export interface BackupSetupState {
   /** Local destination: the switch and the configured directory (not secret). */
   localEnabled: boolean;
   localPath: string | null;
+  /** True when EITHER destination is switched on — see isAnyBackupDestinationEnabled. */
+  anyDestinationEnabled: boolean;
   /**
    * True when backups reach a destination that survives a container restart —
    * a configured S3 bucket with both secrets, OR an enabled local directory.
@@ -285,6 +305,7 @@ export async function getBackupSetupState(): Promise<BackupSetupState> {
     ),
     localEnabled: config.localEnabled,
     localPath: config.localPath,
+    anyDestinationEnabled: isAnyBackupDestinationEnabled(config),
     durable:
       (Boolean(config.bucket) && accessKeyIdSet && secretAccessKeySet) ||
       (config.localEnabled && Boolean(config.localPath)),

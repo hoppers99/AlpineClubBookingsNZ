@@ -33,7 +33,7 @@
 # Format: one record per line, sorted by path.
 #   <path> <loc> <budget-category>
 src/app/(admin)/admin/audit-log/page.tsx 1083 route-page-shell
-src/app/(admin)/admin/backups/backups-client.tsx 832 domain-module
+src/app/(admin)/admin/backups/backups-client.tsx 839 domain-module
 src/app/(admin)/admin/bed-allocation/page.tsx 1954 route-page-shell
 src/app/(admin)/admin/book/page.tsx 1461 route-page-shell
 src/app/(admin)/admin/bookings/page.tsx 706 route-page-shell

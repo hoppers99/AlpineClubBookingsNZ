@@ -35,9 +35,14 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 // Backup config is DB-only (#2095): mock the resolver rather than setting env.
-vi.mock("@/lib/backup-config", () => ({
-  resolveBackupConfig: vi.fn(),
-}));
+// PARTIAL, not wholesale: the module also exports the pure
+// `isAnyBackupDestinationEnabled` predicate the engine now gates on, and
+// replacing the whole module left it undefined — killing every case in this
+// file with "No isAnyBackupDestinationEnabled export is defined on the mock".
+vi.mock("@/lib/backup-config", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/backup-config")>();
+  return { ...actual, resolveBackupConfig: vi.fn() };
+});
 
 import {
   applyLegacyBackupEnvGate,

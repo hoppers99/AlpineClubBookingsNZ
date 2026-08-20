@@ -341,10 +341,24 @@ export function LocalBackupCard({
             canEdit={canEdit}
             describeReason={false}
             onClick={onRunNow}
-            disabled={running || status.running}
+            // The same conditions the Status card's run button uses — the two
+            // press the same endpoint, so a button that looks available here and
+            // 409s there would be worse than a disabled one.
+            disabled={
+              running ||
+              status.running ||
+              !status.anyDestinationEnabled ||
+              status.needsReentry
+            }
           >
             {running || status.running ? "Backup running…" : "Manual Backup"}
           </ViewOnlyActionButton>
+          {!status.anyDestinationEnabled && !status.running ? (
+            <p className="text-sm text-warning">
+              Enable a backup destination first — tick <strong>Enable local
+              backups</strong> above and save, or enable the nightly S3 backup.
+            </p>
+          ) : null}
           {runError ? (
             <p role="alert" className="text-sm text-danger">
               {runError}

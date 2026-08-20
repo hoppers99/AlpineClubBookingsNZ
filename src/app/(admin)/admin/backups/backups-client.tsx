@@ -61,6 +61,8 @@ export interface BackupStatus {
   restoreValidationUrlSet: boolean;
   localEnabled: boolean;
   localPath: string | null;
+  /** Either destination switched on — what actually decides whether a run happens. */
+  anyDestinationEnabled: boolean;
   localBackups: LocalBackupFileSummary[];
   /** Null when the directory could not be measured — shown as unknown, never as fine. */
   localDiskSpace: LocalBackupDiskSpaceSummary | null;
@@ -276,8 +278,13 @@ function StatusCard({
 
   // canEdit gating is handled by ViewOnlyActionButton; these are the additional
   // run-specific reasons the button stays disabled.
+  // `anyDestinationEnabled`, not `enabled`: the S3 switch alone is not what
+  // decides whether a backup can run once a local destination exists.
   const disableRun =
-    running || status.running || !status.enabled || status.needsReentry;
+    running ||
+    status.running ||
+    !status.anyDestinationEnabled ||
+    status.needsReentry;
 
   return (
     <Card>
@@ -285,7 +292,7 @@ function StatusCard({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle>Status</CardTitle>
           <div className="flex items-center gap-2">
-            {status.enabled ? (
+            {status.anyDestinationEnabled ? (
               <StatusPill tone="success">Enabled</StatusPill>
             ) : (
               <StatusPill tone="muted">Disabled</StatusPill>
@@ -412,7 +419,7 @@ function StatusCard({
         {/* Disabled-reason hint (#2227): the run button greys out for several
             reasons. needsReentry and running already have their own alert/pill
             above, so the one otherwise-silent case is "backups disabled". */}
-        {!status.enabled && !status.needsReentry && !status.running ? (
+        {!status.anyDestinationEnabled && !status.needsReentry && !status.running ? (
           <p className="text-sm text-warning">
             Enable backups below first.
           </p>
