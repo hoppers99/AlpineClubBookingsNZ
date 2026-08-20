@@ -79,7 +79,7 @@ src/app/(admin)/admin/work-parties/page.tsx 593 route-page-shell
 src/app/(admin)/admin/xero/_components/health-diagnostics-panel.tsx 711 domain-module
 src/app/(admin)/admin/xero/member-grouping/page.tsx 695 route-page-shell
 src/app/(authenticated)/book/_components/review-step.tsx 969 domain-module
-src/app/(authenticated)/book/_hooks/use-booking-wizard.ts 1922 domain-module
+src/app/(authenticated)/book/_hooks/use-booking-wizard.ts 1951 domain-module
 src/app/(authenticated)/book/page.tsx 680 route-page-shell
 src/app/(authenticated)/bookings/[id]/page.tsx 2495 route-page-shell
 src/app/(authenticated)/dashboard/page.tsx 887 route-page-shell
@@ -176,7 +176,7 @@ src/components/admin/booking-requests/public-booking-requests-panel.tsx 2217 dom
 src/components/admin/email-settings/email-message-settings-panel.tsx 979 domain-module
 src/components/admin/finance-report-mappings-panel.tsx 792 domain-module
 src/components/admin/induction-template-manager.tsx 733 domain-module
-src/components/admin/manual-refund-task-queue.tsx 704 domain-module
+src/components/admin/manual-refund-task-queue.tsx 716 domain-module
 src/components/admin/page-content-panel.tsx 2577 domain-module
 src/components/admin/rooms-beds-manager.tsx 1502 domain-module
 src/components/admin/subscription-lockout-settings-panel.tsx 788 domain-module
@@ -204,7 +204,7 @@ src/lib/bed-allocation-move.ts 1439 domain-module
 src/lib/bed-allocation-removal.ts 789 domain-module
 src/lib/bed-allocation.ts 3678 domain-module
 src/lib/booking-batch-modification-service.ts 1414 domain-module
-src/lib/booking-cancel.ts 2368 domain-module
+src/lib/booking-cancel.ts 2379 domain-module
 src/lib/booking-create.ts 1874 domain-module
 src/lib/booking-date-modification-service.ts 1774 domain-module
 src/lib/booking-delete.ts 733 domain-module
@@ -228,7 +228,7 @@ src/lib/config-transfer/categories/site-content.ts 953 domain-module
 src/lib/config-transfer/categories/xero-config.ts 808 domain-module
 src/lib/cron-confirm-pending.ts 1687 domain-module
 src/lib/cron-group-settlement-reaper.ts 740 domain-module
-src/lib/deleted-booking-modification-payment.ts 838 domain-module
+src/lib/deleted-booking-modification-payment.ts 861 domain-module
 src/lib/deploy/warmup-run.ts 885 domain-module
 src/lib/diagnostics/tools/database.ts 1200 domain-module
 src/lib/diagnostics/tools/define.ts 981 domain-module
@@ -236,7 +236,7 @@ src/lib/diagnostics/tools/invoke.ts 1122 domain-module
 src/lib/diagnostics/tools/packs/booking-evidence.ts 2052 domain-module
 src/lib/diagnostics/tools/packs/booking-records.ts 1429 domain-module
 src/lib/diagnostics/tools/packs/booking-search.ts 878 domain-module
-src/lib/diagnostics/tools/packs/finance-evidence.ts 849 domain-module
+src/lib/diagnostics/tools/packs/finance-evidence.ts 854 domain-module
 src/lib/diagnostics/tools/packs/finance-records.ts 1196 domain-module
 src/lib/diagnostics/tools/packs/membership-records.ts 1157 domain-module
 src/lib/diagnostics/tools/provision-role.ts 1132 domain-module
@@ -246,9 +246,9 @@ src/lib/email-message-renderer.ts 848 domain-module
 src/lib/email-message-token-contract.ts 715 domain-module
 src/lib/email/booking.ts 1427 domain-module
 src/lib/finance-booking-metrics.ts 1281 domain-module
-src/lib/finance-dashboard-page.ts 1653 domain-module
+src/lib/finance-dashboard-page.ts 1707 domain-module
 src/lib/finance-report-mappings.ts 1022 domain-module
-src/lib/group-booking.ts 1722 domain-module
+src/lib/group-booking.ts 1763 domain-module
 src/lib/group-cancel.ts 872 domain-module
 src/lib/group-settlement.ts 1235 domain-module
 src/lib/ib-hold-clearing-audit.ts 799 domain-module
@@ -273,7 +273,7 @@ src/lib/membership-subscription-billing.ts 1402 domain-module
 src/lib/membership-type-policy.ts 1106 domain-module
 src/lib/nomination.ts 2448 domain-module
 src/lib/notices.ts 708 domain-module
-src/lib/payment-link.ts 1168 domain-module
+src/lib/payment-link.ts 1180 domain-module
 src/lib/payment-reconciliation.ts 2896 domain-module
 src/lib/payment-recovery.ts 1881 domain-module
 src/lib/payment-transactions.ts 1101 domain-module
@@ -299,8 +299,8 @@ src/lib/xero-contact-create-recovery.ts 830 domain-module
 src/lib/xero-contact-groups.ts 853 domain-module
 src/lib/xero-contacts.ts 1700 domain-module
 src/lib/xero-credit-notes.ts 932 domain-module
-src/lib/xero-hardening-report.ts 959 domain-module
-src/lib/xero-inbound/credit-note-repairs.ts 979 domain-module
+src/lib/xero-hardening-report.ts 1080 domain-module
+src/lib/xero-inbound/credit-note-repairs.ts 980 domain-module
 src/lib/xero-inbound/invoice-paid-effects.ts 1525 domain-module
 src/lib/xero-invoice-rounding-audit.ts 743 domain-module
 src/lib/xero-member-grouping-resync.ts 794 domain-module

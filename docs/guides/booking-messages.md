@@ -75,6 +75,19 @@ Available merge fields include `{{bookerFirstName}}`, `{{bookerFullName}}`,
 `{{holdDays}}`, `{{bookingStatus}}`, `{{CLUB_NAME}}`, `{{CLUB_LODGE_NAME}}`,
 `{{BASE_URL}}`, and `{{SUPPORT_EMAIL}}`.
 
+Every merge field you can insert is filled in on every screen these messages
+appear on: the member's booking page, the payment page a payment link leads to,
+the payment choices in the booking flow, and the group join and settlement
+screens. If a field has no value for that particular booking it comes out blank —
+you will never see `{{braces}}` in front of a member.
+
+`{{CLUB_LODGE_NAME}}` fills in from the lodge the booking is actually at, so a
+club with more than one lodge sees the right property named in each member's
+message. On the booking-flow payment choices, where there is no booking yet, it
+is the lodge the member has selected. The preview beside the editor has no real
+booking to read, so it shows your default lodge's name — that is the sample
+standing in, not what the member will be sent.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
