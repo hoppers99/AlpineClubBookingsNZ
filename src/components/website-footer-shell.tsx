@@ -102,6 +102,12 @@ import { PER_REQUEST_WEBSITE_ROUTES } from "@/lib/public-website-paths";
 export const PUBLIC_GROUP_DYNAMIC_ROUTES = [
   "/chores/[token]",
   "/family-invite/[token]",
+  // #2780: the unauthenticated QR maintenance form. Added because #2827's guard
+  // caught it -- this route was introduced in the same wave and stamped its raw
+  // token into `data-page-slug`, which is precisely the class that guard exists
+  // to stop coming back. It is the `(public)` group, so this is defence in depth
+  // rather than a live oracle, for the reason set out above.
+  "/lodge-maintenance/[token]",
   "/membership-cancellation/[token]",
   "/pay/[token]",
 ] as const;
