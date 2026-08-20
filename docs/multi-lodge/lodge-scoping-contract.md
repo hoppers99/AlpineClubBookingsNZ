@@ -509,7 +509,27 @@ operational documents (which may carry door/emergency access details).
   rows when present, falling back to the legacy contiguous envelope only when
   none exist; a sparse stay on the 10th and 12th neither occupies nor suggests
   the 11th. Club-wide uncovered-night aggregation retains lodge identity, so an
-  assignment at Lodge A does not suppress the same date at Lodge B. Assignment
+  assignment at Lodge A does not suppress the same date at Lodge B.
+  **An uncovered night is one row PER LODGE** (#2917): `getUnassignedHutLeaderDates`
+  returns `{ date, lodgeId, lodgeName, lodgeActive, bookingCount, guestCount }`
+  ordered by
+  date then lodge name then id, so a night on which two lodges both lack a
+  leader is two rows with each lodge's own counts, and every club-wide consumer
+  — the dashboard attention card, the officer card, the sidebar badge and the
+  stuck-state tile — counts lodge-nights and can name the lodge. The per-lodge
+  trigger is a guest **active on that night** (`isGuestActiveOnNight`), which is
+  deliberately not the auto-assign cron's operational-day, consent-filtered
+  predicate: a departure-morning guest is not a night here, and a consent-pending
+  member guest raises a row here that the cron will not auto-assign for. A
+  `{ kind: "all" }` read is **not** filtered to active lodges: deactivating a
+  lodge that still has future bookings is permitted with `force` and does not
+  cancel them, so those guest nights stay visible with `lodgeActive: false` and
+  are labelled as archived rather than disappearing from every surface at once.
+  A single-lodge club's dates, counts and wording are unchanged; the lodge name
+  and the lodge-night noun appear once the club has **more than one active
+  lodge** — `countActiveLodges`, per the Presentation Rule below, never inferred
+  from how many lodges a result happens to span — or once a row belongs to an
+  archived lodge. Assignment
   creation serializes on the lodge key and repeats member, overlap and optional
   bed checks after acquiring it; overlapping same-lodge role-only/different-bed
   requests cannot both commit, while different lodges remain independent.

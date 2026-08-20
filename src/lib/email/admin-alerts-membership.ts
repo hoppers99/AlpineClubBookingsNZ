@@ -16,6 +16,7 @@ import {
   sendToAdmins,
   shouldSendDirectAdminSystemEmail,
 } from "./admin-alerts-shared";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 export async function sendAdminMembershipApplicationPendingEmail(data: {
   applicationId: string;
@@ -28,12 +29,12 @@ export async function sendAdminMembershipApplicationPendingEmail(data: {
 
   await sendToAdmins({
     subject: `Membership application ready: ${data.applicantName}`,
-    html: adminMembershipApplicationPendingTemplate({
+    html: await renderEmailHtml(() => adminMembershipApplicationPendingTemplate({
       applicantName: data.applicantName,
       applicantEmail: data.applicantEmail,
       familyMemberCount: data.familyMemberCount,
       reviewUrl,
-    }),
+    })),
     templateName: "admin-membership-application-pending",
     templateData: {
       applicantName: data.applicantName,
@@ -55,7 +56,7 @@ export async function sendAdminFamilyGroupRequestAlert(data: {
 }) {
   await sendToAdmins({
     subject: `Family Group Request: ${data.requesterName} (${data.requestType})`,
-    html: adminFamilyGroupRequestTemplate(data),
+    html: await renderEmailHtml(() => adminFamilyGroupRequestTemplate(data)),
     templateName: "admin-family-group-request",
     templateData: data,
     preferenceKey: "adminFamilyGroupRequest",
@@ -72,12 +73,12 @@ export async function sendAdminMembershipCancellationRequestAlert(params: {
 
   await sendToAdmins({
     subject: `Membership cancellation ready: ${params.requesterName}`,
-    html: adminMembershipCancellationRequestTemplate({
+    html: await renderEmailHtml(() => adminMembershipCancellationRequestTemplate({
       requesterName: params.requesterName,
       participantSummary: params.participantSummary,
       reason: params.reason,
       reviewUrl,
-    }),
+    })),
     templateName: "admin-membership-cancellation-request",
     templateData: {
       requesterName: params.requesterName,
@@ -102,12 +103,12 @@ export async function sendAdminAccountDeletionRequestedAlert(params: {
 
   await sendToAdmins({
     subject: `Account deletion requested: ${params.memberName}`,
-    html: adminAccountDeletionRequestedTemplate({
+    html: await renderEmailHtml(() => adminAccountDeletionRequestedTemplate({
       memberName: params.memberName,
       memberEmail: params.memberEmail,
       reason: params.reason,
       reviewUrl,
-    }),
+    })),
     templateName: "admin-account-deletion-requested",
     templateData: {
       requestId: params.requestId,
@@ -134,12 +135,12 @@ export async function sendAdminMemberArchiveRequestedAlert(params: {
 
   await sendToAdmins({
     subject: `Member archive requested: ${params.memberName}`,
-    html: adminMemberArchiveRequestedTemplate({
+    html: await renderEmailHtml(() => adminMemberArchiveRequestedTemplate({
       requesterName: params.requesterName,
       memberName: params.memberName,
       reason: params.reason,
       reviewUrl,
-    }),
+    })),
     templateName: "admin-member-archive-requested",
     templateData: {
       requesterName: params.requesterName,
@@ -166,12 +167,12 @@ export async function sendAdminMemberDeleteRequestedAlert(params: {
 
   await sendToAdmins({
     subject: `Member delete requested: ${params.memberName}`,
-    html: adminMemberDeleteRequestedTemplate({
+    html: await renderEmailHtml(() => adminMemberDeleteRequestedTemplate({
       requesterName: params.requesterName,
       memberName: params.memberName,
       reason: params.reason,
       reviewUrl,
-    }),
+    })),
     templateName: "admin-member-delete-requested",
     templateData: {
       requesterName: params.requesterName,
@@ -202,7 +203,7 @@ export async function sendAdminMemberDeleteApprovedEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Member delete approved: ${params.memberName}`,
-    html: adminMemberDeleteApprovedTemplate(params),
+    html: await renderEmailHtml(() => adminMemberDeleteApprovedTemplate(params)),
     // Admin-audience alert: never booking-scoped and never withheld (#2258).
     bookingContext: "none",
     templateName: "admin-member-delete-approved",
@@ -240,13 +241,13 @@ export async function sendAdminMemberDeleteRejectedEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Member delete rejected: ${params.memberName}`,
-    html: adminMemberDeleteRejectedTemplate({
+    html: await renderEmailHtml(() => adminMemberDeleteRejectedTemplate({
       requesterName: params.requesterName,
       memberName: params.memberName,
       reason: params.reason,
       reviewNote: params.reviewNote,
       reviewUrl,
-    }),
+    })),
     // Admin-audience alert: never booking-scoped and never withheld (#2258).
     bookingContext: "none",
     templateName: "admin-member-delete-rejected",

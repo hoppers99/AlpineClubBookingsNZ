@@ -19,6 +19,7 @@ import {
   classifyBookingOwnerContext,
   type BookingEmailSourceContext,
 } from "@/lib/booking-email-contract";
+import { renderEmailHtml } from "@/lib/email-theme";
 
 /**
  * Verification email for a non-member joining a group booking. Reuses the
@@ -44,14 +45,14 @@ export async function sendGroupBookingJoinVerificationEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Confirm your group booking spot — ${CLUB_NAME}`,
-    html: bookingRequestVerificationTemplate({
+    html: await renderEmailHtml(() => bookingRequestVerificationTemplate({
       firstName: params.firstName,
       verifyUrl,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
       guestCount: params.guestCount,
       expiresAt: params.expiresAt,
-    }),
+    })),
     bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "group-booking-join-verification",
     templateData: {
@@ -82,13 +83,13 @@ export async function sendGroupSettlementReceiptEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Your group booking is settled — ${CLUB_NAME}`,
-    html: groupSettlementReceiptTemplate({
+    html: await renderEmailHtml(() => groupSettlementReceiptTemplate({
       firstName: params.firstName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
       joinerCount: params.joinerCount,
       totalCents: params.totalCents,
-    }),
+    })),
     bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "group-settlement-receipt",
     templateData: {
@@ -117,13 +118,13 @@ export async function sendGroupJoinSettledEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Your spot is confirmed — ${CLUB_NAME}`,
-    html: groupJoinSettledTemplate({
+    html: await renderEmailHtml(() => groupJoinSettledTemplate({
       firstName: params.firstName,
       organiserName: params.organiserName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
       guestCount: params.guestCount,
-    }),
+    })),
     bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "group-join-settled",
     templateData: {
@@ -152,13 +153,13 @@ export async function sendGroupSettlementExpiredEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Your group payment expired — ${CLUB_NAME}`,
-    html: groupSettlementExpiredTemplate({
+    html: await renderEmailHtml(() => groupSettlementExpiredTemplate({
       firstName: params.firstName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
       joinerCount: params.joinerCount,
       totalCents: params.totalCents,
-    }),
+    })),
     bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "group-settlement-expired",
     templateData: {
@@ -186,12 +187,12 @@ export async function sendGroupJoinReleasedEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Your held spot has been released — ${CLUB_NAME}`,
-    html: groupJoinReleasedTemplate({
+    html: await renderEmailHtml(() => groupJoinReleasedTemplate({
       firstName: params.firstName,
       organiserName: params.organiserName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
-    }),
+    })),
     bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "group-join-released",
     templateData: {
@@ -222,12 +223,12 @@ export async function sendGroupJoinCancelledEmail(params: {
   await sendEmail({
     to: params.email,
     subject: `Your group booking has been cancelled — ${CLUB_NAME}`,
-    html: groupJoinCancelledTemplate({
+    html: await renderEmailHtml(() => groupJoinCancelledTemplate({
       firstName: params.firstName,
       organiserName: params.organiserName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
-    }),
+    })),
     bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "group-join-cancelled",
     templateData: {
