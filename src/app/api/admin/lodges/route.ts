@@ -4,13 +4,16 @@ import {
   buildStructuredAuditLogCreateArgs,
   getAuditRequestContext,
 } from "@/lib/audit";
+import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import {
   buildUniqueLodgeSlug,
+  lodgeIdentitySelect,
   lodgeOrderBy,
   lodgeSelect,
   normalizeLodgeText,
   redactLodgeForAudit,
   serializeLodge,
+  serializeLodgeIdentity,
 } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
@@ -30,28 +33,82 @@ const createSchema = z
   .strict();
 
 /*
-  `lodge:view`, inferred from the request path (#2925).
+  ADMISSION: any admitted administrator (#2925, owner decision 17 Aug 2026).
+  PAYLOAD: narrowed to the lodge vocabulary unless the caller holds `lodge:view`.
 
-  `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold no `lodge` entry, so this 403s for
-  them permanently, and the admin surfaces that need only the lodge NAMES lose
-  their content as a result. That is a real defect and it is tracked in #2925,
-  not fixed here.
+  The lodge list is the vocabulary every admin screen needs to say WHICH lodge
+  it means. `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold no `lodge` entry at all
+  (`admin-permissions.ts`), so a `lodge:view` gate here was a permanent 403 for
+  them, and pages they legitimately hold — Promo Codes, Seasons, Hut Fees,
+  Lockers — lost their content to it. The owner's decision was to relax THIS
+  route alone, not to add `lodge:view` to those presets, which would widen
+  eighteen other read endpoints on upgrade.
 
-  It was attempted in this PR and reverted, because the attempt was INERT and
-  the revert is the honest state. `requireAdmin()` with no options does not mean
-  "any admin": `inferAdminAccessRequirement` reads the `x-pathname` and
-  `x-request-method` headers that `proxy.ts` sets for this route and resolves
-  them through `getAdminRouteRequirement`, which maps `/api/admin/lodges` to
-  `area: "lodge"`. Dropping the explicit `permission` therefore changed nothing
-  at all — the same requirement came back by inference — while the tests written
-  for it passed against a mock whose absent-options fallback used
-  `hasAdminPortalAccess`, which the real guard has never had.
+  `permission: "any-admin"` is what expresses this, and it is what the issue
+  asked for in so many words. An earlier cut of this change used
+  `permission: { area: "overview", level: "view" }` on the stated grounds that
+  "every admin access-role grid carries `overview`". THAT IS FALSE, and review
+  measured it against the shipped presets: `FINANCE_USER` ("Finance Viewer",
+  `access-role-definitions.ts`) ships `overviewLevel: "NONE"` and
+  `lodgeLevel: "NONE"`, so it was 403 under the old gate AND under the new one -
+  while still being admitted to the finance area. The issue exists to stop
+  shipped presets losing whole pages, so leaving one of them refused would have
+  missed the point of it.
+
+  It was also a REGRESSION for a second class, reachable through a custom grid
+  rather than a preset: a role holding `lodge:view` without `overview:view`
+  previously got the full list and would have started getting a 403.
+
+  `"any-admin"` resolves to `hasAdminPortalAccess`, i.e. admitted to the admin
+  portal at all - which is the honest statement of "any admin may read the lodge
+  names". It is safe HERE because of the payload split below and only because of
+  it: a caller without `lodge:view` receives id, name, slug and active, and
+  nothing else.
+
+  IT MUST BE EXPLICIT. The first attempt (PR #2885) wrote a bare
+  `requireAdmin()` and was INERT: with no `permission`,
+  `inferAdminAccessRequirement` reads the `x-pathname` / `x-request-method`
+  headers `proxy.ts` stamps on this route and resolves them through
+  `getAdminRouteRequirement`, which maps `/api/admin/lodges` to `area: "lodge"`
+  — so the exact 403 the change existed to remove came straight back by
+  inference. And if the header were ever missing, inference returns null and the
+  guard falls back to the literal `ADMIN` role, which is NARROWER than before.
+  There is no input under which the bare call means "any admitted admin".
+  `admin-lodges-access-gate.test.ts` drives the real guard through the real
+  inference path so that cannot silently return.
+
+  The relaxation is only safe because the payload narrows with it. `lodgeSelect`
+  carries `doorCode` — a physical-access secret this codebase already refuses to
+  put in audit metadata — plus the street address and travel notes. Serving that
+  to every admitted admin would hand two roles a door code they cannot read
+  today, so a caller without `lodge:view` gets `lodgeIdentitySelect` instead.
+
+  `POST` below keeps `lodge:edit`, and `PATCH` in `[id]/route.ts` is untouched:
+  this changes who may READ the lodge names, and nothing about who may write.
 */
 export async function GET() {
-  const guard = await requireAdmin({
-    permission: { area: "lodge", level: "view" },
-  });
+  const guard = await requireAdmin({ permission: "any-admin" });
   if (!guard.ok) return guard.response;
+
+  /*
+    Decided from the matrix `requireAdmin` just computed off the DB-joined
+    member (definitions included) and returned on the session — the same source,
+    at the same strength, that admitted this caller a line above. Re-deriving it
+    from the raw JWT claim would be weaker; a second database read would be the
+    same answer for another round trip.
+  */
+  const canReadLodgeDetail = hasAdminAreaAccess(guard.session.user, {
+    area: "lodge",
+    level: "view",
+  });
+
+  if (!canReadLodgeDetail) {
+    const lodges = await prisma.lodge.findMany({
+      orderBy: lodgeOrderBy(),
+      select: lodgeIdentitySelect,
+    });
+    return NextResponse.json({ lodges: lodges.map(serializeLodgeIdentity) });
+  }
 
   const lodges = await prisma.lodge.findMany({
     orderBy: lodgeOrderBy(),

@@ -170,8 +170,30 @@ under it. The guarantee that buys is narrower than "one lodge cannot end up
 with two overlapping hut leaders", and the narrower statement is the true one:
 
 > No two hut-leader assignments overlap by more than one day at one lodge,
-> **except assignments created by the school-approval path**, which does not
-> decide the predicate at all.
+> **except assignments created by the school-approval path**, which neither
+> decide the predicate nor are counted by it.
+
+The second half of that exemption is #2926. Until then the school path did not
+decide the predicate but its rows still *blocked*, so a school group silently
+refused every later manual or cron assignment for those nights while never being
+refused itself. Nothing had decided that asymmetry. The owner decided it on 17
+Aug 2026: teacher records do not block independent assignments. Only that one
+direction changed — whether an existing assignment blocks a TEACHER is
+unchanged, because the school path still runs no overlap read.
+
+**The exemption is keyed on `HutLeaderAssignment.source`, the provenance the
+CREATING writer stamps, and that is load-bearing rather than an implementation
+detail.** The first attempt keyed it on `Member.role != "SCHOOL"`, which reads
+correctly and is wrong: `Member.role` is DERIVED and admin-writable
+(`legacyRoleFromAccessRoles` maps the `ORG` access role to `SCHOOL`, and the
+member editor's User Type control grants `ORG`), so reclassifying an ordinary
+member as an organisation removed their LIVE assignment from the predicate and
+let an admin or the cron create a second overlapping leader for those nights.
+Reading the access role instead fails the same way one step earlier —
+`accessRoleTokensForUserType("organisation")` returns `["ORG"]`, dropping
+`USER`. `Member.role = "SCHOOL"` is also the school CONTACT member, not only a
+teacher. `source` is written once by the insert and by nothing afterwards, so no
+membership edit can move it.
 
 There is no unique constraint on the range behind the application check, so
 that holds only for as long as all three keep deciding under the key:
@@ -201,7 +223,9 @@ The other three writers, and why the guarantee is worded the way it is:
   school request is approved — same dates, same lodge, deliberately overlapping
   each other, because several teachers do supervise one group together. It holds
   the lodge key (it is inside the approval transaction) but runs no overlap read,
-  and must not: adding one would refuse the club's own school bookings.
+  and must not: adding one would refuse the club's own school bookings. It is
+  also the only writer that stamps `source = SCHOOL_BOOKING`, which is what takes
+  those rows out of the other three writers' predicate (#2926).
 
   This is the exemption in the rule above, and it covers TWO cases, which is why
   the wording names the PATH rather than the relationship between the rows. The
@@ -217,14 +241,47 @@ The other three writers, and why the guarantee is worded the way it is:
   — one changes no dates and no lodge, the other only ever removes a row — so
   neither needs the key.
 
-One asymmetry is recorded here rather than resolved, because it is a product
-question and not a concurrency one. The overlap predicate matches on dates and
-lodge with no role or source filter, so teacher rows **block** a later manual or
-cron assignment for those nights while never being blocked themselves. Excluding
-them was attempted in this PR and reverted; it is tracked as **#2926**, together
-with the fact that `Member.role = "SCHOOL"` is set for the school CONTACT
-member as well as for teachers, so any exclusion has to establish which rows it
-actually covers rather than assuming the role means "teacher".
+**The cron's coverage probes are a fifth decision point, and they are
+deliberately NOT the same rule** (#2926). `cron-hut-leader-auto-assign` asks two
+questions per (lodge, night): *is this night already covered?* — a `findFirst`
+over any assignment spanning the night, once cheaply and once again under the key
+— and *would this assignment overlap?*, which is the shared predicate. The
+coverage probes stay **source-blind**: a school-teacher row counts as coverage,
+so the job does not auto-assign a leader for a night a school group already has
+teachers on site. The overlap predicate excludes those same rows **only for a
+deliberate caller**: the carve-out is opt-in via `allowOverlappingSchoolRows`,
+the two admin routes pass it, and the cron does not. That is not an
+inconsistency, it is the two questions being different ones: coverage is
+automatic and should stay out of the way when somebody responsible is already
+there, while overlap is a REFUSAL and must not refuse an officer who has
+deliberately decided to add a leader.
+
+**Why the carve-out is opt-in rather than unconditional.** Applying it to the
+cron as well was a reachable defect, not a theoretical one. The coverage probes
+ask about ONE night, while the row the job creates spans the guest's whole stay.
+Teachers 10-14 Aug; a sole adult's stay 12-20 Aug; the loop reaches 15 Aug, whose
+coverage probe finds nothing; with the carve-out applied the span read over
+12-20 Aug skipped the teacher rows and the job planted a CRON row across
+12-20 Aug, including the school nights it is documented never to reach. Being
+MANUAL-equivalent, that row then blocked officers across the whole span. Omitting
+the flag restores exactly the pre-carve-out refusal for the job, so the night
+stays uncovered as it did before — which is the intended behaviour, not a
+regression. Both probes must keep agreeing with each
+other — a locked re-ask that answered a different question from the cheap one
+would make the two skips disagree.
+
+**COVERAGE is a whole class of reader, and every one of them stays
+source-blind.** The cron's two probes are the ones that can refuse an automatic
+write, which is why they are named above, but `hut-leader-coverage.ts`, the
+admin page's uncovered-dates panel and the `eligible-members` suggester all ask
+the same "is somebody on site that night?" question, and all of them should keep
+counting a teacher. The consequence to know about is a conservatism, not a
+defect: on a night a school group occupies, the suggester still reports the
+member as fully covered and offers no range, even though the POST would now
+accept one. An officer who wants a leader beside the teachers adds the
+assignment directly and is no longer refused. Anything NEW that refuses a write
+on the strength of an overlap belongs behind `findHutLeaderOverlapRefusal`
+rather than behind its own read.
 
 ### Composition: roster-date writers (#2586)
 

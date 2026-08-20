@@ -20,6 +20,26 @@ type Lodge = {
   doorCode: string | null;
 };
 
+/**
+ * Whether a row from `GET /api/admin/lodges` carries the lodge DETAIL fields
+ * this card edits (#2925).
+ *
+ * That route now admits any admitted admin and narrows its payload instead of
+ * refusing: a caller without `lodge:view` gets `{ id, name, slug, active }` and
+ * a 200. Keying the refusal on the 403 alone would therefore render a
+ * live-looking form with address, travel note and door code silently blank —
+ * and saving it would post those blanks back. So the card keys on the FIELDS
+ * being absent, which is true of both answers: the narrowed 200 and (should the
+ * route ever tighten again) the 403 handled beside it.
+ *
+ * `in` rather than a null check, deliberately: a real lodge with no door code
+ * set sends `doorCode: null`, which is an editable empty value, not a refusal.
+ */
+function hasLodgeDetailFields(row: unknown): row is Lodge {
+  if (typeof row !== "object" || row === null) return false;
+  return "address" in row && "travelNote" in row && "doorCode" in row;
+}
+
 // Single-lodge editing surface (E3 #1929). Multi-lodge clubs manage lodges under
 // Admin > Setup > Lodges; this card only appears for a single-lodge club.
 export function LodgeDetailsPanel() {
@@ -27,9 +47,11 @@ export function LodgeDetailsPanel() {
   const [multiLodge, setMultiLodge] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
-  // A content-only admin can reach the Club Identity page but has no lodge:view;
-  // GET /api/admin/lodges then 403s. Distinguish that from a transient failure so
-  // we can explain the missing card rather than show a raw error + Retry.
+  // A content-only admin can reach the Club Identity page but has no lodge:view.
+  // Since #2925 that shows up as a 200 carrying only the lodge VOCABULARY rather
+  // than a 403 — see `hasLodgeDetailFields`. Either way it is a permission
+  // answer, not a transient failure, so it earns an explanation instead of a raw
+  // error + Retry that could only produce the same answer again.
   const [accessDenied, setAccessDenied] = useState(false);
   // Gated on the "lodge" area (E1's view-only pattern, area-generic): the save
   // hits the lodge-area /api/admin/lodges/[id] route, so the UI gate must match.
@@ -48,7 +70,16 @@ export function LodgeDetailsPanel() {
           return;
         }
         if (!response.ok) throw new Error();
-        const lodges: Lodge[] = (await response.json()).lodges ?? [];
+        const rows: unknown[] = (await response.json()).lodges ?? [];
+        // A narrowed payload means this admin holds no lodge:view (#2925), so
+        // refuse before the single/multi-lodge split — the explanation is the
+        // same either way, and a narrowed multi-lodge club would otherwise be
+        // told to go and edit lodges it cannot read.
+        if (rows.length > 0 && !rows.every(hasLodgeDetailFields)) {
+          setAccessDenied(true);
+          return;
+        }
+        const lodges = rows.filter(hasLodgeDetailFields);
         if (lodges.length === 1) {
           setLodge(lodges[0]);
           setMultiLodge(false);

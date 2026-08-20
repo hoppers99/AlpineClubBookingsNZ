@@ -80,6 +80,15 @@ import "./roster-checkout-day-races.realdb.test";
 // lodge deactivation, last-two-lodge deactivation, and hut-leader overlap
 // serialization on the production lock helpers.
 import "./lodge-admission-races.realdb.test";
+// #2926 shares the same guarded database to prove that the hut-leader overlap
+// predicate's school-teacher carve-out is a property of the ROW rather than of
+// the member — specifically that reclassifying a member as an organisation
+// leaves their LIVE assignment in the predicate, which is a claim about
+// executing the predicate on either side of a real membership edit and not
+// about the shape of the query. Its describe stays skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1 and its fixtures are namespaced and cleaned
+// independently.
+import "./hut-leader-teacher-exclusion.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

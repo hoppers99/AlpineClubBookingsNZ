@@ -34,6 +34,13 @@ vi.mock("@/lib/auth", () => ({
 
   Found while proving a lodge-list access change that has since been reverted to
   #2925, and kept because the vacuity predates that change.
+
+  The cost of correcting the fallback was MEASURED while this lane was open, and
+  is recorded here so #2975 does not have to re-derive it: 7 test files and 20
+  tests go red on the correction (Xero, health, family groups, reports,
+  dependents), because each was passing against a gate the mock was not
+  applying. That is a route-by-route sweep, not a side effect of a lodge-list
+  change.
 */
 vi.mock("@/lib/session-guards", async () => ({
   requireAdmin: (await import("./helpers/require-admin-mock"))

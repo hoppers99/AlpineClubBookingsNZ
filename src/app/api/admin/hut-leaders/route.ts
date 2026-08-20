@@ -19,6 +19,7 @@ import { validateCustodianBedHold } from "@/lib/custodian-assignment";
 import { custodianBedHoldErrorResponse } from "@/lib/custodian-assignment-routes";
 import { isMinorAgeTier } from "@/lib/custodian-occupancy";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
+import { HutLeaderAssignmentSource } from "@prisma/client";
 
 const createSchema = z.object({
   memberId: z.string().min(1),
@@ -167,6 +168,8 @@ export async function POST(req: NextRequest) {
     lodgeId,
     startDate: newStart,
     endDate: newEnd,
+    // #2926: a DELIBERATE officer action, so the teacher carve-out applies.
+    allowOverlappingSchoolRows: true,
   });
   if (earlyOverlap) {
     return NextResponse.json({ error: earlyOverlap.error }, { status: 409 });
@@ -228,6 +231,8 @@ export async function POST(req: NextRequest) {
         lodgeId: lockedLodgeId,
         startDate: newStart,
         endDate: newEnd,
+        // #2926: a DELIBERATE officer action, so the teacher carve-out applies.
+        allowOverlappingSchoolRows: true,
       });
       if (lockedOverlap) throw new HutLeaderOverlapError(lockedOverlap.error);
 
@@ -248,6 +253,9 @@ export async function POST(req: NextRequest) {
           endDate: newEnd,
           hutLeaderPin,
           lodgeId: lockedLodgeId,
+          // #2926: an officer put this leader here. Stamped rather than left
+          // to the column default so the census reads it off the call site.
+          source: HutLeaderAssignmentSource.MANUAL,
           ...(bedId ? { bedId } : {}),
         },
       });
