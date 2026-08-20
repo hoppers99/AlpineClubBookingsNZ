@@ -260,30 +260,13 @@ operational documents (which may carry door/emergency access details).
     `FINANCE_USER` and `ADMIN_MEMBERSHIP` all get a permanent 403 on the lodge
     list.
 
-  **The root cause is NOT fixed here — it is #2925.** `GET /api/admin/lodges`
-  requires `lodge:view`, and `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` hold no
-  `lodge` entry, so a 403 is their permanent answer and every admin surface that
-  needs only the lodge NAMES loses content it does not need permission for. The
-  right fix is at the route, where one gate serves all twenty-two consumers.
-
-  Relaxing it was attempted in this PR and reverted, and the reason is worth
-  recording because it is a trap for the next attempt: dropping the explicit
-  `permission` from `requireAdmin()` does NOT open the route.
-  `inferAdminAccessRequirement` reads the `x-pathname` and `x-request-method`
-  headers `proxy.ts` sets for it and resolves them through
-  `getAdminRouteRequirement`, which maps `/api/admin/lodges` to `area: "lodge"`
-  — so the same requirement returns by inference and nothing changes. The tests
-  written for the attempt passed anyway, because the shared `requireAdmin` mock
-  fell back to `hasAdminPortalAccess` when given no options, which the real
-  guard has never done. #2925 must change the mapping or the route's stated
-  requirement, not the call site, and must not be believed until a test drives
-  the real inference path.
-
-  Any #2925 fix also has to narrow the PAYLOAD, not just the access:
-  `lodgeSelect` carries `doorCode`, which this codebase already treats as a
-  physical-access secret kept out of audit metadata, plus the street address and
-  travel notes. A finance or membership admin needs id, name and active — and
-  nothing else.
+  **The root cause was NOT fixed there — it is #2925, and it is now delivered.**
+  `GET /api/admin/lodges` required `lodge:view`, and `ADMIN_MEMBERSHIP` and
+  `FINANCE_ADMIN` hold no `lodge` entry, so a 403 was their permanent answer and
+  every admin surface that needs only the lodge NAMES lost content it does not
+  need permission for. The fix is at the route, where one gate serves all
+  twenty-two consumers:
+  [Admin Lodge List Access And Payload](#admin-lodge-list-access-and-payload).
 
   They are also fixed at the surface, and the difference between the two is the
   point.
@@ -387,14 +370,20 @@ operational documents (which may carry door/emergency access details).
     leaves alone. A single-lodge club never reaches it: ADR-002 still normalises
     to the sole lodge, sentinel or not.
   - **A 403 on the lodge list is not an outage.** `/admin/bed-allocation` is
-    gated on `bookings`; `GET /api/admin/lodges` needs `lodge:view`. The shipped
-    `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` presets hold `bookings: "view"` and
-    no `lodge` entry at all, so for them the refusal is the normal answer and
-    club-wide read-only is the only view they can have — the view they had
-    before #2701. `useLodgeOptions` therefore reports `forbidden` separately
-    from `failed`, and this board maps it to `all` / `no-lodge-permission` with
-    its own banner. Collapsing the two handed those roles a permanent error and
-    a retry that could only 403 again.
+    gated on `bookings`, and `GET /api/admin/lodges` then needed `lodge:view`.
+    The shipped `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` presets hold
+    `bookings: "view"` and no `lodge` entry at all, so for them the refusal was
+    the normal answer and club-wide read-only was the only view they could have
+    — the view they had before #2701. `useLodgeOptions` therefore reports
+    `forbidden` separately from `failed`, and this board maps it to `all` /
+    `no-lodge-permission` with its own banner. Collapsing the two handed those
+    roles a permanent error and a retry that could only 403 again.
+
+    **#2925 relaxed that route** (see
+    [Admin Lodge List Access And Payload](#admin-lodge-list-access-and-payload)),
+    so those two presets now get a real list here. The state and the banner stay: a
+    club-edited or custom role holding `bookings: "view"` with `overview: "none"`
+    is still refused, and `failed` is unchanged.
   - **`empty` is a real state.** A successful lodge list with no ACTIVE lodge is
     neither club-wide nor an outage nor a state that resolves; without it the
     board sat on a "Choosing which lodge to show" spinner for ever with Refresh
@@ -715,6 +704,79 @@ re-validates per lodge.
   conservatively conflict at every lodge.
 - Money stays in integer cents and booking dates stay NZ date-only,
   unchanged by lodge scoping.
+
+## Admin Lodge List Access And Payload
+
+`GET /api/admin/lodges` is the vocabulary every admin screen draws on to say
+WHICH lodge it means, so its gate is a scoping decision and belongs here.
+Delivered by #2925 (owner decision, 17 Aug 2026); the route's own docblock
+carries the implementation reasoning and is not repeated.
+
+**Access.** Any admitted administrator, expressed as the explicit requirement
+`permission: { area: "overview", level: "view" }` — the documented "any admitted
+admin" shape in this codebase. It must stay EXPLICIT. A bare `requireAdmin()`
+does not mean "any admin": `inferAdminAccessRequirement` reads the `x-pathname`
+and `x-request-method` headers `proxy.ts` stamps on this route and resolves them
+through `getAdminRouteRequirement`, which maps `/api/admin/lodges` to
+`area: "lodge"` — so the old requirement returns by inference and nothing
+changes. That is exactly what happened on PR #2885, whose tests passed anyway
+because the shared `requireAdmin` mock fell back to `hasAdminPortalAccess` when
+given no options, a semantic the real guard has never had. The gate is therefore
+proved in `admin-lodges-access-gate.test.ts`, which mocks neither the guard nor
+the headers.
+
+The presets this changed, all of which hold `overview: "view"` and no `lodge`
+entry: **`ADMIN_MEMBERSHIP`**, **`FINANCE_ADMIN`** and **`ADMIN_CONTENT`**. No
+preset was edited — adding `lodge:view` to them would have widened eighteen
+other read endpoints on upgrade. A 403 is still the answer for a caller who is
+not an admitted admin, and for a club-edited or custom role holding
+`overview: "none"`, which is why `useLodgeOptions` keeps its `forbidden` state.
+
+**Payload, decided from nothing rather than trimmed from `lodgeSelect`.** A
+caller WITH `lodge:view` keeps the whole record. A caller without it receives
+`id`, `name`, `slug`, `active` and nothing else:
+
+| Field | Out? | Why |
+| --- | --- | --- |
+| `id` | yes | the value every lodge-scoped request sends back |
+| `name` | yes | the label in every selector, badge and heading |
+| `slug` | yes | URL identifier, derived from `name`, so it discloses nothing more |
+| `active` | yes | load-bearing: consumers filter on `active !== false`, and without it a deactivated lodge is offered as an option |
+| `doorCode` | **no** | a physical-access secret, already kept out of audit metadata by `redactLodgeForAudit` |
+| `address` | **no** | the lodge's physical location |
+| `travelNote` | **no** | arrival instructions; its only vocabulary consumer is the MEMBER wizard, which reads `/api/lodges` |
+| `createdAt`, `updatedAt` | **no** | record metadata no vocabulary consumer reads |
+| `isDefault`, `displayConfig`, `displayNotice`, `displayNameGranularity`, `showGuestPhonesOnScreens` | **no** | never in either payload; listed so the enumeration is complete |
+
+The narrowing is what makes the relaxation safe, so the two move together: a
+future column is excluded by default because `lodgeIdentitySelect` names what
+goes out rather than what stays in, and `serializeLodgeIdentity` names the same
+four again so a planted select cannot leak through it either.
+
+**Reading it: key on the absent FIELDS, never on a 403.** A narrowed payload is
+a permissions answer wearing a 200, so a surface that needs the detail fields has
+to notice they are missing. `lodge-details-panel.tsx` does, and renders its
+explanation rather than a form whose address, travel note and door code are
+silently blank. It tests `"doorCode" in row`, not `row.doorCode != null` — a
+lodge with no door code SET sends `doorCode: null`, which is an ordinary editable
+value.
+
+**Writing it: the door-code wipe cannot happen, and the reason is the level
+ranks, not a page gate.** The worry is real in shape: `PATCH
+/api/admin/lodges/[id]` reads an absent key as "leave unchanged" and a `null` as
+"clear it", so an editor seeded from a narrowed record and then saved would blank
+a door code nobody was shown. But the PATCH requires `lodge:edit`, this route
+narrows below `lodge:view`, and `edit` outranks `view` — so **every caller who
+can write has already been served the full record.** The wipe is closed at the
+server for every editor, present and future, without any of them cooperating.
+
+The Lodges list editor additionally omits detail fields it was never given from
+its PATCH body. That is belt-and-braces over the argument above, kept because it
+is cheap and directly tested. It was deliberately NOT replicated in the lodge
+setup wizard: a second copy bought no reachable safety, pushed a 913-line file
+past its size ceiling, and made the wizard reject any incomplete test fixture —
+it broke a passing back-link test on a lodge row that simply had not bothered to
+include `doorCode`.
 
 ## Presentation Rule
 

@@ -23,6 +23,55 @@ export const lodgeSelect = {
 
 export type LodgeRecord = Pick<Lodge, keyof typeof lodgeSelect>;
 
+/**
+ * The lodge VOCABULARY (#2925): the four fields an admin surface needs to say
+ * WHICH lodge it is talking about, and nothing else.
+ *
+ * `GET /api/admin/lodges` serves this to a caller who is an admitted admin but
+ * holds no `lodge:view`. Built from nothing rather than trimmed from
+ * `lodgeSelect`, so a column added to `Lodge` later is excluded by default
+ * instead of joining the response silently:
+ *
+ * - `id` — the value every lodge-scoped request sends back.
+ * - `name` — the label in every selector, badge and heading.
+ * - `slug` — the URL identifier. Derived from `name` by `slugifyLodgeName`, so
+ *   it discloses nothing the name does not already disclose.
+ * - `active` — load-bearing, not decorative: `useLodgeOptions` and the four
+ *   lobby-display consumers filter on `active !== false`, so omitting it would
+ *   offer a deactivated lodge as a bookable option.
+ *
+ * Deliberately EXCLUDED, and each for its own reason:
+ *
+ * - `doorCode` — a physical-access secret. `redactLodgeForAudit` already keeps
+ *   it out of audit metadata; this keeps it out of the response for every role
+ *   the access relaxation admits.
+ * - `address` — the lodge's physical location, admin-editable operational data.
+ * - `travelNote` — arrival instructions. Its only vocabulary consumer is the
+ *   MEMBER booking wizard, which reads `/api/lodges`, not this route.
+ * - `createdAt` / `updatedAt` — record metadata no vocabulary consumer reads.
+ * - `displayConfig`, `displayNotice`, `displayNameGranularity`,
+ *   `showGuestPhonesOnScreens`, `isDefault` — never in either payload; listed
+ *   so the enumeration is complete rather than partial.
+ */
+export const lodgeIdentitySelect = {
+  id: true,
+  name: true,
+  slug: true,
+  active: true,
+} satisfies Prisma.LodgeSelect;
+
+export type LodgeIdentityRecord = Pick<
+  Lodge,
+  keyof typeof lodgeIdentitySelect
+>;
+
+export interface SerializedLodgeIdentity {
+  id: string;
+  name: string;
+  slug: string;
+  active: boolean;
+}
+
 export interface SerializedLodge {
   id: string;
   name: string;
@@ -46,6 +95,25 @@ export function serializeLodge(lodge: LodgeRecord): SerializedLodge {
     travelNote: lodge.travelNote,
     createdAt: lodge.createdAt.toISOString(),
     updatedAt: lodge.updatedAt.toISOString(),
+  };
+}
+
+/**
+ * Serialize the vocabulary payload (#2925).
+ *
+ * Names its four fields explicitly rather than spreading, so it is a second,
+ * independent barrier: even if a caller hands it a row read with the full
+ * `lodgeSelect`, no excluded field can reach the response. `lodgeIdentitySelect`
+ * stops the secret leaving the database; this stops it leaving the process.
+ */
+export function serializeLodgeIdentity(
+  lodge: LodgeIdentityRecord,
+): SerializedLodgeIdentity {
+  return {
+    id: lodge.id,
+    name: lodge.name,
+    slug: lodge.slug,
+    active: lodge.active,
   };
 }
 
