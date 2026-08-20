@@ -1189,5 +1189,135 @@ describe("formatStripeRefundNoteLinkRepairReport", () => {
     expect(text).toContain("[reactivate] note CN-0090 (inactive, AUTHORISED, 0.90)");
     // A never-recorded status renders as "status unknown", never as fine.
     expect(text).toContain("[keep-active] note cn_10 (active, status unknown, 0.10)");
+    // #2902: the operator sees both figures and which rule produced the target.
+    expect(text).toContain(
+      "refunded mirror 1.00, cash refund-note target 1.00 (legacy-mirror)"
+    );
+  });
+});
+
+describe("#2902 cash-evidence coverage target", () => {
+  it("reports an account-credit-only cancellation's active note as the fictitious-document manual review, never as valid coverage", async () => {
+    // The defect shape: the whole 341.00 mirror is an account-credit
+    // disposition (no PaymentRefund rows), yet a fictitious refund note is
+    // active. The cash target is 0, so the note is pure over-coverage —
+    // reported for the operator to void in Xero, with nothing automatic.
+    state.payments[0].refundedAmountCents = 34100;
+    state.memberCredits = [
+      {
+        sourceBookingId: "book_1",
+        type: "CANCELLATION_REFUND",
+        amountCents: 34100,
+        restoredFromBookingId: null,
+      },
+    ];
+    state.links = [
+      makeLink({
+        id: "link_fict",
+        xeroObjectId: "cn_fict",
+        active: true,
+        metadata: { amountCents: 34100, status: "AUTHORISED" },
+      }),
+    ];
+
+    const report = await findStripeRefundNoteLinkRepairs();
+
+    expect(report.plans).toHaveLength(1);
+    const plan = report.plans[0];
+    expect(plan).toMatchObject({
+      paymentId: "pay_1",
+      refundedAmountCents: 34100,
+      coverageTargetCents: 0,
+      cashEvidenceSource: "legacy-mirror",
+      activeCoveredCents: 34100,
+      plannedCoveredCents: 34100,
+      repairable: false,
+      reactivateLinkIds: [],
+      deactivateLinkIds: [],
+    });
+    expect(plan.manualReviewReason).toContain("account-credit disposition");
+    expect(plan.manualReviewReason).toContain("fictitious");
+
+    // Nothing is applied for it either.
+    const result = await applyStripeRefundNoteLinkRepairs();
+    expect(result.appliedPayments).toBe(0);
+    expect(
+      state.links.find((link) => link.id === "link_fict")?.active
+    ).toBe(true);
+  });
+
+  it("deactivates the fictitious note's mirror once the operator voids it in Xero and the void is recorded", async () => {
+    state.payments[0].refundedAmountCents = 34100;
+    state.memberCredits = [
+      {
+        sourceBookingId: "book_1",
+        type: "CANCELLATION_REFUND",
+        amountCents: 34100,
+        restoredFromBookingId: null,
+      },
+    ];
+    state.links = [
+      makeLink({
+        id: "link_fict",
+        xeroObjectId: "cn_fict",
+        active: true,
+        metadata: { amountCents: 34100, status: "VOIDED" },
+      }),
+    ];
+
+    const result = await applyStripeRefundNoteLinkRepairs({
+      paymentIds: ["pay_1"],
+    });
+
+    expect(result.appliedPayments).toBe(1);
+    expect(result.deactivatedLinks).toBe(1);
+    expect(
+      state.links.find((link) => link.id === "link_fict")?.active
+    ).toBe(false);
+  });
+
+  it("reactivates only up to the provider-ledger cash target on a mixed cash + credit payment", async () => {
+    // 100c mirror; the ledger proves 60c of Stripe cash. Both per-delta notes
+    // (60c cash note and a 40c fictitious one) were deactivated by the
+    // pre-#2901 cleanup. Only the 60c note may come back — reactivating both
+    // would land on the mirror, not the cash target.
+    state.paymentRefunds = [
+      { paymentId: "pay_1", status: "succeeded", amountCents: 60 },
+    ];
+    state.payments[0].refundedAmountCents = 100;
+    state.links = [
+      makeLink({
+        id: "link_60",
+        xeroObjectId: "cn_60",
+        active: false,
+        metadata: { amountCents: 60, status: "AUTHORISED" },
+        createdAt: new Date("2026-05-01T00:00:00Z"),
+      }),
+      makeLink({
+        id: "link_40",
+        xeroObjectId: "cn_40",
+        active: false,
+        metadata: { amountCents: 40, status: "AUTHORISED" },
+        createdAt: new Date("2026-05-02T00:00:00Z"),
+      }),
+    ];
+
+    const report = await findStripeRefundNoteLinkRepairs();
+
+    expect(report.plans).toHaveLength(1);
+    const plan = report.plans[0];
+    expect(plan).toMatchObject({
+      coverageTargetCents: 60,
+      cashEvidenceSource: "provider-ledger",
+      plannedCoveredCents: 60,
+      repairable: true,
+      reactivateLinkIds: ["link_60"],
+    });
+    expect(
+      plan.links.find((link) => link.linkId === "link_40")?.plannedAction
+    ).toBe("leave-inactive");
+    expect(
+      plan.links.find((link) => link.linkId === "link_40")?.reason
+    ).toContain("provider-backed cash refund target");
   });
 });
