@@ -6,9 +6,18 @@ import { ApiError } from "@/lib/api-error";
  * follow-up to #2749).
  *
  * A booking officer names a partner lodge on the booking (`Booking.otherLodgeId`)
- * and then ticks the individual NON-MEMBER guests who belong to it
+ * and then ticks the individual guests who belong to it
  * (`BookingGuest.otherLodgeMember`). Those guests price from the club's own FULL
  * member rate rows at their own age tier; everybody else is untouched.
+ *
+ * WHICH GUESTS MAY BE TICKED (#2978). Anyone currently priced at the club's
+ * NON-MEMBER rate - not merely anyone with `isMember` false. The two are not the
+ * same set: a non-member contact minted by book-on-behalf and re-added through
+ * the member-guest finder carries `isMember` true while resolving to the
+ * built-in NON_MEMBER type, and those people are precisely who a reciprocal rate
+ * is for. `resolveOtherLodgeRateEligibleGuestIds` is the single answer, used by
+ * the edit panel to decide which rows get a tick box and by this resolver to
+ * refuse a tick on anybody else.
  *
  * WHY THIS MODULE EXISTS RATHER THAN THE RULE BEING WRITTEN TWICE. The preview
  * (`modify-quote`) and the save (`modifyBookingBatch` → `prepareGuestPlan`) must
@@ -20,19 +29,29 @@ import { ApiError } from "@/lib/api-error";
  * the result. That is the same shape the #2337 placeholder→member link uses, and
  * for the same reason.
  *
- * IT CHANGES THE RATE AND NOTHING ELSE. `BookingGuest.isMember` stays false, so
- * adult-member hosting, the non-member hold, split bookings,
- * `Booking.hasNonMembers`, the subscription gate and member-only promotions all
- * keep seeing a non-member — which is the truth: the person is a member of
- * ANOTHER club, not of this one.
+ * IT CHANGES THE RATE AND NOTHING ELSE. `BookingGuest.isMember` is never
+ * written by this feature, so adult-member hosting, the non-member hold, split
+ * bookings, `Booking.hasNonMembers`, the subscription gate and member-only
+ * promotions all keep seeing exactly what they saw before the tick — which is
+ * the truth: the tick records that somebody is a member of ANOTHER club, and
+ * says nothing about their standing in this one.
  */
 
 export const OTHER_LODGE_RATE_ADMIN_ONLY_MESSAGE =
   "Only an admin or booking officer can price a guest at the other-lodge member rate.";
 export const OTHER_LODGE_RATE_GUEST_NOT_ON_BOOKING_MESSAGE =
   "One or more other-lodge member ticks referenced a guest not on this booking.";
-export const OTHER_LODGE_RATE_MEMBER_GUEST_MESSAGE =
-  "A member of this club already prices at their own membership rate and cannot be marked as an other-lodge member.";
+/**
+ * #2978: the refusal is now about the RATE, not about `isMember`. Two different
+ * people trip it and the sentence has to serve both - somebody already on this
+ * club's member rate (there is nothing to re-rate), and somebody repriced to
+ * non-member rates by an unpaid subscription (re-rating them would undo the
+ * lockout). Naming the subscription case explicitly is deliberate: an officer
+ * who ticks a lapsed member and gets a bare "not eligible" would reasonably
+ * conclude the feature is broken.
+ */
+export const OTHER_LODGE_RATE_INELIGIBLE_GUEST_MESSAGE =
+  "That guest cannot be priced at the other-lodge member rate: they are already on this club's member rate, or they are a member whose unpaid subscription has repriced them.";
 export const OTHER_LODGE_RATE_LODGE_REQUIRED_MESSAGE =
   "Choose the other lodge before marking anybody as one of its members.";
 export const OTHER_LODGE_RATE_LODGE_NOT_FOUND_MESSAGE = "Selected lodge not found";
@@ -58,6 +77,20 @@ export interface OtherLodgeRateBooking {
     isMember: boolean;
     otherLodgeMember: boolean;
   }>;
+}
+
+/**
+ * The guests this booking may legitimately flag, resolved by
+ * `resolveOtherLodgeRateEligibleGuestIds` (#2978).
+ *
+ * Passed in rather than derived here because the answer needs the season's
+ * membership-type policies and the unpaid-subscription set, both of which are
+ * database reads - and this resolver is deliberately synchronous and pure so
+ * the preview and the save can run it over identical inputs. Callers resolve it
+ * once, from the same helper the edit panel's tick boxes come from.
+ */
+export interface OtherLodgeRateEligibility {
+  eligibleGuestIds: ReadonlySet<string>;
 }
 
 /** The two request fields, exactly as both routes' zod schemas parse them. */
@@ -99,6 +132,24 @@ export interface OtherLodgeRateElection {
   repriceGuestIds: ReadonlySet<string>;
 }
 
+/**
+ * Whether this request says anything about the other-lodge rate at all.
+ *
+ * Exported so a caller can skip resolving eligibility - two database reads -
+ * on the overwhelming majority of modifications, which never mention it. That
+ * matters most on the save path, where those reads would otherwise happen
+ * inside the transaction holding the capacity lock. The resolver below uses the
+ * same predicate, so "inert" means the same thing in both places.
+ */
+export function requestCarriesOtherLodgeElection(
+  input: OtherLodgeRateInput,
+): boolean {
+  return (
+    input.otherLodgeId !== undefined ||
+    input.otherLodgeMemberGuestIds !== undefined
+  );
+}
+
 /** The election a request that says nothing about the other-lodge rate produces. */
 function inertElection(booking: OtherLodgeRateBooking): OtherLodgeRateElection {
   return {
@@ -119,22 +170,24 @@ function inertElection(booking: OtherLodgeRateBooking): OtherLodgeRateElection {
  * The gate is admin/officer-only, mirroring `resolveGuestMemberLinks`: this
  * re-rates a guest downward, so it must be unreachable from member self-service
  * however this resolver is reached, not merely hidden on the screen. The rest is
- * structural — a tick must name a guest on this booking, that guest must be a
- * non-member, and a tick with no lodge behind it is refused so a booking can
- * never carry a member-rated guest with no club recorded against them.
+ * structural — a tick must name a guest on this booking, that guest must be one
+ * the club may re-rate at all (#2978: they must currently price at the
+ * non-member rate, which is NOT the same test as `!isMember`), and a tick with
+ * no lodge behind it is refused so a booking can never carry a member-rated
+ * guest with no club recorded against them.
  */
 export function resolveOtherLodgeRateElection({
   booking,
   input,
   role,
+  eligibleGuestIds,
 }: {
   booking: OtherLodgeRateBooking;
   input: OtherLodgeRateInput;
   role: Role;
-}): OtherLodgeRateElection {
+} & OtherLodgeRateEligibility): OtherLodgeRateElection {
   const mentionsLodge = input.otherLodgeId !== undefined;
-  const mentionsGuests = input.otherLodgeMemberGuestIds !== undefined;
-  if (!mentionsLodge && !mentionsGuests) {
+  if (!requestCarriesOtherLodgeElection(input)) {
     return inertElection(booking);
   }
 
@@ -153,8 +206,8 @@ export function resolveOtherLodgeRateElection({
     if (!guest) {
       throw new ApiError(OTHER_LODGE_RATE_GUEST_NOT_ON_BOOKING_MESSAGE, 400);
     }
-    if (guest.isMember) {
-      throw new ApiError(OTHER_LODGE_RATE_MEMBER_GUEST_MESSAGE, 400);
+    if (!eligibleGuestIds.has(guestId)) {
+      throw new ApiError(OTHER_LODGE_RATE_INELIGIBLE_GUEST_MESSAGE, 400);
     }
     flaggedGuestIds.add(guestId);
   }
