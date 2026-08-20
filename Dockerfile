@@ -57,6 +57,26 @@ RUN npm run diagnostics:bundle
 ARG RELEASE_ID=""
 ENV RELEASE_ID=$RELEASE_ID
 
+# Optional Node flags for the BUILD only (not the runtime image).
+#
+# Empty by default, so every deployment builds exactly as it did before this
+# existed — an empty NODE_OPTIONS is ignored by Node. It is here because
+# `next build` is the memory peak of the whole image, and on a small server it
+# can exhaust Node's default heap and be OOM-killed. The operator's alternative
+# was editing this line locally and re-applying it after every `git pull`.
+#
+# Set it through compose, which maps NODE_BUILD_OPTIONS from .env onto this arg:
+#   NODE_BUILD_OPTIONS=--max-old-space-size=4096
+#
+# Deliberately NOT named NODE_OPTIONS on the .env side. That name is read by
+# every Node process, so a developer who has it set in their shell for an
+# unrelated reason would silently change what the image is built with; the build
+# knob is its own name, and only this ARG turns it into NODE_OPTIONS, only here.
+#
+# A declared ARG is exposed to RUN as an environment variable, which is why the
+# build line below needs no change.
+ARG NODE_OPTIONS=""
+
 RUN npx prisma generate
 RUN npm run build
 
