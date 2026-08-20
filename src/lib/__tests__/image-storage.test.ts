@@ -5,6 +5,7 @@ import {
   ALLOWED_IMAGE_MIME,
   IMAGES_ROOT,
   imagePublicUrl,
+  isSafeDirectoryName,
   isStorageUnavailableCode,
   resolveInImagesRoot,
   storageUnavailableMessage,
@@ -41,6 +42,67 @@ describe("image-storage", () => {
       expect(resolveInImagesRoot("../secrets")).toBeNull();
       expect(resolveInImagesRoot("../../etc/passwd")).toBeNull();
       expect(resolveInImagesRoot("foo/../../bar")).toBeNull();
+    });
+  });
+
+  // #2841 (CodeQL js/path-injection, alerts 32/33/34 on the directories route).
+  // The charset filter these endpoints shared banned separators but not dots, so
+  // "." and ".." — the two names path.join expands as operators — reached the
+  // path builder and left the downstream containment check as the only barrier.
+  describe("isSafeDirectoryName", () => {
+    it("accepts the ordinary names the Image Manager UI produces", () => {
+      for (const name of [
+        "brand",
+        "Trip Photos 2026",
+        "lodge-exterior",
+        "winter_2026",
+        // Dots are fine in a name — only a name made ENTIRELY of dots is
+        // refused, so these stay legitimate.
+        ".hidden",
+        "v1.2",
+        "photos.2026.winter",
+      ]) {
+        expect(isSafeDirectoryName(name), name).toBe(true);
+      }
+    });
+
+    it("rejects the dot-only names that path.join expands", () => {
+      // ".." resolves to the PARENT of the directory it is joined to, and "."
+      // resolves to that directory itself. Neither is a name.
+      expect(isSafeDirectoryName("..")).toBe(false);
+      expect(isSafeDirectoryName(".")).toBe(false);
+    });
+
+    it("rejects longer dot runs too, though path.join does not expand them", () => {
+      // Measured: path.join(root, "...") yields root/... , a literal segment —
+      // so this is not a traversal defence. It is refused because it costs
+      // nothing and because Windows strips trailing dots from a name, which
+      // would create a directory that cannot then be found under that name.
+      expect(isSafeDirectoryName("...")).toBe(false);
+      expect(isSafeDirectoryName("....")).toBe(false);
+    });
+
+    it("rejects separators, reserved characters and control characters", () => {
+      for (const name of [
+        "a/b",
+        "a\\b",
+        "../escape",
+        "a<b",
+        'a"b',
+        "a:b",
+        "a|b",
+        "a?b",
+        "a*b",
+        "a>b",
+        "a\u0000b",
+        "a\u001Fb",
+      ]) {
+        expect(isSafeDirectoryName(name), JSON.stringify(name)).toBe(false);
+      }
+    });
+
+    it("rejects an empty name", () => {
+      expect(isSafeDirectoryName("")).toBe(false);
     });
   });
 
