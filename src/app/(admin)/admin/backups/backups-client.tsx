@@ -61,6 +61,8 @@ export interface BackupStatus {
   restoreValidationUrlSet: boolean;
   localEnabled: boolean;
   localPath: string | null;
+  /** The path came from the deployment's mount rather than a saved value. */
+  localPathFromEnv: boolean;
   /** Either destination switched on — what actually decides whether a run happens. */
   anyDestinationEnabled: boolean;
   localBackups: LocalBackupFileSummary[];

@@ -68,3 +68,38 @@ export function hasSignedInHint(cookies: string | null | undefined): boolean {
 
   return false;
 }
+
+/**
+ * The marker cookie's `Set-Cookie` value, written by `src/proxy.ts` as a header
+ * rather than through `response.cookies.set()` ON PURPOSE.
+ *
+ * `NextResponse`'s cookie proxy also writes `x-middleware-set-cookie`, and Next
+ * merges that into the render's `cookies()`
+ * (`next/dist/server/async-storage/request-store.js`, `mergeMiddlewareCookies`).
+ * So going through the proxy API would leave the hint readable server-side on the
+ * one request that sets it, which is the same property
+ * `stripSignedInHintFromCookieHeader()` exists to hold on every other request.
+ * Same bytes on the wire either way — `ResponseCookies` appends to this header —
+ * so the browser behaviour is unchanged.
+ *
+ * The attribute policy is the one this module's header states: never `HttpOnly`,
+ * because the browser has to read it, and not `Secure` in development, where the
+ * app is served over plain http and a `Secure` cookie would never be stored.
+ */
+export function serialiseSignedInHintCookie(
+  value: string,
+  maxAgeSeconds: number,
+): string {
+  const attributes = [
+    `${SIGNED_IN_HINT_COOKIE}=${value}`,
+    "Path=/",
+    `Max-Age=${maxAgeSeconds}`,
+    "SameSite=Lax",
+  ];
+
+  if (process.env.NODE_ENV === "production") {
+    attributes.push("Secure");
+  }
+
+  return attributes.join("; ");
+}

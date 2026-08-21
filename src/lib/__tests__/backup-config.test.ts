@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   prisma: {
@@ -57,9 +57,19 @@ describe("backup-config validators", () => {
 });
 
 describe("resolveBackupConfig", () => {
+  // BACKUP_LOCAL_DIR is real process state, so it is restored per test rather
+  // than left set for whatever runs next in this file.
+  const originalMountedDir = process.env.BACKUP_LOCAL_DIR;
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.providerNeedsReentry.mockResolvedValue(false);
+    delete process.env.BACKUP_LOCAL_DIR;
+  });
+
+  afterEach(() => {
+    if (originalMountedDir === undefined) delete process.env.BACKUP_LOCAL_DIR;
+    else process.env.BACKUP_LOCAL_DIR = originalMountedDir;
   });
 
   function valueMap(values: Record<string, string | null>) {
@@ -122,6 +132,35 @@ describe("resolveBackupConfig", () => {
 
     expect(config.localEnabled).toBe(true);
     expect(config.localPath).toBe("/var/backups/tacbookings");
+  });
+
+  it("falls back to the deployment's mounted directory when none is stored", async () => {
+    // BACKUP_LOCAL_DIR is where the compose stack mounts the backup volume
+    // inside the container. An operator who has set the mount should not then
+    // have to retype that path into the admin screen — and cannot typo it into
+    // somewhere unmounted.
+    process.env.BACKUP_LOCAL_DIR = "/backups";
+    valueMap({});
+
+    await expect(resolveBackupConfig()).resolves.toMatchObject({
+      localPath: "/backups",
+    });
+  });
+
+  it("lets a stored path override the deployment's mount", async () => {
+    process.env.BACKUP_LOCAL_DIR = "/backups";
+    valueMap({ [BACKUP_CREDENTIAL_KEYS.localPath]: "/srv/club-backups" });
+
+    await expect(resolveBackupConfig()).resolves.toMatchObject({
+      localPath: "/srv/club-backups",
+    });
+  });
+
+  it("stays null when neither a stored path nor a mount exists", async () => {
+    delete process.env.BACKUP_LOCAL_DIR;
+    valueMap({});
+
+    await expect(resolveBackupConfig()).resolves.toMatchObject({ localPath: null });
   });
 
   it("reads the local switch as off for anything but the literal 'true'", async () => {
