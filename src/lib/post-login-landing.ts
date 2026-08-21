@@ -1,6 +1,6 @@
 import type { PostLoginLanding } from "@prisma/client";
 import { DEFAULT_POST_LOGIN_PATH, getExplicitCallbackUrl } from "@/lib/auth-redirect";
-import { getFamilyInviteReturnPath } from "@/lib/family-invite-return-address";
+import { matchFamilyInviteReturnCookie } from "@/lib/family-invite-return-address";
 import {
   getFirstAccessibleAdminHref,
   type AdminPermissionInput,
@@ -15,7 +15,8 @@ import {
  *      value the login flow itself materialised (the 2FA detour, a provider
  *      callbackUrl) must NOT be passed in as `explicitCallbackUrl`, so it never
  *      counts as explicit here.
- *   2. A family-invite return address carried server-side in the #2827 cookie.
+ *   2. A family-invite return address carried server-side in the #2827 cookie,
+ *      **and only for the tab that opened the invitation** (#2974).
  *      It is carried privately rather than in a `callbackUrl` because putting it
  *      in the URL means rendering the invite token into a link's `href`, and from
  *      there into the visitor's address bar, history and `Referer`. It sits BELOW
@@ -36,14 +37,29 @@ import {
  *      stale ADMIN_DASHBOARD preference likewise falls through to /dashboard —
  *      the same safe target the admin-layout guard bounces to, never a 403 loop.
  *
- * `privateReturnPath` is re-validated HERE rather than trusted from the caller,
- * so a site that forwards a raw cookie value cannot turn this function into an
- * open redirect or a general "land anywhere" lever: the only value it can ever
- * return from that input is a `/family-invite/<token>` page.
+ * The family-invite address is resolved HERE, from the RAW cookie value plus the
+ * nonce the caller's own request presented, rather than accepted as a path a
+ * caller worked out for itself. That is deliberate and it is structural (#2974):
+ *
+ *  - a site that forwards a raw cookie value cannot turn this function into an
+ *    open redirect or a general "land anywhere" lever, because the only value it
+ *    can ever return from that input is a `/family-invite/<token>` page; and
+ *  - a site that forgets to thread the tab-binding nonce through cannot quietly
+ *    restore the browser-scoped behaviour #2974 removed. With no nonce there is
+ *    no way to express "honour this address", so the omission fails closed —
+ *    the member lands where they normally would.
+ *
+ * `familyInviteReturn` is therefore the PAIR. Passing a path here is not
+ * possible, which is the point.
  */
 export function resolvePostLoginLandingPath(args: {
   explicitCallbackUrl?: string | null;
-  privateReturnPath?: string | null;
+  familyInviteReturn?: {
+    /** The untouched `family-invite-return` cookie value on this request. */
+    cookieValue?: string | null;
+    /** The `?inviteReturn=` nonce this request presented, if any. */
+    presentedNonce?: string | string[] | null;
+  } | null;
   landingPreference?: PostLoginLanding | null;
   permissionInput: AdminPermissionInput;
 }): string {
@@ -52,7 +68,10 @@ export function resolvePostLoginLandingPath(args: {
     return explicit;
   }
 
-  const privateReturn = getFamilyInviteReturnPath(args.privateReturnPath);
+  const privateReturn = matchFamilyInviteReturnCookie(
+    args.familyInviteReturn?.cookieValue,
+    args.familyInviteReturn?.presentedNonce,
+  );
   if (privateReturn) {
     return privateReturn;
   }

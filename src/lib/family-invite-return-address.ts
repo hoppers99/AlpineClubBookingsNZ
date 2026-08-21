@@ -2,15 +2,15 @@ import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
 
 /**
  * The server-side post-login return address for a family-group invitation
- * (#2827).
+ * (#2827), bound to the tab that opened the invitation (#2974).
  *
  * ## What problem this exists to solve, stated accurately
  *
  * `/family-invite/[token]` used to offer the recipient a sign-in link built as
  * `buildLoginPath('/family-invite/<token>')`, so the invite token was rendered
  * into an `href` and then travelled in the visitor's address bar, their browser
- * history, and any `Referer` the next hop was shown. The sign-in link is now a
- * plain `/login` and the address travels here instead, so none of those three
+ * history, and any `Referer` the next hop was shown. The sign-in link carries no
+ * token now and the address travels here instead, so none of those three
  * carries it.
  *
  * **It is worth being exact about what this page did NOT expose, because the
@@ -43,10 +43,10 @@ import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
  * {@link FAMILY_INVITE_RETURN_MAX_AGE_SECONDS}, and the token it carries is
  * already held hashed-at-rest (`PartnerInviteToken.tokenHash`) exactly as before.
  *
- * ## Its whole life, in two conditions
+ * ## Its whole life, in three conditions
  *
- * Both live in `syncFamilyInviteReturnAddress()` (`src/proxy.ts`), and both came
- * out of the same review:
+ * The first two live in `syncFamilyInviteReturnAddress()` (`src/proxy.ts`) and
+ * both came out of the #2827 review; the third is #2974:
  *
  *  - **Written only on a signed-out, top-level document navigation to the invite
  *    page** (`Sec-Fetch-Dest: document`). Without that condition a cross-site
@@ -57,22 +57,71 @@ import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
  *    terminate there, which is what makes "cleared on use" true for the Google
  *    and 2FA-detour flows as well; their server components cannot write a cookie,
  *    so the first cut left the address alive for its full ten minutes after use.
+ *  - **Honoured only for the TAB that opened the invitation** — the subject of
+ *    the next section, and what closes the last residual #2827 left open.
  *
- * **Stated limit, and it is a property of cookies rather than of this code.** A
- * cookie is per-BROWSER where the `callbackUrl` it replaces was per-tab, so on a
- * shared browser somebody who opens an invitation and leaves without signing in
- * hands the next sign-in that landing, for as long as the cookie lives — which is
- * why {@link FAMILY_INVITE_RETURN_MAX_AGE_SECONDS} was shortened to two minutes.
- * What is disclosed is the invited email address and the group name; the page's
- * email re-check still refuses the join. The retire above closes the version of
- * this that mattered — where the first visitor signed in, and their live token
- * ended up in the second person's address bar. Closing the remainder completely
- * means binding the address to the tab that asked for it, with a tokenless flag on
- * the sign-in link threaded through all four resolution sites and both 2FA detour
- * hops; the owner chose (19 Aug 2026) to shorten the window rather than build that
- * in a PR whose scope excludes the login flow, and
- * `docs/SECURITY-ATTACK-SURFACE.md` records it as an accepted, bounded residual
- * with its named fix, tracked as issue #2974.
+ * ## Tab scoping: what it closes, and how (#2974)
+ *
+ * A cookie is per-BROWSER where the `callbackUrl` it replaced was per-tab. #2827
+ * shipped with that as an accepted, bounded residual: on a shared lodge or kiosk
+ * browser, somebody who opened an invitation and walked away *without signing in*
+ * handed the next person to sign in that landing — disclosing the invited email
+ * address and the family-group name. (Not an account takeover: the invite page
+ * re-checks that the signed-in member's email matches the invited address, and
+ * still refuses the join. That check is unchanged and stays as defence in depth.)
+ *
+ * The fix is a **tokenless nonce**, minted per navigation:
+ *
+ *  1. `src/proxy.ts` mints {@link createFamilyInviteReturnNonce} on the same
+ *     signed-out document GET that writes the cookie, stores it IN the cookie
+ *     ({@link buildFamilyInviteReturnCookieValue}) and hands the render the same
+ *     value in the {@link FAMILY_INVITE_RETURN_NONCE_HEADER} request header —
+ *     the mechanism `REQUEST_PATH_HEADER` and the CSP nonce already use. A
+ *     server component may not set a cookie during render, so the proxy is the
+ *     only place both halves can be minted together.
+ *  2. The invite page renders its sign-in affordance as
+ *     {@link buildFamilyInviteLoginPath}, an ordinary anchor to
+ *     `/login?inviteReturn=<nonce>`.
+ *  3. Every post-login landing site passes the nonce it was given, alongside the
+ *     raw cookie value, to `resolvePostLoginLandingPath()`, which honours the
+ *     address only when {@link matchFamilyInviteReturnCookie} says the two agree.
+ *
+ * A sign-in started in any other tab — a fresh `/login`, a bookmark, the next
+ * person sitting down at the kiosk — presents no nonce, so the address is not
+ * honoured and they land where they normally would. **That is the security
+ * property, and it is what `post-login-landing.test.ts` and the login/2FA suites
+ * assert.**
+ *
+ * ### Three things about the nonce that are deliberate
+ *
+ *  - **It is not derived from the token, and it is not a credential.** It is 128
+ *    bits from `crypto.randomUUID()` and means nothing on its own: presenting it
+ *    without the `HttpOnly` cookie from the same browser yields nothing at all.
+ *    That is why rendering it into an `href` does not reintroduce the class #2827
+ *    closed — there is no value in it for a CSS attribute oracle to read out, and
+ *    no value in it for a `Referer` to leak. `family-invite-login-link.test.tsx`
+ *    pins that the *token* still appears in no attribute.
+ *  - **`docs/SECURITY-ATTACK-SURFACE.md` sketched a CONSTANT flag** ("that is a
+ *    constant, not a secret, so it is safe to render"). A constant is guessable,
+ *    and the acceptance criterion is that a sign-in in a *different tab* does not
+ *    land on the invitation — which a constant anybody can type into `/login?…`
+ *    does not give you. A per-navigation nonce costs one header and one cookie
+ *    field more and gives the property outright, so this took the stronger option.
+ *  - **It rotates on every signed-out document GET of the invite page**, so a
+ *    second tab on the same invitation invalidates the first tab's link. That
+ *    fails CLOSED — the stale tab degrades to the member's ordinary landing — and
+ *    the invite page's own copy already tells the recipient to return to the link
+ *    once their login is active.
+ *
+ * ### What tab scoping costs, stated plainly
+ *
+ * A **magic-link** sign-in started from the invitation no longer returns to it.
+ * The emailed link opens in whatever tab the mail client gives it, carrying no
+ * nonce, so the address is not honoured — by design, since a nonce mailed to an
+ * inbox is not a tab binding. The recipient lands on their normal home and
+ * follows the invite link again, which is exactly what the page's copy tells them
+ * to do. The password and Google flows, and both 2FA detours, all return to the
+ * invitation as before.
  *
  * ## Why the shape check is this narrow
  *
@@ -98,8 +147,11 @@ import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
  *    visible top-level navigation to the club's own invite page, which achieves
  *    no more than emailing the victim the link) together with the fact that
  *    joining still takes a deliberate click on a page that names the inviter and
- *    the group. The email check remains load-bearing against a FORWARDED link,
- *    which is the case it was written for.
+ *    the group. Since #2974 a planted cookie also needs its nonce to reach the
+ *    tab that signs in, which a plant cannot arrange without the victim visibly
+ *    loading the invite page and clicking its own sign-in link. The email check
+ *    remains load-bearing against a FORWARDED link, which is the case it was
+ *    written for.
  *
  * The 64-hex shape is the action-token format
  * (`ACTION_TOKEN_PATTERN` in `src/lib/action-tokens.ts`). It is duplicated here
@@ -112,27 +164,67 @@ import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
 export const FAMILY_INVITE_RETURN_COOKIE = "family-invite-return";
 
 /**
- * Two minutes: long enough that a recipient who clicks the emailed link, then
- * clicks "I already have an account", types an email and password and clears a
- * 2FA challenge comfortably completes inside it — that is a continuous sitting of
- * seconds, not minutes — while a value nobody consumed is gone quickly.
+ * The query parameter that carries the tab-binding nonce along the sign-in
+ * journey (#2974): `/login?inviteReturn=<nonce>`, and from there into the 2FA
+ * detour hops, the Google `callbackUrl` and the landing route's query.
  *
- * The window is deliberately short because it is also the exposure window for the
- * one residual this mechanism does not close: on a shared browser, a visitor who
- * opens an invitation and leaves *without signing in* hands the return address to
- * whoever signs in next, for this long. Two minutes (owner decision, 19 Aug 2026)
- * rather than the ten this shipped at first, chosen over building the full
- * tab-scoped fix in a PR whose scope excludes the login flow — see
- * {@link getFamilyInviteReturnPath}'s cookie-planting note and
- * `docs/SECURITY-ATTACK-SURFACE.md`, which name that deferred fix.
+ * Deliberately NOT `callbackUrl`. That name is the explicit-deep-link channel,
+ * it outranks this address in `resolvePostLoginLandingPath()`, and putting the
+ * invite path in it is precisely what #2827 removed. This parameter never carries
+ * a path — only the nonce — so the token cannot travel in it even by mistake.
+ */
+export const FAMILY_INVITE_RETURN_PARAM = "inviteReturn";
+
+/**
+ * Request header the proxy uses to hand the freshly-minted nonce to the invite
+ * page's render (#2974).
  *
- * Accuracy does not depend on it being generous. The address is written on a
- * signed-out navigation to the invite page and retired by the signed-in GET of it
- * (both in `syncFamilyInviteReturnAddress()`, `src/proxy.ts`);
- * `src/app/api/auth/post-login-landing/route.ts` clears it as well, for the one
- * case that never reaches the page at all. An absent or expired cookie degrades
- * to the member's ordinary post-login landing rather than to an error — the
- * emailed invite link still works.
+ * It exists because the two halves of the binding are minted in different
+ * runtimes: only middleware can write the cookie, only the render can put the
+ * nonce in an anchor, and the render cannot read a `Set-Cookie` the same response
+ * is still carrying. Same mechanism as `REQUEST_PATH_HEADER` and the CSP nonce —
+ * `NextResponse.next({ request: { headers } })`.
+ *
+ * **The proxy deletes any inbound copy before setting its own**, so a client that
+ * sends this header cannot reach the render with it. That is belt-and-braces
+ * rather than a hole being closed: a forged nonce simply would not match the
+ * cookie.
+ */
+export const FAMILY_INVITE_RETURN_NONCE_HEADER = "x-family-invite-return-nonce";
+
+/**
+ * Two minutes, and **#2974 re-examined this and kept it.**
+ *
+ * #2827 shortened the life from ten minutes to two, as a mitigation for the
+ * shared-browser disclosure that tab scoping has now closed outright. The
+ * question that left behind was whether to give the ten minutes back. Measured
+ * against the journey that actually consumes the cookie, two is comfortable and
+ * ten buys nothing:
+ *
+ *  - The address is consumed at the **first** authenticated page load after
+ *    sign-in — `/api/auth/post-login-landing` for the password flow, the `/login`
+ *    self-heal for Google, and the GET of `/login/verify` or `/login/enroll` for
+ *    the 2FA detour. Entering a 2FA code does **not** extend the window: those
+ *    pages resolve the landing during render and hand it to the panel as a prop,
+ *    so the cookie has already been read before the recipient goes looking for
+ *    their emailed code. The window covers "load `/login`, type an email and a
+ *    password, submit" and nothing longer.
+ *  - What is left for the window to bound is the one same-browser case tab
+ *    scoping does not reach: a second person using the FIRST person's own tab.
+ *    That discloses nothing new — the invitation is on the screen in front of
+ *    them — but a short life is still the cheaper side of the trade.
+ *
+ * **On the provenance of the two-minute figure.** Earlier revisions of this file
+ * and of `docs/SECURITY-ATTACK-SURFACE.md` credited it to "an owner decision, 19
+ * Aug 2026". There is no such comment on #2827 or on PR #2970 — every comment on
+ * both was posted by the automation account — so that citation pointed at
+ * nothing. The owner did make the call; it was made in session and never written
+ * down as a dated comment, so this says so rather than dating it to a record that
+ * does not exist.
+ *
+ * Accuracy does not depend on the window being generous. An absent or expired
+ * cookie degrades to the member's ordinary post-login landing rather than to an
+ * error — the emailed invite link still works.
  */
 export const FAMILY_INVITE_RETURN_MAX_AGE_SECONDS = 2 * 60;
 
@@ -142,6 +234,48 @@ export const FAMILY_INVITE_RETURN_MAX_AGE_SECONDS = 2 * 60;
  * cookie constant's docblock for why it is not imported.
  */
 const FAMILY_INVITE_RETURN_PATH_PATTERN = /^\/family-invite\/[a-f0-9]{64}$/;
+
+/**
+ * The tab-binding nonce's shape: 32 lowercase hex characters, which is
+ * `crypto.randomUUID()` with its dashes removed — 122 bits of randomness.
+ *
+ * Anchored, and applied to BOTH the value read out of the cookie and the value
+ * presented in the query string, so neither side can smuggle a separator, a path
+ * or a control character into the comparison.
+ */
+const FAMILY_INVITE_RETURN_NONCE_PATTERN = /^[0-9a-f]{32}$/;
+
+/** Separates the nonce from the path inside the cookie value. */
+const FAMILY_INVITE_RETURN_COOKIE_SEPARATOR = ".";
+
+/**
+ * A fresh tab-binding nonce (#2974).
+ *
+ * `crypto.randomUUID()` is the Web Crypto global, available in the middleware
+ * runtime — the same reason `createCspNonce()` in `src/lib/csp.ts` uses it, and
+ * the reason this module still may not reach for `node:crypto`.
+ */
+export function createFamilyInviteReturnNonce(): string {
+  return crypto.randomUUID().replace(/-/g, "");
+}
+
+/**
+ * The well-formed nonce in `candidate`, or null.
+ *
+ * Applied to every presented value before it is compared, so a caller cannot
+ * hand `matchFamilyInviteReturnCookie()` an empty string, an array element or a
+ * regex-special value and have it agree with a malformed cookie.
+ */
+export function getFamilyInviteReturnNonce(
+  candidate: string | string[] | null | undefined,
+): string | null {
+  const value = Array.isArray(candidate) ? candidate[0] : candidate;
+
+  return typeof value === "string" &&
+    FAMILY_INVITE_RETURN_NONCE_PATTERN.test(value)
+    ? value
+    : null;
+}
 
 /**
  * The safe family-invite return path in `candidate`, or null.
@@ -173,6 +307,149 @@ export function getFamilyInviteReturnPath(
   }
 
   return FAMILY_INVITE_RETURN_PATH_PATTERN.test(safePath) ? safePath : null;
+}
+
+/**
+ * The cookie value for a nonce/path pair, or null when either is malformed
+ * (#2974).
+ *
+ * Returning null rather than a best-effort string is what keeps a defective
+ * caller from writing a cookie no consumption site can ever match — the proxy
+ * skips the write instead, and the visitor degrades to their ordinary landing.
+ */
+export function buildFamilyInviteReturnCookieValue(
+  nonce: string,
+  returnPath: string,
+): string | null {
+  const safeNonce = getFamilyInviteReturnNonce(nonce);
+  const safePath = getFamilyInviteReturnPath(returnPath);
+
+  if (!safeNonce || !safePath) {
+    return null;
+  }
+
+  return `${safeNonce}${FAMILY_INVITE_RETURN_COOKIE_SEPARATOR}${safePath}`;
+}
+
+/**
+ * The `{ nonce, path }` a cookie value carries, or null.
+ *
+ * Both halves are re-validated by their own anchored guard, so this never
+ * returns a pair that a consumption site would then have to sanitise again. A
+ * value in the pre-#2974 format — a bare path with no nonce — has no separator
+ * before a 32-hex prefix and is therefore refused, which is the correct
+ * behaviour across a deploy: an in-flight visitor holding an old cookie degrades
+ * to their ordinary landing for the two minutes it survives, and the emailed
+ * invite link still works.
+ */
+export function parseFamilyInviteReturnCookie(
+  value: string | null | undefined,
+): { nonce: string; path: string } | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const separator = value.indexOf(FAMILY_INVITE_RETURN_COOKIE_SEPARATOR);
+
+  if (separator < 0) {
+    return null;
+  }
+
+  const nonce = getFamilyInviteReturnNonce(value.slice(0, separator));
+  const path = getFamilyInviteReturnPath(value.slice(separator + 1));
+
+  if (!nonce || !path) {
+    return null;
+  }
+
+  return { nonce, path };
+}
+
+/**
+ * Compare two already-shape-validated nonces without an early exit.
+ *
+ * A remote timing oracle on a 128-bit value that lives for two minutes is not a
+ * realistic attack, and the nonce is not a credential in any case — it is worth
+ * nothing without the `HttpOnly` cookie from the same browser. This is five
+ * lines that remove the argument entirely rather than a control anything rests
+ * on.
+ */
+function noncesMatch(expected: string, presented: string): boolean {
+  if (expected.length !== presented.length) {
+    return false;
+  }
+
+  let difference = 0;
+
+  for (let index = 0; index < expected.length; index += 1) {
+    difference |= expected.charCodeAt(index) ^ presented.charCodeAt(index);
+  }
+
+  return difference === 0;
+}
+
+/**
+ * The return path this cookie authorises for the tab presenting
+ * `presentedNonce`, or null (#2974).
+ *
+ * **This is the whole tab binding**, and it is deliberately the only way to turn
+ * a cookie value into a landing path: `resolvePostLoginLandingPath()` calls it
+ * rather than accepting a pre-resolved path from its caller, so no consumption
+ * site can honour the address without having been given a nonce. A site that
+ * forgets to thread the nonce through fails closed — the member lands where they
+ * normally would — instead of silently restoring the browser-scoped behaviour
+ * #2974 removed.
+ */
+export function matchFamilyInviteReturnCookie(
+  cookieValue: string | null | undefined,
+  presentedNonce: string | string[] | null | undefined,
+): string | null {
+  const parsed = parseFamilyInviteReturnCookie(cookieValue);
+  const nonce = getFamilyInviteReturnNonce(presentedNonce);
+
+  if (!parsed || !nonce) {
+    return null;
+  }
+
+  return noncesMatch(parsed.nonce, nonce) ? parsed.path : null;
+}
+
+/**
+ * The invite page's sign-in address: `/login?inviteReturn=<nonce>`, or a plain
+ * `/login` when there is no usable nonce (#2974).
+ *
+ * Shared by the invite page's anchor and the login form's Google button, which
+ * has to send the same nonce back through the provider round trip because
+ * `/login`'s authenticated self-heal is the only post-auth seam that flow has.
+ * A plain `/login` is always a valid answer: the address is simply not honoured,
+ * and the recipient lands where they normally would.
+ */
+export function buildFamilyInviteLoginPath(
+  nonce: string | null | undefined,
+): string {
+  const safeNonce = getFamilyInviteReturnNonce(nonce);
+
+  return safeNonce
+    ? `/login?${FAMILY_INVITE_RETURN_PARAM}=${safeNonce}`
+    : "/login";
+}
+
+/**
+ * `?inviteReturn=<nonce>` for appending to a login-flow hop, or an empty string.
+ *
+ * Used by the 2FA detour hops, which already build a `URLSearchParams` for the
+ * explicit `callbackUrl`; this keeps the nonce's parameter name in one place
+ * rather than spelled out at each hop.
+ */
+export function appendFamilyInviteReturnParam(
+  params: URLSearchParams,
+  nonce: string | null | undefined,
+): void {
+  const safeNonce = getFamilyInviteReturnNonce(nonce);
+
+  if (safeNonce) {
+    params.set(FAMILY_INVITE_RETURN_PARAM, safeNonce);
+  }
 }
 
 /**
