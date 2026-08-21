@@ -191,6 +191,14 @@ Things worth knowing:
 - **Clearing the lodge clears everybody.** Untick **Member of Other Lodge**, or
   set the picker back to *Select a lodge*, and every tick clears with it — you
   cannot record somebody as an other-lodge member of no lodge.
+- **It works on a booking whose price you negotiated.** A booking that came in
+  through the public request form usually carries a price an officer agreed
+  rather than the standard rates, and most edits to those are refused so nobody
+  disturbs what was agreed. This tick is allowed anyway — it is not a
+  renegotiation, it just applies the rate you already offer members of that
+  lodge, and everybody else on the booking keeps the price they were quoted. Set
+  the tick on its own, though: combine it with a date change, adding or removing
+  somebody, or a promo code and the edit is refused as usual.
 - **Only one lodge per booking.** A party split across two visiting clubs needs
   the officer to pick the one that applies, or to price the second club's people
   by hand.

@@ -33,5 +33,17 @@
   Guests card now says all this on screen, so a missing tick box reads as a rule
   rather than a fault.
 
+  **The tick can now be saved on a booking whose price was negotiated.** A
+  booking taken through the public request form carries an agreed total rather
+  than standard rates, and most edits to those are refused so nothing disturbs
+  what was agreed — but that form is exactly where "are you a member of another
+  lodge?" is asked, so it is where these guests come from. The price preview
+  allowed the tick and the save then refused it, which made the feature
+  unusable on the very bookings it was built for. It now saves, on the same
+  terms the existing placeholder-to-member fix already had: on its own only.
+  Combine it with a date change, adding or removing somebody, a per-person date
+  range or a promo code and the edit is refused exactly as before. Everybody the
+  tick does not name keeps the price they were quoted.
+
   Nothing changes for bookings already taken, and the tick still changes the
   price and nothing else.

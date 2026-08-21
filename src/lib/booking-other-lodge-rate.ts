@@ -187,6 +187,69 @@ export function requestCarriesOtherLodgeElection(
   );
 }
 
+/**
+ * The fields that DISTURB a negotiated (quote-priced) booking's basis, in one
+ * shape both the preview and the save can hand over.
+ *
+ * Named canonically here rather than taken from either caller's vocabulary: the
+ * route destructures its zod body into `newCheckInStr`/`newPromoCode`, the batch
+ * service reads `input.checkIn`/`input.promoCode`, and neither name is more
+ * right than the other. Each caller maps its own locals onto these once.
+ */
+export interface OtherLodgeRateExemptionRequest extends OtherLodgeRateInput {
+  checkIn?: unknown;
+  checkOut?: unknown;
+  addGuests?: { length: number } | null;
+  removeGuestIds?: { length: number } | null;
+  guestStayRanges?: { length: number } | null;
+  promoCode?: unknown;
+  removePromoCode?: unknown;
+}
+
+/**
+ * Whether this request is an other-lodge election and NOTHING ELSE — the test
+ * that exempts it from the quote-priced edit block (owner decision, 21 Aug 2026).
+ *
+ * WHY THE EXEMPTION EXISTS. A booking converted from a public request is
+ * quote-priced: its guest rows carry a split of a total an officer negotiated,
+ * and `QUOTE_PRICED_EDIT_BLOCK_MESSAGE` exists to stop an ordinary edit
+ * disturbing that basis. But the public form is exactly where the "are you a
+ * member of another lodge?" answer arrives, so a quote-priced booking is where
+ * these guests come from — and the tick renegotiates nothing. It records that
+ * somebody belongs to a partner lodge and applies the rate the club has already
+ * agreed to give such people. That is the same character as the #2337
+ * placeholder→member link, which is exempted here on the same reasoning and is
+ * the precedent this follows.
+ *
+ * WHY IT IS ELECTION-ONLY, and why that fence is what makes it acceptable. Pair
+ * the tick with a date move, a guest added or removed, a per-guest stay range or
+ * a promotion and the negotiated basis really does move, so the block applies
+ * again in full. Every guest the election does NOT name keeps their locked split
+ * price untouched, because only the ticked and unticked rows have their locks
+ * cleared — which is what confines the exemption to the one person it is about.
+ *
+ * ONE PREDICATE, CALLED FROM BOTH SIDES, and that is the point of it existing.
+ * The preview (`modify-quote`) and the save (`modifyBookingBatch`) each used to
+ * keep their own hand-written list of disturbing fields, and the save's list was
+ * simply missing — so an election-only edit on a negotiated booking previewed
+ * 200 and saved 400. Two lists drift; one cannot. Callers still apply their own
+ * officer check on top, because "who may do this" is theirs to answer.
+ */
+export function requestIsOtherLodgeRateElectionOnly(
+  input: OtherLodgeRateExemptionRequest,
+): boolean {
+  if (!requestCarriesOtherLodgeElection(input)) return false;
+  return !(
+    input.checkIn ||
+    input.checkOut ||
+    input.addGuests?.length ||
+    input.removeGuestIds?.length ||
+    input.guestStayRanges?.length ||
+    input.promoCode ||
+    input.removePromoCode
+  );
+}
+
 /** The election a request that says nothing about the other-lodge rate produces. */
 function inertElection(booking: OtherLodgeRateBooking): OtherLodgeRateElection {
   return {

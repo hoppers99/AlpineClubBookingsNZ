@@ -145,7 +145,7 @@ src/app/api/bookings/[id]/exception-requests/route.ts 286 route-handler
 src/app/api/bookings/[id]/guests/[guestId]/route.ts 502 route-handler
 src/app/api/bookings/[id]/guests/route.ts 1208 route-handler
 src/app/api/bookings/[id]/modify-dates/route.ts 334 route-handler
-src/app/api/bookings/[id]/modify-quote/route.ts 2334 route-handler
+src/app/api/bookings/[id]/modify-quote/route.ts 2331 route-handler
 src/app/api/bookings/[id]/modify/route.ts 468 route-handler
 src/app/api/bookings/[id]/refund-request/route.ts 256 route-handler
 src/app/api/bookings/[id]/waitlist-confirm/route.ts 566 route-handler
@@ -205,7 +205,7 @@ src/lib/bed-allocation-lifecycle.ts 2691 domain-module
 src/lib/bed-allocation-move.ts 1439 domain-module
 src/lib/bed-allocation-removal.ts 789 domain-module
 src/lib/bed-allocation.ts 3678 domain-module
-src/lib/booking-batch-modification-service.ts 1447 domain-module
+src/lib/booking-batch-modification-service.ts 1478 domain-module
 src/lib/booking-cancel.ts 2379 domain-module
 src/lib/booking-create.ts 1874 domain-module
 src/lib/booking-date-modification-service.ts 1774 domain-module

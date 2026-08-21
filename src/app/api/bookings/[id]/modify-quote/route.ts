@@ -35,6 +35,7 @@ import {
   assertOtherLodgeExists,
   OTHER_LODGE_RATE_IN_PROGRESS_MESSAGE,
   requestCarriesOtherLodgeElection,
+  requestIsOtherLodgeRateElectionOnly,
   resolveOtherLodgeRateElection,
   type OtherLodgeRateElection,
 } from "@/lib/booking-other-lodge-rate";
@@ -686,33 +687,29 @@ export async function POST(
     );
   /**
    * The other-lodge re-rate is exempt from the quote-priced edit block on the
-   * same terms as the #2337 link, and for the same reason.
+   * same terms as the #2337 link, and for the same reason. The rule itself —
+   * election-only, and which fields count as disturbing — lives in
+   * `requestIsOtherLodgeRateElectionOnly`, which the SAVE path calls too.
    *
-   * A booking converted from a public request IS quote-priced: its guest rows
-   * carry an even split of the total the officer negotiated (#1032 blocks
-   * ordinary edits so nothing disturbs that basis). But the request path is
-   * exactly where an other-club guest arrives — the public form asks "are you a
-   * member of another lodge?" — and re-rating them afterwards is the officer's
-   * deliberate, audited decision about one named person, not an ordinary edit.
-   * Every guest NOT re-rated keeps their locked split price untouched, because
-   * only the ticked/unticked rows clear their locks.
-   *
-   * Election-only, like the link exemption: pair it with a date change or a
-   * guest add and the ordinary block applies again.
+   * That sharing is a fix, not tidying. This list used to be written out here
+   * and nowhere else: `modifyBookingBatch` had no other-lodge exemption at all,
+   * so an election-only edit on a negotiated booking previewed 200 and saved
+   * 400 (owner decision, 21 Aug 2026). Two hand-maintained lists drift; one
+   * cannot. Only the officer check stays local to each caller.
    */
   const requestIsOtherLodgeRateExempt =
-    (requestedOtherLodgeId !== undefined ||
-      otherLodgeMemberGuestIds !== undefined) &&
     isAdmin &&
-    !(
-      newCheckInStr ||
-      newCheckOutStr ||
-      addGuests?.length ||
-      removeGuestIds?.length ||
-      guestStayRanges?.length ||
-      newPromoCode ||
-      removePromoCode
-    );
+    requestIsOtherLodgeRateElectionOnly({
+      otherLodgeId: requestedOtherLodgeId,
+      otherLodgeMemberGuestIds,
+      checkIn: newCheckInStr,
+      checkOut: newCheckOutStr,
+      addGuests,
+      removeGuestIds,
+      guestStayRanges,
+      promoCode: newPromoCode,
+      removePromoCode,
+    });
   const quotePriced = await isQuotePricedBooking(prisma, bookingId);
   if (
     !requestIsIdentityOnly &&

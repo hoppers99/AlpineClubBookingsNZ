@@ -248,6 +248,33 @@ price — and the resolver re-checks eligibility itself, so a row that somehow
 carries the flag without qualifying still resolves through the ordinary rules.
 The API refusal is the first fence, not the only one.
 
+**An election-only edit is EXEMPT from the quote-priced edit block, on both the
+preview and the save** (owner decision, 21 Aug 2026). A booking converted from a
+public request is quote-priced: its guest rows carry a split of a total an
+officer negotiated, and `QUOTE_PRICED_EDIT_BLOCK_MESSAGE` normally refuses any
+edit that would disturb that basis. The tick is exempted because it does not
+renegotiate anything — it records that somebody belongs to a partner lodge and
+applies the rate the club has already agreed to give such people. That is the
+same character as the `INV-MOD` placeholder→member link, which was exempted
+first and is the precedent this follows. **This was decided, not overlooked.**
+
+The exemption is **election-ONLY**, and that fence is what makes it safe: pair
+the tick with a date move, a guest added or removed, a per-guest stay range or a
+promotion and the block applies again in full, because those genuinely do move
+the negotiated basis. Every guest the election does not name keeps their locked
+split price, since only the ticked and unticked rows have their locks cleared.
+It is officer-only, matching the resolver's own admin refusal.
+
+**One predicate answers it for both paths**
+(`requestIsOtherLodgeRateElectionOnly`), and that is deliberate rather than
+tidiness. The preview and the save each used to carry their own hand-written
+list of disturbing fields — and the save's list did not exist at all, so an
+election-only edit on a negotiated booking previewed 200 and then saved 400, on
+precisely the bookings these guests arrive through. Two lists drift; one cannot.
+For the same reason an election never takes the identity-only price-preserving
+echo: that path writes the flag without running the rate resolver, so the tick
+would land and the money would not move.
+
 **The election is an END STATE, and the guests whose flag CHANGES are exactly the
 guests whose locked nights are cleared.** `resolveOtherLodgeRateElection`
 (`src/lib/booking-other-lodge-rate.ts`) is shared verbatim by the modify-quote

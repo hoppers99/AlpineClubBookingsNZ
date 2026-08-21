@@ -35,7 +35,10 @@ import {
   isQuotePricedBooking,
   QUOTE_PRICED_EDIT_BLOCK_MESSAGE,
 } from "@/lib/booking-modify";
-import { requestCarriesOtherLodgeElection } from "@/lib/booking-other-lodge-rate";
+import {
+  requestCarriesOtherLodgeElection,
+  requestIsOtherLodgeRateElectionOnly,
+} from "@/lib/booking-other-lodge-rate";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { linkModificationToOutstandingChangeRequest } from "@/lib/booking-change-request-linkage";
 import { getDefaultLodgeId } from "@/lib/lodges";
@@ -479,11 +482,39 @@ export async function modifyBookingBatch({
         input.promoCode ||
         input.removePromoCode
       );
+    /**
+     * The other-lodge election, exempt on exactly the link's terms (owner
+     * decision, 21 Aug 2026).
+     *
+     * THIS EXEMPTION WAS MISSING, and its absence broke the feature's headline
+     * case. `modify-quote` has carried one since the Other Lodges epic, so an
+     * election-only edit on a quote-priced booking PREVIEWED 200 and then SAVED
+     * 400 — on precisely the bookings these guests arrive through, since the
+     * public request form is what asks "are you a member of another lodge?".
+     * #2978 did not cause that, but it widened who may be ticked, so it made it
+     * far more reachable.
+     *
+     * The owner's reasoning for allowing it: the tick renegotiates nothing. It
+     * records that somebody belongs to a partner lodge and applies the rate the
+     * club has already agreed to give such people — the same character as the
+     * #2337 placeholder link exempted above.
+     *
+     * The rule is `requestIsOtherLodgeRateElectionOnly`, the SAME function the
+     * preview calls, so the two can no longer drift: pair the tick with a date,
+     * add/remove-guest, stay-range or promo change and the block applies again
+     * in full. Officer-only, matching `resolveOtherLodgeRateElection`'s own
+     * `role !== "ADMIN"` refusal — that resolver would throw 403 later anyway,
+     * but an exemption that reads as if a member could use it is a trap for the
+     * next reader.
+     */
+    const requestIsOtherLodgeRateExempt =
+      actor.role === "ADMIN" && requestIsOtherLodgeRateElectionOnly(input);
     const quotePriced = await isQuotePricedBooking(tx, bookingId);
     if (
       !requestIsIdentityOnly &&
       !requestIsCreditElectionOnly &&
       !requestIsMemberLinkExempt &&
+      !requestIsOtherLodgeRateExempt &&
       quotePriced
     ) {
       throw new ApiError(QUOTE_PRICED_EDIT_BLOCK_MESSAGE, 400);
