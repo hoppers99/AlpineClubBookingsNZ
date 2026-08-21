@@ -18,7 +18,10 @@ import {
 } from "./lib/internal-return-path";
 import { ASSET_URL_EXTENSIONS } from "./lib/asset-url-404";
 import {
+  buildFamilyInviteReturnCookieValue,
+  createFamilyInviteReturnNonce,
   FAMILY_INVITE_RETURN_MAX_AGE_SECONDS,
+  FAMILY_INVITE_RETURN_NONCE_HEADER,
   getFamilyInviteReturnPath,
   serialiseFamilyInviteReturnCookie,
 } from "./lib/family-invite-return-address";
@@ -520,40 +523,76 @@ function serialiseSignedInHintCookie(
  * in-app `<Link>` to it needs to know that.
  *
  * The value is a path, never a URL, and it is re-validated on the way out by
- * `getFamilyInviteReturnPath()` at each of the four post-login landing sites.
+ * `matchFamilyInviteReturnCookie()` at each of the four post-login landing sites.
+ *
+ * ## The third condition: tab scoping (#2974)
+ *
+ * The write now mints a nonce and stores it IN the cookie, and the same value
+ * goes to the render in {@link FAMILY_INVITE_RETURN_NONCE_HEADER} so the invite
+ * page can put it on its sign-in anchor. A landing site honours the address only
+ * when the nonce it was handed matches the one in the cookie, which is what makes
+ * the address belong to the TAB that opened the invitation rather than to the
+ * browser. Full account, including what a cookie could disclose on a shared kiosk
+ * before this, in `src/lib/family-invite-return-address.ts`.
+ *
+ * The decision and the write are split because they happen at different moments
+ * in {@link proxy}: the request headers handed to the render are assembled BEFORE
+ * the response exists, so {@link planFamilyInviteReturnAddress} answers "write
+ * this, with this nonce" early and this function does the `Set-Cookie` at the
+ * same point it always did. Keeping the write here is also what keeps the
+ * two-writer census in `csp-proxy.test.ts` meaningful — see {@link isPageShapedPath}.
  */
-function syncFamilyInviteReturnAddress(
+type FamilyInviteReturnPlan =
+  | { action: "write"; cookieValue: string; nonce: string }
+  | { action: "retire" };
+
+function planFamilyInviteReturnAddress(
   request: NextRequest,
-  response: NextResponse,
-): void {
-  if (request.method !== "GET") return;
+): FamilyInviteReturnPlan | null {
+  if (request.method !== "GET") return null;
 
   const path = normalisePathname(request.nextUrl.pathname);
 
-  if (!isPageShapedPath(path)) return;
+  if (!isPageShapedPath(path)) return null;
 
   const returnPath = getFamilyInviteReturnPath(path);
 
-  if (!returnPath) return;
+  if (!returnPath) return null;
 
   // Arrived. Retiring is always the safe direction, so it is deliberately not
   // gated on the navigation check below.
   if (hasSessionCookie(request)) {
-    response.headers.append(
-      "Set-Cookie",
-      serialiseFamilyInviteReturnCookie("", 0),
-    );
-    return;
+    return { action: "retire" };
   }
 
-  if (request.headers.get("sec-fetch-dest") !== "document") return;
+  if (request.headers.get("sec-fetch-dest") !== "document") return null;
+
+  const nonce = createFamilyInviteReturnNonce();
+  const cookieValue = buildFamilyInviteReturnCookieValue(nonce, returnPath);
+
+  // Null only if a future edit loosens one of the two shape guards out of step
+  // with the other. Writing nothing degrades the visitor to their ordinary
+  // post-login landing, where writing an unmatchable cookie would look like the
+  // feature working right up until it silently did not.
+  if (!cookieValue) return null;
+
+  return { action: "write", cookieValue, nonce };
+}
+
+function syncFamilyInviteReturnAddress(
+  response: NextResponse,
+  plan: FamilyInviteReturnPlan | null,
+): void {
+  if (!plan) return;
 
   response.headers.append(
     "Set-Cookie",
-    serialiseFamilyInviteReturnCookie(
-      returnPath,
-      FAMILY_INVITE_RETURN_MAX_AGE_SECONDS,
-    ),
+    plan.action === "retire"
+      ? serialiseFamilyInviteReturnCookie("", 0)
+      : serialiseFamilyInviteReturnCookie(
+          plan.cookieValue,
+          FAMILY_INVITE_RETURN_MAX_AGE_SECONDS,
+        ),
   );
 }
 
@@ -1099,6 +1138,11 @@ export async function proxy(request: NextRequest) {
 
   const requestHeaders = new Headers(request.headers);
 
+  // #2974: decided before the render's headers are assembled, because a WRITE has
+  // to hand the invite page the same nonce it is about to put in the cookie. The
+  // `Set-Cookie` itself still happens below, in the census'd writer.
+  const familyInviteReturnPlan = planFamilyInviteReturnAddress(request);
+
   // The D2 marker cookie is for the BROWSER only. See
   // `stripSignedInHintFromCookieHeader` for why this line is what makes that
   // true rather than a comment claiming it.
@@ -1122,6 +1166,21 @@ export async function proxy(request: NextRequest) {
   );
   requestHeaders.set(REQUEST_METHOD_HEADER, request.method);
 
+  // Deleted unconditionally first (#2974). `new Headers(request.headers)` copies
+  // whatever the CLIENT sent, and this header is a message from the proxy to the
+  // render — a visitor's own copy must never reach a page. Belt-and-braces
+  // rather than a hole being closed: a forged nonce matches no cookie. Set only
+  // on the one request that is also being given the matching cookie, so no other
+  // route can read a live nonce out of its request headers.
+  requestHeaders.delete(FAMILY_INVITE_RETURN_NONCE_HEADER);
+
+  if (familyInviteReturnPlan?.action === "write") {
+    requestHeaders.set(
+      FAMILY_INVITE_RETURN_NONCE_HEADER,
+      familyInviteReturnPlan.nonce,
+    );
+  }
+
   const response = NextResponse.next({
     request: {
       headers: requestHeaders,
@@ -1131,7 +1190,7 @@ export async function proxy(request: NextRequest) {
   response.headers.set(CSP_HEADER, csp);
   setSecurityHeaders(response.headers, pathname);
   syncSignedInHint(request, response, hasSessionCookie(request));
-  syncFamilyInviteReturnAddress(request, response);
+  syncFamilyInviteReturnAddress(response, familyInviteReturnPlan);
 
   const anonymousCacheControl = getAnonymousPageCacheControl(request);
 
