@@ -834,6 +834,30 @@ describe("the deliberate escape: a declared allowance", () => {
     expect(second.stderr).toContain("+100 beyond its ceiling");
   });
 
+  it("survives into the push-to-main run, which judges the same merge", () => {
+    // Load-bearing, and not obvious: `verify` also runs on a push to `main`,
+    // against the push's own pre-push commit. If an allowance did not reach
+    // that run, every merge of a pull request carrying one would redden `main`
+    // for growth that was already declared and reviewed. It does reach it,
+    // because the allowance file is part of the same merge and so is in that
+    // run's diff too.
+    const { repo, base } = overBudgetRepo();
+    git(repo.root, "checkout", "--quiet", "-b", "lane");
+    repo.write("src/lib/big.ts", 1300);
+    repo.allow("2980-big.md", `file: src/lib/big.ts\nlines: 1300\nreason: ${REASON}\n`);
+    repo.commit("lane grows it, with an allowance");
+    expect(captureRun(repo.root, ["--base", base]).code).toBe(0);
+
+    git(repo.root, "checkout", "--quiet", "main");
+    const before = git(repo.root, "rev-parse", "HEAD").trim();
+    git(repo.root, "merge", "--quiet", "--no-ff", "-m", "merge lane", "lane");
+
+    const push = captureRun(repo.root, ["--base", before]);
+    expect(push.stderr).toBe("");
+    expect(push.code).toBe(0);
+    expect(push.stdout).toContain("ALLOWED GROWTH");
+  });
+
   it("refuses to judge anything on an allowance it cannot read", () => {
     const { repo, base } = overBudgetRepo();
     repo.write("src/lib/big.ts", 1300);
