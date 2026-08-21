@@ -3042,8 +3042,8 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   token is involved either way — it is a styling-correctness bug in a
   security fix, fixed in the same PR.
 
-- **`/family-invite/[token]`'s login link: FIXED by #2827, via a server-side
-  return address (owner decision, 19 Aug 2026).** The page used to build
+- **`/family-invite/[token]`'s login link: FIXED by #2827 via a server-side
+  return address, and TAB-SCOPED by #2974 — no residual remains.** The page used to build
   `<Link href={buildLoginPath('/family-invite/<token>')}>` for its signed-out and
   wrong-account branches, so the invite token sat in an `href` — and from there in
   the recipient's address bar, their browser history and any `Referer` the next hop
@@ -3065,13 +3065,31 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   The owner chose the rework instead: keep the plain anchor, and carry the return
   address out of the page.
 
-  The signed-out branch's affordance is now a `<Link href="/login">` with no
-  `callbackUrl` at all (the wrong-account branch's is a sign-out control, below),
+  Be exact about the scope of that claim, because it is easy to read as more than
+  it is: what needs no scripting is **arming the return address** — the affordance
+  is a server-rendered anchor and both halves of the mechanism ride on the HTTP
+  response that rendered it. Submitting the sign-in form still calls `signIn()` and
+  so still needs JavaScript, exactly as it did before #2827 and #2974.
+
+  The signed-out branch's affordance is now a `<Link>` to `/login` with no
+  `callbackUrl` at all — since #2974 it carries a tokenless `?inviteReturn=<nonce>`
+  and nothing else (the wrong-account branch's is a sign-out control, below),
   and the post-login return address travels in an `HttpOnly`, `SameSite=Lax`,
-  path-wide cookie with a **two-minute** life — shortened from ten by the owner
-  (19 Aug 2026), see the bounded-residual note below
-  (`src/lib/family-invite-return-address.ts`). Four things make that safe rather
-  than a token in a different hiding place:
+  path-wide cookie with a **two-minute** life
+  (`src/lib/family-invite-return-address.ts`).
+
+  **On the two minutes, and a citation this document used to get wrong.** The life
+  was shortened from ten to two during #2827. Earlier revisions of this entry, and
+  of the module docblock, credited that to "an owner decision, 19 Aug 2026" — and
+  there is no such comment on #2827 or on PR #2970; every comment on both was
+  posted by the automation account. The owner did make the call. It was made in
+  session and never written down as a dated comment, so this says so rather than
+  dating it to a record that does not exist. #2974 re-examined the figure once tab
+  scoping closed the disclosure the shortening was mitigating, and **kept it** —
+  see "Tab scoping" below.
+
+  Five things make the cookie safe rather than a token in a different hiding
+  place:
 
   - **It is unreadable from the page.** `HttpOnly` puts it out of reach of CSS
     attribute selectors, of `document.cookie`, and of the document, the address
@@ -3121,6 +3139,14 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
     narrowed to `Sec-Fetch-Site: same-origin`, because the ordinary path here is a
     click on an emailed link and arrives `cross-site`.
 
+  - **It belongs to the TAB that opened the invitation, not to the browser
+    (#2974).** The write mints 128 random bits, stores them in the cookie as
+    `<nonce>.<path>`, and hands the same value to the render in the
+    `x-family-invite-return-nonce` request header; the invite page puts it on its
+    sign-in anchor as `/login?inviteReturn=<nonce>`, and a landing site honours the
+    cookie only for a request presenting a matching nonce. Detail in "Tab scoping"
+    below.
+
   ### The address's life, and why one route handler could not manage it
 
   All four post-login landing sites honour the address (the landing route for
@@ -3150,37 +3176,82 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   kept.) It is now a sign-out-and-return control: signing out lands a signed-out
   navigation on the invite page, which is where the address is written.
 
-  **Accepted bounded residual (owner decision, 19 Aug 2026): a cookie is
-  per-browser, where the old `callbackUrl` was per-tab.** If somebody opens an
-  invitation on a shared lodge or kiosk browser while signed out and walks away
-  *without signing in*, the next person to sign in on that browser within the
-  cookie's life is landed on that invitation. The retire above closes the case
-  where the first visitor DID sign in, which is the common one and the one that put
-  a live token in a second person's address bar; this remainder discloses the
-  invited email address and the family-group name, and the page's email re-check
-  still refuses the join. It is inherent to a browser-scoped return address: the
-  pre-#2827 `callbackUrl` avoided it only by living in a URL, which is the exposure
-  being closed.
+  ### Tab scoping — the #2827 residual, CLOSED by #2974
 
-  The complete closure is to bind the address to the tab that asked for it — a
-  tokenless flag on the sign-in link (`/login?…`), honoured only when present. That
-  is a constant, not a secret, so it is safe to render. **The owner chose not to
-  build it in this PR, and to shorten the exposure window instead:** the cookie's
-  life was reduced from ten minutes to two (`FAMILY_INVITE_RETURN_MAX_AGE_SECONDS`),
-  so the residual is now a roughly two-minute window on a shared browser after a
-  signed-out visitor abandons an invitation. The tab-scoped fix has to be threaded
-  through all four resolution sites and both 2FA detour hops — a change to the login
-  flow, which this PR's scope excludes — and it would trade a bounded disclosure for
-  regression risk across the flows this PR has just corrected. It is therefore a
-  named, deferred fix the owner has accepted, recorded here and in the module
-  docblock, and **tracked as issue #2974** for a later supervised, gated PR.
+  **What was left open.** A cookie is per-browser, where the `callbackUrl` it
+  replaced was per-tab. If somebody opened an invitation on a shared lodge or kiosk
+  browser while signed out and walked away *without signing in*, the next person to
+  sign in on that browser within the cookie's life was landed on that invitation —
+  disclosing the invited email address and the family-group name. Not an account
+  takeover: the page's email re-check still refused the join, and the version that
+  mattered (a first visitor's live token reaching a second person's address bar) was
+  already closed by the retire above. #2827 accepted it as a bounded residual, cut
+  the window from ten minutes to two, and named the fix; #2974 built it.
 
-  An absent or expired cookie degrades to the member's ordinary landing rather
-  than to an error — as does a browser too old to send `Sec-Fetch-*` — and the
-  emailed link still works. Severity was always materially lower than the payment
-  token, for the email-binding reason above; it is closed regardless, because a
-  bearer-shaped value in a place the URL or an attribute can carry is the class,
-  not the consequence.
+  **What #2974 does.** The address is bound to the tab that opened the invitation,
+  by a tokenless nonce:
+
+  1. `syncFamilyInviteReturnAddress()` mints 128 bits from `crypto.randomUUID()`
+     on the same signed-out document GET that writes the cookie, stores them in the
+     cookie as `<nonce>.<path>`, and hands the same value to the render in the
+     `x-family-invite-return-nonce` request header — the mechanism `x-pathname` and
+     the CSP nonce already use. A server component cannot set a cookie during
+     render, so the proxy is the only place both halves can be minted together.
+  2. The invite page renders `/login?inviteReturn=<nonce>` — still an ordinary
+     anchor, so nothing on that page needs JavaScript to arm the address.
+  3. Every landing site passes the nonce it was given, with the RAW cookie value,
+     to `resolvePostLoginLandingPath()`, which honours the address only when
+     `matchFamilyInviteReturnCookie()` says the two agree. The nonce rides through
+     the landing route's query, Google's `callbackUrl` and both 2FA detour hops.
+
+  A sign-in started anywhere else — a fresh `/login`, a bookmark, the next person
+  at the kiosk — presents no nonce and lands where it normally would.
+
+  **Three points a reviewer should not have to work out.**
+
+  - **The resolver takes the PAIR, never a pre-resolved path.** A landing site that
+    forgets to thread the nonce through therefore cannot express "honour this
+    address" at all: the omission fails closed rather than silently restoring
+    browser-scoped behaviour. That is the structural half of the fix, and it is why
+    `readFamilyInviteReturnCookieValue()` hands back the untouched cookie value.
+  - **The nonce in the `href` is not a step backwards.** It is random, not derived
+    from the token, and worth nothing without the `HttpOnly` cookie from the same
+    browser — so there is nothing in it for a CSS attribute oracle to read out or a
+    `Referer` to leak (and `Referrer-Policy: strict-origin-when-cross-origin` sends
+    a cross-origin hop the origin only). This entry previously sketched the fix as a
+    *constant* flag, "safe to render" because it is not a secret. A constant is
+    guessable, and the criterion is that a sign-in in a **different tab** does not
+    reach the invitation — which a constant anybody can type into `/login?…` does
+    not give you. A per-navigation nonce costs one header and one cookie field more.
+  - **The two-minute window was reconsidered and KEPT.** It was shortened as a
+    mitigation for the disclosure now closed, so the question was whether to give
+    the ten minutes back. Measured against the journey that consumes the cookie,
+    two is comfortable: the address is read at the *first* authenticated page load,
+    and entering a 2FA code does not extend the window, because `/login/verify` and
+    `/login/enroll` resolve the landing during render and hand it to the panel as a
+    prop. The window covers "load `/login`, type an email and a password, submit".
+    What it still bounds is the one case tab scoping does not reach — a second
+    person using the *first* person's own tab — which discloses nothing new, since
+    the invitation is already on the screen in front of them.
+
+  **What it costs, stated plainly.** A **magic-link** sign-in started from an
+  invitation no longer returns to it. The emailed link opens in whatever tab the
+  mail client gives it, carrying no nonce — by design, since a nonce mailed to an
+  inbox is not a tab binding. The recipient lands on their normal home and follows
+  the invite link again, which is what the page's copy already tells them to do.
+  The password and Google flows and both 2FA detours are unaffected.
+
+  **Behaviour across the deploy.** A cookie written by the previous release carries
+  a bare path and no nonce, so the new parser refuses it: an in-flight visitor
+  degrades to their ordinary landing for the two minutes it survives, and the
+  emailed link still works. No migration, and nothing errors.
+
+  An absent, expired, mismatched or old-format cookie degrades to the member's
+  ordinary landing rather than to an error — as does a browser too old to send
+  `Sec-Fetch-*` — and the emailed link still works. Severity was always materially
+  lower than the payment token, for the email-binding reason above; it is closed
+  regardless, because a bearer-shaped value in a place the URL or an attribute can
+  carry is the class, not the consequence.
 
   Eight suites pin it, and each property was mutation-verified rather than merely
   asserted. `src/lib/__tests__/family-invite-return-address.test.ts` covers the
@@ -3204,6 +3275,18 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   `src/app/(public)/login/__tests__/two-factor-detour-landing.test.tsx` — and the
   proxy's `Set-Cookie` writer census in `src/lib/__tests__/csp-proxy.test.ts` is
   now the set of two described under #2578 above.
+
+  **#2974 added the tab binding to every one of those files rather than to a new
+  one, on purpose: five separate places could quietly reopen it, so each of them
+  carries its own "the cookie is alive and this request presents no nonce" case.**
+  The pure matcher, the resolver, the `/login` self-heal (the Google flow's
+  terminus), both 2FA detour pages and the landing route each assert that the
+  member lands on their ordinary home instead. The proxy suite adds that the cookie
+  parses as `<nonce>.<path>`, that the forwarded request header carries the *same*
+  nonce, that a fresh one is minted per navigation, that none is derived from the
+  token, and that a client-sent copy of the nonce header never reaches a render.
+  The page suite adds that the anchor carries the nonce and still no token, that a
+  missing header degrades to a plain `/login`, and that a malformed one is refused.
 ## CodeQL And Semgrep Alert Backlog Triage - 2026-08-19
 
 **Audience: developer.** This is the canonical record of the code-scanning alert
