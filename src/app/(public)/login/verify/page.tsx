@@ -1,7 +1,11 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { buildLoginPath, getExplicitCallbackUrl } from "@/lib/auth-redirect";
-import { readFamilyInviteReturnAddress } from "@/lib/family-invite-return-address-cookie";
+import { readFamilyInviteReturnCookieValue } from "@/lib/family-invite-return-address-cookie";
+import {
+  appendFamilyInviteReturnParam,
+  getFamilyInviteReturnNonce,
+} from "@/lib/family-invite-return-address";
 import { resolvePostLoginLandingPath } from "@/lib/post-login-landing";
 import { TwoFactorVerifyPanel } from "../two-factor-panels";
 
@@ -12,7 +16,10 @@ function singleSearchParam(value?: string | string[]) {
 export default async function TwoFactorVerifyPage({
   searchParams,
 }: {
-  searchParams: Promise<{ callbackUrl?: string | string[] }>;
+  searchParams: Promise<{
+    callbackUrl?: string | string[];
+    inviteReturn?: string | string[];
+  }>;
 }) {
   const params = await searchParams;
   // A genuinely explicit deep link only (null when absent/unsafe/self-referential).
@@ -20,6 +27,12 @@ export default async function TwoFactorVerifyPage({
   // "user asked for a specific page" signal here (D-D4).
   const explicitCallbackUrl =
     getExplicitCallbackUrl(singleSearchParam(params.callbackUrl)) ?? undefined;
+  // #2974: the tab-binding nonce the family-invite page minted, carried across
+  // the detour hop that brought us here. Tokenless, and shape-checked before it
+  // is forwarded anywhere; a missing or malformed value simply means the invite
+  // address is not honoured and the member lands where they normally would.
+  const familyInviteReturnNonce =
+    getFamilyInviteReturnNonce(params.inviteReturn) ?? undefined;
   const session = await auth();
 
   if (!session?.user) {
@@ -39,10 +52,14 @@ export default async function TwoFactorVerifyPage({
   // #2827: a 2FA-enabled member who came from a family invite must still land back
   // on the invite after the challenge. The address is read from the HttpOnly cookie
   // rather than carried in this page's query string, and the panel below only ever
-  // passes it to `router.replace()` — never into a rendered attribute.
+  // passes it to `router.replace()` — never into a rendered attribute. #2974: and
+  // only when this request presents the nonce the invite page's own tab was given.
   const landing = resolvePostLoginLandingPath({
     explicitCallbackUrl,
-    privateReturnPath: await readFamilyInviteReturnAddress(),
+    familyInviteReturn: {
+      cookieValue: await readFamilyInviteReturnCookieValue(),
+      presentedNonce: familyInviteReturnNonce,
+    },
     landingPreference: session.user.postLoginLanding,
     permissionInput: {
       adminPermissionMatrix: session.user.adminPermissionMatrix,
@@ -56,10 +73,13 @@ export default async function TwoFactorVerifyPage({
   if (!session.user.twoFactorEnrolled || !session.user.twoFactorMethod) {
     // Carry only the explicit deep link across to /login/enroll; that page
     // re-resolves the default the same way, so the detour hop never bakes one in.
+    // The #2974 tab-binding nonce rides along too, so the second hop can still
+    // honour the family-invite address — it is the nonce, never the invite path.
     const query = new URLSearchParams();
     if (explicitCallbackUrl) {
       query.set("callbackUrl", explicitCallbackUrl);
     }
+    appendFamilyInviteReturnParam(query, familyInviteReturnNonce);
     const suffix = query.toString() ? `?${query.toString()}` : "";
     redirect(`/login/enroll${suffix}`);
   }

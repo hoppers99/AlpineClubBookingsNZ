@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readFamilyInviteReturnAddress } from "@/lib/family-invite-return-address-cookie";
-import { serialiseFamilyInviteReturnCookie } from "@/lib/family-invite-return-address";
+import { readFamilyInviteReturnCookieValue } from "@/lib/family-invite-return-address-cookie";
+import {
+  FAMILY_INVITE_RETURN_PARAM,
+  serialiseFamilyInviteReturnCookie,
+} from "@/lib/family-invite-return-address";
 import { resolvePostLoginLandingPath } from "@/lib/post-login-landing";
 import { requireActiveSession } from "@/lib/session-guards";
 
@@ -34,10 +37,19 @@ export async function GET(req: NextRequest) {
   // signed-in GET of the invite page instead (`syncFamilyInviteReturnAddress()`),
   // which covers all four flows. The clear below is still needed for the one case
   // that never lands on the page — see the comment on it.
-  const privateReturnPath = await readFamilyInviteReturnAddress();
+  // #2974: the raw cookie value is paired with the tab-binding nonce the caller
+  // presented, and `resolvePostLoginLandingPath` honours the address only if the
+  // two agree. The login form forwards the nonce it was rendered with, so the
+  // password flow still returns to the invitation; a magic-link sign-in, whose
+  // navigation came from an email in some other tab, presents none and lands on
+  // the member's ordinary home.
+  const familyInviteReturnCookie = await readFamilyInviteReturnCookieValue();
   const path = resolvePostLoginLandingPath({
     explicitCallbackUrl,
-    privateReturnPath,
+    familyInviteReturn: {
+      cookieValue: familyInviteReturnCookie,
+      presentedNonce: req.nextUrl.searchParams.get(FAMILY_INVITE_RETURN_PARAM),
+    },
     landingPreference: user.postLoginLanding,
     permissionInput: {
       adminPermissionMatrix: user.adminPermissionMatrix,
@@ -46,13 +58,16 @@ export async function GET(req: NextRequest) {
 
   const response = NextResponse.json({ path });
 
-  // Cleared whenever a valid address was present, not only when it won — and this
-  // is the case the proxy's retire cannot reach: an explicit callbackUrl outranks
-  // the address, so the member never lands on the invite page, and leaving the
-  // cookie behind would then steer their NEXT sign-in somewhere they did not ask
-  // for. Expiry is a past-dated overwrite with the same attributes, never a bare
-  // delete.
-  if (privateReturnPath) {
+  // Cleared whenever an address was present, not only when it won — and this is
+  // the case the proxy's retire cannot reach: an explicit callbackUrl outranks the
+  // address, so the member never lands on the invite page, and leaving the cookie
+  // behind would then steer their NEXT sign-in somewhere they did not ask for.
+  // Deliberately keyed on the cookie EXISTING rather than on it matching this
+  // tab's nonce (#2974): a successful sign-in that did not consume the address
+  // should still tidy it away, and clearing something this request was not
+  // entitled to use is the fail-safe direction. Expiry is a past-dated overwrite
+  // with the same attributes, never a bare delete.
+  if (familyInviteReturnCookie) {
     response.headers.append(
       "Set-Cookie",
       serialiseFamilyInviteReturnCookie("", 0),
