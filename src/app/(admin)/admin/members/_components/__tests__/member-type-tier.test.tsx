@@ -62,8 +62,12 @@ vi.mock("@/components/ui/select", () => ({
       {children}
     </div>
   ),
-  // Plain text inside the listbox, NOT an option — which is the point of using
-  // it for the Unassigned hint (#2978): it can never be selected as a value.
+  // #2978: the Membership Type picker groups the club's own types under a
+  // label. `SelectGroup` is what PROVIDES the context `SelectLabel` reads — the
+  // real Radix label throws without it, which is why the pair is mocked
+  // together and why `member-filter-toolbar-real-select.test.tsx` renders the
+  // unmocked component as well.
+  SelectGroup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SelectLabel: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SelectTrigger: ({ children, ...props }: { children: ReactNode }) => (
     <button type="button" {...props}>
@@ -173,7 +177,12 @@ describe("members list: Membership Type filter + Non-Member Category rename (#14
     renderToolbar();
 
     expect(screen.getByText("All Membership Types")).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "Unassigned" })).toBeInTheDocument();
+    // #2978 added the parenthetical pointing at non-member contacts; the option
+    // still MATCHES exactly what it always did (no season assignment), and the
+    // removable filter chip still reads plain "Unassigned".
+    expect(
+      screen.getByRole("option", { name: /^Unassigned/ }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Full" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Life" })).toBeInTheDocument();
   });

@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectLabel,
   SelectTrigger,
@@ -157,31 +158,47 @@ export function MemberFilterToolbar({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Membership Types</SelectItem>
-              <SelectItem value={UNASSIGNED_MEMBERSHIP_TYPE_VALUE}>
-                Unassigned
-              </SelectItem>
               {/*
                 #2978 (owner decision, 21 Aug 2026): COPY ONLY — nothing about
-                what these options match has changed, and acceptance criterion 1
+                what these options MATCH has changed, and acceptance criterion 1
                 forbids changing it. The Type – Tier column now reads
                 "Non-Member – Adult" for a non-member booking contact, so an
                 officer reasonably picks the Non-Member type below and gets
                 nothing: those rows carry no season assignment, which is what
-                Unassigned means and always meant. Say so where they are looking.
-
-                A `SelectLabel`, not an item: Radix renders it as a plain node
-                inside the listbox, so it is announced as text and can never be
-                chosen as a value.
+                Unassigned means and always meant. The hint therefore rides on
+                the option itself, where the officer is looking and where it
+                cannot be read as anything but a note about what this option
+                finds. The removable filter chip still reads plain "Unassigned".
               */}
-              <SelectLabel className="max-w-[240px] whitespace-normal text-xs font-normal text-muted-foreground">
-                Non-member contacts have no membership type — they are listed
-                under Unassigned.
-              </SelectLabel>
-              {membershipTypeOptions.map((type) => (
-                <SelectItem key={type.id} value={type.id}>
-                  {type.name}
-                </SelectItem>
-              ))}
+              <SelectItem value={UNASSIGNED_MEMBERSHIP_TYPE_VALUE}>
+                Unassigned (includes non-member contacts)
+              </SelectItem>
+              {/*
+                The club's OWN types, grouped under a label so the two entries
+                above read as what they are — filter states, not membership
+                types.
+
+                `SelectGroup` IS LOAD-BEARING, not decoration. Radix's
+                `Select.Label` reads a context that only `Select.Group`
+                provides, and that context has no default value, so a bare
+                `<SelectLabel>` throws "`SelectLabel` must be used within
+                `SelectGroup`" the moment the content renders — taking the whole
+                members page down with it. Matches the pattern in
+                `guest-chip.tsx` and `bed-range-assign-dialog.tsx`, the repo's
+                only other users of this component. Keep the label SHORT: it is
+                the group's accessible name, so a screen reader repeats it on
+                every option inside.
+              */}
+              <SelectGroup>
+                <SelectLabel className="text-xs font-normal text-muted-foreground">
+                  Club membership types
+                </SelectLabel>
+                {membershipTypeOptions.map((type) => (
+                  <SelectItem key={type.id} value={type.id}>
+                    {type.name}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
           <Select
