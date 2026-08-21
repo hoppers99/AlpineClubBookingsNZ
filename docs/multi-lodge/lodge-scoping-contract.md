@@ -10,6 +10,27 @@ is updated before metric definitions change.
 These carry a required `lodgeId` after phase 2 (see ADR-001 for migration
 sequencing):
 
+| Model | Scoping | Notes |
+| --- | --- | --- |
+| `LodgeRoom` | direct `lodgeId` | `name` unique per lodge, not globally |
+| `LodgeBed` | via `LodgeRoom` | no direct FK |
+| `BedAllocation` | via room/booking | no direct FK |
+| `Locker` | direct `lodgeId` | `name` unique per lodge; lockers gain a lodge link for the first time |
+| `Season` | direct `lodgeId` | lodges may have different season windows |
+| `MembershipTypeSeasonRate` | via `Season` | keeps `[seasonId, membershipTypeId, ageTier]` uniqueness. Replaced the boolean-keyed `SeasonRate` at E4 (#1930); `SeasonRate` itself was dropped by `20260721120000_contract_drop_season_rate` (#2129 step 2) |
+| `Booking` | direct `lodgeId` | denormalised for capacity/availability query performance; always matches the room's lodge when a room is assigned. `waitlistOfferedLodgeId` (nullable) names the alternate lodge of a live cross-lodge waitlist offer (ADR-004) and never changes the entry's own lodge |
+| `BookingWaitlistAlternateLodge` | direct `lodgeId` junction | ADR-004 cross-lodge waitlist opt-in: lodges a waitlisted member would also accept; rows only widen what the processor may offer |
+| `BookingGuest` / `BookingGuestNight` | via `Booking` | no direct FK |
+| `GroupBooking` | via organiser `Booking` | one group = one lodge (ADR-001 open question 1) |
+| `ChoreTemplate` | direct `lodgeId` | roster generation filters by lodge |
+| `LodgeSettings` | per-lodge row | converted from singleton |
+| `BedAllocationSettings` | per-lodge row | converted from singleton |
+| `BookingDefaults` | per-lodge row | converted from singleton |
+| `BookingRequestSettings` | per-lodge row | converted from singleton |
+| Lodge identity fields (`lodgeName`, `doorCode`, `lodgeTravelNote`) | resolve from `Lodge` (default lodge when no `lodgeId` is in scope) | dropped from the `EmailMessageSetting` singleton (migration `20260709130000`) |
+| `MaintenanceReport` | direct `lodgeId` | a reported physical fault belongs to one building (#2780); `onDelete: Cascade` — a deleted lodge takes its fault history with it |
+| `LodgeMaintenanceReportToken` | direct `lodgeId` (`@unique`) | one live QR-sign bearer token per lodge (#2780); rotating overwrites in place, `onDelete: Cascade` |
+| `MaintenanceReportAnswer` | via `MaintenanceReport` | no direct FK; answers store the question label as asked, so they carry the report's lodge |
 | Model                                                              | Scoping                                                            | Notes                                                                                                                                                                                                                                                                                                                                                   |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `LodgeRoom`                                                        | direct `lodgeId`                                                   | `name` unique per lodge, not globally                                                                                                                                                                                                                                                                                                                   |
@@ -546,6 +567,11 @@ new ADR:
 - Skifield conditions (`WhakapapaReportCache`, the `skifieldConditions`
   module): public-website content, not lodge UI. A per-lodge/per-field
   conditions widget would be a future enhancement, not a scoping change.
+- Maintenance-report policy and questions (`MaintenanceReportSettings`
+  singleton, `MaintenanceReportQuestion`): the club asks the same bounded
+  question set at every lodge, and the photo/retention/anonymous-QR policy is a
+  club decision (#2780). The reports and their per-lodge QR signs above are
+  lodge-scoped; the questions asked and the policy governing them are not.
 
 ## Known Not-Yet-Scoped Surfaces (open)
 

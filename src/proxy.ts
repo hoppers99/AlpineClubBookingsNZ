@@ -1310,6 +1310,15 @@ export const config = {
     "/api/group-bookings/:path*",
     "/api/inductions/:path*",
     "/api/lodge/:path*",
+    // Maintenance reports (#2780): the maintenanceReports rule in
+    // src/config/feature-routes.ts gates "/api/lodge-maintenance" (the
+    // unauthenticated QR submit door) and "/api/maintenance-reports" (the member
+    // submit door), and the first matcher entry above excludes every "/api/..."
+    // path — so without these two entries the proxy never runs on them and
+    // turning the module OFF would leave both API doors LIVE while only the
+    // pages 404. Same failure the calendar entry above was added to prevent.
+    "/api/lodge-maintenance/:path*",
+    "/api/maintenance-reports/:path*",
     "/api/notices/:path*",
     "/api/promo-codes/:path*",
     "/api/skifield-conditions/:path*",

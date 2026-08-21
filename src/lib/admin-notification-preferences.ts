@@ -71,6 +71,11 @@ export const ADMIN_NOTIFICATION_PREFERENCE_META = {
     description:
       "Alerts when an admin requests a permanent member-record hard delete that a different admin must approve. Kept separate from the shared member-requests category so muting family-group and application alerts does not silence delete-request review alerts.",
   },
+  adminMaintenanceReport: {
+    label: "Maintenance reports",
+    description:
+      "Alerts when somebody reports a physical fault at a lodge, from the members' portal or from a QR code in the lodge.",
+  },
 } as const;
 
 export type AdminNotificationPreferenceKey =
@@ -128,6 +133,14 @@ export const ADMIN_NOTIFICATION_PREFERENCE_REQUIREMENT: Record<
   adminBookingRequest: { area: "bookings", level: "edit" },
   adminBookingReviewRequired: { area: "bookings", level: "edit" },
   adminMemberDeleteRequest: { area: "membership", level: "edit" },
+  // #2780. THIS IS WHAT "THE MAINTENANCE OFFICER" MEANS IN A PRODUCT THAT MUST
+  // NOT ENCODE ONE CLUB'S COMMITTEE. There is no maintenance-officer role here
+  // and adding one would be a permission-model change every adopter inherits;
+  // instead the alert goes to whoever the club has given Lodge Operations edit
+  // to, which is where hut leaders, rosters, work parties and lodge settings
+  // already live. A club whose maintenance officer is not otherwise a lodge
+  // admin grants them that area, or builds a custom access role that does.
+  adminMaintenanceReport: { area: "lodge", level: "edit" },
 };
 
 export type AdminNotificationPreferences = Record<
@@ -155,6 +168,7 @@ export const ADMIN_NOTIFICATION_PREFERENCE_SELECT = {
   adminBookingRequest: true,
   adminBookingReviewRequired: true,
   adminMemberDeleteRequest: true,
+  adminMaintenanceReport: true,
 } as const;
 
 export function resolveAdminNotificationPreferences(
@@ -176,6 +190,7 @@ export function resolveAdminNotificationPreferences(
     adminBookingRequest: preferences?.adminBookingRequest ?? true,
     adminBookingReviewRequired: preferences?.adminBookingReviewRequired ?? true,
     adminMemberDeleteRequest: preferences?.adminMemberDeleteRequest ?? true,
+    adminMaintenanceReport: preferences?.adminMaintenanceReport ?? true,
   };
 }
 

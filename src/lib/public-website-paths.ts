@@ -165,6 +165,10 @@ export const NON_WEBSITE_ROOT_SEGMENTS: ReadonlySet<string> = new Set([
   "dashboard",
   "induction",
   "lodge-instructions",
+  // #2780: the signed-in maintenance-report form. An `(authenticated)` route
+  // like dashboard/induction — no session exists pre-setup, so it redirects to
+  // login rather than being a public website page.
+  "maintenance-report",
   "nominations",
   "notices",
   "profile",
@@ -184,6 +188,11 @@ export const NON_WEBSITE_ROOT_SEGMENTS: ReadonlySet<string> = new Set([
   "family-invite",
   "forgot-password",
   "login",
+  // #2780: the unauthenticated lodge-maintenance QR token flow, a `(public)`
+  // token route like pay / membership-cancellation. It is module- and
+  // setting-gated and no token can exist pre-setup, so it 404s rather than
+  // answering the holding screen — never a public website page.
+  "lodge-maintenance",
   "membership-cancellation",
   "pay",
   "register",

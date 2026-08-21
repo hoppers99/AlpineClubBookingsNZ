@@ -12,6 +12,7 @@ import { tmpdir } from "os";
 import path from "path";
 
 import {
+  directoryAdviceForThisRuntime,
   diskSpaceLevel,
   ensureLocalBackupDirectory,
   DISK_SPACE_CRITICAL_BYTES,
@@ -148,6 +149,50 @@ describe("ensureLocalBackupDirectory", () => {
     expect(() => ensureLocalBackupDirectory("relative/path")).toThrow(
       LocalBackupPathError,
     );
+  });
+});
+
+describe("directoryAdviceForThisRuntime", () => {
+  // The message an operator actually acts on. A real deployment created
+  // /home/<user>/db_backup on the HOST, typed it here, and got back
+  // "Could not create that directory: ENOENT" — true, and useless: the app runs
+  // in a container with a read-only root, so a host path it was never shown does
+  // not exist in its filesystem and cannot be created there either.
+  const originalMountedDir = process.env.BACKUP_LOCAL_DIR;
+  afterEach(() => {
+    if (originalMountedDir === undefined) delete process.env.BACKUP_LOCAL_DIR;
+    else process.env.BACKUP_LOCAL_DIR = originalMountedDir;
+  });
+
+  it("names the mounted path when the deployment has one", () => {
+    process.env.BACKUP_LOCAL_DIR = "/backups";
+
+    const advice = directoryAdviceForThisRuntime(true);
+
+    expect(advice).toContain("mounted");
+    expect(advice).toContain("/backups");
+    // The specific confusion to clear: host path vs container path.
+    expect(advice).toContain("host path");
+  });
+
+  it("says how to create the mount when the deployment has none", () => {
+    delete process.env.BACKUP_LOCAL_DIR;
+
+    const advice = directoryAdviceForThisRuntime(true);
+
+    expect(advice).toContain("BACKUP_LOCAL_HOST_DIR");
+    expect(advice).toContain("docker compose up -d app");
+    // uid 1001 is the app user; a host directory owned by anyone else is
+    // unwritable, which is the SECOND thing that stops an operator.
+    expect(advice).toContain("1001");
+  });
+
+  it("does not talk about containers when it is not in one", () => {
+    const advice = directoryAdviceForThisRuntime(false);
+
+    expect(advice).not.toContain("container");
+    expect(advice).not.toContain("BACKUP_LOCAL_HOST_DIR");
+    expect(advice).toContain("can write to it");
   });
 });
 

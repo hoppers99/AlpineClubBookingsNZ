@@ -241,6 +241,7 @@ describe("featureFlagsSchema", () => {
         aiAssistant: false,
         memberGuests: false,
         aiDiagnostics: false,
+        maintenanceReports: true,
         alpineCentralServer: false,
       }),
     ).toBeDefined();

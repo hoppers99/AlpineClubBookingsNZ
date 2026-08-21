@@ -37,6 +37,10 @@ const MEMBERSHIP_KEYS = [
   "adminFamilyGroupRequest",
   "adminMemberDeleteRequest",
 ] as const;
+// #2780: the first and only `lodge`-area alert. A Booking Officer holds
+// lodge:edit ("manage bed allocation and lodge operations"), so it reaches them
+// too — see the Booking Officer test below.
+const LODGE_KEYS = ["adminMaintenanceReport"] as const;
 
 function member(role: string) {
   return { accessRoles: [{ role }], canLogin: true };
@@ -83,7 +87,7 @@ describe("admin notification category → permission area map (#2548)", () => {
     }
   });
 
-  it("has a requirement for exactly the fifteen preference keys", () => {
+  it("has a requirement for exactly the sixteen preference keys", () => {
     expect(Object.keys(ADMIN_NOTIFICATION_PREFERENCE_REQUIREMENT).sort()).toEqual(
       [...ADMIN_NOTIFICATION_PREFERENCE_KEYS].sort(),
     );
@@ -102,9 +106,13 @@ describe("default alert matrix per role (#2548)", () => {
     expect(Object.values(defaults).every(Boolean)).toBe(true);
   });
 
-  it("gives a Booking Officer the booking categories and nothing else", () => {
+  it("gives a Booking Officer the booking categories plus the lodge maintenance alert", () => {
+    // The Booking Officer bundle holds bookings:edit AND lodge:edit ("manage
+    // bookings, bed allocation, and lodge operations"), so it receives the
+    // bookings-area alerts and the one lodge-area alert (#2780) — and nothing
+    // from finance/membership/support, which it holds only at `view`.
     const keys = adminNotificationKeysForMember(member("ADMIN_BOOKINGS"));
-    expect([...keys].sort()).toEqual([...BOOKING_KEYS].sort());
+    expect([...keys].sort()).toEqual([...BOOKING_KEYS, ...LODGE_KEYS].sort());
 
     const defaults = resolveEffectiveAdminNotificationPreferences(
       member("ADMIN_BOOKINGS"),
@@ -112,6 +120,10 @@ describe("default alert matrix per role (#2548)", () => {
     );
     // The alert the owner expected to already reach them (#2542, #2548).
     expect(defaults.adminBookingChangeRequest).toBe(true);
+    // The lodge-area maintenance alert reaches them because they manage lodge
+    // operations — deliberate, not a leak (#2780). A custom role with
+    // bookings:edit but lodge:NONE does NOT get it (see the custom-role test).
+    expect(defaults.adminMaintenanceReport).toBe(true);
     // …and the ones that must NOT start reaching them, even though the Booking
     // Officer bundle carries finance/membership/support at `view`.
     expect(defaults.adminPaymentFailure).toBe(false);
@@ -191,7 +203,7 @@ describe("default alert matrix per role (#2548)", () => {
 describe("stored preferences vs area mask (#2548)", () => {
   it("never turns a stored true into delivery outside the member's areas", () => {
     // The `admin*` columns are non-null and default to TRUE in the database, so
-    // any officer who ever saved a personal email preference carries fifteen
+    // any officer who ever saved a personal email preference carries sixteen
     // `true`s they never chose. The mask is what stops those reaching them.
     const allStoredOn = Object.fromEntries(
       ADMIN_NOTIFICATION_PREFERENCE_KEYS.map((key) => [key, true]),

@@ -366,6 +366,10 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
     "defaultSubject": "Refund Appeal Update — {{CLUB_BOOKINGS_NAME}}",
     "defaultBody": "Refund Appeal Update\n\nHi {{firstName}},\n\nYour refund appeal for your booking ({{checkIn}} - {{checkOut}}) was not approved at this time.\n\n{{adminNotesLine}}If you have questions, contact the club at {{SUPPORT_EMAIL}}."
   },
+  "admin-maintenance-report": {
+    "defaultSubject": "Maintenance report: {{lodgeName}}",
+    "defaultBody": "Maintenance Report Lodged\n\nSomething needs attention at {{lodgeName}}.\n\nLodge: {{lodgeName}}\nReported by: {{reportedBy}}\nHow it was sent: {{sourceLabel}}\nPhoto: {{photoLabel}}\n\n{{summary}}\n\n{{answersText}}\n\nReview Maintenance Report: {{maintenanceReportUrl}}"
+  },
   "admin-issue-report": {
     "defaultSubject": "Issue Report: {{memberName}}",
     "defaultBody": "Issue Report Submitted\n\n{{memberName}} has reported an issue from the bookings site.\n\nMember: {{memberName}}\nEmail: {{memberEmail}}\nPage: {{pageTitle}}\nScreenshot: Available in admin OR Not included\n\n{{description}}\n\nReview Issue Report: {{issueReportUrl}}\n\nOpen Reported Page: {{pageUrl}}"

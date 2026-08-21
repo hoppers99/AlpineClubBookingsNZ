@@ -1,6 +1,7 @@
 import {
   adminDailyDigestTemplate,
   adminIssueReportTemplate,
+  adminMaintenanceReportTemplate,
 } from "@/lib/email-templates/admin-ops";
 import { sendToAdmins } from "./admin-alerts-shared";
 import { renderEmailHtml } from "@/lib/email-theme";
@@ -54,5 +55,50 @@ export async function sendAdminIssueReportAlert(data: {
       pageTitle: data.pageTitle ?? data.pageUrl,
     },
     preferenceKey: "adminIssueReport",
+  });
+}
+
+/**
+ * #2780: a maintenance report was lodged.
+ *
+ * WHO GETS THIS is not decided here. `sendToAdmins` resolves the audience from
+ * the access-role matrix via the `adminMaintenanceReport` preference key, whose
+ * requirement is `{ area: "lodge", level: "edit" }` — so "the maintenance
+ * officer" is whoever the club has given Lodge Operations to, and a club with a
+ * different committee shape changes a permission rather than a line of code.
+ * The club-wide delivery rules at /admin/notification-rules still sit upstream
+ * and can mute it entirely.
+ *
+ * `answersText` is the plain-text rendering of the same answers the HTML shows,
+ * so an operator who has rewritten this template at /admin/email-messages gets
+ * the answers too rather than a message that silently drops them.
+ */
+export async function sendAdminMaintenanceReportAlert(data: {
+  lodgeName: string;
+  reportedBy: string;
+  sourceLabel: string;
+  photoLabel: string;
+  summary: string;
+  answers: Array<{ label: string; value: string }>;
+  maintenanceReportUrl: string;
+}) {
+  const answersText = data.answers
+    .map((answer) => `${answer.label}: ${answer.value}`)
+    .join("\n");
+
+  await sendToAdmins({
+    subject: `Maintenance report: ${data.lodgeName}`,
+    html: await renderEmailHtml(() => adminMaintenanceReportTemplate(data)),
+    templateName: "admin-maintenance-report",
+    templateData: {
+      lodgeName: data.lodgeName,
+      reportedBy: data.reportedBy,
+      sourceLabel: data.sourceLabel,
+      photoLabel: data.photoLabel,
+      summary: data.summary,
+      answersText,
+      maintenanceReportUrl: data.maintenanceReportUrl,
+    },
+    preferenceKey: "adminMaintenanceReport",
   });
 }

@@ -101,6 +101,14 @@ export const MODEL_LEVEL_EXCLUSIONS: Record<string, string> = {
     "is an operational spend control a source club must never silently reset on a " +
     "target — enabling paid diagnostics is a per-deployment decision, so a fresh " +
     "import keeps the target's own cap — instance-local",
+  MaintenanceReportSettings:
+    "maintenance-report policy (#2780) carries anonymousReportsEnabled, the master " +
+    "switch for an UNAUTHENTICATED public submit endpoint. Like the AnalyticsSettings " +
+    "consent-banner mode, that is a security posture a source club must never set on " +
+    "a target's behalf — importing it could silently open a target club's public door. " +
+    "The photo-retention window and photo/contact toggles are equally an operational " +
+    "posture; a fresh import keeps the target's own settings, and a target with none " +
+    "stays fail-closed (anonymous OFF by default) — instance-local",
   ServerNzSettings:
     "this install's own Alpine Central Server connection: a base URL bound to the " +
     "server THIS club was issued a key for (the key itself lives in the encrypted " +

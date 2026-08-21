@@ -771,6 +771,36 @@ Lobby Display's single `/admin/display` hub entry is owned by the collapsible
 group from the shared navigation registry, while the display leaves and their
 BackLinks remain unchanged.
 
+## Lodge maintenance reports (#2780)
+
+Two doors into one form, one officer queue behind them.
+
+- **Member door** — a **Lodge Maintenance Issue** card on `/dashboard` (shown
+  only while the `maintenanceReports` module is on) links to `/maintenance-report`.
+  The member picks the lodge (auto-resolved when the club has one), says what needs
+  fixing, answers the club's short question set, and may attach a photo. The photo
+  is resized in the browser before it is sent.
+- **Anonymous QR door** — a printed sign in the lodge carries a per-lodge bearer
+  token; scanning it opens `/lodge-maintenance/[token]` in the `(public)` group.
+  The token is read from the router, never rendered into the page or its RSC
+  payload, and every failure (bad token, paused sign, module off, lodge inactive)
+  renders one generic "this code is not working" card — the API answers a single
+  404 for all of them, so the page is not an oracle. This door works only when the
+  admin has ticked **Report from a QR code without signing in** (default off), and
+  is rate-limited per IP and per token.
+- **Officer queue** — `/admin/maintenance-reports` (**Admin → Lodge Operations →
+  Lodge Maintenance**, `lodge` area) has four tabs: **Reports** (triage, defaults
+  to Open; photo fetched only when a report is opened, which is also when the
+  disclosure audit row is written), **Questions** (the club-wide bounded editor;
+  removing a question never rewrites what an old report was asked), **Signs**
+  (create/print/pause/replace — the raw code is shown once, the QR bitmap drawn
+  in-app; Replace kills a leaked sign, Pause does not), and **Settings** (photos,
+  retention days, the anonymous switch). Every edit affordance is gated through
+  `ViewOnlyActionButton` under one `AdminViewOnlySectionBanner` per section. A
+  QR reporter's self-declared name is labelled "says they are …", never shown as a
+  verified identity. The officer is emailed a new-report notification through the
+  existing notification-rules machinery.
+
 ## Feedback Conventions
 
 One rule for "did that work?" feedback, so the affordance is predictable on
