@@ -363,6 +363,17 @@ describe("family-invite tab-binding nonce (#2974)", () => {
     });
   });
 
+  it("keeps the parameter NAME in step with the pages that spell it literally", () => {
+    // `/login`, `/login/verify` and `/login/enroll` declare their `searchParams`
+    // type with the key written out — `inviteReturn?: string | string[]` — because
+    // a TypeScript object-literal type cannot take a computed key from a const the
+    // way an object value can. So renaming this constant without renaming those
+    // three declarations would leave the nonce silently unread at every landing
+    // site, and the address would just stop working. Pinned by value, which is the
+    // cheapest thing that turns that into a failing test.
+    expect(FAMILY_INVITE_RETURN_PARAM).toBe("inviteReturn");
+  });
+
   describe("buildFamilyInviteLoginPath / appendFamilyInviteReturnParam", () => {
     it("puts the nonce — and only the nonce — on the sign-in address", () => {
       const built = buildFamilyInviteLoginPath(NONCE);
