@@ -18,12 +18,8 @@ import {
 } from "./lib/internal-return-path";
 import { ASSET_URL_EXTENSIONS } from "./lib/asset-url-404";
 import {
-  buildFamilyInviteReturnCookieValue,
-  createFamilyInviteReturnNonce,
-  FAMILY_INVITE_RETURN_MAX_AGE_SECONDS,
-  FAMILY_INVITE_RETURN_NONCE_HEADER,
-  getFamilyInviteReturnPath,
-  serialiseFamilyInviteReturnCookie,
+  planFamilyInviteReturnAddress,
+  setFamilyInviteReturnNonceHeader,
 } from "./lib/family-invite-return-address";
 import {
   isFixedNonceWebsitePath,
@@ -33,6 +29,7 @@ import { getPublicWebsiteNonce } from "./lib/release-nonce";
 import { getSetupInProgressResponse } from "./lib/setup-gate";
 import {
   hasSignedInHint,
+  serialiseSignedInHintCookie,
   SIGNED_IN_HINT_COOKIE,
   SIGNED_IN_HINT_MAX_AGE_SECONDS,
   SIGNED_IN_HINT_VALUE,
@@ -299,50 +296,28 @@ const API_NAMESPACE_ANY_CASE_PATTERN = /^\/api(?:\/|$)/i;
  * Both consequences follow from the same fact — no page document can be served here
  * — so ONE predicate answers both questions the proxy asks about such a response:
  * whether to write the private-only directive ({@link getPrivateOnlyCacheControl})
- * and whether to write a cookie at all (the D2 marker in {@link syncSignedInHint},
- * and since #2827 the family-invite return address in
- * {@link syncFamilyInviteReturnAddress}). Keeping them on one predicate is what holds
- * the #2578 invariant structurally rather than by coincidence: **the proxy never emits
- * a `Set-Cookie` on a response whose `Cache-Control` it has left to another layer.**
+ * and whether to write a cookie at all. That is what holds the #2578 invariant
+ * structurally rather than by coincidence: **the proxy never emits a `Set-Cookie` on
+ * a response whose `Cache-Control` it has left to another layer.**
  *
- * One predicate is necessary and was not sufficient: the review of the first cut found
+ * One predicate was necessary and not sufficient — the review of the first cut found
  * the invariant false at `/`, where {@link getPrivateOnlyCacheControl} had a carve-out
- * this predicate knows nothing about. It is closed there, so the claim above now rests
- * on two facts together — the proxy's `Set-Cookie` writers are EXACTLY
- * {@link syncSignedInHint} and {@link syncFamilyInviteReturnAddress}, and both are
- * gated on this predicate, and every path it admits gets a directive from either
- * `getPrivateOnlyCacheControl()` or `getAnonymousPageCacheControl()`. Anything that
- * adds a further `Set-Cookie` writer, or a second carve-out on the directive side, has
- * to re-establish the pairing rather than inherit it.
+ * this predicate knew nothing about — so the claim rests on two facts together: the
+ * proxy's `Set-Cookie` writers are EXACTLY {@link syncSignedInHint} and
+ * {@link syncFamilyInviteReturnAddress}, both gated here, and every path this
+ * predicate admits gets a directive from `getPrivateOnlyCacheControl()` or
+ * `getAnonymousPageCacheControl()`. BOTH are tested rather than merely documented
+ * (review finding, 4 Aug 2026): the gating is mutation-proven, and the census is an
+ * AST walk of this file asserted both ways round, so a writer added somewhere new and
+ * one deleted or renamed away each redden `csp-proxy.test.ts`, whose docblock states
+ * the argument in full. `docs/SECURITY-ATTACK-SURFACE.md` records the history.
  *
- * #2827 added the second writer and re-established the pairing rather than inheriting
- * it: it takes the same `request.method === "GET"` and `isPageShapedPath()` gate, its
- * one address (`/family-invite/<token>`) is page-shaped and out of the public-website
- * territory so it always takes {@link PRIVATE_ONLY_CACHE_CONTROL}, and
- * `csp-proxy.test.ts` now asserts the writer census by AST **and** that neither cookie
- * appears on the shapes this predicate excludes.
- *
- * **Read "gated on this predicate" precisely for that second writer since #2974**: the
- * gate now lives in {@link planFamilyInviteReturnAddress}, which decides, and
- * {@link syncFamilyInviteReturnAddress}, which writes, does whatever the plan says.
- * The pairing is unchanged — no plan, no `Set-Cookie` — and the split exists because
- * the render's request headers are assembled before the response object exists and a
- * WRITE has to put its nonce in both. Anyone moving that decision back inline, or
- * calling the writer with a plan built somewhere else, is on the hook for the same
- * invariant; the AST census only pins WHERE the write happens, never what reaches it.
- *
- * **BOTH facts are now tested, which the first cut left to the docblock (review
- * finding, 4 Aug 2026).** The gating is mutation-proven — reverting the cookie gate to
- * `startsWith("/api/")` reddens `csp-proxy.test.ts`. The writer-census half was
- * enforced by nothing, and every case in that file asserts on the HINT cookie by name,
- * so a writer added outside the census (a lodge preference, a consent banner) would
- * leave the suite green while `GET /branding/logo.png` shipped a `Set-Cookie` beside
- * `send`'s `public, max-age=…`. "keeps the proxy's Set-Cookie writers to the two gated
- * ones" walks this file's AST and fails on any `"Set-Cookie"` literal or
- * `.cookies.set()` outside the two functions named above — and, checked the other way
- * round, on either of them being deleted or renamed away. So adding a third writer is
- * a red test rather than a silent regression, and moving an existing write into a
- * helper reddens that one case and nothing else, which is the point.
+ * A further writer is not forbidden — it has to RE-ESTABLISH the pairing rather than
+ * inherit it, as #2827's second writer did: same `GET` + page-shaped gate, and its one
+ * address is out of the public-website territory, so it always takes
+ * {@link PRIVATE_ONLY_CACHE_CONTROL}. The census fixes WHERE a `Set-Cookie` may be
+ * emitted, never what reaches the writer — since #2974 the decision behind that one is
+ * `planFamilyInviteReturnAddress()`, and only the append is here.
  *
  * Note this says nothing about which addresses are the public WEBSITE — that is
  * `isPublicWebsitePath()`. A member page, `/login`, `/robots.txt` and `/sitemap.xml`
@@ -431,178 +406,17 @@ function syncSignedInHint(
 }
 
 /**
- * The marker cookie's `Set-Cookie` value, written as a header rather than through
- * `response.cookies.set()` ON PURPOSE.
- *
- * `NextResponse`'s cookie proxy also writes `x-middleware-set-cookie`, and Next
- * merges that into the render's `cookies()`
- * (`next/dist/server/async-storage/request-store.js`, `mergeMiddlewareCookies`).
- * So going through the proxy API would leave the hint readable server-side on the
- * one request that sets it, which is the same property
- * {@link stripSignedInHintFromCookieHeader} exists to hold on every other
- * request. Same bytes on the wire either way — `ResponseCookies` appends to this
- * header — so the browser behaviour is unchanged.
+ * Appends the family-invite return-address `Set-Cookie` (#2827, #2974) that
+ * {@link planFamilyInviteReturnAddress} decided on. It stays in THIS file, and not
+ * in the module holding everything else about the address, because the #2578 writer
+ * census reads this file's AST — see {@link isPageShapedPath}. What gets written,
+ * when, and why the proxy carries it at all: that module.
  */
-function serialiseSignedInHintCookie(
-  value: string,
-  maxAgeSeconds: number,
-): string {
-  const attributes = [
-    `${SIGNED_IN_HINT_COOKIE}=${value}`,
-    "Path=/",
-    `Max-Age=${maxAgeSeconds}`,
-    "SameSite=Lax",
-  ];
-
-  // Never HttpOnly — the browser has to read it, which is the whole mechanism —
-  // and not Secure in development, where the app is served over plain http and a
-  // Secure cookie would never be stored.
-  if (process.env.NODE_ENV === "production") {
-    attributes.push("Secure");
-  }
-
-  return attributes.join("; ");
-}
-
-/**
- * Writes — or retires — the #2827 family-invite post-login return address on the
- * response to a GET of `/family-invite/<token>`.
- *
- * **Why the proxy carries this, rather than the page.** The invite page's sign-in
- * affordance is a plain `/login` anchor now, so the return address has to travel
- * out of band and it has to survive with JavaScript off. The token only ever
- * reaches the server on a request whose URL contains it, and a server COMPONENT
- * may not set a cookie during render — which leaves this response's own headers
- * and a Server Action form, the latter measured attribute-safe but untestable
- * without a running build. Full reasoning, and what the old `href` did and did not
- * expose, in `src/lib/family-invite-return-address.ts`.
- *
- * **The pairing is re-established, not inherited** — see
- * {@link isPageShapedPath}. Same `GET` + `isPageShapedPath()` gate as
- * {@link syncSignedInHint}: the predicate is strictly redundant here, because the
- * address pattern already admits only one page-shaped shape, and it is kept so the
- * invariant holds structurally rather than by coincidence about that pattern.
- * `/family-invite/…` is out of the public-website territory and page-shaped, so
- * {@link getPrivateOnlyCacheControl} always answers true for it and the cookie can
- * never land beside a shared-cache directive.
- *
- * ## Two conditions, and both were found by review (20 Aug 2026)
- *
- * **A visitor who already holds a session has ARRIVED, so this response retires
- * the address instead of writing it.** The first cut wrote it unconditionally and
- * left the clearing to `/api/auth/post-login-landing`, which made "cleared on use"
- * false in every flow: the route cleared the cookie and then handed back a redirect
- * to this very page, whose GET re-stamped it for another ten minutes — and the
- * Google and both 2FA detour flows never call that route at all, being server
- * components that cannot write a cookie. Measured consequence on a shared browser:
- * member A signed in through their invite, and member B signing in within ten
- * minutes landed on A's invite page with A's live token in B's address bar. Because
- * every one of the four flows terminates in a signed-in GET of this page, retiring
- * it here is what makes the claim true for all four. The route handler's clear is
- * kept as well, for the one case that never lands here at all (an explicit
- * `callbackUrl` outranked the address).
- *
- * The wrong-account branch ("Sign in with a different account") is the case the
- * first cut cited for writing unconditionally. It is served by
- * `SignOutAndReturnButton`, which signs the visitor out and returns them here — so
- * the address is written on that signed-out GET, where it belongs.
- *
- * **Only a real top-level document navigation may write it.** `SameSite=Lax`
- * governs whether a cookie is SENT cross-site, not whether a cross-site response
- * may STORE one, so without this condition
- * `<img src="https://club.example/family-invite/<attacker's token>">` on any page
- * planted a victim's post-login landing with no interaction at all.
- * `Sec-Fetch-Dest` is browser-set and unforgeable from script, and only a
- * navigation the visitor can SEE reports `document` (an `<iframe>` reports
- * `iframe`, a subresource reports its own type). It deliberately does NOT require
- * `Sec-Fetch-Site: same-origin`: the ordinary path here is a click on an emailed
- * link, which arrives `cross-site` from a webmail page. What is left is an attacker
- * navigating the victim to the club's own invite page in a visible tab, which
- * achieves no more than emailing them the link would.
- *
- * A browser too old to send `Sec-Fetch-*` at all writes no address and degrades to
- * the member's ordinary post-login landing — the same graceful degradation as an
- * expired cookie, and the page's own copy already tells the recipient to return to
- * the link once their login is active. Measured on the vendored next runtime: the
- * middleware adapter strips only the five `FLIGHT_HEADERS`, so `Sec-Fetch-*`
- * reaches this function intact. A Next SOFT navigation would not qualify — an RSC
- * fetch reports `empty` — and today nothing links to the invite page from inside
- * the app at all: the only ways in are the emailed link and the wrong-account
- * branch's sign-out return, both full document navigations. Anyone adding an
- * in-app `<Link>` to it needs to know that.
- *
- * The value is a path, never a URL, and it is re-validated on the way out by
- * `matchFamilyInviteReturnCookie()` at each of the four post-login landing sites.
- *
- * ## The third condition: tab scoping (#2974)
- *
- * The write now mints a nonce and stores it IN the cookie, and the same value
- * goes to the render in {@link FAMILY_INVITE_RETURN_NONCE_HEADER} so the invite
- * page can put it on its sign-in anchor. A landing site honours the address only
- * when the nonce it was handed matches the one in the cookie, which is what makes
- * the address belong to the TAB that opened the invitation rather than to the
- * browser. Full account, including what a cookie could disclose on a shared kiosk
- * before this, in `src/lib/family-invite-return-address.ts`.
- *
- * The decision and the write are split because they happen at different moments
- * in {@link proxy}: the request headers handed to the render are assembled BEFORE
- * the response exists, so {@link planFamilyInviteReturnAddress} answers "write
- * this, with this nonce" early and this function does the `Set-Cookie` at the
- * same point it always did. Keeping the write here is also what keeps the
- * two-writer census in `csp-proxy.test.ts` meaningful — see {@link isPageShapedPath}.
- */
-type FamilyInviteReturnPlan =
-  | { action: "write"; cookieValue: string; nonce: string }
-  | { action: "retire" };
-
-function planFamilyInviteReturnAddress(
-  request: NextRequest,
-): FamilyInviteReturnPlan | null {
-  if (request.method !== "GET") return null;
-
-  const path = normalisePathname(request.nextUrl.pathname);
-
-  if (!isPageShapedPath(path)) return null;
-
-  const returnPath = getFamilyInviteReturnPath(path);
-
-  if (!returnPath) return null;
-
-  // Arrived. Retiring is always the safe direction, so it is deliberately not
-  // gated on the navigation check below.
-  if (hasSessionCookie(request)) {
-    return { action: "retire" };
-  }
-
-  if (request.headers.get("sec-fetch-dest") !== "document") return null;
-
-  const nonce = createFamilyInviteReturnNonce();
-  const cookieValue = buildFamilyInviteReturnCookieValue(nonce, returnPath);
-
-  // Null only if a future edit loosens one of the two shape guards out of step
-  // with the other. Writing nothing degrades the visitor to their ordinary
-  // post-login landing, where writing an unmatchable cookie would look like the
-  // feature working right up until it silently did not.
-  if (!cookieValue) return null;
-
-  return { action: "write", cookieValue, nonce };
-}
-
 function syncFamilyInviteReturnAddress(
   response: NextResponse,
-  plan: FamilyInviteReturnPlan | null,
+  plan: ReturnType<typeof planFamilyInviteReturnAddress>,
 ): void {
-  if (!plan) return;
-
-  response.headers.append(
-    "Set-Cookie",
-    plan.action === "retire"
-      ? serialiseFamilyInviteReturnCookie("", 0)
-      : serialiseFamilyInviteReturnCookie(
-          plan.cookieValue,
-          FAMILY_INVITE_RETURN_MAX_AGE_SECONDS,
-        ),
-  );
+  if (plan) response.headers.append("Set-Cookie", plan.setCookie);
 }
 
 /**
@@ -1148,9 +962,14 @@ export async function proxy(request: NextRequest) {
   const requestHeaders = new Headers(request.headers);
 
   // #2974: decided before the render's headers are assembled, because a WRITE has
-  // to hand the invite page the same nonce it is about to put in the cookie. The
-  // `Set-Cookie` itself still happens below, in the census'd writer.
-  const familyInviteReturnPlan = planFamilyInviteReturnAddress(request);
+  // to hand the invite page the same nonce it is about to put in the cookie.
+  const normalisedPath = normalisePathname(pathname);
+  const familyInviteReturnPlan = planFamilyInviteReturnAddress({
+    method: request.method,
+    pageShapedPath: isPageShapedPath(normalisedPath) ? normalisedPath : null,
+    signedIn: hasSessionCookie(request),
+    secFetchDest: request.headers.get("sec-fetch-dest"),
+  });
 
   // The D2 marker cookie is for the BROWSER only. See
   // `stripSignedInHintFromCookieHeader` for why this line is what makes that
@@ -1175,20 +994,8 @@ export async function proxy(request: NextRequest) {
   );
   requestHeaders.set(REQUEST_METHOD_HEADER, request.method);
 
-  // Deleted unconditionally first (#2974). `new Headers(request.headers)` copies
-  // whatever the CLIENT sent, and this header is a message from the proxy to the
-  // render — a visitor's own copy must never reach a page. Belt-and-braces
-  // rather than a hole being closed: a forged nonce matches no cookie. Set only
-  // on the one request that is also being given the matching cookie, so no other
-  // route can read a live nonce out of its request headers.
-  requestHeaders.delete(FAMILY_INVITE_RETURN_NONCE_HEADER);
-
-  if (familyInviteReturnPlan?.action === "write") {
-    requestHeaders.set(
-      FAMILY_INVITE_RETURN_NONCE_HEADER,
-      familyInviteReturnPlan.nonce,
-    );
-  }
+  // #2974: a message FROM the proxy, so an inbound copy is deleted either way.
+  setFamilyInviteReturnNonceHeader(requestHeaders, familyInviteReturnPlan);
 
   const response = NextResponse.next({
     request: {

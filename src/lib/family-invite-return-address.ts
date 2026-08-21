@@ -45,8 +45,9 @@ import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
  *
  * ## Its whole life, in three conditions
  *
- * The first two live in `syncFamilyInviteReturnAddress()` (`src/proxy.ts`) and
- * both came out of the #2827 review; the third is #2974:
+ * All three are decided by {@link planFamilyInviteReturnAddress} below, on facts
+ * `src/proxy.ts` hands it; the first two came out of the #2827 review, and the
+ * third is #2974:
  *
  *  - **Written only on a signed-out, top-level document navigation to the invite
  *    page** (`Sec-Fetch-Dest: document`). Without that condition a cross-site
@@ -485,4 +486,129 @@ export function serialiseFamilyInviteReturnCookie(
   }
 
   return attributes.join("; ");
+}
+
+/**
+ * What the proxy should do about the return address on ONE response (#2827,
+ * #2974): the `Set-Cookie` value to append, and the tab-binding nonce to hand
+ * the render — null on a retirement, which has no nonce to hand anybody.
+ */
+export type FamilyInviteReturnPlan = {
+  setCookie: string;
+  nonce: string | null;
+};
+
+/**
+ * The facts about a request the decision below turns on.
+ *
+ * Passed in rather than read here, so this module needs neither `NextRequest`
+ * nor `src/proxy.ts`'s own path predicates — which keeps the policy unit-testable
+ * from a plain object, and keeps the proxy's predicates in the proxy where the
+ * #2578 census can see them.
+ */
+export type FamilyInviteReturnRequestFacts = {
+  method: string;
+  /**
+   * The request's pathname with any trailing slash already normalised, when
+   * `isPageShapedPath()` admits it — and null when it does not.
+   *
+   * That predicate is **strictly redundant** for this address: the pattern below
+   * admits only `/family-invite/<64 hex>`, which is page-shaped by construction.
+   * It is threaded through anyway so the #2578 pairing holds structurally rather
+   * than by coincidence about the pattern — see `isPageShapedPath()`'s docblock.
+   */
+  pageShapedPath: string | null;
+  /** Does the request carry a next-auth session cookie of any supported shape? */
+  signedIn: boolean;
+  /** The `Sec-Fetch-Dest` request header, verbatim. */
+  secFetchDest: string | null;
+};
+
+/**
+ * Decides whether this response writes, retires, or ignores the return address.
+ *
+ * **Separate from the write, and that split is #2974's doing.** `src/proxy.ts`
+ * assembles the request headers handed to the render BEFORE the response object
+ * exists, and a write has to put its nonce in both — so the decision happens
+ * early and `syncFamilyInviteReturnAddress()` appends whatever this returned. The
+ * pairing is unchanged (no plan, no `Set-Cookie`), and the AST census in
+ * `csp-proxy.test.ts` pins only WHERE a write may happen, never what reaches it.
+ *
+ * The three conditions are the ones set out in this module's header docblock, in
+ * the order they are applied:
+ *
+ *  1. A GET of `/family-invite/<64 hex>`, and nothing else.
+ *  2. A signed-in visitor has ARRIVED, so the address is RETIRED rather than
+ *     written. Retiring is always the safe direction, so it is deliberately not
+ *     gated on the navigation check below.
+ *  3. Otherwise a write, but only on a real top-level document navigation.
+ *
+ * **On condition 3, and what it is measured against.** `Sec-Fetch-Dest` is
+ * browser-set and unforgeable from script, and only a navigation the visitor can
+ * SEE reports `document`; an `<iframe>` reports `iframe` and a subresource reports
+ * its own type. Measured on the vendored next runtime: the middleware adapter
+ * strips only the five `FLIGHT_HEADERS`, so `Sec-Fetch-*` reaches this decision
+ * intact. A Next SOFT navigation would NOT qualify — an RSC fetch reports `empty` —
+ * and today nothing links to the invite page from inside the application at all:
+ * the only ways in are the emailed link and the wrong-account branch's sign-out
+ * return, both full document navigations. **Anyone adding an in-app `<Link>` to
+ * the invite page needs to know that**, because such a link would arm no address.
+ *
+ * A browser too old to send `Sec-Fetch-*` at all writes nothing and degrades to
+ * the member's ordinary post-login landing — the same graceful degradation as an
+ * expired cookie.
+ */
+export function planFamilyInviteReturnAddress(
+  facts: FamilyInviteReturnRequestFacts,
+): FamilyInviteReturnPlan | null {
+  if (facts.method !== "GET") return null;
+
+  const returnPath = getFamilyInviteReturnPath(facts.pageShapedPath);
+
+  if (!returnPath) return null;
+
+  if (facts.signedIn) {
+    return { setCookie: serialiseFamilyInviteReturnCookie("", 0), nonce: null };
+  }
+
+  if (facts.secFetchDest !== "document") return null;
+
+  const nonce = createFamilyInviteReturnNonce();
+  const cookieValue = buildFamilyInviteReturnCookieValue(nonce, returnPath);
+
+  // Null only if a future edit loosens one of the two shape guards out of step
+  // with the other. Writing nothing degrades the visitor to their ordinary
+  // post-login landing, where writing an unmatchable cookie would look like the
+  // feature working right up until it silently did not.
+  if (!cookieValue) return null;
+
+  return {
+    setCookie: serialiseFamilyInviteReturnCookie(
+      cookieValue,
+      FAMILY_INVITE_RETURN_MAX_AGE_SECONDS,
+    ),
+    nonce,
+  };
+}
+
+/**
+ * Hands the render the nonce a WRITE just minted — and deletes any inbound copy
+ * FIRST, whatever the plan turned out to be.
+ *
+ * `new Headers(request.headers)` copies whatever the CLIENT sent, and this header
+ * is a message from the proxy to the render, so a visitor's own copy must never
+ * reach a page. Belt-and-braces rather than a hole being closed: a forged nonce
+ * matches no cookie. The header is set only on the one request that is also being
+ * given the matching cookie, so no other route can read a live nonce out of its
+ * request headers.
+ */
+export function setFamilyInviteReturnNonceHeader(
+  requestHeaders: Headers,
+  plan: FamilyInviteReturnPlan | null,
+): void {
+  requestHeaders.delete(FAMILY_INVITE_RETURN_NONCE_HEADER);
+
+  if (plan?.nonce) {
+    requestHeaders.set(FAMILY_INVITE_RETURN_NONCE_HEADER, plan.nonce);
+  }
 }
