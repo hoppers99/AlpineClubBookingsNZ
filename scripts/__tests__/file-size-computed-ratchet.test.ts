@@ -199,6 +199,68 @@ describe("evaluateComputedRatchet — a rename cannot launder debt", () => {
     // And a rename with no growth is not a finding at all.
     expect(judge(repo.root, base, { "src/big.js": 1200 }).findings).toEqual([]);
   });
+
+  it("gives a file moved IN from outside the scope no ceiling, so it must meet its budget", () => {
+    // The regression this closes, and the reason it matters: following the
+    // rename unconditionally made "move an oversized file into src/" a way to
+    // arrive over budget with the gate green. The ledger caught it by scanning
+    // the whole tree and finding an over-budget file with no entry.
+    const repo = newRepo();
+    repo.write("prisma/demo-seed.ts", 1324);
+    repo.write("src/keep.ts", 10);
+    const base = repo.commit("base");
+    mkdirSync(path.join(repo.root, "src"), { recursive: true });
+    git(repo.root, "mv", "prisma/demo-seed.ts", "src/demo-seed.ts");
+    repo.commit("moved into src");
+
+    const finding = judge(repo.root, base, { "src/demo-seed.ts": 1324 }).findings[0];
+    expect(finding?.kind).toBe("new-over-budget");
+    expect(finding?.severity).toBe("regression");
+    expect(finding?.problem).toBe(
+      "a file MOVED INTO the budgeted scope is over its budget",
+    );
+    expect(finding?.previous).toContain("prisma/demo-seed.ts");
+    expect(finding?.current).toContain("over by 624");
+  });
+
+  it("passes the same move when the file is UNDER its budget", () => {
+    // The rule is the budget, not the move. Moving a small module into src/ is
+    // an ordinary thing to do and must not be a finding.
+    const repo = newRepo();
+    repo.write("prisma/small.ts", 300);
+    repo.write("src/keep.ts", 10);
+    const base = repo.commit("base");
+    mkdirSync(path.join(repo.root, "src"), { recursive: true });
+    git(repo.root, "mv", "prisma/small.ts", "src/small.ts");
+    repo.commit("moved into src");
+
+    expect(judge(repo.root, base, { "src/small.ts": 300 }).findings).toEqual([]);
+  });
+
+  it("closes the two-step launder: out of scope to grow, then back in", () => {
+    // Both halves used to pass. PR1 moves `src/big.ts` somewhere this policy does
+    // not look and grows it 1200 -> 5000 (nothing in scope changed, so: green).
+    // PR2 moves it back, inheriting 5000 as its "previous length" (so: green
+    // again). A 5000-line production module lands and no run ever went red.
+    const repo = newRepo();
+    repo.write("src/big.ts", 1200);
+    const base1 = repo.commit("base");
+
+    mkdirSync(path.join(repo.root, "out-of-scope"), { recursive: true });
+    git(repo.root, "mv", "src/big.ts", "out-of-scope/big.ts");
+    repo.write("out-of-scope/big.ts", 5000);
+    const base2 = repo.commit("PR1: moved out and grown");
+
+    // PR1 itself is still green, and correctly so — nothing in scope changed.
+    expect(judge(repo.root, base1, { "out-of-scope/big.ts": 5000 }).findings).toEqual([]);
+
+    git(repo.root, "mv", "out-of-scope/big.ts", "src/big2.ts");
+    repo.commit("PR2: moved back in");
+
+    const finding = judge(repo.root, base2, { "src/big2.ts": 5000 }).findings[0];
+    expect(finding?.kind).toBe("new-over-budget");
+    expect(finding?.current).toContain("over by 4300");
+  });
 });
 
 describe("evaluateComputedRatchet — the unusable cases fail rather than pass", () => {

@@ -26,25 +26,37 @@
  * rather than guessed at, because git reports it.
  *
  * "The base ref" here means the MERGE BASE of that ref and `HEAD`, not its tip.
- * See `resolveBaseRef` for why, and for the seven untouched files that measured
- * the difference.
+ * See `resolveBaseRef` for what that buys, and for what it costs.
+ *
+ * A rename is followed ONLY WITHIN THE BUDGETED SCOPE. Moving a file into
+ * `src/` from `prisma/` or `scripts/` is not a rename this policy can inherit a
+ * ceiling from, because those trees have no ceiling to inherit; such a file is
+ * judged as new. See `resolveBaseSizes`.
  *
  * NO NETWORK, NO BUILD, NO DATABASE. Two `git` reads per changed file at worst.
- * CI's `verify` job already checks out full history (`fetch-depth: 0`) and runs
- * this check in the same job, so the base ref is present where it matters.
+ * CI's `verify` job already checks out full history (`fetch-depth: 0`), which is
+ * what puts the real branch point in the clone at all — see `resolveBaseRef` for
+ * what a truncated history does here, which is quieter and worse than failing.
  *
  * FAILS LOUDLY WHEN THE BASE CANNOT BE RESOLVED, and that is deliberate rather
  * than defensive: a gate that cannot read what it is comparing against must not
  * report a pass it has not earned. `npm run pr:check` already behaves this way
  * for the same reason — an unfetched `origin/main` is a failure there, not a
- * green. The remedy printed is the same: `git fetch origin main`.
+ * green. The remedy printed names the ref actually asked for.
  */
 import { execFileSync } from "node:child_process";
 
 /** How many lines a file had on the base ref, or that it did not exist there. */
 export type BaseSize =
   | { kind: "existed"; lines: number; /** Set when git reports a rename. */ from?: string }
-  | { kind: "absent" };
+  | {
+      kind: "absent";
+      /**
+       * Set when git reports a rename whose PREDECESSOR was outside the budgeted
+       * scope, so there was no ceiling to inherit and the file counts as new.
+       */
+      movedFrom?: string;
+    };
 
 export type BaseResolution =
   | { ok: true; ref: string; sizes: Map<string, BaseSize> }
@@ -79,6 +91,29 @@ function gitBuffer(root: string, args: string[]): Buffer {
 }
 
 /**
+ * An all-zero object id. GitHub sends this as a push event's `before` when the
+ * ref did not exist beforehand, and git never resolves it to a commit.
+ */
+function isNullSha(ref: string): boolean {
+  return /^0{40}$/.test(ref) || /^0{64}$/.test(ref);
+}
+
+/**
+ * The remedy to print, worded for the ref that was actually asked for.
+ *
+ * `git fetch origin main` used to be hard-coded into both failure branches,
+ * which meant a run with `--base release/1.2` was told to fetch a ref it had
+ * not mentioned. An instruction that does not match the input is worse than no
+ * instruction: it gets followed, it does not help, and the reader concludes the
+ * gate is broken rather than that their base is missing.
+ */
+function fetchRemedyFor(ref: string): string {
+  const remoteBranch = /^origin\/(.+)$/.exec(ref);
+  if (remoteBranch) return `git fetch origin ${remoteBranch[1]}`;
+  return `git fetch origin, or pass --base with a ref this checkout has`;
+}
+
+/**
  * Confirm the base ref exists, and return the commit this branch left it at.
  *
  * NOT the ref's tip — the MERGE BASE of the ref and `HEAD`, which is where this
@@ -86,28 +121,56 @@ function gitBuffer(root: string, args: string[]): Buffer {
  * change do" and "how does this checkout differ from wherever `main` has got
  * to", and only the first is a fair thing to fail somebody for.
  *
- * Measured on this very branch while building #2979: `origin/main` had moved
- * ahead by one merged pull request, and `git diff origin/main` reported SEVEN
- * `src/` files as changed that the branch had never touched — the backups work
- * from #2977. Judging those seven against the tip reads main's own edits as this
- * branch's, in whichever direction they happen to point. They happened to be
- * shrinks that day, so nothing failed; had that pull request SPLIT a file
- * instead, every open branch would have gone red for growth none of them
- * caused, and the only remedy would have been to merge `main` — which is the
- * treadmill this issue exists to end.
+ * WHERE THE DIFFERENCE IS REAL, AND WHERE IT IS NOT. On a `pull_request` event
+ * the two readings are IDENTICAL, and that was measured rather than assumed:
+ * CI checks out `refs/pull/N/merge`, a merge commit whose first parent is the
+ * base tip, so `merge-base(origin/main, HEAD)` IS `origin/main`. The merge tree
+ * already carries `main`'s version of every file the branch did not touch, so
+ * those files are not in the diff under either reading. The benefit AND the
+ * cost below therefore both belong to LOCAL runs on a branch that has not
+ * merged `main` in.
  *
- * Comparing against the merge base is also strictly the stricter reading. If
- * `main` grows an oversized file after the branch point, the tip form hands this
- * branch that larger number as its ceiling and lets it grow into the gap for
- * free; the merge base does not.
+ * WHAT IT BUYS, locally: a stale branch is not failed for growth it did not
+ * cause. Measured while building #2979 — `origin/main` had moved ahead by one
+ * merged pull request and `git diff origin/main` reported SEVEN `src/` files as
+ * changed that the branch had never touched. They happened to be shrinks, so
+ * nothing failed; had that pull request SPLIT a file instead, the local check
+ * would have gone red for somebody else's edit, and the remedy would have been
+ * to merge `main` — the treadmill this change exists to end.
  *
- * A missing merge base — unrelated histories, or a shallow clone with no shared
- * commit — FAILS, for the same reason a missing ref does.
+ * WHAT IT COSTS, locally, stated plainly because an earlier version of this
+ * comment claimed the opposite. The merge base is NOT uniformly the stricter
+ * reading. Measured counterexample: `src/lib/big.ts` is 1200 lines at the
+ * branch point, `main` then splits it to 300, and the branch re-inflates it to
+ * 1199. The merge-base ceiling is 1200, so the local run PASSES; the tip
+ * ceiling would be `max(700, 300) = 700` and would fail. The gap closes the
+ * moment `main` is merged in — the merge base then moves to the shrink — and it
+ * never opens in CI at all, for the reason above.
+ *
+ * A MISSING merge base fails. A TRUNCATED history is the quieter hazard, and it
+ * does not fail: in a `git clone --depth 1`, `origin/main` resolves, the merge
+ * base comes back as HEAD itself, the diff is empty, and this check reports OK
+ * over a tree holding a 1300-line module. That is measured, and it is why the
+ * `verify` job's `fetch-depth: 0` is load-bearing — not because a shallow clone
+ * has no merge base, but because a shallow one silently narrows the diff.
  */
 export function resolveBaseRef(
   root: string,
   ref: string,
 ): { ok: true; sha: string } | { ok: false; error: string } {
+  if (isNullSha(ref)) {
+    return {
+      ok: false,
+      error:
+        `The base is an all-zero object id (\`${ref}\`), which is how a push event says\n` +
+        `  the ref did not exist before this push — a branch created by it, or a push\n` +
+        `  whose predecessor GitHub could not name. There is no "before" to measure\n` +
+        `  against, so this check cannot run, and it fails rather than passing: a gate\n` +
+        `  that cannot read its comparison must not report a green it has not earned.\n` +
+        `  Fix with:  re-run with --base naming a commit this history really contains`,
+    };
+  }
+
   let tip: string;
   try {
     tip = git(root, ["rev-parse", "--verify", `${ref}^{commit}`]).trim();
@@ -120,11 +183,17 @@ export function resolveBaseRef(
         `  This check compares each changed file against its length on that ref, so it\n` +
         `  cannot run without it — and it fails rather than passing, because a gate that\n` +
         `  cannot read its comparison must not report a green it has not earned.\n` +
-        `  Fix with:  git fetch origin main`,
+        `  Fix with:  ${fetchRemedyFor(ref)}`,
     };
   }
   if (!tip) {
-    return { ok: false, error: `\`git rev-parse ${ref}\` produced no commit.` };
+    return {
+      ok: false,
+      error:
+        `\`git rev-parse ${ref}\` produced no commit, so there is nothing to compare\n` +
+        `  against and this check fails rather than reporting a green it has not earned.\n` +
+        `  Fix with:  ${fetchRemedyFor(ref)}`,
+    };
   }
 
   try {
@@ -138,9 +207,10 @@ export function resolveBaseRef(
       error:
         `\`${ref}\` resolves to ${tip.slice(0, 12)}, but this checkout shares no commit\n` +
         `  with it (${detail}), so there is no point to measure "before" from.\n` +
-        `  A shallow clone is the usual cause. It fails rather than passing, because a\n` +
-        `  gate that cannot read its comparison must not report a green it has not earned.\n` +
-        `  Fix with:  git fetch --unshallow origin, or git fetch origin main`,
+        `  Unrelated histories, or a clone too shallow to reach the branch point, are the\n` +
+        `  usual causes. It fails rather than passing, because a gate that cannot read its\n` +
+        `  comparison must not report a green it has not earned.\n` +
+        `  Fix with:  git fetch --unshallow origin, or ${fetchRemedyFor(ref)}`,
     };
   }
 }
@@ -244,9 +314,38 @@ export function untrackedFiles(root: string): string[] {
  * Resolve the previous length of every file changed since `ref`.
  *
  * A renamed file resolves to its length under its OLD path, and records that
- * path so a message can explain where the ceiling came from.
+ * path so a message can explain where the ceiling came from — BUT ONLY WHEN THE
+ * OLD PATH WAS ITSELF INSIDE THE BUDGETED SCOPE.
+ *
+ * That qualification is load-bearing, and its absence was a regression against
+ * the ledger this replaced. The ledger scanned the whole tree, so a 1324-line
+ * `prisma/demo-seed.ts` moved to `src/lib/demo-seed.ts` turned up as an
+ * over-budget file with no entry and failed as new debt. Following the rename
+ * unconditionally instead reads that move as "this file already had a 1324-line
+ * ceiling", and the gate passes — for a file that has just entered the policy's
+ * scope for the first time, at nearly twice its budget. Reproduced at 1324 and
+ * at 5000 lines, exit 0 both times.
+ *
+ * Worse, it could be laundered in two steps with a green gate on each. Move
+ * `src/lib/big.ts` into `src/lib/__tests__/` (out of scope, so unjudged) and
+ * grow it from 1200 to 5000; then move it back to `src/lib/big2.ts`, inheriting
+ * 5000 as its "previous length". A 5000-line production module lands and
+ * nothing ever went red.
+ *
+ * So: a rename whose predecessor is not a production file is treated as a NEW
+ * file, which must meet its documented budget outright. `movedFrom` records
+ * where it came from, so the failure says that rather than calling a file the
+ * reader can see in the history "new".
+ *
+ * `isProductionFile` is required rather than optional on purpose. A default of
+ * "everything is in scope" would restore the bypass silently for any caller who
+ * forgot it, and this is a gate.
  */
-export function resolveBaseSizes(root: string, ref: string): BaseResolution {
+export function resolveBaseSizes(
+  root: string,
+  ref: string,
+  isProductionFile: (file: string) => boolean,
+): BaseResolution {
   const base = resolveBaseRef(root, ref);
   if (!base.ok) return { ok: false, error: base.error };
 
@@ -256,12 +355,16 @@ export function resolveBaseSizes(root: string, ref: string): BaseResolution {
   const sizes = new Map<string, BaseSize>();
   for (const { file, renamedFrom } of diff.changed) {
     if (renamedFrom) {
+      if (!isProductionFile(renamedFrom)) {
+        sizes.set(file, { kind: "absent", movedFrom: renamedFrom });
+        continue;
+      }
       const previous = baseSizeOf(root, base.sha, renamedFrom);
       sizes.set(
         file,
         previous.kind === "existed"
           ? { kind: "existed", lines: previous.lines, from: renamedFrom }
-          : { kind: "absent" },
+          : { kind: "absent", movedFrom: renamedFrom },
       );
       continue;
     }
@@ -269,8 +372,15 @@ export function resolveBaseSizes(root: string, ref: string): BaseResolution {
   }
 
   // Untracked files are new by definition, so they carry no previous length and
-  // must simply meet their budget. Added AFTER the diff so a file that is both
-  // tracked and modified keeps the length the diff found for it.
+  // must simply meet their budget. Added AFTER the diff, and guarded, so a file
+  // that is both tracked and modified keeps the length the diff found for it.
+  //
+  // The guard is belt-and-braces rather than a case anybody has reached: `git
+  // diff <commit>` reports only paths present in the base tree or the index,
+  // and `git ls-files --others` reports only paths in neither, so the two sets
+  // are disjoint by construction. It stays because the cost is one `Map.has`
+  // and the failure it would prevent — handing an oversized modified file a
+  // brand-new-file ceiling — is exactly the shape of bug this gate exists for.
   for (const file of untrackedFiles(root)) {
     if (!sizes.has(file)) sizes.set(file, { kind: "absent" });
   }
@@ -284,6 +394,8 @@ export function resolveBaseSizes(root: string, ref: string): BaseResolution {
 
 export type ComputedFindingKind =
   | "base-unresolvable"
+  /** The scan found no production files at all, so a clean result proves nothing. */
+  | "empty-scan"
   | "new-over-budget"
   | "grown-beyond-base"
   | "unclassified-source-file";
@@ -315,16 +427,25 @@ export type ComputedResult = {
  * over budget may not go over it, and a file already over may not grow. What
  * changes is that "already over, and by how much" is read from the base ref.
  *
- * TWO PROPERTIES THIS GAINS, both of which the ledger needed machinery to fake:
+ * TWO PROPERTIES THIS GAINS, both of which the ledger needed machinery to fake.
+ * Both are stated with their real limits, because an earlier version of this
+ * comment stated them absolutely and neither is absolute:
  *
- * 1. **No ceiling drift, for free.** The ledger enforced exact equality with the
- *    tree precisely because a merely-not-worse ledger rots: a file could shrink
- *    to 100 lines, keep a 900-line ceiling, and grow back to 900 with nothing to
- *    show for it. Here the ceiling IS the base ref, so a file that shrank on one
- *    change has the smaller number as its ceiling on the next. Drift is not
- *    prevented, it is unrepresentable.
+ * 1. **Ceiling drift cannot accumulate SEQUENTIALLY.** The ledger enforced exact
+ *    equality with the tree precisely because a merely-not-worse ledger rots: a
+ *    file could shrink to 100 lines, keep a 900-line ceiling, and grow back to
+ *    900 with nothing to show for it. Here the ceiling IS the base ref, so one
+ *    change after another is judged against what the previous one really left
+ *    behind, and no stale number can survive in between. What this does NOT
+ *    cover is a branch that PREDATES the shrink: its merge base still holds the
+ *    larger file, so it may re-inflate up to that older length and pass. See
+ *    `resolveBaseRef` for the measured counterexample and why the exposure is
+ *    confined to local runs.
  * 2. **A rename cannot launder debt**, because the previous length is looked up
- *    under the old path that git reports, not under a key that no longer exists.
+ *    under the old path that git reports, not under a key that no longer exists
+ *    — and, since the fix in `resolveBaseSizes`, only when that old path was
+ *    itself inside the budgeted scope. A file arriving from `prisma/` or
+ *    `scripts/`, or returning from a test path, is judged as new.
  *
  * WHAT IT DELIBERATELY STOPS DOING: it no longer judges files the change did not
  * touch. An untouched file cannot have grown, so there is nothing to catch — and
@@ -358,7 +479,11 @@ export function evaluateComputedRatchet(input: {
     });
   }
 
-  const resolved = resolveBaseSizes(input.root, input.baseRef);
+  const resolved = resolveBaseSizes(
+    input.root,
+    input.baseRef,
+    input.isProductionFile,
+  );
   if (!resolved.ok) {
     findings.push({
       severity: "unusable",
@@ -368,7 +493,9 @@ export function evaluateComputedRatchet(input: {
       previous: null,
       current: null,
       problem: resolved.error,
-      action: "fetch the base ref, or pass one that exists, then re-run",
+      action:
+        "follow the remedy named above and re-run — this check will not report " +
+        "a pass it has no evidence for",
     });
     return { findings, baseSha: null, checkedFiles: 0 };
   }
@@ -384,15 +511,24 @@ export function evaluateComputedRatchet(input: {
 
     if (previous.kind === "absent") {
       if (current > budget.limit) {
+        const moved = previous.movedFrom;
         findings.push({
           severity: "regression",
           kind: "new-over-budget",
           file,
           budget: describe,
-          previous: null,
+          previous: moved
+            ? `no ceiling to inherit — ${moved} is outside the file-size policy's scope`
+            : null,
           current: `${current} LOC, over by ${current - budget.limit}`,
-          problem: "a NEW file is over its budget",
-          action: "split it, or bring it under the budget before it lands",
+          problem: moved
+            ? "a file MOVED INTO the budgeted scope is over its budget"
+            : "a NEW file is over its budget",
+          action: moved
+            ? "split it, or bring it under the budget before it moves in — a file " +
+              "entering this policy's scope has to meet the budget like any other " +
+              "new one, or moving code into src/ would be a way to launder debt"
+            : "split it, or bring it under the budget before it lands",
         });
       }
       continue;

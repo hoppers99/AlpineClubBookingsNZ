@@ -26,6 +26,17 @@ import {
 
 const ROOTS: string[] = [];
 
+/**
+ * The scope predicate `resolveBaseSizes` takes, for cases that are not about
+ * scope. Everything in these repositories counts as production, which is what
+ * makes a rename inherit its predecessor's ceiling. The cases that ARE about
+ * scope pass `underSrc` instead.
+ */
+const EVERYTHING_IN_SCOPE = () => true;
+
+/** The real classifier's shape, small enough to state: production lives in src/. */
+const underSrc = (file: string) => file.startsWith("src/");
+
 afterEach(() => {
   for (const root of ROOTS) rmSync(root, { force: true, recursive: true });
   ROOTS.length = 0;
@@ -104,6 +115,59 @@ describe("resolveBaseRef", () => {
     const result = resolveBaseRef(repo.root, mainTip);
 
     expect(result).toEqual({ ok: true, sha: forked });
+  });
+
+  it("names the ref it was actually given in the remedy, not always origin/main", () => {
+    // Both failure branches used to hard-code `git fetch origin main`, so a run
+    // with a different base was handed an instruction about a ref it had never
+    // mentioned. An instruction that does not match the input gets followed,
+    // does not help, and reads as the gate being broken.
+    const repo = newRepo();
+    repo.write("a.ts", 3);
+    repo.commit("first");
+
+    const other = resolveBaseRef(repo.root, "origin/release-1.2");
+    expect(other.ok).toBe(false);
+    if (!other.ok) {
+      expect(other.error).toContain("git fetch origin release-1.2");
+      expect(other.error).not.toContain("git fetch origin main");
+    }
+
+    const notARemote = resolveBaseRef(repo.root, "some-local-tag");
+    expect(notARemote.ok).toBe(false);
+    if (!notARemote.ok) {
+      expect(notARemote.error).toContain("pass --base with a ref this checkout has");
+    }
+  });
+
+  it("FAILS on an all-zero base, which is a push event saying there was no before", () => {
+    // GitHub sends 40 zeros as `before` when the pushed ref did not exist
+    // beforehand. It resolves to nothing, so the honest answer is to refuse:
+    // "no previous state" is not "no growth". Named explicitly rather than left
+    // to the generic branch, whose remedy (fetch the ref) cannot ever work.
+    const repo = newRepo();
+    repo.write("a.ts", 3);
+    repo.commit("first");
+
+    for (const zeros of ["0".repeat(40), "0".repeat(64)]) {
+      const result = resolveBaseRef(repo.root, zeros);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("all-zero object id");
+        expect(result.error).not.toContain("git fetch");
+      }
+    }
+  });
+
+  it("FAILS on a commit this checkout does not have, such as one a force-push orphaned", () => {
+    const repo = newRepo();
+    repo.write("a.ts", 3);
+    repo.commit("first");
+
+    const result = resolveBaseRef(repo.root, "deadbeef".repeat(5));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("Could not resolve the base ref");
   });
 
   it("FAILS when the ref resolves but shares no history with this checkout", () => {
@@ -241,7 +305,7 @@ describe("resolveBaseSizes", () => {
     repo.write("brand-new.ts", 5);
     repo.commit("changed");
 
-    const result = resolveBaseSizes(repo.root, base);
+    const result = resolveBaseSizes(repo.root, base, EVERYTHING_IN_SCOPE);
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -262,7 +326,7 @@ describe("resolveBaseSizes", () => {
     git(repo.root, "mv", "big.ts", "big.js");
     repo.commit("renamed to .js");
 
-    const result = resolveBaseSizes(repo.root, base);
+    const result = resolveBaseSizes(repo.root, base, EVERYTHING_IN_SCOPE);
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -280,7 +344,7 @@ describe("resolveBaseSizes", () => {
     const base = repo.commit("base");
     repo.write("never-added.ts", 900);
 
-    const result = resolveBaseSizes(repo.root, base);
+    const result = resolveBaseSizes(repo.root, base, EVERYTHING_IN_SCOPE);
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -288,20 +352,73 @@ describe("resolveBaseSizes", () => {
     }
   });
 
-  it("does not let the untracked sweep overwrite a length the diff found", () => {
-    // Ordering matters: a file can be both tracked-and-modified and, in another
-    // checkout, untracked. Overwriting the diff's answer with `absent` would
-    // silently hand an oversized modified file a brand-new-file ceiling.
+  it("resolves a modified file and an untracked one side by side, each correctly", () => {
+    // NOT a test of the `if (!sizes.has(file))` guard in the untracked sweep.
+    // That guard cannot be reached: `git diff <commit>` reports only paths in
+    // the base tree or the index, `git ls-files --others` reports only paths in
+    // neither, and the two sets are disjoint by construction — deleting the
+    // guard changed nothing across every case in this file. It stays as cheap
+    // belt-and-braces; this case pins the behaviour that IS observable, which
+    // is that an uncommitted edit to a tracked file keeps the base ref's length
+    // while a genuinely untracked file alongside it reads as new.
     const repo = newRepo();
     repo.write("grow.ts", 1200);
     const base = repo.commit("base");
     repo.write("grow.ts", 1300);
+    repo.write("never-added.ts", 40);
 
-    const result = resolveBaseSizes(repo.root, base);
+    const result = resolveBaseSizes(repo.root, base, EVERYTHING_IN_SCOPE);
 
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.sizes.get("grow.ts")).toEqual({ kind: "existed", lines: 1200 });
+      expect(result.sizes.get("never-added.ts")).toEqual({ kind: "absent" });
+    }
+  });
+
+  it("gives a file renamed in from OUTSIDE the scope no ceiling to inherit", () => {
+    // The regression this closes. Following the rename unconditionally let a
+    // 1324-line `prisma/demo-seed.ts` become `src/lib/demo-seed.ts` carrying its
+    // own length as its ceiling — so a file entering the policy's scope for the
+    // first time, at nearly twice its budget, passed. The ledger this replaced
+    // caught it, because it scanned the whole tree.
+    const repo = newRepo();
+    repo.write("prisma/demo-seed.ts", 1324);
+    repo.write("src/lib/keep.ts", 10);
+    const base = repo.commit("base");
+    mkdirSync(path.join(repo.root, "src/lib"), { recursive: true });
+    git(repo.root, "mv", "prisma/demo-seed.ts", "src/lib/demo-seed.ts");
+    repo.commit("moved into src");
+
+    const result = resolveBaseSizes(repo.root, base, underSrc);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.sizes.get("src/lib/demo-seed.ts")).toEqual({
+        kind: "absent",
+        movedFrom: "prisma/demo-seed.ts",
+      });
+    }
+  });
+
+  it("still follows a rename WITHIN the scope, so a legitimate move keeps its ceiling", () => {
+    // The other half of the same rule: narrowing rename-following must not turn
+    // an ordinary move of an oversized module into 1200 lines of new debt.
+    const repo = newRepo();
+    repo.write("src/lib/old-home.ts", 1200);
+    const base = repo.commit("base");
+    git(repo.root, "mv", "src/lib/old-home.ts", "src/lib/new-home.ts");
+    repo.commit("moved it");
+
+    const result = resolveBaseSizes(repo.root, base, underSrc);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.sizes.get("src/lib/new-home.ts")).toEqual({
+        kind: "existed",
+        lines: 1200,
+        from: "src/lib/old-home.ts",
+      });
     }
   });
 
@@ -312,7 +429,7 @@ describe("resolveBaseSizes", () => {
     repo.write("a.ts", 3);
     repo.commit("first");
 
-    const result = resolveBaseSizes(repo.root, "refs/heads/does-not-exist");
+    const result = resolveBaseSizes(repo.root, "refs/heads/does-not-exist", EVERYTHING_IN_SCOPE);
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("does-not-exist");
