@@ -35,6 +35,7 @@ import {
   isQuotePricedBooking,
   QUOTE_PRICED_EDIT_BLOCK_MESSAGE,
 } from "@/lib/booking-modify";
+import { requestCarriesOtherLodgeElection } from "@/lib/booking-other-lodge-rate";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { linkModificationToOutstandingChangeRequest } from "@/lib/booking-change-request-linkage";
 import { getDefaultLodgeId } from "@/lib/lodges";
@@ -206,6 +207,11 @@ function buildIdentityOnlyPricing(booking: LoadedBookingForModify): PricingResul
       perNightRates: (guest.nights ?? []).map((night) => night.priceCents ?? 0),
       nightDates: (guest.nights ?? []).map((night) => night.stayDate),
     })),
+    // Nothing was rated here — this echo does not run the rate resolver at all.
+    // A request carrying an other-lodge election is therefore kept OFF this path
+    // (see `pricePreservingModification` below): storing the flag from an echo
+    // would stamp a re-rate the money never made.
+    otherLodgeRatedGuestIds: new Set<string>(),
   };
 }
 
@@ -615,8 +621,21 @@ export async function modifyBookingBatch({
     // rate change. The promo is equally untouched: nothing promo-relevant
     // changes when a name does. #2266: a credit-election-only modification is
     // price-preserving for the same reason and takes the same echo.
+    //
+    // #2978 review: an other-lodge election is NEVER price-preserving, whatever
+    // else the request carries. A name edit plus a tick used to take this echo,
+    // which writes the per-guest flag from the election while leaving every
+    // locked night exactly as it was — the officer sees the tick land and the
+    // total never moves, and the row then reads "(Other Club Member)" beside a
+    // fee that says otherwise. Same reasoning as `linkGuestToMember` in
+    // `requestedStructuralChange` above: a re-rate has to reach the rate
+    // resolver. Kept out HERE rather than added to `requestedStructuralChange`
+    // deliberately, so the quote-priced exemptions above keep the meaning
+    // `modify-quote` gives them and the preview and the save still agree about
+    // what is allowed.
     const pricePreservingModification =
-      identityOnlyModification || requestIsCreditElectionOnly;
+      (identityOnlyModification || requestIsCreditElectionOnly) &&
+      !requestCarriesOtherLodgeElection(input);
     const pricing = pricePreservingModification
       ? buildIdentityOnlyPricing(booking)
       : await calculateModifiedPricing(tx, {
@@ -702,6 +721,9 @@ export async function modifyBookingBatch({
       // per-guest flag is written from the same decision that cleared their
       // locked nights.
       otherLodgeElection: guestPlan.otherLodgeElection,
+      // #2978 review: and who pricing actually rated at that rate, so a tick the
+      // rate resolver declined is never stored as though it had been honoured.
+      otherLodgeRatedGuestIds: pricing.otherLodgeRatedGuestIds,
     });
 
     const choreWarnings = await applyChoreCleanup(tx, {
