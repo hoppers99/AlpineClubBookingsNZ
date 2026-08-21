@@ -184,14 +184,59 @@ which rows get a tick box from it, and `resolveOtherLodgeRateElection` refuses a
 tick on anybody outside it, so the screen can never offer a control whose save is
 refused.
 
-**One class is excluded on purpose: a member repriced by the `INV-LOCKOUT`
-unpaid-subscription rule.** They are `isMember` with `NON_MEMBER_DEFAULT` — the
-same rate source a true non-member carries, deliberately, so the group discount
-treats them alike (see the note in `resolveGuestRateMembershipTypes`) — so the
-rate source alone cannot separate them and `isMember` plus the unpaid set does.
-Electing them would restore the member rate and silently undo a lockout the club
-configured on purpose, which is a money outcome, so both the API boundary and the
-rate resolver refuse it.
+**One class is excluded on purpose: a member who owes this club a season
+subscription.** Under `NON_MEMBER_PRICING` they are `isMember` with
+`NON_MEMBER_DEFAULT` — the same rate source a true non-member carries,
+deliberately, so the group discount treats them alike (see the note in
+`resolveGuestRateMembershipTypes`) — so the rate source alone cannot separate
+them and `isMember` plus the unpaid set does. Electing them would restore the
+member rate and silently undo a lockout the club configured on purpose, which is
+a money outcome, so both the API boundary and the rate resolver refuse it.
+
+**Owing the subscription withholds the tick under EVERY lockout mode** (owner
+decision, 21 Aug 2026). It is not conditional on the club having chosen
+`NON_MEMBER_PRICING`: the fact that matters is the debt, not the club's chosen
+response to it, and `MembershipLockoutSettings.mode` defaults to `HARD_BLOCK`, so
+a mode-gated rule would have left the DEFAULT configuration offering the club's
+own member rate to an unpaid member on a `NON_MEMBER_RATE` membership type.
+`NO_BLOCK` was considered and deliberately included. In code the two questions
+are separate functions on purpose: `resolveMemberIdsOwingSubscription` answers
+"do they owe us one" for the OFFER, and the mode-gated
+`resolveUnpaidSubscriptionRepricedMemberIds` answers "does the club charge them
+non-member rates" for the REPRICE. Nothing about the offer rule moves money on an
+existing booking: a flag already stored keeps pricing exactly as it did.
+
+**Why a lapsed member of this club who is paid up at a partner lodge still gets
+no tick, and why that is intended rather than a bug.** It looks harsh, and it was
+put to the owner as its own question. Letting reciprocity win there would let
+anybody lapse their subscription, claim membership of a partner lodge, and keep
+paying the member rate indefinitely — the lockout exists precisely to chase an
+unpaid subscription, and somebody in that position does still owe this club one.
+It was weighed against offering the tick with an officer-facing warning, and the
+clean rule was preferred. The officer is told the tick is withheld and why (see
+[the booking officer's guide](../guides/bookings.md) and
+[Subscription lockout](../guides/subscription-lockout.md)); the way to apply the
+reciprocal rate to that person is to settle their subscription, not to work
+around the rule here.
+
+**Eligibility answers `bookingBehavior === "NON_MEMBER_RATE"`, not
+`!== "MEMBER_RATE"`.** The third value, `BLOCK_BOOKING`, means "may not book at
+all", which is not "is on the non-member rate"; the looser test admitted it, and
+was unreachable only because `assertMembershipTypeBookingAllowed` refuses such a
+guest earlier in every pricing path. A money fence must not depend on an
+unrelated guard continuing to exist.
+
+**A stored flag records what was CHARGED, never what was asked for.** The
+election fence is judged against the stored booking rows while pricing is judged
+against the proposed rows, which the `INV-MOD` placeholder→member link has
+already rewritten — so a request that links a placeholder to a member and ticks
+them passes the fence while pricing correctly resolves the member's own type.
+`applyGuestChanges` therefore writes `otherLodgeMember: true` only for guests the
+pricing pass resolved to `OTHER_LODGE_MEMBER`
+(`PricingResult.otherLodgeRatedGuestIds`), while an untick always clears the flag
+— gate the clear and a stale flag could never be removed. For the same reason an
+election is never price-preserving: it may not take the identity-only pricing
+echo, which would write the flag without running the rate resolver at all.
 
 **`isMember` is never written by this election, permanently and deliberately.**
 The tick records that somebody is a member of ANOTHER club and says nothing about

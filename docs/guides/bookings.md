@@ -126,9 +126,10 @@ with member-guest consent. The consent surfaces say *awaiting approval* or
 ### Charge a visiting club's members at your member rate
 
 Somebody you currently charge the **non-member** rate, who belongs to another
-club's lodge, can be charged your **member** rate instead — the reciprocal arrangement clubs have with
-each other. The public booking-request form already asks "are you a member of
-another lodge?", but plenty of these people arrive some other way: an officer
+club's lodge, can be charged your **member** rate instead — the reciprocal
+arrangement clubs have with each other. The public booking-request form already
+asks "are you a member of another lodge?", but plenty of these people arrive
+some other way: an officer
 books them on behalf, or the answer only comes up later. This is how you set it
 on any booking, at any time before the stay starts.
 
@@ -152,19 +153,33 @@ Things worth knowing:
 
 - **A tick box appears beside anybody you currently charge the non-member
   rate.** That is usually a non-member, but not always: somebody who was added
-  to the booking from your own people list can still be on the non-member rate —
-  a non-member contact created by an earlier booking, or a membership category
+  to the booking with **+ Add Member Guest** can still be on the non-member rate
+  — a non-member contact created by an earlier booking, or a membership category
   your club prices at non-member rates — and they get a tick box too, because
   the rate is what the reciprocal arrangement is about.
 
-  Two groups get no tick box, and both for the same reason — there is no
-  non-member rate there to replace. Somebody already on your member rate has
-  nothing to change. And a member whose **subscription is unpaid**, whom your
-  club's lockout has already moved onto non-member rates, is deliberately left
-  out: ticking them would hand back the member rate and quietly cancel the
-  lockout. If that is genuinely what you want, settle their subscription — or
-  ask for the lockout setting to be reviewed — rather than working around it
-  here.
+  **Two groups get no tick box, for two different reasons.**
+
+  Somebody **already on your member rate** has nothing to change: there is no
+  non-member rate there to replace, so the box would do nothing.
+
+  Somebody whose **subscription is unpaid** is left out deliberately, and this
+  one is not about there being nothing to replace — they may well be on the
+  non-member rate right now. It is that handing them your member rate is the one
+  thing an unpaid subscription is supposed to cost them. The screen says so
+  under the lodge picker. This holds whichever setting your club uses for unpaid
+  subscriptions, including the setting that does not reprice anybody: what
+  matters is that the subscription is owed.
+
+  **That includes somebody who has let your subscription lapse while being a
+  fully paid-up member of the partner lodge**, which reads harsh and is
+  deliberate. If reciprocity won there, anybody could let their subscription
+  lapse, name a partner lodge, and go on paying your member rate for good — and
+  the whole point of the lapsed-subscription setting is to chase the money they
+  owe you. Offering the tick with a warning beside it was considered and turned
+  down in favour of the simple rule. If you want the reciprocal rate to apply to
+  that person, settle their subscription first; the tick box appears as soon as
+  it is paid.
 - **The booking's own page says so afterwards.** Once saved, that person's line
   in the Guests list carries *(Other Club Member)* after their rate category —
   the note is what explains the member-rate fee beside it.

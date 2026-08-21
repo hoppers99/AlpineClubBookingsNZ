@@ -59,10 +59,10 @@ src/app/(admin)/admin/lodges/[id]/setup/page.tsx 913 route-page-shell
 src/app/(admin)/admin/member-applications/_components/approval-mapping-panel.tsx 736 domain-module
 src/app/(admin)/admin/member-applications/page.tsx 790 route-page-shell
 src/app/(admin)/admin/members/[id]/_components/member-dependent-dialog.tsx 712 domain-module
-src/app/(admin)/admin/members/[id]/page.tsx 1312 route-page-shell
+src/app/(admin)/admin/members/[id]/page.tsx 1350 route-page-shell
 src/app/(admin)/admin/members/_components/member-editor-dialog.tsx 1269 domain-module
 src/app/(admin)/admin/members/_components/member-import-dialog.tsx 856 domain-module
-src/app/(admin)/admin/members/page.tsx 596 route-page-shell
+src/app/(admin)/admin/members/page.tsx 606 route-page-shell
 src/app/(admin)/admin/membership-cancellations/page.tsx 1208 route-page-shell
 src/app/(admin)/admin/membership-types/page.tsx 1853 route-page-shell
 src/app/(admin)/admin/mountain-conditions/_components/mountain-conditions-panel.tsx 895 domain-module
@@ -81,7 +81,7 @@ src/app/(admin)/admin/xero/member-grouping/page.tsx 695 route-page-shell
 src/app/(authenticated)/book/_components/review-step.tsx 969 domain-module
 src/app/(authenticated)/book/_hooks/use-booking-wizard.ts 1951 domain-module
 src/app/(authenticated)/book/page.tsx 680 route-page-shell
-src/app/(authenticated)/bookings/[id]/page.tsx 2546 route-page-shell
+src/app/(authenticated)/bookings/[id]/page.tsx 2572 route-page-shell
 src/app/(authenticated)/dashboard/page.tsx 887 route-page-shell
 src/app/(authenticated)/profile/family-group-section.tsx 1142 domain-module
 src/app/(authenticated)/profile/page.tsx 667 route-page-shell
@@ -145,7 +145,7 @@ src/app/api/bookings/[id]/exception-requests/route.ts 286 route-handler
 src/app/api/bookings/[id]/guests/[guestId]/route.ts 502 route-handler
 src/app/api/bookings/[id]/guests/route.ts 1208 route-handler
 src/app/api/bookings/[id]/modify-dates/route.ts 334 route-handler
-src/app/api/bookings/[id]/modify-quote/route.ts 2321 route-handler
+src/app/api/bookings/[id]/modify-quote/route.ts 2334 route-handler
 src/app/api/bookings/[id]/modify/route.ts 468 route-handler
 src/app/api/bookings/[id]/refund-request/route.ts 256 route-handler
 src/app/api/bookings/[id]/waitlist-confirm/route.ts 566 route-handler
@@ -205,7 +205,7 @@ src/lib/bed-allocation-lifecycle.ts 2691 domain-module
 src/lib/bed-allocation-move.ts 1439 domain-module
 src/lib/bed-allocation-removal.ts 789 domain-module
 src/lib/bed-allocation.ts 3678 domain-module
-src/lib/booking-batch-modification-service.ts 1425 domain-module
+src/lib/booking-batch-modification-service.ts 1447 domain-module
 src/lib/booking-cancel.ts 2379 domain-module
 src/lib/booking-create.ts 1874 domain-module
 src/lib/booking-date-modification-service.ts 1774 domain-module
@@ -217,7 +217,7 @@ src/lib/booking-exception-request-service.ts 2125 domain-module
 src/lib/booking-exception-requests.ts 720 domain-module
 src/lib/booking-guest-removal-service.ts 995 domain-module
 src/lib/booking-guests.ts 811 domain-module
-src/lib/booking-modify-plan.ts 2294 domain-module
+src/lib/booking-modify-plan.ts 2367 domain-module
 src/lib/booking-request-quotes.ts 1694 domain-module
 src/lib/booking-request.ts 2851 domain-module
 src/lib/capacity.ts 1045 domain-module
@@ -272,7 +272,7 @@ src/lib/membership-cancellation-admin.ts 1143 domain-module
 src/lib/membership-cancellation-requests.ts 1316 domain-module
 src/lib/membership-cancellation-xero.ts 1364 domain-module
 src/lib/membership-subscription-billing.ts 1402 domain-module
-src/lib/membership-type-policy.ts 1229 domain-module
+src/lib/membership-type-policy.ts 1344 domain-module
 src/lib/nomination.ts 2448 domain-module
 src/lib/notices.ts 708 domain-module
 src/lib/payment-link.ts 1180 domain-module
@@ -280,7 +280,7 @@ src/lib/payment-reconciliation.ts 2896 domain-module
 src/lib/payment-recovery.ts 1881 domain-module
 src/lib/payment-transactions.ts 1101 domain-module
 src/lib/policies/adult-member-hosting.ts 880 domain-module
-src/lib/policies/pricing.ts 825 domain-module
+src/lib/policies/pricing.ts 831 domain-module
 src/lib/promo.ts 2052 domain-module
 src/lib/public-page-content-tokens.ts 746 domain-module
 src/lib/redact-sensitive-json.ts 832 domain-module
