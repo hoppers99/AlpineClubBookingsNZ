@@ -37,9 +37,23 @@
   And the check no longer reports a clean result when it scanned nothing at all,
   which is what a checkout missing its source folder used to produce.
 
+  There is still a way to say "yes, this file grows, I mean it", and it needed
+  to stay: 283 files are already over their target size, including most of the
+  ones people work in every day, so a rule with no exception at all would have
+  stopped ordinary work rather than large files. A piece of work that has to
+  make one of those files longer now adds **its own small file** saying which
+  file, how long it becomes, and why splitting it would be worse — the same
+  one-file-per-change shape used for release notes, so two pieces of work in
+  progress can never collide over it. The note is checked rather than trusted:
+  the length it records has to be the file's real length, it is used up by the
+  change that wrote it and cannot be reused later, and one that turned out not
+  to be needed is reported rather than passed over. It cannot be used to bring
+  in a brand new oversized file, or to walk one in from outside the checked
+  area — those stay refused.
+
   For a contributor, the practical effect is that `npm run quality:budget:update`
   is gone, because there is no longer anything to regenerate; a size increase
-  that is genuinely necessary is explained in the pull request instead. The
+  that is genuinely necessary is declared in that per-change file instead. The
   overall figure the list used to give away — how many files are over budget and
   by how much in total — is now produced on demand by
   `npm run quality:budget -- --report`, and appears in `npm run quality:report`

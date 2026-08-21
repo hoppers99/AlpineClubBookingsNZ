@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { run } from "../ci/check-file-size-budget";
 import { evaluateComputedRatchet } from "../lib/file-size-base";
+import { ALLOWANCE_DIR } from "../lib/file-size-allowances";
 
 import {
   PRODUCTION_LIMIT,
@@ -86,7 +87,14 @@ function newRepo() {
     git(root, "commit", "--quiet", "-m", message);
     return git(root, "rev-parse", "HEAD").trim();
   };
-  return { root, write, commit };
+  /** Declare a file-size allowance the way a pull request would. */
+  const allow = (name: string, body: string) => {
+    const full = path.join(root, ALLOWANCE_DIR, name);
+    mkdirSync(path.dirname(full), { recursive: true });
+    writeFileSync(full, body, "utf8");
+  };
+
+  return { root, write, commit, allow };
 }
 
 function captureRun(
@@ -674,6 +682,185 @@ describe("the gate, end to end, against real commits", () => {
     const result = captureRun(path.join(REPO_ROOT, "no-such-directory-2979"), []);
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("could not list tracked files");
+  });
+});
+
+describe("the deliberate escape: a declared allowance", () => {
+  /**
+   * Owner decision, 21 Aug 2026. Deleting `quality:budget:update` left the 283
+   * already-over-budget files unable to gain a line, ever, with no way to say
+   * "yes, I mean it" — measured, PR #2980 grows eight of them by 463 lines and
+   * PR #2985 hit the same wall on `src/proxy.ts`. The escape is per-pull-request
+   * (the `changelog.d/` pattern, so no two branches conflict), it names the
+   * file, the length and the reason, and it must never reopen either bypass
+   * this pull request closed.
+   */
+  const REASON =
+    "the branch is four lines of policy inside an existing decision tree, and " +
+    "lifting that tree out is a refactor of its own.";
+
+  function overBudgetRepo() {
+    const repo = newRepo();
+    repo.write("src/lib/big.ts", 1200);
+    repo.write("src/lib/keep.ts", 10);
+    return { repo, base: repo.commit("base") };
+  }
+
+  it("lets an already-over-budget file grow, and says out loud that it did", () => {
+    const { repo, base } = overBudgetRepo();
+    repo.write("src/lib/big.ts", 1300);
+    repo.allow("2980-big.md", `file: src/lib/big.ts\nlines: 1300\nreason: ${REASON}\n`);
+    repo.commit("grew, with an allowance");
+
+    const result = captureRun(repo.root, ["--base", base]);
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+    // Visible on SUCCESS, not only when something fails: an escape nobody can
+    // see is the ledger again in another shape.
+    expect(result.stdout).toContain("ALLOWED GROWTH");
+    expect(result.stdout).toContain("src/lib/big.ts  ->  1300 LOC");
+    expect(result.stdout).toContain(`${ALLOWANCE_DIR}/2980-big.md`);
+    expect(result.stdout).toContain("lifting that tree out is a refactor of its own");
+  });
+
+  it("fails when the recorded length is not the file's real length", () => {
+    // The rule that stops an allowance drifting from the tree the way the
+    // ledger did, and stops one being written once and reached for later.
+    const { repo, base } = overBudgetRepo();
+    repo.write("src/lib/big.ts", 1300);
+    repo.allow("2980-big.md", `file: src/lib/big.ts\nlines: 1250\nreason: ${REASON}\n`);
+    repo.commit("grew, with a stale allowance");
+
+    const result = captureRun(repo.root, ["--base", base]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("does not match the file");
+    expect(result.stderr).toContain("records 1250 LOC");
+    expect(result.stderr).toContain("1300 LOC — longer than the allowance says");
+    expect(result.stderr).toContain("set `lines: 1300`");
+  });
+
+  it("CONSTRAINT: an allowance cannot cover a NEW file", () => {
+    // Bypass one of the two this pull request closed. An allowance permits an
+    // already-over-budget file to GROW; it is not a way to arrive over budget.
+    const { repo, base } = overBudgetRepo();
+    repo.write("src/lib/brand-new.ts", 900);
+    repo.allow(
+      "2980-new.md",
+      `file: src/lib/brand-new.ts\nlines: 900\nreason: ${REASON}\n`,
+    );
+    repo.commit("a new oversized module, with an allowance");
+
+    const result = captureRun(repo.root, ["--base", base]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("an allowance cannot cover a NEW file");
+    expect(result.stderr).toContain("src/lib/brand-new.ts");
+    expect(result.stderr).toContain("delete the allowance and split the file");
+  });
+
+  it("CONSTRAINT: an allowance cannot cover a file renamed INTO the scope", () => {
+    // Bypass two. Without this, "move it into src/ and declare it" would walk
+    // any out-of-scope file in at any size.
+    const repo = newRepo();
+    repo.write("prisma/demo-seed.ts", 1324);
+    repo.write("src/lib/keep.ts", 10);
+    const base = repo.commit("base");
+    mkdirSync(path.join(repo.root, "src/lib"), { recursive: true });
+    git(repo.root, "mv", "prisma/demo-seed.ts", "src/lib/demo-seed.ts");
+    repo.allow(
+      "2980-moved.md",
+      `file: src/lib/demo-seed.ts\nlines: 1324\nreason: ${REASON}\n`,
+    );
+    repo.commit("moved into src, with an allowance");
+
+    const result = captureRun(repo.root, ["--base", base]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      "an allowance cannot cover a file MOVED INTO the budgeted scope",
+    );
+    expect(result.stderr).toContain("src/lib/demo-seed.ts");
+  });
+
+  it("cannot carry a file over its budget for the first time either", () => {
+    // The owner decision permits growth of an existing OVER-BUDGET file. A
+    // module still inside its budget has the cheapest split available to it.
+    const repo = newRepo();
+    repo.write("src/lib/mod.ts", 600);
+    repo.write("src/lib/keep.ts", 10);
+    const base = repo.commit("base");
+    repo.write("src/lib/mod.ts", 800);
+    repo.allow("2980-mod.md", `file: src/lib/mod.ts\nlines: 800\nreason: ${REASON}\n`);
+    repo.commit("crossed its budget, with an allowance");
+
+    const result = captureRun(repo.root, ["--base", base]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      "an allowance cannot carry a file over its budget for the first time",
+    );
+  });
+
+  it("says so when a change declares an allowance nothing needed", () => {
+    // Either a mistake or a file that shrank, and both are worth seeing. It
+    // FAILS rather than merely printing, because an allowance left lying around
+    // is the seed of the shared ledger this whole change deletes.
+    const { repo, base } = overBudgetRepo();
+    repo.write("src/lib/keep.ts", 11);
+    repo.allow("2980-big.md", `file: src/lib/big.ts\nlines: 1200\nreason: ${REASON}\n`);
+    repo.commit("an unrelated change, with a spare allowance");
+
+    const result = captureRun(repo.root, ["--base", base]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("declares an allowance the check did not need");
+    expect(result.stderr).toContain(`delete the entry from ${ALLOWANCE_DIR}/2980-big.md`);
+  });
+
+  it("is one-shot: a merged allowance is inert for the next change", () => {
+    // What makes this per-pull-request rather than a ledger by accretion. The
+    // allowance only has effect on the change that introduces it, so it cannot
+    // be reached for again — and after merge it can be swept up in bulk, like a
+    // compiled changelog fragment.
+    const { repo, base } = overBudgetRepo();
+    repo.write("src/lib/big.ts", 1300);
+    repo.allow("2980-big.md", `file: src/lib/big.ts\nlines: 1300\nreason: ${REASON}\n`);
+    const merged = repo.commit("PR1: grew, with its allowance");
+
+    expect(captureRun(repo.root, ["--base", base]).code).toBe(0);
+
+    repo.write("src/lib/big.ts", 1400);
+    repo.commit("PR2: grows it again, leaning on PR1's allowance");
+
+    const second = captureRun(repo.root, ["--base", merged]);
+    expect(second.code).toBe(1);
+    expect(second.stderr).toContain("an already-oversized file grew");
+    expect(second.stderr).toContain("+100 beyond its ceiling");
+  });
+
+  it("refuses to judge anything on an allowance it cannot read", () => {
+    const { repo, base } = overBudgetRepo();
+    repo.write("src/lib/big.ts", 1300);
+    repo.allow("2980-big.md", "file: src/lib/big.ts\nlines: 1300\nreason: needed\n");
+    repo.commit("grew, with a bare marker for a reason");
+
+    const result = captureRun(repo.root, ["--base", base]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("UNUSABLE");
+    expect(result.stderr).toContain("6-character reason");
+    // And the growth is still reported, rather than being swallowed by the
+    // unreadable declaration.
+    expect(result.stderr).toContain("an already-oversized file grew");
+  });
+
+  it("points at the escape in the failure it is the answer to", () => {
+    const { repo, base } = overBudgetRepo();
+    repo.write("src/lib/big.ts", 1300);
+    repo.commit("grew, with nothing said about it");
+
+    const result = captureRun(repo.root, ["--base", base]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(`${ALLOWANCE_DIR}/<pr-number>-<slug>.md`);
+    expect(result.stderr).toContain("one file per pull request");
+    expect(result.stderr).toContain(
+      "splitting the file is still the better answer",
+    );
   });
 });
 

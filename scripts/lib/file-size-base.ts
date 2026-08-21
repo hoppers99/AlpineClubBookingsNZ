@@ -46,6 +46,16 @@
  */
 import { execFileSync } from "node:child_process";
 
+import {
+  ALLOWANCE_DIR,
+  type AllowanceProblem,
+  type SizeAllowance,
+} from "./file-size-allowances";
+
+/** Quoted into every message that asks somebody to write one. */
+const ALLOWANCE_FORMAT_HINT =
+  "`file: <path>` / `lines: <its new length>` / `reason: <why splitting is worse here>`";
+
 /** How many lines a file had on the base ref, or that it did not exist there. */
 export type BaseSize =
   | { kind: "existed"; lines: number; /** Set when git reports a rename. */ from?: string }
@@ -405,7 +415,15 @@ export type ComputedFindingKind =
   | "empty-scan"
   | "new-over-budget"
   | "grown-beyond-base"
-  | "unclassified-source-file";
+  | "unclassified-source-file"
+  /** An allowance file this gate cannot read or cannot trust. */
+  | "allowance-malformed"
+  /** An allowance whose recorded length is not the file's real length. */
+  | "allowance-mismatched"
+  /** An allowance for something an allowance may never cover. */
+  | "allowance-not-permitted"
+  /** An allowance in this change that covered nothing. */
+  | "allowance-unused";
 
 export type ComputedFinding = {
   severity: "regression" | "unusable";
@@ -425,6 +443,12 @@ export type ComputedResult = {
   baseSha: string | null;
   /** Production files this run actually judged. */
   checkedFiles: number;
+  /**
+   * Growth this run permitted because the change said out loud that it would.
+   * Rendered on SUCCESS as well as on failure: an escape nobody can see is the
+   * escape the ledger already was.
+   */
+  allowancesApplied: SizeAllowance[];
 };
 
 /**
@@ -467,8 +491,27 @@ export function evaluateComputedRatchet(input: {
   isProductionFile: (file: string) => boolean;
   budgetForFile: (file: string) => { category: string; limit: number };
   countLines: (root: string, file: string) => number;
+  /** Declared growth from `size-allowances.d/`, and anything unreadable in it. */
+  allowances?: ReadonlyArray<SizeAllowance>;
+  allowanceProblems?: ReadonlyArray<AllowanceProblem>;
 }): ComputedResult {
   const findings: ComputedFinding[] = [];
+
+  for (const { source, problem } of input.allowanceProblems ?? []) {
+    findings.push({
+      severity: "unusable",
+      kind: "allowance-malformed",
+      file: source,
+      budget: null,
+      previous: null,
+      current: null,
+      problem,
+      action:
+        `fix the entry, or delete it — an allowance this gate cannot read is a ` +
+        `hole in the gate, not an allowance it may ignore. Format: ` +
+        `${ALLOWANCE_FORMAT_HINT}`,
+    });
+  }
 
   for (const { file, reason } of input.unclassified) {
     findings.push({
@@ -504,8 +547,20 @@ export function evaluateComputedRatchet(input: {
         "follow the remedy named above and re-run — this check will not report " +
         "a pass it has no evidence for",
     });
-    return { findings, baseSha: null, checkedFiles: 0 };
+    return { findings, baseSha: null, checkedFiles: 0, allowancesApplied: [] };
   }
+
+  // An allowance only has effect on the change that INTRODUCES it: the
+  // allowance file itself has to be in this change's diff. That is what makes
+  // it per-pull-request rather than a ledger by accretion — after merge it is
+  // inert, so it can be swept up in bulk like a compiled changelog fragment,
+  // and it can never be reached for again by a later change.
+  const liveAllowances = (input.allowances ?? []).filter((allowance) =>
+    resolved.sizes.has(allowance.source),
+  );
+  const allowanceFor = new Map(liveAllowances.map((a) => [a.file, a]));
+  const used = new Set<string>();
+  const allowancesApplied: SizeAllowance[] = [];
 
   let checkedFiles = 0;
   for (const [file, previous] of [...resolved.sizes.entries()].sort(([a], [b]) => a.localeCompare(b))) {
@@ -516,9 +571,36 @@ export function evaluateComputedRatchet(input: {
     const current = input.countLines(input.root, file);
     const describe = `${budget.category}, <= ${budget.limit} LOC`;
 
+    const allowance = allowanceFor.get(file);
+
     if (previous.kind === "absent") {
       if (current > budget.limit) {
         const moved = previous.movedFrom;
+        // An allowance may NEVER cover this. Refused by name rather than
+        // ignored, because the two bypasses #2987 closed are exactly a new file
+        // skipping its budget and a rename into scope inheriting an
+        // out-of-scope ceiling — and an escape hatch that quietly reopened
+        // either would be worse than no escape hatch.
+        if (allowance) {
+          used.add(file);
+          findings.push({
+            severity: "regression",
+            kind: "allowance-not-permitted",
+            file,
+            budget: describe,
+            previous: allowance.source,
+            current: `${current} LOC, over by ${current - budget.limit}`,
+            problem: moved
+              ? "an allowance cannot cover a file MOVED INTO the budgeted scope"
+              : "an allowance cannot cover a NEW file",
+            action:
+              "delete the allowance and split the file, or bring it under its " +
+              "budget. An allowance permits an already-over-budget file to grow; " +
+              "it is not a way to arrive over budget, which is the bypass this " +
+              "gate exists to refuse",
+          });
+          continue;
+        }
         findings.push({
           severity: "regression",
           kind: "new-over-budget",
@@ -547,6 +629,52 @@ export function evaluateComputedRatchet(input: {
     const ceiling = Math.max(budget.limit, previous.lines);
     if (current > ceiling) {
       const renamedNote = previous.from ? ` (renamed from ${previous.from})` : "";
+      const alreadyOver = previous.lines > budget.limit;
+
+      if (allowance) {
+        used.add(file);
+        if (!alreadyOver) {
+          // The owner decision permits "growth of an existing in-scope
+          // OVER-BUDGET file". A module still inside its budget is a module
+          // that can be split before it goes over, and letting an allowance
+          // carry it over would turn the budget itself into a suggestion.
+          findings.push({
+            severity: "regression",
+            kind: "allowance-not-permitted",
+            file,
+            budget: describe,
+            previous: `${previous.lines} LOC on the base ref, inside its budget (${allowance.source})`,
+            current: `${current} LOC, +${current - ceiling} beyond its ceiling`,
+            problem:
+              "an allowance cannot carry a file over its budget for the first time",
+            action:
+              "split it, or keep it inside its budget. An allowance lets an " +
+              "already-over-budget file grow; a file that is still within its " +
+              "budget has the cheapest possible split available to it",
+          });
+        } else if (allowance.lines !== current) {
+          // The one rule that stops an allowance drifting from the tree the way
+          // the ledger did, and stops one being written once and re-used later.
+          findings.push({
+            severity: "regression",
+            kind: "allowance-mismatched",
+            file,
+            budget: describe,
+            previous: `${allowance.source} records ${allowance.lines} LOC`,
+            current: `${current} LOC — ${current > allowance.lines ? "longer" : "shorter"} than the allowance says`,
+            problem:
+              "the allowance does not match the file, so it is not describing this change",
+            action:
+              `set \`lines: ${current}\` in ${allowance.source}, or delete the ` +
+              `entry if the file no longer needs one — an allowance whose number ` +
+              `is not the file's real length is the drift this gate replaced`,
+          });
+        } else {
+          allowancesApplied.push(allowance);
+        }
+        continue;
+      }
+
       findings.push({
         severity: "regression",
         kind: "grown-beyond-base",
@@ -554,18 +682,50 @@ export function evaluateComputedRatchet(input: {
         budget: describe,
         previous: `${previous.lines} LOC on the base ref${renamedNote}`,
         current: `${current} LOC, +${current - ceiling} beyond its ceiling`,
-        problem:
-          previous.lines > budget.limit
-            ? "an already-oversized file grew"
-            : "the file grew past its budget",
-        action:
-          "split or reduce it; if the increase is genuinely necessary, say in " +
-          "the PR body why splitting is worse here — there is no baseline file " +
-          "to regenerate any more, so an accepted increase is explained rather " +
-          "than recorded",
+        problem: alreadyOver
+          ? "an already-oversized file grew"
+          : "the file grew past its budget",
+        action: alreadyOver
+          ? `split or reduce it. If the increase is genuinely necessary, say so ` +
+            `out loud: add ${ALLOWANCE_DIR}/<pr-number>-<slug>.md containing ` +
+            `${ALLOWANCE_FORMAT_HINT.replace(/\n/g, " ")} — one file per pull ` +
+            `request, so no two branches conflict over it`
+          : "split or reduce it below its budget — an allowance cannot carry a " +
+            "file over its budget for the first time, only let one already over " +
+            "it grow",
       });
     }
   }
 
-  return { findings, baseSha: resolved.ref, checkedFiles };
+  // An allowance nobody needed is either a mistake or a file that shrank, and
+  // both are worth seeing. It FAILS rather than merely printing, for two
+  // reasons: an allowance left lying around is the seed of the shared ledger
+  // this whole change deletes, and the fix — delete three lines — is cheaper
+  // than the review it would otherwise escape.
+  for (const allowance of liveAllowances) {
+    if (used.has(allowance.file)) continue;
+    findings.push({
+      severity: "regression",
+      kind: "allowance-unused",
+      file: allowance.file,
+      budget: null,
+      previous: `${allowance.source} records ${allowance.lines} LOC`,
+      current: `${input.countLines(input.root, allowance.file)} LOC in the tree`,
+      problem:
+        "this change declares an allowance the check did not need — the file " +
+        "did not grow past its ceiling, or is not a production file this policy " +
+        "covers, or is not in this change at all",
+      action:
+        `delete the entry from ${allowance.source}. An allowance is one-shot and ` +
+        `belongs to the change that needs it; one left behind is a stored ` +
+        `exception, which is the thing this gate no longer has`,
+    });
+  }
+
+  return {
+    findings,
+    baseSha: resolved.ref,
+    checkedFiles,
+    allowancesApplied,
+  };
 }

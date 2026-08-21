@@ -344,8 +344,8 @@ enforces is:
 
 > Current size debt may stay. New debt and debt growth may not appear silently.
 
-**Nothing is written down.** For each file a change touches, the check reads how
-long that file was on `origin/main` and compares. From that:
+**No ceiling is written down.** For each file a change touches, the check reads
+how long that file was on `origin/main` and compares. From that:
 
 - a file that was **within** its budget may not go over it;
 - a file that was **already over** may not exceed the length it had on
@@ -354,6 +354,9 @@ long that file was on `origin/main` and compares. From that:
   what the next change is measured against, because that is what `origin/main`
   will then carry;
 - a file the change did not touch is not judged at all — it cannot have grown;
+- an already-over-budget file **may** grow if the change says so out loud, in a
+  per-pull-request allowance that names the file, its new length and why
+  splitting is worse — see "When a file legitimately has to grow" below;
 - a file **renamed within** the budgeted scope keeps its predecessor's ceiling,
   so moving an oversized module does not read as a pile of brand-new debt. A
   file renamed **into** the scope from outside it — from `prisma/`, `scripts/`,
@@ -481,33 +484,66 @@ reviewers to read as a split going well.
 
 #### When a file legitimately has to grow
 
-There is no command to run and nothing to commit. **`npm run quality:budget:update`
-is gone** (#2979) — if you remember typing it, or you find it in an old branch or
-an old pull request comment, that is the command this section replaces. It
-regenerated the deleted baseline file; running it now prints an explanation
-rather than doing nothing quietly.
+**Splitting the file is the preferred answer, and stays the preferred answer.**
+Where a cohesive helper can come out into a focused module, take that — it is
+the outcome the budgets exist to produce, and it lowers the ceiling for everyone
+who comes next.
 
-Say in the pull request body why the increase is necessary and why splitting is
-worse at that point, and let a reviewer weigh it. That was always the real
-contract — the old regeneration step existed to make the increase visible in a
-diff, and the pull request body is where a reviewer was meant to be looking
-anyway.
+Where the split is genuinely worse — the rule and its exception belong in one
+place, or the seam does not exist yet and inventing one for this change would
+make the code harder to follow — say so out loud, in a file of your own:
 
-What this costs, stated plainly: an accepted increase is no longer *enforced* in
-a machine-checkable artefact, so the gate stays red for that pull request until
-the file comes back under its previous length or a reviewer accepts the change
-by approving it. What it buys is that no other pull request pays for the
-decision. The old escape hatch had to be paid for by every concurrent branch,
-which is what made it a treadmill rather than a control.
+```markdown
+size-allowances.d/2980-membership-type-policy.md
+
+file: src/lib/membership-type-policy.ts
+lines: 1509
+reason: the school-teacher discriminator has to sit beside the policy it
+  guards; splitting it would put the rule and its exception in different files.
+```
+
+That is **one new file per pull request**, at a path no other pull request
+touches, which is the same shape `changelog.d/` uses and for exactly the same
+reason: a shared list is what made this gate a treadmill in the first place.
+[`size-allowances.d/README.md`](../size-allowances.d/README.md) is the full
+format and the rules. In short:
+
+- it names the **file**, its **new length** and the **reason**, because a bare
+  "allow growth" marker is not something a reviewer can weigh;
+- the recorded length must be the file's **real** length. The check fails if it
+  is not, which is what stops an allowance drifting away from the tree the way
+  the old ledger did, and stops one being written once and reached for later;
+- it is **one-shot**. It only has effect on the change that introduces it, so
+  after merge it is inert — the grown length *is* the base ref by then, and the
+  file can be swept out of the directory in bulk whenever somebody tidies, the
+  same way compiled changelog fragments are;
+- an allowance the check **did not need** fails too, rather than passing
+  quietly. That is either a mistake or a file that shrank, and leaving one lying
+  around is how a per-change note turns back into a stored exceptions list;
+- it may **not** cover a new file, a file renamed into the budgeted scope, or a
+  file crossing its budget for the first time. Each is refused by name. An
+  allowance lets an already-over-budget file grow; it is not a way to arrive
+  over budget.
+
+**`npm run quality:budget:update` is gone** (#2979) — if you remember typing it,
+or find it in an old branch or an old pull request comment, the allowance above
+is what replaced it. It regenerated the deleted baseline file; running it now
+prints an explanation rather than doing nothing quietly.
+
+What this arrangement buys, stated plainly: an accepted increase is still
+machine-checked and still visible in a diff, but **no other pull request pays
+for the decision**. The old escape hatch was a single shared file that every
+concurrent branch had to re-resolve, which is what made it a treadmill rather
+than a control.
 
 - **A split or a thinning** lowers the ceiling automatically on the next change,
   because `origin/main` then carries the smaller file. Nothing to regenerate and
   no way to leave the old number behind.
-- **A rebase or a merge from `main`** no longer conflicts on anything belonging
-  to this gate. That is the point of the change.
-- **A deliberate increase** is explained in the pull request body. There is no
-  exceptions list, no allow-list, and no file to edit — so there is also nothing
-  to hand-edit into a laxer ceiling.
+- **A rebase or a merge from `main`** does not conflict on anything belonging to
+  this gate, because no two branches write the same path.
+- **A deliberate increase** is one disposable file, reviewed on its own terms.
+  There is still no exceptions list and no shared allow-list to hand-edit into a
+  laxer ceiling.
 
 If you want the aggregate figure for context — how many files are over budget
 and by how much in total — run `npm run quality:budget -- --report`, or read the

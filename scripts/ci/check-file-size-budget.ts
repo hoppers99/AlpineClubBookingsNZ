@@ -55,6 +55,11 @@ import {
   evaluateComputedRatchet,
   type ComputedFinding,
 } from "../lib/file-size-base";
+import {
+  ALLOWANCE_DIR,
+  readSizeAllowances,
+  type SizeAllowance,
+} from "../lib/file-size-allowances";
 
 /** The ref a change is judged against unless told otherwise. */
 export const DEFAULT_BASE_REF = "origin/main";
@@ -72,6 +77,33 @@ export function renderFinding(finding: ComputedFinding): string {
   if (finding.current) lines.push(`      current:  ${finding.current}`);
   lines.push(`      action:   ${finding.action}`);
   return lines.join("\n");
+}
+
+/**
+ * Growth this run let through, printed on SUCCESS as well as on failure.
+ *
+ * An escape hatch nobody can see is the ledger again in another shape. This is
+ * what a reviewer reads to decide whether the reason is good enough, and what
+ * makes an allowance a decision somebody made rather than a green tick.
+ */
+export function renderAppliedAllowances(
+  applied: readonly SizeAllowance[],
+): string {
+  if (applied.length === 0) return "";
+  return [
+    "",
+    `ALLOWED GROWTH — ${applied.length} file(s) grew because this change said so out loud`,
+    "",
+    ...applied.flatMap((allowance) => [
+      `  ${allowance.file}  ->  ${allowance.lines} LOC`,
+      `      declared: ${allowance.source}`,
+      `      reason:   ${allowance.reason}`,
+      "",
+    ]),
+    "  Each entry is one-shot. Once this merges the new length IS the base ref, so",
+    `  the file needs no allowance next time and the ${ALLOWANCE_DIR}/ file is inert.`,
+    "",
+  ].join("\n");
 }
 
 export function renderReport(findings: readonly ComputedFinding[]): string {
@@ -213,6 +245,7 @@ export function run(root: string, argv: readonly string[]): number {
   }
 
   const baseRef = baseRefFrom(argv);
+  const declared = readSizeAllowances(root);
   const result = evaluateComputedRatchet({
     root,
     baseRef,
@@ -223,6 +256,8 @@ export function run(root: string, argv: readonly string[]): number {
       return { category: budget.category, limit: budget.limit };
     },
     countLines,
+    allowances: declared.allowances,
+    allowanceProblems: declared.problems,
   });
 
   const findings =
@@ -240,10 +275,19 @@ export function run(root: string, argv: readonly string[]): number {
       : `\`${baseRef}\` (merge base \`${result.baseSha.slice(0, 12)}\`)`;
 
   if (findings.length === 0) {
+    // The tail changes when an allowance was applied, because "none beyond its
+    // previous length" would then be a false summary of a run that deliberately
+    // let one through.
+    const tail =
+      result.allowancesApplied.length === 0
+        ? "none over its budget or beyond its previous length."
+        : `the only growth beyond a previous length is the ` +
+          `${result.allowancesApplied.length} declared below.`;
     process.stdout.write(
       `File-size budget ratchet: OK — ${result.checkedFiles} production file(s) changed ` +
-        `since ${against}, none over its budget or beyond its previous length.\n`,
+        `since ${against}, ${tail}\n`,
     );
+    process.stdout.write(renderAppliedAllowances(result.allowancesApplied));
     return 0;
   }
 
@@ -253,11 +297,17 @@ export function run(root: string, argv: readonly string[]): number {
       `Judged ${result.checkedFiles} production file(s) changed since that point.\n`,
   );
   process.stderr.write(renderReport(findings));
+  process.stderr.write(renderAppliedAllowances(result.allowancesApplied));
   process.stderr.write(
     [
       "",
       "The rule: current size debt may stay, but new debt and debt growth may not",
       'appear silently. See docs/MAINTENANCE.md -> "File-size budget ratchet".',
+      "",
+      "An already-over-budget file that genuinely has to grow says so out loud, in",
+      `${ALLOWANCE_DIR}/<pr-number>-<slug>.md — one file per pull request, so no two`,
+      `branches conflict over it. ${ALLOWANCE_DIR}/README.md is the format and the`,
+      "rules; splitting the file is still the better answer where it is available.",
       "",
       `  ${CHECK_COMMAND}                     re-run this check`,
       `  ${CHECK_COMMAND} -- --report         the whole tree's debt, for context`,
