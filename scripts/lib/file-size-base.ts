@@ -247,6 +247,13 @@ export function changedFilesSinceBase(
       // A rename or copy status is `R100` / `C75` and consumes TWO paths; every
       // other status consumes one. Reading the arity off the status letter is
       // what keeps the NUL stream aligned.
+      //
+      // `C` cannot occur here today: copy detection needs `-C`, and only `-M` is
+      // passed. It is parsed anyway so the stream stays aligned if that ever
+      // changes — but note that treating a copy like a rename would be WRONG for
+      // this gate. A copy of an oversized module is a second oversized module,
+      // not a move of the first, so it should be judged as new. Add that
+      // distinction in the same change that adds `-C`, not after it.
       if (status.startsWith("R") || status.startsWith("C")) {
         const from = fields[i + 1];
         const to = fields[i + 2];
