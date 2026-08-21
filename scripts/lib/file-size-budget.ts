@@ -385,4 +385,3 @@ function compare(a: string, b: string): number {
 function byPath(a: { file: string }, b: { file: string }): number {
   return compare(a.file, b.file);
 }
-
