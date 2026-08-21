@@ -89,6 +89,17 @@ describe("evaluateComputedRatchet — a NEW file must meet its budget", () => {
 
     expect(judge(repo.root, base, { "src/fresh.ts": 699 }).findings).toEqual([]);
   });
+
+  it("treats the budget as exclusive: exactly at the limit is not over", () => {
+    const repo = newRepo();
+    repo.write("src/existing.ts", 10);
+    const base = repo.commit("base");
+    repo.write("src/fresh.ts", 10);
+    repo.commit("added");
+
+    expect(judge(repo.root, base, { "src/fresh.ts": 700 }).findings).toEqual([]);
+    expect(judge(repo.root, base, { "src/fresh.ts": 701 }).findings).toHaveLength(1);
+  });
 });
 
 describe("evaluateComputedRatchet — existing debt may stay but may not grow", () => {
@@ -134,6 +145,26 @@ describe("evaluateComputedRatchet — existing debt may stay but may not grow", 
     repo.commit("grew back");
     const after = judge(repo.root, shrunk, { "src/big.ts": 1000 });
     expect(after.findings[0]?.kind).toBe("grown-beyond-base");
+  });
+
+  it("reports every regression at once rather than stopping at the first", () => {
+    // A gate that names one problem per run costs a full CI cycle per problem.
+    const repo = newRepo();
+    repo.write("src/big.ts", 1200);
+    const base = repo.commit("base");
+    repo.write("src/big.ts", 1300);
+    repo.write("src/fresh.ts", 800);
+    repo.commit("grew one and added another");
+
+    const result = judge(repo.root, base, {
+      "src/big.ts": 1300,
+      "src/fresh.ts": 800,
+    });
+
+    expect(result.findings).toHaveLength(2);
+    expect(new Set(result.findings.map((f) => f.kind))).toEqual(
+      new Set(["grown-beyond-base", "new-over-budget"]),
+    );
   });
 
   it("fails an under-budget file that crossed its budget", () => {

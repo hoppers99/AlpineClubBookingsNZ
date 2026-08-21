@@ -9,6 +9,7 @@ import {
   changedFilesSinceBase,
   resolveBaseRef,
   resolveBaseSizes,
+  untrackedFiles,
 } from "../lib/file-size-base";
 
 /**
@@ -82,6 +83,66 @@ describe("resolveBaseRef", () => {
       expect(result.error).toContain("origin/main");
       expect(result.error).toContain("git fetch origin main");
     }
+  });
+
+  it("returns where this branch LEFT the ref, not where the ref has got to", () => {
+    // The merge base, not the tip. Without this, a branch is measured against
+    // whatever has landed on `main` since it was cut, so main's own edits are
+    // read as the branch's - measured on the #2979 branch itself, where seven
+    // untouched `src/` files showed up in `git diff origin/main`.
+    const repo = newRepo();
+    repo.write("a.ts", 3);
+    const forked = repo.commit("shared history");
+    git(repo.root, "checkout", "--quiet", "-b", "feature");
+    repo.write("feature-only.ts", 3);
+    repo.commit("feature work");
+    git(repo.root, "checkout", "--quiet", "-");
+    repo.write("main-only.ts", 3);
+    const mainTip = repo.commit("main moved on");
+    git(repo.root, "checkout", "--quiet", "feature");
+
+    const result = resolveBaseRef(repo.root, mainTip);
+
+    expect(result).toEqual({ ok: true, sha: forked });
+  });
+
+  it("FAILS when the ref resolves but shares no history with this checkout", () => {
+    // The shallow-clone shape: resolving the ref is not the same as being able
+    // to compare against it, and the difference must not be a silent pass.
+    const repo = newRepo();
+    repo.write("a.ts", 3);
+    const original = repo.commit("first");
+    git(repo.root, "checkout", "--quiet", "--orphan", "unrelated");
+    git(repo.root, "rm", "-rq", "--cached", ".");
+    repo.write("b.ts", 3);
+    repo.commit("unrelated root");
+
+    const result = resolveBaseRef(repo.root, original);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("shares no commit");
+      expect(result.error).toContain("git fetch --unshallow");
+    }
+  });
+});
+
+describe("untrackedFiles", () => {
+  it("lists what git is neither tracking nor ignoring", () => {
+    // `git diff` cannot see an untracked file, so without this a brand-new
+    // module is judged by nobody until somebody stages it.
+    const repo = newRepo();
+    repo.write("tracked.ts", 3);
+    writeFileSync(path.join(repo.root, ".gitignore"), "ignored.ts\n", "utf8");
+    repo.commit("first");
+    repo.write("brand-new.ts", 3);
+    repo.write("ignored.ts", 3);
+
+    expect(untrackedFiles(repo.root)).toEqual(["brand-new.ts"]);
+  });
+
+  it("returns nothing rather than throwing outside a checkout", () => {
+    expect(untrackedFiles(path.join(tmpdir(), "acb-not-a-repo-2979"))).toEqual([]);
   });
 });
 
@@ -210,6 +271,37 @@ describe("resolveBaseSizes", () => {
         lines: 1200,
         from: "big.ts",
       });
+    }
+  });
+
+  it("treats an untracked file as new, so it must simply meet its budget", () => {
+    const repo = newRepo();
+    repo.write("tracked.ts", 12);
+    const base = repo.commit("base");
+    repo.write("never-added.ts", 900);
+
+    const result = resolveBaseSizes(repo.root, base);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.sizes.get("never-added.ts")).toEqual({ kind: "absent" });
+    }
+  });
+
+  it("does not let the untracked sweep overwrite a length the diff found", () => {
+    // Ordering matters: a file can be both tracked-and-modified and, in another
+    // checkout, untracked. Overwriting the diff's answer with `absent` would
+    // silently hand an oversized modified file a brand-new-file ceiling.
+    const repo = newRepo();
+    repo.write("grow.ts", 1200);
+    const base = repo.commit("base");
+    repo.write("grow.ts", 1300);
+
+    const result = resolveBaseSizes(repo.root, base);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.sizes.get("grow.ts")).toEqual({ kind: "existed", lines: 1200 });
     }
   });
 
