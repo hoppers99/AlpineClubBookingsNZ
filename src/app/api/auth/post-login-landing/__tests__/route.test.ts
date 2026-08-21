@@ -25,9 +25,11 @@ vi.mock("@/lib/prisma", () => ({
 // #2827: the route reads the family-invite return address from an HttpOnly
 // cookie. Mocked at the reader rather than at `next/headers`, because `cookies()`
 // throws outside a request scope and the reader is the seam the route depends on.
-const mockReadReturnAddress = vi.fn<() => Promise<string | null>>();
+// #2974: the reader hands back the RAW `<nonce>.<path>` value, and the route pairs
+// it with the `?inviteReturn=` nonce the caller presented.
+const mockReadReturnCookie = vi.fn<() => Promise<string | null>>();
 vi.mock("@/lib/family-invite-return-address-cookie", () => ({
-  readFamilyInviteReturnAddress: () => mockReadReturnAddress(),
+  readFamilyInviteReturnCookieValue: () => mockReadReturnCookie(),
 }));
 
 import {
@@ -49,11 +51,14 @@ function session(user: Record<string, unknown>) {
   return { user: { id: "m1", ...user } };
 }
 
-function req(callbackUrl?: string) {
-  const url = callbackUrl
-    ? `http://localhost/api/auth/post-login-landing?callbackUrl=${encodeURIComponent(callbackUrl)}`
-    : "http://localhost/api/auth/post-login-landing";
-  return new NextRequest(url);
+function req(callbackUrl?: string, inviteReturn?: string) {
+  const params = new URLSearchParams();
+  if (callbackUrl) params.set("callbackUrl", callbackUrl);
+  if (inviteReturn) params.set("inviteReturn", inviteReturn);
+  const query = params.toString();
+  return new NextRequest(
+    `http://localhost/api/auth/post-login-landing${query ? `?${query}` : ""}`,
+  );
 }
 
 beforeEach(() => {
@@ -63,7 +68,7 @@ beforeEach(() => {
     forcePasswordChange: false,
     twoFactorEnabled: false,
   });
-  mockReadReturnAddress.mockResolvedValue(null);
+  mockReadReturnCookie.mockResolvedValue(null);
 });
 
 describe("GET /api/auth/post-login-landing (#2090)", () => {
@@ -145,13 +150,16 @@ describe("GET /api/auth/post-login-landing (#2090)", () => {
  * that never lands on that page: an explicit `callbackUrl` outranked the address,
  * and leaving it behind would steer the member's NEXT sign-in.
  */
-describe("GET /api/auth/post-login-landing — family-invite return address (#2827)", () => {
+describe("GET /api/auth/post-login-landing — family-invite return address (#2827, #2974)", () => {
   const TOKEN =
     "e7c1b93a5d0f4826" +
     "1af74c02be95d738" +
     "6b0d2e8149a3fc57" +
     "d4938e6017c2ba5f";
   const INVITE_PATH = `/family-invite/${TOKEN}`;
+  const NONCE = "3f9c17ae42b0d85610c73fe29ab4d051";
+  const OTHER_NONCE = "0a1b2c3d4e5f60718293a4b5c6d7e8f9";
+  const INVITE_COOKIE = `${NONCE}.${INVITE_PATH}`;
 
   function clearedCookies(res: Response) {
     return res.headers
@@ -163,20 +171,49 @@ describe("GET /api/auth/post-login-landing — family-invite return address (#28
     mockAuth.mockResolvedValue(
       session({ postLoginLanding: null, adminPermissionMatrix: matrix() }),
     );
-    mockReadReturnAddress.mockResolvedValue(INVITE_PATH);
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
+
+    const res = await GET(req(undefined, NONCE));
+
+    await expect(res.json()).resolves.toEqual({ path: INVITE_PATH });
+  });
+
+  /**
+   * THE #2974 PROPERTY at the terminal consumer for the password and magic-link
+   * flows. A sign-in the invitation's own tab did not start presents no nonce, so
+   * the address is not honoured — while the cookie is still tidied away, which is
+   * the fail-safe direction.
+   */
+  it("ignores the address when the caller presents no nonce (#2974)", async () => {
+    mockAuth.mockResolvedValue(
+      session({ postLoginLanding: null, adminPermissionMatrix: matrix() }),
+    );
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
 
     const res = await GET(req());
 
-    await expect(res.json()).resolves.toEqual({ path: INVITE_PATH });
+    await expect(res.json()).resolves.toEqual({ path: "/dashboard" });
+    expect(clearedCookies(res)).toHaveLength(1);
+  });
+
+  it("ignores the address for a nonce from another tab (#2974)", async () => {
+    mockAuth.mockResolvedValue(
+      session({ postLoginLanding: null, adminPermissionMatrix: matrix() }),
+    );
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
+
+    const res = await GET(req(undefined, OTHER_NONCE));
+
+    await expect(res.json()).resolves.toEqual({ path: "/dashboard" });
   });
 
   it("clears the cookie once it has been answered", async () => {
     mockAuth.mockResolvedValue(
       session({ postLoginLanding: null, adminPermissionMatrix: matrix() }),
     );
-    mockReadReturnAddress.mockResolvedValue(INVITE_PATH);
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
 
-    const res = await GET(req());
+    const res = await GET(req(undefined, NONCE));
 
     expect(clearedCookies(res)).toEqual([
       serialiseFamilyInviteReturnCookie("", 0),
@@ -189,9 +226,9 @@ describe("GET /api/auth/post-login-landing — family-invite return address (#28
     mockAuth.mockResolvedValue(
       session({ postLoginLanding: null, adminPermissionMatrix: matrix() }),
     );
-    mockReadReturnAddress.mockResolvedValue(INVITE_PATH);
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
 
-    const res = await GET(req("/bookings"));
+    const res = await GET(req("/bookings", NONCE));
 
     await expect(res.json()).resolves.toEqual({ path: "/bookings" });
     expect(clearedCookies(res)).toHaveLength(1);
@@ -204,9 +241,9 @@ describe("GET /api/auth/post-login-landing — family-invite return address (#28
     mockAuth.mockResolvedValue(
       session({ postLoginLanding: null, adminPermissionMatrix: matrix() }),
     );
-    mockReadReturnAddress.mockResolvedValue(null);
+    mockReadReturnCookie.mockResolvedValue(null);
 
-    const res = await GET(req());
+    const res = await GET(req(undefined, NONCE));
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ path: "/dashboard" });

@@ -3,6 +3,8 @@ import { NextRequest } from "next/server";
 import {
   FAMILY_INVITE_RETURN_COOKIE,
   FAMILY_INVITE_RETURN_MAX_AGE_SECONDS,
+  FAMILY_INVITE_RETURN_NONCE_HEADER,
+  parseFamilyInviteReturnCookie,
 } from "@/lib/family-invite-return-address";
 import { MODULE_KEYS } from "@/config/modules";
 import type { FeatureFlags } from "@/config/schema";
@@ -32,6 +34,17 @@ import type { FeatureFlags } from "@/config/schema";
  *    stops a cookie being SENT cross-site, not being STORED from a cross-site
  *    response, so without this an `<img src>` on any page could plant a victim's
  *    post-login landing.
+ *
+ * A third condition arrived with #2974, and the cases below own it here because
+ * this is the only place both halves of it exist at once:
+ *
+ *  - **The write mints a tab-binding nonce**, stores it in the cookie as
+ *    `<nonce>.<path>`, and hands the SAME value to the render in
+ *    `FAMILY_INVITE_RETURN_NONCE_HEADER` so the invite page can put it on its
+ *    sign-in anchor. Without the header the two halves could never meet: only
+ *    middleware can write the cookie, and only the render can write the link.
+ *  - **A client's own copy of that header never reaches the render.** It is
+ *    deleted on every request before the proxy sets its own.
  *
  * The #2578 pairing is asserted in `csp-proxy.test.ts`, which owns that invariant
  * for both of the proxy's cookie writers.
@@ -66,6 +79,25 @@ function returnCookies(headers: Headers): string[] {
   return headers
     .getSetCookie()
     .filter((value) => value.startsWith(`${FAMILY_INVITE_RETURN_COOKIE}=`));
+}
+
+/** The `<nonce>.<path>` pair a written cookie carries, or null. */
+function returnCookiePair(headers: Headers) {
+  const [cookie] = returnCookies(headers);
+
+  if (!cookie) return null;
+
+  const value = cookie.slice(
+    `${FAMILY_INVITE_RETURN_COOKIE}=`.length,
+    cookie.indexOf(";"),
+  );
+
+  return parseFamilyInviteReturnCookie(value);
+}
+
+/** The tab-binding nonce the proxy forwarded to the render, or null. */
+function forwardedNonce(headers: Headers) {
+  return headers.get(`x-middleware-request-${FAMILY_INVITE_RETURN_NONCE_HEADER}`);
 }
 
 // The init type is taken from the constructor rather than written as the DOM's
@@ -106,14 +138,14 @@ beforeEach(() => {
   expect(MODULE_KEYS.length).toBeGreaterThan(0);
 });
 
-describe("proxy family-invite return address (#2827)", () => {
+describe("proxy family-invite return address (#2827, #2974)", () => {
   it("stamps the exact invite path on a GET of the invite page", async () => {
     const response = await get(INVITE_PATH);
     const [cookie, ...rest] = returnCookies(response.headers);
 
     expect(cookie, "the invite page must carry a return address").toBeTruthy();
     expect(rest, "one cookie, not several").toEqual([]);
-    expect(cookie).toContain(`${FAMILY_INVITE_RETURN_COOKIE}=${INVITE_PATH};`);
+    expect(returnCookiePair(response.headers)?.path).toBe(INVITE_PATH);
   });
 
   it("writes it HttpOnly, SameSite=Lax, path-wide and short-lived", async () => {
@@ -126,6 +158,86 @@ describe("proxy family-invite return address (#2827)", () => {
     expect(cookie).toContain("SameSite=Lax");
     expect(cookie).toContain("Path=/");
     expect(cookie).toContain(`Max-Age=${FAMILY_INVITE_RETURN_MAX_AGE_SECONDS}`);
+  });
+
+  /**
+   * #2974 — THE TAB BINDING, at the only point where both of its halves exist.
+   *
+   * A cookie is per-browser. Before this, somebody who opened an invitation on a
+   * shared kiosk and walked away without signing in handed the next person to
+   * sign in that landing, with the invited email address and the family-group
+   * name on it. The nonce is what makes the address belong to the tab instead:
+   * the render puts it on the sign-in anchor, and a landing site honours the
+   * cookie only for a request that presents it.
+   */
+  it("mints a tab-binding nonce and stores it in the cookie", async () => {
+    const pair = returnCookiePair((await get(INVITE_PATH)).headers);
+
+    expect(pair, "the cookie must parse as <nonce>.<path>").not.toBeNull();
+    expect(pair?.nonce).toMatch(/^[0-9a-f]{32}$/);
+    expect(pair?.path).toBe(INVITE_PATH);
+  });
+
+  it("hands the render the SAME nonce it put in the cookie", async () => {
+    // Without this the two halves could never meet: only middleware can write the
+    // cookie, and only the render can write the link the nonce has to travel on.
+    const response = await get(INVITE_PATH);
+
+    expect(forwardedNonce(response.headers)).toBe(
+      returnCookiePair(response.headers)?.nonce,
+    );
+  });
+
+  it("mints a FRESH nonce per navigation, and never one derived from the token", async () => {
+    const first = returnCookiePair((await get(INVITE_PATH)).headers)?.nonce;
+    const second = returnCookiePair((await get(INVITE_PATH)).headers)?.nonce;
+
+    expect(first).toBeTruthy();
+    expect(second).toBeTruthy();
+    expect(second, "two navigations must not share a nonce").not.toBe(first);
+    // A nonce derived from the token would turn the anchor back into a token
+    // oracle, which is the class #2827 exists to close.
+    expect(TOKEN).not.toContain(first);
+    expect(first).not.toContain(TOKEN.slice(0, 8));
+  });
+
+  it("never lets a CLIENT's own copy of the nonce header reach the render", async () => {
+    // `new Headers(request.headers)` copies whatever the visitor sent, so the
+    // proxy deletes this header on every request before setting its own. A forged
+    // nonce would match no cookie, so this is belt-and-braces — but a header that
+    // is a message FROM the proxy must never be writable by the caller.
+    const planted = "ffffffffffffffffffffffffffffffff";
+
+    const onInvite = await get(INVITE_PATH, {
+      headers: { [FAMILY_INVITE_RETURN_NONCE_HEADER]: planted },
+    });
+
+    expect(forwardedNonce(onInvite.headers)).not.toBe(planted);
+    expect(forwardedNonce(onInvite.headers)).toBe(
+      returnCookiePair(onInvite.headers)?.nonce,
+    );
+
+    for (const path of ["/", "/login", "/dashboard", `/pay/${TOKEN}`]) {
+      const response = await get(path, {
+        headers: { [FAMILY_INVITE_RETURN_NONCE_HEADER]: planted },
+      });
+
+      expect(forwardedNonce(response.headers), path).toBeNull();
+    }
+  });
+
+  it("forwards no nonce on a request that writes no address", async () => {
+    // A signed-in visitor is retiring the address, and a non-navigation writes
+    // nothing at all: in neither case is there a live nonce for a render to use.
+    const signedIn = await get(INVITE_PATH, {
+      headers: { cookie: "authjs.session-token=abc" },
+    });
+    const subresource = await getRaw(INVITE_PATH, {
+      headers: { "sec-fetch-dest": "image" },
+    });
+
+    expect(forwardedNonce(signedIn.headers)).toBeNull();
+    expect(forwardedNonce(subresource.headers)).toBeNull();
   });
 
   it("RETIRES the address for a signed-in visitor, who has arrived", async () => {
@@ -205,23 +317,20 @@ describe("proxy family-invite return address (#2827)", () => {
     });
 
     expect(returnCookies(response.headers)).toHaveLength(1);
-    expect(returnCookies(response.headers)[0]).toContain(
-      `${FAMILY_INVITE_RETURN_COOKIE}=${INVITE_PATH};`,
-    );
+    expect(returnCookiePair(response.headers)?.path).toBe(INVITE_PATH);
   });
 
   it("normalises a trailing slash rather than missing the address", async () => {
-    const [cookie] = returnCookies((await get(`${INVITE_PATH}/`)).headers);
+    const response = await get(`${INVITE_PATH}/`);
 
-    expect(cookie).toContain(`${FAMILY_INVITE_RETURN_COOKIE}=${INVITE_PATH};`);
+    expect(returnCookiePair(response.headers)?.path).toBe(INVITE_PATH);
   });
 
   it("ignores a query string, which the address has no use for", async () => {
-    const [cookie] = returnCookies(
-      (await get(`${INVITE_PATH}?utm_source=email`)).headers,
-    );
+    const response = await get(`${INVITE_PATH}?utm_source=email`);
+    const [cookie] = returnCookies(response.headers);
 
-    expect(cookie).toContain(`${FAMILY_INVITE_RETURN_COOKIE}=${INVITE_PATH};`);
+    expect(returnCookiePair(response.headers)?.path).toBe(INVITE_PATH);
     expect(cookie).not.toContain("utm_source");
   });
 

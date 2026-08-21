@@ -164,21 +164,27 @@ describe("resolvePostLoginLandingPath — explicit callbackUrl precedence (D-D4)
  * invite token into a link's `href` and so into the address bar, the browser's
  * history and any `Referer` the next hop is shown.
  *
- * The resolver re-validates the value itself, so these cases hold whatever a
- * caller forwards: the only path this input can ever produce is an invite page.
+ * #2974 — and honoured only for the TAB that opened the invitation. The resolver
+ * takes the RAW cookie value plus the nonce this request presented, and does both
+ * the shape check and the nonce match itself, so these cases hold whatever a
+ * caller forwards: the only path this input can ever produce is an invite page,
+ * and only for a caller holding that invitation's own nonce.
  */
-describe("resolvePostLoginLandingPath — private family-invite return address (#2827)", () => {
+describe("resolvePostLoginLandingPath — private family-invite return address (#2827, #2974)", () => {
   const TOKEN =
     "e7c1b93a5d0f4826" +
     "1af74c02be95d738" +
     "6b0d2e8149a3fc57" +
     "d4938e6017c2ba5f";
   const INVITE_PATH = `/family-invite/${TOKEN}`;
+  const NONCE = "3f9c17ae42b0d85610c73fe29ab4d051";
+  const OTHER_NONCE = "0a1b2c3d4e5f60718293a4b5c6d7e8f9";
+  const COOKIE = `${NONCE}.${INVITE_PATH}`;
 
   it("beats the landing preference and the role default", () => {
     expect(
       resolvePostLoginLandingPath({
-        privateReturnPath: INVITE_PATH,
+        familyInviteReturn: { cookieValue: COOKIE, presentedNonce: NONCE },
         landingPreference: "MEMBER_DASHBOARD",
         permissionInput: FULL_ADMIN,
       }),
@@ -186,7 +192,7 @@ describe("resolvePostLoginLandingPath — private family-invite return address (
 
     expect(
       resolvePostLoginLandingPath({
-        privateReturnPath: INVITE_PATH,
+        familyInviteReturn: { cookieValue: COOKIE, presentedNonce: NONCE },
         landingPreference: null,
         permissionInput: FULL_ADMIN,
       }),
@@ -200,11 +206,82 @@ describe("resolvePostLoginLandingPath — private family-invite return address (
     expect(
       resolvePostLoginLandingPath({
         explicitCallbackUrl: "/nominations/tok",
-        privateReturnPath: INVITE_PATH,
+        familyInviteReturn: { cookieValue: COOKIE, presentedNonce: NONCE },
         landingPreference: null,
         permissionInput: FULL_ADMIN,
       }),
     ).toBe("/nominations/tok");
+  });
+
+  /**
+   * THE #2974 PROPERTY, and the reason this issue exists.
+   *
+   * On a shared lodge or kiosk browser, somebody opens an invitation, does not
+   * sign in, and walks away. The cookie is still there. The next person sits down
+   * and signs in — in their own tab, so with no nonce, or with a nonce from some
+   * other journey. They must land where they normally would, never on a stranger's
+   * invitation with its invited email address and family-group name on the screen.
+   */
+  it("is NOT honoured by a sign-in that presents no nonce — the shared-kiosk case", () => {
+    for (const presentedNonce of [null, undefined, ""]) {
+      expect(
+        resolvePostLoginLandingPath({
+          familyInviteReturn: { cookieValue: COOKIE, presentedNonce },
+          landingPreference: "MEMBER_DASHBOARD",
+          permissionInput: FULL_ADMIN,
+        }),
+        String(presentedNonce),
+      ).toBe("/dashboard");
+    }
+  });
+
+  it("is NOT honoured by a nonce from a different tab or journey", () => {
+    expect(
+      resolvePostLoginLandingPath({
+        familyInviteReturn: {
+          cookieValue: COOKIE,
+          presentedNonce: OTHER_NONCE,
+        },
+        landingPreference: "MEMBER_DASHBOARD",
+        permissionInput: FULL_ADMIN,
+      }),
+    ).toBe("/dashboard");
+  });
+
+  it("refuses a nonce that is a prefix, a suffix or a near miss of the real one", () => {
+    for (const attempt of [
+      NONCE.slice(0, 31),
+      `${NONCE}0`,
+      NONCE.toUpperCase(),
+      `${NONCE.slice(0, 31)}f`,
+      ".*",
+      `${NONCE} `,
+    ]) {
+      expect(
+        resolvePostLoginLandingPath({
+          familyInviteReturn: { cookieValue: COOKIE, presentedNonce: attempt },
+          landingPreference: "MEMBER_DASHBOARD",
+          permissionInput: FULL_ADMIN,
+        }),
+        attempt,
+      ).toBe("/dashboard");
+    }
+  });
+
+  it("refuses a cookie in the pre-#2974 format, which carried no nonce", () => {
+    // A visitor holding an old-format cookie across a deploy degrades to their
+    // ordinary landing for the two minutes it survives. The emailed link still
+    // works; nothing errors.
+    expect(
+      resolvePostLoginLandingPath({
+        familyInviteReturn: {
+          cookieValue: INVITE_PATH,
+          presentedNonce: NONCE,
+        },
+        landingPreference: "MEMBER_DASHBOARD",
+        permissionInput: FULL_ADMIN,
+      }),
+    ).toBe("/dashboard");
   });
 
   it("refuses an off-origin value — the open-redirect guard", () => {
@@ -217,7 +294,10 @@ describe("resolvePostLoginLandingPath — private family-invite return address (
     ]) {
       expect(
         resolvePostLoginLandingPath({
-          privateReturnPath: attempt,
+          familyInviteReturn: {
+            cookieValue: `${NONCE}.${attempt}`,
+            presentedNonce: NONCE,
+          },
           landingPreference: null,
           permissionInput: FULL_ADMIN,
         }),
@@ -240,7 +320,10 @@ describe("resolvePostLoginLandingPath — private family-invite return address (
     ]) {
       expect(
         resolvePostLoginLandingPath({
-          privateReturnPath: attempt,
+          familyInviteReturn: {
+            cookieValue: `${NONCE}.${attempt}`,
+            presentedNonce: NONCE,
+          },
           landingPreference: null,
           permissionInput: FULL_ADMIN,
         }),
@@ -255,12 +338,21 @@ describe("resolvePostLoginLandingPath — private family-invite return address (
     for (const absent of [null, undefined, ""]) {
       expect(
         resolvePostLoginLandingPath({
-          privateReturnPath: absent,
+          familyInviteReturn: { cookieValue: absent, presentedNonce: NONCE },
           landingPreference: "MEMBER_DASHBOARD",
           permissionInput: FULL_ADMIN,
         }),
         String(absent),
       ).toBe("/dashboard");
     }
+
+    // ...and with no pair supplied at all, which is what every landing site that
+    // has nothing to do with invitations passes.
+    expect(
+      resolvePostLoginLandingPath({
+        landingPreference: "MEMBER_DASHBOARD",
+        permissionInput: FULL_ADMIN,
+      }),
+    ).toBe("/dashboard");
   });
 });

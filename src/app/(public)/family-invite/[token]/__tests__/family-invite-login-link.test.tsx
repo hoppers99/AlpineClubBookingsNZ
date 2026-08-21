@@ -31,6 +31,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * signed-in visitor reaches when the invite was sent to somebody else. The
  * wrong-account branch matters independently — it is the one a forwarded link lands
  * on, so it is the one an attacker can reach with a session of their own.
+ *
+ * **#2974 puts something new in that anchor, and the cases below say exactly what.**
+ * The sign-in link is `/login?inviteReturn=<nonce>`: 128 random bits the proxy
+ * minted on this response, which bind the return address to this tab so the next
+ * person to sign in on a shared kiosk browser is not landed on this invitation. It
+ * is not derived from the token and it is worth nothing without the HttpOnly cookie
+ * from the same browser, so it reintroduces no oracle — and the token assertions
+ * here are unchanged and still pass, which is the point.
  */
 
 /** A realistic 64-hex action token, with no repeating run, so a short prefix of
@@ -42,10 +50,22 @@ const TOKEN =
 /** The shortest prefix an attacker needs to start a working `^=` oracle. */
 const ORACLE_PROBE_LENGTH = 6;
 
-const { mockAuth, mockInviteView, mockMemberFindUnique } = vi.hoisted(() => ({
-  mockAuth: vi.fn(),
-  mockInviteView: vi.fn(),
-  mockMemberFindUnique: vi.fn(),
+/** A #2974 tab-binding nonce, as `src/proxy.ts` would have minted it. */
+const NONCE = "3f9c17ae42b0d85610c73fe29ab4d051";
+
+const { mockAuth, mockInviteView, mockMemberFindUnique, mockRequestHeaders } =
+  vi.hoisted(() => ({
+    mockAuth: vi.fn(),
+    mockInviteView: vi.fn(),
+    mockMemberFindUnique: vi.fn(),
+    mockRequestHeaders: vi.fn<() => Headers>(),
+  }));
+
+// #2974: the page reads the tab-binding nonce out of the request header the proxy
+// set on this very response. Mocked at `next/headers` because `headers()` throws
+// outside a request scope.
+vi.mock("next/headers", () => ({
+  headers: async () => mockRequestHeaders(),
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: () => mockAuth() }));
@@ -137,6 +157,9 @@ function expectNoTokenAnywhere(markup: string, host: Element) {
 beforeEach(() => {
   vi.clearAllMocks();
   mockInviteView.mockResolvedValue(claimableView());
+  mockRequestHeaders.mockReturnValue(
+    new Headers({ "x-family-invite-return-nonce": NONCE }),
+  );
 });
 
 describe("family-invite page — the invite token stays out of the markup (#2827)", () => {
@@ -150,7 +173,57 @@ describe("family-invite page — the invite token stays out of the markup (#2827
 
     expect(signIn, "the sign-in affordance must survive the fix").toBeTruthy();
     // Exact, not a prefix match: `/login?callbackUrl=…` is the shape this fix
-    // removes and the shape a future edit would most plausibly reintroduce.
+    // removes and the shape a future edit would most plausibly reintroduce. The
+    // only query parameter permitted here is the #2974 tokenless nonce.
+    expect(signIn?.getAttribute("href")).toBe(`/login?inviteReturn=${NONCE}`);
+  });
+
+  it("carries the tokenless tab-binding nonce, and nothing derived from the token (#2974)", async () => {
+    // The nonce is what stops the next person signing in on a shared kiosk browser
+    // from landing on this invitation. It goes in an `href`, so it has to be worth
+    // nothing to a CSS attribute oracle: it is random, not derived, and useless
+    // without the HttpOnly cookie from the same browser.
+    mockAuth.mockResolvedValue(null);
+
+    const { markup, host } = await renderPage();
+    const signIn = Array.from(host.querySelectorAll("a")).find((anchor) =>
+      (anchor.textContent ?? "").includes("I already have an account"),
+    );
+
+    expect(signIn?.getAttribute("href")).toContain(`inviteReturn=${NONCE}`);
+    expect(NONCE).not.toContain(TOKEN.slice(0, ORACLE_PROBE_LENGTH));
+    // Belt and braces: the nonce being present must not have smuggled the token in.
+    expectNoTokenAnywhere(markup, host);
+  });
+
+  it("falls back to a plain /login when the proxy sent no nonce (#2974)", async () => {
+    // A browser too old for `Sec-Fetch-*`, or any request the proxy declined to
+    // write an address for. The recipient signs in normally and lands where they
+    // usually would; nothing errors, and the emailed link still works.
+    mockAuth.mockResolvedValue(null);
+    mockRequestHeaders.mockReturnValue(new Headers());
+
+    const { host } = await renderPage();
+    const signIn = Array.from(host.querySelectorAll("a")).find((anchor) =>
+      (anchor.textContent ?? "").includes("I already have an account"),
+    );
+
+    expect(signIn?.getAttribute("href")).toBe("/login");
+  });
+
+  it("refuses a malformed nonce rather than putting it in the anchor (#2974)", async () => {
+    // The header is deleted on every request before the proxy sets its own, so a
+    // forged value should never arrive — this is the second lock on that door.
+    mockAuth.mockResolvedValue(null);
+    mockRequestHeaders.mockReturnValue(
+      new Headers({ "x-family-invite-return-nonce": `"><script>x</script>` }),
+    );
+
+    const { host } = await renderPage();
+    const signIn = Array.from(host.querySelectorAll("a")).find((anchor) =>
+      (anchor.textContent ?? "").includes("I already have an account"),
+    );
+
     expect(signIn?.getAttribute("href")).toBe("/login");
   });
 
@@ -165,8 +238,10 @@ describe("family-invite page — the invite token stays out of the markup (#2827
   it("keeps it a real anchor, so the flow survives with JavaScript off", async () => {
     // The owner's requirement for this rework. A button with an onClick handler
     // would have closed the oracle and quietly dropped the no-JavaScript path;
-    // an anchor to a static address needs no script at all, and the return
-    // address rides on the response that rendered it.
+    // an anchor to a static address needs no script at all, and BOTH halves of the
+    // #2974 binding — the cookie and the nonce in this href — ride on the response
+    // that rendered it. Nothing on this page needs scripting to arm the return
+    // address.
     mockAuth.mockResolvedValue(null);
 
     const { host } = await renderPage();
@@ -205,7 +280,7 @@ describe("family-invite page — the invite token stays out of the markup (#2827
         anchor.getAttribute("href"),
       ),
       "no anchor on this branch may point at /login — that is the bounce",
-    ).not.toContain("/login");
+    ).not.toContainEqual(expect.stringContaining("/login"));
     const control = Array.from(host.querySelectorAll("button")).find((button) =>
       (button.textContent ?? "").includes("Sign out and use a different account"),
     );

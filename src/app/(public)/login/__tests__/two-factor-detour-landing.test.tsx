@@ -15,18 +15,19 @@ import {
 // involved, so the detour never bakes a stale /dashboard default (the alice/bob
 // asymmetry this suite guards against).
 
-const { mockAuth, mockRedirect, mockReadReturnAddress } = vi.hoisted(() => ({
+const { mockAuth, mockRedirect, mockReadReturnCookie } = vi.hoisted(() => ({
   mockAuth: vi.fn(),
   mockRedirect: vi.fn(),
-  mockReadReturnAddress: vi.fn<() => Promise<string | null>>(),
+  mockReadReturnCookie: vi.fn<() => Promise<string | null>>(),
 }));
 
 // #2827: both detour pages read the family-invite return address from an
 // HttpOnly cookie so a 2FA-enabled member still lands back on their invite.
 // Mocked at the reader, not at `next/headers`, because `cookies()` throws
-// outside a request scope.
+// outside a request scope. #2974: the reader hands back the RAW cookie value,
+// and the page pairs it with the `?inviteReturn=` nonce the detour hop carried.
 vi.mock("@/lib/family-invite-return-address-cookie", () => ({
-  readFamilyInviteReturnAddress: () => mockReadReturnAddress(),
+  readFamilyInviteReturnCookieValue: () => mockReadReturnCookie(),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -76,21 +77,28 @@ function sessionUser(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function runEnroll(callbackUrl?: string) {
+function detourParams(callbackUrl?: string, inviteReturn?: string) {
+  return {
+    ...(callbackUrl ? { callbackUrl } : {}),
+    ...(inviteReturn ? { inviteReturn } : {}),
+  };
+}
+
+async function runEnroll(callbackUrl?: string, inviteReturn?: string) {
   return EnrollPage({
-    searchParams: Promise.resolve(callbackUrl ? { callbackUrl } : {}),
+    searchParams: Promise.resolve(detourParams(callbackUrl, inviteReturn)),
   });
 }
 
-async function runVerify(callbackUrl?: string) {
+async function runVerify(callbackUrl?: string, inviteReturn?: string) {
   return VerifyPage({
-    searchParams: Promise.resolve(callbackUrl ? { callbackUrl } : {}),
+    searchParams: Promise.resolve(detourParams(callbackUrl, inviteReturn)),
   });
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockReadReturnAddress.mockResolvedValue(null);
+  mockReadReturnCookie.mockResolvedValue(null);
   mockRedirect.mockImplementation((path: string) => {
     throw new Error(`redirect:${path}`);
   });
@@ -207,8 +215,12 @@ describe("/login/verify post-detour landing (#2090)", () => {
   });
 });
 
-describe("2FA detour honours the family-invite return address (#2827)", () => {
-  const INVITE_PATH = `/family-invite/${"e7c1b93a5d0f4826".repeat(4)}`;
+describe("2FA detour honours the family-invite return address (#2827, #2974)", () => {
+  const TOKEN = "e7c1b93a5d0f4826".repeat(4);
+  const INVITE_PATH = `/family-invite/${TOKEN}`;
+  const NONCE = "3f9c17ae42b0d85610c73fe29ab4d051";
+  const OTHER_NONCE = "0a1b2c3d4e5f60718293a4b5c6d7e8f9";
+  const INVITE_COOKIE = `${NONCE}.${INVITE_PATH}`;
   const enrolled = { twoFactorEnrolled: true, twoFactorMethod: "TOTP" as const };
 
   it("hands /login/verify's panel the invite path, over the role default", async () => {
@@ -218,9 +230,9 @@ describe("2FA detour honours the family-invite return address (#2827)", () => {
     mockAuth.mockResolvedValue(
       sessionUser({ ...enrolled, adminPermissionMatrix: matrix({ finance: "view" }) }),
     );
-    mockReadReturnAddress.mockResolvedValue(INVITE_PATH);
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
 
-    const element = (await runVerify()) as unknown as {
+    const element = (await runVerify(undefined, NONCE)) as unknown as {
       props: { callbackUrl: string };
     };
     expect(element.props.callbackUrl).toBe(INVITE_PATH);
@@ -230,19 +242,67 @@ describe("2FA detour honours the family-invite return address (#2827)", () => {
     mockAuth.mockResolvedValue(
       sessionUser({ adminPermissionMatrix: matrix({ finance: "view" }) }),
     );
-    mockReadReturnAddress.mockResolvedValue(INVITE_PATH);
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
 
-    const element = (await runEnroll()) as unknown as {
+    const element = (await runEnroll(undefined, NONCE)) as unknown as {
       props: { callbackUrl: string };
     };
     expect(element.props.callbackUrl).toBe(INVITE_PATH);
   });
 
+  /**
+   * THE #2974 PROPERTY at the detour: a 2FA member signing in from a tab that
+   * never opened the invitation carries no nonce across the hop, so the panel is
+   * handed their ordinary landing and never a stranger's invite path.
+   */
+  it("ignores the cookie when the detour hop carried no nonce (#2974)", async () => {
+    mockAuth.mockResolvedValue(sessionUser(enrolled));
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
+
+    const element = (await runVerify()) as unknown as {
+      props: { callbackUrl: string };
+    };
+    expect(element.props.callbackUrl).toBe("/dashboard");
+  });
+
+  it("ignores the cookie for a nonce from another tab (#2974)", async () => {
+    // An unenrolled session, so /login/enroll RENDERS its panel rather than
+    // handing back to /login/verify — the panel's callbackUrl is the landing
+    // under test.
+    mockAuth.mockResolvedValue(sessionUser());
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
+
+    const element = (await runEnroll(undefined, OTHER_NONCE)) as unknown as {
+      props: { callbackUrl: string };
+    };
+    expect(element.props.callbackUrl).toBe("/dashboard");
+  });
+
+  it("carries the nonce — and never the invite path — across the second hop (#2974)", async () => {
+    // /login/verify hands an unenrolled session to /login/enroll, and /login/enroll
+    // hands an enrolled one back. The nonce has to survive both hops, and the token
+    // must not appear in either URL.
+    mockAuth.mockResolvedValue(
+      sessionUser({ twoFactorEnrolled: false, twoFactorMethod: null }),
+    );
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
+
+    await expect(runVerify(undefined, NONCE)).rejects.toThrow(
+      `redirect:/login/enroll?inviteReturn=${NONCE}`,
+    );
+
+    mockAuth.mockResolvedValue(sessionUser(enrolled));
+
+    await expect(runEnroll(undefined, NONCE)).rejects.toThrow(
+      `redirect:/login/verify?inviteReturn=${NONCE}`,
+    );
+  });
+
   it("still lets a genuine deep link outrank it", async () => {
     mockAuth.mockResolvedValue(sessionUser(enrolled));
-    mockReadReturnAddress.mockResolvedValue(INVITE_PATH);
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
 
-    const element = (await runVerify("/nominations/tok")) as unknown as {
+    const element = (await runVerify("/nominations/tok", NONCE)) as unknown as {
       props: { callbackUrl: string };
     };
     expect(element.props.callbackUrl).toBe("/nominations/tok");
@@ -250,9 +310,9 @@ describe("2FA detour honours the family-invite return address (#2827)", () => {
 
   it("degrades to the ordinary landing when the cookie has expired", async () => {
     mockAuth.mockResolvedValue(sessionUser(enrolled));
-    mockReadReturnAddress.mockResolvedValue(null);
+    mockReadReturnCookie.mockResolvedValue(null);
 
-    const element = (await runVerify()) as unknown as {
+    const element = (await runVerify(undefined, NONCE)) as unknown as {
       props: { callbackUrl: string };
     };
     expect(element.props.callbackUrl).toBe("/dashboard");

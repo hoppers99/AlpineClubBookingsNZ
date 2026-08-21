@@ -1,9 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { isActionTokenFormat } from "@/lib/action-tokens";
 import {
+  appendFamilyInviteReturnParam,
+  buildFamilyInviteLoginPath,
+  buildFamilyInviteReturnCookieValue,
+  createFamilyInviteReturnNonce,
   FAMILY_INVITE_RETURN_COOKIE,
   FAMILY_INVITE_RETURN_MAX_AGE_SECONDS,
+  FAMILY_INVITE_RETURN_PARAM,
+  getFamilyInviteReturnNonce,
   getFamilyInviteReturnPath,
+  matchFamilyInviteReturnCookie,
+  parseFamilyInviteReturnCookie,
   serialiseFamilyInviteReturnCookie,
 } from "@/lib/family-invite-return-address";
 
@@ -19,6 +27,13 @@ import {
  * pin the two properties that makes safe: the value can only ever be an invite
  * page (so a planted cookie is neither an open redirect nor a general "land
  * anywhere" lever), and the cookie is genuinely unreadable from the page.
+ *
+ * #2974 added the third property, and it is the one that closes the residual #2827
+ * left open: the address is honoured only for the TAB that opened the invitation.
+ * A cookie is per-browser, so before this, somebody who opened an invitation on a
+ * shared lodge or kiosk browser and walked away WITHOUT signing in handed the next
+ * person to sign in that landing — the invited email address and the family-group
+ * name on their screen. The nonce cases below are that fix at its narrowest point.
  */
 
 /** A realistic 64-hex action token — the shape `issueActionToken` mints. */
@@ -133,11 +148,16 @@ describe("serialiseFamilyInviteReturnCookie (#2827)", () => {
   });
 
   it("expires within two minutes", () => {
-    // Two minutes, not the ten this shipped at first (owner decision, 19 Aug
-    // 2026): the lifetime IS the exposure window for the shared-browser residual
-    // this mechanism does not fully close, so it is kept as short as the emailed
-    // link -> sign-in sitting comfortably allows. Pinned by value, not just by the
-    // constant, so shortening or lengthening it is a deliberate edit here.
+    // Two minutes, not the ten this shipped at first. #2974 re-examined the figure
+    // once tab scoping closed the disclosure the shortening was mitigating, and
+    // KEPT it: the window covers "load /login, type an email and a password,
+    // submit" and nothing longer, because every landing site reads the cookie
+    // during the first authenticated page load — entering a 2FA code happens after
+    // /login/verify has already resolved the landing. Pinned by value, not just by
+    // the constant, so changing it is a deliberate edit here. (Earlier revisions
+    // credited the two minutes to an owner decision of 19 Aug 2026; no such comment
+    // exists on #2827 or PR #2970. The owner did make the call — it was made in
+    // session and never written down as a dated comment.)
     expect(FAMILY_INVITE_RETURN_MAX_AGE_SECONDS).toBe(120);
     expect(cookie).toContain(`Max-Age=${FAMILY_INVITE_RETURN_MAX_AGE_SECONDS}`);
   });
@@ -175,5 +195,202 @@ describe("serialiseFamilyInviteReturnCookie (#2827)", () => {
       vi.unstubAllEnvs();
       expect(process.env.NODE_ENV).toBe(original);
     }
+  });
+});
+
+/**
+ * #2974 — the tab-binding nonce, tested at the level where the whole property
+ * lives: a cookie value plus a presented nonce either agree or they do not.
+ */
+describe("family-invite tab-binding nonce (#2974)", () => {
+  const NONCE = "3f9c17ae42b0d85610c73fe29ab4d051";
+  const OTHER_NONCE = "0a1b2c3d4e5f60718293a4b5c6d7e8f9";
+  const COOKIE_VALUE = `${NONCE}.${INVITE_PATH}`;
+
+  describe("createFamilyInviteReturnNonce", () => {
+    it("mints 32 lowercase hex characters", () => {
+      expect(createFamilyInviteReturnNonce()).toMatch(/^[0-9a-f]{32}$/);
+    });
+
+    it("mints a different value every time", () => {
+      // A repeated nonce would make the binding meaningless: a second tab could
+      // present a value it had seen before and be honoured.
+      const minted = new Set(
+        Array.from({ length: 50 }, () => createFamilyInviteReturnNonce()),
+      );
+
+      expect(minted.size).toBe(50);
+    });
+
+    it("mints a value its own shape guard accepts", () => {
+      expect(getFamilyInviteReturnNonce(createFamilyInviteReturnNonce())).not.toBeNull();
+    });
+  });
+
+  describe("getFamilyInviteReturnNonce", () => {
+    it("accepts exactly the minted shape, and the first of an array", () => {
+      expect(getFamilyInviteReturnNonce(NONCE)).toBe(NONCE);
+      expect(getFamilyInviteReturnNonce([NONCE, OTHER_NONCE])).toBe(NONCE);
+    });
+
+    it("refuses everything else", () => {
+      for (const candidate of [
+        null,
+        undefined,
+        "",
+        " ",
+        NONCE.slice(0, 31),
+        `${NONCE}0`,
+        NONCE.toUpperCase(),
+        `${NONCE} `,
+        `${NONCE}\n`,
+        ".*",
+        "../../admin",
+        `${NONCE}.${INVITE_PATH}`,
+        [],
+      ] as (string | string[] | null | undefined)[]) {
+        expect(
+          getFamilyInviteReturnNonce(candidate),
+          JSON.stringify(candidate),
+        ).toBeNull();
+      }
+    });
+  });
+
+  describe("buildFamilyInviteReturnCookieValue / parseFamilyInviteReturnCookie", () => {
+    it("round-trips a nonce and an invite path", () => {
+      const value = buildFamilyInviteReturnCookieValue(NONCE, INVITE_PATH);
+
+      expect(value).toBe(COOKIE_VALUE);
+      expect(parseFamilyInviteReturnCookie(value)).toEqual({
+        nonce: NONCE,
+        path: INVITE_PATH,
+      });
+    });
+
+    it("refuses to build a value no consumption site could ever match", () => {
+      // Writing an unmatchable cookie would look like the feature working right up
+      // until it silently did not; writing nothing degrades visibly to the ordinary
+      // landing instead.
+      expect(buildFamilyInviteReturnCookieValue("not-a-nonce", INVITE_PATH)).toBeNull();
+      expect(buildFamilyInviteReturnCookieValue(NONCE, "/dashboard")).toBeNull();
+      expect(
+        buildFamilyInviteReturnCookieValue(NONCE, `https://evil.example${INVITE_PATH}`),
+      ).toBeNull();
+    });
+
+    it("refuses a pre-#2974 cookie, which carried a bare path and no nonce", () => {
+      // The deploy case: an in-flight visitor holding an old cookie degrades to
+      // their ordinary landing for the two minutes it survives.
+      expect(parseFamilyInviteReturnCookie(INVITE_PATH)).toBeNull();
+    });
+
+    it("refuses a malformed value rather than half-parsing it", () => {
+      for (const candidate of [
+        null,
+        undefined,
+        "",
+        NONCE,
+        `${NONCE}.`,
+        `.${INVITE_PATH}`,
+        `${NONCE}.${INVITE_PATH}.extra`,
+        `${NONCE}.//evil.example${INVITE_PATH}`,
+        `${NONCE}./dashboard`,
+        `${NONCE.toUpperCase()}.${INVITE_PATH}`,
+      ]) {
+        expect(
+          parseFamilyInviteReturnCookie(candidate),
+          String(candidate),
+        ).toBeNull();
+      }
+    });
+  });
+
+  describe("matchFamilyInviteReturnCookie — the binding itself", () => {
+    it("returns the path when the presented nonce is the cookie's own", () => {
+      expect(matchFamilyInviteReturnCookie(COOKIE_VALUE, NONCE)).toBe(INVITE_PATH);
+    });
+
+    /**
+     * THE #2974 PROPERTY. This is the shared-kiosk case reduced to one assertion:
+     * the cookie is alive, the person signing in did not open the invitation, so
+     * they present nothing and are told nothing.
+     */
+    it("returns null when no nonce is presented — the shared-kiosk case", () => {
+      for (const presented of [null, undefined, ""]) {
+        expect(
+          matchFamilyInviteReturnCookie(COOKIE_VALUE, presented),
+          String(presented),
+        ).toBeNull();
+      }
+    });
+
+    it("returns null for a nonce from another tab", () => {
+      expect(matchFamilyInviteReturnCookie(COOKIE_VALUE, OTHER_NONCE)).toBeNull();
+    });
+
+    it("refuses a prefix, a suffix, a case change and a regex metacharacter", () => {
+      for (const presented of [
+        NONCE.slice(0, 31),
+        `${NONCE}0`,
+        NONCE.toUpperCase(),
+        `${NONCE.slice(0, 31)}f`,
+        ".*",
+        `${NONCE} `,
+      ]) {
+        expect(
+          matchFamilyInviteReturnCookie(COOKIE_VALUE, presented),
+          presented,
+        ).toBeNull();
+      }
+    });
+
+    it("still refuses an off-origin or non-invite path even with the right nonce", () => {
+      // The nonce is a tab binding, never an authorisation to land anywhere: the
+      // shape guard is applied to the cookie's path regardless.
+      for (const path of [
+        `https://evil.example${INVITE_PATH}`,
+        `//evil.example${INVITE_PATH}`,
+        "/admin/members",
+        "/dashboard",
+        `${INVITE_PATH}?next=/admin`,
+      ]) {
+        expect(
+          matchFamilyInviteReturnCookie(`${NONCE}.${path}`, NONCE),
+          path,
+        ).toBeNull();
+      }
+    });
+  });
+
+  describe("buildFamilyInviteLoginPath / appendFamilyInviteReturnParam", () => {
+    it("puts the nonce — and only the nonce — on the sign-in address", () => {
+      const built = buildFamilyInviteLoginPath(NONCE);
+
+      expect(built).toBe(`/login?${FAMILY_INVITE_RETURN_PARAM}=${NONCE}`);
+      expect(built).not.toContain(TOKEN);
+      expect(built).not.toContain("family-invite");
+      expect(built).not.toContain("callbackUrl");
+    });
+
+    it("falls back to a plain /login for an absent or malformed nonce", () => {
+      for (const candidate of [null, undefined, "", "../../admin", `"><script>`]) {
+        expect(buildFamilyInviteLoginPath(candidate), String(candidate)).toBe(
+          "/login",
+        );
+      }
+    });
+
+    it("appends the nonce to a detour hop's query, and drops a bad one", () => {
+      const params = new URLSearchParams({ callbackUrl: "/bookings" });
+      appendFamilyInviteReturnParam(params, NONCE);
+
+      expect(params.get(FAMILY_INVITE_RETURN_PARAM)).toBe(NONCE);
+
+      const rejected = new URLSearchParams();
+      appendFamilyInviteReturnParam(rejected, "../../admin");
+
+      expect(rejected.toString()).toBe("");
+    });
   });
 });
