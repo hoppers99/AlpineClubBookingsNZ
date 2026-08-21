@@ -25,6 +25,10 @@
  * both rewrite, no stored number to drift from the tree, and a rename is followed
  * rather than guessed at, because git reports it.
  *
+ * "The base ref" here means the MERGE BASE of that ref and `HEAD`, not its tip.
+ * See `resolveBaseRef` for why, and for the seven untouched files that measured
+ * the difference.
+ *
  * NO NETWORK, NO BUILD, NO DATABASE. Two `git` reads per changed file at worst.
  * CI's `verify` job already checks out full history (`fetch-depth: 0`) and runs
  * this check in the same job, so the base ref is present where it matters.
@@ -75,19 +79,38 @@ function gitBuffer(root: string, args: string[]): Buffer {
 }
 
 /**
- * Confirm the base ref exists and name the commit it points at.
+ * Confirm the base ref exists, and return the commit this branch left it at.
  *
- * Returns the resolved SHA rather than the ref name so a later error message can
- * say which commit was compared against, not merely which name was asked for.
+ * NOT the ref's tip — the MERGE BASE of the ref and `HEAD`, which is where this
+ * branch diverged. That distinction is the difference between "what did this
+ * change do" and "how does this checkout differ from wherever `main` has got
+ * to", and only the first is a fair thing to fail somebody for.
+ *
+ * Measured on this very branch while building #2979: `origin/main` had moved
+ * ahead by one merged pull request, and `git diff origin/main` reported SEVEN
+ * `src/` files as changed that the branch had never touched — the backups work
+ * from #2977. Judging those seven against the tip reads main's own edits as this
+ * branch's, in whichever direction they happen to point. They happened to be
+ * shrinks that day, so nothing failed; had that pull request SPLIT a file
+ * instead, every open branch would have gone red for growth none of them
+ * caused, and the only remedy would have been to merge `main` — which is the
+ * treadmill this issue exists to end.
+ *
+ * Comparing against the merge base is also strictly the stricter reading. If
+ * `main` grows an oversized file after the branch point, the tip form hands this
+ * branch that larger number as its ceiling and lets it grow into the gap for
+ * free; the merge base does not.
+ *
+ * A missing merge base — unrelated histories, or a shallow clone with no shared
+ * commit — FAILS, for the same reason a missing ref does.
  */
 export function resolveBaseRef(
   root: string,
   ref: string,
 ): { ok: true; sha: string } | { ok: false; error: string } {
+  let tip: string;
   try {
-    const sha = git(root, ["rev-parse", "--verify", `${ref}^{commit}`]).trim();
-    if (!sha) return { ok: false, error: `\`git rev-parse ${ref}\` produced no commit.` };
-    return { ok: true, sha };
+    tip = git(root, ["rev-parse", "--verify", `${ref}^{commit}`]).trim();
   } catch (error) {
     const detail = error instanceof Error ? error.message.split("\n")[0] : String(error);
     return {
@@ -98,6 +121,26 @@ export function resolveBaseRef(
         `  cannot run without it — and it fails rather than passing, because a gate that\n` +
         `  cannot read its comparison must not report a green it has not earned.\n` +
         `  Fix with:  git fetch origin main`,
+    };
+  }
+  if (!tip) {
+    return { ok: false, error: `\`git rev-parse ${ref}\` produced no commit.` };
+  }
+
+  try {
+    const mergeBase = git(root, ["merge-base", tip, "HEAD"]).trim();
+    if (!mergeBase) throw new Error("produced no commit");
+    return { ok: true, sha: mergeBase };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message.split("\n")[0] : String(error);
+    return {
+      ok: false,
+      error:
+        `\`${ref}\` resolves to ${tip.slice(0, 12)}, but this checkout shares no commit\n` +
+        `  with it (${detail}), so there is no point to measure "before" from.\n` +
+        `  A shallow clone is the usual cause. It fails rather than passing, because a\n` +
+        `  gate that cannot read its comparison must not report a green it has not earned.\n` +
+        `  Fix with:  git fetch --unshallow origin, or git fetch origin main`,
     };
   }
 }
@@ -170,6 +213,34 @@ export function baseSizeOf(
 }
 
 /**
+ * Files git does not track yet and is not ignoring.
+ *
+ * `git diff` cannot see an untracked file, so without this a brand-new module is
+ * judged by nobody until somebody stages it. That matters locally rather than in
+ * CI, where everything is committed — but a developer running the check before
+ * `git add` would otherwise be told a 900-line new file is fine, which is the
+ * one answer this gate must never give.
+ *
+ * Found by probing rather than by reading: while mutation-testing the new-file
+ * case, the STAGED version failed correctly and the untracked version printed
+ * nothing at all. The old ledger implementation had the identical blind spot for
+ * the identical reason — it scanned `git ls-files`, which lists tracked files
+ * only. Closed here rather than reproduced.
+ *
+ * `--exclude-standard` is what keeps an ignored file ignored, so a build
+ * artefact or a local scratch file is still none of this gate's business.
+ */
+export function untrackedFiles(root: string): string[] {
+  try {
+    return git(root, ["ls-files", "--others", "--exclude-standard", "-z"])
+      .split("\0")
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Resolve the previous length of every file changed since `ref`.
  *
  * A renamed file resolves to its length under its OLD path, and records that
@@ -196,6 +267,14 @@ export function resolveBaseSizes(root: string, ref: string): BaseResolution {
     }
     sizes.set(file, baseSizeOf(root, base.sha, file));
   }
+
+  // Untracked files are new by definition, so they carry no previous length and
+  // must simply meet their budget. Added AFTER the diff so a file that is both
+  // tracked and modified keeps the length the diff found for it.
+  for (const file of untrackedFiles(root)) {
+    if (!sizes.has(file)) sizes.set(file, { kind: "absent" });
+  }
+
   return { ok: true, ref: base.sha, sizes };
 }
 
