@@ -758,6 +758,17 @@ export async function POST(
   // differences two pricing calls into the member's settlement delta. Hoisted
   // to here rather than resolved twice, which is what
   // `subscription-lockout-call-sites.test.ts` exists to catch.
+  //
+  // HOISTED FROM ~500 LINES BELOW BY #2978, AND THAT MOVED MORE THAN THE READ.
+  // There are roughly fifteen early returns between here and where this used to
+  // sit, so a preview that refuses at one of them now performs this settings
+  // read where before it short-circuited first. Two consequences worth having in
+  // the open: the read is cached but can reach Xero for the organisation's
+  // accounting year when the Xero module is on, and — the reason the hoist is a
+  // net improvement rather than a cost — it reseeds the financial-year cache
+  // BEFORE the `getSeasonYear(booking.checkIn)` calls below, so a cold process at
+  // a club with a non-March year end no longer judges the season against the
+  // March default.
   const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
 
   let otherLodgeElection: OtherLodgeRateElection;
@@ -774,17 +785,19 @@ export async function POST(
       otherLodgeId: requestedOtherLodgeId,
       otherLodgeMemberGuestIds,
     };
-    // Only when the request actually mentions the rate. Almost no modification
-    // does, and resolving eligibility costs two reads.
-    const otherLodgeEligibleGuestIds = requestCarriesOtherLodgeElection(
-      otherLodgeInput,
-    )
-      ? await resolveOtherLodgeRateEligibleGuestIds(prisma, {
-          seasonYear: getSeasonYear(booking.checkIn),
-          guests: booking.guests,
-          subscriptionLockoutMode,
-        })
-      : new Set<string>();
+    // Only when the request actually mentions the rate, and only for an actor
+    // who could act on the answer. Almost no modification mentions it, and
+    // resolving eligibility costs several reads — which an ordinary member could
+    // otherwise force on every request, since `resolveOtherLodgeRateElection`
+    // does not raise its 403 until after this. Nothing leaks either way (the set
+    // never reaches the response on that path); this is about not doing the work.
+    const otherLodgeEligibleGuestIds =
+      isAdmin && requestCarriesOtherLodgeElection(otherLodgeInput)
+        ? await resolveOtherLodgeRateEligibleGuestIds(prisma, {
+            seasonYear: getSeasonYear(booking.checkIn),
+            guests: booking.guests,
+          })
+        : new Set<string>();
     otherLodgeElection = resolveOtherLodgeRateElection({
       booking,
       input: otherLodgeInput,
