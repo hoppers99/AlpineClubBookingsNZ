@@ -482,14 +482,19 @@ jobs:
         run: npm run lint
 
       # #2687: the file-size budgets in docs/MAINTENANCE.md, enforced as a
-      # regression ratchet against the committed baseline in
-      # `scripts/quality/file-size-baseline.txt`. Current debt may stay; new
-      # debt and debt growth may not appear silently. `git ls-files` plus the
-      # working tree and nothing else — no network, no database, no build — and
-      # it runs in well under a second, so it sits here rather than behind the
-      # slower gates. It exits non-zero on a missing, stale or malformed
-      # baseline as well as on a regression: a gate that cannot trust its own
-      # input must say so instead of reporting a pass it has not earned.
+      # regression ratchet. Current debt may stay; new debt and debt growth may
+      # not appear silently.
+      #
+      # #2979 removed the committed baseline this used to compare against. Each
+      # changed file's previous length now comes from `origin/main` — precisely,
+      # from the merge base of `origin/main` and HEAD, so a branch is judged on
+      # what IT did rather than on how far `main` has moved since. That is why
+      # this job's checkout above must keep `fetch-depth: 0`: with a shallow
+      # clone there is no merge base, and the check FAILS rather than passing
+      # with no evidence, the same way `npm run pr:check` treats an unresolvable
+      # base. Reads git and the working tree only — no network, no database, no
+      # build — and runs in well under a second, so it sits here rather than
+      # behind the slower gates.
       - name: File-size budget ratchet
         run: npm run quality:budget
 
