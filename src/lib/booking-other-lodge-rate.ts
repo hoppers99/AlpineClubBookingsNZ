@@ -44,14 +44,31 @@ export const OTHER_LODGE_RATE_GUEST_NOT_ON_BOOKING_MESSAGE =
 /**
  * #2978: the refusal is now about the RATE, not about `isMember`. Two different
  * people trip it and the sentence has to serve both - somebody already on this
- * club's member rate (there is nothing to re-rate), and somebody repriced to
- * non-member rates by an unpaid subscription (re-rating them would undo the
- * lockout). Naming the subscription case explicitly is deliberate: an officer
- * who ticks a lapsed member and gets a bare "not eligible" would reasonably
- * conclude the feature is broken.
+ * club's member rate (there is nothing to re-rate), and a member who owes this
+ * club a subscription (re-rating them would hand back the member rate the
+ * lockout exists to withhold). Naming the subscription case explicitly is
+ * deliberate: an officer who ticks a lapsed member and gets a bare "not
+ * eligible" would reasonably conclude the feature is broken.
+ *
+ * IT NAMES THE GUEST, because a six-guest booking refused with "that guest"
+ * leaves the officer ticking boxes one at a time to find out who. The two
+ * reasons stay behind one "or": which of them applies is the difference between
+ * "they are a member" and "their subscription is unpaid", and the second is not
+ * this screen's to disclose. That is a soft consideration rather than a control
+ * — the refusal is only reachable after the `role !== "ADMIN"` 403, so the only
+ * person who can read it is a booking officer, who could look the member up
+ * anyway.
  */
+export function otherLodgeRateIneligibleGuestMessage(
+  guestName?: string | null,
+): string {
+  const who = guestName?.trim() || "That guest";
+  return `${who} cannot be priced at the other-lodge member rate: they are already on this club's member rate, or they are a member who owes this club a subscription.`;
+}
+
+/** The un-named form, for a caller that holds no name for the guest. */
 export const OTHER_LODGE_RATE_INELIGIBLE_GUEST_MESSAGE =
-  "That guest cannot be priced at the other-lodge member rate: they are already on this club's member rate, or they are a member whose unpaid subscription has repriced them.";
+  otherLodgeRateIneligibleGuestMessage();
 export const OTHER_LODGE_RATE_LODGE_REQUIRED_MESSAGE =
   "Choose the other lodge before marking anybody as one of its members.";
 export const OTHER_LODGE_RATE_LODGE_NOT_FOUND_MESSAGE = "Selected lodge not found";
@@ -76,7 +93,27 @@ export interface OtherLodgeRateBooking {
     id: string;
     isMember: boolean;
     otherLodgeMember: boolean;
+    /**
+     * Only ever used to NAME somebody in a refusal. Optional because both
+     * production callers pass the stored guest rows, which carry them, while a
+     * unit fixture asserting the election arithmetic need not.
+     */
+    firstName?: string | null;
+    lastName?: string | null;
   }>;
+}
+
+/** "Ada Lovelace", or undefined when the row carries no usable name. */
+function guestDisplayName(guest: {
+  firstName?: string | null;
+  lastName?: string | null;
+}): string | undefined {
+  return (
+    [guest.firstName, guest.lastName]
+      .map((part) => part?.trim())
+      .filter(Boolean)
+      .join(" ") || undefined
+  );
 }
 
 /**
@@ -207,7 +244,10 @@ export function resolveOtherLodgeRateElection({
       throw new ApiError(OTHER_LODGE_RATE_GUEST_NOT_ON_BOOKING_MESSAGE, 400);
     }
     if (!eligibleGuestIds.has(guestId)) {
-      throw new ApiError(OTHER_LODGE_RATE_INELIGIBLE_GUEST_MESSAGE, 400);
+      throw new ApiError(
+        otherLodgeRateIneligibleGuestMessage(guestDisplayName(guest)),
+        400,
+      );
     }
     flaggedGuestIds.add(guestId);
   }
