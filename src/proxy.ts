@@ -322,6 +322,15 @@ const API_NAMESPACE_ANY_CASE_PATTERN = /^\/api(?:\/|$)/i;
  * `csp-proxy.test.ts` now asserts the writer census by AST **and** that neither cookie
  * appears on the shapes this predicate excludes.
  *
+ * **Read "gated on this predicate" precisely for that second writer since #2974**: the
+ * gate now lives in {@link planFamilyInviteReturnAddress}, which decides, and
+ * {@link syncFamilyInviteReturnAddress}, which writes, does whatever the plan says.
+ * The pairing is unchanged — no plan, no `Set-Cookie` — and the split exists because
+ * the render's request headers are assembled before the response object exists and a
+ * WRITE has to put its nonce in both. Anyone moving that decision back inline, or
+ * calling the writer with a plan built somewhere else, is on the hook for the same
+ * invariant; the AST census only pins WHERE the write happens, never what reaches it.
+ *
  * **BOTH facts are now tested, which the first cut left to the docblock (review
  * finding, 4 Aug 2026).** The gating is mutation-proven — reverting the cookie gate to
  * `startsWith("/api/")` reddens `csp-proxy.test.ts`. The writer-census half was
