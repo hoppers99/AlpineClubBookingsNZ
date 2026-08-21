@@ -51,13 +51,18 @@ export interface OtherLodgeRateState {
     otherLodgeId?: string | null;
     otherLodgeMemberGuestIds?: string[];
   };
-  /** Discard the pending election — used by the admin date-override reset. */
   /**
    * #2978: the guests this officer may tick, straight from the server. Empty
    * when the payload carried none, which is also what a non-admin viewer gets -
    * so no tick box is offered to anybody who could not save one.
+   *
+   * A guest ALREADY ticked on the stored booking can fall out of this set later
+   * (their membership type changes, or their subscription lapses). The panel
+   * still renders their box in that case — see `edit-guests-card` — because a
+   * flag nobody can untick makes the whole booking uneditable.
    */
   eligibleGuestIds: ReadonlySet<string>;
+  /** Discard the pending election — used by the admin date-override reset. */
   reset: () => void;
 }
 

@@ -174,7 +174,6 @@ export interface BookingData {
    * the RSC wire.
    */
   otherLodgeRateEligibleGuestIds?: string[];
-
 }
 
 // #2266: an eligible promo chip, as returned by GET /api/promo-codes/available
