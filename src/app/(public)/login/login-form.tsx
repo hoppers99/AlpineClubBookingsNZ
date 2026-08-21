@@ -11,6 +11,10 @@ import { WebsiteLogo } from "@/components/website-logo";
 import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  appendFamilyInviteReturnParam,
+  buildFamilyInviteLoginPath,
+} from "@/lib/family-invite-return-address";
 import { MagicLinkRequestForm } from "./magic-link-request-form";
 
 // The login query params (verified / verifyError / emailChanged / callbackUrl)
@@ -43,6 +47,7 @@ export function LoginForm({
   emailChanged,
   redirectTo,
   explicitCallbackUrl,
+  familyInviteReturnNonce,
   authBounceRef,
   magicLinkEnabled = false,
   googleLoginEnabled = false,
@@ -57,6 +62,14 @@ export function LoginForm({
   // falls back to the member's preference / admin role default. Undefined is
   // NOT a flow-materialised default — the server only forwards a real one.
   explicitCallbackUrl?: string;
+  // #2974: the tab-binding nonce from `/login?inviteReturn=…`, already
+  // shape-checked server-side. It is tokenless — 128 random bits that mean
+  // nothing without the HttpOnly family-invite cookie from this same browser —
+  // and it exists so a sign-in started in THIS tab returns to the invitation
+  // while one started anywhere else does not. Forwarded to the landing resolver,
+  // the 2FA detour and Google's callbackUrl, which are the three seams this
+  // component owns. Never the invite path: that is what put the token in a URL.
+  familyInviteReturnNonce?: string;
   authBounceRef?: string;
   magicLinkEnabled?: boolean;
   googleLoginEnabled?: boolean;
@@ -90,6 +103,7 @@ export function LoginForm({
       if (explicitCallbackUrl) {
         params.set("callbackUrl", explicitCallbackUrl);
       }
+      appendFamilyInviteReturnParam(params, familyInviteReturnNonce);
       const query = params.toString();
       const response = await fetch(
         `/api/auth/post-login-landing${query ? `?${query}` : ""}`,
@@ -138,6 +152,10 @@ export function LoginForm({
     if (explicitCallbackUrl) {
       params.set("callbackUrl", explicitCallbackUrl);
     }
+    // #2974: the detour re-resolves the landing server-side, so the tab-binding
+    // nonce has to travel with it or a 2FA member from an invitation lands on
+    // their dashboard instead of back on the invitation.
+    appendFamilyInviteReturnParam(params, familyInviteReturnNonce);
     const query = params.toString();
     const suffix = query ? `?${query}` : "";
     return status.enrolled
@@ -392,9 +410,14 @@ export function LoginForm({
                 // returns to /login, whose authenticated self-heal resolves the
                 // landing preference / admin role default (#2090). There is no
                 // client post-auth seam on the OAuth round-trip, so /login is
-                // that seam.
+                // that seam — which is why the #2974 tab-binding nonce has to be
+                // in the address the provider returns to. It is tokenless, and
+                // `Referrer-Policy: strict-origin-when-cross-origin` means the
+                // provider is sent this origin and no path or query at all.
                 void signIn("google", {
-                  callbackUrl: explicitCallbackUrl ?? "/login",
+                  callbackUrl:
+                    explicitCallbackUrl ??
+                    buildFamilyInviteLoginPath(familyInviteReturnNonce),
                 })
               }
             >

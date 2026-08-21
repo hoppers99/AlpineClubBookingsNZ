@@ -195,3 +195,97 @@ describe("LoginForm — post-auth landing navigation (#2090)", () => {
     ).toBe(true);
   });
 });
+
+/**
+ * #2974 — this component owns the three seams the tab-binding nonce has to
+ * survive, and each of them is a place the family-invite return address would
+ * silently stop working (or, worse, silently go back to being browser-scoped) if
+ * the nonce were dropped:
+ *
+ *  - the landing resolver's query, for the ordinary password sign-in;
+ *  - the 2FA detour URL, which re-resolves the landing server-side;
+ *  - Google's `callbackUrl`, because `/login`'s authenticated self-heal is the
+ *    only post-auth seam that flow has.
+ *
+ * What must NEVER travel on any of them is the invite path or its token — that is
+ * the #2827 exposure, and the nonce exists precisely so the path does not have to.
+ */
+describe("LoginForm — family-invite tab-binding nonce (#2974)", () => {
+  const NONCE = "3f9c17ae42b0d85610c73fe29ab4d051";
+
+  it("forwards the nonce to the landing resolver", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const body = url.startsWith("/api/auth/post-login-landing")
+        ? { path: "/family-invite/abc" }
+        : { required: false };
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(body),
+      } as Response);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderForm({ familyInviteReturnNonce: NONCE });
+    await submit();
+
+    await waitFor(() =>
+      expect(assignMock).toHaveBeenCalledWith("/family-invite/abc"),
+    );
+    const resolverCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).startsWith("/api/auth/post-login-landing"),
+    );
+    expect(String(resolverCall?.[0])).toBe(
+      `/api/auth/post-login-landing?inviteReturn=${NONCE}`,
+    );
+  });
+
+  it("carries the nonce across the 2FA detour, alongside any deep link", async () => {
+    mockFetch({
+      "/api/auth/2fa/status": { required: true, verified: false, enrolled: true },
+    });
+
+    renderForm({ familyInviteReturnNonce: NONCE });
+    await submit();
+
+    await waitFor(() =>
+      expect(assignMock).toHaveBeenCalledWith(
+        `/login/verify?inviteReturn=${NONCE}`,
+      ),
+    );
+  });
+
+  it("sends the nonce back through the Google round trip", async () => {
+    // /login's authenticated self-heal is the only post-auth seam the OAuth flow
+    // has, so the nonce has to be in the address the provider returns to.
+    renderForm({ googleLoginEnabled: true, familyInviteReturnNonce: NONCE });
+
+    fireEvent.click(screen.getByRole("button", { name: /continue with google/i }));
+
+    expect(mockSignIn).toHaveBeenCalledWith("google", {
+      callbackUrl: `/login?inviteReturn=${NONCE}`,
+    });
+  });
+
+  it("keeps a plain /login as Google's callbackUrl when there is no nonce", async () => {
+    renderForm({ googleLoginEnabled: true });
+
+    fireEvent.click(screen.getByRole("button", { name: /continue with google/i }));
+
+    expect(mockSignIn).toHaveBeenCalledWith("google", { callbackUrl: "/login" });
+  });
+
+  it("lets an explicit deep link keep Google's callbackUrl to itself", async () => {
+    renderForm({
+      googleLoginEnabled: true,
+      explicitCallbackUrl: "/nominations/tok",
+      familyInviteReturnNonce: NONCE,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /continue with google/i }));
+
+    expect(mockSignIn).toHaveBeenCalledWith("google", {
+      callbackUrl: "/nominations/tok",
+    });
+  });
+});

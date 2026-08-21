@@ -1873,11 +1873,11 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
    *
    * The claim in `isPageShapedPath()`'s docblock — "the proxy never emits a
    * `Set-Cookie` on a response whose `Cache-Control` it has left to another layer" —
-   * needs two things: that `syncSignedInHint()` is gated on that predicate, and that
-   * `syncSignedInHint()` is the proxy's ONLY `Set-Cookie` writer. The first is
-   * mutation-proven by the cases above. The second was documented and enforced by
-   * nothing, and every case in this file asserts on the HINT cookie specifically — so
-   * a second writer added ahead of the header block (a lodge preference, a consent
+   * needs two things: that every cookie writer is gated on that predicate, and that
+   * the census of writers below is the WHOLE census. The first is mutation-proven by
+   * the cases above. The second was documented and enforced by nothing, and every
+   * case in this file asserts on the HINT cookie specifically — so a writer added
+   * outside the census ahead of the header block (a lodge preference, a consent
    * banner, both entirely plausible here) would leave the whole suite green while
    * `GET /branding/logo.png` shipped that cookie beside `send`'s `public, max-age=…`,
    * storable by a shared cache and servable to a stranger. That is the hazard #2578
@@ -1888,11 +1888,32 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
    * search cannot tell prose from code. The same shape as the repo's other
    * registration guards (`dataset-reset-contract.test.ts` and friends).
    *
-   * A third writer is not forbidden — it has to RE-ESTABLISH the pairing rather than
-   * inherit it, which means either writing inside `syncSignedInHint()` or extending
+   * A further writer is not forbidden — it has to RE-ESTABLISH the pairing rather than
+   * inherit it, which means either writing inside an existing writer or extending
    * this list along with the directive side and the docblocks that claim it.
+   *
+   * #2827 is the first change to take that route, so the census is now a SET of two
+   * rather than a single name: `syncFamilyInviteReturnAddress()` carries the
+   * family-invite post-login return address, takes the same `GET` +
+   * `isPageShapedPath()` gate, and writes only on `/family-invite/<token>` — a
+   * page-shaped, out-of-territory address that always takes the private-only
+   * directive. The case below this one probes both cookies on the excluded shapes,
+   * so the pairing is asserted for the new writer rather than assumed from its
+   * gate.
+   *
+   * **#2974 moved that gate one function upstream and out of this file, and this
+   * census deliberately did not follow it.** `planFamilyInviteReturnAddress()`, in
+   * `src/lib/family-invite-return-address.ts`, now decides — it has to run before
+   * the render's request headers are assembled, so a write can put its tab-binding
+   * nonce in both the cookie and a header — and `syncFamilyInviteReturnAddress()`
+   * appends whatever the plan says. What this test pins is WHERE a `Set-Cookie` may
+   * be emitted, which is the property the #2578 pairing needs, and not what reaches
+   * the writer. That is also why the writer stays in `src/proxy.ts` when everything
+   * else about the address lives in its own module: a census of this file's AST can
+   * only speak for writes this file makes. The behavioural half stays where it
+   * always was: the case below, and `family-invite-return-cookie-proxy.test.ts`.
    */
-  it("keeps syncSignedInHint the proxy's only Set-Cookie writer", () => {
+  it("keeps the proxy's Set-Cookie writers to the two gated ones", () => {
     const proxyPath = resolve(process.cwd(), "src/proxy.ts");
     const source = ts.createSourceFile(
       proxyPath,
@@ -1953,27 +1974,42 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
 
     visit(source);
 
-    // Not vacuous: if the writer is renamed away or the append is deleted, this fails
-    // rather than passing with an empty list.
-    expect(
-      writers.length,
-      "src/proxy.ts must still write the marker cookie somewhere",
-    ).toBeGreaterThan(0);
+    // The census, as a set of names. Written both ways round on purpose: the
+    // subset check catches a writer added somewhere new, and the coverage check
+    // catches one deleted or renamed away — so neither half can pass vacuously.
+    const ALLOWED_WRITERS = new Set([
+      "syncSignedInHint",
+      "syncFamilyInviteReturnAddress",
+    ]);
 
     expect(
-      writers.filter(({ name }) => name !== "syncSignedInHint"),
-      "a Set-Cookie writer outside syncSignedInHint() breaks the #2578 pairing: it is " +
-        "not gated on isPageShapedPath(), so it can land beside a directive the proxy " +
+      writers.filter(({ name }) => !ALLOWED_WRITERS.has(name)),
+      "a Set-Cookie writer outside the census breaks the #2578 pairing: it is not " +
+        "gated on isPageShapedPath(), so it can land beside a directive the proxy " +
         "left to another layer. See isPageShapedPath()'s docblock in src/proxy.ts.",
+    ).toEqual([]);
+
+    expect(
+      [...ALLOWED_WRITERS].filter(
+        (name) => !writers.some((writer) => writer.name === name),
+      ),
+      "every writer in the census must still exist in src/proxy.ts",
     ).toEqual([]);
   });
 
-  it("writes no marker cookie on the shapes it leaves another layer's directive on", async () => {
+  it("writes no cookie at all on the shapes it leaves another layer's directive on", async () => {
     // The other side of the same invariant: `/api` was always excluded, and #2578
     // added the asset shapes — because those keep `send`'s `public, max-age=…`, and a
     // `Set-Cookie` beside a `public` directive is the hazard, not the fix. An image
     // response has no chrome to correct; the document that embeds it gets its own
     // sync on the same page load.
+    //
+    // Asserted as "no `Set-Cookie` whatsoever" rather than "no marker cookie", which
+    // is what makes it cover the #2827 writer as well as the D2 marker. There is no
+    // family-invite-shaped probe to add here — no address matching
+    // `/family-invite/<64 hex>` can also be asset- or `/api`-shaped — so this
+    // property holds for that writer by its gate, and the gate is what the AST
+    // census above pins.
     for (const path of [
       "/api/admin/waitlist",
       "/api/images/uploaded/x.jpg",
