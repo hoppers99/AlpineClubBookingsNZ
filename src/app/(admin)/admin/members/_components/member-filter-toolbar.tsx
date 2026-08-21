@@ -10,6 +10,7 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectGroup,
   SelectLabel,
   SelectTrigger,
   SelectValue,
@@ -172,11 +173,21 @@ export function MemberFilterToolbar({
                 A `SelectLabel`, not an item: Radix renders it as a plain node
                 inside the listbox, so it is announced as text and can never be
                 chosen as a value.
+
+                IT MUST BE WRAPPED IN A `SelectGroup`, and the wrapper is not
+                cosmetic. Radix's `SelectLabel` reads the group context and
+                THROWS without it - and it throws on page load, not on open,
+                because a CLOSED `SelectContent` still portals its children into
+                a detached DocumentFragment to collect them. Unwrapped, this
+                crashed the whole members page to the error boundary; the unit
+                suites could not see it because they mock this select module.
               */}
-              <SelectLabel className="max-w-[240px] whitespace-normal text-xs font-normal text-muted-foreground">
-                Non-member contacts have no membership type — they are listed
-                under Unassigned.
-              </SelectLabel>
+              <SelectGroup>
+                <SelectLabel className="max-w-[240px] whitespace-normal text-xs font-normal text-muted-foreground">
+                  Non-member contacts have no membership type — they are listed
+                  under Unassigned.
+                </SelectLabel>
+              </SelectGroup>
               {membershipTypeOptions.map((type) => (
                 <SelectItem key={type.id} value={type.id}>
                   {type.name}

@@ -64,6 +64,7 @@ vi.mock("@/components/ui/select", () => ({
   ),
   // Plain text inside the listbox, NOT an option — which is the point of using
   // it for the Unassigned hint (#2978): it can never be selected as a value.
+  SelectGroup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SelectLabel: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SelectTrigger: ({ children, ...props }: { children: ReactNode }) => (
     <button type="button" {...props}>
