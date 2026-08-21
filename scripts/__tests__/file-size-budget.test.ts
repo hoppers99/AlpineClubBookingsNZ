@@ -174,15 +174,42 @@ describe("blocking CI wiring", () => {
     const verify = verifyJobSource(workflow);
     expect(verify, "ci.yml must contain a top-level verify job").not.toBe("");
     expect(
-      verify.match(/^        run: npm run quality:budget\s*$/gm) ?? [],
+      verify.match(
+        /^        run: npm run quality:budget -- --base "\$BUDGET_BASE"\s*$/gm,
+      ) ?? [],
     ).toHaveLength(1);
   });
 
+  it("passes an explicit base, because the default is vacuous on a push to main", () => {
+    // `verify` runs on `push: branches: [main]` as well as on pull requests, and
+    // there `origin/main` IS the commit under test: the merge base is HEAD, the
+    // diff is empty, and the gate reports "0 production file(s) changed" and
+    // exits 0 whatever the tree holds. Reproduced with two lanes that each add
+    // 60 lines to a 600-line file: both pass their own PR gate, merge to 720
+    // against a 700 budget, and the push gate says nothing.
+    //
+    // The event name is what selects the base, and that is the load-bearing
+    // half. A `pull_request.synchronize` payload also carries a top-level
+    // `before` — the previous PR head — so keying on the field instead of on
+    // the event would judge only the newest push to a branch and let everything
+    // earlier in it through.
+    const workflow = readFileSync(
+      path.join(REPO_ROOT, ".github/workflows/ci.yml"),
+      "utf8",
+    );
+    const verify = verifyJobSource(workflow);
+    expect(verify).toContain(
+      "BUDGET_BASE: ${{ github.event_name == 'push' && github.event.before || 'origin/main' }}",
+    );
+  });
+
   it("checks out full history in that job, which the computed comparison needs", () => {
-    // Load-bearing since #2979: with a shallow clone there is no merge base with
-    // `origin/main`, and the gate fails rather than passing with no evidence.
-    // A silent switch to a shallow checkout would turn this gate permanently red
-    // rather than quietly off, but red for a reason nobody would guess.
+    // Load-bearing since #2979, for a quieter reason than it first said here: a
+    // shallow clone does NOT fail. Measured — `git clone --depth 1` resolves
+    // `origin/main`, the merge base comes back as HEAD, the diff is empty, and
+    // the gate prints OK over a tree holding a 1300-line module. Truncated
+    // history narrows the diff silently, so a switch to a shallow checkout would
+    // turn this gate off rather than red.
     const workflow = readFileSync(
       path.join(REPO_ROOT, ".github/workflows/ci.yml"),
       "utf8",
@@ -428,6 +455,107 @@ describe("the gate, end to end, against real commits", () => {
     expect(result.stderr).toContain("src/lib/audit.js");
     expect(result.stderr).toContain("renamed from src/lib/audit.ts");
     expect(result.stderr).toContain("+500 beyond its ceiling");
+  });
+
+  it("fails a file MOVED INTO src/ from outside the policy, over its budget", () => {
+    // A rename is followed only within the budgeted scope. `prisma/`, `scripts/`
+    // and the rest have no ceiling to inherit, so a file arriving from one of
+    // them is judged as new — which is what the deleted ledger did by scanning
+    // the whole tree and finding an over-budget file with no entry. Following
+    // the rename unconditionally made a 1324-line `prisma/demo-seed.ts` pass on
+    // arrival at `src/lib/`, and `prisma/demo-seed.ts` is a real file here.
+    const repo = newRepo();
+    repo.write("prisma/demo-seed.ts", 1324);
+    repo.write("src/lib/keep.ts", 10);
+    const base = repo.commit("base");
+    mkdirSync(path.join(repo.root, "src/lib"), { recursive: true });
+    git(repo.root, "mv", "prisma/demo-seed.ts", "src/lib/demo-seed.ts");
+    repo.commit("moved into src");
+
+    const result = captureRun(repo.root, ["--base", base]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("src/lib/demo-seed.ts");
+    expect(result.stderr).toContain(
+      "a file MOVED INTO the budgeted scope is over its budget",
+    );
+    expect(result.stderr).toContain("prisma/demo-seed.ts");
+    expect(result.stderr).toContain("over by 624");
+  });
+
+  it("passes the same move when the arriving file is under its budget", () => {
+    const repo = newRepo();
+    repo.write("prisma/small.ts", 300);
+    repo.write("src/lib/keep.ts", 10);
+    const base = repo.commit("base");
+    mkdirSync(path.join(repo.root, "src/lib"), { recursive: true });
+    git(repo.root, "mv", "prisma/small.ts", "src/lib/small.ts");
+    repo.commit("moved into src");
+
+    const result = captureRun(repo.root, ["--base", base]);
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+  });
+
+  it("closes the two-step launder through a test path, on the return leg", () => {
+    // Both legs used to pass. Move `src/lib/big.ts` into `src/lib/__tests__/`
+    // (excluded from production debt) and grow it 1200 -> 5000: nothing in scope
+    // changed, so green, and correctly so. Then move it back to
+    // `src/lib/big2.ts`, inheriting 5000 as its previous length: green again. A
+    // 5000-line production module lands with no run ever going red.
+    const repo = newRepo();
+    repo.write("src/lib/big.ts", 1200);
+    // Something must stay in scope, or the empty-scan floor answers first and
+    // this case stops being about the launder.
+    repo.write("src/lib/keep.ts", 10);
+    const base1 = repo.commit("base");
+
+    mkdirSync(path.join(repo.root, "src/lib/__tests__"), { recursive: true });
+    git(repo.root, "mv", "src/lib/big.ts", "src/lib/__tests__/big.ts");
+    repo.write("src/lib/__tests__/big.ts", 5000);
+    const base2 = repo.commit("leg one: out of scope and grown");
+
+    expect(captureRun(repo.root, ["--base", base1]).code).toBe(0);
+
+    git(repo.root, "mv", "src/lib/__tests__/big.ts", "src/lib/big2.ts");
+    repo.commit("leg two: back into scope");
+
+    const returned = captureRun(repo.root, ["--base", base2]);
+    expect(returned.code).toBe(1);
+    expect(returned.stderr).toContain("src/lib/big2.ts");
+    expect(returned.stderr).toContain("over by 4300");
+  });
+
+  it("refuses to report clean when it scanned no production files at all", () => {
+    // "Scanned and found nothing wrong" and "scanned nothing" produce the same
+    // empty findings list. The ledger implementation floored on this and the
+    // rewrite lost it, so a checkout with no `src/` tree printed OK and exited
+    // 0. A sparse checkout, a partial clone or the wrong working directory all
+    // land here, and a gate that scans nothing must say so.
+    const repo = newRepo();
+    repo.write("docs/notes.md", 5);
+    const base = repo.commit("base");
+    repo.write("docs/more.md", 5);
+    repo.commit("more docs");
+
+    const result = captureRun(repo.root, ["--base", base]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("UNUSABLE");
+    expect(result.stderr).toContain("no production source files at all");
+    expect(result.stderr).toContain("an empty scan is not a pass");
+  });
+
+  it("names the commit it compared against, not only the ref", () => {
+    // The comparison is against the merge base of the ref and HEAD, which on a
+    // stale branch is not where the ref points. Until now nothing the gate
+    // printed said so in either direction, so a surprising result could not be
+    // checked without re-deriving the base by hand.
+    const repo = newRepo();
+    repo.write("src/lib/a.ts", 10);
+    const base = repo.commit("base");
+
+    const result = captureRun(repo.root, ["--base", base]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(`merge base \`${base.slice(0, 12)}\``);
   });
 
   it("judges a branch on what IT did, not on how far main has moved", () => {

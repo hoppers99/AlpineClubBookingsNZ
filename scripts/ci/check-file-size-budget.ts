@@ -6,6 +6,10 @@
  * `npm run quality:budget -- --base <ref>`    compare against a different ref
  * `npm run quality:budget -- --report`        print the whole tree's debt
  *
+ * `--base` is not only a diagnostic. CI passes it on a `push` to `main`, where
+ * the default of `origin/main` IS the commit being tested and would make this
+ * gate vacuous — see the step comment in `.github/workflows/ci.yml`.
+ *
  * The rule, in one sentence and unchanged: current size debt may stay, but new
  * debt and debt growth may not appear silently. A file that was not over its
  * budget may not go over it, and a file that was already over may not grow.
@@ -121,6 +125,13 @@ export function runReport(root: string): number {
     [
       `File-size budget report — ${summary.oversizedFiles} of ${summary.scannedFiles} ` +
         `production files are over budget, carrying ${summary.debt} lines of debt.`,
+      ...(summary.scannedFiles === 0
+        ? [
+            "",
+            "  NOTHING WAS SCANNED. This is not a debt-free tree; it is a checkout with",
+            "  no production source in it. Run from the repository root.",
+          ]
+        : []),
       "",
       "  Largest ten:",
       ...worst.map(
@@ -156,6 +167,32 @@ function explainRemovedUpdateMode(): number {
   return 1;
 }
 
+/**
+ * A gate that scans nothing reports clean. Say so instead.
+ *
+ * Carried over from the ledger implementation, which floored on exactly this
+ * condition and lost it in the rewrite. Without it a checkout with no `src/`
+ * tree at all — a partial clone, a wrong working directory that still happens
+ * to be inside some git repository, a sparse checkout that excluded the source
+ * — prints "OK, 0 production file(s) changed" and exits 0. Reproduced.
+ *
+ * "Scanned and found nothing wrong" and "scanned nothing" produce the same
+ * empty findings list and must not produce the same message.
+ */
+const EMPTY_SCAN_FINDING: ComputedFinding = {
+  severity: "unusable",
+  kind: "empty-scan",
+  file: null,
+  budget: null,
+  previous: null,
+  current: null,
+  problem:
+    "the scan found no production source files at all, so the comparison proves nothing",
+  action:
+    "run this from the repository root inside a full git checkout; a passing " +
+    "result from an empty scan is not a pass",
+};
+
 export function run(root: string, argv: readonly string[]): number {
   if (argv.includes("--report")) return runReport(root);
   if (argv.includes("--update")) return explainRemovedUpdateMode();
@@ -164,6 +201,7 @@ export function run(root: string, argv: readonly string[]): number {
   // scope audit, which asks a question about the WHOLE tree rather than about
   // this change: is there a tracked `src/` file no budget covers? A scope hole
   // reads exactly like a clean pass, so it is worth one `git ls-files` call.
+  // It is also what the empty-scan floor below is measured from.
   const scan = scanRepository(root);
   if (scan.gitError !== null) {
     process.stderr.write(
@@ -187,20 +225,34 @@ export function run(root: string, argv: readonly string[]): number {
     countLines,
   });
 
-  if (result.findings.length === 0) {
+  const findings =
+    scan.productionStats.length === 0
+      ? [EMPTY_SCAN_FINDING, ...result.findings]
+      : result.findings;
+
+  // Name the COMMIT, not only the ref. The comparison is against the merge base
+  // of the ref and HEAD, which on a stale branch is not where the ref points —
+  // and until now nothing the gate printed said so, in either direction. Same
+  // shape as `scripts/agent-context.ts` prints for the same reason.
+  const against =
+    result.baseSha === null
+      ? `\`${baseRef}\``
+      : `\`${baseRef}\` (merge base \`${result.baseSha.slice(0, 12)}\`)`;
+
+  if (findings.length === 0) {
     process.stdout.write(
       `File-size budget ratchet: OK — ${result.checkedFiles} production file(s) changed ` +
-        `since ${baseRef}, none over its budget or beyond its previous length.\n`,
+        `since ${against}, none over its budget or beyond its previous length.\n`,
     );
     return 0;
   }
 
   process.stderr.write(
-    `File-size budget ratchet: FAILED — ${result.findings.length} finding(s) ` +
-      `against ${baseRef}.\n` +
-      `Judged ${result.checkedFiles} production file(s) changed since that ref.\n`,
+    `File-size budget ratchet: FAILED — ${findings.length} finding(s) ` +
+      `against ${against}.\n` +
+      `Judged ${result.checkedFiles} production file(s) changed since that point.\n`,
   );
-  process.stderr.write(renderReport(result.findings));
+  process.stderr.write(renderReport(findings));
   process.stderr.write(
     [
       "",
