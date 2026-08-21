@@ -334,7 +334,7 @@ the existing surface.
 ### File-size budget ratchet
 
 The tree does not meet the budgets today and will not for some time. Measured
-on 21 Aug 2026: 283 of 2,036 production files are over budget, carrying 122,885
+on 21 Aug 2026: 283 of 2,036 production files are over budget, carrying 122,887
 lines of size debt. That is an anchored measurement, not an acceptance constant
 — run `npm run quality:budget -- --report` for the current tree, which is now
 the only place the figure lives. Failing all that debt at once would produce
@@ -354,10 +354,19 @@ long that file was on `origin/main` and compares. From that:
   what the next change is measured against, because that is what `origin/main`
   will then carry;
 - a file the change did not touch is not judged at all — it cannot have grown;
+- a file **renamed within** the budgeted scope keeps its predecessor's ceiling,
+  so moving an oversized module does not read as a pile of brand-new debt. A
+  file renamed **into** the scope from outside it — from `prisma/`, `scripts/`,
+  or a `__tests__/` path — has no ceiling to inherit and is judged as **new**,
+  so it must meet its budget outright. Otherwise "move it into `src/`" would be
+  a way to arrive over budget with the gate green, and moving it out and back
+  again would be a way to launder any amount of growth in two steps;
 - if the base cannot be read, the check **fails**. An enforcement tool that
   cannot see what it is comparing against must say so rather than report a pass
   it has not earned, which is the same rule `npm run pr:check` follows for an
-  unfetched `origin/main`.
+  unfetched `origin/main`. The same goes for a run that finds **no production
+  files at all**: "scanned and found nothing wrong" and "scanned nothing" are
+  the same empty result and must not be the same message.
 
 ```bash
 npm run quality:budget                    # verify (also a step in CI's `verify` job)
@@ -374,13 +383,41 @@ measured against whatever has landed on `main` since, and `main`'s own edits
 read as the branch's. That was measured while building this: `origin/main` had
 moved ahead by one merged pull request and `git diff origin/main` reported seven
 `src/` files as changed that the branch had never touched. They happened to be
-shrinks, so nothing failed — but had that pull request *split* a file, every
-open branch would have gone red for growth none of them caused. Using the merge
-base is also the stricter reading: growth landing on `main` after the branch
-point no longer hands an open branch a larger allowance for free.
+shrinks, so nothing failed — but had that pull request *split* a file, the local
+run would have gone red for somebody else's edit.
 
-This is why CI's `verify` job must keep `fetch-depth: 0`. A shallow clone has no
-merge base, and the check fails rather than guessing.
+**In CI the two readings are the same commit**, so this choice costs and buys
+nothing there. A `pull_request` run checks out `refs/pull/N/merge`, a merge
+commit whose first parent is the base tip, so the merge base *is* the tip — and
+the merge tree already carries `main`'s version of every untouched file, so the
+seven files above could not have appeared under either reading. The difference
+is entirely about running the check locally on a branch that has not merged
+`main` in.
+
+**What it costs there, stated plainly.** The merge base is not uniformly the
+stricter reading. If `main` *shrinks* a file after the branch point, the branch
+is still judged against the larger pre-split length: measured, a 1,200-line
+module that `main` splits to 300 can be re-inflated to 1,199 on a stale branch
+and the local run passes, where the tip reading would have failed it at 700. The
+gap closes as soon as `main` is merged in — the merge base then moves to the
+split — and it never opens in CI.
+
+**On a push to `main` the default base is not usable at all**, and the `verify`
+job passes an explicit one. There, `origin/main` *is* the commit being tested:
+the merge base is `HEAD`, the diff is empty, and the check would report "0
+production files changed" whatever the tree holds. Two branches that each add
+sixty lines to a six-hundred-line file both pass their own pull-request run,
+merge cleanly to 720 against a 700 budget, and nothing would ever say so — after
+which the next change to that file is measured against 720. The workflow
+therefore passes the push event's own pre-push commit as `--base`, and keys that
+on the event name, because a `pull_request` payload carries a `before` field too
+and it means something else entirely.
+
+This is also why CI's `verify` job must keep `fetch-depth: 0` — for a quieter
+reason than "a shallow clone has no merge base", which is not true. A depth-1
+clone resolves `origin/main` perfectly well, returns `HEAD` as the merge base,
+and reports **OK** over a tree holding a 1,300-line module. Truncated history
+narrows the diff silently rather than failing, which is the worse of the two.
 
 #### Why there is no longer a baseline file (#2979)
 
@@ -434,11 +471,17 @@ reviewers to read as a split going well.
 
 #### When a file legitimately has to grow
 
-There is no command to run and nothing to commit. Say in the pull request body
-why the increase is necessary and why splitting is worse at that point, and let
-a reviewer weigh it. That was always the real contract — the old regeneration
-step existed to make the increase visible in a diff, and the pull request body
-is where a reviewer was meant to be looking anyway.
+There is no command to run and nothing to commit. **`npm run quality:budget:update`
+is gone** (#2979) — if you remember typing it, or you find it in an old branch or
+an old pull request comment, that is the command this section replaces. It
+regenerated the deleted baseline file; running it now prints an explanation
+rather than doing nothing quietly.
+
+Say in the pull request body why the increase is necessary and why splitting is
+worse at that point, and let a reviewer weigh it. That was always the real
+contract — the old regeneration step existed to make the increase visible in a
+diff, and the pull request body is where a reviewer was meant to be looking
+anyway.
 
 What this costs, stated plainly: an accepted increase is no longer *enforced* in
 a machine-checkable artefact, so the gate stays red for that pull request until

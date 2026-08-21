@@ -20,8 +20,22 @@
   that was within its budget may not go over it, a file that was already over
   may not grow, and shrinking is always allowed. Two loopholes close as a side
   effect — renaming a file (including from `.ts` to `.js`) no longer leaves its
-  allowance behind, and a file that shrinks can no longer creep back up to its
-  old size unnoticed.
+  allowance behind, and one change after another can no longer creep a shrunken
+  file back up to its old size, because each is measured against what the last
+  one really left behind rather than against a number somebody wrote down. (A
+  branch cut *before* the shrink is still measured against the larger file until
+  it merges the latest work in. In the automated checks that gap never opens at
+  all, because they compare against the same commit either way; it only shows up
+  when the check is run by hand on a branch that has fallen behind.)
+
+  Two things that could quietly get past the check are also fixed. Moving a file
+  **into** the checked area — from the database seed or scripts folders, or back
+  from a test folder — used to let it keep whatever length it had where nothing
+  was watching, so a 1,300-line file could arrive well over budget and the check
+  would say nothing; done in two steps, any amount of growth could be laundered
+  the same way. Such a file now has to meet its budget like any other new one.
+  And the check no longer reports a clean result when it scanned nothing at all,
+  which is what a checkout missing its source folder used to produce.
 
   For a contributor, the practical effect is that `npm run quality:budget:update`
   is gone, because there is no longer anything to regenerate; a size increase
@@ -31,4 +45,7 @@
   `npm run quality:budget -- --report`, and appears in `npm run quality:report`
   as before. The check also measures each file against the point where the
   branch was cut rather than against the tip of `origin/main`, so work is judged
-  on what it changed rather than on how far `main` has moved underneath it.
+  on what it changed rather than on how far `main` has moved underneath it —
+  and, when it runs on `main` itself after a merge, against what `main` held
+  before that merge, so two pieces of work that each grow the same file within
+  their own allowance cannot add up to a breach that nothing ever reports.
