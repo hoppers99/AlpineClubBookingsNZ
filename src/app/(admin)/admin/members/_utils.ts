@@ -2,7 +2,7 @@ import type { Filters, MemberForm } from "./_types";
 import { ACCESS_ROLE_LABELS } from "@/lib/access-roles";
 import { LOGIN_STAGE_LABELS } from "@/lib/member-login-stage";
 import { UNASSIGNED_MEMBERSHIP_TYPE_VALUE } from "@/lib/membership-type-filter";
-import { BUILT_IN_MEMBERSHIP_TYPES, defaultMembershipTypeKeyForRole } from "@/lib/membership-types";
+import { defaultMembershipTypeNameForRole } from "@/lib/membership-types";
 import {
   NON_MEMBER_ROLE_VALUES,
   ROLE_LABELS,
@@ -135,18 +135,24 @@ export function formatAgeTierLabel(ageTier: string): string {
 }
 
 /**
- * The built-in type name a non-member category falls back to (#2978), e.g.
- * `NON_MEMBER` -> "Non-Member". Resolved from the SAME role->type mapping the
- * pricing engine uses, so the column cannot drift from what the person is
- * actually charged.
+ * The type name a non-member category falls back to (#2978), e.g. `NON_MEMBER`
+ * -> "Non-Member". Resolved from the SAME role->type mapping the pricing engine
+ * uses, so the column cannot drift from what the person is actually charged.
+ *
+ * `clubMembershipTypes` is the club's OWN rows, which is what decides the word.
+ * `MembershipType.name` is editable, so a club that renames its `NON_MEMBER`
+ * type to "Visitor" must read "Visitor" here as well as everywhere else; the
+ * seed name is only the fallback while the list has not loaded. That resolution
+ * lives in `defaultMembershipTypeNameForRole`, shared with the member detail
+ * page so the roster and the record cannot disagree.
  */
-function builtInTypeNameForNonMemberRole(
+function fallbackTypeNameForNonMemberRole(
   role: string | null | undefined,
+  clubMembershipTypes?: ReadonlyArray<{ key: string; name: string }>,
 ): string | null {
   if (!role) return null;
   if (!(NON_MEMBER_ROLE_VALUES as readonly string[]).includes(role)) return null;
-  const key = defaultMembershipTypeKeyForRole(role as AppRole);
-  return BUILT_IN_MEMBERSHIP_TYPES.find((type) => type.key === key)?.name ?? null;
+  return defaultMembershipTypeNameForRole(role as AppRole, clubMembershipTypes);
 }
 
 /**
@@ -172,9 +178,12 @@ export function formatTypeTierLabel(
   typeName: string | null | undefined,
   ageTier: string,
   role?: string | null,
+  clubMembershipTypes?: ReadonlyArray<{ key: string; name: string }>,
 ): string {
   const resolved =
-    typeName ?? builtInTypeNameForNonMemberRole(role) ?? "Unassigned";
+    typeName ??
+    fallbackTypeNameForNonMemberRole(role, clubMembershipTypes) ??
+    "Unassigned";
   return `${resolved} – ${formatAgeTierLabel(ageTier)}`;
 }
 
