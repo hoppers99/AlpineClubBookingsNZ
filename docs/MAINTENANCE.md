@@ -394,7 +394,7 @@ seven files above could not have appeared under either reading. The difference
 is entirely about running the check locally on a branch that has not merged
 `main` in.
 
-**What it costs there, stated plainly.** The merge base is not uniformly the
+**What it costs locally, stated plainly.** The merge base is not uniformly the
 stricter reading. If `main` *shrinks* a file after the branch point, the branch
 is still judged against the larger pre-split length: measured, a 1,200-line
 module that `main` splits to 300 can be re-inflated to 1,199 on a stale branch
@@ -412,6 +412,16 @@ which the next change to that file is measured against 720. The workflow
 therefore passes the push event's own pre-push commit as `--base`, and keys that
 on the event name, because a `pull_request` payload carries a `before` field too
 and it means something else entirely.
+
+Most of the time that run says exactly what the pull-request run already said,
+against exactly the same base — for a branch that was up to date, the merge
+commit's tree is the tree CI already tested. It differs in two situations, and
+both are worth knowing. If `main` moved between a branch's last run and its
+merge, the push run is the first thing to see the combined result, which is the
+whole point. And if an accepted increase is ever landed by merging a red pull
+request, the push run goes red once as well; it clears on the next push, and
+while it is red it is reporting what `main` now holds rather than a fault in the
+merge.
 
 This is also why CI's `verify` job must keep `fetch-depth: 0` — for a quieter
 reason than "a shallow clone has no merge base", which is not true. A depth-1
