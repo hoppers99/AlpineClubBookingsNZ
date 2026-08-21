@@ -358,6 +358,25 @@ describe("proxy family-invite return address (#2827, #2974)", () => {
     }
   });
 
+  it("writes nothing on any other address for a SIGNED-IN visitor either", async () => {
+    // The same addresses again, this time carrying a session — because the RETIRE
+    // branch runs before the document-navigation condition and is therefore the one
+    // branch a loosened address check would reach on an ordinary page. Found by
+    // mutation, 21 Aug 2026: replacing `getFamilyInviteReturnPath()` in the planner
+    // with a bare pass-through left every case above green, because the cookie
+    // builder refuses a bad path on the WRITE side — while a signed-in member
+    // browsing the site collected a `family-invite-return=; Max-Age=0` header on
+    // every page view. Harmless in itself, and exactly the kind of drift a guard
+    // that no longer discriminates goes on to permit.
+    for (const path of ["/", "/login", "/dashboard", `/pay/${TOKEN}`]) {
+      const response = await get(path, {
+        headers: { cookie: "authjs.session-token=abc" },
+      });
+
+      expect(returnCookies(response.headers), path).toEqual([]);
+    }
+  });
+
   it("writes nothing on a method that is not GET", async () => {
     for (const method of ["POST", "HEAD", "PUT", "DELETE"]) {
       const response = await get(INVITE_PATH, { method });
