@@ -512,7 +512,7 @@ export type FamilyInviteReturnRequestFacts = {
    * The request's pathname with any trailing slash already normalised, when
    * `isPageShapedPath()` admits it — and null when it does not.
    *
-   * That predicate is **strictly redundant** for this address: the pattern below
+   * That predicate is **strictly redundant** for this address: the address pattern
    * admits only `/family-invite/<64 hex>`, which is page-shaped by construction.
    * It is threaded through anyway so the #2578 pairing holds structurally rather
    * than by coincidence about the pattern — see `isPageShapedPath()`'s docblock.
@@ -534,8 +534,8 @@ export type FamilyInviteReturnRequestFacts = {
  * pairing is unchanged (no plan, no `Set-Cookie`), and the AST census in
  * `csp-proxy.test.ts` pins only WHERE a write may happen, never what reaches it.
  *
- * The three conditions are the ones set out in this module's header docblock, in
- * the order they are applied:
+ * The conditions are this module's header docblock's three, in the order they are
+ * applied here:
  *
  *  1. A GET of `/family-invite/<64 hex>`, and nothing else.
  *  2. A signed-in visitor has ARRIVED, so the address is RETIRED rather than
