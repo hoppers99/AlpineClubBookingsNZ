@@ -1372,9 +1372,15 @@ The security-relevant properties:
   walks `src/proxy.ts`'s AST and fails on any `"Set-Cookie"` literal or
   `.cookies.set()` written outside it. **#2827 is the first change to take that
   route, so the census is now a set of two** — the hint sync, and
-  `stampFamilyInviteReturnAddress()`, which carries the family-invite post-login
+  `syncFamilyInviteReturnAddress()`, which carries the family-invite post-login
   return address on the same `GET` + `isPageShapedPath()` gate (see the #2827
-  bullet under "Admin Raw CSS on the public site" below). The census is asserted
+  bullet under "Admin Raw CSS on the public site" below). What that writer
+  appends is decided a few lines earlier by `planFamilyInviteReturnAddress()` in
+  `src/lib/family-invite-return-address.ts`, because the nonce a write mints has
+  to reach the render's request headers as well as the browser's cookie; the
+  census pins WHERE a `Set-Cookie` may be emitted, never what reaches the writer,
+  and the behavioural half is pinned by the proxy suite instead. The census is
+  asserted
   both ways round, so neither a writer added somewhere new nor one deleted or
   renamed away can pass vacuously, and the excluded-shape case beside it now
   requires no `Set-Cookie` **at all** rather than merely no marker cookie — which
@@ -3162,7 +3168,7 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   member A signed in through their invitation, and member B signing in at `/login`
   within ten minutes was redirected to A's invite page with A's live token in B's
   address bar. Because every one of the four flows terminates in a signed-in GET
-  of the invite page, `syncFamilyInviteReturnAddress()` retires it there, which
+  of the invite page, the proxy retires it there, which
   makes "cleared on use" true for all four. The route handler still clears it for
   the one case that never lands on the page — an explicit `callbackUrl` outranked
   the address.
@@ -3191,12 +3197,14 @@ admin who authors CSS — a **content-area** admin, not necessarily a Full Admin
   **What #2974 does.** The address is bound to the tab that opened the invitation,
   by a tokenless nonce:
 
-  1. `syncFamilyInviteReturnAddress()` mints 128 bits from `crypto.randomUUID()`
+  1. `planFamilyInviteReturnAddress()` mints 128 bits from `crypto.randomUUID()`
      on the same signed-out document GET that writes the cookie, stores them in the
      cookie as `<nonce>.<path>`, and hands the same value to the render in the
      `x-family-invite-return-nonce` request header — the mechanism `x-pathname` and
      the CSP nonce already use. A server component cannot set a cookie during
      render, so the proxy is the only place both halves can be minted together.
+     It runs there before the render's request headers are assembled, and
+     `syncFamilyInviteReturnAddress()` appends the `Set-Cookie` it decided on.
   2. The invite page renders `/login?inviteReturn=<nonce>` — still an ordinary
      anchor, so nothing on that page needs JavaScript to arm the address.
   3. Every landing site passes the nonce it was given, with the RAW cookie value,

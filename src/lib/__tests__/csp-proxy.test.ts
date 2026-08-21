@@ -1901,15 +1901,17 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
    * so the pairing is asserted for the new writer rather than assumed from its
    * gate.
    *
-   * **#2974 moved that gate one function upstream, and this census deliberately did
-   * not follow it.** `planFamilyInviteReturnAddress()` now decides (it has to run
-   * before the render's request headers are assembled, so a write can put its
-   * tab-binding nonce in both the cookie and a header), and
-   * `syncFamilyInviteReturnAddress()` writes whatever the plan says. What this test
-   * pins is WHERE a `Set-Cookie` may be emitted — which is the property the #2578
-   * pairing needs — and not what reaches the writer. The behavioural half stays
-   * where it always was: the case below, and
-   * `family-invite-return-cookie-proxy.test.ts`.
+   * **#2974 moved that gate one function upstream and out of this file, and this
+   * census deliberately did not follow it.** `planFamilyInviteReturnAddress()`, in
+   * `src/lib/family-invite-return-address.ts`, now decides — it has to run before
+   * the render's request headers are assembled, so a write can put its tab-binding
+   * nonce in both the cookie and a header — and `syncFamilyInviteReturnAddress()`
+   * appends whatever the plan says. What this test pins is WHERE a `Set-Cookie` may
+   * be emitted, which is the property the #2578 pairing needs, and not what reaches
+   * the writer. That is also why the writer stays in `src/proxy.ts` when everything
+   * else about the address lives in its own module: a census of this file's AST can
+   * only speak for writes this file makes. The behavioural half stays where it
+   * always was: the case below, and `family-invite-return-cookie-proxy.test.ts`.
    */
   it("keeps the proxy's Set-Cookie writers to the two gated ones", () => {
     const proxyPath = resolve(process.cwd(), "src/proxy.ts");
