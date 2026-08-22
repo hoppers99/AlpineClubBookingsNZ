@@ -50,6 +50,21 @@
  */
 export const CLUB_TIME_ZONE_FALLBACK = "Pacific/Auckland";
 
+/**
+ * The `ClubTimeSettings` singleton row id — the ONE spelling, and it lives in
+ * this module rather than beside the reader for a measured reason (#2989 review).
+ * Four writers query this row: the admin route, the boot backfill, the setup CLI
+ * and the seed. Two of them cannot import the `server-only` reader, so each had
+ * declared its own `"default"` literal — and a drift between them fails SILENTLY,
+ * because `create` passes `id` explicitly: the writer would create a second row
+ * under the wrong id, the reader would still find nothing at `"default"`, and the
+ * club's chosen timezone would sit orphaned with no error anywhere. This module is
+ * deliberately free of `server-only` precisely so every writer can reach it,
+ * which is the same argument its own doc makes for the validator: "a validator
+ * that only half the writers can reach is how two of them drift".
+ */
+export const CLUB_TIME_SETTINGS_ID = "default";
+
 /** Matches `ClubTimeSettings.timeZone`'s `@db.VarChar(64)`. */
 export const CLUB_TIME_ZONE_MAX_LENGTH = 64;
 
@@ -103,6 +118,60 @@ export function normaliseClubTimeZone(
   return hasIanaIdentifierShape(resolved) ? resolved : null;
 }
 
+/**
+ * The canonical zone for a value whose job is to be PRESERVED rather than
+ * approved — the boot backfill and the seed, and nothing else.
+ *
+ * IT DIFFERS FROM {@link normaliseClubTimeZone} IN ONE ORDERING, AND THAT
+ * ORDERING IS THE WHOLE POINT (#2989 review, found independently by two lenses).
+ * The validator judges the INPUT's shape before probing, which is right for a
+ * value an operator types: it refuses `EST` outright rather than letting the
+ * runtime widen it into `America/Panama`, because an abbreviation names no place
+ * and so promises nothing about next spring's DST rules. Applied to a backfill
+ * that ordering is a defect, because the backfill is not approving anybody's
+ * choice — it is recording the zone a deployment has ALREADY been running on for
+ * years, and refusing it does not undo that; it substitutes
+ * `Pacific/Auckland` and moves the club.
+ *
+ * Measured on Node 24.15.0: forty-one `TZ` values that work perfectly today
+ * (`Intl` accepts them, so `APP_TIME_ZONE` formats correctly) are refused by the
+ * validator — `GB`, `NZ`, `NZ-CHAT`, `EST5EDT`, `PST8PDT`, `Japan`, `Israel`,
+ * `W-SU`, `Navajo` and the rest. **Thirty-six of them canonicalise to a genuine
+ * location that satisfies the shape rule**: `GB` → `Europe/London`, `NZ-CHAT` →
+ * `Pacific/Chatham` (+12:45), `EST5EDT` → `America/New_York`. Probing first
+ * preserves every one of those exactly, and still satisfies the issue's
+ * requirement that only a named IANA identifier is ever stored — the STORED value
+ * is a location either way.
+ *
+ * The residual class returns `null` and MUST NOT be substituted: `UTC`, `GMT`,
+ * `Zulu`, `Universal`, `UCT`, `Greenwich` and `Etc/UTC` all canonicalise to
+ * `UTC`, and `Etc/GMT±N` / `SystemV/*` to themselves. No place on earth has those
+ * as its civil time, so there is nothing to preserve and every candidate would be
+ * a guess. The callers therefore record nothing at all and leave the setup
+ * checklist blocked naming the refused value, which satisfies both requirement 2
+ * (never invent a zone for a configured install) and requirement 3 (never store a
+ * fixed offset), and matches `INV-CONFIG-001`'s rule that an unconfigured state
+ * is visible where an operator has to act.
+ */
+export function normaliseClubTimeZoneForPreservation(
+  value: string | null | undefined,
+): string | null {
+  const candidate = typeof value === "string" ? value.trim() : "";
+  if (!candidate || candidate.length > CLUB_TIME_ZONE_MAX_LENGTH) return null;
+
+  let resolved: string;
+  try {
+    resolved = new Intl.DateTimeFormat("en-NZ", {
+      timeZone: candidate,
+    }).resolvedOptions().timeZone;
+  } catch {
+    // This runtime has no such zone, so the deployment cannot have been using it.
+    return null;
+  }
+
+  return hasIanaIdentifierShape(resolved) ? resolved : null;
+}
+
 /** True when `value` is a usable named IANA club timezone. */
 export function isValidClubTimeZone(value: string | null | undefined): boolean {
   return normaliseClubTimeZone(value) !== null;
@@ -136,28 +205,6 @@ export function resolveClubTimeZone(
     normaliseClubTimeZone(environmentTimeZone) ??
     CLUB_TIME_ZONE_FALLBACK
   );
-}
-
-/**
- * The environment's club timezone, as a SEED ONLY.
- *
- * `TZ` / `NEXT_PUBLIC_TZ` were the club timezone before CT-1, so they are what an
- * existing deployment's "current effective timezone" means, and they are the only
- * thing a first boot after the upgrade can copy from. That is the whole of their
- * remaining role: `resolveClubTimeZone` consults this only when nothing is
- * persisted, and `clubTimeZoneSelfHealStep` persists it once so that stops being
- * true. The transitional `APP_TIME_ZONE` constant in `src/config/operational.ts`
- * still derives from the same two variables for the call sites CT-2/CT-4 have not
- * migrated yet, and `club-time-zone-env-agreement.test.ts` pins the two readings
- * together so they cannot drift apart while both exist. Retired by CT-6.
- *
- * Read LIVE from `process.env` rather than from a module-level constant, which is
- * not a detail: a constant frozen at import makes a "the database wins over the
- * environment" test unable to tell a real precedence rule from an environment
- * read that never happened.
- */
-export function readEnvironmentClubTimeZoneSeed(): string | null {
-  return process.env.TZ?.trim() || process.env.NEXT_PUBLIC_TZ?.trim() || null;
 }
 
 /**

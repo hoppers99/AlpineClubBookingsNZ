@@ -30,19 +30,22 @@ import "server-only";
  */
 
 import {
+  CLUB_TIME_SETTINGS_ID,
   normaliseClubTimeZone,
-  readEnvironmentClubTimeZoneSeed,
   resolveClubTimeZone,
 } from "@/lib/club-time-zone";
+import { readEnvironmentClubTimeZoneSeed } from "@/lib/club-time-zone-env";
 import { prisma } from "@/lib/prisma";
 
 /**
- * The `ClubTimeSettings` singleton row id. Its own constant rather than a shared
- * one, exactly as `CLUB_IDENTITY_SETTINGS_ID` is: several models happen to use
- * the value "default" and coupling them through one constant would make a future
- * change to one of them silently a change to all.
+ * Re-exported so this module stays the natural import for a server caller, while
+ * the single declaration lives in `club-time-zone.ts` — the one module every
+ * writer can reach, including the two `tsx` entrypoints that cannot import
+ * anything `server-only`. See that constant's own doc for why four separate
+ * spellings of `"default"` was a silent-failure hazard rather than a style
+ * question (#2989 review).
  */
-export const CLUB_TIME_SETTINGS_ID = "default";
+export { CLUB_TIME_SETTINGS_ID };
 
 /** The Prisma projection every read of this row uses. */
 const CLUB_TIME_SETTINGS_SELECT = {
@@ -109,7 +112,11 @@ export async function getClubTimeZone(): Promise<string> {
  * chosen its timezone" from "this is what the environment happens to say until
  * the first boot of the upgraded release persists it".
  */
-export type ClubTimeZoneSource = "persisted" | "environment" | "default";
+export type ClubTimeZoneSource =
+  | "persisted"
+  | "persisted-unusable"
+  | "environment"
+  | "default";
 
 export interface ResolvedClubTimeZone {
   timeZone: string;
@@ -136,11 +143,25 @@ export async function resolveClubTimeZoneWithSource(): Promise<ResolvedClubTimeZ
     persisted?.timeZone ?? null,
     environmentSeed,
   );
+  /*
+    `persisted-unusable` is a distinct answer from `environment`, and conflating
+    them produced a wrong instruction on the one screen whose job is to explain
+    provenance (#2989 review). A row whose `timeZone` does not validate — a
+    hand-edit, a bad restore, a future writer that skips the validator — is NOT
+    the same state as no row at all: the club HAS recorded something, it just
+    cannot be used, and the boot backfill will never repair it because its
+    presence check is row-level. Reporting that as "nothing recorded yet, the app
+    records it on the next restart" tells the reader to do something that cannot
+    work. Saying so explicitly lets the panel and the setup checklist give the one
+    instruction that does: set the timezone again.
+  */
   const source: ClubTimeZoneSource =
     normaliseClubTimeZone(persisted?.timeZone) !== null
       ? "persisted"
-      : normaliseClubTimeZone(environmentSeed) !== null
-        ? "environment"
-        : "default";
+      : persisted
+        ? "persisted-unusable"
+        : normaliseClubTimeZone(environmentSeed) !== null
+          ? "environment"
+          : "default";
   return { timeZone, source, persisted };
 }
