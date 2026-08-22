@@ -156,8 +156,13 @@ function runGate(
  * with no `rollback.sql` fails the pre-existing ledger-coverage check, which
  * would mask which check actually fired.
  */
-function contractRow(contract: string, expand: string, plan = "Probe contract row."): string {
-  return `${contract}\tcontract\t${expand}\tyes\t${plan}`;
+function contractRow(
+  contract: string,
+  expand: string,
+  plan = "Probe contract row.",
+  oldCodeCompatible = "yes",
+): string {
+  return `${contract}\tcontract\t${expand}\t${oldCodeCompatible}\t${plan}`;
 }
 
 function expandRow(name: string): string {
@@ -370,18 +375,29 @@ describe("same-release expand/contract check (#3002)", () => {
       // "the owner chose a maintenance window" gets deleted rather than
       // satisfied. It lives in the contract row's own lock_impact_plan so the
       // justification cannot drift away from the row it excuses.
+      //
+      // THE ROW DECLARES `windowed` AND SHIPS A rollback.sql, and both are now
+      // required of an acknowledgement rather than merely described. This case
+      // originally declared `yes` and shipped no reverse script, which is what
+      // made docs/BLUE_GREEN_MIGRATION_POLICY.md's "is `windowed` by definition,
+      // and the pre-existing coverage check then still demands its
+      // `rollback.sql`" false — the demand fires on the declaration and nothing
+      // required the declaration. The second half of this test is that pair
+      // working: take the reverse script away and the coverage check bites.
       const fixture = newFixture();
       fixture.commit("base with no migrations");
       fixture.branch("base-main");
 
       fixture.addMigration("20990101000000_add_thing");
       fixture.addMigration("20990102000000_drop_thing");
+      fixture.addFileToMigration("20990102000000_drop_thing", "rollback.sql", "SELECT 1;\n");
       fixture.writeLedger([
         expandRow("20990101000000_add_thing"),
         contractRow(
           "20990102000000_drop_thing",
           "20990101000000_add_thing",
           "SAME-RELEASE EXPAND/CONTRACT ACKNOWLEDGED: owner chose a one-release drop behind an announced window; old app and workers stopped before migrate.",
+          "windowed",
         ),
       ]);
       fixture.commit("windowed one-release drop");
@@ -394,6 +410,12 @@ describe("same-release expand/contract check (#3002)", () => {
       );
       // Counted in the summary, so an acknowledgement is never silent.
       expect(result.stderr).toContain("(1 acknowledged)");
+
+      rmSync(path.join(fixture.migrationsDir, "20990102000000_drop_thing", "rollback.sql"));
+      const withoutRollback = runGate(fixture, "base-main");
+
+      expect(withoutRollback.status, withoutRollback.stderr).not.toBe(0);
+      expect(withoutRollback.stderr).toContain("windowed migrations must ship a reverse script");
     },
   );
 
@@ -482,6 +504,148 @@ describe("same-release expand/contract check (#3002)", () => {
       expect(result.stderr).toContain("Same-release expand/contract check SKIPPED");
       expect(result.stderr).toContain("Ledger well-formedness check passed");
       expect(result.stderr).toContain("Migration safety coverage check passed");
+    },
+  );
+
+  it(
+    "FAILS on the all-zero base a ref-CREATING push carries",
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    () => {
+      // The case `.github/workflows/ci.yml`'s `github.event.created == false`
+      // guard routes around, asserted here so the gate's half of that contract
+      // is proved rather than assumed. An all-zero `before` means the ref did
+      // not exist until this push, so there is no "before" to measure against
+      // and no pass to report. Epic branches are created routinely since #3002,
+      // which is what made this reachable.
+      const fixture = newFixture();
+      fixture.addMigration("20990101000000_add_thing");
+      fixture.addMigration("20990102000000_drop_thing");
+      fixture.writeLedger([
+        expandRow("20990101000000_add_thing"),
+        contractRow("20990102000000_drop_thing", "20990101000000_add_thing"),
+      ]);
+      fixture.commit("the branch-creating push");
+
+      const result = runGate(fixture, "0".repeat(40));
+
+      expect(result.status, result.stderr).not.toBe(0);
+      expect(result.stderr).toContain("the base is the all-zero object id");
+      expect(result.stderr).toContain("re-run with --base naming a commit");
+    },
+  );
+
+  it(
+    "FAILS when the expand landed in an EARLIER COMMIT on the same branch",
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    () => {
+      // The epic-wide reach, which was correct by construction and unproven.
+      // On an integration branch each child is its own commit, so the expand and
+      // its contract are rarely in one commit — they are two children. The check
+      // compares against the BASE REF rather than against HEAD^1 precisely so
+      // the whole branch counts as one deploy, which since #3002 it is.
+      const fixture = newFixture();
+      fixture.commit("base with no migrations");
+      fixture.branch("base-main");
+
+      fixture.addMigration("20990101000000_add_thing");
+      fixture.writeLedger([expandRow("20990101000000_add_thing")]);
+      fixture.commit("child one: the expand half");
+
+      fixture.addMigration("20990102000000_drop_thing");
+      fixture.writeLedger([
+        expandRow("20990101000000_add_thing"),
+        contractRow("20990102000000_drop_thing", "20990101000000_add_thing"),
+      ]);
+      fixture.commit("child two: the contract half, a commit later");
+
+      const result = runGate(fixture, "base-main");
+
+      expect(result.status, result.stderr).not.toBe(0);
+      expect(result.stderr).toContain(
+        "Same-release expand/contract check FAILED: an expand and its own contract land in one deploy.",
+      );
+      expect(result.stderr).toContain("20990101000000_add_thing  (added on this branch too)");
+    },
+  );
+
+  it(
+    "FAILS a previous_expand_release that names a migration which does not exist",
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    () => {
+      // Check 5. The contract row names `20990101000000_add_thing`; the
+      // directory is `20990101000000_expand_add_thing` — one dropped word in a
+      // hand-typed 40-to-60 character name.
+      //
+      // WHAT THIS TEST IS ACTUALLY FOR: check 4 matches that value against the
+      // migrations the branch adds, so a name matching NOTHING matches the added
+      // expand either, and check 4 passes over the exact pair it exists to
+      // catch. The assertion below that it "passed" is therefore deliberate,
+      // not an oversight — it pins the blindness that makes check 5 necessary.
+      // Nothing else validated this field: the deploy validator requires only
+      // that it be non-empty and not `n/a`.
+      const fixture = newFixture();
+      fixture.commit("base with no migrations");
+      fixture.branch("base-main");
+
+      fixture.addMigration("20990101000000_expand_add_thing");
+      fixture.addMigration("20990102000000_contract_drop_thing");
+      fixture.writeLedger([
+        expandRow("20990101000000_expand_add_thing"),
+        contractRow("20990102000000_contract_drop_thing", "20990101000000_add_thing"),
+      ]);
+      fixture.commit("the epic adds both halves, and the ledger drops a word");
+
+      const result = runGate(fixture, "base-main");
+
+      expect(result.status, result.stderr).not.toBe(0);
+      expect(result.stderr).toContain(
+        "previous_expand_release check FAILED: a ledger row names a release that does not exist.",
+      );
+      expect(result.stderr).toContain("previous_expand_release : 20990101000000_add_thing");
+      // The near-miss is offered, because the fix is almost always a copy-paste.
+      expect(result.stderr).toContain("20990101000000_expand_add_thing");
+      // The blindness this exists to cover: check 4 saw nothing to compare.
+      expect(result.stderr).toContain("Same-release expand/contract check passed");
+    },
+  );
+
+  it(
+    "REFUSES an acknowledgement on a row that does not declare itself windowed",
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    () => {
+      // docs/BLUE_GREEN_MIGRATION_POLICY.md says an acknowledged row "is
+      // `windowed` by definition, and the pre-existing coverage check then still
+      // demands its `rollback.sql`". That was untrue: the rollback demand fires
+      // only on a `windowed` declaration, and nothing required one — so an
+      // acknowledged row could declare `yes` (asserting the old colour stays
+      // compatible, which the acknowledgement itself contradicts) and ship no
+      // reverse script at all.
+      const fixture = newFixture();
+      fixture.commit("base with no migrations");
+      fixture.branch("base-main");
+
+      fixture.addMigration("20990101000000_add_thing");
+      fixture.addMigration("20990102000000_drop_thing");
+      fixture.writeLedger([
+        expandRow("20990101000000_add_thing"),
+        contractRow(
+          "20990102000000_drop_thing",
+          "20990101000000_add_thing",
+          "SAME-RELEASE EXPAND/CONTRACT ACKNOWLEDGED: owner chose a one-release drop behind an announced window; old app and workers stopped before migrate.",
+          "yes",
+        ),
+      ]);
+      fixture.commit("acknowledged, but declared yes and shipping no rollback.sql");
+
+      const result = runGate(fixture, "base-main");
+
+      expect(result.status, result.stderr).not.toBe(0);
+      expect(result.stderr).toContain(
+        "Same-release expand/contract ACKNOWLEDGEMENT REFUSED: only a windowed row may be acknowledged.",
+      );
+      expect(result.stderr).toContain("old_code_compatible: yes");
+      // Not counted as an acknowledgement, so the summary cannot read as a pass.
+      expect(result.stderr).not.toContain("(1 acknowledged)");
     },
   );
 

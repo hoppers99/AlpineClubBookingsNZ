@@ -40,7 +40,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  issues: write
 
 concurrency:
   group: epic-branch-sync
@@ -52,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out full history
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -95,7 +94,20 @@ jobs:
               --json number --jq '.[0].number // empty')"
 
             if [ -z "${existing}" ]; then
-              existing="$(gh pr create \
+              # `gh pr create` PRINTS THE NEW PULL REQUEST'S URL and has no
+              # --json/--jq flags — it never has. The first draft of this
+              # workflow asked it for `--json number --jq .number`, which is
+              # `unknown flag: --json` and an exit 1 during flag parsing, before
+              # any network call: no pull request was created, the `||` fallback
+              # then found none either, and the job failed claiming a sync
+              # failure. Measured against gh 2.96.0.
+              #
+              # STDERR IS DELIBERATELY NOT DISCARDED. The same draft ended the
+              # create with `2>/dev/null`, which swallowed the single line that
+              # explained all of the above — the defect was not merely present,
+              # it was self-obscuring. A scheduled job nobody watches has to say
+              # why it failed in the log, or the log is worth nothing.
+              created_output="$(gh pr create \
                 --base "${branch}" \
                 --head main \
                 --title "Sync \`main\` into \`${branch}\`" \
@@ -108,9 +120,24 @@ jobs:
                   "" \
                   "**If it conflicts,** resolve it on \`${branch}\` by hand: \`git merge origin/main\`, resolve, commit, push. Do not force-push a shared integration branch, and do not let a merge tool pick a side unread. Classify each conflict: where the two sides differ only in a NUMBER, that number is usually measured and must be RE-measured after the merge rather than picked; where they differ in words, both edits usually belong." \
                   "" \
-                  "Run: ${RUN_URL}")" \
-                --json number --jq .number 2>/dev/null \
-                || gh pr list --base "${branch}" --head main --state open --json number --jq '.[0].number // empty')"
+                  "Run: ${RUN_URL}")")" || created_output=""
+
+              created_url="$(printf '%s\n' "${created_output}" \
+                | grep -Eo 'https://[^[:space:]]+' | tail -n 1)" || created_url=""
+
+              if [ -n "${created_url}" ]; then
+                echo "${branch}: opened ${created_url}"
+                existing="$(gh pr view "${created_url}" --json number --jq .number)" || existing=""
+              fi
+
+              if [ -z "${existing}" ]; then
+                # Reached when the create failed OR when its output could not be
+                # read as a URL. Both are recoverable if the pull request exists
+                # anyway — another run of this job racing this one, or one opened
+                # by hand — so look it up rather than giving up on the branch.
+                existing="$(gh pr list --base "${branch}" --head main --state open \
+                  --json number --jq '.[0].number // empty')" || existing=""
+              fi
             fi
 
             if [ -z "${existing}" ]; then
@@ -123,10 +150,14 @@ jobs:
             # Arm auto-merge so a clean sync needs nobody. A merge commit, never a
             # squash: the epic branch must keep main's real history or the final
             # epic -> main merge re-resolves everything.
-            gh pr merge "${existing}" --auto --merge >/dev/null 2>&1 \
+            # stdout only is discarded, never stderr — the same reason the create
+            # above keeps its own. "Could not be armed" is usually "already is",
+            # but it is equally what a repository with auto-merge disabled looks
+            # like, and only gh's own message tells the two apart.
+            gh pr merge "${existing}" --auto --merge >/dev/null \
               || echo "${branch}: auto-merge could not be armed on #${existing} (it may already be)."
 
-            state="$(gh pr view "${existing}" --json mergeable --jq .mergeable 2>/dev/null || echo UNKNOWN)"
+            state="$(gh pr view "${existing}" --json mergeable --jq .mergeable || echo UNKNOWN)"
             echo "${branch}: sync pull request #${existing}, mergeable=${state}"
 
             if [ "${state}" = "CONFLICTING" ]; then

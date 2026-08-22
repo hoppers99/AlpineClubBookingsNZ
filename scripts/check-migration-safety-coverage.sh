@@ -6,7 +6,7 @@
 # inspects migrations that are still PENDING against a target database. A
 # regex-matching migration committed without a ledger entry therefore stays
 # invisible until a production/fork deploy hits the gate and aborts before
-# cutover. This script closes that gap by asserting, at PR time, three things:
+# cutover. This script closes that gap by asserting, at PR time, five things:
 #
 #   1. Ledger well-formedness: EVERY row in the ledger names a migration exactly
 #      once and declares old_code_compatible from the closed vocabulary
@@ -34,14 +34,25 @@
 #      requests re-fixed a rule that was already written down correctly, in the
 #      right place, in strong language. This check is mechanical instead, and it
 #      catches the same defect on an ordinary pull request as on an epic branch.
+#      An acknowledgement (the escape hatch below) is available only to a row
+#      declaring old_code_compatible=windowed, which is what makes the policy's
+#      "and the pre-existing coverage check then still demands its rollback.sql"
+#      true: that demand fires on `windowed` and on nothing else.
+#   5. previous_expand_release names a migration THAT EXISTS. Check 4 matches
+#      that value against directory names, and nothing else validated it — the
+#      deploy validator only requires it to be non-empty and not `n/a`. So one
+#      dropped word in a hand-typed 40-to-60 character name matched nothing,
+#      check 4 found no pair, and the gate passed over exactly the case it
+#      exists to catch.
 #
 # Check 4 is the only one that reads git. It compares against a BASE REF, and it
 # FAILS rather than passing when it cannot read that comparison — an unresolvable
 # ref, or a shallow clone that would narrow the diff silently. That is the rule
 # `npm run pr:check` and the file-size ratchet already follow.
 #
-# Checks 1-3 are read-only and need no database or git — the script still runs as
-# an early fail-fast step in CI's migration-drift job.
+# Checks 1-3 and 5 are read-only and need no database or git — the script still
+# runs as an early fail-fast step in CI's migration-drift job, and check 5 is
+# live on a developer machine where check 4 skips.
 #
 # Arguments:
 #   --base <ref> | --base=<ref>   base ref for check 4 (default origin/main),
@@ -386,10 +397,11 @@ else
           seen[name] = 1
           phase = trim($2)
           previous = trim($3)
+          compatible = trim($4)
           plan = trim($5)
           if (phase != "contract") { next }
           if (previous == "" || previous == "n/a") { next }
-          print name "\t" previous "\t" plan
+          print name "\t" previous "\t" compatible "\t" plan
         }
       ' "$MIGRATION_SAFETY_LEDGER"
     )"
@@ -400,7 +412,7 @@ else
 
     same_release_pairs=0
     same_release_acknowledged=0
-    while IFS=$'\t' read -r contract_migration expand_migration lock_impact_plan; do
+    while IFS=$'\t' read -r contract_migration expand_migration old_code_compatible lock_impact_plan; do
       [ -n "${contract_migration:-}" ] || continue
       is_added_on_this_branch "$contract_migration" || continue
       is_added_on_this_branch "${expand_migration:-}" || continue
@@ -414,6 +426,36 @@ else
       esac
 
       if [ "${#reason}" -ge "$SAME_RELEASE_ACK_MIN_REASON_CHARS" ]; then
+        # An acknowledgement is only available to a `windowed` row, and that is
+        # not bookkeeping. docs/BLUE_GREEN_MIGRATION_POLICY.md says an
+        # acknowledged row "is `windowed` by definition, and the pre-existing
+        # coverage check then still demands its `rollback.sql`" — TRUE ONLY IF
+        # THE ROW REALLY SAYS `windowed`, because that is the single condition
+        # the validator's reverse-script requirement fires on. Declared `yes`,
+        # an acknowledged row was a one-release drop asserting the old colour
+        # stays compatible (which the acknowledgement itself contradicts) and
+        # shipping no reverse script at all. That is the exact shape this gate
+        # exists to prevent, arriving through the gate's own escape hatch.
+        if [ "${old_code_compatible:-}" != "windowed" ]; then
+          same_release_pairs=$((same_release_pairs + 1))
+          echo "Same-release expand/contract ACKNOWLEDGEMENT REFUSED: only a windowed row may be acknowledged." >&2
+          echo "  contract migration : ${contract_migration}  (added on this branch)" >&2
+          echo "  its named expand   : ${expand_migration}  (added on this branch too)" >&2
+          echo "  old_code_compatible: ${old_code_compatible:-(empty)}  - must be exactly: windowed" >&2
+          echo "  WHY: the acknowledgement says the owner chose a ONE-RELEASE DROP behind a" >&2
+          echo "  maintenance window, and 'windowed' is precisely what that means - the previous" >&2
+          echo "  colour WILL error between migrate and cutover. Declaring 'yes' asserts the" >&2
+          echo "  opposite in the same row. It also disarms the reverse-script requirement in" >&2
+          echo "  scripts/validate-blue-green-migrations.sh, which fires on 'windowed' and on" >&2
+          echo "  nothing else - so 'yes' plus an acknowledgement ships a one-release drop with" >&2
+          echo "  no declared window and no rollback.sql, and the coverage check above stays" >&2
+          echo "  quiet about it." >&2
+          echo "  WHAT TO DO: set old_code_compatible=windowed on ${contract_migration} and" >&2
+          echo "  commit its rollback.sql (docs/BLUE_GREEN_MIGRATION_POLICY.md), or drop the" >&2
+          echo "  acknowledgement and move the contract half to a release after this one." >&2
+          failures=1
+          continue
+        fi
         same_release_acknowledged=$((same_release_acknowledged + 1))
         echo "Same-release expand/contract ACKNOWLEDGED for ${contract_migration} against ${expand_migration}: ${reason}" >&2
         continue
@@ -440,8 +482,9 @@ else
       echo "  ledger rather than working around this gate: put" >&2
       echo "    ${SAME_RELEASE_ACK_MARKER} <why, and which window>" >&2
       echo "  in ${contract_migration}'s lock_impact_plan, with at least ${SAME_RELEASE_ACK_MIN_REASON_CHARS} characters of reason." >&2
-      echo "  Such a row is old_code_compatible=windowed by definition, and it ships a" >&2
-      echo "  rollback.sql - the validator already enforces both." >&2
+      echo "  Such a row must ALSO declare old_code_compatible=windowed, which this check now" >&2
+      echo "  requires of an acknowledgement, and a windowed row must ship a rollback.sql," >&2
+      echo "  which the validator enforces off that same declaration." >&2
       failures=1
     done <<<"$contract_rows"
 
@@ -449,6 +492,82 @@ else
       echo "Same-release expand/contract check passed for ${added_count} migration(s) added since ${BASE_REF} (${same_release_acknowledged} acknowledged)." >&2
     fi
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# 5. previous_expand_release must name a migration that EXISTS (#3002).
+# ---------------------------------------------------------------------------
+# Check 4 decides whether an expand and its own contract land together by
+# MATCHING THIS NAME against the migrations the branch adds, with `grep -Fxq`
+# over directory basenames. Nothing validated the name itself:
+# scripts/validate-blue-green-migrations.sh requires only that a destructive
+# contract's value be non-empty and not `n/a`. So one dropped word in a 40-to-60
+# character hand-typed name — `20260901000000_add_foo` where the directory is
+# `20260901000000_expand_add_foo` — matches nothing, check 4 finds no pair, and
+# the gate passes over exactly the case it exists to catch. Silently, and with a
+# green tick.
+#
+# Deliberately OUTSIDE the git-dependent block above: existence is a filesystem
+# question, so this still runs on a developer machine where check 4 skips.
+# Applied to every row that names a previous release rather than only to
+# contract rows — today those are the same 19 rows, and "if you name one, it has
+# to exist" is the rule a reader can hold.
+migration_dir_names="$(
+  for migration_dir in "$MIGRATIONS_DIR"/*/; do
+    [ -d "$migration_dir" ] || continue
+    basename "$migration_dir"
+  done
+)"
+
+previous_release_rows="$(
+  awk -F'\t' '
+    function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+    /^[[:space:]]*#/ { next }
+    NF == 0 { next }
+    {
+      name = trim($1)
+      if (name == "") { next }
+      if (name in seen) { next }
+      seen[name] = 1
+      previous = trim($3)
+      if (previous == "" || previous == "n/a") { next }
+      print name "\t" previous
+    }
+  ' "$MIGRATION_SAFETY_LEDGER"
+)"
+
+previous_release_checked=0
+previous_release_missing=0
+while IFS=$'\t' read -r ledger_row_migration named_previous; do
+  [ -n "${ledger_row_migration:-}" ] || continue
+  previous_release_checked=$((previous_release_checked + 1))
+  if printf '%s\n' "$migration_dir_names" | grep -Fxq -- "${named_previous}"; then
+    continue
+  fi
+
+  near_misses="$(printf '%s\n' "$migration_dir_names" | grep -F -- "${named_previous%%_*}" | tr '\n' ' ')"
+  echo "previous_expand_release check FAILED: a ledger row names a release that does not exist." >&2
+  echo "  ledger row              : ${ledger_row_migration}" >&2
+  echo "  previous_expand_release : ${named_previous}" >&2
+  echo "  no such directory       : ${MIGRATIONS_DIR}/${named_previous}" >&2
+  if [ -n "${near_misses// /}" ]; then
+    echo "  sharing that timestamp  : ${near_misses}" >&2
+  fi
+  echo "  WHY THIS IS A GATE: the same-release expand/contract check matches this NAME" >&2
+  echo "  against the migrations this branch adds. A name that matches no migration cannot" >&2
+  echo "  match the added expand either, so that check finds nothing to compare and reports" >&2
+  echo "  a pass - over the very pair it exists to catch. One dropped word in a hand-typed" >&2
+  echo "  40-to-60 character name is enough, and nothing else validates this field:" >&2
+  echo "  scripts/validate-blue-green-migrations.sh only requires it to be non-empty and" >&2
+  echo "  not n/a." >&2
+  echo "  WHAT TO DO: copy the directory name from ${MIGRATIONS_DIR} verbatim, or use n/a" >&2
+  echo "  if this row genuinely names no previous release." >&2
+  previous_release_missing=$((previous_release_missing + 1))
+  failures=1
+done <<<"$previous_release_rows"
+
+if [ "$previous_release_missing" = "0" ]; then
+  echo "previous_expand_release check passed for ${previous_release_checked} row(s) naming a previous release." >&2
 fi
 
 if [ "$failures" = "0" ]; then

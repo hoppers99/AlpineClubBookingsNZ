@@ -62,11 +62,22 @@
  *   `EPIC_REHEARSAL_DATABASE_URL`). It NEVER falls back to `DATABASE_URL`,
  *   because on an operator's host that is the live database.
  * - Loopback hosts only.
+ * - **No query string at all.** node-postgres reads the connection out of the
+ *   query as well as out of the URL: measured, `?host=/var/run/postgresql`
+ *   redirects to the local socket and `?port=5432` overrides the port, each
+ *   walking past a guard below while the URL still reads as loopback:5433. Any
+ *   parameter is refused rather than an allowlist of the ones one version of one
+ *   library happens to honour.
  * - **Port 5432 is refused outright**, rather than inspected. It is PostgreSQL's
  *   default, so on any machine that also runs a real instance — an operator's
  *   server, a fork owner's box — loopback:5432 IS that instance, and "it is only
  *   my local one" is exactly the assumption that ends a club's data. Run the
  *   throwaway container on another port and point this at that.
+ * - **The server must hold no databases but its own maintenance one.** An empty
+ *   maintenance database proves nothing on its own: a production cluster's
+ *   `postgres` database is empty as well, so on an operator's box that test and
+ *   the two above were all that stood between this script and `CREATE DATABASE`
+ *   on the live server. `pg_database` names the club's database out loud.
  * - The database it connects to must hold **no tables at all**. A non-empty
  *   public schema is treated as somebody's real data.
  * - It then does its work inside a scratch database it CREATES and DROPS itself,
@@ -182,6 +193,34 @@ export function describeDisposabilityRefusal(rawUrl: string): string | null {
     return `the URL scheme is ${parsed.protocol} — this rehearsal only speaks PostgreSQL.`;
   }
 
+  // EVERY QUERY PARAMETER IS REFUSED, and this is not tidiness. The two guards
+  // below read `URL.hostname` and `URL.port`, but node-postgres does not: it
+  // hands the string to `pg-connection-string`, which lets the QUERY STRING
+  // override both. Measured against the copy in this checkout:
+  //
+  //   ?host=/var/run/postgresql  -> host becomes the local socket, so a URL
+  //                                 spelling 127.0.0.1 connects somewhere else
+  //                                 entirely and the loopback guard sees nothing
+  //   ?port=5432                 -> port becomes 5432, walking straight through
+  //                                 the one port this script refuses outright
+  //
+  // `hostaddr`, `dbname`, `options` and an upper-case `HOST` are ignored by that
+  // parser today — which is exactly why an allowlist of "the dangerous ones"
+  // would be wrong: it would encode a measurement of one version of one library
+  // and rot silently. A rehearsal URL is loopback, non-5432 and throwaway; it
+  // has no legitimate need of a parameter, so any parameter is refused and the
+  // remedy is to delete it.
+  if (parsed.search !== "") {
+    const names = [...new Set([...parsed.searchParams.keys()])].join(", ");
+    return (
+      `the URL carries query parameter(s) (${names}), and this rehearsal refuses all of\n` +
+      `  them. node-postgres reads the connection out of the query string as well as out\n` +
+      `  of the URL: ?host= redirects to another server and ?port= overrides the port,\n` +
+      `  both past the checks below. Delete the query string and point the URL itself at\n` +
+      `  the throwaway server.`
+    );
+  }
+
   const host = parsed.hostname.toLowerCase();
   if (!LOOPBACK_HOSTS.has(host)) {
     return (
@@ -213,6 +252,51 @@ export function describeDisposabilityRefusal(rawUrl: string): string | null {
   }
 
   return null;
+}
+
+/** A scratch database this script created, named from 8 crypto bytes. */
+const SCRATCH_DATABASE_PATTERN = /^epic_rehearsal_[0-9a-f]{16}$/;
+
+/**
+ * Why this CLUSTER is not obviously disposable, or null when it is.
+ *
+ * The emptiness test this script has always run inspects the MAINTENANCE
+ * database it connects to — and on a production cluster that database is
+ * `postgres`, which is empty there too. So on an operator's box the only thing
+ * between this script and `CREATE DATABASE` on the live server was the loopback
+ * and non-5432 pair, and a server administered from the machine it runs on
+ * satisfies both. `SELECT datname FROM pg_database` is the honest question: a
+ * throwaway container holds `postgres` and nothing else, while a real cluster
+ * names the club's database out loud.
+ *
+ * Templates are excluded by the query. `postgres` is allowed because every
+ * cluster has it, the maintenance database is allowed because that is the one
+ * already inspected for tables, and a leftover `epic_rehearsal_<hex>` is allowed
+ * because `--keep-scratch` is a documented option and its own droppings must not
+ * lock the next run out.
+ */
+export function describeClusterNotDisposable(
+  databaseNames: readonly string[],
+  maintenanceDatabase: string,
+): string | null {
+  const foreign = databaseNames.filter(
+    (name) =>
+      name !== maintenanceDatabase &&
+      name !== "postgres" &&
+      !SCRATCH_DATABASE_PATTERN.test(name),
+  );
+  if (foreign.length === 0) return null;
+
+  const listed = foreign.slice(0, 5).join(", ");
+  return (
+    `the PostgreSQL server it was pointed at holds ${foreign.length} database(s) that are\n` +
+    `  not this rehearsal's own: ${listed}${foreign.length > 5 ? ", …" : ""}.\n` +
+    "  That is somebody's cluster until proven otherwise, and an empty maintenance\n" +
+    "  database proves nothing about it — a production server's `postgres` database is\n" +
+    "  empty too. This script CREATES and DROPS databases on the server it connects to,\n" +
+    "  so it runs only against a server that holds nothing else. Start a throwaway\n" +
+    "  container on a spare port and point it at that."
+  );
 }
 
 /** Fail closed rather than measure against a history git cannot fully see. */
@@ -526,8 +610,11 @@ REF's schema and reads every model with it. A read that fails is the colour
 draining at cutover failing.
 
 Options
-  --database-url <url>  REQUIRED. A throwaway PostgreSQL. Loopback only, and
-                        never port ${REFUSED_PORT}. Also accepted as
+  --database-url <url>  REQUIRED. A throwaway PostgreSQL. Loopback only, never
+                        port ${REFUSED_PORT}, and no query string (node-postgres reads
+                        ?host= and ?port= out of it, past both of those). The
+                        server must hold no databases beyond the one named here
+                        and \`postgres\`. Also accepted as
                         EPIC_REHEARSAL_DATABASE_URL. DATABASE_URL is never used.
   --base <ref>          Base ref to rehearse against (default ${DEFAULT_BASE_REF}).
                         Pass the pre-push SHA on a push event.
@@ -624,6 +711,21 @@ export async function run(root: string, argv: readonly string[]): Promise<number
 
   try {
     await admin.connect();
+
+    // The cluster test comes first because it is the broader one: it asks what
+    // this SERVER is, where the query below asks only what one database holds.
+    const clusterDatabases = await admin.query<{ datname: string }>(
+      "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname",
+    );
+    const clusterRefusal = describeClusterNotDisposable(
+      clusterDatabases.rows.map((row) => row.datname),
+      new URL(adminUrl).pathname.replace(/^\//, ""),
+    );
+    if (clusterRefusal) {
+      console.error("REFUSED — this rehearsal will not run here.");
+      console.error(`  ${clusterRefusal}`);
+      return 1;
+    }
 
     const existing = await admin.query<{ table_name: string }>(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name",

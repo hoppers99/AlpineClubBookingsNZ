@@ -8,6 +8,7 @@ import {
   DEFAULT_BASE_REF,
   REFUSED_PORT,
   addedMigrationsSinceBase,
+  describeClusterNotDisposable,
   describeDisposabilityRefusal,
   normaliseSchemaForComparison,
   parseArgs,
@@ -173,6 +174,71 @@ describe("describeDisposabilityRefusal", () => {
     expect(describeDisposabilityRefusal("postgres://p:p@127.0.0.1:55302")).toContain(
       "names no database",
     );
+  });
+
+  it("REFUSES a query string, because node-postgres reads the connection out of it", () => {
+    // Both of these read as loopback:5433 to `new URL`, and both connect
+    // somewhere else. Measured against the `pg-connection-string` in this
+    // checkout: `?host=` becomes the connection host, and `?port=` becomes the
+    // port — walking through the loopback guard and through the one port this
+    // script refuses outright, respectively. The guard is not an allowlist of
+    // those two names: an allowlist would encode one measurement of one version
+    // of one library and rot without saying so.
+    expect(
+      describeDisposabilityRefusal(
+        "postgresql://u:pw@127.0.0.1:5433/postgres?host=/var/run/postgresql",
+      ),
+    ).toContain("query parameter(s) (host)");
+    expect(
+      describeDisposabilityRefusal("postgresql://u:pw@127.0.0.1:5433/postgres?port=5432"),
+    ).toContain("query parameter(s) (port)");
+    // Anything else too, including a parameter that is inert today.
+    expect(
+      describeDisposabilityRefusal("postgresql://u:pw@127.0.0.1:5433/postgres?sslmode=disable"),
+    ).toContain("refuses all of");
+  });
+});
+
+describe("describeClusterNotDisposable", () => {
+  it("accepts a throwaway cluster, and one holding this script's own leftovers", () => {
+    // `postgres` exists on every cluster; `--keep-scratch` is a documented
+    // option, so the script's own droppings must not lock the next run out.
+    expect(describeClusterNotDisposable(["postgres"], "postgres")).toBeNull();
+    expect(
+      describeClusterNotDisposable(
+        ["epic_rehearsal_0123456789abcdef", "postgres"],
+        "postgres",
+      ),
+    ).toBeNull();
+    // The maintenance database need not be called `postgres`.
+    expect(describeClusterNotDisposable(["postgres", "scratch"], "scratch")).toBeNull();
+  });
+
+  it("REFUSES a cluster holding databases that are not its own", () => {
+    // The hole this closes: the emptiness test the script has always run
+    // inspects the MAINTENANCE database, and a production cluster's `postgres`
+    // database is empty too. On an operator's box — loopback, and a server
+    // administered from the machine it runs on — that left only the port check
+    // between this script and `CREATE DATABASE` on the live cluster.
+    const refusal = describeClusterNotDisposable(
+      ["postgres", "tacbookings", "tacbookings_backup"],
+      "postgres",
+    );
+
+    expect(refusal).toContain("tacbookings");
+    expect(refusal).toContain("tacbookings_backup");
+    expect(refusal).toContain("an empty maintenance");
+  });
+
+  it("does not mistake a lookalike name for one of its own scratch databases", () => {
+    // The pattern is anchored and hex-exact on purpose: a club database called
+    // `epic_rehearsal_notes` is somebody's data, not a leftover.
+    expect(
+      describeClusterNotDisposable(["postgres", "epic_rehearsal_notes"], "postgres"),
+    ).toContain("epic_rehearsal_notes");
+    expect(
+      describeClusterNotDisposable(["postgres", "epic_rehearsal_0123456789abcdefff"], "postgres"),
+    ).toContain("epic_rehearsal_0123456789abcdefff");
   });
 });
 

@@ -142,8 +142,20 @@ SAME-RELEASE EXPAND/CONTRACT ACKNOWLEDGED: <at least 40 characters of reason>
 A bare marker is refused; the reason is the point. It lives beside the window it
 describes rather than in a separate allowlist that could drift, and every
 acknowledgement is printed and counted in the check's summary, so it is never
-silent. It is not a cheap escape either: such a row is `windowed` by definition,
-and the pre-existing coverage check then still demands its `rollback.sql`.
+silent. It is not a cheap escape either: **the check refuses an acknowledgement on a row
+that does not declare `windowed`**, and the coverage check then demands that
+row's `rollback.sql`. Both were an assertion until #3002's review — an
+acknowledged row declaring `yes` shipped no reverse script, and a test was
+asserting that defect rather than catching it.
+
+**A `previous_expand_release` must name a migration that exists**, which check 5
+enforces. It is not tidiness: check 4 decides whether the named expand is part of
+this change by matching that string against directory names, so a dropped word in
+a sixty-character hand-typed name silently turns the whole check off for that row,
+and nothing else in the repository validated it. It applies to any row naming a
+previous release rather than only a contract one — "if you name it, it must
+exist" is a rule a reader can hold — and the failure offers the near-miss sharing
+the same timestamp.
 
 ### Rehearsing an epic's deploy
 
@@ -156,8 +168,14 @@ applies the migrations this change adds, generates a Prisma client from the
 **base ref's** `prisma/schema.prisma`, and reads every model with it — which is
 what proves the draining colour can still deserialise. It refuses to run against
 anything that is not obviously disposable: the URL must be passed explicitly and
-never falls back to `DATABASE_URL`, the host must be loopback, **port 5432 is
-refused outright**, and the target must hold zero tables.
+never falls back to `DATABASE_URL`; the host must be loopback; **port 5432 is
+refused outright**; the URL may carry **no query string at all**, because
+node-postgres reads `?host=` *and* `?port=` out of one and either walks straight
+past the host and port checks; the **server** must hold no databases beyond the
+one named and `postgres`; and the target itself must hold zero tables. The last
+two came out of #3002's review — a maintenance database on a production cluster
+is empty, so without them loopback-and-not-5432 was the only thing standing
+between the script and `CREATE DATABASE` on a live server.
 
 **What a green run does not prove**, because a rehearsal that overclaims is worse
 than none: it does not exercise writes, the application's own query shapes, the
@@ -169,8 +187,9 @@ visible rather than assumed, and takes `--seed-sql` where a column *type* change
 and representative values matter.
 
 It is **run by hand on the epic's pull request** rather than in CI. Automating it
-would need a third service database — the `migration-drift` one is non-empty by
-the time that job runs, and the guard correctly refuses it — plus a step-level
+would need a third service **server**, not merely another database on an existing
+one: the cluster guard refuses a server holding databases it does not recognise,
+and `migration-drift`'s is populated by the time that job runs. Plus a step-level
 condition on whether the diff adds a migration. That is a reasonable thing to
 build later; it is not a reason to skip the rehearsal now.
 
@@ -206,7 +225,8 @@ The deploy gate only inspects migrations still pending against the target databa
 
 - any row in `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv` declares an `old_code_compatible` outside `yes`/`no`/`windowed`, names no migration, or repeats a migration already named on an earlier row. This runs over the whole ledger and does not depend on which migrations are in scope below, so a mistyped `windowed` fails the pull request rather than the deploy,
 - a committed migration at or after the ledger baseline (the earliest migration named in the ledger) matches the hot-table/breaking regexes but has no well-formed `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv` entry — or is declared `windowed` and ships no `rollback.sql` beside its `migration.sql`, or
-- a migration the change ADDS is a `phase=contract` whose `previous_expand_release` names a migration the change also adds — an expand and its own contract in one deploy (#3002). It compares against `--base`, default `origin/main`, and fails closed rather than guessing when it cannot read that base. See "The expand/contract half is ENFORCED" above for the acknowledgement marker that covers a deliberate windowed drop, or
+- a migration the change ADDS is a `phase=contract` whose `previous_expand_release` names a migration the change also adds — an expand and its own contract in one deploy (#3002). It compares against `--base`, default `origin/main`, and fails closed rather than guessing when it cannot read that base. See "The expand/contract half is ENFORCED" above for the acknowledgement marker that covers a deliberate windowed drop,
+- any ledger row's `previous_expand_release` names a migration that does not exist — a typo there silently disables the check above for that row, or
 - a new migration reuses an existing timestamp prefix. Prisma orders migrations by folder name, so a duplicate prefix sorts ambiguously. The historical duplicate prefixes that predate this gate are grandfathered in the script; any new collision fails CI. Always stamp a new migration with a timestamp later than every committed migration.
 
 Add the ledger row (and, for destructive changes, follow the expand/contract sequence above) in the same pull request that adds the migration.

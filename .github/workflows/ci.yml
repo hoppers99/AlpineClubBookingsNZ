@@ -523,10 +523,24 @@ jobs:
       # everything earlier in it through.
       #
       # A base the checkout cannot reach — an all-zero `before` from a
-      # ref-creating push, or a commit orphaned by a force-push — FAILS here
-      # rather than passing with no evidence, the same way `npm run pr:check`
-      # treats an unresolvable base. Both are blocked on `main` by branch
-      # protection, so a red gate is the right answer if either ever appears.
+      # ref-creating push, or a commit orphaned by a force-push — FAILS in the
+      # ratchet rather than passing with no evidence, the same way
+      # `npm run pr:check` treats an unresolvable base.
+      #
+      # THAT IS WHY `github.event.created == false` IS IN THE EXPRESSION, and it
+      # is not decoration. This comment used to say both cases were "blocked on
+      # `main` by branch protection, so a red gate is the right answer if either
+      # ever appears" — true while `push` only ever meant `main`. #3002 added
+      # `push: branches: [epic/**]` above, and an epic branch is CREATED
+      # routinely, once per epic. A ref-creating push carries
+      # `before = 0000…`, the ratchet correctly refuses it, and `verify` would
+      # be red on the first push of every epic branch — a gate failing on an
+      # event that is entirely normal, which is how a gate gets ignored and then
+      # deleted. On a creating push the branch is judged against `origin/main`
+      # instead, which for a branch just cut from main is the same comparison a
+      # pull request would make. The `Check migration safety ledger coverage`
+      # step below carries the identical guard for the identical reason; keep
+      # the two in step.
       #
       # `fetch-depth: 0` on this job's checkout is load-bearing for a quieter
       # reason than it used to say here: a shallow clone does NOT fail: it
@@ -539,7 +553,7 @@ jobs:
       # behind the slower gates.
       - name: File-size budget ratchet
         env:
-          BUDGET_BASE: ${{ github.event_name == 'push' && github.event.before || 'origin/main' }}
+          BUDGET_BASE: ${{ (github.event_name == 'push' && github.event.created == false) && github.event.before || 'origin/main' }}
         run: npm run quality:budget -- --base "$BUDGET_BASE"
 
       - name: Generate Prisma client

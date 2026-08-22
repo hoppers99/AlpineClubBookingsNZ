@@ -116,6 +116,14 @@ runs the next epic.
 - **Branch protection does not reach an integration branch** unless somebody with
   admin adds it. An agent session cannot: the machine account holds `push`, not
   `admin`, and that endpoint's 404 means "not permitted", never "not protected".
+- **`npm run pr:check` needs `--base`, and silently misjudges a child without
+  it.** It defaults to `origin/main`, so on a child of an epic it sees every
+  earlier child's diff as well: CT-2 (#3004) was judged against 101 changed files
+  rather than its own 35, and refused for want of a concurrency declaration
+  covering a schema and a migration it never touched. Run
+  `npm run pr:check -- <body-file> --base origin/epic/<issue>-<slug>`. Both gates
+  decide what they ask for from the diff, so the wrong base asks the wrong
+  question — and it fails in the safe direction only by luck.
 - **Nothing in the epic ships until all of it ships.** Inherent, not an
   oversight. The levers are keeping epics small and using the inert-child
   exception for foundations.
