@@ -1,4 +1,4 @@
-# File-size allowances for #2989 (CT-1, club time zone)
+# File-size allowances for #3000 (CT-1, #2989 — club time zone)
 
 Four already-over-budget files grow here. Each gains one entry in a list or one
 branch in a decision it already owns — none of them gains a new concern.
