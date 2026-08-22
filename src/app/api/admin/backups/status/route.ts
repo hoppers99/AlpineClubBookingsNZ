@@ -97,6 +97,7 @@ export async function GET() {
     restoreValidationUrlSet: state.restoreValidationUrlSet,
     localEnabled: state.localEnabled,
     localPath: state.localPath,
+    localPathFromEnv: state.localPathFromEnv,
     anyDestinationEnabled: state.anyDestinationEnabled,
     localBackups,
     localDiskSpace,

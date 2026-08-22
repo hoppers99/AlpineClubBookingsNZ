@@ -5,6 +5,11 @@ import {
   isValidAuthBounceRef,
   resolvePostLoginPath,
 } from "@/lib/auth-redirect";
+import { readFamilyInviteReturnCookieValue } from "@/lib/family-invite-return-address-cookie";
+import {
+  appendFamilyInviteReturnParam,
+  getFamilyInviteReturnNonce,
+} from "@/lib/family-invite-return-address";
 import { resolvePostLoginLandingPath } from "@/lib/post-login-landing";
 import { googleCredentialsConfigured } from "@/lib/google-oauth";
 import { getCachedEffectiveModuleFlags } from "@/lib/public-layout-config";
@@ -28,6 +33,7 @@ export default async function LoginPage({
     callbackUrl?: string | string[];
     ref?: string | string[];
     error?: string | string[];
+    inviteReturn?: string | string[];
   }>;
 }) {
   const params = await searchParams;
@@ -44,6 +50,13 @@ export default async function LoginPage({
   const explicitCallbackUrl = getExplicitCallbackUrl(rawCallbackUrl) ?? undefined;
   const refCandidate = singleSearchParam(params.ref);
   const authBounceRef = isValidAuthBounceRef(refCandidate) ? refCandidate : undefined;
+  // #2974: the tab-binding nonce the family-invite page put on its sign-in
+  // anchor. Tokenless and worthless on its own — it only tells the landing
+  // resolver that THIS tab is the one that opened the invitation. Shape-checked
+  // here so nothing malformed is forwarded into a detour URL or a client prop;
+  // an absent or bad value simply means the invite address is not honoured.
+  const familyInviteReturnNonce =
+    getFamilyInviteReturnNonce(params.inviteReturn) ?? undefined;
 
   // An already-authenticated visitor must never be shown the sign-in form —
   // a bounced tab would otherwise strand on /login with no error and no way
@@ -65,6 +78,10 @@ export default async function LoginPage({
       if (explicitCallbackUrl) {
         query.set("callbackUrl", explicitCallbackUrl);
       }
+      // #2974: the detour hop carries the tab-binding nonce so the verify/enroll
+      // page can still honour the family-invite address. Only the nonce travels —
+      // never the invite path, which is what would put the token back in a URL.
+      appendFamilyInviteReturnParam(query, familyInviteReturnNonce);
       const suffix = query.toString() ? `?${query.toString()}` : "";
       redirect(
         session.user.twoFactorEnrolled && session.user.twoFactorMethod
@@ -76,8 +93,25 @@ export default async function LoginPage({
     // preference / role default is honoured on this self-heal path (and,
     // notably, this is where a Google sign-in with no explicit deep link lands
     // to be resolved).
+    // #2827: honour the family-invite return address here too. This branch is
+    // where a Google sign-in from an invite comes back (the provider callbackUrl
+    // is "/login?inviteReturn=<nonce>" whenever there is no explicit deep link),
+    // so without this read the one flow that has no client post-auth seam would
+    // land on the dashboard. Deliberately NOT folded into `explicitCallbackUrl`
+    // above: that value is forwarded to the client form and into the 2FA detour's
+    // query string, and the whole point of this fix is that the invite token stops
+    // appearing in the login page's own output. It is read only on this
+    // redirect-only path.
+    // #2974: the raw cookie value goes in with the nonce this request presented,
+    // and the resolver honours the address only if they agree — so a member who
+    // simply navigated to /login gets their ordinary landing even when somebody
+    // else's invitation cookie is still alive in this browser.
     const landing = resolvePostLoginLandingPath({
       explicitCallbackUrl,
+      familyInviteReturn: {
+        cookieValue: await readFamilyInviteReturnCookieValue(),
+        presentedNonce: familyInviteReturnNonce,
+      },
       landingPreference: session.user.postLoginLanding,
       permissionInput: {
         adminPermissionMatrix: session.user.adminPermissionMatrix,
@@ -102,6 +136,7 @@ export default async function LoginPage({
       emailChanged={emailChanged}
       redirectTo={redirectTo}
       explicitCallbackUrl={explicitCallbackUrl}
+      familyInviteReturnNonce={familyInviteReturnNonce}
       authBounceRef={authBounceRef}
       magicLinkEnabled={modules.magicLink}
       googleLoginEnabled={modules.googleLogin && googleConfigured}

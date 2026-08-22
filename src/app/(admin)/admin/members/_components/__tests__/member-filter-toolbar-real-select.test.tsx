@@ -1,38 +1,36 @@
 // @vitest-environment jsdom
 
-/**
- * The members filter toolbar rendered against the REAL `@/components/ui/select`,
- * and a repo-wide guard on the component that broke it.
- *
- * WHY THIS FILE EXISTS, and why the other toolbar suites could not do its job.
- * `member-type-tier.test.tsx` and `access-role-ui.test.tsx` both mock
- * `@/components/ui/select` wholesale, swapping every part for a plain `<div>`.
- * That is reasonable for asserting on options without fighting Radix in jsdom —
- * but it means no unit test ever rendered the real component, and when #2978
- * added a `<SelectLabel>` directly inside `<SelectContent>` those suites stayed
- * green while `/admin/members` threw on every render:
- *
- *     `SelectLabel` must be used within `SelectGroup`
- *
- * Radix's `Select.Label` reads a context that only `Select.Group` provides, and
- * that context is created with no default, so the consumer throws rather than
- * degrading. Playwright caught it — one spec, all three retries — because it is
- * the only place the real component runs.
- *
- * This is the incomplete-mock-factory hazard in `AGENTS.md` running BACKWARDS.
- * There the mock was missing an export the tree needed and the file died at
- * import; here the mock was *given* an export whose real implementation refuses
- * the way it was used, so the mock made a broken render look fine. The lesson is
- * the same: a mocked component tree proves nothing about the component.
- */
-
 import "@testing-library/jest-dom/vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { emptyFilters } from "../../_utils";
+import { MemberFilterToolbar } from "../member-filter-toolbar";
 
-// Only the role-options fetch is stubbed; every Radix part below is real.
+/**
+ * The members filter toolbar rendered against the REAL `@/components/ui/select`.
+ *
+ * WHY THIS FILE EXISTS, AND WHY IT DELIBERATELY MOCKS ALMOST NOTHING.
+ * Every other suite in this folder replaces the select module with plain divs.
+ * That is reasonable for asserting copy and wiring, but it means the whole
+ * Radix runtime — its contexts, and the invariants they enforce — is never
+ * exercised anywhere in the unit tests. A `SelectLabel` was added to the
+ * Membership Type picker outside a `SelectGroup`; every mocked suite passed,
+ * and the members page crashed to its error boundary in a real browser, taking
+ * out the E2E that loads `/admin/members`.
+ *
+ * The trap is that it does NOT need the picker to be opened. A CLOSED Radix
+ * `SelectContent` still portals its children into a detached DocumentFragment
+ * so it can collect them, so a child that throws on mount throws on PAGE LOAD.
+ * `SelectLabel` reads the group context and throws without it:
+ * "`SelectLabel` must be used within `SelectGroup`".
+ *
+ * So the assertion here is deliberately shallow — that the toolbar MOUNTS. The
+ * value is entirely in the real module being present, not in what is asserted.
+ */
+
+// Option sources fetch in the browser; pin them so this file tests rendering.
 vi.mock("@/hooks/use-access-role-options", async () => {
   const { buildFallbackAccessRoleOptions } = await import(
     "@/lib/access-role-definitions"
@@ -41,57 +39,41 @@ vi.mock("@/hooks/use-access-role-options", async () => {
   return { useAccessRoleOptions: () => options };
 });
 
-import { MemberFilterToolbar } from "../member-filter-toolbar";
-import { emptyFilters } from "../../_utils";
-
-beforeAll(() => {
-  // Radix measures and scrolls; jsdom implements none of it. These are the
-  // standard shims, and none of them affects whether a render throws.
-  globalThis.ResizeObserver ??= class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  } as never;
-  Element.prototype.scrollIntoView ??= function () {};
-  Element.prototype.hasPointerCapture ??= () => false;
-  Element.prototype.releasePointerCapture ??= () => {};
-});
-
-afterEach(() => cleanup());
-
-function renderRealToolbar() {
+function renderToolbar() {
   return render(
     <MemberFilterToolbar
       search=""
       filters={emptyFilters}
-      xeroFeatures={{ liveMemberGroupLookups: false, autoLoadContactGroups: false }}
-      xeroContactGroupsList={[]}
+      // Non-empty on purpose: the picker then renders its club types beside the
+      // label, which is the arrangement that shipped broken.
       membershipTypes={[
         { id: "mt-full", key: "FULL", name: "Full", isActive: true },
-        { id: "mt-old", key: "OLD", name: "Retired", isActive: false },
+        { id: "mt-nonmember", key: "NON_MEMBER", name: "Non-Member", isActive: true },
       ]}
+      xeroFeatures={{ liveMemberGroupLookups: false, autoLoadContactGroups: false }}
+      xeroContactGroupsList={[]}
       onSearchChange={vi.fn()}
       onSetFilter={vi.fn()}
-      resetDisabled
+      resetDisabled={true}
       onReset={vi.fn()}
     />,
   );
 }
 
-describe("members filter toolbar against the real Radix select (#2978)", () => {
-  it("mounts without throwing", () => {
-    // The whole regression in one assertion. A throw here is not a test detail:
-    // it is /admin/members failing to render for every officer.
-    expect(() => renderRealToolbar()).not.toThrow();
+describe("members filter toolbar against the real select primitives (#2978)", () => {
+  afterEach(() => cleanup());
+
+  it("mounts without throwing, with every Select still closed", () => {
+    // If a Select child violates a Radix context invariant, this render throws
+    // and the whole page it belongs to fails the same way in the browser.
+    expect(() => renderToolbar()).not.toThrow();
   });
 
-  it("still shows the filter's own trigger once mounted", () => {
-    renderRealToolbar();
+  it("renders the Membership Type picker's trigger", () => {
+    renderToolbar();
 
-    // Proof the render actually produced the control, so the assertion above
-    // cannot pass by rendering nothing at all.
     expect(
-      screen.getByLabelText("Filter by membership type"),
+      screen.getByRole("combobox", { name: /membership type/i }),
     ).toBeInTheDocument();
   });
 });
@@ -128,7 +110,7 @@ describe("every SelectLabel sits inside a SelectGroup", () => {
       const source = readFileSync(file, "utf8");
       if (!source.includes("<SelectLabel")) continue;
       // A file that renders one must also render the group that provides its
-      // context. Deliberately coarse — a per-occurrence parse would be a JSX
+      // context. Deliberately coarse - a per-occurrence parse would be a JSX
       // parser, and every real misuse so far has been a file with no group at
       // all.
       if (!source.includes("<SelectGroup")) {
@@ -139,7 +121,7 @@ describe("every SelectLabel sits inside a SelectGroup", () => {
     expect(
       offenders,
       "Radix's Select.Label reads a context only Select.Group provides, and it " +
-        "throws rather than degrading — so a bare <SelectLabel> takes the whole " +
+        "throws rather than degrading - so a bare <SelectLabel> takes the whole " +
         "page down the moment the select renders. Wrap it in <SelectGroup>.",
     ).toEqual([]);
   });

@@ -12,9 +12,19 @@ import {
 // same gates as login/verify: forced password change, then the two-factor
 // funnel, then the sanitised callbackUrl.
 
-const { mockAuth, mockRedirect } = vi.hoisted(() => ({
+const { mockAuth, mockRedirect, mockReadReturnCookie } = vi.hoisted(() => ({
   mockAuth: vi.fn(),
   mockRedirect: vi.fn(),
+  mockReadReturnCookie: vi.fn<() => Promise<string | null>>(),
+}));
+
+// #2827: the self-heal branch reads the family-invite return address from an
+// HttpOnly cookie. Mocked at the reader, not at `next/headers`, because
+// `cookies()` throws outside a request scope. #2974: the reader hands back the
+// RAW cookie value — `<nonce>.<path>` — and the resolver pairs it with the
+// `?inviteReturn=` nonce this request presented.
+vi.mock("@/lib/family-invite-return-address-cookie", () => ({
+  readFamilyInviteReturnCookieValue: () => mockReadReturnCookie(),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -78,9 +88,15 @@ async function runLoginPage(
   return LoginPage({ searchParams: Promise.resolve(params) });
 }
 
+const TOKEN = "e7c1b93a5d0f4826".repeat(4);
+const INVITE_PATH = `/family-invite/${TOKEN}`;
+const NONCE = "3f9c17ae42b0d85610c73fe29ab4d051";
+const INVITE_COOKIE = `${NONCE}.${INVITE_PATH}`;
+
 describe("LoginPage authenticated self-heal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockReadReturnCookie.mockResolvedValue(null);
     mockRedirect.mockImplementation((path: string) => {
       throw new Error(`redirect:${path}`);
     });
@@ -233,6 +249,107 @@ describe("LoginPage authenticated self-heal", () => {
     await expect(
       runLoginPage({ callbackUrl: "/bookings" })
     ).rejects.toThrow("redirect:/bookings");
+  });
+
+  it("returns a Google sign-in to the family-invite address in the cookie (#2827)", async () => {
+    // This branch is where a Google sign-in from an invite comes back: the
+    // provider callbackUrl is "/login?inviteReturn=<nonce>" whenever there is no
+    // explicit deep link, so without the cookie read here the one flow with no
+    // client post-auth seam would land on the dashboard and the invite would be
+    // forgotten.
+    mockAuth.mockResolvedValue(sessionUser());
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
+
+    await expect(
+      runLoginPage({ inviteReturn: NONCE }),
+    ).rejects.toThrow(`redirect:${INVITE_PATH}`);
+  });
+
+  /**
+   * THE #2974 PROPERTY at this landing site, and the shared-kiosk case in one
+   * test: the cookie is alive, but this sign-in did not come from the tab that
+   * opened the invitation, so it presents no nonce and must land on the member's
+   * ordinary home rather than on a stranger's invitation.
+   */
+  it("ignores the cookie for a sign-in that presents no nonce (#2974)", async () => {
+    mockAuth.mockResolvedValue(sessionUser());
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
+
+    await expect(runLoginPage()).rejects.toThrow("redirect:/dashboard");
+  });
+
+  it("ignores the cookie for a nonce from some other tab (#2974)", async () => {
+    mockAuth.mockResolvedValue(sessionUser());
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
+
+    await expect(
+      runLoginPage({ inviteReturn: "0a1b2c3d4e5f60718293a4b5c6d7e8f9" }),
+    ).rejects.toThrow("redirect:/dashboard");
+  });
+
+  it("lets an explicit callbackUrl outrank the family-invite cookie (#2827)", async () => {
+    mockAuth.mockResolvedValue(sessionUser());
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
+
+    await expect(
+      runLoginPage({ callbackUrl: "/bookings", inviteReturn: NONCE }),
+    ).rejects.toThrow("redirect:/bookings");
+  });
+
+  it("never materialises the family-invite address into the 2FA detour URL (#2827)", async () => {
+    // The invite token must not reappear in a URL the login page RENDERS or
+    // redirects through with a query string — the detour carries only a genuinely
+    // explicit deep link plus the tokenless #2974 nonce, and /login/verify
+    // re-reads the cookie for itself.
+    mockAuth.mockResolvedValue(
+      sessionUser({
+        twoFactorRequired: true,
+        twoFactorEnrolled: true,
+        twoFactorMethod: "totp",
+      }),
+    );
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
+
+    await expect(runLoginPage({ inviteReturn: NONCE })).rejects.toThrow(
+      `redirect:/login/verify?inviteReturn=${NONCE}`,
+    );
+  });
+
+  it("carries the tokenless nonce — and nothing else — into the detour (#2974)", async () => {
+    // The nonce has to survive the hop or a 2FA member from an invitation lands
+    // on their dashboard. What must NOT survive is the invite path or its token.
+    mockAuth.mockResolvedValue(
+      sessionUser({
+        twoFactorRequired: true,
+        twoFactorEnrolled: true,
+        twoFactorMethod: "totp",
+      }),
+    );
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
+
+    const redirected = await runLoginPage({ inviteReturn: NONCE }).then(
+      () => "no redirect happened",
+      (error: Error) => error.message,
+    );
+
+    expect(redirected).toBe(`redirect:/login/verify?inviteReturn=${NONCE}`);
+    expect(redirected).not.toContain(TOKEN);
+    expect(redirected).not.toContain("family-invite");
+  });
+
+  it("drops a malformed nonce rather than forwarding it into the detour (#2974)", async () => {
+    mockAuth.mockResolvedValue(
+      sessionUser({
+        twoFactorRequired: true,
+        twoFactorEnrolled: true,
+        twoFactorMethod: "totp",
+      }),
+    );
+    mockReadReturnCookie.mockResolvedValue(INVITE_COOKIE);
+
+    await expect(
+      runLoginPage({ inviteReturn: "../../admin?x=1" }),
+    ).rejects.toThrow("redirect:/login/verify");
   });
 
   it("still renders the form for an anonymous visitor", async () => {

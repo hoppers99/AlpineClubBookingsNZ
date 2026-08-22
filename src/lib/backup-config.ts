@@ -224,7 +224,19 @@ export async function resolveBackupConfig(): Promise<ResolvedBackupConfig> {
       ? restoreValidationUrl.trim()
       : null,
     localEnabled: localEnabledRaw?.trim().toLowerCase() === "true",
-    localPath: localPathRaw?.trim() ? localPathRaw.trim() : null,
+    // The stored path wins; the deployment's mount is the DEFAULT.
+    //
+    // `BACKUP_LOCAL_DIR` is where the compose stack mounts the backup volume
+    // INSIDE the container, so it is deployment infrastructure rather than club
+    // configuration — the same reasoning that keeps `BACKUP_CRON_SCHEDULE` in
+    // the environment while everything else moved into the encrypted store
+    // (#2095, C6). Falling back to it means an operator who has set the mount
+    // does not then have to retype the path into the admin screen, and cannot
+    // typo it into somewhere unmounted.
+    localPath:
+      localPathRaw?.trim() ||
+      process.env.BACKUP_LOCAL_DIR?.trim() ||
+      null,
     needsReentry,
   };
 }
@@ -264,6 +276,13 @@ export interface BackupSetupState {
   /** Local destination: the switch and the configured directory (not secret). */
   localEnabled: boolean;
   localPath: string | null;
+  /**
+   * True when `localPath` came from the deployment's `BACKUP_LOCAL_DIR` mount
+   * rather than from a value an admin saved. The screen says so, because a
+   * pre-filled path an operator did not type is otherwise indistinguishable from
+   * one they set months ago and forgot.
+   */
+  localPathFromEnv: boolean;
   /** True when EITHER destination is switched on — see isAnyBackupDestinationEnabled. */
   anyDestinationEnabled: boolean;
   /**
@@ -305,6 +324,8 @@ export async function getBackupSetupState(): Promise<BackupSetupState> {
     ),
     localEnabled: config.localEnabled,
     localPath: config.localPath,
+    localPathFromEnv:
+      !present.has(BACKUP_CREDENTIAL_KEYS.localPath) && Boolean(config.localPath),
     anyDestinationEnabled: isAnyBackupDestinationEnabled(config),
     durable:
       (Boolean(config.bucket) && accessKeyIdSet && secretAccessKeySet) ||

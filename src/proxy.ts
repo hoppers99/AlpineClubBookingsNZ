@@ -18,6 +18,10 @@ import {
 } from "./lib/internal-return-path";
 import { ASSET_URL_EXTENSIONS } from "./lib/asset-url-404";
 import {
+  planFamilyInviteReturnAddress,
+  setFamilyInviteReturnNonceHeader,
+} from "./lib/family-invite-return-address";
+import {
   isFixedNonceWebsitePath,
   isPublicWebsitePath,
 } from "./lib/public-website-paths";
@@ -25,6 +29,7 @@ import { getPublicWebsiteNonce } from "./lib/release-nonce";
 import { getSetupInProgressResponse } from "./lib/setup-gate";
 import {
   hasSignedInHint,
+  serialiseSignedInHintCookie,
   SIGNED_IN_HINT_COOKIE,
   SIGNED_IN_HINT_MAX_AGE_SECONDS,
   SIGNED_IN_HINT_VALUE,
@@ -291,31 +296,28 @@ const API_NAMESPACE_ANY_CASE_PATTERN = /^\/api(?:\/|$)/i;
  * Both consequences follow from the same fact — no page document can be served here
  * — so ONE predicate answers both questions the proxy asks about such a response:
  * whether to write the private-only directive ({@link getPrivateOnlyCacheControl})
- * and whether to write the D2 marker cookie ({@link syncSignedInHint}). Keeping them
- * on one predicate is what holds the #2578 invariant structurally rather than by
- * coincidence: **the proxy never emits a `Set-Cookie` on a response whose
- * `Cache-Control` it has left to another layer.**
+ * and whether to write a cookie at all. That is what holds the #2578 invariant
+ * structurally rather than by coincidence: **the proxy never emits a `Set-Cookie` on
+ * a response whose `Cache-Control` it has left to another layer.**
  *
- * One predicate is necessary and was not sufficient: the review of the first cut found
+ * One predicate was necessary and not sufficient — the review of the first cut found
  * the invariant false at `/`, where {@link getPrivateOnlyCacheControl} had a carve-out
- * this predicate knows nothing about. It is closed there, so the claim above now rests
- * on two facts together — {@link syncSignedInHint} is the proxy's ONLY `Set-Cookie`
- * writer and is gated on this predicate, and every path it admits gets a directive
- * from either `getPrivateOnlyCacheControl()` or `getAnonymousPageCacheControl()`.
- * Anything that adds a third `Set-Cookie` writer, or a second carve-out on the
- * directive side, has to re-establish the pairing rather than inherit it.
+ * this predicate knew nothing about — so the claim rests on two facts together: the
+ * proxy's `Set-Cookie` writers are EXACTLY {@link syncSignedInHint} and
+ * {@link syncFamilyInviteReturnAddress}, both gated here, and every path this
+ * predicate admits gets a directive from `getPrivateOnlyCacheControl()` or
+ * `getAnonymousPageCacheControl()`. BOTH are tested rather than merely documented
+ * (review finding, 4 Aug 2026): the gating is mutation-proven, and the census is an
+ * AST walk of this file asserted both ways round, so a writer added somewhere new and
+ * one deleted or renamed away each redden `csp-proxy.test.ts`, whose docblock states
+ * the argument in full. `docs/SECURITY-ATTACK-SURFACE.md` records the history.
  *
- * **BOTH facts are now tested, which the first cut left to the docblock (review
- * finding, 4 Aug 2026).** The gating is mutation-proven — reverting the cookie gate to
- * `startsWith("/api/")` reddens `csp-proxy.test.ts`. The sole-writer half was enforced
- * by nothing, and every case in that file asserts on the HINT cookie by name, so a
- * second writer (a lodge preference, a consent banner) would have left the suite green
- * while `GET /branding/logo.png` shipped a `Set-Cookie` beside `send`'s
- * `public, max-age=…`. "keeps syncSignedInHint the proxy's only Set-Cookie writer"
- * walks this file's AST and fails on any `"Set-Cookie"` literal or `.cookies.set()`
- * outside that function. So adding a writer elsewhere is now a red test rather than a
- * silent regression — and moving the existing write into a helper reddens that one
- * case and nothing else, which is the point.
+ * A further writer is not forbidden — it has to RE-ESTABLISH the pairing rather than
+ * inherit it, as #2827's second writer did: same `GET` + page-shaped gate, and its one
+ * address is out of the public-website territory, so it always takes
+ * {@link PRIVATE_ONLY_CACHE_CONTROL}. The census fixes WHERE a `Set-Cookie` may be
+ * emitted, never what reaches the writer — since #2974 the decision behind that one is
+ * `planFamilyInviteReturnAddress()`, and only the append is here.
  *
  * Note this says nothing about which addresses are the public WEBSITE — that is
  * `isPublicWebsitePath()`. A member page, `/login`, `/robots.txt` and `/sitemap.xml`
@@ -404,37 +406,17 @@ function syncSignedInHint(
 }
 
 /**
- * The marker cookie's `Set-Cookie` value, written as a header rather than through
- * `response.cookies.set()` ON PURPOSE.
- *
- * `NextResponse`'s cookie proxy also writes `x-middleware-set-cookie`, and Next
- * merges that into the render's `cookies()`
- * (`next/dist/server/async-storage/request-store.js`, `mergeMiddlewareCookies`).
- * So going through the proxy API would leave the hint readable server-side on the
- * one request that sets it, which is the same property
- * {@link stripSignedInHintFromCookieHeader} exists to hold on every other
- * request. Same bytes on the wire either way — `ResponseCookies` appends to this
- * header — so the browser behaviour is unchanged.
+ * Appends the family-invite return-address `Set-Cookie` (#2827, #2974) that
+ * {@link planFamilyInviteReturnAddress} decided on. It stays in THIS file, and not
+ * in the module holding everything else about the address, because the #2578 writer
+ * census reads this file's AST — see {@link isPageShapedPath}. What gets written,
+ * when, and why the proxy carries it at all: that module.
  */
-function serialiseSignedInHintCookie(
-  value: string,
-  maxAgeSeconds: number,
-): string {
-  const attributes = [
-    `${SIGNED_IN_HINT_COOKIE}=${value}`,
-    "Path=/",
-    `Max-Age=${maxAgeSeconds}`,
-    "SameSite=Lax",
-  ];
-
-  // Never HttpOnly — the browser has to read it, which is the whole mechanism —
-  // and not Secure in development, where the app is served over plain http and a
-  // Secure cookie would never be stored.
-  if (process.env.NODE_ENV === "production") {
-    attributes.push("Secure");
-  }
-
-  return attributes.join("; ");
+function syncFamilyInviteReturnAddress(
+  response: NextResponse,
+  plan: ReturnType<typeof planFamilyInviteReturnAddress>,
+): void {
+  if (plan) response.headers.append("Set-Cookie", plan.setCookie);
 }
 
 /**
@@ -979,6 +961,16 @@ export async function proxy(request: NextRequest) {
 
   const requestHeaders = new Headers(request.headers);
 
+  // #2974: decided before the render's headers are assembled, because a WRITE has
+  // to hand the invite page the same nonce it is about to put in the cookie.
+  const normalisedPath = normalisePathname(pathname);
+  const familyInviteReturnPlan = planFamilyInviteReturnAddress({
+    method: request.method,
+    pageShapedPath: isPageShapedPath(normalisedPath) ? normalisedPath : null,
+    signedIn: hasSessionCookie(request),
+    secFetchDest: request.headers.get("sec-fetch-dest"),
+  });
+
   // The D2 marker cookie is for the BROWSER only. See
   // `stripSignedInHintFromCookieHeader` for why this line is what makes that
   // true rather than a comment claiming it.
@@ -1002,6 +994,9 @@ export async function proxy(request: NextRequest) {
   );
   requestHeaders.set(REQUEST_METHOD_HEADER, request.method);
 
+  // #2974: a message FROM the proxy, so an inbound copy is deleted either way.
+  setFamilyInviteReturnNonceHeader(requestHeaders, familyInviteReturnPlan);
+
   const response = NextResponse.next({
     request: {
       headers: requestHeaders,
@@ -1011,6 +1006,7 @@ export async function proxy(request: NextRequest) {
   response.headers.set(CSP_HEADER, csp);
   setSecurityHeaders(response.headers, pathname);
   syncSignedInHint(request, response, hasSessionCookie(request));
+  syncFamilyInviteReturnAddress(response, familyInviteReturnPlan);
 
   const anonymousCacheControl = getAnonymousPageCacheControl(request);
 
