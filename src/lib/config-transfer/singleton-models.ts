@@ -109,6 +109,16 @@ export const MODEL_LEVEL_EXCLUSIONS: Record<string, string> = {
     "The photo-retention window and photo/contact toggles are equally an operational " +
     "posture; a fresh import keeps the target's own settings, and a target with none " +
     "stays fail-closed (anonymous OFF by default) — instance-local",
+  ClubTimeSettings:
+    "the installation's ONE club timezone (CT-1, #2989): the IANA identifier that " +
+    "is this club's sole civil-time authority. It does not travel for the same " +
+    "reason it is Full-Admin-only, confirmation-gated and audited in the first " +
+    "place — a bundle apply is none of those things, so importing it would move " +
+    "every displayed time and every club-local scheduled job on the target club " +
+    "with no acknowledgement of the consequences and no before/after audit row " +
+    "naming who did it. A fresh import keeps the target's own configured zone, and " +
+    "a target that has none keeps resolving the zone it is already effectively " +
+    "using (INV-CONFIG-002) — instance-local",
   ServerNzSettings:
     "this install's own Alpine Central Server connection: a base URL bound to the " +
     "server THIS club was issued a key for (the key itself lives in the encrypted " +

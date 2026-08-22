@@ -744,3 +744,4 @@ headings the index keeps verbatim.
 | ID | Covers |
 | --- | --- |
 | `INV-CONFIG-001` | Club-varying values get a configuration surface; upgrades fall back safely and visibly |
+| `INV-CONFIG-002` | One persisted IANA club timezone is the sole civil-time authority; `TZ` seeds it, the browser never decides it, and changing it rewrites nothing |

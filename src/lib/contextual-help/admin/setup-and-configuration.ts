@@ -523,6 +523,40 @@ export const adminSetupAndConfigurationHelpEntries: HelpEntry[] = [
     ),
   ),
   entry(
+    "/admin/club-time",
+    help(
+      "Club Time Zone",
+      "Club Time Zone holds the single time zone this club runs on. Every time the site shows — booking confirmations, rosters, reminders, cut-offs — is worked out from it, and so is when club-local scheduled jobs fire.",
+      [
+        "Check the time zone here before launch, and again if the club ever moves.",
+        "Choose the named place the club keeps time by, such as Pacific/Auckland, rather than an abbreviation or a fixed offset.",
+        "Read the consequences and tick the acknowledgement before saving; only a Full Admin can change it, and every change is recorded in the audit log with the old and new zone.",
+      ],
+      [
+        {
+          name: "Club time zone",
+          description:
+            "The named place the club keeps time by, stored as an IANA identifier such as Pacific/Auckland. Daylight saving is handled for you, because the name carries the rules for that place.",
+        },
+        {
+          name: "Not the server's time zone",
+          description:
+            "This is a property of the club, not of the machine the site runs on and not of whoever is looking. A member reading the site from another country sees club time, not their own.",
+        },
+        {
+          name: "Last changed",
+          description:
+            "When the time zone was last saved and who saved it. Blank until the club has saved a choice of its own.",
+        },
+      ],
+      [
+        "Changing the time zone does not move anything already recorded. Dates and times in the database stay exactly as they are; what changes is how times are displayed from now on and when club-local scheduled jobs fire.",
+        "Lodge nights keep the calendar dates they already have. A booking for the 14th is still a booking for the 14th.",
+        "Abbreviations such as NZT or EST and fixed offsets such as +12:00 are refused. They name no place, so they carry no daylight-saving rules and would silently drift an hour twice a year.",
+      ],
+    ),
+  ),
+  entry(
     "/admin/access-roles",
     help(
       "Access roles and admin areas",

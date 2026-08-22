@@ -1,15 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { clubConfig } from "@/config/club";
+import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
+import { CLUB_TIME_ZONE_FALLBACK } from "@/lib/club-time-zone";
 import {
   ageTierSelfHealStep,
   clubFacebookUrlSelfHealStep,
   clubIdentitySelfHealStep,
+  clubTimeZoneSelfHealStep,
   defineSelfHealStep,
   isUniqueConstraintError,
   lodgeCapacitySelfHealStep,
   runConfigSelfHeal,
   SELF_HEAL_STEPS,
+  stepRequiresPrimaryClubConfig,
   type RegisteredSelfHealStep,
   type SelfHealDb,
 } from "@/lib/config-self-heal";
@@ -21,6 +25,23 @@ const CONFIG_FACEBOOK_URL = clubConfig.socialLinks?.facebook ?? null;
 
 // Silence the app logger in tests (runConfigSelfHeal logs per step).
 const silentLog = { info: vi.fn(), warn: vi.fn() };
+
+/**
+ * Every step whose value is copied out of `config/club.json` — that is, exactly
+ * the set the primary-config fallback guard covers.
+ *
+ * `SELF_HEAL_STEPS` is deliberately NOT the same list: since CT-1 (#2989) it also
+ * holds `clubTimeZoneSelfHealStep`, whose value comes from the ENVIRONMENT and
+ * which therefore runs whatever state `config/club.json` is in. The guard tests
+ * below pass this list explicitly so they keep testing the guard, and the
+ * partial-run behaviour of the real registry gets its own tests further down.
+ */
+const CLUB_CONFIG_STEPS: readonly RegisteredSelfHealStep[] = [
+  clubIdentitySelfHealStep,
+  clubFacebookUrlSelfHealStep,
+  ageTierSelfHealStep,
+  lodgeCapacitySelfHealStep,
+];
 
 /**
  * A stateful in-memory fake of the ClubIdentitySettings singleton delegate.
@@ -326,12 +347,13 @@ describe("runConfigSelfHeal — blue/green double-boot", () => {
 });
 
 describe("runConfigSelfHeal — config-fallback guard (never freeze a fallback)", () => {
-  it("skips ALL healing on a cold DB when provenance is safe-default (zero writes, skip result, warning)", async () => {
+  it("skips every config/club.json step on a cold DB when provenance is safe-default (zero writes, skip result, warning)", async () => {
     const { rows, db } = makeIdentityDb();
     const log = { info: vi.fn(), warn: vi.fn() };
 
     const summary = await runConfigSelfHeal({
       db,
+      steps: CLUB_CONFIG_STEPS,
       log,
       provenance: "safe-default",
     });
@@ -363,11 +385,12 @@ describe("runConfigSelfHeal — config-fallback guard (never freeze a fallback)"
     expect(log.warn.mock.calls[0][1]).toMatch(/self-heal skipped/i);
   });
 
-  it("skips ALL healing when booting on the example config (never persists the example identity)", async () => {
+  it("skips every config/club.json step when booting on the example config (never persists the example identity)", async () => {
     const { rows, db } = makeIdentityDb();
 
     const summary = await runConfigSelfHeal({
       db,
+      steps: CLUB_CONFIG_STEPS,
       log: silentLog,
       provenance: "example",
     });
@@ -388,6 +411,7 @@ describe("runConfigSelfHeal — config-fallback guard (never freeze a fallback)"
     // Boot 1: a bad/absent primary resolved to safe-default → skipped, DB cold.
     const skippedRun = await runConfigSelfHeal({
       db,
+      steps: CLUB_CONFIG_STEPS,
       log: silentLog,
       provenance: "safe-default",
     });
@@ -1124,10 +1148,28 @@ describe("registry", () => {
     expect(SELF_HEAL_STEPS).toContain(lodgeCapacitySelfHealStep);
     expect(lodgeCapacitySelfHealStep.name).toBe("lodge-capacity");
     // A future step must consciously extend this pin.
-    expect(SELF_HEAL_STEPS).toHaveLength(4);
+    expect(SELF_HEAL_STEPS).toHaveLength(5);
   });
 
-  it("defineSelfHealStep binds currentValue + write into heal", async () => {
+  it("registers the club-time-zone step (CT-1, #2989)", () => {
+    expect(SELF_HEAL_STEPS).toContain(clubTimeZoneSelfHealStep);
+    expect(clubTimeZoneSelfHealStep.name).toBe("club-time-zone");
+  });
+
+  it("exempts ONLY the club-time-zone step from the primary-config guard", () => {
+    // The exemption is the dangerous part of this change, so it is pinned by
+    // name: if a future step is written with requiresPrimaryClubConfig: false by
+    // copy-paste, this fails and its author has to justify it.
+    const exempt = SELF_HEAL_STEPS.filter(
+      (step) => !stepRequiresPrimaryClubConfig(step),
+    ).map((step) => step.name);
+    expect(exempt).toEqual(["club-time-zone"]);
+    for (const step of CLUB_CONFIG_STEPS) {
+      expect(stepRequiresPrimaryClubConfig(step)).toBe(true);
+    }
+  });
+
+  it("defineSelfHealStep binds currentValue + write into heal, and guards by default", async () => {
     const written: string[] = [];
     const step = defineSelfHealStep<string>({
       name: "demo",
@@ -1141,6 +1183,21 @@ describe("registry", () => {
     await step.heal({} as SelfHealDb);
 
     expect(written).toEqual(["value-from-config"]);
+    // A step that says nothing about the guard is guarded — the safe default,
+    // and what keeps every pre-CT-1 step's behaviour byte-identical.
+    expect(step.requiresPrimaryClubConfig).toBe(true);
+    expect(stepRequiresPrimaryClubConfig(step)).toBe(true);
+  });
+
+  it("treats a hand-rolled step with no flag as guarded", () => {
+    // The runner reads the flag through one helper precisely so that "absent"
+    // and "true" can never be handled differently.
+    const raw: RegisteredSelfHealStep = {
+      name: "hand-rolled",
+      isPresent: async () => true,
+      heal: async () => {},
+    };
+    expect(stepRequiresPrimaryClubConfig(raw)).toBe(true);
   });
 });
 
@@ -1316,5 +1373,398 @@ describe("facebookUrl self-heal step (C5 #1984)", () => {
       vi.doUnmock("@/config/club");
       vi.resetModules();
     }
+  });
+});
+
+/**
+ * A stateful in-memory fake of the `ClubTimeSettings` singleton delegate, with
+ * the same real create-or-update semantics as `makeIdentityDb` above:
+ * `upsert` creates when the row is absent and otherwise MERGES the `update`
+ * object — which is `{}` for a create-if-absent step, so an existing row must
+ * come out untouched. Modelling it this way rather than asserting on the
+ * arguments is what lets the never-overwrite test below drive the write against
+ * an existing row and check the ROW, not the call.
+ */
+function makeClubTimeDb(seedRow?: Record<string, unknown>) {
+  const rows = new Map<string, Record<string, unknown>>();
+  if (seedRow) rows.set("default", { id: "default", ...seedRow });
+
+  const db = {
+    clubTimeSettings: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+        return rows.get(where.id) ?? null;
+      }),
+      upsert: vi.fn(
+        async ({
+          where,
+          create,
+          update,
+        }: {
+          where: { id: string };
+          create: Record<string, unknown>;
+          update?: Record<string, unknown>;
+        }) => {
+          const existing = rows.get(where.id);
+          if (existing) {
+            const merged = { ...existing, ...(update ?? {}) };
+            rows.set(where.id, merged);
+            return merged;
+          }
+          rows.set(where.id, { ...create });
+          return rows.get(where.id);
+        },
+      ),
+    },
+  };
+
+  return { rows, db: db as unknown as SelfHealDb };
+}
+
+/**
+ * Every delegate the WHOLE default registry reaches, so a run over
+ * `SELF_HEAL_STEPS` can be asserted on both halves at once: which steps touched
+ * the database and which did not.
+ */
+function makeWholeRegistryDb() {
+  const identity = makeIdentityDb();
+  const clubTime = makeClubTimeDb();
+  const lodgeRows = new Map<string, Record<string, unknown>>();
+
+  const ageTierSetting = {
+    findFirst: vi.fn(async () => null),
+    upsert: vi.fn(async () => ({ tier: "ADULT" })),
+  };
+  const lodgeSettings = {
+    findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+      return lodgeRows.get(where.id) ?? null;
+    }),
+    upsert: vi.fn(async () => ({ id: "default" })),
+    updateMany: vi.fn(async () => ({ count: 0 })),
+  };
+
+  const identityDelegate = (
+    identity.db as unknown as {
+      clubIdentitySettings: {
+        findUnique: ReturnType<typeof vi.fn>;
+        upsert: ReturnType<typeof vi.fn>;
+        updateMany: ReturnType<typeof vi.fn>;
+      };
+    }
+  ).clubIdentitySettings;
+  const clubTimeDelegate = (
+    clubTime.db as unknown as {
+      clubTimeSettings: {
+        findUnique: ReturnType<typeof vi.fn>;
+        upsert: ReturnType<typeof vi.fn>;
+      };
+    }
+  ).clubTimeSettings;
+
+  const db = {
+    clubIdentitySettings: identityDelegate,
+    clubTimeSettings: clubTimeDelegate,
+    ageTierSetting,
+    lodgeSettings,
+    $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
+  };
+
+  return {
+    clubTimeRows: clubTime.rows,
+    identityRows: identity.rows,
+    identity: identityDelegate,
+    clubTime: clubTimeDelegate,
+    ageTierSetting,
+    lodgeSettings,
+    db: db as unknown as SelfHealDb,
+  };
+}
+
+/**
+ * The club-timezone backfill (CT-1, #2989) — the ONLY thing standing between an
+ * existing deployment and a silent change of civil time on upgrade.
+ *
+ * A production upgrade runs `prisma migrate deploy` and nothing else: the seed
+ * does not run, and SQL cannot read `process.env.TZ`. So this step is the whole
+ * of the upgrade path, and the two properties that matter are that it copies the
+ * environment's zone when nothing is stored, and that it can NEVER overwrite a
+ * zone that already is.
+ *
+ * `process.env.TZ` is restored by assignment, never by deleting it (#2485).
+ */
+describe("clubTimeZoneSelfHealStep — the upgrade keeps the zone already in use (CT-1, #2989)", () => {
+  const hostTimeZone = captureHostTimeZone();
+  const originalNextPublicTz = process.env.NEXT_PUBLIC_TZ;
+
+  afterEach(() => {
+    hostTimeZone.restore();
+    if (originalNextPublicTz === undefined) {
+      delete process.env.NEXT_PUBLIC_TZ;
+    } else {
+      process.env.NEXT_PUBLIC_TZ = originalNextPublicTz;
+    }
+  });
+
+  function pinEnvironmentZone(zone: string) {
+    process.env.TZ = zone;
+    // NEXT_PUBLIC_TZ is the second half of the seed's precedence; clear it so
+    // `TZ` is unambiguously what the environment says, on CI as well as here.
+    delete process.env.NEXT_PUBLIC_TZ;
+  }
+
+  it("backfills the environment's zone into an absent row", async () => {
+    pinEnvironmentZone("Australia/Sydney");
+    const { rows, db } = makeClubTimeDb();
+
+    const summary = await runConfigSelfHeal({
+      db,
+      steps: [clubTimeZoneSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(summary.healed).toBe(1);
+    expect(summary.failed).toBe(0);
+    expect(summary.results[0]).toMatchObject({
+      name: "club-time-zone",
+      outcome: "healed",
+    });
+    expect(rows.get("default")).toEqual({
+      id: "default",
+      timeZone: "Australia/Sydney",
+      // A boot has no actor.
+      updatedByMemberId: null,
+    });
+  });
+
+  it("reads the environment at heal time, not at import", async () => {
+    // If the seed were captured in a module constant, every boot of a
+    // long-running image would persist whatever zone the FIRST import saw.
+    pinEnvironmentZone("Europe/London");
+    const london = makeClubTimeDb();
+    await runConfigSelfHeal({
+      db: london.db,
+      steps: [clubTimeZoneSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    pinEnvironmentZone("Asia/Tokyo");
+    const tokyo = makeClubTimeDb();
+    await runConfigSelfHeal({
+      db: tokyo.db,
+      steps: [clubTimeZoneSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(london.rows.get("default")).toMatchObject({
+      timeZone: "Europe/London",
+    });
+    expect(tokyo.rows.get("default")).toMatchObject({ timeZone: "Asia/Tokyo" });
+  });
+
+  it("persists the documented default when the environment says nothing usable", async () => {
+    // A NOT NULL VarChar(64) column must never receive `NZT`, and an install
+    // with a nonsense TZ must still end up with a real zone.
+    pinEnvironmentZone("NZT");
+    const { rows, db } = makeClubTimeDb();
+
+    await runConfigSelfHeal({
+      db,
+      steps: [clubTimeZoneSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(rows.get("default")).toMatchObject({
+      timeZone: CLUB_TIME_ZONE_FALLBACK,
+    });
+  });
+
+  it("canonicalises a lower-case environment value before storing it", async () => {
+    pinEnvironmentZone("australia/sydney");
+    const { rows, db } = makeClubTimeDb();
+
+    await runConfigSelfHeal({
+      db,
+      steps: [clubTimeZoneSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(rows.get("default")).toMatchObject({ timeZone: "Australia/Sydney" });
+  });
+
+  it("NEVER overwrites an existing row — a Sydney club survives a Pacific/Auckland boot", async () => {
+    // The single most important property in this file. The club chose Sydney;
+    // the container says New Zealand; the club stays in Sydney, for ever, on
+    // every boot.
+    pinEnvironmentZone("Pacific/Auckland");
+    const { rows, db } = makeClubTimeDb({ timeZone: "Australia/Sydney" });
+
+    const summary = await runConfigSelfHeal({
+      db,
+      steps: [clubTimeZoneSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(summary.healed).toBe(0);
+    expect(summary.alreadyPresent).toBe(1);
+    expect(rows.get("default")).toMatchObject({ timeZone: "Australia/Sydney" });
+    expect(
+      (db as unknown as { clubTimeSettings: { upsert: ReturnType<typeof vi.fn> } })
+        .clubTimeSettings.upsert,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("still cannot overwrite when the write itself is forced against an existing row", async () => {
+    // Belt and braces: the presence check is one guard, `update: {}` is the
+    // other. Driving `heal` directly bypasses the first, so this proves the
+    // write on its own is incapable of changing an existing row — the property
+    // that survives a future refactor of the presence check.
+    pinEnvironmentZone("Pacific/Auckland");
+    const { rows, db } = makeClubTimeDb({
+      timeZone: "Australia/Sydney",
+      updatedByMemberId: "member_1",
+    });
+
+    await clubTimeZoneSelfHealStep.heal(db);
+
+    expect(rows.get("default")).toMatchObject({
+      timeZone: "Australia/Sydney",
+      updatedByMemberId: "member_1",
+    });
+  });
+
+  it("is idempotent: a second boot is already-present", async () => {
+    pinEnvironmentZone("Australia/Sydney");
+    const { rows, db } = makeClubTimeDb();
+
+    const first = await runConfigSelfHeal({
+      db,
+      steps: [clubTimeZoneSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+    const second = await runConfigSelfHeal({
+      db,
+      steps: [clubTimeZoneSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(first.results[0].outcome).toBe("healed");
+    expect(second.results[0].outcome).toBe("already-present");
+    expect(second.failed).toBe(0);
+    expect(rows.get("default")).toMatchObject({ timeZone: "Australia/Sydney" });
+  });
+
+  it("treats a raced blue/green insert (P2002) as already-present, not failed", async () => {
+    // Both slots boot at once, both see no row, one inserts first.
+    pinEnvironmentZone("Australia/Sydney");
+    const db = {
+      clubTimeSettings: {
+        findUnique: vi.fn(async () => null),
+        upsert: vi.fn(async () => {
+          throw Object.assign(new Error("Unique constraint failed"), {
+            code: "P2002",
+          });
+        }),
+      },
+    } as unknown as SelfHealDb;
+
+    const summary = await runConfigSelfHeal({
+      db,
+      steps: [clubTimeZoneSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(summary.failed).toBe(0);
+    expect(summary.healed).toBe(0);
+    expect(summary.alreadyPresent).toBe(1);
+    expect(summary.results[0]).toMatchObject({
+      name: "club-time-zone",
+      outcome: "already-present",
+    });
+  });
+
+  it.each(["safe-default", "example"] as const)(
+    "runs on a %s config provenance while every config/club.json step does NOT",
+    async (provenance) => {
+      // BOTH halves, in one assertion set, because either half alone is
+      // misleading. The timezone step must run — its value comes from the
+      // environment, and since #1987 an absent config/club.json is normal for a
+      // DB-first install, so gating it would strand exactly those installs on
+      // the generic default for ever. The four club.json steps must NOT run,
+      // because freezing "Example Mountain Club" into a DB-first row is the
+      // outage class epic #1943 exists to prevent.
+      pinEnvironmentZone("Australia/Sydney");
+      const harness = makeWholeRegistryDb();
+      const log = { info: vi.fn(), warn: vi.fn() };
+
+      const summary = await runConfigSelfHeal({
+        db: harness.db,
+        log,
+        provenance,
+      });
+
+      // Half one: the environment-sourced step ran and wrote.
+      expect(summary.results).toEqual([
+        { name: "club-time-zone", outcome: "healed" },
+      ]);
+      expect(summary.healed).toBe(1);
+      expect(harness.clubTimeRows.get("default")).toMatchObject({
+        timeZone: "Australia/Sydney",
+      });
+
+      // Half two: nothing from config/club.json was read OR written — not even a
+      // presence probe.
+      expect(summary.skipped).toBe(true);
+      expect(summary.provenance).toBe(provenance);
+      expect(harness.identityRows.size).toBe(0);
+      expect(harness.identity.findUnique).not.toHaveBeenCalled();
+      expect(harness.identity.upsert).not.toHaveBeenCalled();
+      expect(harness.ageTierSetting.findFirst).not.toHaveBeenCalled();
+      expect(harness.ageTierSetting.upsert).not.toHaveBeenCalled();
+      expect(harness.lodgeSettings.findUnique).not.toHaveBeenCalled();
+      expect(harness.lodgeSettings.upsert).not.toHaveBeenCalled();
+
+      // And the warning says which steps were skipped and which still ran, so a
+      // deploy log cannot be read as "nothing happened".
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      expect(log.warn.mock.calls[0][0]).toMatchObject({
+        scope: "config-self-heal",
+        provenance,
+        ranSteps: ["club-time-zone"],
+      });
+      const message = String(log.warn.mock.calls[0][1]);
+      expect(message).toMatch(/self-heal skipped/i);
+      expect(message).toContain("club-identity-settings");
+      expect(message).toContain("club-time-zone");
+    },
+  );
+
+  it("runs the whole registry on a primary config, timezone step included", async () => {
+    // The control for the test above: on a healthy primary boot every step gets
+    // its turn, so the partial-run branch is not quietly the only branch.
+    pinEnvironmentZone("Australia/Sydney");
+    const harness = makeWholeRegistryDb();
+
+    const summary = await runConfigSelfHeal({
+      db: harness.db,
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(summary.skipped).toBe(false);
+    expect(summary.results.map((result) => result.name)).toEqual(
+      SELF_HEAL_STEPS.map((step) => step.name),
+    );
+    expect(harness.clubTimeRows.get("default")).toMatchObject({
+      timeZone: "Australia/Sydney",
+    });
+    expect(harness.identity.findUnique).toHaveBeenCalled();
   });
 });

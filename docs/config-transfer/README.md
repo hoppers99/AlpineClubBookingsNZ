@@ -232,7 +232,7 @@ deeper reference for what each category contains and the import safety model.
     fields are ordinary allowlisted fields and **travel normally** — which is
     the intended behaviour, and why applying a bundle refreshes the DB-first
     club-identity cache. On any booted install the row usually does exist:
-    `clubIdentitySelfHealStep` (`src/lib/config-self-heal.ts`) creates it at
+    `clubIdentitySelfHealStep` (`src/lib/config-self-heal-steps.ts`) creates it at
     boot from `config/club.json`.
   - **An all-null file never creates a row.** `carriesNoValue` in
     `club-settings.ts` skips the create branch (and the plan reports

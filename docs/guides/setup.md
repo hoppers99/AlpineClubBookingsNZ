@@ -63,6 +63,15 @@ the areas it links to:
 Provider tests cover Stripe, SMTP (email), Sentry, and Xero. Each check is
 **complete**, **warning**, **blocked**, or **not started**.
 
+One checklist step does not sit behind a hub card, because it is a single
+setting: **Club Time Zone** links straight to [`/admin/club-time`](club-time.md).
+On a fresh install it reads **blocked** until a valid time zone is recorded, so
+setup cannot be finished without one. After an upgrade it reads *complete* and
+names the zone — the application records the zone it was already effectively
+using the first time it starts, so nothing needs to be chosen. If it still reads
+blocked after an upgrade, the application has not restarted since the migration;
+restart it, or run `npm run config:self-heal`.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -70,6 +79,7 @@ Provider tests cover Stripe, SMTP (email), Sentry, and Xero. Each check is
 | A provider test fails | The credentials/config for that provider are missing or wrong | Fix them per [`CONFIGURATION.md`](../../CONFIGURATION.md); re-run the test |
 | A hub card is missing or greyed | Your role lacks the card's permission area | Ask a full admin, or an admin with that area, to complete it |
 | A check stays "blocked" | A required dependency isn't in place | Open the linked area and resolve the named requirement |
+| **Club Time Zone** stays blocked right after an upgrade | The application has not restarted since the migration, so the zone has not been recorded yet. The zone in use is still the right one | Restart the application, or run `npm run config:self-heal`. See the [Club Time Zone guide](club-time.md) |
 | Setup shows incomplete after go-live | Optional checks were left unskipped | Mark genuinely-skipped checks as skipped so the summary reflects reality |
 
 ## Related links
@@ -77,6 +87,6 @@ Provider tests cover Stripe, SMTP (email), Sentry, and Xero. Each check is
 - Back to the [documentation hub](../README.md).
 - Sibling guides: [Modules](modules.md), [Integrations](integrations.md),
   [Login & Security](security.md), [Membership & Members setup](membership-setup.md),
-  [Notifications & Email](notifications.md).
+  [Notifications & Email](notifications.md), [Club Time Zone](club-time.md).
 - Reference: [`CONFIGURATION.md`](../../CONFIGURATION.md) and the
   [`IMPLEMENTATION_GUIDE.md`](../IMPLEMENTATION_GUIDE.md).

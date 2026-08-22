@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 import {
   SETUP_STEP_IDS,
   buildSetupReadiness,
@@ -88,6 +89,9 @@ const completeDatabase: SetupDatabaseSnapshot = {
   xeroAccountMappingCount: 5,
   xeroHutFeeItemMappingCount: 16,
   xeroEntranceFeeMappingCount: 4,
+  // The club's persisted timezone (CT-1, #2989). A configured install has one;
+  // its absence is a BLOCK, so a "complete setup" fixture has to carry it.
+  clubTimeZone: "Pacific/Auckland",
 };
 
 const validClubConfig = {
@@ -756,5 +760,257 @@ describe("setup-readiness club-config DB-first gate (#1987, C8)", () => {
       .flatMap((c) => c.checks)
       .find((c) => c.id === "age-tiers");
     expect(ageCheck?.status).toBe("complete");
+  });
+});
+
+/**
+ * The club-timezone readiness step (CT-1, #2989).
+ *
+ * Setup is not finished until the club's timezone is stored explicitly, so the
+ * not-yet-stored state is a BLOCK — but a friendly one: it has to name the zone
+ * actually in force and say that the app stores it on the next boot, or an
+ * operator reads a normal post-migration state as a broken site.
+ *
+ * Every case below pins `process.env.TZ` rather than inheriting the host's or the
+ * CI runner's zone, and restores it by ASSIGNING the captured value back (#2485).
+ * Nothing here formats a date, so the frozen clock is not involved.
+ */
+describe("setup-readiness club timezone (CT-1, #2989)", () => {
+  const hostTimeZone = captureHostTimeZone();
+  const originalNextPublicTz = process.env.NEXT_PUBLIC_TZ;
+
+  afterEach(() => {
+    hostTimeZone.restore();
+    if (originalNextPublicTz === undefined) {
+      delete process.env.NEXT_PUBLIC_TZ;
+    } else {
+      process.env.NEXT_PUBLIC_TZ = originalNextPublicTz;
+    }
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function pinEnvironmentZone(zone: string | null) {
+    if (zone === null) {
+      // Assign before deleting: only an assignment invalidates Node's cached
+      // zone. `hostTimeZone.restore()` puts the original back the same way.
+      process.env.TZ = "Pacific/Auckland";
+      delete process.env.TZ;
+    } else {
+      process.env.TZ = zone;
+    }
+    delete process.env.NEXT_PUBLIC_TZ;
+  }
+
+  function clubTimeZoneCheck(database?: SetupDatabaseSnapshot) {
+    const readiness = buildSetupReadiness({
+      env: baseEnv,
+      configDir: makeConfigDir(),
+      database,
+      now: new Date("2026-05-18T00:00:00.000Z"),
+    });
+    const check = readiness.categories
+      .flatMap((category) => category.checks)
+      .find((candidate) => candidate.id === "club-time-zone");
+    if (!check) throw new Error("club-time-zone check is missing");
+    return check;
+  }
+
+  it("is a required foundation step pointing at the club time page", () => {
+    pinEnvironmentZone("Pacific/Auckland");
+    const readiness = buildSetupReadiness({
+      env: baseEnv,
+      configDir: makeConfigDir(),
+      database: completeDatabase,
+    });
+    const foundation = readiness.categories.find(
+      (category) => category.id === "foundation",
+    );
+
+    const check = foundation?.checks.find(
+      (candidate) => candidate.id === "club-time-zone",
+    );
+    expect(check).toBeDefined();
+    expect(check?.required).toBe(true);
+    expect(check?.href).toBe("/admin/club-time");
+    expect(SETUP_STEP_IDS).toContain("club-time-zone");
+  });
+
+  it("is complete and NAMES the stored zone", () => {
+    pinEnvironmentZone("America/Denver");
+
+    const check = clubTimeZoneCheck({
+      ...completeDatabase,
+      clubTimeZone: "Australia/Sydney",
+    });
+
+    expect(check.status).toBe("complete");
+    // Naming it is the point: an upgraded club has to be able to see at a glance
+    // that it was not moved.
+    expect(check.message).toContain("Australia/Sydney");
+    expect(check.details.join(" ")).toContain("Australia/Sydney");
+  });
+
+  it("reports the canonical spelling of a stored alias", () => {
+    pinEnvironmentZone("Pacific/Auckland");
+
+    const check = clubTimeZoneCheck({
+      ...completeDatabase,
+      clubTimeZone: "australia/sydney",
+    });
+
+    expect(check.status).toBe("complete");
+    expect(check.message).toContain("Australia/Sydney");
+    expect(check.details.join(" ")).toContain("australia/sydney");
+  });
+
+  it("blocks when nothing is stored, naming the zone in force and how it gets stored", () => {
+    // The state a fresh install, and an existing install between
+    // `prisma migrate deploy` and its first boot, is in.
+    pinEnvironmentZone("Australia/Sydney");
+
+    const check = clubTimeZoneCheck({
+      ...completeDatabase,
+      clubTimeZone: null,
+    });
+
+    expect(check.status).toBe("blocked");
+    const text = `${check.message} ${check.details.join(" ")}`;
+    expect(text).toContain("Australia/Sydney");
+    expect(text).toMatch(/has not been stored yet/i);
+    expect(text).toMatch(/next time it starts|next boot/i);
+    expect(text).toContain("npm run config:self-heal");
+  });
+
+  it("blocks when the snapshot simply omits the field (an older caller)", () => {
+    pinEnvironmentZone("Australia/Sydney");
+    const withoutTimeZone: SetupDatabaseSnapshot = { ...completeDatabase };
+    delete withoutTimeZone.clubTimeZone;
+
+    const check = clubTimeZoneCheck(withoutTimeZone);
+
+    expect(check.status).toBe("blocked");
+  });
+
+  it("names the built-in default as the zone in force when the environment says nothing", () => {
+    pinEnvironmentZone(null);
+
+    const check = clubTimeZoneCheck({ ...completeDatabase, clubTimeZone: null });
+
+    expect(check.status).toBe("blocked");
+    const text = `${check.message} ${check.details.join(" ")}`;
+    expect(text).toContain("Pacific/Auckland");
+    expect(text).toMatch(/No TZ or NEXT_PUBLIC_TZ is set/i);
+  });
+
+  it("blocks on a stored value that does not validate, and says what the app is using meanwhile", () => {
+    // Only database surgery or an ICU that dropped the zone gets you here. The
+    // app keeps answering from the fallback, so the details must not imply the
+    // stored value is in force.
+    pinEnvironmentZone("Europe/London");
+
+    const check = clubTimeZoneCheck({
+      ...completeDatabase,
+      clubTimeZone: "NZT",
+    });
+
+    expect(check.status).toBe("blocked");
+    const text = `${check.message} ${check.details.join(" ")}`;
+    expect(text).toContain("NZT");
+    expect(text).toContain("Europe/London");
+  });
+
+  it("blocks on a stored fixed offset", () => {
+    pinEnvironmentZone("Pacific/Auckland");
+
+    expect(
+      clubTimeZoneCheck({ ...completeDatabase, clubTimeZone: "Etc/GMT-12" })
+        .status,
+    ).toBe("blocked");
+    expect(
+      clubTimeZoneCheck({ ...completeDatabase, clubTimeZone: "" }).status,
+    ).toBe("blocked");
+  });
+
+  it("renders an unusable stored value bounded and printable", () => {
+    // The report is printed into an operator's terminal by `setup:check`, and a
+    // value that failed validation never came through the validated write path,
+    // so nothing bounds its bytes. Naming what is stored is what makes the
+    // failure fixable, so it is sanitised rather than withheld.
+    pinEnvironmentZone("Pacific/Auckland");
+    const hostile = `Pacific/\u0007${"x".repeat(300)}`;
+
+    const readiness = buildSetupReadiness({
+      env: baseEnv,
+      configDir: makeConfigDir(),
+      database: { ...completeDatabase, clubTimeZone: hostile },
+    });
+    const check = readiness.categories
+      .flatMap((category) => category.checks)
+      .find((candidate) => candidate.id === "club-time-zone");
+    const rendered = renderSetupCheckReport(readiness);
+
+    expect(check?.status).toBe("blocked");
+    // The control character never reaches the terminal, and the value is capped
+    // so one stored string cannot flood the report.
+    expect(rendered).not.toContain("\u0007");
+    expect(rendered).not.toContain("x".repeat(100));
+    expect(rendered).toContain("Pacific/?xxx");
+  });
+
+  it("reports 'not checked' rather than an answer when the database was not reached", () => {
+    // `setup:check` before the database is up. The environment cannot answer
+    // this question, because the environment is exactly what this setting stops
+    // being authoritative.
+    pinEnvironmentZone("Australia/Sydney");
+
+    const check = clubTimeZoneCheck(undefined);
+
+    expect(check.status).toBe("warning");
+    expect(check.message).toBe("Database state was not checked.");
+    expect(check.details.join(" ")).not.toContain("Australia/Sydney");
+  });
+
+  it("says in plain English that this is not the server's timezone, in every state", () => {
+    // The single most common operator misunderstanding, so it is stated on the
+    // step whatever state the step is in.
+    pinEnvironmentZone("Australia/Sydney");
+
+    for (const database of [
+      undefined,
+      { ...completeDatabase, clubTimeZone: null },
+      { ...completeDatabase, clubTimeZone: "NZT" },
+      { ...completeDatabase, clubTimeZone: "Australia/Sydney" },
+    ]) {
+      const details = clubTimeZoneCheck(database).details.join(" ");
+      expect(details).toMatch(/not the server/i);
+      expect(details).toMatch(/database/i);
+    }
+  });
+
+  it("does not depend on the wall clock", () => {
+    // Two different `now` values, one identical answer.
+    pinEnvironmentZone("Australia/Sydney");
+    const database = { ...completeDatabase, clubTimeZone: null };
+
+    const early = buildSetupReadiness({
+      env: baseEnv,
+      configDir: makeConfigDir(),
+      database,
+      now: new Date("2020-01-01T00:00:00.000Z"),
+    });
+    const late = buildSetupReadiness({
+      env: baseEnv,
+      configDir: makeConfigDir(),
+      database,
+      now: new Date("2031-12-31T23:59:59.000Z"),
+    });
+    const pick = (readiness: typeof early) =>
+      readiness.categories
+        .flatMap((category) => category.checks)
+        .find((candidate) => candidate.id === "club-time-zone");
+
+    expect(pick(early)).toEqual(pick(late));
   });
 });

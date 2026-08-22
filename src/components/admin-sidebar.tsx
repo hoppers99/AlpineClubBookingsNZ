@@ -54,6 +54,7 @@ import {
   LockKeyhole,
   Search,
   Bot,
+  Globe,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -525,6 +526,29 @@ const navSections: NavSection[] = [
         icon: ArrowRightLeft,
         fullAdminOnly: true,
         keywords: ["backup", "migration", "config transfer", "restore"],
+      },
+      {
+        // The one persisted IANA club timezone (CT-1 #2989, epic #2988). Full
+        // Admin like Access Roles and Export & Import beside it, and the route
+        // enforces that itself. The keywords carry the words an operator would
+        // actually type — "timezone" as one word and two, plus the daylight-saving
+        // vocabulary and "IANA" — because the label alone matches none of them and
+        // the palette index is built from these entries.
+        href: "/admin/club-time",
+        label: "Club Time Zone",
+        icon: Globe,
+        fullAdminOnly: true,
+        keywords: [
+          "timezone",
+          "time zone",
+          "clock",
+          "daylight saving",
+          "dst",
+          "iana",
+          "utc offset",
+          "nzst",
+          "nzdt",
+        ],
       },
       { href: "/admin/committee", label: "Committee", icon: UsersRound },
     ],

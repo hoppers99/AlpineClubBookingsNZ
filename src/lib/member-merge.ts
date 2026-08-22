@@ -463,6 +463,15 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   "BookingGuest.consentRespondedByMemberId",
   "MemberGuestSettings.updatedByMemberId",
 
+  // CT-1 (#2989): who last changed the installation's club time zone. The
+  // ordinary settings-audit actor column, identical in kind to
+  // MemberGuestSettings' and MembershipSubscriptionBillingSettings' above, and a
+  // snapshot for the same reason: the audit answer to "who moved this club's
+  // civil time" is the administrator who did it at the time, not whoever later
+  // absorbed their record. The AuditLog row for CLUB_TIME_ZONE_UPDATED is the
+  // full trail; this column is the settings row's own last-writer note.
+  "ClubTimeSettings.updatedByMemberId",
+
   // #2243 review sweep — bespoke-named FK-less member-id columns the detector
   // cannot see (their names appear nowhere in the schema as a Member FK column),
   // found by hand and previously in neither block. All eight are actor/audit

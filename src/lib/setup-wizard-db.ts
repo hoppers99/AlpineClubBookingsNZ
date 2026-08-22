@@ -1,4 +1,9 @@
 import type { AgeTier } from "@prisma/client";
+import {
+  normaliseClubTimeZone,
+  readEnvironmentClubTimeZoneSeed,
+  resolveClubTimeZone,
+} from "@/lib/club-time-zone";
 import { EMAIL_MESSAGE_SETTINGS_ID } from "@/lib/email-message-settings";
 import { prisma } from "@/lib/prisma";
 
@@ -16,6 +21,10 @@ import { prisma } from "@/lib/prisma";
  *    support/contact email, publicUrl    (mirrors src/app/api/admin/email-settings/route.ts)
  *  - total bunk/bed capacity          -> LodgeSettings (id="default").capacity
  *    (mirrors the admin capacity editor's LodgeSettings write)
+ *  - club timezone (IANA identifier)  -> ClubTimeSettings (id="default")
+ *    (CT-1 #2989; mirrors the Full-Admin maintenance surface's write, validated
+ *    through the same `normaliseClubTimeZone`, so the wizard can never persist a
+ *    value that surface would reject)
  *  - age tiers (label/ages/subscription) -> AgeTierSetting, keyed by the unique
  *    `tier` enum (mirrors src/app/api/admin/age-tier-settings/route.ts and the
  *    seed's create-if-missing loop). Per-tier nightly RATES are NOT stored here
@@ -31,6 +40,10 @@ import { prisma } from "@/lib/prisma";
 
 const CLUB_IDENTITY_SETTINGS_ID = "default";
 const LODGE_SETTINGS_ID = "default";
+// Mirrors CLUB_TIME_SETTINGS_ID in `src/lib/club-time-zone-settings.ts`, kept as
+// a literal here for the same reason the two ids above are: that module imports
+// "server-only" and this one is imported by the tsx setup CLI.
+const CLUB_TIME_SETTINGS_ID = "default";
 
 /**
  * Upper bound on lodge capacity, mirroring the admin lodge-settings editor
@@ -59,6 +72,14 @@ export interface WizardConfigValues {
   publicUrl: string;
   emailFromName: string;
   capacity: number;
+  /**
+   * The club's civil timezone as a named IANA identifier (CT-1, #2989) — the
+   * SOLE authority for what day and time it is for booking purposes, and a
+   * different thing entirely from the server's or container's `TZ`. Rejected on
+   * the write path unless `normaliseClubTimeZone` accepts it, so setup cannot
+   * finish with an empty or invalid zone.
+   */
+  timeZone: string;
   ageTiers: WizardAgeTier[];
 }
 
@@ -93,6 +114,7 @@ export interface WizardDbClient {
   emailMessageSetting: WizardDelegate;
   lodgeSettings: WizardDelegate;
   ageTierSetting: WizardDelegate;
+  clubTimeSettings: WizardDelegate;
   $transaction(operations: Promise<unknown>[]): Promise<unknown[]>;
 }
 
@@ -124,6 +146,15 @@ export interface WizardCurrentValues {
   publicUrl: string | null;
   emailFromName: string | null;
   capacity: number | null;
+  /**
+   * The exception to the all-nullable rule above (CT-1, #2989): there is ALWAYS
+   * an effective club timezone, so this is never null. When `ClubTimeSettings`
+   * holds a valid zone that is it; otherwise it is what the deployment is
+   * effectively using right now — the validated `TZ` / `NEXT_PUBLIC_TZ` seed, or
+   * `Pacific/Auckland` when the environment says nothing. Prompting from a null
+   * would risk the wizard offering an empty default for a NON-NULL column.
+   */
+  timeZone: string;
   ageTiers: WizardCurrentAgeTier[];
 }
 
@@ -156,7 +187,7 @@ function toAgeTier(value: unknown): AgeTier | null {
 export async function readWizardConfigState(
   db: WizardDbClient = defaultDb(),
 ): Promise<WizardConfigState> {
-  const [identity, email, lodge, ageTierRows] = await Promise.all([
+  const [identity, email, lodge, ageTierRows, clubTime] = await Promise.all([
     db.clubIdentitySettings.findUnique({
       where: { id: CLUB_IDENTITY_SETTINGS_ID },
       select: { name: true, shortName: true },
@@ -185,6 +216,16 @@ export async function readWizardConfigState(
         subscriptionRequiredForBooking: true,
       },
     }),
+    // CT-1 (#2989). Read like every sibling — NOT swallowed: an unreachable DB
+    // or an un-migrated schema must reach the CLI as "cannot reach the database"
+    // (see this function's docblock), not be quietly reported as "no timezone
+    // configured", which would make the wizard offer the environment's zone as
+    // the default while the club's real answer sat unread in a table it could
+    // not open.
+    db.clubTimeSettings.findUnique({
+      where: { id: CLUB_TIME_SETTINGS_ID },
+      select: { timeZone: true },
+    }),
   ]);
 
   const currentAgeTiers: WizardCurrentAgeTier[] = ageTierRows.flatMap((row) => {
@@ -204,6 +245,23 @@ export async function readWizardConfigState(
   const capacity =
     typeof lodge?.capacity === "number" ? lodge.capacity : null;
 
+  // The current EFFECTIVE club timezone: the persisted row wins, and only when
+  // it is absent (or somehow unusable) does the environment seed and then the
+  // documented default answer. Same precedence as the canonical reader
+  // `getClubTimeZone`, reached through the same pure resolver so the CLI's
+  // prompt default can never disagree with what the app reports.
+  //
+  // Note the ROW's existence is deliberately NOT folded into the
+  // "already configured" flags below: the boot-time backfill
+  // (`clubTimeZoneSelfHealStep`) creates that row unprompted on the very first
+  // boot of an empty install, so treating it as configuration would make a
+  // genuinely fresh database announce "the database already holds club
+  // configuration" and demand an overwrite confirmation.
+  const timeZone = resolveClubTimeZone(
+    typeof clubTime?.timeZone === "string" ? clubTime.timeZone : null,
+    readEnvironmentClubTimeZoneSeed(),
+  );
+
   return {
     hasClubIdentity: Boolean(trimOptional(identity?.name)),
     hasEmailSettings: Boolean(
@@ -221,6 +279,7 @@ export async function readWizardConfigState(
       publicUrl: trimOptional(email?.publicUrl),
       emailFromName: trimOptional(email?.emailFromName),
       capacity,
+      timeZone,
       ageTiers: currentAgeTiers,
     },
   };
@@ -246,6 +305,22 @@ export async function applyWizardConfigToDatabase(
   ) {
     throw new Error(
       `capacity must be a positive integer no greater than ${MAX_LODGE_CAPACITY}`,
+    );
+  }
+
+  // Never persist a club timezone the Full-Admin maintenance surface would
+  // reject, and never persist an empty one — `ClubTimeSettings.timeZone` is NOT
+  // NULL and the whole point of asking is that the answer is explicit. Checked
+  // BEFORE any write, like the capacity guard above, so a bad answer leaves the
+  // database exactly as it was rather than half-applied. The prompt in
+  // scripts/setup.ts rejects a bad answer earlier; this is the last resort.
+  const timeZone = normaliseClubTimeZone(values.timeZone);
+  if (!timeZone) {
+    throw new Error(
+      `timeZone must be a named IANA timezone such as Pacific/Auckland or ` +
+        `Australia/Sydney. Abbreviations (NZT, NZST, EST) and fixed offsets ` +
+        `(+12:00, UTC+12, Etc/GMT-12) are not accepted: they name no place, so ` +
+        `they carry no daylight-saving rules for the club's future bookings.`,
     );
   }
 
@@ -294,6 +369,25 @@ export async function applyWizardConfigToDatabase(
       capacity: values.capacity,
       updatedByMemberId: null,
     },
+  });
+
+  // Club timezone (CT-1, #2989). This upsert DOES update an existing row, unlike
+  // the create-only age-tier and bookingsName writes above and unlike the
+  // boot-time backfill: the operator was just asked this question outright and
+  // gave an answer, so their answer wins over whatever an earlier boot copied out
+  // of the environment. The value written is the NORMALISED identifier, so the
+  // canonical spelling is stored however the operator typed it. Rewriting it
+  // changes no historical timestamp and no date-only value — it changes only how
+  // civil time is computed from here on.
+  await db.clubTimeSettings.upsert({
+    where: { id: CLUB_TIME_SETTINGS_ID },
+    update: { timeZone, updatedByMemberId: null },
+    create: {
+      id: CLUB_TIME_SETTINGS_ID,
+      timeZone,
+      updatedByMemberId: null,
+    },
+    select: { id: true },
   });
 
   // Write all age tiers atomically. A mid-loop failure in the old sequential

@@ -96,6 +96,52 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### The club's time zone moves into the database (#2989, epic #2988)
+
+**Nothing changes for your deployment at this upgrade. That is the point of how
+it was built, and it is worth reading anyway, because one operator action follows
+and one habit stops working.**
+
+**What changes.** The time zone every date and time is shown in is now recorded
+in the database, in-app, at **Admin → Setup & Configuration → Club Time Zone**
+(`/admin/club-time`), instead of being taken from the `TZ` environment variable
+the container was started with. It is stored as a place — `Pacific/Auckland` —
+so the platform keeps its own daylight-saving rules.
+
+**What the migration does to your data.** Nothing. It creates one empty table.
+It deliberately does **not** write a time zone into it, because SQL cannot read
+your container's environment and guessing `Pacific/Auckland` would silently
+reassign the civil time of any club running on another zone. Instead, **the first
+time the upgraded application starts, it copies the zone it is already
+effectively using** — your existing `TZ`, or `NEXT_PUBLIC_TZ`, or
+`Pacific/Auckland` if neither is set — into the new setting. So the displayed
+time before and after this upgrade is the same, whatever zone you run on.
+No stored timestamp and no lodge night is touched, now or ever, by a time zone
+change.
+
+**Between `prisma migrate deploy` and that first start** the setting is empty, and
+the application falls back to exactly the same environment value it used before —
+so the draining old colour and the new colour agree on the club's time throughout
+the deploy. The old colour does not know the table exists.
+
+**The post-upgrade action.** Open `/admin/setup` after cutover and confirm the
+**Club Time Zone** step reads *complete* and names the zone you expect. If it
+still says the zone has not been recorded, the app has not restarted since the
+migration — restart it, or run `npm run config:self-heal`, which does the same
+backfill without a restart.
+
+**The habit that stops working.** `TZ` and `NEXT_PUBLIC_TZ` are now a **seed
+only**. Once the setting is recorded, editing them no longer changes what members
+see — change the zone in-app instead. Leave them set as they are; they are still
+read on a fresh install and they still feed the display call sites epic #2988 has
+not migrated yet. And note the two are genuinely different things: the club's
+time zone is now a club setting, and the container's own clock setting is
+deliberately irrelevant to it.
+
+**Who may change it.** Full Administrators only, with an explicit confirmation,
+and every change is audited (`CLUB_TIME_ZONE_UPDATED`) with the administrator and
+the before and after zone.
+
 ### Family email inheritance becomes direct-parent only, and re-resolves itself (#2716)
 
 **Expect a list of members needing an email address on the first day, and expect

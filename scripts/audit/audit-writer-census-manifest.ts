@@ -318,7 +318,19 @@ export const AUDIT_CENSUS_TOTALS = {
   // 435, so the merged total is 453. Taken from `npm run audit:census` run on
   // the merged tree rather than by adding one branch's delta to the other's
   // total, which is how a published count goes wrong in a merge.
-  writeSites: 453,
+  // 453 -> 454 (CT-1, #2989): `CLUB_TIME_ZONE_UPDATED`, the one writer on the
+  // Full-Admin club-timezone maintenance route. It records the before and after
+  // IANA identifier and nothing else — the issue's requirement 6 says in so many
+  // words "do not audit unrelated settings payload" — inside the same
+  // transaction as the `ClubTimeSettings` upsert, so a rolled-back save records
+  // nothing and a pristine re-save (the dirty gate) never reaches the write at
+  // all. Category `admin`, the same installation-configuration answer
+  // `CLUB_IDENTITY_SETTINGS_UPDATED` gives, so it does not join
+  // `UNCATEGORISED_AUDIT_WRITERS` below. Measured by RUNNING
+  // `npx tsx scripts/audit/audit-writer-census.ts` on this tree (454 sites,
+  // 2106 files scanned), not by adding one to the literal above — which is the
+  // only way this file has ever been right after a merge.
+  writeSites: 454,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -409,7 +421,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // 70 -> 69 (#2581 child 2 review): the age-up handoff write, above. No
     // hand-built `auditLog.create` remains outside a declared wrapper.
     // 69 -> 72 (#2749): the three Other Lodges admin CRUD writers, above.
-    "auditLog.create": { total: 72, uncategorised: 0 },
+    // 72 -> 73 (CT-1, #2989): the club-timezone writer. `tx.auditLog.create`
+    // with `buildStructuredAuditLogCreateArgs`, matching the sibling settings
+    // singleton it was cloned from (`/api/admin/club-identity`) rather than
+    // introducing a fourth form on a route that does exactly the same job.
+    "auditLog.create": { total: 73, uncategorised: 0 },
   },
   /**
    * Literal category values written, and by how many sites. The three `membership`
@@ -582,7 +598,16 @@ export const AUDIT_CENSUS_TOTALS = {
     // in an audit row (see docs/SECURITY-ATTACK-SURFACE.md), so this widens what
     // a support-only operator can correlate by the fact of a connection change,
     // never by its secret.
-    admin: 102,
+    // 102 -> 103 (CT-1, #2989): `CLUB_TIME_ZONE_UPDATED`. `admin` is the answer
+    // the sibling club-identity settings writer already gives, and it is the
+    // honest one: this is installation configuration, not a security event and
+    // not a member's own business. It is readable with `support:view` alone, so
+    // the derived weakest-gate total moves 128 -> 129 — by one row saying which
+    // timezone the club now keeps, which is exactly what a support operator
+    // investigating "why did the nightly job run an hour late" needs to find.
+    // Retention is unchanged from every other `admin` row: `critical`, seven
+    // years, because the action name normalises to no access-event word.
+    admin: 103,
     // 16 -> 19 (#2581 child 2): `member.password-reset-sent` and
     // `member.setup-invite-sent` (decision 3 — the affected domain is the
     // CREDENTIAL, not the mailing), plus the `member.bulk-set-role` branch

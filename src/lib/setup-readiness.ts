@@ -1,6 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
+import {
+  CLUB_TIME_ZONE_MAX_LENGTH,
+  normaliseClubTimeZone,
+  readEnvironmentClubTimeZoneSeed,
+  resolveClubTimeZone,
+} from "@/lib/club-time-zone";
 import { clubConfigSchema, type ClubConfig } from "../config/schema";
 import {
   DEFAULT_ADMIN_MODULE_SETTINGS,
@@ -17,6 +23,7 @@ import { authSecretWeaknessReason } from "@/lib/integration-crypto";
 
 export const SETUP_STEP_IDS = [
   "club-config",
+  "club-time-zone",
   "runtime-env",
   "auth-secret-strength",
   "seed-admin",
@@ -115,6 +122,13 @@ export interface SetupDatabaseSnapshot {
   // config/club.json is normal — the file is only an optional seed now.
   clubIdentityName?: string | null;
   configuredCapacity?: number | null;
+  // The persisted club timezone (CT-1, #2989): `ClubTimeSettings.timeZone`, or
+  // null when no row exists yet. Optional so an older caller — and a DB-less
+  // `setup:check` run, which passes no snapshot at all — still compiles; on a
+  // snapshot that WAS taken, undefined and null both mean "no row", which the
+  // club-time-zone check reports as not-yet-configured. This is the CLUB's
+  // timezone, never the server's or the container's `TZ`.
+  clubTimeZone?: string | null;
   // Resolved booking capacity of the club's DEFAULT lodge
   // (getDefaultLodgeCapacity). Since #1982 the club-config check warns when this
   // is 0 — a default lodge with no active beds AND no capacity override accepts
@@ -575,6 +589,165 @@ function buildClubConfigCheck(
       details: [
         "Source: none (config/club.json is an optional seed; club.example.json does not count)",
         "Database state was not checked.",
+      ],
+    },
+    progress,
+  );
+}
+
+/**
+ * The one sentence every detail list below repeats, because it is the single
+ * thing an operator most often gets wrong: the club timezone and the machine's
+ * timezone are different settings with different owners.
+ */
+const CLUB_VERSUS_SERVER_TIME_ZONE_DETAIL =
+  "This is the club's timezone, not the server's or container's timezone. They are separate settings: the club's timezone decides which day a lodge night belongs to and what time members see, and it is stored in the database, so changing TZ on the host does not change it.";
+
+/**
+ * Render a stored timezone that FAILED validation safely enough to print.
+ *
+ * A value only reaches this path through database surgery or an ICU that no
+ * longer knows the zone, so it never came through the validated write path and
+ * nothing bounds its bytes. The readiness report is rendered into an operator's
+ * terminal by `setup:check`, so control characters are replaced and the value is
+ * capped — naming what is actually stored is what makes the failure fixable.
+ */
+function describeInvalidStoredTimeZone(value: string): string {
+  const printable = value.replace(/[^\x20-\x7E]/g, "?");
+  return printable.length > CLUB_TIME_ZONE_MAX_LENGTH
+    ? `${printable.slice(0, CLUB_TIME_ZONE_MAX_LENGTH)}…`
+    : printable;
+}
+
+/** Plain-English provenance of the zone the app falls back to when none is stored. */
+function describeEnvironmentTimeZoneSeed(seed: string | null): string {
+  if (seed === null) {
+    return "No TZ or NEXT_PUBLIC_TZ is set, so the built-in New Zealand default applies.";
+  }
+  if (normaliseClubTimeZone(seed) === null) {
+    return "The TZ / NEXT_PUBLIC_TZ value in the environment is not a usable named timezone, so the built-in New Zealand default applies until the club's timezone is stored.";
+  }
+  return "Taken from the TZ / NEXT_PUBLIC_TZ environment variable, which seeds this setting once and is then no longer consulted.";
+}
+
+/**
+ * Club-timezone gate (CT-1, #2989; epic #2988). The club has exactly one
+ * persisted IANA timezone and it is the sole civil-time authority
+ * (INV-CONFIG-002), so setup is not finished until it is stored explicitly.
+ *
+ * Four states, and the difference between the last two is the whole point:
+ * 1. **No snapshot** — `setup:check` ran before the database was reachable. The
+ *    same "not checked" warning the sibling DB-backed steps use; it cannot be
+ *    answered from the environment, because the environment is precisely what
+ *    this setting stops being authoritative.
+ * 2. **A stored zone that validates** → complete, and the message NAMES it, so a
+ *    club that has been running on `Australia/Sydney` can see at a glance that
+ *    the upgrade did not move it.
+ * 3. **A stored zone that does not validate** → blocked. Only DB surgery or an
+ *    ICU that dropped the zone can produce this; the app keeps answering from the
+ *    environment fallback meanwhile, and the details say so rather than implying
+ *    the stored value is in force.
+ * 4. **No row at all** → blocked. This is the state a fresh install and a
+ *    just-migrated existing install are in, and it is deliberately a block rather
+ *    than a warning: it is what stops setup finishing without an explicit
+ *    timezone (issue AC). It is also not an emergency — the message names the
+ *    zone actually in effect and says the app stores it on the next boot — so the
+ *    block reads as "confirm this", not "the site is broken".
+ *
+ * Deliberately clock-free: nothing here formats a date, so the answer is the same
+ * at every instant.
+ */
+function buildClubTimeZoneCheck(
+  db: SetupDatabaseSnapshot | undefined,
+  progress: SetupProgressState,
+): SetupStepCheck {
+  const base = {
+    id: "club-time-zone" as const,
+    title: "Club Timezone",
+    description:
+      "The one timezone the club runs on — which day a lodge night falls on, and what time members see.",
+    required: true,
+    href: "/admin/club-time",
+  };
+
+  // 1. The database was not checked at all.
+  if (!db) {
+    return applyProgress(
+      {
+        ...base,
+        status: "warning",
+        message: "Database state was not checked.",
+        details: [
+          "Run setup:check again inside an environment with database access, or review /admin/setup after login.",
+          "The club's timezone is stored in the database, so it cannot be read without a database connection.",
+          CLUB_VERSUS_SERVER_TIME_ZONE_DETAIL,
+        ],
+      },
+      progress,
+    );
+  }
+
+  const stored = db.clubTimeZone ?? null;
+  const environmentSeed = readEnvironmentClubTimeZoneSeed();
+  // What the app answers RIGHT NOW if nothing usable is stored: the same
+  // precedence the canonical reader uses, reached through the same resolver so
+  // readiness cannot describe a different zone from the one in force.
+  const effectiveWithoutStored = resolveClubTimeZone(null, environmentSeed);
+
+  // 4. No row yet — a fresh install, or an existing one between
+  //    `prisma migrate deploy` and its first boot on the new release.
+  if (stored === null) {
+    return applyProgress(
+      {
+        ...base,
+        status: "blocked",
+        message: `The club's timezone has not been stored yet, so the app is using ${effectiveWithoutStored}. Confirm or change it, then it is fixed for good.`,
+        details: [
+          "Source: none — nothing is stored in the database yet.",
+          `In effect right now: ${effectiveWithoutStored}. ${describeEnvironmentTimeZoneSeed(environmentSeed)}`,
+          "The app stores this zone automatically the next time it starts, keeping exactly the timezone this deployment already used. To store it now without a restart, run npm run config:self-heal.",
+          CLUB_VERSUS_SERVER_TIME_ZONE_DETAIL,
+        ],
+      },
+      progress,
+    );
+  }
+
+  const canonical = normaliseClubTimeZone(stored);
+
+  // 3. Something is stored that this runtime cannot use.
+  if (canonical === null) {
+    return applyProgress(
+      {
+        ...base,
+        status: "blocked",
+        message: `The stored club timezone is not a timezone this app can use, so it is falling back to ${effectiveWithoutStored}. Set the club's timezone again.`,
+        details: [
+          "Source: database (ClubTimeSettings)",
+          `Stored value: "${describeInvalidStoredTimeZone(stored)}" — not a named IANA timezone such as Pacific/Auckland. Abbreviations (NZT, EST) and fixed offsets (+12:00, Etc/GMT-12) are refused because they carry no daylight-saving rules.`,
+          `Until it is fixed the app answers with ${effectiveWithoutStored}. ${describeEnvironmentTimeZoneSeed(environmentSeed)}`,
+          CLUB_VERSUS_SERVER_TIME_ZONE_DETAIL,
+        ],
+      },
+      progress,
+    );
+  }
+
+  // 2. Configured.
+  return applyProgress(
+    {
+      ...base,
+      status: "complete",
+      message: `The club's timezone is ${canonical}.`,
+      details: [
+        "Source: database (ClubTimeSettings)",
+        `Club timezone: ${canonical}`,
+        ...(canonical === stored
+          ? []
+          : [
+              `Stored as "${stored}", which this runtime knows as ${canonical} — the same place, the current spelling.`,
+            ]),
+        CLUB_VERSUS_SERVER_TIME_ZONE_DETAIL,
       ],
     },
     progress,
@@ -1442,6 +1615,7 @@ export function buildSetupReadiness(
   const checksByCategory: Record<SetupCategoryId, SetupStepCheck[]> = {
     foundation: [
       buildClubConfigCheck(club, input.database, progress),
+      buildClubTimeZoneCheck(input.database, progress),
       buildRuntimeEnvCheck(env, progress),
       buildAuthSecretStrengthCheck(env, progress),
       buildSeedAdminCheck(input.database, progress),

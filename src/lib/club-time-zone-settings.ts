@@ -30,6 +30,7 @@ import "server-only";
  */
 
 import {
+  normaliseClubTimeZone,
   readEnvironmentClubTimeZoneSeed,
   resolveClubTimeZone,
 } from "@/lib/club-time-zone";
@@ -117,7 +118,17 @@ export interface ResolvedClubTimeZone {
   persisted: PersistedClubTimeSettings | null;
 }
 
-/** {@link getClubTimeZone} plus its provenance. */
+/**
+ * {@link getClubTimeZone} plus its provenance.
+ *
+ * The provenance is decided by asking each candidate the SAME question
+ * `resolveClubTimeZone` asks — "does this normalise to a usable zone?" — rather
+ * than by string-comparing the answer against the raw stored text. Those two are
+ * not the same test: a stored value can be a deprecated alias or a case variant
+ * (`US/Pacific`, `pacific/auckland`), which normalises to a different spelling,
+ * and comparing spellings would then report a perfectly good configured zone as
+ * having come from the environment.
+ */
 export async function resolveClubTimeZoneWithSource(): Promise<ResolvedClubTimeZone> {
   const persisted = await loadPersistedClubTimeSettings();
   const environmentSeed = readEnvironmentClubTimeZoneSeed();
@@ -126,9 +137,9 @@ export async function resolveClubTimeZoneWithSource(): Promise<ResolvedClubTimeZ
     environmentSeed,
   );
   const source: ClubTimeZoneSource =
-    persisted && persisted.timeZone && timeZone === persisted.timeZone
+    normaliseClubTimeZone(persisted?.timeZone) !== null
       ? "persisted"
-      : environmentSeed && timeZone === environmentSeed
+      : normaliseClubTimeZone(environmentSeed) !== null
         ? "environment"
         : "default";
   return { timeZone, source, persisted };

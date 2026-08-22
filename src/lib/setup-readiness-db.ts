@@ -16,7 +16,9 @@ import { getStripeSetupState } from "@/lib/stripe-config";
  * configuration model the club-config and age-tier gates read this snapshot
  * (clubIdentityName / configuredCapacity / ageTierSettingCount) rather than
  * `config/club.json`, so an install configured only in the DB reports as
- * complete without any file on disk.
+ * complete without any file on disk. The club-time-zone gate (CT-1, #2989) reads
+ * `clubTimeZone` here for the same reason — the club's timezone is database
+ * state, never the host's `TZ`.
  */
 export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot> {
   const now = new Date();
@@ -36,6 +38,7 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     clubIdentity,
     emailSettings,
     lodgeSettings,
+    clubTimeSettings,
     publicContentSettings,
   ] = await Promise.all([
     prisma.member.count({ where: { role: "ADMIN", active: true } }),
@@ -118,6 +121,15 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     prisma.lodgeSettings.findUnique({
       where: { id: "default" },
       select: { capacity: true },
+    }),
+    // The persisted club timezone (CT-1, #2989). An absent row is the normal
+    // pre-first-boot state, not an error, so a null here simply means "not
+    // stored yet" and the readiness check says so. Validation is NOT done here —
+    // the check itself judges the value, so the snapshot stays a plain report of
+    // what the database holds.
+    prisma.clubTimeSettings.findUnique({
+      where: { id: "default" },
+      select: { timeZone: true },
     }),
     // Public {{hut-fees}} embed opt-in (#2129). Only when this is ON does the
     // single-rate-column readiness warning below apply.
@@ -359,5 +371,11 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     defaultLodgeCapacity,
     clubIdentityName,
     configuredCapacity: lodgeSettings?.capacity ?? null,
+    // Reported EXACTLY as stored, not trimmed or blank-collapsed. A row holding
+    // an unusable value must read as "stored but invalid" and not as "not stored
+    // yet": the boot backfill keys on the ROW existing, so it will never replace
+    // a bad value, and telling the operator "the app will store this on the next
+    // boot" would then be untrue.
+    clubTimeZone: clubTimeSettings?.timeZone ?? null,
   };
 }
