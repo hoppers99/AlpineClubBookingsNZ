@@ -453,12 +453,70 @@ describe("setup-wizard-db — club timezone", () => {
     expect(state.current.timeZone).toBe("America/Denver");
   });
 
-  it("falls back to the documented default when the environment says nothing usable", async () => {
-    process.env.TZ = "NZT";
+  it.each([
+    ["GB", "Europe/London"],
+    ["NZ-CHAT", "Pacific/Chatham"],
+    ["australia/sydney", "Australia/Sydney"],
+  ])(
+    "offers the place TZ=%s actually means (%s) as the prompt default",
+    async (raw, expected) => {
+      // The wizard's default has to be the zone the deployment is already using,
+      // for the same reason the backfill has to record it (#2989 review): an
+      // operator who presses Enter on a default they had every reason to trust
+      // must not thereby move the club. `GB` is Europe/London, not New Zealand.
+      process.env.TZ = raw;
 
-    const state = await readWizardConfigState(makeDb());
+      const state = await readWizardConfigState(makeDb());
 
-    expect(state.current.timeZone).toBe(CLUB_TIME_ZONE_FALLBACK);
+      expect(state.current.timeZone).toBe(expected);
+    },
+  );
+
+  it.each(["NZT", "UTC", "Etc/GMT-12"])(
+    "falls back to the documented default when TZ=%s names no place",
+    async (raw) => {
+      // Nothing to preserve, so the documented New Zealand default is offered —
+      // and unlike the backfill that is not a silent substitution: the value is
+      // on screen and a person answers for it.
+      process.env.TZ = raw;
+
+      const state = await readWizardConfigState(makeDb());
+
+      expect(state.current.timeZone).toBe(CLUB_TIME_ZONE_FALLBACK);
+    },
+  );
+
+  it("still lets the stored row win over an environment alias", async () => {
+    process.env.TZ = "GB";
+
+    const state = await readWizardConfigState(
+      makeDb({ clubTime: { timeZone: "Australia/Sydney" } }),
+    );
+
+    expect(state.current.timeZone).toBe("Australia/Sydney");
+  });
+
+  it("offers the canonical spelling of a stored alias", async () => {
+    // A row written before the validator canonicalised, or by hand.
+    process.env.TZ = "America/Denver";
+
+    const state = await readWizardConfigState(
+      makeDb({ clubTime: { timeZone: "australia/sydney" } }),
+    );
+
+    expect(state.current.timeZone).toBe("Australia/Sydney");
+  });
+
+  it("ignores a stored value that cannot be used and offers the environment's zone", async () => {
+    // A row holding an unusable value is not an answer, so the prompt must offer
+    // something real rather than echoing it back into a NOT NULL column.
+    process.env.TZ = "GB";
+
+    const state = await readWizardConfigState(
+      makeDb({ clubTime: { timeZone: "Etc/GMT-12" } }),
+    );
+
+    expect(state.current.timeZone).toBe("Europe/London");
   });
 
   it("does NOT let a stored timezone alone count as 'already configured'", async () => {

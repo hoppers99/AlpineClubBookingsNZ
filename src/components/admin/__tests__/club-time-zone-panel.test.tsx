@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ClubTimeZonePanel } from "@/components/admin/club-time-zone-panel";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 
 /*
   The club-timezone maintenance panel (CT-1, #2989; epic #2988).
@@ -31,7 +32,17 @@ const SERVER_STATE = {
   source: "persisted" as const,
   updatedAt: "2026-06-30T21:30:00.000Z",
   updatedByName: "Ada Lovelace",
+  unusableStoredValue: null,
 };
+
+/** The same instant spelled in a named zone, in the house shape. */
+function spelledIn(timeZone: string, iso: string): string {
+  return new Intl.DateTimeFormat(APP_LOCALE, {
+    timeZone,
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(iso));
+}
 
 let fetchMock: ReturnType<typeof vi.fn>;
 let resolvedOptionsSpy: ReturnType<typeof vi.spyOn>;
@@ -99,6 +110,7 @@ describe("ClubTimeZonePanel", () => {
         source: "default",
         updatedAt: null,
         updatedByName: null,
+        unusableStoredValue: null,
       }),
     );
     await renderPanel();
@@ -165,6 +177,7 @@ describe("ClubTimeZonePanel", () => {
             source: "environment",
             updatedAt: null,
             updatedByName: null,
+            unusableStoredValue: null,
           }),
     );
     await renderPanel();
@@ -229,17 +242,97 @@ describe("ClubTimeZonePanel", () => {
       screen.getByText(/already recorded are not rewritten or moved/),
     ).not.toBeNull();
     expect(
-      screen.getByText(/how times are shown from now on/),
-    ).not.toBeNull();
-    expect(
       screen.getByText(/keep the calendar dates they already have/),
     ).not.toBeNull();
+    /*
+      AND THE SECOND ONE IS TRUE TODAY (#2989 review). CT-1 records the zone and
+      nothing reads it yet, so the panel must not promise that saving changes
+      what members see or when jobs fire: it says the deployment's TZ still
+      drives those, and asks for the two to be kept in step. Both legs are
+      asserted -- the honest sentence is present, and the old overclaim is gone --
+      so restoring the confident wording reddens this test rather than passing.
+    */
+    expect(
+      screen.getByText(
+        /still follow the TZ setting this deployment starts with/,
+      ),
+    ).not.toBeNull();
+    expect(
+      screen.queryByText(/What changes is how times are shown from now on/),
+    ).toBeNull();
     // And the acknowledgement itself says what it is acknowledging.
     expect(
       screen.getByText(
         /does not move any date or time already recorded/,
       ),
     ).not.toBeNull();
+    expect(
+      screen.getByText(/keep following the deployment's TZ setting/),
+    ).not.toBeNull();
+  });
+
+  it("tells the truth about a stored value it cannot use, with the fix that works", async () => {
+    /*
+      The state this panel used to describe WRONGLY. A row exists whose zone does
+      not validate, which the API reported as "environment", so the panel read
+      "Nothing has been recorded yet... Restarting the app records it" directly
+      above "Last changed 1 Jul 2026 by Ada Lovelace". Restarting can never
+      record it: the boot backfill's presence check is row-level, so the bad row
+      counts as present and the backfill is skipped for good. Saving here is the
+      only repair, so that is what the screen has to say.
+    */
+    fetchMock.mockImplementation(async () =>
+      respondWith({
+        timeZone: "Pacific/Auckland",
+        source: "persisted-unusable",
+        updatedAt: SERVER_STATE.updatedAt,
+        updatedByName: "Ada Lovelace",
+        // A control character, because nothing validated this text on the way in.
+        unusableStoredValue: "NZT\u0007",
+      }),
+    );
+    await renderPanel();
+
+    expect(screen.getByText("Not usable")).not.toBeNull();
+    // It NAMES the value, made printable: "not usable" without saying WHICH
+    // value is an instruction the operator cannot act on.
+    expect(screen.getByText(/"NZT\?"/)).not.toBeNull();
+    expect(
+      screen.getByText(/Set the club's time zone again below/),
+    ).not.toBeNull();
+    expect(screen.queryByText(/Restarting the app records it/)).toBeNull();
+
+    // And the repair is reachable: Save must not be disabled merely because the
+    // fallback zone on screen is the one already selected.
+    fireEvent.click(screen.getByRole("button", { name: /Change time zone/ }));
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(saveButton().hasAttribute("disabled")).toBe(false);
+  });
+
+  it("spells Last changed in the zone the rest of the admin tree uses", async () => {
+    /*
+      FINDING 4. This is the same class of timestamp `/admin/audit-log` renders --
+      the audit row this save writes -- and that screen spells it in
+      APP_TIME_ZONE. Spelling it here in the CONFIGURED zone instead let two
+      admin screens show one instant as two different times, with nothing on
+      either saying which. CT-4 moves them together; until then this one matches
+      its neighbours.
+    */
+    const configured = "Pacific/Honolulu";
+    fetchMock.mockImplementation(async () =>
+      respondWith({ ...SERVER_STATE, timeZone: configured }),
+    );
+    await renderPanel();
+
+    const inAppZone = spelledIn(APP_TIME_ZONE, SERVER_STATE.updatedAt);
+    const inConfiguredZone = spelledIn(configured, SERVER_STATE.updatedAt);
+    // The premise: these two zones really do disagree about this instant, so the
+    // assertion below can tell them apart.
+    expect(inAppZone).not.toBe(inConfiguredZone);
+
+    const line = screen.getByText(/Last changed/);
+    expect(line.textContent).toContain(inAppZone);
+    expect(line.textContent).not.toContain(inConfiguredZone);
   });
 
   it("sends the chosen zone with an explicit confirmation, and shows the result", async () => {

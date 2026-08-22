@@ -526,7 +526,7 @@ export const adminSetupAndConfigurationHelpEntries: HelpEntry[] = [
     "/admin/club-time",
     help(
       "Club Time Zone",
-      "Club Time Zone holds the single time zone this club runs on. Every time the site shows — booking confirmations, rosters, reminders, cut-offs — is worked out from it, and so is when club-local scheduled jobs fire.",
+      "Club Time Zone records the single time zone this club runs on — the place whose clocks and daylight-saving rules the site keeps. It is the setting the whole product is moving onto; for now the times the site shows are still worked out from the TZ setting this deployment starts with, so keep the two the same.",
       [
         "Check the time zone here before launch, and again if the club ever moves.",
         "Choose the named place the club keeps time by, such as Pacific/Auckland, rather than an abbreviation or a fixed offset.",
@@ -546,11 +546,11 @@ export const adminSetupAndConfigurationHelpEntries: HelpEntry[] = [
         {
           name: "Last changed",
           description:
-            "When the time zone was last saved and who saved it. Blank until the club has saved a choice of its own.",
+            "When the time zone was last saved, and who saved it. The name is blank when nobody chose it by hand — the zone recorded automatically on the first start after upgrading has no administrator behind it, and neither does one set by npm run setup at the command line.",
         },
       ],
       [
-        "Changing the time zone does not move anything already recorded. Dates and times in the database stay exactly as they are; what changes is how times are displayed from now on and when club-local scheduled jobs fire.",
+        "Changing the time zone does not move anything already recorded. Dates and times in the database stay exactly as they are. What changes is which zone times are written in from then on, and the club-local hour overnight jobs run at — following the note above about TZ while both settings exist.",
         "Lodge nights keep the calendar dates they already have. A booking for the 14th is still a booking for the 14th.",
         "Abbreviations such as NZT or EST and fixed offsets such as +12:00 are refused. They name no place, so they carry no daylight-saving rules and would silently drift an hour twice a year.",
       ],

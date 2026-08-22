@@ -6,7 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { listSelectableClubTimeZones } from "@/lib/club-time-zone";
+import {
+  CLUB_TIME_ZONE_MAX_LENGTH,
+  listSelectableClubTimeZones,
+} from "@/lib/club-time-zone";
+import { formatNZDateTime } from "@/lib/nzst-date";
 
 /**
  * The club-timezone maintenance panel (CT-1, #2989; epic #2988).
@@ -36,30 +40,48 @@ import { listSelectableClubTimeZones } from "@/lib/club-time-zone";
  * a member in Ohakune have to see the same club time. The 418-entry OPTION LIST
  * does come from this runtime (`listSelectableClubTimeZones`), which is a list of
  * choices rather than a decision, and every choice is re-validated server-side.
+ *
+ * WHAT THIS SCREEN MAY CLAIM, which is narrower than it reads (#2989 review).
+ * CT-1 RECORDS the zone and nothing more: no production code path reads
+ * `getClubTimeZone()` yet, so every displayed time and every club-local schedule
+ * still follows the deployment's `TZ`. So the copy below says the setting is
+ * recorded here and asks the operator to keep the two in step. It must not tell
+ * them that saving changes what members see, because today it does not — and if
+ * you are the change that makes it true, this copy is part of your diff.
  */
 
-type ClubTimeZoneSource = "persisted" | "environment" | "default";
+type ClubTimeZoneSource =
+  | "persisted"
+  | "persisted-unusable"
+  | "environment"
+  | "default";
 
 type ClubTimeZoneState = {
   timeZone: string;
   source: ClubTimeZoneSource;
   updatedAt: string | null;
   updatedByName: string | null;
+  /** Non-null only for `persisted-unusable`; see `describeSource`. */
+  unusableStoredValue: string | null;
 };
 
 /**
- * The three provenance words the operator guide uses, and the sentence behind
- * each. `docs/guides/club-time.md` names them verbatim, so they are the labels
- * rather than a paraphrase — a screen and a guide that describe the same state in
+ * The provenance words the operator guide uses, and the sentence behind each.
+ * `docs/guides/club-time.md` names them verbatim, so they are the labels rather
+ * than a paraphrase — a screen and a guide that describe the same state in
  * different words is how an operator stops trusting the guide.
  */
 const SOURCE_LABEL: Record<ClubTimeZoneSource, string> = {
   persisted: "Configured",
+  "persisted-unusable": "Not usable",
   environment: "From the environment",
   default: "Default",
 };
 
-const SOURCE_EXPLANATION: Record<ClubTimeZoneSource, string> = {
+const SOURCE_EXPLANATION: Record<
+  Exclude<ClubTimeZoneSource, "persisted-unusable">,
+  string
+> = {
   persisted: "Recorded in this installation's settings — the club has chosen it.",
   environment:
     "Nothing has been recorded yet, so this is the zone the server was started " +
@@ -70,24 +92,61 @@ const SOURCE_EXPLANATION: Record<ClubTimeZoneSource, string> = {
 };
 
 /**
- * "Last changed" spelled in the CLUB's configured zone — which is the panel
- * practising exactly what it explains below. The zone comes from the server
- * payload, never from `resolvedOptions()`, and it is passed explicitly because an
- * `Intl.DateTimeFormat` with no `timeZone` renders in the viewer's own (INV-DATE-015,
- * and the ESLint date guard refuses one). It is deliberately NOT `APP_TIME_ZONE`:
- * that transitional constant still derives from the environment and is retired by
- * CT-6, and this screen is the one place that must show the configured value.
+ * A stored value that failed validation, made safe to print. It never came
+ * through the validated write path — only a hand-edit, a bad restore or an ICU
+ * that dropped the zone gets a value here — so control characters are replaced
+ * and the text is capped. Same reasoning and same treatment as the setup
+ * checklist's `describeInvalidStoredTimeZone`.
  */
-function formatChangedAt(iso: string, timeZone: string): string {
-  try {
-    return new Intl.DateTimeFormat("en-NZ", {
-      dateStyle: "medium",
-      timeStyle: "short",
-      timeZone,
-    }).format(new Date(iso));
-  } catch {
-    return iso;
+function printableStoredValue(value: string | null): string {
+  if (!value) return "(empty)";
+  const printable = value.replace(/[^\x20-\x7E]/g, "?");
+  return printable.length > CLUB_TIME_ZONE_MAX_LENGTH
+    ? `${printable.slice(0, CLUB_TIME_ZONE_MAX_LENGTH)}…`
+    : printable;
+}
+
+/**
+ * The provenance sentence shown under the zone.
+ *
+ * `persisted-unusable` is built rather than looked up, for two reasons. It has
+ * to NAME the stored value, because "the stored time zone is not usable" is
+ * unactionable without saying which one. And its instruction is different in
+ * kind: this state used to be reported as "from the environment", which told the
+ * reader that restarting the app would record it — and restarting never does,
+ * because the boot backfill's presence check is row-level, so the bad row counts
+ * as present and the backfill is skipped for good. Saving here IS the repair, so
+ * that is what it says. Worded to match the setup checklist's equivalent step,
+ * which an operator may well be reading in the same sitting.
+ */
+function describeSource(state: ClubTimeZoneState): string {
+  if (state.source === "persisted-unusable") {
+    return (
+      `Something is recorded that this app cannot use — ` +
+      `"${printableStoredValue(state.unusableStoredValue)}" — so it is falling ` +
+      `back to ${state.timeZone}. Restarting will not repair it. Set the club's ` +
+      `time zone again below.`
+    );
   }
+  return SOURCE_EXPLANATION[state.source];
+}
+
+/**
+ * "Last changed", in the same zone as every other admin timestamp.
+ *
+ * Deliberately NOT the club's configured zone, even though the configured zone
+ * is what this screen is about. `/admin/audit-log` renders the very same class of
+ * timestamp — the audit row this save writes — through `APP_TIME_ZONE`, and one
+ * screen quietly spelling an instant in a different zone from the screen beside
+ * it, with nothing on either saying which, is worse than both sitting on the
+ * transitional constant. CT-4 moves every admin timestamp onto the configured
+ * zone in one change, and this line moves with them. `formatNZDateTime` pins
+ * locale and zone together, which is what INV-DATE-015 and the ESLint date guard
+ * require of any formatter here.
+ */
+function formatChangedAt(iso: string): string {
+  const changedAt = new Date(iso);
+  return Number.isNaN(changedAt.getTime()) ? iso : formatNZDateTime(changedAt);
 }
 
 /** Match on the identifier with underscores read as spaces: "new york" finds America/New_York. */
@@ -152,17 +211,18 @@ export function ClubTimeZonePanel() {
   const chosen = choice ?? state.timeZone;
   /*
     RECORDING THE ZONE THE CLUB IS ALREADY EFFECTIVELY ON IS A REAL SAVE, and it
-    is the state a fresh install and an upgraded one both arrive in. Until a valid
-    row exists the answer is coming from `TZ` or from the shipped default, and the
-    whole point of CT-1 is that the club's own choice is recorded rather than
-    inferred — so "Save" stays available even when the chosen zone equals the one
-    displayed. The server agrees: with nothing persisted there is no before-value
-    to match, so the write happens and the audit row records `before: null`. Once
-    a row exists, re-picking the same zone is the pristine re-save the dirty gate
-    is there to refuse.
+    is the state a fresh install, an upgraded one, and one whose stored value
+    cannot be used all arrive in. Until a USABLE row exists the answer is coming
+    from `TZ` or from the shipped default, and the whole point of CT-1 is that
+    the club's own choice is recorded rather than inferred — so "Save" stays
+    available even when the chosen zone equals the one displayed. The server
+    agrees: with nothing usable persisted there is no before-value that can
+    match, so the write happens and the audit row records whatever was there
+    (`null`, or the unusable text). Once a usable row exists, re-picking the same
+    zone is the pristine re-save the dirty gate is there to refuse.
   */
-  const nothingRecordedYet = state.source !== "persisted";
-  const unchanged = chosen === state.timeZone && !nothingRecordedYet;
+  const noUsableZoneRecorded = state.source !== "persisted";
+  const unchanged = chosen === state.timeZone && !noUsableZoneRecorded;
   /*
     The chosen zone is ALWAYS offered, even when the filter excludes it and even
     when this runtime's `supportedValuesOf` does not list it — ICU disagrees with
@@ -227,11 +287,11 @@ export function ClubTimeZonePanel() {
         </p>
         <p className="text-sm text-muted-foreground">
           <span className="font-medium">{SOURCE_LABEL[state.source]}</span>
-          {` — ${SOURCE_EXPLANATION[state.source]}`}
+          {` — ${describeSource(state)}`}
         </p>
         {state.updatedAt ? (
           <p className="text-sm text-muted-foreground">
-            {`Last changed ${formatChangedAt(state.updatedAt, state.timeZone)}`}
+            {`Last changed ${formatChangedAt(state.updatedAt)}`}
             {state.updatedByName ? ` by ${state.updatedByName}` : null}
           </p>
         ) : null}
@@ -294,9 +354,11 @@ export function ClubTimeZonePanel() {
                 Nothing in the database changes except this setting.
               </li>
               <li>
-                What changes is how times are shown from now on, and when
-                club-local scheduled jobs — reminders, nightly work, cut-offs —
-                fire.
+                What this changes today is the setting itself. The times the site
+                shows, and when club-local scheduled jobs — reminders, nightly
+                work, cut-offs — fire, still follow the TZ setting this
+                deployment starts with, and move onto this one as the rest of the
+                club-time work lands. So keep the two the same.
               </li>
               <li>
                 Lodge nights keep the calendar dates they already have. A booking
@@ -310,9 +372,11 @@ export function ClubTimeZonePanel() {
                 onCheckedChange={(checked) => setAcknowledged(checked)}
               />
               <Label htmlFor={acknowledgeId} className="text-sm font-normal">
-                I understand that saving changes how times are displayed and when
-                club-local scheduled jobs fire, and that it does not move any date
-                or time already recorded.
+                I understand that this records the club&apos;s time zone, that
+                displayed times and club-local scheduled jobs keep following the
+                deployment&apos;s TZ setting until the rest of the club-time work
+                lands, and that saving does not move any date or time already
+                recorded.
               </Label>
             </div>
           </div>

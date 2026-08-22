@@ -19,6 +19,14 @@ import { isFullAdmin } from "@/lib/access-roles";
  * `requireAdmin({ permission: false })` on both verbs of
  * `/api/admin/club-time-zone` — and this check exists so the screen does not
  * offer an action it knows will be refused.
+ *
+ * THE BLURB SAYS WHAT IS TRUE TODAY, which is less than it first said (#2989
+ * review). CT-1 records the zone; no production code path reads it yet, so the
+ * times the site shows and the club-local schedules still come from the
+ * deployment's `TZ`. Saying otherwise here would have an operator change this
+ * setting expecting displayed times to follow, and then find they had not. The
+ * second paragraph goes when the reader of the setting arrives — the change that
+ * makes the claim true is the change that gets to make it.
  */
 export default function ClubTimePage() {
   const { data: session } = useSession();
@@ -36,15 +44,19 @@ export default function ClubTimePage() {
 
   return (
     <div className="space-y-6">
-      <div>
+      <div className="space-y-2">
         <h1 className="text-2xl font-bold">Club Time Zone</h1>
         <p className="text-sm text-muted-foreground">
-          The one time zone this club runs on. Everything the site shows as a time
-          — booking confirmations, rosters, reminders, cut-offs — is worked out
-          from it, and so is when club-local scheduled jobs fire. It is a
-          property of the CLUB, not of the server or of whoever is looking: a
-          member reading the site from another country sees club time, not their
-          own.
+          The one time zone this club runs on. It is a property of the CLUB, not
+          of the server or of whoever is looking: a member reading the site from
+          another country should see club time, not their own.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          It is recorded here, and the site moves onto it as the rest of the
+          club-time work lands. Until then the times the site shows — booking
+          confirmations, rosters, reminders, cut-offs — and when club-local
+          scheduled jobs fire still follow the TZ setting this deployment starts
+          with, so keep the two the same.
         </p>
       </div>
       <ClubTimeZonePanel />

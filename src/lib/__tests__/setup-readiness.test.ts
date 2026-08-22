@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
+import { decideClubTimeZoneBackfill } from "@/lib/config-self-heal-steps";
 import {
   SETUP_STEP_IDS,
   buildSetupReadiness,
@@ -893,7 +894,7 @@ describe("setup-readiness club timezone (CT-1, #2989)", () => {
     expect(check.status).toBe("blocked");
   });
 
-  it("names the built-in default as the zone in force when the environment says nothing", () => {
+  it("names the built-in default as the zone to be stored when the environment says nothing", () => {
     pinEnvironmentZone(null);
 
     const check = clubTimeZoneCheck({ ...completeDatabase, clubTimeZone: null });
@@ -902,6 +903,81 @@ describe("setup-readiness club timezone (CT-1, #2989)", () => {
     const text = `${check.message} ${check.details.join(" ")}`;
     expect(text).toContain("Pacific/Auckland");
     expect(text).toMatch(/No TZ or NEXT_PUBLIC_TZ is set/i);
+  });
+
+  it.each([
+    ["GB", "Europe/London"],
+    ["NZ-CHAT", "Pacific/Chatham"],
+  ])(
+    "names the place TZ=%s actually means (%s) as the zone about to be stored",
+    (raw, expected) => {
+      // The readiness message has to agree with what the next boot will really
+      // record. Before the #2989 review both this step and the backfill ran the
+      // operator-input validator over the environment, so this said
+      // "Pacific/Auckland" to a London club and then the backfill wrote it.
+      pinEnvironmentZone(raw);
+
+      const check = clubTimeZoneCheck({
+        ...completeDatabase,
+        clubTimeZone: null,
+      });
+
+      expect(check.status).toBe("blocked");
+      const text = `${check.message} ${check.details.join(" ")}`;
+      expect(text).toContain(expected);
+      expect(text).not.toContain("Pacific/Auckland");
+      // And it shows the raw value too, so the interpretation is visible.
+      expect(text).toContain(raw);
+    },
+  );
+
+  it.each(["UTC", "Etc/GMT-12", "SystemV/EST5"])(
+    "refuses to name ANY zone as in force when TZ=%s names no place",
+    (raw) => {
+      // The second half of the same finding. `TZ=UTC` used to print
+      // "In effect right now: Pacific/Auckland" — a zone nobody had chosen, that
+      // the un-migrated APP_TIME_ZONE call sites were demonstrably not using, and
+      // that the backfill now (correctly) refuses to invent. A step whose job is
+      // to say what is in force must not name something that is not.
+      pinEnvironmentZone(raw);
+
+      const check = clubTimeZoneCheck({
+        ...completeDatabase,
+        clubTimeZone: null,
+      });
+
+      expect(check.status).toBe("blocked");
+      const text = `${check.message} ${check.details.join(" ")}`;
+      expect(text).toContain(raw);
+      expect(text).not.toContain("Pacific/Auckland");
+      expect(text).not.toMatch(/in effect right now/i);
+      // It says plainly that nothing will be stored and who has to act.
+      expect(text).toMatch(/not a place|name no place/i);
+      expect(text).toContain("/admin/club-time");
+      expect(text).not.toMatch(/next time it starts/i);
+    },
+  );
+
+  it("reports 'not checked' rather than a remedy when the timezone row could not be READ", () => {
+    // An un-migrated database: every other setting answered and this one query
+    // failed. "The app stores it on the next start" is the remedy for an absent
+    // row and is no remedy at all for an absent table, so this state gets its
+    // own message.
+    pinEnvironmentZone("Australia/Sydney");
+
+    const check = clubTimeZoneCheck({
+      ...completeDatabase,
+      clubTimeZone: null,
+      clubTimeZoneUnreadable: true,
+    });
+
+    expect(check.status).toBe("warning");
+    const text = `${check.message} ${check.details.join(" ")}`;
+    expect(text).toMatch(/could not be read/i);
+    expect(text).toMatch(/migrate/i);
+    expect(text).not.toMatch(/next time it starts/i);
+    // It does not answer the question from the environment either.
+    expect(text).not.toContain("Australia/Sydney");
   });
 
   it("blocks on a stored value that does not validate, and says what the app is using meanwhile", () => {
@@ -982,12 +1058,78 @@ describe("setup-readiness club timezone (CT-1, #2989)", () => {
       { ...completeDatabase, clubTimeZone: null },
       { ...completeDatabase, clubTimeZone: "NZT" },
       { ...completeDatabase, clubTimeZone: "Australia/Sydney" },
+      { ...completeDatabase, clubTimeZone: null, clubTimeZoneUnreadable: true },
     ]) {
       const details = clubTimeZoneCheck(database).details.join(" ");
       expect(details).toMatch(/not the server/i);
       expect(details).toMatch(/database/i);
     }
+    // Including the two states that depend on the environment rather than on the
+    // snapshot: an unusable TZ, and an alias that names a real place.
+    for (const raw of ["UTC", "GB"]) {
+      pinEnvironmentZone(raw);
+      const details = clubTimeZoneCheck({
+        ...completeDatabase,
+        clubTimeZone: null,
+      }).details.join(" ");
+      expect(details).toMatch(/not the server/i);
+      expect(details).toMatch(/database/i);
+    }
   });
+
+  it.each([
+    "GB",
+    "NZ-CHAT",
+    "EST5EDT",
+    "Australia/Sydney",
+    "australia/sydney",
+    null,
+  ])(
+    "promises exactly what the next boot will record, for TZ=%s",
+    (raw) => {
+      // The checklist and the backfill are two descriptions of one fact. They
+      // read the environment through the same classification but they are
+      // different code, and this is the assertion that stops them drifting: the
+      // zone the step NAMES has to be the zone `decideClubTimeZoneBackfill`
+      // would write. Before the #2989 review both were wrong in the same way,
+      // which is exactly why agreement alone is not enough — the two
+      // it.each blocks above pin what the right answer IS.
+      pinEnvironmentZone(raw);
+      const decision = decideClubTimeZoneBackfill();
+      expect(decision.record).toBe(true);
+      if (!decision.record) return;
+
+      const check = clubTimeZoneCheck({
+        ...completeDatabase,
+        clubTimeZone: null,
+      });
+
+      expect(check.message).toContain(decision.timeZone);
+      expect(check.details.join(" ")).toContain(decision.timeZone);
+    },
+  );
+
+  it.each(["UTC", "Etc/GMT-12"])(
+    "names no zone at all when the next boot would record nothing, for TZ=%s",
+    (raw) => {
+      // The other half of the agreement: where the backfill records nothing, the
+      // checklist must not name a zone either — which is the whole finding.
+      pinEnvironmentZone(raw);
+      expect(decideClubTimeZoneBackfill().record).toBe(false);
+
+      const check = clubTimeZoneCheck({
+        ...completeDatabase,
+        clubTimeZone: null,
+      });
+      const text = `${check.message} ${check.details.join(" ")}`;
+
+      expect(check.status).toBe("blocked");
+      // No IANA-shaped identifier appears anywhere except inside the refusal's
+      // own examples of what is NOT acceptable.
+      expect(text).not.toContain("Pacific/Auckland");
+      expect(text).not.toContain("Australia/Sydney");
+    },
+  );
 
   it("does not depend on the wall clock", () => {
     // Two different `now` values, one identical answer.

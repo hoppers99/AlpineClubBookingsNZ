@@ -39,10 +39,8 @@ const { mockPrisma } = vi.hoisted(() => ({
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
 
-import {
-  readEnvironmentClubTimeZoneSeed,
-  CLUB_TIME_ZONE_FALLBACK,
-} from "@/lib/club-time-zone";
+import { CLUB_TIME_ZONE_FALLBACK } from "@/lib/club-time-zone";
+import { readEnvironmentClubTimeZoneSeed } from "@/lib/club-time-zone-env";
 import {
   CLUB_TIME_SETTINGS_ID,
   getClubTimeZone,
@@ -229,16 +227,39 @@ describe("resolveClubTimeZoneWithSource", () => {
     expect(resolved.persisted).toBeNull();
   });
 
-  it("reports 'environment' when a stored value is unusable but TZ is not", async () => {
+  it("reports 'persisted-unusable', NOT 'environment', when a stored value cannot be used", async () => {
     // The setup and maintenance surfaces have to say WHERE the answer came from,
-    // and "the row exists" is not the same as "the row is the answer".
+    // and "the row exists" is not the same as "the row is the answer" — but nor
+    // is it the same as "no row" (#2989 review). A row holding an unusable value
+    // is its own state: the club HAS recorded something, the boot backfill keys
+    // on the row existing so it will never repair it, and telling the reader
+    // "nothing is recorded yet, the app records it on the next restart" sends
+    // them to wait for something that cannot happen. The one instruction that
+    // works is "set it again", and only this source can produce that.
     process.env.TZ = "Europe/London";
     findUnique.mockResolvedValue(persistedRow("NZT"));
 
     const resolved = await resolveClubTimeZoneWithSource();
 
+    // The app keeps answering — from the environment, then the default — so the
+    // zone reported is the one in force even though the source is the bad row.
     expect(resolved.timeZone).toBe("Europe/London");
-    expect(resolved.source).toBe("environment");
+    expect(resolved.source).toBe("persisted-unusable");
     expect(resolved.persisted).toMatchObject({ timeZone: "NZT" });
+  });
+
+  it("distinguishes an unusable row from no row at all", async () => {
+    // The premise for the assertion above: with the SAME environment, an absent
+    // row reports `environment`. Without this leg the test could not tell a real
+    // distinction from a constant.
+    process.env.TZ = "Europe/London";
+
+    findUnique.mockResolvedValue(persistedRow("Etc/GMT-12"));
+    expect((await resolveClubTimeZoneWithSource()).source).toBe(
+      "persisted-unusable",
+    );
+
+    findUnique.mockResolvedValue(null);
+    expect((await resolveClubTimeZoneWithSource()).source).toBe("environment");
   });
 });

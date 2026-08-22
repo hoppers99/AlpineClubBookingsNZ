@@ -1,14 +1,16 @@
 import type { AgeTier } from "@prisma/client";
 import { clubConfig } from "@/config/club";
 import {
-  readEnvironmentClubTimeZoneSeed,
-  resolveClubTimeZone,
+  CLUB_TIME_SETTINGS_ID,
+  CLUB_TIME_ZONE_FALLBACK,
 } from "@/lib/club-time-zone";
+import { classifyEnvironmentClubTimeZoneSeed } from "@/lib/club-time-zone-env";
 import {
   CLUB_CONFIG_LODGE_CAPACITY,
   getDefaultLodgeCapacity,
 } from "@/lib/lodge-capacity";
 import type { ConfigSelfHealStep, SelfHealDb } from "@/lib/config-self-heal";
+import logger from "@/lib/logger";
 
 /**
  * The registered config self-heal step DEFINITIONS (epic #1943 C1/C3/C4/C5, and
@@ -431,14 +433,69 @@ export const ageTierSelfHealStepDefinition: ConfigSelfHealStep<AgeTierSelfHealRo
   },
 };
 
-// The ClubTimeSettings singleton row id, a literal for exactly the reason
-// CLUB_IDENTITY_SETTINGS_ID above is one: this module is imported by the
-// out-of-band `npm run config:self-heal` tsx entrypoint, and importing
-// `src/lib/club-time-zone-settings.ts` (which holds the canonical
-// CLUB_TIME_SETTINGS_ID) would drag `server-only` in and abort it. The step
-// below therefore reads the PURE validator module `@/lib/club-time-zone`, which
-// carries no `server-only` and no Prisma import.
-const CLUB_TIME_SETTINGS_ID = "default";
+/**
+ * What a create-if-absent writer should record for the club timezone, decided
+ * once so the boot backfill and the seed cannot answer it differently.
+ *
+ * `prisma/seed.ts` claims its row is "identical to the boot backfill … so a
+ * seed-created row and a boot-healed row hold byte-identical values" (the #1984
+ * parity standard). That claim used to rest on both files calling the same
+ * resolver with the same argument, which is exactly the arrangement that drifted
+ * in the identity/facebookUrl pair before it. Sharing the DECISION makes the
+ * parity true by construction instead of by inspection.
+ *
+ * Three outcomes, from `classifyEnvironmentClubTimeZoneSeed`:
+ *
+ * - the environment names a real place → record THAT place. `raw` is what the
+ *   environment literally said, so a caller can log the interpretation when the
+ *   two differ (`GB` → `Europe/London`).
+ * - the environment says nothing at all → record `CLUB_TIME_ZONE_FALLBACK`. This
+ *   is the "truly unset legacy install" the issue's default is for.
+ * - the environment says something that names no place (`UTC`, `Etc/GMT-12`,
+ *   `SystemV/EST5`) → record NOTHING, and hand the caller the raw value to
+ *   report. There is no place whose civil time is `UTC`, so every candidate zone
+ *   would be a guess, and a guess written by a create-if-absent writer is
+ *   permanent: nothing revisits the row afterwards.
+ *
+ * WHY NOT `resolveClubTimeZone(null, seed)`, which is what both callers did
+ * before (#2989 review, found independently by two lenses). That runs the
+ * OPERATOR-INPUT validator over a value whose only job is to be preserved —
+ * `normaliseClubTimeZoneForPreservation`'s docblock is the single home for that
+ * distinction and the forty-one measured values behind it. What it cost HERE is
+ * the part worth repeating: `GB`, `NZ-CHAT`, `EST5EDT` and Debian's own
+ * `Etc/UTC` default all landed on `Pacific/Auckland`, create-if-absent wrote it
+ * once and never revisited it, and `/admin/setup` then reported the step
+ * COMPLETE naming a zone the club had never been in.
+ *
+ * Pure — no logging, no database, no clock — so both callers can log in their own
+ * idiom (the boot step through the app logger, the seed through `console`) and
+ * the decision itself is unit-testable on its own.
+ */
+export type ClubTimeZoneBackfillDecision =
+  | {
+      record: true;
+      /** The zone to write. Always a valid named IANA identifier. */
+      timeZone: string;
+      /** What the environment said, or null when it said nothing. */
+      raw: string | null;
+    }
+  | {
+      record: false;
+      /** What the environment said — always set on this branch. */
+      raw: string;
+    };
+
+export function decideClubTimeZoneBackfill(): ClubTimeZoneBackfillDecision {
+  const seed = classifyEnvironmentClubTimeZoneSeed();
+  switch (seed.kind) {
+    case "preserved":
+      return { record: true, timeZone: seed.timeZone, raw: seed.raw };
+    case "absent":
+      return { record: true, timeZone: CLUB_TIME_ZONE_FALLBACK, raw: null };
+    case "unusable":
+      return { record: false, raw: seed.raw };
+  }
+}
 
 /**
  * Club-timezone step (CT-1, #2989; epic #2988). Persists the zone this
@@ -478,17 +535,35 @@ const CLUB_TIME_SETTINGS_ID = "default";
  * backfilled and would silently fall back to the generic NZ default forever.
  *
  * ## The value
- * `resolveClubTimeZone(null, readEnvironmentClubTimeZoneSeed())` — the persisted
- * argument is `null` by construction (the row is absent, or `isPresent` would
- * have skipped the write), so this is exactly "the zone this deployment is
- * effectively using right now": the validated `TZ` / `NEXT_PUBLIC_TZ` value, and
- * `Pacific/Auckland` only where the environment says nothing usable. The seed is
- * read at heal time, never captured at import, so the value cannot go stale.
- * `updatedByMemberId` is null because a boot has no actor — the same treatment
- * every column of that shape gets on the writes this module and the setup CLI
- * own.
+ * {@link decideClubTimeZoneBackfill} — the zone this deployment is ALREADY
+ * effectively using, or nothing at all. The environment is read at heal time,
+ * never captured at import, so the value cannot go stale on a long-running
+ * image. `updatedByMemberId` is null because a boot has no actor — the same
+ * treatment every column of that shape gets on the writes this module and the
+ * setup CLI own.
+ *
+ * ## When the environment names no place, this step records NOTHING
+ * And it says so, on every boot, until somebody fixes it. `TZ=UTC` (or
+ * `Etc/GMT-12`, or `SystemV/EST5`) is a real misconfiguration for a club: those
+ * are not places, they carry no daylight-saving rules, and no club's civil time
+ * is one of them. There is nothing to preserve, so the honest states are "not
+ * configured" plus a warning — which leaves the setup checklist blocked and asks
+ * the operator — rather than a silent, permanent guess at New Zealand.
+ *
+ * The refusal short-circuits in `isPresent`, AFTER the row read and only when
+ * the row is absent. Both halves of that matter. Following the
+ * `lodgeCapacitySelfHealStep` precedent above, reporting already-present stops
+ * the runner recording a phantom `healed` for a write that would no-op — and
+ * doing it after the read means a club that HAS chosen its timezone never sees
+ * the warning, which would be alarming and untrue.
+ *
+ * ## And when it DOES name a place, this step says which one it recorded
+ * `GB` is `Europe/London` and `NZ-CHAT` is `Pacific/Chatham`; the value stored
+ * is the place, not the spelling the environment used. This is the only
+ * self-heal step that can substitute a different value for its source, so the
+ * interpretation is logged where an operator reading a deploy log will meet it.
  */
-export const clubTimeZoneSelfHealStepDefinition: ConfigSelfHealStep<string> = {
+export const clubTimeZoneSelfHealStepDefinition: ConfigSelfHealStep<string | null> = {
   name: "club-time-zone",
   requiresPrimaryClubConfig: false,
   async isPresent(db) {
@@ -496,12 +571,56 @@ export const clubTimeZoneSelfHealStepDefinition: ConfigSelfHealStep<string> = {
       where: { id: CLUB_TIME_SETTINGS_ID },
       select: { id: true },
     });
-    return row !== null;
+    // The club's own choice, whatever the environment says. Answered before the
+    // environment is even classified, so a configured club is never warned at.
+    if (row !== null) return true;
+
+    const decision = decideClubTimeZoneBackfill();
+    if (!decision.record) {
+      logger.warn(
+        {
+          scope: "config-self-heal",
+          step: "club-time-zone",
+          environmentTimeZone: decision.raw,
+        },
+        `Config self-heal recorded NO club timezone: TZ / NEXT_PUBLIC_TZ is ` +
+          `"${decision.raw}", which is not a named place such as ` +
+          `Pacific/Auckland or Europe/London. UTC, GMT and fixed offsets carry ` +
+          `no daylight-saving rules, so no club's civil time can be derived ` +
+          `from one, and guessing a place would silently decide which day a ` +
+          `lodge night falls on. An administrator must choose the club's ` +
+          `timezone at /admin/club-time (or run npm run setup); until then the ` +
+          `setup checklist reports this step as not configured.`,
+      );
+      return true;
+    }
+    return false;
   },
   currentValue() {
-    return resolveClubTimeZone(null, readEnvironmentClubTimeZoneSeed());
+    const decision = decideClubTimeZoneBackfill();
+    // Guarded by `isPresent`, which reports already-present for this case;
+    // retained so the write can never receive a value nothing chose.
+    if (!decision.record) return null;
+    if (decision.raw !== null && decision.raw !== decision.timeZone) {
+      logger.info(
+        {
+          scope: "config-self-heal",
+          step: "club-time-zone",
+          environmentTimeZone: decision.raw,
+          clubTimeZone: decision.timeZone,
+        },
+        `Config self-heal is recording the club timezone as ` +
+          `${decision.timeZone}, read from TZ / NEXT_PUBLIC_TZ as ` +
+          `"${decision.raw}" — the same place, named the way this runtime ` +
+          `spells it.`,
+      );
+    }
+    return decision.timeZone;
   },
   async write(db, value) {
+    // Guarded by isPresent; defensive, and the reason this step's value type is
+    // nullable at all — a NOT NULL column must never receive a guess.
+    if (value === null) return;
     // Create-if-absent only (`update: {}`): an existing row is the club's own
     // choice and must survive every future boot untouched.
     await db.clubTimeSettings.upsert({

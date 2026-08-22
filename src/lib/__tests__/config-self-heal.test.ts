@@ -1,4 +1,24 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+/*
+  The club-timezone step logs through the APP logger rather than the runner's
+  injectable one (CT-1, #2989 review): `ConfigSelfHealStep` hands a step only the
+  database, and what this step has to say — "the environment names no place, so I
+  recorded nothing", "`GB` means Europe/London" — belongs in the deploy log
+  whichever entrypoint ran it. Mocked here so those two lines can be asserted,
+  and so nothing prints during the suite.
+*/
+const { mockLogger } = vi.hoisted(() => ({
+  mockLogger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    trace: vi.fn(),
+    fatal: vi.fn(),
+  },
+}));
+vi.mock("@/lib/logger", () => ({ default: mockLogger }));
 
 import { clubConfig } from "@/config/club";
 import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
@@ -1495,6 +1515,12 @@ describe("clubTimeZoneSelfHealStep — the upgrade keeps the zone already in use
   const hostTimeZone = captureHostTimeZone();
   const originalNextPublicTz = process.env.NEXT_PUBLIC_TZ;
 
+  beforeEach(() => {
+    // The step's own logging is asserted below, so each case starts clean.
+    mockLogger.info.mockClear();
+    mockLogger.warn.mockClear();
+  });
+
   afterEach(() => {
     hostTimeZone.restore();
     if (originalNextPublicTz === undefined) {
@@ -1504,8 +1530,16 @@ describe("clubTimeZoneSelfHealStep — the upgrade keeps the zone already in use
     }
   });
 
-  function pinEnvironmentZone(zone: string) {
-    process.env.TZ = zone;
+  function pinEnvironmentZone(zone: string | null) {
+    if (zone === null) {
+      // Assign before deleting: only an assignment invalidates Node's cached
+      // zone (#2485). `hostTimeZone.restore()` puts the original back the same
+      // way.
+      process.env.TZ = CLUB_TIME_ZONE_FALLBACK;
+      delete process.env.TZ;
+    } else {
+      process.env.TZ = zone;
+    }
     // NEXT_PUBLIC_TZ is the second half of the seed's precedence; clear it so
     // `TZ` is unambiguously what the environment says, on CI as well as here.
     delete process.env.NEXT_PUBLIC_TZ;
@@ -1563,11 +1597,69 @@ describe("clubTimeZoneSelfHealStep — the upgrade keeps the zone already in use
     expect(tokyo.rows.get("default")).toMatchObject({ timeZone: "Asia/Tokyo" });
   });
 
-  it("persists the documented default when the environment says nothing usable", async () => {
-    // A NOT NULL VarChar(64) column must never receive `NZT`, and an install
-    // with a nonsense TZ must still end up with a real zone.
-    pinEnvironmentZone("NZT");
+  it("persists the documented default when the environment is not set at all", async () => {
+    // The "truly unset legacy install" the issue's fallback exists for. A NOT
+    // NULL VarChar(64) column must still end up holding a real zone.
+    pinEnvironmentZone(null);
     const { rows, db } = makeClubTimeDb();
+
+    const summary = await runConfigSelfHeal({
+      db,
+      steps: [clubTimeZoneSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(summary.healed).toBe(1);
+    expect(rows.get("default")).toMatchObject({
+      timeZone: CLUB_TIME_ZONE_FALLBACK,
+    });
+    // Nothing to warn about: an unset environment is a normal fresh install.
+    expect(mockLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    // The 36 aliases that resolve to a real location. `GB` is the common one on
+    // a Debian host; `NZ-CHAT` is the one that would move a club by 45 minutes.
+    ["GB", "Europe/London"],
+    ["NZ-CHAT", "Pacific/Chatham"],
+    ["EST5EDT", "America/New_York"],
+  ])(
+    "records the place TZ=%s actually names (%s) rather than the New Zealand default",
+    async (raw, expected) => {
+      // THE FINDING. Before this, the backfill ran the operator-input validator
+      // over a value whose only job was to be preserved, so all three of these
+      // were refused and `Pacific/Auckland` was written instead — once, silently,
+      // never revisited, with /admin/setup then reporting the step COMPLETE while
+      // naming a zone the club had never been in.
+      pinEnvironmentZone(raw);
+      const { rows, db } = makeClubTimeDb();
+
+      const summary = await runConfigSelfHeal({
+        db,
+        steps: [clubTimeZoneSelfHealStep],
+        log: silentLog,
+        provenance: "primary",
+      });
+
+      expect(summary.healed).toBe(1);
+      expect(rows.get("default")).toEqual({
+        id: "default",
+        timeZone: expected,
+        updatedByMemberId: null,
+      });
+      expect(rows.get("default")).not.toMatchObject({
+        timeZone: CLUB_TIME_ZONE_FALLBACK,
+      });
+    },
+  );
+
+  it("says in the deploy log which place it read out of the environment", async () => {
+    // This is the only self-heal step that can substitute a different value for
+    // its source, so the interpretation has to be visible to whoever reads the
+    // boot log.
+    pinEnvironmentZone("GB");
+    const { db } = makeClubTimeDb();
 
     await runConfigSelfHeal({
       db,
@@ -1576,9 +1668,133 @@ describe("clubTimeZoneSelfHealStep — the upgrade keeps the zone already in use
       provenance: "primary",
     });
 
-    expect(rows.get("default")).toMatchObject({
-      timeZone: CLUB_TIME_ZONE_FALLBACK,
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        step: "club-time-zone",
+        environmentTimeZone: "GB",
+        clubTimeZone: "Europe/London",
+      }),
+      expect.stringContaining("Europe/London"),
+    );
+  });
+
+  it("logs nothing extra when the environment already names the zone canonically", async () => {
+    pinEnvironmentZone("Australia/Sydney");
+    const { db } = makeClubTimeDb();
+
+    await runConfigSelfHeal({
+      db,
+      steps: [clubTimeZoneSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
     });
+
+    expect(mockLogger.info).not.toHaveBeenCalled();
+    expect(mockLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it.each(["UTC", "Etc/GMT-12", "SystemV/EST5", "NZT"])(
+    "records NOTHING when TZ=%s names no place, and says so",
+    async (raw) => {
+      // There is no place whose civil time is UTC, so every candidate zone is a
+      // guess — and a create-if-absent write is never revisited, so the guess
+      // would be permanent. The honest state is "not configured", which leaves
+      // the setup checklist blocked and asks the operator.
+      pinEnvironmentZone(raw);
+      const { rows, db } = makeClubTimeDb();
+
+      const summary = await runConfigSelfHeal({
+        db,
+        steps: [clubTimeZoneSelfHealStep],
+        log: silentLog,
+        provenance: "primary",
+      });
+
+      expect(rows.size).toBe(0);
+      expect(
+        (db as unknown as { clubTimeSettings: { upsert: ReturnType<typeof vi.fn> } })
+          .clubTimeSettings.upsert,
+      ).not.toHaveBeenCalled();
+      // Reported already-present, NOT healed — the same log-honesty short-circuit
+      // `lodgeCapacitySelfHealStep` uses for a 0-bed config, so the runner never
+      // records a phantom "healed" for a write that did not happen.
+      expect(summary.healed).toBe(0);
+      expect(summary.failed).toBe(0);
+      expect(summary.results[0]).toMatchObject({
+        name: "club-time-zone",
+        outcome: "already-present",
+      });
+      // And a warning names the offending value, on every boot until it is fixed.
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          step: "club-time-zone",
+          environmentTimeZone: raw,
+        }),
+        expect.stringContaining(raw),
+      );
+      const message = String(mockLogger.warn.mock.calls[0]?.[1]);
+      // It says nothing was recorded, and says who has to act. It names
+      // Pacific/Auckland only as an EXAMPLE of a place, so the assertion is on
+      // what it claims rather than on which strings appear.
+      expect(message).toMatch(/recorded NO club timezone/i);
+      expect(message).toMatch(/must choose/i);
+      expect(message).toContain("/admin/club-time");
+    },
+  );
+
+  it("does NOT warn a club that has already chosen its timezone, whatever TZ says", async () => {
+    // The presence check runs FIRST. A configured club seeing "an administrator
+    // must choose the club's timezone" on every boot would be both alarming and
+    // untrue.
+    pinEnvironmentZone("UTC");
+    const { rows, db } = makeClubTimeDb({ timeZone: "Australia/Sydney" });
+
+    const summary = await runConfigSelfHeal({
+      db,
+      steps: [clubTimeZoneSelfHealStep],
+      log: silentLog,
+      provenance: "primary",
+    });
+
+    expect(summary.alreadyPresent).toBe(1);
+    expect(rows.get("default")).toMatchObject({ timeZone: "Australia/Sydney" });
+    expect(mockLogger.warn).not.toHaveBeenCalled();
+    expect(mockLogger.info).not.toHaveBeenCalled();
+  });
+
+  it("leaves an existing row alone whatever the environment says", async () => {
+    // One assertion over every environment shape: preserved, unusable, unset.
+    for (const raw of ["GB", "UTC", "Pacific/Auckland", null]) {
+      pinEnvironmentZone(raw);
+      const { rows, db } = makeClubTimeDb({
+        timeZone: "Australia/Sydney",
+        updatedByMemberId: "member_1",
+      });
+
+      await runConfigSelfHeal({
+        db,
+        steps: [clubTimeZoneSelfHealStep],
+        log: silentLog,
+        provenance: "primary",
+      });
+
+      expect(rows.get("default")).toMatchObject({
+        timeZone: "Australia/Sydney",
+        updatedByMemberId: "member_1",
+      });
+    }
+  });
+
+  it("writes nothing when the write is forced with no value to record", async () => {
+    // Belt and braces for the NOT NULL column: `isPresent` short-circuits the
+    // unusable case, and the write refuses it too, so a future refactor of the
+    // presence check cannot put a guess in the column.
+    pinEnvironmentZone("UTC");
+    const { rows, db } = makeClubTimeDb();
+
+    await clubTimeZoneSelfHealStep.heal(db);
+
+    expect(rows.size).toBe(0);
   });
 
   it("canonicalises a lower-case environment value before storing it", async () => {

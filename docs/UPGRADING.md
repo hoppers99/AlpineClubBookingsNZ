@@ -112,12 +112,28 @@ so the platform keeps its own daylight-saving rules.
 It deliberately does **not** write a time zone into it, because SQL cannot read
 your container's environment and guessing `Pacific/Auckland` would silently
 reassign the civil time of any club running on another zone. Instead, **the first
-time the upgraded application starts, it copies the zone it is already
-effectively using** — your existing `TZ`, or `NEXT_PUBLIC_TZ`, or
-`Pacific/Auckland` if neither is set — into the new setting. So the displayed
-time before and after this upgrade is the same, whatever zone you run on.
-No stored timestamp and no lodge night is touched, now or ever, by a time zone
-change.
+time the upgraded application starts, it records the zone you are already
+effectively using**, read from your existing `TZ` or `NEXT_PUBLIC_TZ`.
+
+**Displayed times do not change at this upgrade, on any deployment.** They are
+still worked out from `TZ` for now; this release records the setting that takes
+over as the remaining time-zone work ships. No stored timestamp and no lodge
+night is touched, now or ever, by a time zone change.
+
+Three outcomes on that first start, and it is worth knowing which one you get:
+
+- **Your `TZ` names a place** — `Pacific/Auckland`, `Australia/Sydney`, and also
+  older spellings such as `GB` or `NZ-CHAT`. That place is recorded, an older
+  spelling under its modern name: `GB` is recorded as `Europe/London`, `NZ-CHAT`
+  as `Pacific/Chatham`. Same zone, current name.
+- **Neither variable is set** — `Pacific/Auckland` is recorded, the generic New
+  Zealand default.
+- **Your `TZ` names no place** — `UTC`, `Etc/UTC` (a common container default),
+  `Etc/GMT-12`. Then **nothing is recorded**, deliberately: no place on earth has
+  "UTC" as its civil time, so anything the upgrade picked would be a guess. The
+  setup checklist reports the step as *blocked* and names the value it could not
+  use, and a Full Administrator chooses the club's zone at `/admin/club-time`.
+  Displayed times are unaffected in the meantime.
 
 **Between `prisma migrate deploy` and that first start** the setting is empty, and
 the application falls back to exactly the same environment value it used before —
@@ -130,13 +146,16 @@ still says the zone has not been recorded, the app has not restarted since the
 migration — restart it, or run `npm run config:self-heal`, which does the same
 backfill without a restart.
 
-**The habit that stops working.** `TZ` and `NEXT_PUBLIC_TZ` are now a **seed
-only**. Once the setting is recorded, editing them no longer changes what members
-see — change the zone in-app instead. Leave them set as they are; they are still
-read on a fresh install and they still feed the display call sites epic #2988 has
-not migrated yet. And note the two are genuinely different things: the club's
-time zone is now a club setting, and the container's own clock setting is
-deliberately irrelevant to it.
+**Do not remove `TZ` yet, and this is the one thing that can bite you.** It is
+becoming a seed rather than the authority, but it still drives displayed times
+today, and it is what the first start after this upgrade copies the club's zone
+*from*. An operator who tidies `TZ=Australia/Sydney` out of the environment in the
+same deploy hands the upgrade nothing to copy, and gets `Pacific/Auckland`
+recorded instead. Leave it exactly as it is, confirm the setup checklist after
+cutover, and keep it in step with the in-app setting from then on.
+
+The two remain genuinely different things: the club's time zone is a club
+setting, and the container's own clock is not the club's civil time.
 
 **Who may change it.** Full Administrators only, with an explicit confirmation,
 and every change is audited (`CLUB_TIME_ZONE_UPDATED`) with the administrator and

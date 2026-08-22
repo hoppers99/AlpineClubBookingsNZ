@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { CLUB_TIME_SETTINGS_ID } from "@/lib/club-time-zone";
 import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import {
   computeMembershipTypeRateGaps,
@@ -7,6 +8,22 @@ import {
 import { collapseHutFeeColumns } from "@/lib/public-hut-fee-columns";
 import { getXeroTokenReadability } from "@/lib/xero-token-store";
 import { getStripeSetupState } from "@/lib/stripe-config";
+
+/**
+ * The sentinel a failed `ClubTimeSettings` read resolves to, so "the read did
+ * not answer" stays distinguishable from "there is no row" all the way to the
+ * readiness check. A symbol rather than a string or a null, so no value the
+ * database could hold is able to impersonate it.
+ */
+const CLUB_TIME_SETTINGS_UNREADABLE: unique symbol = Symbol(
+  "club-time-settings-unreadable",
+);
+
+/** What the guarded `ClubTimeSettings` read resolves to: a row, no row, or neither. */
+type ClubTimeSettingsRead =
+  | { timeZone: string }
+  | null
+  | typeof CLUB_TIME_SETTINGS_UNREADABLE;
 
 /**
  * Build the database half of the setup-readiness snapshot (C8 #1987).
@@ -127,10 +144,24 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     // stored yet" and the readiness check says so. Validation is NOT done here —
     // the check itself judges the value, so the snapshot stays a plain report of
     // what the database holds.
-    prisma.clubTimeSettings.findUnique({
-      where: { id: "default" },
-      select: { timeZone: true },
-    }),
+    //
+    // DEFENSIVE, like `getDefaultLodgeCapacity` and the Xero/Stripe probes below
+    // (#2989 review). This is the newest table in the schema, so it is the one
+    // most likely to be absent on a database a migration has not reached — and
+    // unguarded inside this `Promise.all` that single failure rejects the whole
+    // snapshot, which `/admin/setup` renders as a 500 for every step rather than
+    // as one unread setting. The failure is reported rather than swallowed to
+    // null: "no row yet" carries the remedy "the app records it on the next
+    // start", which is not the remedy for a table that does not exist.
+    prisma.clubTimeSettings
+      .findUnique({
+        where: { id: CLUB_TIME_SETTINGS_ID },
+        select: { timeZone: true },
+      })
+      // Annotated so the sentinel keeps its `unique symbol` type through the
+      // handler: without it the inferred return widens to `symbol` and the
+      // `=== CLUB_TIME_SETTINGS_UNREADABLE` check below stops narrowing.
+      .catch((): ClubTimeSettingsRead => CLUB_TIME_SETTINGS_UNREADABLE),
     // Public {{hut-fees}} embed opt-in (#2129). Only when this is ON does the
     // single-rate-column readiness warning below apply.
     prisma.publicContentSettings.findUnique({
@@ -376,6 +407,10 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     // yet": the boot backfill keys on the ROW existing, so it will never replace
     // a bad value, and telling the operator "the app will store this on the next
     // boot" would then be untrue.
-    clubTimeZone: clubTimeSettings?.timeZone ?? null,
+    clubTimeZone:
+      clubTimeSettings === CLUB_TIME_SETTINGS_UNREADABLE
+        ? null
+        : (clubTimeSettings?.timeZone ?? null),
+    clubTimeZoneUnreadable: clubTimeSettings === CLUB_TIME_SETTINGS_UNREADABLE,
   };
 }

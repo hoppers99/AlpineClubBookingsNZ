@@ -13,15 +13,19 @@ their original module so no importer, no document and no schema comment had to
 change. So the club-timezone backfill step carries no size debt at all.
 
 file: src/lib/setup-readiness.ts
-lines: 1731
+lines: 1841
 reason: this is the change. The setup checklist gains a seventeenth step, and the
   sixteen already there are all defined in this file and assembled into the
   readiness report a few lines below them. A seventeenth check in its own module
   would be the only one, splitting one contract across two places for the sake of
-  a line count. Roughly half the growth is the four-state decision written out
-  where the next reader meets it — in particular why an absent row BLOCKS rather
-  than warns on a fresh install, and why a missing snapshot refuses to answer
-  from the environment instead of guessing.
+  a line count. The growth is mostly the SIX states this one check has to
+  distinguish and the reason each is worded as it is — why an absent row BLOCKS
+  rather than warns on a fresh install; why a missing snapshot refuses to answer
+  from the environment instead of guessing; and why, when the environment names no
+  place at all, the message names the raw value and no zone rather than printing a
+  fallback that is not in force. Two review lenses independently found that last
+  one reported `Pacific/Auckland` as "in effect right now" on a deployment running
+  on UTC, so the wording is the fix, not decoration.
 
 file: src/components/admin-sidebar.tsx
 lines: 1078

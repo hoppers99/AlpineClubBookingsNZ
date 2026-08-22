@@ -1,9 +1,10 @@
 import type { AgeTier } from "@prisma/client";
 import {
+  CLUB_TIME_SETTINGS_ID,
+  CLUB_TIME_ZONE_FALLBACK,
   normaliseClubTimeZone,
-  readEnvironmentClubTimeZoneSeed,
-  resolveClubTimeZone,
 } from "@/lib/club-time-zone";
+import { classifyEnvironmentClubTimeZoneSeed } from "@/lib/club-time-zone-env";
 import { EMAIL_MESSAGE_SETTINGS_ID } from "@/lib/email-message-settings";
 import { prisma } from "@/lib/prisma";
 
@@ -40,10 +41,6 @@ import { prisma } from "@/lib/prisma";
 
 const CLUB_IDENTITY_SETTINGS_ID = "default";
 const LODGE_SETTINGS_ID = "default";
-// Mirrors CLUB_TIME_SETTINGS_ID in `src/lib/club-time-zone-settings.ts`, kept as
-// a literal here for the same reason the two ids above are: that module imports
-// "server-only" and this one is imported by the tsx setup CLI.
-const CLUB_TIME_SETTINGS_ID = "default";
 
 /**
  * Upper bound on lodge capacity, mirroring the admin lodge-settings editor
@@ -245,11 +242,21 @@ export async function readWizardConfigState(
   const capacity =
     typeof lodge?.capacity === "number" ? lodge.capacity : null;
 
-  // The current EFFECTIVE club timezone: the persisted row wins, and only when
-  // it is absent (or somehow unusable) does the environment seed and then the
-  // documented default answer. Same precedence as the canonical reader
-  // `getClubTimeZone`, reached through the same pure resolver so the CLI's
-  // prompt default can never disagree with what the app reports.
+  // The current EFFECTIVE club timezone, offered as the prompt's default: the
+  // persisted row wins, and only when it is absent (or somehow unusable) does the
+  // environment answer, with the documented New Zealand default as the last
+  // resort.
+  //
+  // The environment leg goes through the PRESERVATION rule, exactly as the boot
+  // backfill and the seed do (#2989 review). A deployment running on `TZ=GB` has
+  // been keeping Europe/London time for years, so Europe/London is what the
+  // operator must be offered; offering Pacific/Auckland — which is what running
+  // the operator-input validator over `GB` produces — would move the club the
+  // moment they pressed Enter on a default they had every reason to trust. Where
+  // the environment names no place at all (`TZ=UTC`) there is nothing to
+  // preserve, so the documented default is offered and the operator is the one
+  // who confirms it. That is not the silent substitution the backfill had to
+  // avoid: here the value is on screen and a person is answering for it.
   //
   // Note the ROW's existence is deliberately NOT folded into the
   // "already configured" flags below: the boot-time backfill
@@ -257,10 +264,14 @@ export async function readWizardConfigState(
   // boot of an empty install, so treating it as configuration would make a
   // genuinely fresh database announce "the database already holds club
   // configuration" and demand an overwrite confirmation.
-  const timeZone = resolveClubTimeZone(
-    typeof clubTime?.timeZone === "string" ? clubTime.timeZone : null,
-    readEnvironmentClubTimeZoneSeed(),
-  );
+  const environmentSeed = classifyEnvironmentClubTimeZoneSeed();
+  const timeZone =
+    normaliseClubTimeZone(
+      typeof clubTime?.timeZone === "string" ? clubTime.timeZone : null,
+    ) ??
+    (environmentSeed.kind === "preserved"
+      ? environmentSeed.timeZone
+      : CLUB_TIME_ZONE_FALLBACK);
 
   return {
     hasClubIdentity: Boolean(trimOptional(identity?.name)),

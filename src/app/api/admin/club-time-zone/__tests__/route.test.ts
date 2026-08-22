@@ -119,9 +119,15 @@ const h = vi.hoisted(() => {
   const tx = makeClient();
   const prisma = {
     ...root.client,
-    $transaction: vi.fn(async (callback: (client: unknown) => unknown) =>
-      callback(tx.client),
-    ),
+    // The second parameter is declared so the isolation option this route passes
+    // is RECORDED. Without it `mock.calls[0][1]` does not typecheck and the
+    // "Serializable" assertion below could not be written at all.
+    $transaction: vi.fn<
+      (
+        callback: (client: unknown) => unknown,
+        options?: unknown,
+      ) => Promise<unknown>
+    >(async (callback) => callback(tx.client)),
   };
 
   return {
@@ -322,6 +328,7 @@ describe("GET /api/admin/club-time-zone — Full Admin only", () => {
         source: "persisted",
         updatedAt: CHANGED_AT.toISOString(),
         updatedByName: "Ada Lovelace",
+        unusableStoredValue: null,
       },
     });
   });
@@ -339,6 +346,7 @@ describe("GET /api/admin/club-time-zone — Full Admin only", () => {
         source: "environment",
         updatedAt: null,
         updatedByName: null,
+        unusableStoredValue: null,
       },
     });
   });
@@ -349,6 +357,35 @@ describe("GET /api/admin/club-time-zone — Full Admin only", () => {
     expect((await response.json()).state).toMatchObject({
       timeZone: "Pacific/Auckland",
       source: "persisted",
+    });
+  });
+
+  it("reports an unusable stored value as its own state, and names it", async () => {
+    /*
+      A hand-edit, a bad restore, or an ICU that dropped the zone. The row
+      EXISTS, so the boot backfill's row-level presence check will never repair
+      it — which is why this cannot be reported as "environment". It was, and the
+      panel then told the operator that restarting the app would record it, which
+      can never work (#2989 review). The raw stored text travels so the panel can
+      NAME it; making it printable is the renderer's job.
+    */
+    setPersisted({
+      timeZone: "NZT",
+      updatedByMemberId: "member-previous",
+      updatedAt: CHANGED_AT,
+    });
+    process.env.TZ = "Pacific/Chatham";
+
+    const response = await get();
+    expect(await response.json()).toEqual({
+      state: {
+        // The zone actually in force, never the unusable text.
+        timeZone: "Pacific/Chatham",
+        source: "persisted-unusable",
+        updatedAt: CHANGED_AT.toISOString(),
+        updatedByName: "Ada Lovelace",
+        unusableStoredValue: "NZT",
+      },
     });
   });
 
@@ -408,6 +445,7 @@ describe("PUT /api/admin/club-time-zone — authorisation", () => {
         source: "persisted",
         updatedAt: CHANGED_AT.toISOString(),
         updatedByName: "Ada Lovelace",
+        unusableStoredValue: null,
       },
     });
   });
@@ -557,6 +595,75 @@ describe("PUT /api/admin/club-time-zone — the audit row", () => {
     expect(h.tx.client.auditLog.create).not.toHaveBeenCalled();
     // The dirty gate is a READ and nothing else.
     expect(h.tx.touched).toEqual(["clubTimeSettings.findUnique"]);
+  });
+});
+
+describe("PUT /api/admin/club-time-zone — a concurrent save cannot lie", () => {
+  const CHANGE = { timeZone: "Pacific/Chatham", confirmed: true };
+
+  it("runs the read and the write at Serializable isolation", async () => {
+    await put(CHANGE);
+    /*
+      Prisma's default is READ COMMITTED, where `findUnique` takes no row lock.
+      Two Full Admins saving at once would then each read Auckland and each write
+      — one to Chatham, one to Denver — and the audit trail would claim two
+      changes FROM Auckland. "Who changed it, and what was it before" would
+      answer wrongly, and the intermediate zone would appear nowhere at all. The
+      isolation level is the whole fix, so it is asserted directly rather than
+      inferred from the re-read being inside the transaction (it always was, and
+      that never stopped this).
+    */
+    expect(h.prisma.$transaction.mock.calls[0][1]).toEqual({
+      isolationLevel: "Serializable",
+    });
+  });
+
+  it.each([
+    ["P2034", "the serialisation failure Serializable raises"],
+    ["P2028", "an exhausted transaction timeout"],
+    ["P2002", "the create arm losing a first-write race"],
+  ])("answers %s (%s) with a retryable 503, touching nothing", async (code) => {
+    h.prisma.$transaction.mockImplementation(async () => {
+      throw Object.assign(new Error("conflict"), { code });
+    });
+
+    const response = await put(CHANGE);
+    expect(response.status).toBe(503);
+    expect((await response.json()).error).toContain("try again");
+    expect(h.tx.touched).toEqual([]);
+  });
+
+  it("answers 503 when the COMMIT loses the race, after the work has run", async () => {
+    // The realistic shape: the callback completes, and the database refuses the
+    // commit. The row and the audit row are rolled back together — which a
+    // Prisma double cannot demonstrate, so what is asserted is that the caller
+    // is never handed a state that would read as a successful save.
+    h.prisma.$transaction.mockImplementation(
+      async (callback: (client: unknown) => unknown) => {
+        await callback(h.tx.client);
+        throw Object.assign(new Error("could not serialize access"), {
+          code: "P2034",
+        });
+      },
+    );
+
+    const response = await put(CHANGE);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "Another update is in progress — try again shortly.",
+    });
+  });
+
+  it("does not dress a failure that is NOT contention up as one", async () => {
+    // A missing table or a broken connection is not "try again shortly", and
+    // hiding it behind that message would hide it from whoever has to fix it.
+    h.prisma.$transaction.mockImplementation(async () => {
+      throw Object.assign(new Error("relation does not exist"), {
+        code: "P2021",
+      });
+    });
+
+    await expect(put(CHANGE)).rejects.toThrow("relation does not exist");
   });
 });
 

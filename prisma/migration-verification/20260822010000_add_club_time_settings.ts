@@ -7,7 +7,7 @@ import type { DataMigrationVerification } from "./types";
  * WHY A FIXTURE FOR A MIGRATION THAT REWRITES NOTHING. This migration is two
  * `CREATE` statements, so `scripts/check-data-migration-verification.sh`
  * classifies it as shape-only and demands nothing. It ships a fixture anyway,
- * because on this table the SHAPE *is* the behaviour, in three specific ways that
+ * because on this table the SHAPE *is* the behaviour, in four specific ways that
  * a reader of the schema file cannot check and `Migration drift check` does not
  * distinguish from any other passing migration:
  *
@@ -19,7 +19,18 @@ import type { DataMigrationVerification } from "./types";
  *  2. The `id` default is exactly `'default'`. Every read and write is
  *     `where: { id: "default" }`. Any other default and the row the backfill
  *     writes is invisible to the application that wrote it.
- *  3. The table is EMPTY afterwards. This is the substantive decision in the
+ *  3. `id` carries a PRIMARY KEY. This is the property a review found unpinned,
+ *     and it is the strongest of the four: it is what makes `where: { id: ... }`
+ *     a `findUnique` at all, and it is the SOLE reason the documented blue/green
+ *     double-boot race raises the `P2002` that `isUniqueConstraintError` handles
+ *     — without it two simultaneous colour boots insert two `'default'` rows and
+ *     the "one row, never overwritten" guarantee is gone. Deleting the constraint
+ *     line leaves valid SQL and left every other expectation here passing: `id`
+ *     keeps its explicit `NOT NULL` so the column shape is byte-identical, the
+ *     table is still empty, and the index query filters on the other index by
+ *     name. So the fixture would have gone green on a table with no unique
+ *     constraint on its key.
+ *  4. The table is EMPTY afterwards. This is the substantive decision in the
  *     migration rather than an accident of it: SQL cannot read `process.env.TZ`,
  *     so seeding `'Pacific/Auckland'` here would silently reassign the civil time
  *     of every club running on any other zone. Preserving each deployment's
@@ -104,6 +115,26 @@ const verification: DataMigrationVerification = {
         },
         {
           claim:
+            "id is the PRIMARY KEY — the unique constraint that makes findUnique work and that turns a raced double-boot insert into the P2002 the backfill handles",
+          sql: `SELECT tc."constraint_name", tc."constraint_type", kcu."column_name"
+                  FROM information_schema.table_constraints tc
+                  JOIN information_schema.key_column_usage kcu
+                    ON kcu."constraint_name" = tc."constraint_name"
+                   AND kcu."table_schema" = tc."table_schema"
+                 WHERE tc."table_schema" = current_schema()
+                   AND tc."table_name" = 'ClubTimeSettings'
+                   AND tc."constraint_type" = 'PRIMARY KEY'
+                 ORDER BY kcu."ordinal_position"`,
+          rows: [
+            {
+              constraint_name: "ClubTimeSettings_pkey",
+              constraint_type: "PRIMARY KEY",
+              column_name: "id",
+            },
+          ],
+        },
+        {
+          claim:
             "the updatedByMemberId index the schema declares exists, and indexes updatedByMemberId",
           sql: `SELECT "indexname", "indexdef" FROM pg_indexes
                  WHERE "schemaname" = current_schema()
@@ -134,6 +165,16 @@ const verification: DataMigrationVerification = {
         'Every read and write of this singleton is `where: { id: "default" }`. With any other default, a row inserted without an explicit id — which is what a create-if-absent upsert from an older client or a hand-written INSERT does — is invisible to the application that wrote it, so the club never appears configured and the backfill re-runs forever.',
       find: "\"id\" TEXT NOT NULL DEFAULT 'default'",
       replace: "\"id\" TEXT NOT NULL DEFAULT 'club'",
+    },
+    {
+      name: "the PRIMARY KEY on id is dropped",
+      harm:
+        "`where: { id: \"default\" }` stops being a unique lookup, and — the part that actually breaks — two colours booting simultaneously both INSERT a 'default' row instead of one of them raising P2002. The backfill's whole never-overwrite guarantee rests on that constraint, so the club could end up with two timezone rows and the reader returning whichever the planner happened to reach first.",
+      // Replaces the key with an always-true CHECK rather than deleting the
+      // line: same single-line edit, still valid SQL, and it leaves the table
+      // with NO unique constraint on `id` — which is the property under test.
+      find: 'CONSTRAINT "ClubTimeSettings_pkey" PRIMARY KEY ("id")',
+      replace: 'CONSTRAINT "ClubTimeSettings_pkey" CHECK (true)',
     },
     {
       name: "the index is built over the wrong column",

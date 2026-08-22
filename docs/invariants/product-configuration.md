@@ -84,8 +84,21 @@ home for that explanation and is not repeated here.
   *not* requiring a primary `config/club.json` — the value it copies comes from
   the environment, not from that file, and since #1987 an absent `club.json` is
   normal for a database-first install. `Pacific/Auckland` is the generic New
-  Zealand distribution default and applies only where no prior effective
-  configuration exists at all.
+  Zealand distribution default and applies only where **nothing** was configured.
+- **A preservation path uses a different normalisation from an operator's input,
+  and the difference is deliberate.** The input validator judges the shape of what
+  was typed *before* asking the runtime, so `EST` is refused rather than widened
+  into `America/Panama`: an abbreviation names no place, so it promises nothing
+  about the next daylight-saving change. A backfill is not approving anybody's
+  choice — it is recording a zone a deployment has been running on for years — so
+  it probes first and judges the *resolved* identifier, which preserves the
+  thirty-six legacy spellings that do name a real place (`GB` to `Europe/London`,
+  `NZ-CHAT` to `Pacific/Chatham`). Applying the input rule there substitutes the
+  New Zealand default and moves the club, which is the defect two review lenses
+  found independently on #2989. Where the environment names **no** place — `UTC`,
+  `Etc/GMT` offsets, `SystemV/*` — nothing is recorded at all, because every
+  candidate would be a guess, and the unconfigured state is then visible on the
+  setup checklist per `INV-CONFIG-001`.
 - **Changing it afterwards is guarded maintenance, and it rewrites nothing.**
   Full Admin only, explicitly confirmed, and audited with the actor and the
   before/after zone and no other payload. No stored instant moves and no

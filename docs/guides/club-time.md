@@ -23,14 +23,22 @@ change. A fixed number of hours would quietly be wrong for half the year.
 | **Club time zone** | The club's civil time — what every member sees, and when club-local scheduled work runs | You, here |
 | Server / container time zone | The clock of the machine the software happens to run on | Whoever runs the server |
 
-Once the club time zone is recorded here, the server's own clock setting no
-longer changes any business answer. A member opening the site from London sees
-exactly the same club times as a member standing in the lodge; the browser never
-converts anything to the reader's own time.
+**Recorded here now; in force as the rest of the time-zone work ships.** This
+page is where the club's time zone is *recorded*, and it is the setting the whole
+product is moving onto. Today the times the site displays are still worked out
+from the `TZ` value the server was started with. So while both exist, **keep the
+two in step**: if you change the zone here, change `TZ` to match. What is already
+true, and permanent: nothing on this page rewrites anything already recorded.
 
-Changing the club time zone is a **Full Administrator** job. It needs an explicit
-confirmation, and every change is written to the audit log with who made it and
-what it was before.
+A member opening the site from London sees exactly the same club times as a
+member standing in the lodge: the browser never converts anything to the reader's
+own time. That part is already true.
+
+Changing the club time zone on this page is a **Full Administrator** job. It
+needs an explicit confirmation, and every such change is written to the audit log
+with who made it and what it was before. (The one other way it can be set is
+`npm run setup` at the command line, by whoever runs the server. That is not
+audited the same way, because there is no signed-in administrator to record.)
 
 ## When you'd use it
 
@@ -40,7 +48,8 @@ what it was before.
   time zone the installation was already effectively using — it does not reset
   anyone to New Zealand — and this page is where you confirm that.
 - **A club outside New Zealand is running this software.** Set the club's own
-  zone here; nothing else in the product needs changing.
+  zone here, and — while the note above still applies — set the server's `TZ` to
+  match it.
 - **The club genuinely moves**, or the zone was recorded wrongly at setup and
   displayed times have been out by an hour or a day.
 
@@ -62,6 +71,16 @@ there is nothing to embed. It gets one when the manifest gains the page.)*
      the app records it; so does running `npm run config:self-heal`.
    - **Default** — nothing has been recorded and the server says nothing either,
      so the platform is using `Pacific/Auckland`.
+   - **Not usable** — something *is* recorded, but it is not a zone this app can
+     use: a hand-edit, or a restore that brought back a bad value. The platform
+     falls back to `Pacific/Auckland`, and restarting will **not** repair it —
+     only saving a zone here will. The page names the unusable value so you can
+     see what is stored.
+
+   The setup checklist has one further state the page does not: **could not be
+   read**, which means the setting itself could not be loaded (typically the
+   database migration has not run yet). That is a deployment problem, not a
+   configuration one.
 
 ### 2. Change it
 
@@ -73,8 +92,8 @@ there is nothing to embed. It gets one when the manifest gains the page.)*
 4. Tick the acknowledgement, then **Save**.
 
 If you are not a Full Administrator the page tells you so and offers nothing to
-change. Ask a Full Administrator; the restriction is deliberate, because this one
-setting moves every displayed time in the product.
+change. Ask a Full Administrator; the restriction is deliberate, because this
+setting decides every displayed time in the product.
 
 ### 3. What changing it does and does not do
 
@@ -84,11 +103,15 @@ same date; an invoice keeps its date. Nothing is edited, converted, or migrated.
 
 **What does change:**
 
-- **How recorded moments are displayed from now on.** A booking created at a
-  particular instant is still that same instant — it is simply written out in the
-  new zone, so its date or clock time on screen can read differently.
-- **When club-local scheduled work runs.** Overnight jobs are scheduled at a
-  club-local hour, so they move with the zone.
+- **Which zone recorded moments are written in, from then on.** A booking created
+  at a particular instant is still that same instant — it is simply written out in
+  the new zone, so its date or clock time on screen can read differently.
+- **The club-local hour overnight work runs at.** Scheduled jobs are set by a
+  club-local time, so they move with the zone.
+
+Both of those follow the note in **What it is** while `TZ` still exists: today the
+displayed times come from `TZ`, and this setting takes over as the rest of the
+time-zone work ships. Keep the two the same and the distinction never matters.
 
 **Lodge nights are unaffected.** A stay is a set of calendar dates — "the nights
 of 12 and 13 July" — and calendar dates are not converted by a time zone change.

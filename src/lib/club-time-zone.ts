@@ -120,7 +120,9 @@ export function normaliseClubTimeZone(
 
 /**
  * The canonical zone for a value whose job is to be PRESERVED rather than
- * approved — the boot backfill and the seed, and nothing else.
+ * approved rather than typed: the boot backfill, the seed, and the environment
+ * leg of {@link resolveClubTimeZone} — every context whose input is a zone a
+ * deployment is ALREADY running on, and no context where a person chose it.
  *
  * IT DIFFERS FROM {@link normaliseClubTimeZone} IN ONE ORDERING, AND THAT
  * ORDERING IS THE WHOLE POINT (#2989 review, found independently by two lenses).
@@ -200,9 +202,26 @@ export function resolveClubTimeZone(
   persisted: string | null | undefined,
   environmentTimeZone: string | null | undefined,
 ): string {
+  /*
+    THE TWO LEGS USE DIFFERENT NORMALISERS, AND THAT IS THE POINT (#2989 review).
+
+    The persisted leg is STRICT: a stored value passed the input validator when it
+    was written, so one that fails now is corrupt — a hand-edit, a bad restore —
+    and falling through is the safe reading.
+
+    The environment leg is a PRESERVATION context, and it is the only thing this
+    function's second argument is ever for: it answers "what is this deployment
+    already effectively using" for the window between `prisma migrate deploy` and
+    the first boot that records it. Judging it strictly gives the wrong answer for
+    the same thirty-six legacy spellings the backfill had to stop mishandling —
+    `TZ=GB` would report `Pacific/Auckland` here while the deployment runs on
+    `Europe/London` and the backfill is about to record `Europe/London`. The window
+    is one boot wide, and a reader that disagrees with the writer inside it is
+    exactly the class the review found; making the two agree costs one call.
+  */
   return (
     normaliseClubTimeZone(persisted) ??
-    normaliseClubTimeZone(environmentTimeZone) ??
+    normaliseClubTimeZoneForPreservation(environmentTimeZone) ??
     CLUB_TIME_ZONE_FALLBACK
   );
 }

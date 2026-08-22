@@ -328,7 +328,7 @@ export const AUDIT_CENSUS_TOTALS = {
   // `CLUB_IDENTITY_SETTINGS_UPDATED` gives, so it does not join
   // `UNCATEGORISED_AUDIT_WRITERS` below. Measured by RUNNING
   // `npx tsx scripts/audit/audit-writer-census.ts` on this tree (454 sites,
-  // 2106 files scanned), not by adding one to the literal above — which is the
+  // 2109 files scanned), not by adding one to the literal above — which is the
   // only way this file has ever been right after a merge.
   writeSites: 454,
   /**

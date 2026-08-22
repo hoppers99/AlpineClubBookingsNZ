@@ -6,6 +6,7 @@ import {
   isValidClubTimeZone,
   listSelectableClubTimeZones,
   normaliseClubTimeZone,
+  normaliseClubTimeZoneForPreservation,
   resolveClubTimeZone,
 } from "@/lib/club-time-zone";
 
@@ -161,6 +162,187 @@ describe("normaliseClubTimeZone — refuses everything that is not a place", () 
   it("refuses a shape-valid identifier this runtime does not know", () => {
     // The runtime probe, not the shape rule, is what catches this.
     expect(normaliseClubTimeZone("Pacific/Atlantis")).toBeNull();
+  });
+});
+
+/**
+ * The PRESERVATION validator (CT-1, #2989 review).
+ *
+ * `normaliseClubTimeZoneForPreservation` exists for exactly two callers — the
+ * boot backfill and the seed — and differs from `normaliseClubTimeZone` in one
+ * ordering: it probes `Intl` FIRST and judges only the RESOLVED identifier. That
+ * asymmetry is the fix, and it is asserted head-on further down; without it the
+ * backfill refuses `TZ=GB` and writes `Pacific/Auckland` over a London club.
+ *
+ * Which zone a value canonicalises to is ICU's business and moves between
+ * versions (`Intl.supportedValuesOf` on this runtime holds `Asia/Calcutta` and
+ * not `Asia/Kolkata`), so most of what is asserted here are PROPERTIES: the
+ * result is a valid club zone, and it keeps the same civil time as the value the
+ * deployment was actually running on. Only the mappings that are stable across
+ * every ICU are pinned by name.
+ *
+ * Nothing below reads the clock: `sameCivilTime` formats two FIXED instants, one
+ * in each hemisphere's summer, so an alias whose DST rules differed from its
+ * canonical zone would still be caught and no assertion can rot with the
+ * calendar.
+ */
+const WINTER_NORTH = "2026-01-15T02:30:00.000Z";
+const SUMMER_NORTH = "2026-07-15T02:30:00.000Z";
+
+function civilTimeAt(zone: string, instant: string): string {
+  return new Intl.DateTimeFormat("en-NZ", {
+    timeZone: zone,
+    dateStyle: "short",
+    timeStyle: "medium",
+  }).format(new Date(instant));
+}
+
+/** True when two zone spellings put the same wall clock on the same instants. */
+function sameCivilTime(left: string, right: string): boolean {
+  return [WINTER_NORTH, SUMMER_NORTH].every(
+    (instant) => civilTimeAt(left, instant) === civilTimeAt(right, instant),
+  );
+}
+
+describe("normaliseClubTimeZoneForPreservation — keeps the zone a deployment already runs on", () => {
+  it.each([
+    // The stable half: these four aliases resolve to the same location on every
+    // ICU this will realistically run on, so the location is pinned by name.
+    ["GB", "Europe/London"],
+    ["NZ", "Pacific/Auckland"],
+    ["NZ-CHAT", "Pacific/Chatham"],
+    ["Japan", "Asia/Tokyo"],
+  ])("canonicalises %s to %s", (raw, expected) => {
+    expect(normaliseClubTimeZoneForPreservation(raw)).toBe(expected);
+  });
+
+  it.each(["GB", "NZ", "NZ-CHAT", "EST5EDT", "PST8PDT", "Japan", "US/Pacific"])(
+    "accepts %s, and what it returns is a real place keeping the same civil time",
+    (raw) => {
+      const preserved = normaliseClubTimeZoneForPreservation(raw);
+
+      // A place — and one the rest of the app accepts as a stored value.
+      expect(preserved).not.toBeNull();
+      expect(isValidClubTimeZone(preserved)).toBe(true);
+      // And the club is not moved: the same wall clock, in both DST seasons.
+      expect(sameCivilTime(raw, preserved as string)).toBe(true);
+      // Idempotent, so a second boot cannot canonicalise it again into
+      // something else.
+      expect(normaliseClubTimeZoneForPreservation(preserved)).toBe(preserved);
+    },
+  );
+
+  it("returns a real IANA zone unchanged", () => {
+    for (const zone of [
+      "Pacific/Auckland",
+      "Australia/Sydney",
+      "Pacific/Chatham",
+    ]) {
+      expect(normaliseClubTimeZoneForPreservation(zone)).toBe(zone);
+    }
+  });
+
+  it("canonicalises a case variant and trims surrounding whitespace", () => {
+    expect(normaliseClubTimeZoneForPreservation("  pacific/auckland  ")).toBe(
+      "Pacific/Auckland",
+    );
+  });
+
+  it.each([
+    // Nothing to preserve: no place on earth has any of these as its civil time,
+    // so every candidate zone would be a guess — and a create-if-absent writer
+    // never revisits a guess.
+    "UTC",
+    "GMT",
+    "Zulu",
+    "Universal",
+    "UCT",
+    "Greenwich",
+    "Etc/UTC",
+    "Etc/GMT-12",
+    "Etc/GMT+0",
+    "SystemV/EST5",
+  ])("refuses %s, because it names no place", (value) => {
+    expect(normaliseClubTimeZoneForPreservation(value)).toBeNull();
+  });
+
+  it.each([
+    ["an empty string", ""],
+    ["whitespace only", "   "],
+    ["null", null],
+    ["undefined", undefined],
+    ["an abbreviation no runtime knows", "NZT"],
+    ["a zone this runtime does not know", "Pacific/Atlantis"],
+    ["a bare fixed offset", "+12:00"],
+  ])("refuses %s", (_label, value) => {
+    expect(normaliseClubTimeZoneForPreservation(value)).toBeNull();
+  });
+
+  it("refuses a value longer than the column allows", () => {
+    // Checked BEFORE the probe, so an absurd environment value cannot reach a
+    // VarChar(64) column by way of a short canonical spelling.
+    const overLong = `A/${"b".repeat(CLUB_TIME_ZONE_MAX_LENGTH)}`;
+    expect(overLong.length).toBeGreaterThan(CLUB_TIME_ZONE_MAX_LENGTH);
+    expect(normaliseClubTimeZoneForPreservation(overLong)).toBeNull();
+  });
+});
+
+describe("the two validators differ EXACTLY as designed", () => {
+  it.each(["GB", "NZ", "NZ-CHAT", "EST5EDT", "PST8PDT", "Japan"])(
+    "refuses %s as operator input and preserves it as an existing deployment's zone",
+    (value) => {
+      // THIS ASYMMETRY IS THE FIX. The left-hand side is why an operator cannot
+      // type `GB` into the admin panel: it names no place, so it promises
+      // nothing about next spring's rules. The right-hand side is why a
+      // deployment already running on `TZ=GB` keeps Europe/London instead of
+      // being moved to New Zealand by its own upgrade.
+      expect(normaliseClubTimeZone(value)).toBeNull();
+      expect(normaliseClubTimeZoneForPreservation(value)).not.toBeNull();
+    },
+  );
+
+  it("agrees on a real named zone, however it is spelled", () => {
+    for (const zone of ["Pacific/Auckland", "pacific/auckland", "US/Pacific"]) {
+      expect(normaliseClubTimeZoneForPreservation(zone)).toBe(
+        normaliseClubTimeZone(zone),
+      );
+    }
+  });
+
+  it("agrees that a fixed offset or an unknown zone is refused", () => {
+    for (const value of [
+      "UTC",
+      "Etc/GMT-12",
+      "SystemV/EST5",
+      "NZT",
+      "Pacific/Atlantis",
+      "",
+      null,
+      undefined,
+    ]) {
+      expect(normaliseClubTimeZone(value)).toBeNull();
+      expect(normaliseClubTimeZoneForPreservation(value)).toBeNull();
+    }
+  });
+
+  it("never preserves anything the app would then refuse to use", () => {
+    // The two run at different moments — one writes the row, the other reads it
+    // — so a value the preservation rule accepted and the reader rejected would
+    // be written once and reported as broken for ever.
+    for (const value of [
+      "GB",
+      "NZ",
+      "NZ-CHAT",
+      "EST5EDT",
+      "PST8PDT",
+      "Japan",
+      "US/Pacific",
+      "Pacific/Auckland",
+      "australia/sydney",
+    ]) {
+      const preserved = normaliseClubTimeZoneForPreservation(value);
+      if (preserved !== null) expect(isValidClubTimeZone(preserved)).toBe(true);
+    }
   });
 });
 
