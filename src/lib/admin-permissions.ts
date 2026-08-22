@@ -330,6 +330,15 @@ const ROUTE_AREA_PREFIXES: Array<{
       "/admin/config-transfer",
       "/admin/setup",
       "/admin/modules",
+      // Club Time — the one persisted IANA club timezone (CT-1 #2989, epic
+      // #2988). Registered under support alongside /admin/modules and
+      // /admin/config-transfer so an unregistered path never falls back to the
+      // overview catch-all and the sidebar's matrix check resolves. The AREA
+      // only decides who can reach the surface: reading AND changing the club
+      // timezone remain Full Admin regardless of area level (enforced in the
+      // routes), exactly like the backups credential + destination writes below.
+      "/admin/club-time",
+      "/api/admin/club-time-zone",
       // Login & Security page (epic #2030, child #2033): password policy today;
       // magic-link / Google sign-in cards land here in #2034/#2035. Pinned to
       // `support` alongside /admin/modules and the other system-config surfaces.

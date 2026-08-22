@@ -231,6 +231,9 @@ procedure.
   operating the Xero member-grouping cutover.
 - [Backups](../guides/backups.md) — S3-backed PostgreSQL backups, configured
   in-app, run on demand or nightly, with a scripted restore drill.
+- [Club Time Zone](../guides/club-time.md) — the one time zone the club runs on,
+  recorded in-app rather than taken from the server's clock. Full Administrator
+  only, confirmed and audited, and it rewrites nothing already recorded.
 
 ## Releases
 

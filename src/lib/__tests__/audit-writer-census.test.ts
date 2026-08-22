@@ -1257,7 +1257,11 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // land unpinned for the same reason — categorised at the site, named in none
     // of the four maps. 453 sites measured minus 127 pinned. `pinned` is again
     // unchanged, so no existing classification moved in this merge either.
-    ).toEqual({ pinned: 127, unpinned: 326 });
+    // 326 -> 327 (CT-1, #2989): the club-timezone writer. Categorised `admin` at
+    // the site and named in none of the four per-site maps, so it lands unpinned
+    // like every other new feature's writer. 454 sites measured minus 127 pinned;
+    // `pinned` is unchanged, which is the point — no existing classification moved.
+    ).toEqual({ pinned: 127, unpinned: 327 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

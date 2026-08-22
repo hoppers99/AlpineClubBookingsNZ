@@ -142,8 +142,21 @@ never overwrites an admin edit. Healing runs **only from a valid primary
 frozen into the DB, and self-repairs on a later boot once the primary is fixed
 (the manual `npm run config:self-heal` exits non-zero on such a fallback skip).
 This is what lets later collapse work drop the file/env fallbacks without
-stranding a live deploy. See "Config self-heal on boot" in `docs/DEPLOYMENT.md`
-and `src/lib/config-self-heal.ts`.
+stranding a live deploy. See "Config self-heal on boot" in `docs/DEPLOYMENT.md`,
+`src/lib/config-self-heal.ts` (the runner) and `src/lib/config-self-heal-steps.ts`
+(the step definitions, split out in #2989 when the module reached its size
+budget; every export is still re-exported from the runner, so nothing that
+imported it had to change).
+
+**One step is deliberately exempt from that `config/club.json` guard**: the club
+timezone (#2989). The value it copies comes from `TZ` / `NEXT_PUBLIC_TZ`, not from
+`club.json`, and since #1987 an absent `club.json` is normal for a database-first
+install — so gating it on the file would mean those installs never recorded their
+timezone at all. It therefore runs on every boot regardless of config provenance,
+and it can only ever CREATE the row, never overwrite one. `npm run
+config:self-heal` now prints the results of the steps that did run even on a
+provenance skip, and still exits non-zero, because a partial run is not a
+success.
 
 The **lodge display name** is not stored in club identity: it always resolves
 from the **default lodge**'s `Lodge.name` (edit it under Club Identity > Lodge
@@ -468,8 +481,8 @@ the pattern so an operator can clean each one up by name.
 > YOUTH 10-17, ADULT 18+) is the last-resort safety net if the table is still
 > empty, so age classification never breaks. Nightly RATES are NOT self-healed
 > here — they live independently in `MembershipTypeSeasonRate` (see below). See
-> `src/lib/policies/age-tier.ts`, `src/lib/config-self-heal.ts`, and "Config
-> self-heal on boot" in `docs/DEPLOYMENT.md`.
+> `src/lib/policies/age-tier.ts`, `src/lib/config-self-heal-steps.ts`, and
+> "Config self-heal on boot" in `docs/DEPLOYMENT.md`.
 
 > **Admins may run a contiguous SUBSET of the four slots (#2009).** On
 > `/admin/age-tier-settings` an admin can save any contiguous subset of the four
@@ -1868,7 +1881,7 @@ action; scoped admins cannot merge.
 | Variable                           | Description                                                                                          |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `CURRENCY`, `NEXT_PUBLIC_CURRENCY` | Currency display and server default.                                                                 |
-| `TZ`, `NEXT_PUBLIC_TZ`             | Time zone; this app expects New Zealand date-only booking semantics unless a feature says otherwise. |
+| `TZ`, `NEXT_PUBLIC_TZ`             | **A seed only, since CT-1 (#2989).** The club's time zone is now recorded in the database and edited in-app at **Admin → Setup & Configuration → Club Time Zone** (`/admin/club-time`); see [`docs/guides/club-time.md`](docs/guides/club-time.md). These variables are read for exactly one purpose: on the first start after upgrading, an installation that has no recorded zone copies the value it is *already effectively using* from here, so nothing about its behaviour changes. After that the recorded setting is the authority and editing these variables does not change the club's civil time. They are **not** the server's own clock policy either — that is the container's business and is deliberately irrelevant to what members see. `Pacific/Auckland` is the generic New Zealand default and applies only where neither a recorded zone nor these variables say anything. Store an IANA identifier naming a place (`Pacific/Auckland`); an abbreviation (`NZT`) or a fixed offset (`+12:00`, `Etc/GMT-12`) is refused. The transitional `APP_TIME_ZONE` constant still derives from these for the display call sites epic #2988 has not migrated yet, and CT-6 retires it. Booking dates remain New Zealand date-only lodge nights unless a feature says otherwise. |
 | `LOCALE`, `NEXT_PUBLIC_LOCALE`     | Locale for formatting.                                                                               |
 | ~~`NEXT_PUBLIC_GA_MEASUREMENT_ID`~~ | **Removed as configuration (#2573).** The GA4 measurement id, the consent-banner mode and the banner wording now live **only** in the database, entered in-app at Admin → Integrations → Google Analytics. Nothing in the app reads the environment variable, there is no fallback to it, and its value is **not** imported automatically — so after deploying this release Google Analytics stays inactive until an authorised admin saves a valid measurement id in-app. Remove the variable from your environment. See the Google Analytics section below. |
 | ~~`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`~~ | **Removed as configuration (#2087).** Google OAuth credentials now live **only** in the encrypted `IntegrationCredential` store, entered and verified in-app (Admin → Integrations → Google sign-in). Any legacy `GOOGLE_CLIENT_*` env vars are **detected, warned about, and ignored** — re-enter the credentials in the wizard, then remove the env vars. This reverses the earlier #2035 "bootstrap-class secret, never in the DB" posture by owner decision (epic #2078). See the Google sign-in section below. |

@@ -129,8 +129,51 @@ describe("AdminSidebar", () => {
       "Notifications & Email",
       "Access Roles",
       "Export & Import",
+      // Club Time Zone (CT-1 #2989): the one persisted IANA club time zone.
+      // Full-Admin only, like the two entries above it.
+      "Club Time Zone",
       "Committee",
     ]);
+  });
+
+  it("keeps Club Time Zone out of the sidebar for an admin who is not a Full Admin", () => {
+    // The `fullAdminOnly` flag, proved rather than assumed: a support EDITOR
+    // satisfies the /admin/club-time prefix requirement on the matrix, so the
+    // flag is the only thing keeping the entry out — and the route refuses them
+    // anyway, so showing it would be an offer the app cannot honour.
+    const asSupportEditor = getVisibleAdminNavSections(
+      allOn,
+      {
+        overview: "view",
+        bookings: "none",
+        membership: "none",
+        finance: "none",
+        lodge: "none",
+        content: "none",
+        support: "edit",
+      },
+      false,
+    );
+    const hrefs = asSupportEditor.flatMap((section) =>
+      section.items.map((item) => item.href),
+    );
+    expect(hrefs).not.toContain("/admin/club-time");
+    // …and the same matrix WITH Full Admin does see it.
+    expect(
+      getVisibleAdminNavSections(
+        allOn,
+        {
+          overview: "view",
+          bookings: "none",
+          membership: "none",
+          finance: "none",
+          lodge: "none",
+          content: "none",
+          support: "edit",
+        },
+        true,
+      ).flatMap((section) => section.items.map((item) => item.href)),
+    ).toContain("/admin/club-time");
   });
 
   it("owns Lobby Display once under Lodge Operations and keeps General intact", () => {
