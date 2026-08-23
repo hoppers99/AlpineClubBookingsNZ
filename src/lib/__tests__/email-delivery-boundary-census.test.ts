@@ -380,6 +380,191 @@ describe("email delivery boundary census (INV-CONFIG-004)", () => {
     ).toEqual([]);
   });
 
+  /**
+   * Every module that writes a "sent" TIMESTAMP around a send has to inspect the
+   * outcome (#3035).
+   *
+   * THE CLASS, because the clearance token does not cover it. That token protects
+   * the TRANSPORT; nothing protected the caller's bookkeeping. `sendEmail`
+   * RETURNS `withheld_for_environment` without throwing, so three callers moved
+   * business state as though the message had gone:
+   *
+   * - the pre-arrival cron stamped `preArrivalReminderSentAt` before the send and
+   *   discarded the outcome. The stamp is the only thing the selecting query
+   *   filters on, so it was consumed permanently — and that message carries the
+   *   lodge's door code;
+   * - the quote-expiry cron wrote `reminderSentAt` AND an audit row reading
+   *   `outcome: "success"`, "Sent a pre-expiry reminder";
+   * - the age-up cron had already flipped the tier and minted the invitation
+   *   token, and its `catch`-block rollback never fired because a withhold does
+   *   not throw.
+   *
+   * WHAT THIS CASE IS AND IS NOT. It is a SHAPE census: it finds every module
+   * that both sends and stamps, and requires each to be acknowledged — either as
+   * inspecting the outcome, or as writing a throttle rather than a one-shot
+   * claim. The BEHAVIOUR is pinned where it belongs, in each caller's own suite
+   * (`cron-pre-arrival-reminders.test.ts`, `cron-quote-expiry-reminders.test.ts`,
+   * `cron-age-up.test.ts`, `cron-additional-payment-reminders.test.ts`), which
+   * drive the real function with a withheld outcome and assert the state does not
+   * move. What this adds is that a NEW stamp-writing sender cannot appear
+   * silently: it fails here until somebody has decided which list it belongs in.
+   *
+   * A FULL census over every `outcome: "success"` audit row was considered and
+   * rejected as disproportionate: fifty modules match, and in most of them the
+   * audited action is the business action (a booking was force-confirmed), which
+   * did succeed. Narrowing to a persisted "sent" timestamp is what isolates the
+   * shape that loses a member's mail.
+   */
+  it("acknowledges every module that writes a sent-timestamp around a send", () => {
+    /** Inspects the outcome before it advances state. */
+    const INSPECTS_THE_OUTCOME = [
+      "src/lib/additional-payment-resend-service.ts",
+      "src/lib/cron-additional-payment-reminders.ts",
+      "src/lib/cron-pre-arrival-reminders.ts",
+      "src/lib/cron-quote-expiry-reminders.ts",
+      // The mailer itself: it IS the thing that decides the outcome.
+      "src/lib/email/core.ts",
+      // The retry cron reads the policy directly and returns before it claims a
+      // row, rather than reading a `sendEmail` outcome.
+      "src/lib/cron-email-retry.ts",
+      // Asks `resolveXeroInvoiceEmailPolicy` and returns BEFORE the `emailSentAt`
+      // write when it answers withhold, so the stamp is never reached.
+      "src/lib/xero-subscription-invoices.ts",
+    ];
+
+    /**
+     * Writes a THROTTLE, not a one-shot claim, so a withheld send delays the next
+     * attempt rather than consuming it.
+     *
+     * These are `lastSentAt`-style columns compared against an interval
+     * (`now - lastSentAt < intervalDays`), so the row is selected again after the
+     * interval and the message is not lost. Materially different from a
+     * `preArrivalReminderSentAt: null` filter, which selects a row exactly once.
+     * Left as they are deliberately: a change here would alter re-send cadence,
+     * which is a product decision rather than a defect fix.
+     */
+    const RATE_LIMIT_STAMP_ONLY: Record<string, string> = {
+      "src/lib/nomination.ts":
+        "lastSentAt throttles a re-issue; the nomination stays selectable",
+      "src/lib/placeholder-guest-name-reminders.ts":
+        "attendeeConfirmationLastSentAt is compared against an interval, so the reminder recurs",
+      "src/lib/school-attendee-confirmation.ts":
+        "attendeeConfirmationLastSentAt is compared against an interval, so the reminder recurs",
+      "src/app/api/admin/inductions/route.ts":
+        "emailSentAt records the last operator-driven send; the operator can send again",
+      "src/lib/token-email-recovery.ts":
+        "lastSentAt records an operator-driven token re-issue; the operator can re-drive it",
+    };
+
+    const SEND_CALL = /\b(?:sendEmail|send[A-Za-z0-9]*Email)\s*\(/;
+    // A "sent" instant PERSISTED to the database, which is the shape that can
+    // consume a claim. `attempts`/`status` writes are not this.
+    // Assigned SOMETHING — `now`, `new Date()`, `issuedAt` — and never `true`
+    // (a Prisma `select`) or `null` (a filter, or a claim being handed back).
+    const SENT_STAMP =
+      /\b[A-Za-z]*[sS]entAt\s*:\s*(?!true\b|false\b|null\b|undefined\b)[A-Za-z_{(]/;
+    const INSPECTION_EVIDENCE = [
+      /\.status === "sent"/,
+      /\.status !== "sent"/,
+      /outcome\.status/,
+      /emailPolicy\.kind === "withhold"/,
+      /delivery\.kind/,
+      // `email/core.ts` IS the decider: it reads its own gates rather than a
+      // returned outcome.
+      /environmentGate\.decision !== "send"/,
+    ];
+
+    const senders = walk(SRC)
+      .map((file) => ({ file: repoRelative(file), text: readFileSync(file, "utf8") }))
+      .filter(({ text }) => SEND_CALL.test(text) && SENT_STAMP.test(text))
+      .map(({ file, text }) => ({ file, text }))
+      .sort((a, b) => a.file.localeCompare(b.file));
+
+    /*
+      Anti-vacuity, in two halves. A narrowed pattern that matched nothing would
+      leave this case asserting an empty list against an empty list, which is the
+      exact shape that has gone quietly green in this epic before — so there is a
+      floor. And every file NAMED below has to be found, so a list entry cannot
+      quietly stop describing anything.
+    */
+    const found = senders.map(({ file }) => file);
+    expect(
+      found.length,
+      "almost no stamp-writing senders were found, so this census checked nothing",
+    ).toBeGreaterThan(8);
+    expect(
+      [...INSPECTS_THE_OUTCOME, ...Object.keys(RATE_LIMIT_STAMP_ONLY)]
+        .filter((file) => !found.includes(file))
+        .sort(),
+      "these files are listed below but no longer match the send-and-stamp " +
+        "shape, so their entries assert nothing. Remove them from the list.",
+    ).toEqual([]);
+
+    const unacknowledged = senders
+      .map(({ file }) => file)
+      .filter(
+        (file) =>
+          !INSPECTS_THE_OUTCOME.includes(file) && !(file in RATE_LIMIT_STAMP_ONLY),
+      );
+    expect(
+      unacknowledged,
+      "This module both sends a message and persists a 'sent' timestamp. " +
+        "`sendEmail` RETURNS rather than throws when nothing was transmitted — an " +
+        "environment withhold, a suppressed address, a walk-in placeholder — so a " +
+        "stamp written without inspecting the outcome records a message that never " +
+        "went out. Where the stamp is what the selecting query filters on, the " +
+        "message is then lost permanently. Inspect the outcome and add the file to " +
+        "INSPECTS_THE_OUTCOME, or, if the stamp is a re-send throttle rather than a " +
+        "one-shot claim, add it to RATE_LIMIT_STAMP_ONLY with that reason " +
+        "(INV-CONFIG-004).",
+    ).toEqual([]);
+
+    // Every acknowledged inspector must still LOOK like one. A shape check, not a
+    // behaviour check — the behaviour is pinned in each caller's own suite — but it
+    // is what notices the handling being deleted wholesale.
+    const noLongerInspecting = INSPECTS_THE_OUTCOME.filter((file) => {
+      const sender = senders.find((entry) => entry.file === file);
+      if (!sender) return true;
+      return !INSPECTION_EVIDENCE.some((pattern) => pattern.test(sender.text));
+    });
+    expect(
+      noLongerInspecting,
+      "These modules are recorded as inspecting the mailer's outcome and no " +
+        "longer appear to (or no longer write a sent-timestamp at all). Update the " +
+        "lists in this case rather than leaving one asserting something untrue.",
+    ).toEqual([]);
+
+    /*
+      THE STATED BLIND SPOT, pinned by hand. A claim does not have to be a
+      timestamp, and the worst instance of this class is not one: the age-up cron
+      commits a tier flip, a login and a minted invitation token, and its own
+      re-check then skips the member for good. There is no general shape for
+      "consumed a claim", so the two claimants that are not timestamps are named
+      here and each must still show it reads the outcome.
+    */
+    const NON_TIMESTAMP_CLAIMANTS: Record<string, string> = {
+      "src/lib/cron-age-up.ts":
+        "the tier flip, the login and the minted invitation token ARE the claim; a withheld invitation is rolled back",
+      "src/lib/booking-request-quotes.ts":
+        "reports emailDelivered to the officer who pressed Send, and audits on it",
+    };
+    const claimantsNotInspecting = Object.keys(NON_TIMESTAMP_CLAIMANTS).filter(
+      (file) => {
+        const text = readFileSync(path.resolve(process.cwd(), file), "utf8");
+        return (
+          !SEND_CALL.test(text) ||
+          !INSPECTION_EVIDENCE.some((pattern) => pattern.test(text))
+        );
+      },
+    );
+    expect(
+      claimantsNotInspecting,
+      "These modules consume a one-shot claim that is not a timestamp, so the " +
+        "shape census above cannot see them. Each must still inspect the mailer's " +
+        "outcome before it advances state (INV-CONFIG-004).",
+    ).toEqual([]);
+  });
+
   it("mints or casts a delivery clearance in exactly one module", () => {
     /*
       The cast shapes that defeat the brand: `as DeliveryClearance` and
