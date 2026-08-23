@@ -1,5 +1,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -662,4 +668,80 @@ describe("same-release expand/contract check (#3002)", () => {
       expect(result.stderr).toContain("unrecognised argument --basse");
     },
   );
+});
+
+/**
+ * The membership test both checks depend on, and the pipeline that broke it.
+ *
+ * Checks 4 and 5 each ask "is this name one of these names". Both used to ask it
+ * as `printf '%s\n' "$list" | grep -Fxq -- "$name"`, and that construct answers
+ * WRONGLY — "absent" for a name that is present — whenever the payload does not
+ * fit in the pipe's buffer: `grep -q` exits at its first match and closes the
+ * pipe, `printf` takes EPIPE and dies with 141, and `set -o pipefail` hands that
+ * 141 to the `if`. Measured on `debian:bookworm-slim`, needle on the FIRST line:
+ * 38 KB of candidates answers FOUND, 208 KB answers `NOT FOUND (status 141)`.
+ * The same 208 KB through `list_contains_line` answers FOUND.
+ *
+ * It is not reproducible on a Windows developer machine — MSYS pipes do not
+ * deliver the signal — which is exactly how it reached CI: the committed tree
+ * passed locally and failed there, reporting "no such directory X" while listing
+ * X two lines later in its own message. So this is a SOURCE contract rather than
+ * a behavioural one: a behavioural case would need a fixture larger than the
+ * pipe buffer AND could not discriminate on the platform this is written on.
+ *
+ * Check 5's direction is a loud false failure. Check 4's is the dangerous one:
+ * `is_added_on_this_branch` answering a false "no" makes it `continue` past a
+ * real expand/contract pair and print a pass.
+ */
+describe("check-migration-safety-coverage membership test", () => {
+  const GATE = "scripts/check-migration-safety-coverage.sh";
+  const source = readFileSync(
+    path.resolve(process.cwd(), GATE),
+    "utf8",
+  );
+
+  it("really is the gate script, so the assertions below judge something", () => {
+    expect(source).toContain(
+      "previous_expand_release check FAILED: a ledger row names a release that does not exist.",
+    );
+    expect(source).toContain("Same-release expand/contract check FAILED");
+    expect(source).toContain("set -Eeuo pipefail");
+  });
+
+  it("resolves membership without a pipeline, from one shared helper", () => {
+    expect(source, `${GATE} must define the pipeline-free membership helper`).toMatch(
+      /^list_contains_line\(\) \{$/m,
+    );
+    // Called by BOTH sites: check 4's `is_added_on_this_branch` and check 5's
+    // directory lookup. Two, so a fix applied to one site cannot pass this.
+    const calls = [...source.matchAll(/^\s*(?:if )?list_contains_line /gm)];
+    expect(
+      calls.length,
+      "both membership sites must go through the helper",
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it("never pipes into a short-circuiting grep again", () => {
+    /*
+      Comments are stripped first: this file's own explanation of the defect
+      spells the defective construct, and a census that matched its own
+      documentation would be unfixable.
+    */
+    const code = source
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line))
+      .join("\n");
+    // Anti-vacuity: stripping comments left the executable body intact.
+    expect(code).toContain("list_contains_line() {");
+    expect(code.length, "the stripped body must still be the script").toBeGreaterThan(
+      4000,
+    );
+    expect(
+      code,
+      "A pipe into `grep -q` (or any short-circuiting reader) loses the writer's " +
+        "exit status to EPIPE under `set -o pipefail`, and answers \"absent\" for a " +
+        "line that is present. Use list_contains_line, or read the payload from a " +
+        "file rather than a pipe.",
+    ).not.toMatch(/\|\s*grep\s+(?:-[A-Za-z]*\s+)*-[A-Za-z]*q/);
+  });
 });
