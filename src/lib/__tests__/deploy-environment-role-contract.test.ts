@@ -150,8 +150,8 @@ describe("the deploy refuses an undeclared production release", () => {
       is also the file an operator diffs against their real `.env` when
       upgrading. Copying the value across would pass a gate that accepted both,
       migrate, boot, resolve NON_PRODUCTION — and then suppress every real
-      member's email and, once #3036 lands, rewrite the email addresses on the
-      club's real Xero contacts. The safe-LOOKING value is the unsafe outcome
+      member's email AND rewrite the email addresses on the club's real Xero
+      contacts (INV-CONFIG-005). The safe-LOOKING value is the unsafe outcome
       here, and only here.
     */
     const body = validatorBody();

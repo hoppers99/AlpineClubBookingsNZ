@@ -169,6 +169,72 @@ Three readings, and they mean different things:
   migration that has not been applied here. It is *not* the same as none: one says
   nothing has been held back, the other says nobody knows.
 
+## What a copy does to the club's Xero contacts
+
+**Audience: operator.**
+
+This is the part people are most often surprised by, so read it before you point
+a copy at Xero.
+
+A copy does **not** stop writing to Xero. It goes on raising invoices and credit
+notes exactly as the live site would, on purpose: an invoice that is never raised
+cannot be paid, settled or reconciled, so a copy that stopped raising them would
+be useless for testing the very things people restore a copy to test. What changes
+is who those documents can reach.
+
+**The reason it has to change at all is that Xero emails on its own account.**
+When an invoice is outstanding, Xero's own invoice reminders go out from Xero's
+servers to whatever email address is stored on the contact — this application is
+not involved and cannot hold them back. So on a copy, the first time a Xero
+contact is needed, this application replaces the email address on that contact
+with one that can never be delivered. After that, Xero has nobody to email.
+
+**On a copy connected to the club's REAL Xero organisation, that is a real edit
+to real accounting records.** The addresses are gone from Xero, though they are
+still correct in the database. So:
+
+- Point a copy at a **separate Xero organisation** wherever you can — a demo or
+  trial organisation. Then containment only ever touches records nobody minds.
+- If a copy has already been connected to the real organisation, Admin →
+  Environment tells you **how many contacts had a working address replaced**. To
+  put them back, re-sync those members from the live site, which pushes each
+  member's stored address to their contact again.
+- Switching the safer override on does not undo anything already done. It stops
+  anything further.
+
+**What the replacement looks like.** Every contact gets an address like
+`contained-<a long string of letters and numbers>@xero-sandbox.invalid`. It is
+derived from the real address, so the same person always gets the same one — which
+is what lets you tell at a glance that a contact has been contained rather than
+edited by hand — but the real address cannot be read back out of it. `.invalid` is
+a reserved ending that no mail system anywhere will deliver to.
+
+**What it is NOT.** This is deliberately a different kind of address from the
+`no-email.invalid` one the app uses for a walk-in guest who never gave an address.
+That one means *this person cannot be reached*, and the app uses it to skip
+reminders and to mark a member unreachable on admin screens. A contained member
+can be reached perfectly well — on the live site, by the club — so they are not
+marked unreachable, and a copy therefore keeps behaving like the live site.
+
+**Importing members from Xero on a copy.** The two "import this Xero contact as a
+member" tools refuse a contact whose address has been contained, and say so. They
+have to: a member created from a contained address would look reachable on every
+screen and be able to receive nothing at all. Do those imports on the live site.
+
+### While the role is "not configured", nothing reaches Xero at all
+
+This is stricter than the email rule, and it is worth knowing before you see it.
+An installation that has not said whether it is the live site or a copy writes
+**nothing** to Xero — no invoice, no credit note, no contact. The reason is that
+the answer decides what address may sit on a contact: the member's real one on the
+live site, a replaced one on a copy. Guessing wrong in one direction emails real
+members from a copy; guessing wrong in the other rewrites the club's real
+accounting. Neither is acceptable, so nothing is attempted.
+
+Declare the role and Xero writing resumes. Anything that was refused can be
+re-driven from **Admin → Xero**; nothing was half-written, because the refusal
+happens before the first call.
+
 ## Letting a copy send into a capture mailbox
 
 A copy normally sends nothing at all. That is the point. But a test installation
@@ -318,13 +384,21 @@ answer*, and on the club's live site the only correct one is production.
 | The deploy says the value **disagrees between this shell and `.env`** | Something exported `APP_ENVIRONMENT_ROLE` into the shell you ran the deploy from — a wrapper script, a systemd unit, a restore rehearsal. Compose would use the shell's value, not the file's | Run `unset APP_ENVIRONMENT_ROLE`, remove it from whatever exported it, then run the deploy again |
 | The deploy says a container reported the wrong **environmentRole** at step 14 | The container received a different value from the one `.env` holds, so the two checks above are worth re-reading | Nothing was switched — the previous release is still serving. Fix the shell or the file and run the deploy again |
 | Who put this site into "copy" mode? | — | **Admin → Audit Log**, action `ENVIRONMENT_SAFETY_OVERRIDE_UPDATED`. The entry names the administrator and the value before and after |
+| A copy stopped raising Xero invoices, saying it cannot tell what installation this is | The role is *not configured*, and Xero writing fails closed until it is | Declare `APP_ENVIRONMENT_ROLE`, then re-drive the refused operations from **Admin → Xero**. Nothing was half-written |
+| Xero contacts on our REAL organisation now hold `contained-…@xero-sandbox.invalid` | A copy was connected to the live Xero organisation, and containment did what it is for | Read the count on **Admin → Environment**, then re-sync those members from the live site to push their real addresses back. Point the copy at a separate Xero organisation before using it again |
+| A copy will not import a Xero contact as a member | That contact's address has been contained, so a member made from it could never receive anything | Do the import on the live site |
+| Admin → Environment says the contained count **could not be counted** | The database migration for this release has not been applied here | Run `prisma migrate deploy` (or `npm run db:migrate` in development) and reload |
 
 ## Related links
 
 - Back to the [documentation hub](../README.md).
 - Configuration reference: [`CONFIGURATION.md`](../../CONFIGURATION.md) →
   "Environment Role".
-- The rule this implements: `INV-CONFIG-003` in
+- The rules this implements: `INV-CONFIG-003`, `INV-CONFIG-004` and
+  `INV-CONFIG-005` in
   [`product-configuration.md`](../invariants/product-configuration.md).
+- Where the Xero containment sits in the Xero subsystem:
+  [`xero/ARCHITECTURE.md`](../xero/ARCHITECTURE.md) -> "Contact email containment
+  on a copy".
 - Sibling setting recorded in the app rather than the environment:
   [Club Time Zone](club-time.md).

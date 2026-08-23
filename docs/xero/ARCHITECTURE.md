@@ -96,6 +96,95 @@ member state, and keep a focused alert mounted across loading and refresh failur
 Provider idempotency, queue redelivery, and the rule that provider calls stay outside
 database transactions are unchanged.
 
+## Contact email containment on a copy
+
+`INV-CONFIG-005` (ENV-SAFETY 3, #3036; epic #2986). Every application-managed
+Xero contact write consumes `INV-CONFIG-003`'s canonical environment role before
+it puts an email address on a contact.
+
+**Where the gate is, and why there.** `findOrCreateXeroContact` is the single
+funnel every Xero document writer goes through to obtain its contact — twelve call
+sites across the five invoice creators, the five credit-note creators,
+`nomination.ts`, the admin force-sync route and the operation-retry worker — so
+the gate lives INSIDE it rather than at those twelve. That also covers the
+thirteenth writer somebody adds next month, and it covers
+`retryXeroWriteWithContactRepair`, which re-resolves to a DIFFERENT contact when
+it repairs a stale link. `createXeroContactForMember` and `updateXeroContact` ask
+the same question for themselves, because neither goes through the funnel.
+
+**The restored-database path is the reason this exists.** A copy restored from the
+club's live database arrives with every member already linked, so the funnel's
+steady-state fast path returns the stored contact id with no provider write and no
+look at what that contact holds. Every invoice is raised `AUTHORISED` and stays
+that way — deliberately, so settlement behaviour remains testable on a copy — and
+Xero's own invoice reminders email the contact's stored address for outstanding
+authorised invoices **with no API call from this application at all**. So
+`INV-CONFIG-004`'s gate on `emailInvoice` is not sufficient: containment has to
+happen before the invoice exists, on the id the funnel is about to hand back.
+
+**Which role read, and the one substitution that would break it.** Containment
+consumes `resolveEnvironmentRole()` directly and NEVER `resolveDeliveryPolicy()`.
+The delivery policy exempts a confirmed copy that has declared a local capture
+mailbox, because a capture intercepts everything this application sends; Xero
+sends from its own servers, so a capture container never sees an invoice email.
+A non-production installation therefore needs full containment regardless of its
+transport mode — which includes every stack the browser suite runs on.
+
+**The three answers.**
+
+| Role | What happens |
+| --- | --- |
+| `PRODUCTION` | Nothing. `applyXeroContactEmailPolicy` is the identity function, no containment record is read or written, and every payload, stored request payload and idempotency key is byte-identical to before this change. |
+| `NON_PRODUCTION` | Every address written into a contact payload is replaced by its contained form, and any contact the funnel is about to return is proved contained first. |
+| `UNKNOWN` | Refused. No transform (UNKNOWN is not evidence of being a copy, so rewriting the club's real accounting on a guess is as wrong as emailing real members on one), and no provider call — so no invoice, credit note or contact write happens at all until the role is declared. |
+
+**The contained address.** `xero-sandbox-contact-email.ts` is a pure leaf: a
+SHA-256 of the normalised address, on the reserved `xero-sandbox.invalid` domain
+(RFC 2606, never deliverable). Deterministic, so the same real address always maps
+to the same contained one and a restored copy can recognise a contact it has
+already dealt with; idempotent, so nothing double-wraps when the address travels
+back out of Xero and into a payload again. The domain is deliberately NOT one of
+the three placeholder domains — see `INV-CONFIG-005` for why merging them would
+make a copy stop behaving like production.
+
+**The proof, and what it costs.** One `XeroSandboxContactContainment` row per Xero
+contact, holding the contained address derived from the member's current stored
+address plus whether a deliverable address was actually overwritten. The steady
+state is one indexed read per contact and **zero** provider calls, so a batch or
+subscription run over hundreds of members touches Xero not at all. A provider read
+and at most one provider write happen once per contact, on first containment, with
+an idempotency key derived from the contact id and the address being written. A
+row is written only after reading Xero's stored value back — never from "we
+believe we sent that" — and the fast path requires the recorded address to match
+what the application would write today, so a change to the member's address
+re-verifies rather than trusting a claim made before the change.
+
+**Where it runs.** Outside every transaction, like every other provider call in
+this subsystem: after the funnel's short advisory-locked link transaction has
+committed, and before the id reaches anything that can raise a document. No caller
+of the funnel is itself inside a transaction — the funnel opens its own, so it
+never could be — and the group-settlement path resolves its contact before its
+`pg_advisory_xact_lock(1)` fence opens, which is the hazard `INV-CONFIG-004`
+recorded for the same caller.
+
+**Failure is a refusal.** If containment cannot be established — the provider read
+fails, the write fails, the proof cannot be recorded, the migration has not been
+applied — `XeroContactContainmentError` propagates and the document is not raised.
+A copy that could not contain a contact and invoiced anyway is the outcome this
+rule exists to prevent.
+
+**The inbound direction.** A contained address must never become a `Member.email`:
+both "import this Xero contact as a member" paths refuse one, because a member
+minted from it would read as reachable on every screen and be able to receive
+nothing. The bulk contact sync is unaffected by design — it matches members to
+contacts BY address, so a contained contact simply stops matching and is reported
+as unmatched.
+
+**Operator surface.** `/admin/environment` reports how many contacts are
+contained, how many of those were holding a deliverable address this installation
+overwrote, and when the most recent containment was — or "unavailable" rather than
+a zero when the count cannot be read. No address of any kind reaches that payload.
+
 ## Entrance-fee invoices
 
 `ENTRANCE_FEE_INVOICE` is a one-off per-member charge (#1886, F21). Before
@@ -251,6 +340,9 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | Module | Owns |
 | --- | --- |
 | `xero-contacts` | `findOrCreateXeroContact`, contact create/update, name normalisation/matching, and `retryXeroWriteWithContactRepair` (invoice writes retry once after repairing a stale contact link). |
+| `xero-contact-containment` | `INV-CONFIG-005`: the environment-role gate on every contact write, the unforgeable policy token the payload builders require, and `ensureXeroContactContained` — the durable proof that a contact a copy is about to invoice can no longer reach a member. |
+| `xero-sandbox-contact-email` | Pure leaf: how a contained address is spelled, and the predicates that recognise one. No database, no environment, no role. |
+| `xero-contact-containment-status` | The operator count for `/admin/environment`: how many contacts are contained, and how many held a deliverable address that was overwritten. |
 | `xero-contact-cache` | `XeroContactCache` + per-contact group-membership cache primitives (no dependency on CRUD/bulk flows). |
 | `xero-contact-groups` | Contact-group cache refresh, cache-backed reads, managed age-tier group sync. |
 | `xero-bulk-contact-sync` | Cursor-driven incremental contact refresh from Xero (`syncContactsFromXero`). |
