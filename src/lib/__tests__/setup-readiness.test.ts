@@ -899,10 +899,13 @@ describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
     declared a copy from a copy nobody is using: a copy is restored FROM
     production, so no property of its data can tell them apart, while the amount
     of member mail being held back can. The three states must therefore read
-    differently — and in particular "none held back" and "not counted yet" must
-    not read the same, because they look identical and mean opposite things.
+    differently — and in particular "none held back" and "the count could not be
+    read" must not read the same, because they look identical and mean opposite
+    things. (#3035 renamed the third state: the delivery boundary has landed, so an
+    absent number no longer means "not counted yet" — it means the count could not
+    be read, usually an unapplied migration.)
   */
-  it("says the withheld count is NOT YET COUNTED, distinctly from none", () => {
+  it("says the withheld count is UNREADABLE, distinctly from none", () => {
     const check = environmentRoleCheck({
       ...completeDatabase,
       environmentRole: environmentRoleResolution("non-production"),
@@ -910,11 +913,13 @@ describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
     });
 
     const details = check.details.join(" ");
-    expect(details).toContain("not counted yet");
+    expect(details).toContain("could not be read");
     // The distinction is stated, not left for the reader to infer.
     expect(details).toContain("NOT the same as none");
     // And it must not claim an amount it does not have.
     expect(details).not.toContain("Held back email: none");
+    // It says what to DO about it, which "not counted yet" could not.
+    expect(details).toContain("pending migrations");
   });
 
   it("says NONE when the count is available and zero", () => {
@@ -926,7 +931,7 @@ describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
 
     const details = check.details.join(" ");
     expect(details).toContain("Held back email: none");
-    expect(details).not.toContain("not counted yet");
+    expect(details).not.toContain("could not be read");
   });
 
   it("reports the count and the most recent one, and says what it means", () => {
@@ -943,8 +948,11 @@ describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
     const details = check.details.join(" ");
     expect(details).toContain("47 message(s)");
     expect(details).toContain("2026-08-23T09:15:00.000Z");
-    // The sentence that makes the number actionable rather than trivia.
+    // The sentence that makes the number actionable rather than trivia — and it
+    // names BOTH reasons a live club stops sending, because the same line renders
+    // under both and either one alone is wrong half the time (#3035).
     expect(details).toMatch(/wrongly declared a copy/);
+    expect(details).toMatch(/undeclared/);
   });
 
   it("shows the count on an UNDECLARED installation too, where it matters most", () => {
@@ -972,14 +980,90 @@ describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
     const details = check.details.join(" ");
     expect(details).toContain("312 message(s)");
     expect(details).toContain("2026-08-23T09:15:00.000Z");
-    // And the not-counted-yet wording reaches this branch as well, so an
-    // installation on this release does not read it as "nothing held back".
+    // And the unreadable-count wording reaches this branch as well, so an
+    // installation that cannot read the number does not read it as "nothing held
+    // back".
     const notCounted = environmentRoleCheck({
       ...completeDatabase,
       environmentRole: environmentRoleResolution("absent"),
     });
-    expect(notCounted.details.join(" ")).toContain("not counted yet");
+    expect(notCounted.details.join(" ")).toContain("could not be read");
   });
+
+  /*
+    AND THE LINE MUST NOT TELL EITHER STATE THE OTHER'S REASON (#3035).
+
+    It renders under TWO states now. Its first version said the count was held
+    back "because it is treated as a copy", which is false on an UNDECLARED
+    installation — and false in the direction that costs the most: an operator of
+    a live site they know is live, reading that sentence, goes hunting for the
+    safer override on Admin -> Environment instead of the missing declaration in
+    their deployment. The override is not what is holding their mail.
+
+    The rule is symmetric and is asserted as such. The line may name BOTH reasons
+    (the non-zero sentence does, and that is useful — it tells the operator which
+    two things to check), and it may name NEITHER. What it may not do is attribute
+    the withholding to one of them, because whichever it picks is wrong half the
+    time. Isolated to the "Held back email:" detail on purpose: the surrounding
+    UNDECLARED message legitimately contains the word "copy" — "the club's live
+    site or a copy" is the whole point of that step — so a blanket search over the
+    details would either fail for a good reason or have to be weakened into
+    something that discriminates nothing.
+  */
+  const withheldStates = [
+    { label: "unavailable", withheldEmail: undefined },
+    {
+      label: "zero",
+      withheldEmail: { available: true as const, count: 0, mostRecentAt: null },
+    },
+    {
+      label: "counted",
+      withheldEmail: {
+        available: true as const,
+        count: 312,
+        mostRecentAt: "2026-08-23T09:15:00.000Z",
+      },
+    },
+  ];
+
+  it.each(withheldStates)(
+    "never blames one state for the other, in the $label state, under either role",
+    ({ withheldEmail }) => {
+      for (const declaration of ["absent", "non-production"] as const) {
+        const check = environmentRoleCheck({
+          ...completeDatabase,
+          environmentRole: environmentRoleResolution(declaration),
+          ...(withheldEmail ? { withheldEmail } : {}),
+        });
+        const line = check.details.find((detail) =>
+          detail.startsWith("Held back email:"),
+        );
+        expect(line, `${declaration}: the withheld line should render`).toBeDefined();
+        const sentence = line ?? "";
+
+        // 1. The exact claim that was wrong: attributing it to being a copy.
+        expect(
+          sentence,
+          `${declaration}: "treated as a copy" is false on an undeclared installation, and sends its operator to the override instead of the declaration`,
+        ).not.toMatch(/treated as a copy|because it is a copy|since it is a copy/i);
+
+        // 2. Symmetrically, it must not blame ONLY the missing declaration either.
+        expect(
+          sentence,
+          `${declaration}: blaming only a missing declaration is false on a declared copy`,
+        ).not.toMatch(/because nothing has (?:said|declared)/i);
+
+        // 3. If it names one reason, it must name the other. Naming both is what
+        //    the non-zero sentence does, and it is the useful shape.
+        const namesCopy = /declared a copy/i.test(sentence);
+        const namesUndeclared = /undeclared/i.test(sentence);
+        expect(
+          namesCopy,
+          `${declaration}: this line names one reason without the other — "${sentence}"`,
+        ).toBe(namesUndeclared);
+      }
+    },
+  );
 
   it("leaves the line off a production installation, where it means nothing", () => {
     // Nothing is held back for environment-safety reasons on a production

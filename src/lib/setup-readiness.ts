@@ -996,23 +996,23 @@ function describeEnvironmentRoleOverride(
  * The reasoning, and why a database-content heuristic cannot do this job, is in
  * `environment-safety-withheld.ts`. What matters here is that the three states
  * read differently, because two of them look identical on a checklist and mean
- * opposite things: "nothing has been held back" says the copy is idle, while
- * "this installation does not count that yet" says nobody knows. A live club that
- * has been wrongly declared a copy shows a steady, recent count — that is the
- * shape an operator is meant to recognise.
+ * opposite things: "nothing has been held back" says nobody is using this
+ * installation, while "the count could not be read" says nobody knows.
  *
- * **#3035 supplies the numbers**; nothing here counts a stand-in from another
- * table, because a number measuring the wrong thing is worse than an honest
- * absence.
+ * NO SENTENCE HERE MAY NAME ONE STATE'S REASON, because this line renders under
+ * two. Telling the operator of an UNDECLARED live site that mail is held back
+ * "because it is treated as a copy" sends them hunting for the safer override
+ * instead of the missing declaration (#3035). The step's own message already
+ * says which state applies; this line says only how much, and how lately.
  */
 function describeWithheldEmail(
   withheldEmail: WithheldApplicationEmail | undefined,
 ): string {
   if (!withheldEmail || !withheldEmail.available) {
-    return "Held back email: not counted yet on this installation. That is NOT the same as none — nothing here records what environment safety holds back until the delivery boundary lands, so this line cannot yet tell you whether this installation is quietly holding back mail the club's members are waiting for.";
+    return "Held back email: the count could not be read on this installation. That is NOT the same as none — one says nothing has been held back, the other says nobody knows — so this line cannot tell you whether this installation is quietly holding back mail the club's members are waiting for. Apply any pending migrations, then check again.";
   }
   if (withheldEmail.count === 0) {
-    return "Held back email: none. Nothing has been held back on this installation for environment-safety reasons, which is what an unused copy looks like.";
+    return "Held back email: none. Nothing has been held back on this installation for environment-safety reasons, which is what an installation nobody is using looks like.";
   }
   const mostRecent = withheldEmail.mostRecentAt
     ? ` The most recent was ${withheldEmail.mostRecentAt}.`

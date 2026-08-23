@@ -128,10 +128,19 @@ function describeDeclaration(state: EnvironmentSafetyState): string {
  * them is consequence. A real club in either of those states holds back a steady
  * stream of member mail; an idle copy holds back almost nothing.
  *
- * The three states must read differently. "None" and "not counted yet" look
- * identical on a screen and mean opposite things: one says the copy is idle, the
- * other says nobody knows. **#3035 supplies the numbers** — see
- * `src/lib/environment-safety-withheld.ts`.
+ * The three states must read differently. "None" and "could not be counted" look
+ * identical at a glance and mean opposite things: one says nobody is using this
+ * installation, the other says nobody knows. The numbers come from
+ * `src/lib/environment-safety-withheld.ts`, which counts what #3035's delivery
+ * boundary records.
+ *
+ * NO SENTENCE HERE MAY NAME ONE STATE'S REASON, because this block renders under
+ * two — a confirmed copy and an installation nobody has declared. Telling the
+ * operator of an undeclared LIVE site that its mail is held back "because it is
+ * treated as a copy" sends them looking for the safer override instead of the
+ * missing declaration, and the override is not what is holding their mail. The
+ * role is displayed directly above this block and says which state applies; this
+ * block says how much and how lately, in words true of both (#3035).
  */
 function describeWithheldEmail(state: EnvironmentSafetyState): {
   headline: string;
@@ -140,16 +149,16 @@ function describeWithheldEmail(state: EnvironmentSafetyState): {
   const withheld = state.withheldEmail;
   if (!withheld.available) {
     return {
-      headline: "Not counted yet on this installation",
+      headline: "Could not be counted on this installation",
       detail:
-        "This is not the same as none. Nothing here records what environment safety holds back yet, so this line cannot tell you whether this installation is quietly holding back mail the club's members are waiting for. Until it can, check the role above is the answer you expect.",
+        "This is not the same as none: one says nothing has been held back, the other says nobody knows. The count could not be read from the database — usually a migration that has not been applied here. Apply any pending migrations and check again; meanwhile this line cannot tell you whether this installation is quietly holding back mail the club's members are waiting for.",
     };
   }
   if (withheld.count === 0) {
     return {
       headline: "None held back",
       detail:
-        "Nothing has been held back on this installation for environment-safety reasons, which is what an unused copy looks like.",
+        "Nothing has been held back on this installation for environment-safety reasons, which is what an installation nobody is using looks like.",
     };
   }
   return {

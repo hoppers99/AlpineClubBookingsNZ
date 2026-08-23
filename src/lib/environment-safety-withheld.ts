@@ -23,10 +23,10 @@
  * contradicts the premise of #2986, which is that a copy is indistinguishable
  * from the real thing by inspecting its data.
  *
- * WHAT DOES DISTINGUISH THEM IS CONSEQUENCE. A real club wrongly declared a copy
- * holds back a steady stream of member mail — confirmations, payment notices,
- * renewal reminders — hour after hour. A genuine copy nobody is using holds back
- * almost nothing. So the COUNT, and how recent the most recent one is, separates
+ * WHAT DOES DISTINGUISH THEM IS CONSEQUENCE. A real club that is not sending —
+ * wrongly declared a copy, or left undeclared — holds back a steady stream of
+ * member mail, confirmations, payment notices and renewal reminders, hour after
+ * hour. A genuine copy nobody is using holds back almost nothing. So the COUNT, and how recent the most recent one is, separates
  * the two cases where no property of the data can. It is also simply what an
  * operator needs to see either way: *you are not sending mail, and this is how
  * much*.

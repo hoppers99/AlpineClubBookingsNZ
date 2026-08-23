@@ -178,6 +178,54 @@ describe("email delivery boundary census (INV-CONFIG-004)", () => {
     ).toEqual([]);
   });
 
+  /**
+   * Neither withheld-email renderer may blame one state for the other (#3035).
+   *
+   * Both render under TWO states — a confirmed copy, and an installation nobody
+   * has declared — because both hold delivery back. "because it is treated as a
+   * copy" is therefore false half the time, and false in the expensive direction:
+   * the operator of an undeclared LIVE site goes looking for the safer override
+   * instead of the missing declaration.
+   *
+   * A SOURCE census rather than a rendering test because
+   * `environment-safety-panel.tsx` has no test harness at all, and inventing a
+   * React suite to assert one sentence would be a worse trade than reading the
+   * two functions. The readiness renderer's behaviour is separately exercised in
+   * `setup-readiness.test.ts`, which drives the real check under both roles.
+   */
+  it("blames neither state for the other in the withheld-email renderers", () => {
+    const RENDERERS = [
+      "src/lib/setup-readiness.ts",
+      "src/components/admin/environment-safety-panel.tsx",
+    ];
+    const offenders: string[] = [];
+    for (const file of RENDERERS) {
+      const source = readFileSync(path.resolve(process.cwd(), file), "utf8");
+      const start = source.indexOf("function describeWithheldEmail");
+      expect(start, `${file} should still define describeWithheldEmail`).toBeGreaterThan(-1);
+      // The function body only: the docblocks above deliberately QUOTE the wrong
+      // wording to explain why it is wrong, and banning that would ban the
+      // explanation.
+      const body = source.slice(start, source.indexOf("\n}", start));
+      if (/treated as a copy|because it is a copy/i.test(body)) {
+        offenders.push(`${file}: attributes the withholding to being a copy`);
+      }
+      if (/declared a copy/i.test(body) !== /undeclared/i.test(body)) {
+        offenders.push(
+          `${file}: names one of the two reasons without the other`,
+        );
+      }
+    }
+    expect(
+      offenders,
+      "Both of these render under a confirmed copy AND an undeclared " +
+        "installation. A sentence naming one reason is wrong half the time, and " +
+        "on an undeclared LIVE site it sends the operator to the safer override " +
+        "instead of the missing declaration. Name both reasons or neither; the " +
+        "surrounding surface already says which state applies (INV-CONFIG-004).",
+    ).toEqual([]);
+  });
+
   it("mints or casts a delivery clearance in exactly one module", () => {
     /*
       The cast shapes that defeat the brand: `as DeliveryClearance` and
