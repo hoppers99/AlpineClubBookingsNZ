@@ -83,12 +83,27 @@ const COMPOSE_SEARCH_SKIP = new Set([
   "dist",
 ]);
 
+/**
+ * Which filenames are a Compose file.
+ *
+ * `docker-compose*.yml` AND Compose's own modern defaults, `compose.yaml` /
+ * `compose.yml` / `compose-*.y[a]ml`. The narrow `^docker-compose` glob was the
+ * ONE fully silent defeat of this census: a `compose.yaml` was never scanned while
+ * every assertion still passed.
+ *
+ * A MODULE CONSTANT so the case below tests THIS value rather than a copy of it.
+ * The first version of that case declared its own regex literal inline, which
+ * made it vacuous — narrowing the glob back left it green (measured). No `g`
+ * flag, so sharing one RegExp carries no `lastIndex` state between callers.
+ */
+const COMPOSE_FILENAME = /^(docker-)?compose.*\.ya?ml$/;
+
 function findComposeFiles(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     if (COMPOSE_SEARCH_SKIP.has(name)) continue;
     const full = path.join(dir, name);
     if (statSync(full).isDirectory()) findComposeFiles(full, out);
-    else if (/^docker-compose.*\.ya?ml$/.test(name)) out.push(full);
+    else if (COMPOSE_FILENAME.test(name)) out.push(full);
   }
   return out;
 }
@@ -103,14 +118,21 @@ const composeFiles = findComposeFiles(process.cwd())
  * A Compose file's `services:` blocks, by name.
  *
  * A deliberately small indentation parser rather than a YAML dependency — this
- * repository has none, and the shape being read is two levels deep. It is exact
- * about what it does: `services:` at column 0, service names at two spaces, and a
- * block runs to the next name at that indentation.
+ * repository has none, and the shape being read is two levels deep.
+ *
+ * TOLERANT OF THREE SHAPES IT USED TO RETURN ZERO SERVICES FOR, each of which
+ * made this whole census pass vacuously (third review lens, measured against
+ * synthetic files): a trailing comment on the `services:` line, an indentation
+ * other than two spaces, and a YAML anchor or trailing comment on a service key
+ * (`app: &app`). The indent is now LEARNED from the first child line rather than
+ * assumed, and every caller asserts the result is non-empty, so an unparsed file
+ * fails loudly instead of silently declaring nothing to check.
  */
 function composeServices(relativePath: string): Map<string, string> {
   const lines = readRepoFile(relativePath).split(/\r?\n/);
   const services = new Map<string, string>();
   let inServices = false;
+  let indent: string | null = null;
   let current: string | null = null;
   let body: string[] = [];
 
@@ -121,29 +143,58 @@ function composeServices(relativePath: string): Map<string, string> {
   };
 
   for (const line of lines) {
-    if (/^services:\s*$/.test(line)) {
+    if (/^services:\s*(#.*)?$/.test(line)) {
       inServices = true;
+      indent = null;
       continue;
     }
     if (!inServices) continue;
-    // Any column-0 content ends the services mapping (volumes:, networks:, an
-    // x-anchor). A comment at column 0 does not.
-    if (/^[^\s#]/.test(line)) {
+    if (line.trim() === "" || /^\s*#/.test(line)) continue;
+    // Any content back at column 0 ends the services mapping (volumes:,
+    // networks:, an x-anchor).
+    if (/^[^\s]/.test(line)) {
       flush();
       inServices = false;
+      indent = null;
       continue;
     }
-    const name = line.match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
-    if (name) {
-      flush();
-      current = name[1];
-      continue;
+    const leading = line.slice(0, line.length - line.trimStart().length);
+    if (indent === null) indent = leading;
+    // A service key sits at exactly the learned indent. The value may carry a
+    // YAML anchor and/or a trailing comment and still be a mapping key.
+    if (leading === indent) {
+      const name = line
+        .trim()
+        .match(/^([A-Za-z0-9_.-]+):\s*(&[A-Za-z0-9_.-]+)?\s*(#.*)?$/);
+      if (name) {
+        flush();
+        current = name[1];
+        continue;
+      }
     }
     if (current) body.push(line);
   }
   flush();
   return services;
 }
+
+/**
+ * Services that do NOT run application code, and may therefore have no
+ * declaration.
+ *
+ * AN ALLOWLIST OF INFRASTRUCTURE, not an allowlist of app services, and the
+ * inversion is the fix for the second half of that finding. The check used to
+ * skip any service whose name was not one of the base file's three app services,
+ * so renaming one in an override file — `app_e2e:` — silently excused it. Now
+ * anything this census does not RECOGNISE as infrastructure has to declare,
+ * which is the fail-closed direction.
+ *
+ * `migrate` runs `prisma migrate deploy` and imports no application code; the
+ * other three are Postgres, Caddy and the mailpit SMTP capture. The set is
+ * asserted to be exactly these four, so widening it is a visible edit rather
+ * than a quiet one.
+ */
+const NON_APP_SERVICES = new Set(["postgres", "caddy", "mailpit", "migrate"]);
 
 /**
  * The services that run APPLICATION CODE, taken from the base file's own anchor
@@ -312,9 +363,11 @@ describe("the deploy refuses an undeclared production release", () => {
     const body = validatorBody();
     expect(body).toContain("resolves UNKNOWN");
     expect(body).toContain("Set APP_ENVIRONMENT_ROLE=production");
-    // The absent case is caught by require_env_key, which fails on its own
-    // before the value comparison — so an absent AND a wrong value both abort.
-    expect(body).toContain('require_env_key "$key"');
+    // The absent case is caught by its own `occurrences -eq 0` branch, which
+    // fails before the value comparison — so an absent AND a wrong value both
+    // abort. It used to lean on the shared `require_env_key`, which reported a
+    // key present-but-indented as "missing" (#3034 second review).
+    expect(body).toContain('if [ "$occurrences" -eq 0 ]; then');
   });
 
   it("points a non-production operator at the stack that is actually for them", () => {
@@ -383,12 +436,69 @@ describe("the deploy refuses an undeclared production release", () => {
       consequential setting in it.
     */
     const body = validatorBody();
-    expect(body).toContain('count_env_file_key_occurrences "$key"');
+    expect(body).toContain('count_environment_role_env_assignments "$key"');
     expect(body).toContain('if [ "$occurrences" -gt 1 ]; then');
     expect(body).toContain("return 1");
     // Scoped to this key. `get_env_file_value` is shared by every other
     // `require_*_env_key` and is deliberately not changed.
-    expect(script).toContain("count_env_file_key_occurrences() {");
+    expect(script).toContain("count_environment_role_env_assignments() {");
+  });
+
+  it("counts EVERY assignment shape Compose honours, not just an exact field", () => {
+    /*
+      The second review finding. The first version counted with `awk -F=` and
+      `$1 == key`, which needs the key to be the whole first `=`-field — so an
+      INDENTED line, an `export `-prefixed line and spaces around the `=` all
+      slipped past, measured against real `docker compose`. Each of those as a
+      SECOND line in a .env whose first line is correct passed the duplicate check
+      and handed every container `non-production`.
+
+      Behaviour is proved in the lane report by running the extracted helpers over
+      nineteen .env fixtures against both the previous and the current script;
+      what this case pins is the pattern, so the grammar cannot quietly narrow
+      again.
+    */
+    const pattern = functionBody("environment_role_env_pattern");
+    expect(pattern).toContain("^[[:space:]]*");
+    expect(pattern).toContain("(export[[:space:]]+)?");
+    expect(pattern).toContain("[[:space:]]*=");
+    // Built from the key it is given, so there is one spelling of the name.
+    expect(pattern).toContain("%s");
+    expect(functionBody("count_environment_role_env_assignments")).toContain(
+      "grep -cE",
+    );
+  });
+
+  it("reads the value Compose would resolve, last-wins and unquoted", () => {
+    /*
+      The third finding, all of it fail-closed but misleading: `export ` and
+      spaces around the `=` were reported as a MISSING .env entry for a key
+      plainly present, and a quoted value was refused, while Compose resolved all
+      three to `production`. "Missing" for a visible key is what gets an operator
+      editing the wrong line under deploy pressure.
+    */
+    const reader = functionBody("environment_role_env_value");
+    // Last-wins, matching Compose rather than the first-match reader every other
+    // key uses.
+    expect(reader).toContain("tail -n 1");
+    // An inline comment, the same rule get_env_file_value applies elsewhere.
+    expect(reader).toContain("[[:space:]]+#.*$");
+    // One layer of matching surrounding quotes.
+    expect(reader).toContain(`[ "$first" = "$last" ]`);
+
+    // And the validator uses it instead of the shared first-match reader, which
+    // is what makes the three shapes above stop aborting.
+    const body = validatorBody();
+    expect(body).toContain('environment_role_env_value "$key"');
+    expect(body).not.toContain('get_env_file_value "$key"');
+    expect(body).not.toContain('require_env_key "$key"');
+    // An absent entry still aborts, with its own message rather than the shared
+    // "Missing required .env entry" for a key that is genuinely absent.
+    expect(body).toContain('if [ "$occurrences" -eq 0 ]; then');
+    expect(body).toContain("Missing required .env entry");
+    // A present-but-empty entry is its own case, because Compose would hand the
+    // containers an empty value.
+    expect(body).toContain('if [ -z "$value" ]; then');
   });
 
   it("refuses a shell-exported value that disagrees with .env", () => {
@@ -464,22 +574,62 @@ describe("the deploy re-reads the declaration from the container itself", () => 
     );
   });
 
-  it("has the container report what IT parsed, folded the way the app folds it", () => {
+  it("gets the answer from the APPLICATION, not from a second parser in shell", () => {
+    /*
+      THE FIX FOR THE FINDING THAT REPLACED THIS CASE, and the reason this file no
+      longer greps a shell parser at all.
+
+      This function used to parse APP_ENVIRONMENT_ROLE in shell, mirroring
+      `readEnvironmentRoleDeclaration`, and the assertions here checked that
+      mirror by searching its source text. A second review lens built six mutants
+      of that snippet and FIVE survived these assertions — four of them making a
+      container that declares `non-production` report `production`, so the deploy
+      proceeded. Measured under busybox ash: widening `production)` to
+      `*production*)`, defaulting the read to `:-production}`, sending the
+      catch-all to `=production`, or adding `|staging` to the accepted branch.
+
+      A duplicated parser pinned by greps drifts, and pre-cutover this was the
+      SOLE witness — the application`s own parse was only asserted after the
+      cutover, by `verify_external_health`. So the duplicate is gone: the
+      pre-cutover witness is now the same endpoint the post-cutover check uses,
+      whose `environmentRole` comes from `readEnvironmentRoleDeclaration` itself.
+      There is nothing left to drift, which is why this case asserts an ABSENCE.
+    */
     const payload = functionBody("get_service_runtime_payload");
-    expect(payload).toContain(`${ENVIRONMENT_ROLE_ENV_VAR}:-`);
-    // The same four kinds the application parser produces, so the deploy and the
-    // app cannot disagree about what counts as declared.
-    for (const kind of [
-      "production",
-      "non-production",
-      "absent",
-      "invalid",
-    ]) {
-      expect(payload).toContain(`environment_role=${kind}`);
+
+    // It asks the application, on the container`s own loopback address.
+    expect(payload).toContain("$DEPLOY_RUNTIME_STATUS_PATH");
+    expect(payload).toContain("http://127.0.0.1:3000");
+    expect(payload).toContain("x-cron-secret");
+
+    // The secret comes from the CONTAINER`s environment, so it never appears in
+    // the host`s process table the way an interpolated `docker compose exec`
+    // argument would. `verify_external_health` takes the same care by feeding
+    // curl its header on stdin.
+    expect(payload).toContain("${CRON_SECRET:-}");
+    expect(payload).not.toContain("get_env_file_value CRON_SECRET");
+  });
+
+  it("leaves NO shell-side mapping of a declaration to a kind, anywhere", () => {
+    /*
+      The guard that makes the class non-recurring: reintroducing a shell parser
+      fails here, wherever in the script it is put. Only the four KIND names are
+      searched for as assignments — `local expected_environment_role=` is a
+      variable declaration, not a mapping, and must stay allowed.
+    */
+    for (const kind of ["production", "non-production", "absent", "invalid"]) {
+      expect(
+        script,
+        `the deploy script must not map a declaration to "${kind}" itself; ` +
+          `it asks /api/deploy/runtime-status, whose answer comes from ` +
+          `readEnvironmentRoleDeclaration`,
+      ).not.toContain(`environment_role=${kind}`);
     }
-    // Case-folded after trimming, exactly as readEnvironmentRoleDeclaration does.
-    expect(payload).toContain(`tr "[:upper:]" "[:lower:]"`);
-    expect(payload).toContain("environmentRole");
+    // And no case-folding of the declaration in shell either, which is the other
+    // half of a parser.
+    expect(functionBody("get_service_runtime_payload")).not.toContain(
+      `tr "[:upper:]" "[:lower:]"`,
+    );
   });
 
   it("fails the deploy when a container reports anything else", () => {
@@ -557,7 +707,7 @@ describe("every service that runs the app is given the declaration", () => {
 describe("EVERY compose file that runs the app declares the role", () => {
   it("finds the compose files by scanning, not from a list in this test", () => {
     // The three that exist today. A new one appears here automatically, which is
-    // the point: it then has to satisfy the case below or fail.
+    // the point: it then has to satisfy the cases below or fail.
     expect(composeFiles).toEqual([
       "docker-compose.staging.yml",
       "docker-compose.yml",
@@ -565,8 +715,86 @@ describe("EVERY compose file that runs the app declares the role", () => {
     ]);
   });
 
+  it("scans Compose's own modern default filenames too", () => {
+    /*
+      `compose.yaml` and `compose.yml` are what `docker compose` looks for by
+      default, and the first version of this census could not see them at all —
+      the one fully SILENT defeat, because the assertion above still passed while
+      a fourth file went unscanned. Asserted on the matcher rather than by
+      planting a file, so nothing has to be written into the repository.
+    */
+    const matcher = COMPOSE_FILENAME;
+    for (const name of [
+      "compose.yaml",
+      "compose.yml",
+      "compose-e2e.yml",
+      "compose.override.yaml",
+      "docker-compose.yml",
+      "docker-compose.staging.yml",
+    ]) {
+      expect(matcher.test(name), `${name} must be scanned`).toBe(true);
+    }
+    for (const name of ["decompose.yml", "compose.json", "notes-compose.md"]) {
+      expect(matcher.test(name), `${name} must not be scanned`).toBe(false);
+    }
+  });
+
+  it("parses a non-empty service set out of every file it scans", () => {
+    /*
+      The assertion that stops this census passing VACUOUSLY. A trailing comment
+      on `services:`, an indentation other than two spaces, or a YAML anchor on a
+      service key each made the parser return zero services — and zero services
+      means zero things to check, silently. Now an unparsed file fails here.
+    */
+    for (const file of composeFiles) {
+      expect(
+        [...composeServices(file).keys()],
+        `${file} parsed to no services at all, so nothing in it was checked`,
+      ).not.toEqual([]);
+    }
+  });
+
+  it("tolerates the YAML shapes that used to defeat the parser", () => {
+    // Exercised on the real files rather than on synthetic text: the base file
+    // has a column-0 anchor block above `services:` and a `migrate` service with
+    // a profile, and the measure file carries trailing comments throughout.
+    const base = composeServices(BASE_COMPOSE);
+    expect([...base.keys()].sort()).toEqual([
+      "app",
+      "app_blue",
+      "app_green",
+      "caddy",
+      "migrate",
+      "postgres",
+    ]);
+    // Anchors and trailing comments on a key are accepted as keys.
+    for (const line of ["  app: &app", "  app: # the cron leader", "    app:"]) {
+      expect(
+        line
+          .trim()
+          .match(/^([A-Za-z0-9_.-]+):\s*(&[A-Za-z0-9_.-]+)?\s*(#.*)?$/)?.[1],
+      ).toBe("app");
+    }
+  });
+
   it("derives the app services from the base file's own anchor", () => {
     expect(appServiceNames()).toEqual(["app", "app_blue", "app_green"]);
+  });
+
+  it("names exactly four services as not running app code", () => {
+    // Widening this set excuses a service from declaring, so it is pinned. Every
+    // name in it must be a real service in the base file.
+    expect([...NON_APP_SERVICES].sort()).toEqual([
+      "caddy",
+      "mailpit",
+      "migrate",
+      "postgres",
+    ]);
+    const base = composeServices(BASE_COMPOSE);
+    for (const name of NON_APP_SERVICES) {
+      if (name === "mailpit") continue; // staging/measure only
+      expect(base.has(name), `${name} must be a real service`).toBe(true);
+    }
   });
 
   it("makes every override file declare it LITERALLY on every app service", () => {
@@ -575,18 +803,25 @@ describe("EVERY compose file that runs the app declares the role", () => {
       because it is the file the club's live deployment uses and only the
       deployment can know. Every OTHER compose file exists to stand up something
       that is by construction NOT the live site — a staging stack, an E2E stack, a
-      measurement harness — so each must hard-code `non-production` on every app
-      service it touches. Interpolated is not good enough there: a stray value in
-      whatever env file that stack is given must not be able to make it claim to
-      be the club's live site.
+      measurement harness — so each must hard-code `non-production` on every
+      service it touches that runs app code. Interpolated is not good enough
+      there: a stray value in whatever env file that stack is given must not be
+      able to make it claim to be the club's live site.
+
+      UNKNOWN SERVICES MUST DECLARE. The check is over everything that is not
+      recognised infrastructure, not over a known list of app names, because a
+      renamed service (`app_e2e:`) was silently excused by the name-list version.
     */
-    const appServices = new Set(appServiceNames());
     const missing: string[] = [];
 
     for (const file of composeFiles) {
       if (file === BASE_COMPOSE) continue;
-      for (const [name, body] of composeServices(file)) {
-        if (!appServices.has(name)) continue;
+      const services = composeServices(file);
+      expect([...services.keys()], `${file} parsed to no services`).not.toEqual(
+        [],
+      );
+      for (const [name, body] of services) {
+        if (NON_APP_SERVICES.has(name)) continue;
         if (!body.includes(`${ENVIRONMENT_ROLE_ENV_VAR}: non-production`)) {
           missing.push(`${file} -> ${name}`);
         }
@@ -595,12 +830,13 @@ describe("EVERY compose file that runs the app declares the role", () => {
 
     expect(
       missing,
-      `A compose service that runs application code does not declare ` +
+      `A compose service that is not recognised infrastructure does not declare ` +
         `${ENVIRONMENT_ROLE_ENV_VAR}. It inherits the base file's ` +
         `\${${ENVIRONMENT_ROLE_ENV_VAR}} with no default, so it resolves UNKNOWN ` +
-        `and holds back member email and Xero writes — and its boot advisory logs ` +
-        `on every start. Add "${ENVIRONMENT_ROLE_ENV_VAR}: non-production" to ` +
-        `each service listed, the way docker-compose.staging.yml does.`,
+        `and holds back member email and Xero writes. Add ` +
+        `"${ENVIRONMENT_ROLE_ENV_VAR}: non-production" to each service listed, the ` +
+        `way docker-compose.staging.yml does — or, if it genuinely runs no ` +
+        `application code, add it to NON_APP_SERVICES with a reason.`,
     ).toEqual([]);
   });
 
@@ -762,11 +998,16 @@ describe("the boot advisory reaches the containers that serve traffic", () => {
       throws `sustained/fatal log noise detected`; at level 30 it passes with zero
       classified lines.
 
-      The analyser ALSO text-classifies any line containing "error", "failed",
-      "warning" or "exception" whatever its level, so the sentence itself has to
-      avoid those words — which is why it says "held back". That is the assertion
-      below, and it is the one that would notice a future rewording undoing the
-      measurement.
+      The analyser ALSO text-classifies a line by its WORDS, whatever its level,
+      so the sentence itself has to avoid them — which is why it says "held back".
+
+      THE THREE REGEXES BELOW ARE COPIED FROM THE ANALYSER, not paraphrased. A
+      third review lens found the first version listed only
+      error/failed/warning/exception/fatal and so missed `panic`, `uncaught`,
+      `unhandled` and a BARE `warn`: measured, rewording the sentence to contain
+      "unhandled" or "warn" trips MC-09 while that guard stayed green. Copying the
+      patterns means the guard cannot drift from the thing it is protecting
+      against, and a substring list cannot silently omit an alternative again.
     */
     const block = bootAdvisoryBlock();
     const nonProduction = block.slice(
@@ -776,11 +1017,21 @@ describe("the boot advisory reaches the containers that serve traffic", () => {
     const args = call.slice(0, call.indexOf("\n        );"));
 
     expect(call.startsWith("logger.info(")).toBe(true);
-    for (const classified of ["error", "failed", "warning", "exception", "fatal"]) {
+
+    // Verbatim from measurement/current-main-refresh/bin/analyse-log-noise.mjs.
+    const ANALYSER_CLASSIFIERS: [string, RegExp][] = [
+      ["fatal", /\b(fatal|panic|uncaught|unhandled)\b/],
+      ["error", /\b(error|exception|failed)\b/],
+      ["warning", /\bwarn(?:ing)?\b/],
+    ];
+    for (const [level, pattern] of ANALYSER_CLASSIFIERS) {
+      const hit = args.toLowerCase().match(pattern);
       expect(
-        args.toLowerCase(),
-        `the copy-at-boot line must not contain "${classified}" — analyse-log-noise.mjs classifies any line holding it, whatever the level`,
-      ).not.toContain(classified);
+        hit?.[0] ?? null,
+        `the copy-at-boot line contains a word analyse-log-noise.mjs classifies ` +
+          `as ${level}, whatever the log level — so MC-09 would count it eleven ` +
+          `times and fail. Reword it (say "held back", not "failed").`,
+      ).toBeNull();
     }
   });
 
