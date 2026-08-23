@@ -58,19 +58,28 @@
   **The deploy also asks each container what it actually received.** Validating
   the settings file and validating what the containers were given turn out to be
   different questions: Docker Compose prefers a value set in the shell the deploy
-  was started from over the one in the file, and reads the last duplicate line
-  rather than the first. So the deploy now refuses a duplicated entry and a shell
-  value that disagrees with the file, and then — with the new release started and
-  the previous one still serving every request — asks each container which answer
-  it parsed for itself, stopping before the switch-over if any of them says
-  anything other than production.
+  was started from over the one in the file, and reads the last of any duplicate
+  assignments rather than the first. So the deploy now refuses a duplicated entry
+  — in any of the shapes a settings file normally carries, including an indented
+  or `export `-prefixed line — and refuses a shell value that disagrees with the
+  file. Then, with the new release started and the previous one still serving
+  every request, it asks each container which answer the application itself read,
+  stopping before the switch-over if any of them says anything other than
+  production. It asks the app rather than re-reading the container's settings so
+  there is only ever one implementation of the rule.
+
+  **Fewer deploys refused for no good reason.** An `export ` prefix, spaces around
+  the `=`, or quotes round the value used to abort the deploy — the first two
+  reported as a missing entry for a setting plainly present in the file. All three
+  are now read the way Docker Compose reads them.
 
   **A copy says so in its own start-up log.** An installation that comes up as a
   copy now records one line saying so, and which of the two sources decided it, so
   somebody reading the log of a site brought up by hand can tell that a live club
   has been declared a copy by mistake. Alongside it, the Environment Safety page
   and the setup checklist have a place for how much application email has been
-  held back while an installation is treated as a copy — the number that tells a
+  held back — shown whenever delivery is being held back, whether the installation
+  is a declared copy or has not been declared at all. That number is what tells a
   busy live club apart from an idle test copy. Nothing counts it yet, and the page
   says so in those words rather than showing a zero, because "none held back" and
   "not counted yet" mean opposite things. The counting arrives with #3035.

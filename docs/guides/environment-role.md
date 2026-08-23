@@ -131,21 +131,29 @@ suddenly post weeks of stale confirmations to real members.
 
 ## Email held back, and the number that tells you whether it matters
 
-Admin → Environment shows how much application email this installation has held
-back, and when the most recent one was. **That number is the one thing that tells
-a live club wrongly declared a copy apart from an ordinary staging copy**, because
-no property of the data can: a copy is restored from the live database and holds
-exactly the same records. What separates them is consequence. A real club
-withholds a steady, recent stream — confirmations, payment notices, renewal
-reminders, hour after hour. A copy nobody is using withholds almost nothing.
+Both **not configured** and **non-production** show how much application email
+this installation has held back, and when the most recent one was — on
+Admin → Environment and on the checklist step. It is not shown on the live site,
+where nothing is held back for this reason.
+
+**That number is the one thing that tells a live club which has stopped sending
+apart from an ordinary idle copy**, because no property of the data can: a copy is
+restored from the live database and holds exactly the same records. What separates
+them is consequence. A real club withholds a steady, recent stream —
+confirmations, payment notices, renewal reminders, hour after hour. A copy nobody
+is using withholds almost nothing.
 
 Three readings, and they mean different things:
 
 - **A number, recent and climbing.** If members are waiting for that mail, the
-  role above is wrong. Fix the declaration.
-- **None.** Nothing has been held back. That is what an unused copy looks like.
+  answer above this line is wrong — either the declaration says *copy* when this
+  is the live site, or nothing has declared it at all. Fix that, and what is
+  queued goes out on its own.
+- **None.** Nothing has been held back. That is what an installation nobody is
+  using looks like.
 - **Not available.** The count could not be read from the database — usually a
-  migration that has not been applied here. It is *not* the same as none.
+  migration that has not been applied here. It is *not* the same as none: one says
+  nothing has been held back, the other says nobody knows.
 
 ## Letting a copy send into a capture mailbox
 
@@ -158,6 +166,10 @@ Declare a **capture mailbox** for that: set `USE_LOCAL_CAPTURE=true` and point
 MailHog, or anything that accepts SMTP and forwards nothing). A confirmed copy is
 then allowed to transmit into it, and those messages appear as ordinary sent mail
 — because they *were* sent, into something that cannot pass them on.
+
+An installation that is **not configured** gets no such permission: a capture
+declaration comes from the same deployment configuration that has failed to say
+what this installation is, so it earns nothing until that is answered.
 
 Three things worth knowing:
 
@@ -234,13 +246,17 @@ rewritten to sandbox addresses. So the deploy stops, and says exactly that.
 
 **The deploy also checks what each container actually received.** Validating the
 `.env` file and validating what the containers were given are different
-questions: Docker Compose prefers a value exported in the shell you ran the
-deploy from over the file, and takes the last duplicate line rather than the
+questions: Docker Compose prefers a value set in the shell you ran the deploy
+from over the file, and takes the last of any duplicate lines rather than the
 first. So at **step 14** — the new release started, the previous one still taking
-every request — the deploy asks each app container which declaration it parsed
-for itself, and stops before the cutover if any of them says anything other than
-`production`. It also refuses a duplicated line and a shell value that disagrees
-with the file, and says which is which.
+every request — the deploy **asks the running application itself** which
+declaration it read, and stops before the cutover if any container answers
+anything other than `production`. It also refuses a duplicated entry and a shell
+value that disagrees with the file, and says which is which.
+
+That check asks the app rather than re-reading the container's settings, on
+purpose: a second copy of the rule is a second thing that can drift away from the
+first, and this one is the check that has to be right when the file check is not.
 
 **And the app says so loudly if an undeclared installation ever does come up** —
 for example on a deployment brought up by hand with `docker compose up` rather
@@ -267,7 +283,7 @@ answer*, and on the club's live site the only correct one is production.
 
 | Setting | What it controls | Default | Notes / constraints |
 | --- | --- | --- | --- |
-| `APP_ENVIRONMENT_ROLE` | Whether this installation is the club's live site or a copy | **None — required** | Exactly `production` or `non-production` (case and surrounding spaces are ignored). Anything else is refused, not interpreted. Set in the deployment's environment, never in the app. Passed through `docker-compose.yml` with **no default** on purpose. |
+| `APP_ENVIRONMENT_ROLE` | Whether this installation is the club's live site or a copy | **None — required** | Exactly `production` or `non-production`. Case and surrounding spaces are ignored, and the deploy check also accepts the shapes `.env` files normally carry: an `export ` prefix, spaces around the `=`, quotes round the value, and a leading indent. Anything that is not one of the two words is refused, not interpreted. Set in the deployment's environment, never in the app. Passed through `docker-compose.yml` with **no default** on purpose. |
 | Safer override | Forces this installation to be treated as a copy, whatever the deployment says | Off | Full Administrator only, confirmed, and audited. Can only ever make the answer *safer*; there is no setting anywhere in the app that can declare an installation to be the live site. |
 
 ## Troubleshooting
@@ -283,8 +299,7 @@ answer*, and on the club's live site the only correct one is production.
 | The setup step shows a green tick but members still get no email | The tick means "declared", not "declared production" — read the message | If it says non-production, set `APP_ENVIRONMENT_ROLE=production` and restart |
 | The page says the override **could not be read** | The database migration for this release has not been applied here | Run `prisma migrate deploy` (or `npm run db:migrate` in development) and reload |
 | It says **Production** but this is a copy | The copy inherited the live `.env` | Set `APP_ENVIRONMENT_ROLE=non-production` on the copy, and switch the safer override on now if you need it safe immediately |
-| It says **Not configured**, but the line is clearly there in `.env` | The line is indented, or begins with `export `. The value is read as a plain `KEY=value` line at the start of a line | Remove the leading spaces and the `export `, so the line begins with `APP_ENVIRONMENT_ROLE=` |
-| It says a value was **refused**, and the value it quotes looks correct | The value is quoted in the file — `APP_ENVIRONMENT_ROLE="production"` — and the quotes are part of it | Write it without quotes: `APP_ENVIRONMENT_ROLE=production` |
+| It says **Not configured**, but the line is clearly there in `.env` | Something else is overriding it: another `APP_ENVIRONMENT_ROLE` line further down the file, or a value set in the shell or service manager that starts the app. Both beat the line you edited | Search the whole file for `APP_ENVIRONMENT_ROLE` and leave one line; then check the shell or systemd unit that starts the stack |
 | The deploy says the entry appears **twice** | `APP_ENVIRONMENT_ROLE` is set on two lines of `.env` | Delete all but one. This is refused rather than resolved because Docker Compose would use the last line and the deploy check reads the first, so the two could disagree about the most consequential setting in the file |
 | The deploy says the value **disagrees between this shell and `.env`** | Something exported `APP_ENVIRONMENT_ROLE` into the shell you ran the deploy from — a wrapper script, a systemd unit, a restore rehearsal. Compose would use the shell's value, not the file's | Run `unset APP_ENVIRONMENT_ROLE`, remove it from whatever exported it, then run the deploy again |
 | The deploy says a container reported the wrong **environmentRole** at step 14 | The container received a different value from the one `.env` holds, so the two checks above are worth re-reading | Nothing was switched — the previous release is still serving. Fix the shell or the file and run the deploy again |

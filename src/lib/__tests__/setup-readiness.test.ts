@@ -947,6 +947,40 @@ describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
     expect(details).toMatch(/wrongly declared a copy/);
   });
 
+  it("shows the count on an UNDECLARED installation too, where it matters most", () => {
+    /*
+      UNKNOWN fails closed — no member email, no Xero writes — so it holds
+      delivery back exactly as a declared copy does, and it is the state a LIVE
+      installation reaches simply by upgrading without adding the declaration.
+      That is the scenario this whole issue exists for, so it is the worst place to
+      withhold the one number that would tell the operator what it is costing.
+
+      The first version rendered this only for NON_PRODUCTION, on a premise this
+      same file contradicts two sentences later (#3034 second review).
+    */
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("absent"),
+      withheldEmail: {
+        available: true,
+        count: 312,
+        mostRecentAt: "2026-08-23T09:15:00.000Z",
+      },
+    });
+
+    expect(check.status).toBe("blocked");
+    const details = check.details.join(" ");
+    expect(details).toContain("312 message(s)");
+    expect(details).toContain("2026-08-23T09:15:00.000Z");
+    // And the not-counted-yet wording reaches this branch as well, so an
+    // installation on this release does not read it as "nothing held back".
+    const notCounted = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("absent"),
+    });
+    expect(notCounted.details.join(" ")).toContain("not counted yet");
+  });
+
   it("leaves the line off a production installation, where it means nothing", () => {
     // Nothing is held back for environment-safety reasons on a production
     // installation, so the line would be noise beside the one setting on this
