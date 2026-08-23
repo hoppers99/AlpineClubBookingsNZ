@@ -6889,3 +6889,38 @@ model LodgeMaintenanceReportToken {
 
   lodge Lodge @relation(fields: [lodgeId], references: [id], onDelete: Cascade)
 }
+
+/// The installation's environment-safety override (ENV-SAFETY 1, #3034; epic
+/// #2986). One row, id "default", exactly like ClubTimeSettings and every other
+/// settings singleton.
+///
+/// THE SHAPE IS THE GUARANTEE, not the code above it. There is deliberately NO
+/// column here that can assert "this instance IS production": the only lever is
+/// `forceNonProduction`, and the only direction it moves the answer in is
+/// towards the safer non-production state. An operator who has to make a copy of
+/// production safe can do it from inside the app; nobody — not an admin, not a
+/// restored database, not a hand-written UPDATE — can make an instance claim to
+/// be production from in here. Production is declared by the DEPLOYMENT
+/// (`APP_ENVIRONMENT_ROLE`) and by nothing else. Adding an `isProduction`,
+/// `forceProduction` or `role` column to this model would remove that
+/// structural guarantee and turn INV-CONFIG-003 back into a convention; the
+/// no-elevation test reads this model out of the Prisma DMMF and fails if such a
+/// field appears.
+///
+/// THE ROW IS NOT SEEDED. Absent means "no override", which is the same answer
+/// as `forceNonProduction = false`, so a read path never has to create anything.
+model EnvironmentSafetySettings {
+  id String @id @default("default")
+
+  /// When true, this installation resolves NON_PRODUCTION whatever the
+  /// deployment declares. When false (or when no row exists) the deployment
+  /// declaration decides — which is not an elevation: an undeclared
+  /// installation goes back to UNKNOWN, never to production.
+  forceNonProduction Boolean @default(false)
+
+  updatedByMemberId String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @default(now()) @updatedAt
+
+  @@index([updatedByMemberId])
+}
