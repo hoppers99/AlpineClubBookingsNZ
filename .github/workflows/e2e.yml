@@ -80,6 +80,15 @@ jobs:
           cat > .env.staging <<EOF
           STAGING_HTTP_PORT=3001
           STAGING_POSTGRES_PORT=5433
+          # Declare the stack a copy (ENV-SAFETY 1 #3034, epic #2986). The
+          # docker-compose.staging.yml `app` service hard-codes non-production, so
+          # this line is not what keeps the suite off the UNKNOWN fail-closed path
+          # — the override is. It is here because the BASE compose file passes
+          # ${APP_ENVIRONMENT_ROLE} through with no default, and an unset variable
+          # makes Compose emit four "variable is not set" warnings on every
+          # invocation (measured). A workflow log full of warnings that mean
+          # nothing is how a warning that means something gets missed.
+          APP_ENVIRONMENT_ROLE=non-production
           NEXTAUTH_URL=http://localhost:3001
           AUTH_TRUST_HOST=true
           DB_PASSWORD=e2e-ci-db-password
@@ -217,6 +226,15 @@ jobs:
           cat > .env.staging <<EOF
           STAGING_HTTP_PORT=3001
           STAGING_POSTGRES_PORT=5433
+          # Declare the stack a copy (ENV-SAFETY 1 #3034, epic #2986). The
+          # docker-compose.staging.yml `app` service hard-codes non-production, so
+          # this line is not what keeps the suite off the UNKNOWN fail-closed path
+          # — the override is. It is here because the BASE compose file passes
+          # ${APP_ENVIRONMENT_ROLE} through with no default, and an unset variable
+          # makes Compose emit four "variable is not set" warnings on every
+          # invocation (measured). A workflow log full of warnings that mean
+          # nothing is how a warning that means something gets missed.
+          APP_ENVIRONMENT_ROLE=non-production
           NEXTAUTH_URL=http://localhost:3001
           AUTH_TRUST_HOST=true
           DB_PASSWORD=e2e-ci-db-password

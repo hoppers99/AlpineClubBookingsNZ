@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 import { decideClubTimeZoneBackfill } from "@/lib/config-self-heal-steps";
+import { decideEnvironmentRole } from "@/lib/environment-role";
+import type { EnvironmentRoleDeclaration } from "@/lib/environment-role-declaration";
 import {
   SETUP_STEP_IDS,
   buildSetupReadiness,
@@ -11,6 +13,37 @@ import {
   renderSetupCheckReport,
   type SetupDatabaseSnapshot,
 } from "@/lib/setup-readiness";
+
+/**
+ * A resolved environment role for the fixtures below, built by the REAL
+ * `decideEnvironmentRole` rather than hand-assembled (ENV-SAFETY 1, #3034).
+ *
+ * Hand-writing the resolution object here would let this suite assert readiness
+ * wording against a state the resolver cannot actually produce — the readiness
+ * step would then keep passing after a precedence change that made its input
+ * impossible.
+ */
+function environmentRoleResolution(
+  declaration: EnvironmentRoleDeclaration["kind"],
+  override: "on" | "off" | "unreadable" = "off",
+) {
+  const declared: EnvironmentRoleDeclaration =
+    declaration === "invalid"
+      ? { kind: "invalid", raw: "staging" }
+      : { kind: declaration };
+  return decideEnvironmentRole(
+    declared,
+    override === "on"
+      ? {
+          kind: "force-non-production",
+          updatedAt: new Date("2026-06-15T09:30:00.000Z"),
+          updatedByMemberId: "member-full-admin",
+        }
+      : override === "unreadable"
+        ? { kind: "unreadable" }
+        : { kind: "none" },
+  );
+}
 
 const baseEnv = {
   DATABASE_URL: "postgresql://user:pass@localhost:5432/app",
@@ -93,6 +126,10 @@ const completeDatabase: SetupDatabaseSnapshot = {
   // The club's persisted timezone (CT-1, #2989). A configured install has one;
   // its absence is a BLOCK, so a "complete setup" fixture has to carry it.
   clubTimeZone: "Pacific/Auckland",
+  // The resolved environment role (ENV-SAFETY 1, #3034). UNKNOWN is a BLOCK, so
+  // a "complete setup" fixture has to carry a resolved one. This is the shape
+  // `resolveEnvironmentRole()` returns for a live club deployment.
+  environmentRole: environmentRoleResolution("production"),
 };
 
 const validClubConfig = {
@@ -782,6 +819,332 @@ describe("setup-readiness club-config DB-first gate (#1987, C8)", () => {
  * CI runner's zone, and restores it by ASSIGNING the captured value back (#2485).
  * Nothing here formats a date, so the frozen clock is not involved.
  */
+/**
+ * Environment-role readiness (ENV-SAFETY 1, #3034; epic #2986; INV-CONFIG-003).
+ *
+ * The precedence rule itself is proved in `environment-role-precedence.test.ts`.
+ * What is proved here is the OPERATOR SURFACE: that an undeclared installation
+ * blocks setup rather than passing quietly, that the details name both sources
+ * and the exact variable to repair, and that the checklist never states a role
+ * it was not given.
+ */
+describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
+  function environmentRoleCheck(database?: SetupDatabaseSnapshot) {
+    const readiness = buildSetupReadiness({
+      env: baseEnv,
+      configDir: makeConfigDir(),
+      database,
+    });
+    const foundation = readiness.categories.find(
+      (category) => category.id === "foundation",
+    );
+    const check = foundation?.checks.find(
+      (candidate) => candidate.id === "environment-role",
+    );
+    if (!check) throw new Error("environment-role check missing");
+    return check;
+  }
+
+  it("is a required foundation step pointing at the environment page", () => {
+    const check = environmentRoleCheck(completeDatabase);
+    expect(check.required).toBe(true);
+    expect(check.href).toBe("/admin/environment");
+    expect(SETUP_STEP_IDS).toContain("environment-role");
+  });
+
+  it("is complete and says PRODUCTION for the club's live installation", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("production"),
+    });
+
+    expect(check.status).toBe("complete");
+    /*
+      `toMatch`, NOT `toContain("PRODUCTION")` (#3034 review). The
+      non-production message — "This installation is declared NON-PRODUCTION — a
+      copy, a staging site or a developer's checkout." — CONTAINS the string
+      "PRODUCTION". So swapping this branch's message for that one left the
+      assertion green: the status is still `complete` and the details assertion
+      below reads the unchanged sources line. The checklist would then tell an
+      operator that their live club installation is a copy, which is the single
+      most consequential sentence on this surface.
+    */
+    expect(check.message).toMatch(/is declared PRODUCTION/);
+    expect(check.details.join(" ")).toContain(
+      "APP_ENVIRONMENT_ROLE=production",
+    );
+  });
+
+  it("is complete and says NON-PRODUCTION for a declared copy", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("non-production"),
+    });
+
+    expect(check.status).toBe("complete");
+    // Precise for the same reason as its sibling above: the
+    // administrator-forced message also contains "NON-PRODUCTION", so only the
+    // full phrase distinguishes a DECLARED copy from a forced one.
+    expect(check.message).toMatch(/is declared NON-PRODUCTION/);
+    expect(check.details.join(" ")).toContain(
+      "APP_ENVIRONMENT_ROLE=non-production",
+    );
+  });
+
+  /*
+    THE WITHHELD-EMAIL LINE, in all three of its states (owner decision, 23 Aug
+    2026).
+
+    It exists because it is the ONLY thing that separates a live club wrongly
+    declared a copy from a copy nobody is using: a copy is restored FROM
+    production, so no property of its data can tell them apart, while the amount
+    of member mail being held back can. The three states must therefore read
+    differently — and in particular "none held back" and "not counted yet" must
+    not read the same, because they look identical and mean opposite things.
+  */
+  it("says the withheld count is NOT YET COUNTED, distinctly from none", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("non-production"),
+      // No `withheldEmail` at all — an older caller, or a `setup:check` run.
+    });
+
+    const details = check.details.join(" ");
+    expect(details).toContain("not counted yet");
+    // The distinction is stated, not left for the reader to infer.
+    expect(details).toContain("NOT the same as none");
+    // And it must not claim an amount it does not have.
+    expect(details).not.toContain("Held back email: none");
+  });
+
+  it("says NONE when the count is available and zero", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("non-production"),
+      withheldEmail: { available: true, count: 0, mostRecentAt: null },
+    });
+
+    const details = check.details.join(" ");
+    expect(details).toContain("Held back email: none");
+    expect(details).not.toContain("not counted yet");
+  });
+
+  it("reports the count and the most recent one, and says what it means", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("non-production"),
+      withheldEmail: {
+        available: true,
+        count: 47,
+        mostRecentAt: "2026-08-23T09:15:00.000Z",
+      },
+    });
+
+    const details = check.details.join(" ");
+    expect(details).toContain("47 message(s)");
+    expect(details).toContain("2026-08-23T09:15:00.000Z");
+    // The sentence that makes the number actionable rather than trivia.
+    expect(details).toMatch(/wrongly declared a copy/);
+  });
+
+  it("shows the count on an UNDECLARED installation too, where it matters most", () => {
+    /*
+      UNKNOWN fails closed — no member email, no Xero writes — so it holds
+      delivery back exactly as a declared copy does, and it is the state a LIVE
+      installation reaches simply by upgrading without adding the declaration.
+      That is the scenario this whole issue exists for, so it is the worst place to
+      withhold the one number that would tell the operator what it is costing.
+
+      The first version rendered this only for NON_PRODUCTION, on a premise this
+      same file contradicts two sentences later (#3034 second review).
+    */
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("absent"),
+      withheldEmail: {
+        available: true,
+        count: 312,
+        mostRecentAt: "2026-08-23T09:15:00.000Z",
+      },
+    });
+
+    expect(check.status).toBe("blocked");
+    const details = check.details.join(" ");
+    expect(details).toContain("312 message(s)");
+    expect(details).toContain("2026-08-23T09:15:00.000Z");
+    // And the not-counted-yet wording reaches this branch as well, so an
+    // installation on this release does not read it as "nothing held back".
+    const notCounted = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("absent"),
+    });
+    expect(notCounted.details.join(" ")).toContain("not counted yet");
+  });
+
+  it("leaves the line off a production installation, where it means nothing", () => {
+    // Nothing is held back for environment-safety reasons on a production
+    // installation, so the line would be noise beside the one setting on this
+    // step that matters.
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("production"),
+      withheldEmail: { available: true, count: 47, mostRecentAt: null },
+    });
+
+    expect(check.details.join(" ")).not.toContain("Held back email");
+  });
+
+  it("distinguishes an administrator-forced copy from a declared one", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("production", "on"),
+    });
+
+    expect(check.status).toBe("complete");
+    expect(check.message).toContain("safer override");
+    // Both facts are on the page: the deployment still says production, and an
+    // administrator has overridden it.
+    expect(check.details.join(" ")).toContain("APP_ENVIRONMENT_ROLE=production");
+    expect(check.details.join(" ")).toContain("Safer override: ON");
+  });
+
+  it("BLOCKS when nothing has declared the installation", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("absent"),
+    });
+
+    // A block, not a warning: an UNKNOWN role is the state in which #3035/#3036
+    // stop sending email at all, so the site is not doing its job.
+    expect(check.status).toBe("blocked");
+    expect(check.details.join(" ")).toContain(
+      "APP_ENVIRONMENT_ROLE is not set",
+    );
+    expect(check.details.join(" ")).toContain(
+      "APP_ENVIRONMENT_ROLE=production",
+    );
+  });
+
+  it("never reports an undeclared installation as production", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("absent"),
+    });
+    expect(check.status).not.toBe("complete");
+    expect(check.message).not.toMatch(/is declared PRODUCTION/);
+  });
+
+  it("BLOCKS on a refused value and QUOTES it, so the typo is visible", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("invalid"),
+    });
+
+    expect(check.status).toBe("blocked");
+    expect(check.details.join(" ")).toContain('set to "staging"');
+    // The two situations that both land on UNKNOWN read differently, because
+    // "you have not set it" and "I refuse to interpret what you set" need
+    // different instructions.
+    expect(check.details.join(" ")).not.toContain(
+      "APP_ENVIRONMENT_ROLE is not set",
+    );
+  });
+
+  it("BLOCKS when the safer override cannot be read, even under a declared production", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("production", "unreadable"),
+    });
+
+    expect(check.status).toBe("blocked");
+    expect(check.details.join(" ")).toContain("could not be read");
+    expect(check.details.join(" ")).toContain("prisma migrate deploy");
+  });
+
+  it("keeps a declared non-production complete when the override cannot be read", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution(
+        "non-production",
+        "unreadable",
+      ),
+    });
+    expect(check.status).toBe("complete");
+  });
+
+  it("says 'not checked' rather than guessing when there is no snapshot", () => {
+    expect(environmentRoleCheck(undefined).status).toBe("warning");
+    expect(environmentRoleCheck(undefined).message).toContain(
+      "was not checked",
+    );
+  });
+
+  it("says 'not checked' for a snapshot taken before this field existed", () => {
+    const snapshot: SetupDatabaseSnapshot = { ...completeDatabase };
+    delete snapshot.environmentRole;
+    expect(environmentRoleCheck(snapshot).status).toBe("warning");
+  });
+
+  it("names APP_ENVIRONMENT_ROLE in full and warns off APP_RUNTIME_ROLE, in every state", () => {
+    /*
+      The two variables sit in the same Compose environment block and differ by
+      one word, and on the staging stack APP_RUNTIME_ROLE literally holds
+      "staging". An operator who repairs the wrong one changes nothing and has no
+      way to tell why, so every state of this step has to say which is which.
+    */
+    const states: SetupDatabaseSnapshot[] = [
+      { ...completeDatabase, environmentRole: environmentRoleResolution("production") },
+      { ...completeDatabase, environmentRole: environmentRoleResolution("non-production") },
+      { ...completeDatabase, environmentRole: environmentRoleResolution("absent") },
+      { ...completeDatabase, environmentRole: environmentRoleResolution("invalid") },
+      { ...completeDatabase, environmentRole: environmentRoleResolution("production", "unreadable") },
+    ];
+    for (const database of states) {
+      const details = environmentRoleCheck(database).details.join(" ");
+      expect(details).toContain("APP_ENVIRONMENT_ROLE");
+      expect(details).toContain("APP_RUNTIME_ROLE");
+    }
+    const noSnapshot = environmentRoleCheck(undefined).details.join(" ");
+    expect(noSnapshot).toContain("APP_RUNTIME_ROLE");
+  });
+
+  it("leaks no connection string or credential into the operator surface", () => {
+    for (const declaration of ["production", "non-production", "absent", "invalid"] as const) {
+      const check = environmentRoleCheck({
+        ...completeDatabase,
+        environmentRole: environmentRoleResolution(declaration),
+      });
+      const text = `${check.message} ${check.details.join(" ")}`;
+      expect(text).not.toContain(baseEnv.DATABASE_URL);
+      expect(text).not.toContain(baseEnv.AUTH_SECRET);
+      expect(text).not.toContain(baseEnv.CRON_SECRET);
+    }
+  });
+
+  it("an acknowledgement resolves the CHECKLIST and not the role", () => {
+    /*
+      `applyProgress` moves `progress` to "completed" and never touches `status`,
+      exactly as it does for `runtime-env`. So ticking the box cannot make an
+      UNKNOWN installation start emailing members: nothing outside the checklist
+      reads the checklist.
+    */
+    const readiness = buildSetupReadiness({
+      env: baseEnv,
+      configDir: makeConfigDir(),
+      database: {
+        ...completeDatabase,
+        environmentRole: environmentRoleResolution("absent"),
+      },
+      progress: { completedStepIds: ["environment-role"] },
+    });
+    const check = readiness.categories
+      .flatMap((category) => category.checks)
+      .find((candidate) => candidate.id === "environment-role");
+    expect(check?.progress).toBe("completed");
+    expect(check?.status).toBe("blocked");
+  });
+});
+
 describe("setup-readiness club timezone (CT-1, #2989)", () => {
   const hostTimeZone = captureHostTimeZone();
   const originalNextPublicTz = process.env.NEXT_PUBLIC_TZ;

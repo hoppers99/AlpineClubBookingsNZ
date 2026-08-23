@@ -745,3 +745,4 @@ headings the index keeps verbatim.
 | --- | --- |
 | `INV-CONFIG-001` | Club-varying values get a configuration surface; upgrades fall back safely and visibly |
 | `INV-CONFIG-002` | One persisted IANA club timezone is the sole civil-time authority; `TZ` seeds it, the browser never decides it, and changing it rewrites nothing |
+| `INV-CONFIG-003` | One explicit `APP_ENVIRONMENT_ROLE` declaration decides production versus non-production; nothing is inferred, the database may only force the safer state, a missing declaration is UNKNOWN rather than either, and a production deploy cannot proceed without it |
