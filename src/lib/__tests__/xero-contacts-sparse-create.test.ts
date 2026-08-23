@@ -241,7 +241,10 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
         create: {
           xeroContactId: "contact-new",
           containedEmail: xeroSandboxContainmentTarget("alice@example.org"),
+          // The contact was created carrying the contained address, so nothing
+          // deliverable was overwritten and there is no rewrite to date.
           rewroteAddress: false,
+          rewrittenAt: null,
         },
       }),
     );

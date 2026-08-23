@@ -101,6 +101,14 @@ type WithheldApplicationEmail =
  * pointed at the club's real books is a destructive edit somebody needs to know
  * about.
  */
+type RewrittenXeroContact = {
+  xeroContactId: string;
+  xeroContactUrl: string;
+  memberName: string | null;
+  memberId: string | null;
+  rewrittenAt: string | null;
+};
+
 type XeroContactContainment =
   | { available: false }
   | {
@@ -108,6 +116,9 @@ type XeroContactContainment =
       containedContacts: number;
       rewrittenContacts: number;
       mostRecentAt: string | null;
+      lastRewrittenAt: string | null;
+      firstContainedAt: string | null;
+      rewritten: RewrittenXeroContact[];
     };
 
 type EnvironmentSafetyState = {
@@ -232,15 +243,29 @@ function describeWithheldEmail(state: EnvironmentSafetyState): {
  * WHY IT RENDERS UNDER NON_PRODUCTION AND UNKNOWN, and says opposite things
  * there. On a confirmed copy containment is running, and the number an operator
  * wants is how much of the club's accounting it has edited. On an UNDECLARED
- * installation containment is NOT running and nothing is being written to Xero at
- * all — every invoice, credit note and contact write is refused until the role is
- * declared — and a count of zero there means "nothing has happened", not
- * "nothing needed to happen". Rendering one number under both states with one
- * sentence would tell the operator of an undeclared LIVE site that their Xero is
- * fine, when in fact their invoicing has stopped. Same rule #3035 arrived at for
- * the withheld-email block, reached here for the opposite reason.
+ * installation containment is NOT running and nothing is being WRITTEN to Xero at
+ * all — every invoice, credit note, payment, allocation and contact write is
+ * refused until the role is resolved — and a count of zero there means "nothing
+ * has happened", not "nothing needed to happen". Rendering one number under both
+ * states with one sentence would tell the operator of an undeclared LIVE site
+ * that their Xero is fine, when in fact their invoicing has stopped. Same rule
+ * #3035 arrived at for the withheld-email block, reached here for the opposite
+ * reason.
  *
- * IT NAMES NO ADDRESS, and cannot: the payload carries counts and an instant.
+ * WRITES, NOT READS, and the distinction is deliberate. Reading from Xero still
+ * works while the role is unresolved — the contact and invoice screens still
+ * load, which is what an operator diagnosing this needs. A read changes nothing
+ * in the club's books and cannot make Xero email anybody.
+ *
+ * THE UNKNOWN BRANCH HAS TWO CASES, because the repair differs and the obvious
+ * single sentence is wrong for one of them. An installation that has DECLARED
+ * itself production still resolves UNKNOWN when the safer override cannot be read
+ * from the database — deliberate #3034 fail-closed behaviour — and telling that
+ * operator to "declare the role" sends them to fix something that is already
+ * correct.
+ *
+ * IT NAMES NO ADDRESS, and cannot: the payload carries counts, instants, member
+ * names and Xero contact ids.
  */
 function describeXeroContainment(state: EnvironmentSafetyState): {
   headline: string;
@@ -248,10 +273,17 @@ function describeXeroContainment(state: EnvironmentSafetyState): {
 } {
   const containment = state.xeroContactContainment;
   if (state.role === "UNKNOWN") {
+    if (state.declaration.kind === "production" && !state.override.readable) {
+      return {
+        headline: "Nothing is being written to Xero",
+        detail:
+          "This deployment DOES declare itself the club's live site, so the repair is not to declare it again. The safer override could not be read from the database, and until it can be, this application cannot rule out that an administrator has already forced this instance to behave as a copy — so it will not write to Xero on a guess. Reading from Xero still works. Apply the pending database migrations (prisma migrate deploy) or restore database access, then reload this page: Xero writing resumes on its own, and anything that was refused can be re-driven from Admin → Xero.",
+      };
+    }
     return {
       headline: "Nothing is being written to Xero",
       detail:
-        "Until this installation says whether it is the club's live site or a copy, no invoice, credit note or contact is sent to Xero at all. The reason is that the answer decides what email address may sit on a Xero contact: the member's real one on the live site, a replaced one on a copy — because Xero emails invoice reminders from its own servers to whatever the contact holds. Guessing either way is wrong, so nothing is attempted. Declare the role and Xero writing resumes; anything that was refused can be re-driven from Admin → Xero.",
+        "Until this installation says whether it is the club's live site or a copy, no invoice, credit note, payment, allocation or contact is written to Xero at all. Reading from Xero still works, so the Xero screens here will still load. The reason writing stops is that the answer decides what email address may sit on a Xero contact: the member's real one on the live site, a replaced one on a copy — because Xero emails invoice reminders from its own servers to whatever the contact holds. Guessing either way is wrong, so nothing is attempted. Set APP_ENVIRONMENT_ROLE and Xero writing resumes; anything that was refused can be re-driven from Admin → Xero.",
     };
   }
   if (!containment.available) {
@@ -263,25 +295,63 @@ function describeXeroContainment(state: EnvironmentSafetyState): {
   }
   if (containment.containedContacts === 0) {
     return {
-      headline: "No Xero contact has been touched yet",
+      headline: "No Xero contact's address has been checked yet",
       detail:
-        "Nothing has been invoiced or synced to Xero from this copy yet. The first time it resolves a Xero contact, it replaces that contact's email address with a non-deliverable one so Xero cannot email a real member from here — and that is a real edit in whichever Xero organisation this copy is connected to.",
+        "This copy has not yet looked at the email address on any Xero contact. It does that the first time it needs a contact — to raise an invoice or a credit note, or when a member's details change — and it then replaces that contact's email address with one that cannot be delivered, so Xero cannot email a real member from here. That is a real edit in whichever Xero organisation this copy is connected to. Note this line is about CONTACT ADDRESSES only: a copy also writes invoices, credit notes and payments, deliberately, and those are not counted here.",
     };
   }
-  const recently = containment.mostRecentAt
-    ? ` Most recently ${formatChangedAt(containment.mostRecentAt)}.`
+  const lastChecked = containment.mostRecentAt
+    ? ` Last checked ${formatChangedAt(containment.mostRecentAt)}.`
+    : "";
+  const since = containment.firstContainedAt
+    ? ` The first was ${formatChangedAt(containment.firstContainedAt)}.`
     : "";
   const contacts = `${containment.containedContacts} Xero contact${containment.containedContacts === 1 ? "" : "s"}`;
   if (containment.rewrittenContacts > 0) {
+    /*
+      `lastRewrittenAt`, NOT `mostRecentAt`. The sentence is about when a real
+      address was last replaced, and `mostRecentAt` moves every time this copy
+      re-checks any contact — so using it would date a destructive edit made in
+      June to whenever the copy last ran anything at all.
+    */
+    const lastRewritten = containment.lastRewrittenAt
+      ? ` The most recent was ${formatChangedAt(containment.lastRewrittenAt)}.`
+      : "";
     return {
       headline: `${containment.rewrittenContacts} real email address${containment.rewrittenContacts === 1 ? "" : "es"} replaced on ${contacts}`,
-      detail: `Those contacts were holding a working email address and this copy overwrote it with one that cannot be delivered, so Xero can no longer email invoice reminders to a real member from here.${recently} If this copy is connected to the club's REAL Xero organisation, those are real accounting records and the addresses are gone from Xero — they are still correct in this database, and re-syncing each member from the live site restores them. If it is connected to a test organisation, this is simply the copy behaving correctly.`,
+      detail: `Those contacts were holding a working email address and this copy overwrote it with one that cannot be delivered, so Xero can no longer email invoice reminders to a real member from here.${lastRewritten} If this copy is connected to a test Xero organisation, that is simply the copy behaving correctly and there is nothing to do. If it is connected to the club's REAL Xero organisation, those are real accounting records: every member's address is still correct in this database and on the live site, but it is gone from Xero, and putting it back is a manual job — see the list below.`,
     };
   }
   return {
     headline: `${contacts} checked, none was holding a real address`,
-    detail: `Every Xero contact this copy has resolved was already unable to reach anybody — no address at all, or a club-internal placeholder — so nothing was overwritten.${recently}`,
+    detail: `Every Xero contact this copy has looked at was already unable to reach anybody — no address at all, or a club-internal placeholder — so this installation has not overwritten a working address on any of them.${since}${lastChecked}`,
   };
+}
+
+/**
+ * The repair, spelled out, because the number on its own is not actionable.
+ *
+ * WHY IT IS MANUAL, and why saying so is better than offering a button that does
+ * not exist. The earlier version of this screen told the operator to "re-sync
+ * those members from the live site", and no shipped route does that: the admin
+ * force-sync links a contact rather than pushing an address to it, the Xero push
+ * refuses an already-linked member, and the contact update only fires when a
+ * LOCAL field changes — none of them compares what Xero holds against what the
+ * database holds. Nor could the copy repair this itself: writing a member's real
+ * address back to Xero is exactly what containment exists to prevent, and it
+ * would re-arm the reminders. And the live site cannot find the damage on its
+ * own, because the record of what this copy changed is in THIS database.
+ *
+ * So the repair is: correct each contact in Xero, reading the right address off
+ * the member's page on the club's live site. The list gives the operator the two
+ * things that makes possible — which contact, and whose it is.
+ */
+function xeroContainmentRepairSteps(): string[] {
+  return [
+    "Open each contact in Xero using the links below, and put the member's email address back on it. The correct address is on that member's page on the club's LIVE site — it was never changed there.",
+    "Do it on the club's live Xero organisation from a browser, not from this copy: a copy is not allowed to write a real address to a Xero contact, which is the whole point of the replacement, and doing so here would start Xero emailing real members again.",
+    "Then point this copy at a separate Xero organisation — a demo or trial one — before using it again, so this cannot recur. Disconnecting Xero here also stops it.",
+  ];
 }
 
 function describeOverride(state: EnvironmentSafetyState): string {
@@ -468,6 +538,64 @@ export function EnvironmentSafetyPanel() {
           <p className="text-sm text-muted-foreground">
             {describeXeroContainment(state).detail}
           </p>
+          {/*
+            The addressable half (#3036 review P0-5). A count tells somebody that
+            damage exists; this tells them which contacts, whose they are, and
+            where to go. Rendered only when there is something to repair.
+          */}
+          {state.xeroContactContainment.available &&
+          state.xeroContactContainment.rewritten.length > 0 ? (
+            <div className="space-y-2 pt-2">
+              <p className="text-sm font-semibold">Putting them back</p>
+              <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
+                {xeroContainmentRepairSteps().map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ol>
+              <ul
+                className="space-y-1 pt-1 text-sm"
+                data-testid="environment-xero-rewritten-contacts"
+              >
+                {state.xeroContactContainment.rewritten.map((contact) => (
+                  <li key={contact.xeroContactId}>
+                    <a
+                      className="underline"
+                      href={contact.xeroContactUrl}
+                      rel="noreferrer noopener"
+                      target="_blank"
+                    >
+                      {contact.memberName ??
+                        `Xero contact ${contact.xeroContactId}`}
+                    </a>
+                    {contact.memberId ? (
+                      <>
+                        {" — "}
+                        <a
+                          className="underline"
+                          href={`/admin/members/${contact.memberId}`}
+                        >
+                          member page
+                        </a>
+                      </>
+                    ) : (
+                      " — no member on this installation points at this contact any more"
+                    )}
+                    {contact.rewrittenAt
+                      ? ` — replaced ${formatChangedAt(contact.rewrittenAt)}`
+                      : null}
+                  </li>
+                ))}
+              </ul>
+              {state.xeroContactContainment.rewrittenContacts >
+              state.xeroContactContainment.rewritten.length ? (
+                <p className="text-sm text-muted-foreground">
+                  {state.xeroContactContainment.rewrittenContacts -
+                    state.xeroContactContainment.rewritten.length}{" "}
+                  more are not listed here. The count above is the real total.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -548,7 +676,7 @@ export function EnvironmentSafetyPanel() {
                 </li>
                 <li>
                   {target
-                    ? "A copy sends no email to members, and every Xero contact it touches has its email address replaced with one that cannot be delivered — so Xero cannot email a member from here either. If this installation is connected to the club's REAL Xero organisation, that replacement is a real edit to real accounting records."
+                    ? "A copy sends no email to members, and every Xero contact it touches has its email address replaced with one that cannot be delivered — so Xero cannot email a member from here either. Switching this on is what STARTS that replacement, not what stops it: containment runs only on an installation confirmed to be a copy. So if this installation is connected to the club's REAL Xero organisation, switching this on begins editing real accounting records — disconnect Xero here first, or point it at a test organisation."
                     : "The decision goes back to this deployment's own APP_ENVIRONMENT_ROLE setting. If that setting says nothing, this installation becomes \"not configured\" — it does NOT become the live site, and while it says nothing this application writes nothing to Xero at all."}
                 </li>
                 <li>

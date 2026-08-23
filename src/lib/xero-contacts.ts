@@ -1539,11 +1539,7 @@ export async function updateXeroContact(
   // unchanged; on a confirmed copy the address is contained; on an undeclared
   // installation this throws before anything reaches Xero.
   //
-  // It deliberately does NOT write a containment record afterwards. Every row in
-  // that table is written after READING back what Xero stored, and "we just sent
-  // it" is not that. The cost of leaving it out is one extra provider read the
-  // next time a document writer resolves this contact, and only when the
-  // member's address has actually moved.
+  // It ALSO proves containment, below, before its own write — see the call site.
   const { policy: emailPolicy } = await resolveXeroContactEmailPolicy();
   // #2859: what Xero is known to hold in the NZBN field right now, so the date
   // of birth below never overwrites a real New Zealand Business Number. Read
@@ -1747,6 +1743,47 @@ export async function updateXeroContact(
     // transactions. The committed RUNNING reservation is their authority, and
     // authentication failure closes it through the same failure path.
     const { xero, tenantId } = await getAuthenticatedXeroClient();
+    /*
+      INV-CONFIG-005 (#3036): CONTAIN BEFORE WRITING, not after.
+
+      This function is reachable with no invoice anywhere near it — an
+      administrator editing a member, a member saving their profile, an
+      email-change confirmation — and on a copy it overwrites whatever Xero holds
+      with the contained form. Recording nothing meant the operator surface could
+      say "no Xero contact has been touched yet" while this installation had
+      already rewritten real accounting records, which is precisely the
+      reassuring-false-record shape this epic keeps finding.
+
+      Recording it AFTERWARDS would have been the wrong repair: every row in that
+      table is written after reading Xero's stored value back, and by then the
+      value read back is the contained address this function just sent, so the
+      row would say "nothing was overwritten" about a real overwrite. Containing
+      FIRST puts the read where it can still see the truth: containment reads the
+      contact, replaces a deliverable address if one is there, and records what
+      it actually saw. The write below then sends the contained form of the
+      member's current address.
+
+      COST, stated honestly. On the live site this is a no-op — no read, no
+      provider call, no row. On a copy whose proof is fresh it is one indexed
+      read. On a copy meeting a contact for the first time it is one provider
+      read plus, if a real address is there, one provider write — so a contact
+      holding a real address takes two provider writes on this path rather than
+      one. Contact updates are rare (a profile save), the duplicate only happens
+      once per contact per freshness window, and paying it is how the count is a
+      measurement rather than a guess.
+
+      The repair leg is covered elsewhere: `retryXeroWriteWithContactRepair` can
+      retry against a DIFFERENT contact, and it reaches that id through
+      `findOrCreateXeroContact`, which contains it.
+    */
+    await ensureXeroContactContained({
+      policy: emailPolicy,
+      xeroContactId,
+      sourceEmail: authoritativeData.email,
+      workflow: "updateXeroContact",
+      xero,
+      tenantId,
+    });
     const response = await retryXeroWriteWithContactRepair({
       memberId:
         options?.localModel === "Member" && options.localId

@@ -32,6 +32,7 @@ import {
   decideXeroContactEmailPolicy,
   ensureXeroContactContained,
   resolveXeroContactEmailPolicy,
+  XERO_CONTAINMENT_PROOF_MAX_AGE_MS,
   XeroContactContainmentError,
   XeroContactEmailPolicyError,
   XeroContactEnvironmentUnknownError,
@@ -48,12 +49,37 @@ import {
 } from "@/lib/__tests__/helpers/environment-role";
 
 const REAL = "member@example.com";
-const CONTACT = "contact-1";
+/*
+  A REAL 36-CHARACTER XERO GUID, not "contact-1". The shorter fixture made one
+  assertion below pass for the wrong reason: the idempotency key is truncated to
+  a provider-safe length, so `expect(key).toContain(CONTACT)` held only because
+  the id was nine characters and everything fitted. With a real GUID the key
+  cannot contain both the id and the address, and the assertion has to check the
+  property it means (the key is DERIVED from both, so a different address is a
+  different key) rather than a coincidence of the fixture (#3036 review P1-8c).
+*/
+const CONTACT = "8f4d2c1a-9b3e-4f57-8a26-1d0c7e5b9a34";
+
+/** The frozen clock all unit tests run at: 2026-07-01T00:00:00.000Z. */
+const NOW_MS = Date.parse("2026-07-01T00:00:00.000Z");
+
+/**
+ * A containment proof row, `ageMs` old.
+ *
+ * The age is explicit at every call site because it is now load-bearing: the
+ * fast path requires the proof to be BOTH a fingerprint match and younger than
+ * `XERO_CONTAINMENT_PROOF_MAX_AGE_MS`.
+ */
+function proofRow(containedEmail: string, ageMs = 0) {
+  return { containedEmail, updatedAt: new Date(NOW_MS - ageMs) };
+}
 
 function xeroClient(storedEmail: string | undefined) {
-  const getContact = vi.fn().mockResolvedValue({
-    body: { contacts: [{ contactID: CONTACT, emailAddress: storedEmail }] },
-  });
+  const getContact = vi
+    .fn()
+    .mockImplementation(async (_tenantId: string, contactId: string) => ({
+      body: { contacts: [{ contactID: contactId, emailAddress: storedEmail }] },
+    }));
   const updateContact = vi.fn().mockResolvedValue({ body: {} });
   return { accountingApi: { getContact, updateContact } };
 }
@@ -71,6 +97,30 @@ async function copyPolicy(): Promise<XeroContactEmailPolicy> {
   declareEnvironmentRole("non-production");
   await expectEnvironmentRolePremise("NON_PRODUCTION");
   return (await resolveXeroContactEmailPolicy()).policy;
+}
+
+/**
+ * The idempotency key containment would send for this contact and this member
+ * address, obtained by running the real code path rather than by re-deriving it
+ * here — a test that spells the key formula a second time cannot notice the
+ * formula changing.
+ */
+async function keyForContainment(
+  xeroContactId: string,
+  sourceEmail: string,
+): Promise<unknown> {
+  const policy = await copyPolicy();
+  const xero = xeroClient(sourceEmail);
+  mocks.prisma.xeroSandboxContactContainment.findUnique.mockResolvedValue(null);
+  await ensureXeroContactContained({
+    policy,
+    xeroContactId,
+    sourceEmail,
+    workflow: "test",
+    xero,
+    tenantId: "tenant-1",
+  });
+  return xero.accountingApi.updateContact.mock.calls[0][3];
 }
 
 /**
@@ -272,10 +322,25 @@ describe("Xero contact containment (INV-CONFIG-005)", () => {
           },
         ],
       });
-      // The key is derived from the contact and the address being written, so a
-      // retry of the same containment cannot produce a second write.
-      expect(idempotencyKey).toContain(CONTACT);
-      expect(idempotencyKey).toContain(toXeroSandboxContactEmail(REAL));
+      /*
+        THE KEY IS A FUNCTION OF BOTH INPUTS, which is the property that makes a
+        retry of the same containment idempotent and a re-containment against a
+        MOVED address a different write. Asserting `toContain(CONTACT)` looked
+        like it checked that and did not: the key is truncated to a provider-safe
+        length, so with a real 36-character GUID neither input survives verbatim.
+        So the property is checked by varying each input in turn.
+      */
+      expect(typeof idempotencyKey).toBe("string");
+      expect((idempotencyKey as string).length).toBeGreaterThan(16);
+      const otherContactKey = await keyForContainment(
+        "11111111-2222-3333-4444-555555555555",
+        REAL,
+      );
+      const otherAddressKey = await keyForContainment(CONTACT, "moved@example.com");
+      expect(otherContactKey).not.toBe(idempotencyKey);
+      expect(otherAddressKey).not.toBe(idempotencyKey);
+      // And it is stable: the same contact and the same address, again.
+      expect(await keyForContainment(CONTACT, REAL)).toBe(idempotencyKey);
       expect(
         mocks.prisma.xeroSandboxContactContainment.upsert,
       ).toHaveBeenCalledWith({
@@ -284,10 +349,12 @@ describe("Xero contact containment (INV-CONFIG-005)", () => {
           xeroContactId: CONTACT,
           containedEmail: xeroSandboxContainmentTarget(REAL),
           rewroteAddress: true,
+          rewrittenAt: expect.any(Date),
         },
         update: {
           containedEmail: xeroSandboxContainmentTarget(REAL),
           rewroteAddress: true,
+          rewrittenAt: expect.any(Date),
         },
       });
     });
@@ -390,9 +457,9 @@ describe("Xero contact containment (INV-CONFIG-005)", () => {
   describe("the steady state costs no provider call", () => {
     it("returns on the evidence alone when the proof still matches", async () => {
       const policy = await copyPolicy();
-      mocks.prisma.xeroSandboxContactContainment.findUnique.mockResolvedValue({
-        containedEmail: xeroSandboxContainmentTarget(REAL),
-      });
+      mocks.prisma.xeroSandboxContactContainment.findUnique.mockResolvedValue(
+        proofRow(xeroSandboxContainmentTarget(REAL)),
+      );
       const xero = xeroClient(REAL);
       await ensureXeroContactContained({
         policy,
@@ -411,9 +478,9 @@ describe("Xero contact containment (INV-CONFIG-005)", () => {
 
     it("takes no Xero client at all on the fast path, so no token is refreshed", async () => {
       const policy = await copyPolicy();
-      mocks.prisma.xeroSandboxContactContainment.findUnique.mockResolvedValue({
-        containedEmail: xeroSandboxContainmentTarget(REAL),
-      });
+      mocks.prisma.xeroSandboxContactContainment.findUnique.mockResolvedValue(
+        proofRow(xeroSandboxContainmentTarget(REAL)),
+      );
       await ensureXeroContactContained({
         policy,
         xeroContactId: CONTACT,
@@ -429,9 +496,9 @@ describe("Xero contact containment (INV-CONFIG-005)", () => {
       // contact is read from Xero again rather than trusted on a claim made
       // before the change.
       const policy = await copyPolicy();
-      mocks.prisma.xeroSandboxContactContainment.findUnique.mockResolvedValue({
-        containedEmail: xeroSandboxContainmentTarget("old@example.com"),
-      });
+      mocks.prisma.xeroSandboxContactContainment.findUnique.mockResolvedValue(
+        proofRow(xeroSandboxContainmentTarget("old@example.com")),
+      );
       const xero = xeroClient(toXeroSandboxContactEmail("old@example.com"));
       await ensureXeroContactContained({
         policy,
@@ -459,9 +526,10 @@ describe("Xero contact containment (INV-CONFIG-005)", () => {
     it("is one indexed read per contact, so a batch of many is not an N+1", async () => {
       const policy = await copyPolicy();
       mocks.prisma.xeroSandboxContactContainment.findUnique.mockImplementation(
-        async ({ where }: { where: { xeroContactId: string } }) => ({
-          containedEmail: xeroSandboxContainmentTarget(`${where.xeroContactId}@example.com`),
-        }),
+        async ({ where }: { where: { xeroContactId: string } }) =>
+          proofRow(
+            xeroSandboxContainmentTarget(`${where.xeroContactId}@example.com`),
+          ),
       );
       const xero = xeroClient(REAL);
       for (let index = 0; index < 25; index += 1) {
@@ -479,6 +547,218 @@ describe("Xero contact containment (INV-CONFIG-005)", () => {
       ).toHaveBeenCalledTimes(25);
       expect(xero.accountingApi.getContact).not.toHaveBeenCalled();
       expect(xero.accountingApi.updateContact).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("a proof about Xero expires, because only Xero can invalidate it", () => {
+    /*
+      INV-CONFIG-005, and the hole the first version of this module had. The
+      fingerprint invalidates a proof when the MEMBER's address moves. Nothing
+      invalidated it when the PROVIDER side moved — and the provider side is what
+      the proof is a claim about. The reachable chain, using this product's own
+      operator guide: a copy connected to the club's real Xero organisation
+      contains contact X, somebody repairs the damage from the live site (where
+      addresses are written verbatim), X holds the member's real address again,
+      the member's local address never moved, and the next document write took
+      the fast path and raised an AUTHORISED invoice against a contact Xero would
+      email reminders to.
+    */
+    it("re-reads the contact once the proof is older than the freshness bound", async () => {
+      const policy = await copyPolicy();
+      mocks.prisma.xeroSandboxContactContainment.findUnique.mockResolvedValue(
+        proofRow(
+          xeroSandboxContainmentTarget(REAL),
+          XERO_CONTAINMENT_PROOF_MAX_AGE_MS + 1,
+        ),
+      );
+      // Xero is holding the member's REAL address again: exactly the state the
+      // stale proof asserts cannot happen.
+      const xero = xeroClient(REAL);
+      await ensureXeroContactContained({
+        policy,
+        xeroContactId: CONTACT,
+        sourceEmail: REAL,
+        workflow: "test",
+        xero,
+        tenantId: "tenant-1",
+      });
+      expect(xero.accountingApi.getContact).toHaveBeenCalledTimes(1);
+      expect(xero.accountingApi.updateContact).toHaveBeenCalledTimes(1);
+    });
+
+    it("still trusts a proof inside the bound, so the steady state stays free", async () => {
+      const policy = await copyPolicy();
+      mocks.prisma.xeroSandboxContactContainment.findUnique.mockResolvedValue(
+        proofRow(
+          xeroSandboxContainmentTarget(REAL),
+          XERO_CONTAINMENT_PROOF_MAX_AGE_MS - 1000,
+        ),
+      );
+      const xero = xeroClient(REAL);
+      await ensureXeroContactContained({
+        policy,
+        xeroContactId: CONTACT,
+        sourceEmail: REAL,
+        workflow: "test",
+        xero,
+        tenantId: "tenant-1",
+      });
+      expect(xero.accountingApi.getContact).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("the record of a real overwrite is never retracted", () => {
+    /*
+      The reassuring-false-record shape, and it needed no concurrency to reach.
+      Re-verifying a contact this copy already contained necessarily finds the
+      CONTAINED address in place, so `rewroteAddress` recomputes as false — and
+      writing that unconditionally erased the record of a real address this
+      installation really had overwritten. The operator surface then positively
+      asserted "none was holding a real address ... so nothing was overwritten".
+    */
+    it("omits rewroteAddress on a re-verification instead of writing false", async () => {
+      const policy = await copyPolicy();
+      // Stale by age, so the contact is re-read; Xero holds the CONTAINED
+      // address, so nothing needs rewriting this time round.
+      mocks.prisma.xeroSandboxContactContainment.findUnique.mockResolvedValue(
+        proofRow(
+          xeroSandboxContainmentTarget(REAL),
+          XERO_CONTAINMENT_PROOF_MAX_AGE_MS + 1,
+        ),
+      );
+      const xero = xeroClient(toXeroSandboxContactEmail(REAL));
+      await ensureXeroContactContained({
+        policy,
+        xeroContactId: CONTACT,
+        sourceEmail: REAL,
+        workflow: "test",
+        xero,
+        tenantId: "tenant-1",
+      });
+      expect(xero.accountingApi.updateContact).not.toHaveBeenCalled();
+      const [args] = mocks.prisma.xeroSandboxContactContainment.upsert.mock
+        .calls[0] as [
+        {
+          create: Record<string, unknown>;
+          update: Record<string, unknown>;
+        },
+      ];
+      expect(
+        Object.keys(args.update).sort(),
+        "a re-verification must not carry rewroteAddress at all: writing false " +
+          "retracts a fact about the past that the operator surface reports",
+      ).toEqual(["containedEmail"]);
+      // The create half still records the truth for a first-ever containment.
+      expect(args.create.rewroteAddress).toBe(false);
+      expect(args.create.rewrittenAt).toBeNull();
+    });
+
+    it("records the instant a deliverable address was replaced", async () => {
+      const policy = await copyPolicy();
+      const xero = xeroClient(REAL);
+      await ensureXeroContactContained({
+        policy,
+        xeroContactId: CONTACT,
+        sourceEmail: REAL,
+        workflow: "test",
+        xero,
+        tenantId: "tenant-1",
+      });
+      const [args] = mocks.prisma.xeroSandboxContactContainment.upsert.mock
+        .calls[0] as [{ update: { rewrittenAt?: Date } }];
+      expect(args.update.rewrittenAt).toBeInstanceOf(Date);
+      expect(args.update.rewrittenAt?.getTime()).toBe(NOW_MS);
+    });
+  });
+
+  describe("a refusal that never reached Xero keeps its own identity", () => {
+    /*
+      #2423 F2 on a new path. The outbox decides whether a FAILED operation may
+      be returned to PENDING by asking whether the error is a pre-HTTP cool-down
+      refusal — `error.name` plus `preHttp`. Wrapping such a refusal in a
+      containment error makes it unrecognisable, so an operation that was NEVER
+      ATTEMPTED is failed terminally and nothing auto-recovers it. The window is
+      real: `getAuthenticatedXeroClient` gates only the DAILY limit, while
+      `withXeroRetry` also gates the transient-outage breaker, so the first
+      pre-HTTP refusal a run meets can land inside containment's own getContact.
+    */
+    for (const name of [
+      "XeroDailyLimitError",
+      "XeroTransientOutageError",
+      "XeroReconnectRequiredError",
+    ]) {
+      it(`rethrows ${name} unchanged from the contact read`, async () => {
+        const policy = await copyPolicy();
+        const refusal = Object.assign(new Error("refused before any request"), {
+          name,
+          preHttp: true,
+        });
+        const xero = xeroClient(REAL);
+        xero.accountingApi.getContact.mockRejectedValue(refusal);
+        await expect(
+          ensureXeroContactContained({
+            policy,
+            xeroContactId: CONTACT,
+            sourceEmail: REAL,
+            workflow: "test",
+            xero,
+            tenantId: "tenant-1",
+          }),
+        ).rejects.toBe(refusal);
+      });
+
+      it(`rethrows ${name} unchanged from the containment write`, async () => {
+        const policy = await copyPolicy();
+        const refusal = Object.assign(new Error("refused before any request"), {
+          name,
+          preHttp: true,
+        });
+        const xero = xeroClient(REAL);
+        xero.accountingApi.updateContact.mockRejectedValue(refusal);
+        await expect(
+          ensureXeroContactContained({
+            policy,
+            xeroContactId: CONTACT,
+            sourceEmail: REAL,
+            workflow: "test",
+            xero,
+            tenantId: "tenant-1",
+          }),
+        ).rejects.toBe(refusal);
+      });
+    }
+
+    it("rethrows a cool-down refusal from authentication unchanged", async () => {
+      const policy = await copyPolicy();
+      const refusal = Object.assign(new Error("daily limit"), {
+        name: "XeroDailyLimitError",
+        preHttp: true,
+      });
+      mocks.getAuthenticatedXeroClient.mockRejectedValue(refusal);
+      await expect(
+        ensureXeroContactContained({
+          policy,
+          xeroContactId: CONTACT,
+          sourceEmail: REAL,
+          workflow: "test",
+        }),
+      ).rejects.toBe(refusal);
+    });
+
+    it("still wraps an ordinary provider failure, so the refusal is explained", async () => {
+      const policy = await copyPolicy();
+      const xero = xeroClient(REAL);
+      xero.accountingApi.getContact.mockRejectedValue(new Error("503 boom"));
+      await expect(
+        ensureXeroContactContained({
+          policy,
+          xeroContactId: CONTACT,
+          sourceEmail: REAL,
+          workflow: "test",
+          xero,
+          tenantId: "tenant-1",
+        }),
+      ).rejects.toThrow(XeroContactContainmentError);
     });
   });
 

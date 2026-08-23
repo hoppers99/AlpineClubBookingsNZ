@@ -763,6 +763,7 @@ describe("findOrCreateXeroContact contains the contact's address on a copy (INV-
           xeroContactId: "xero_existing",
           containedEmail: xeroSandboxContainmentTarget("member@example.com"),
           rewroteAddress: true,
+          rewrittenAt: expect.any(Date),
         },
       }),
     );
@@ -802,8 +803,15 @@ describe("findOrCreateXeroContact contains the contact's address on a copy (INV-
       email: "member@example.com",
       xeroContactId: "xero_existing",
     });
+    /*
+      A proof that matches AND IS FRESH. Both halves are required: the
+      fingerprint alone cannot notice a change made on the Xero side, so a proof
+      older than XERO_CONTAINMENT_PROOF_MAX_AGE_MS is re-verified against the
+      provider (INV-CONFIG-005). `new Date()` is the frozen test clock.
+    */
     mocks.prisma.xeroSandboxContactContainment.findUnique.mockResolvedValue({
       containedEmail: xeroSandboxContainmentTarget("member@example.com"),
+      updatedAt: new Date(),
     });
 
     await expect(findOrCreateXeroContact("mem_1")).resolves.toBe(

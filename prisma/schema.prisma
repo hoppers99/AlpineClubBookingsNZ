@@ -7025,12 +7025,36 @@ model XeroSandboxContactContainment {
   /// True when Xero was holding a deliverable address and this installation
   /// replaced it; false when the contact was already unreachable and nothing
   /// was written to the provider.
+  ///
+  /// MONOTONE: it goes false -> true and never back. A re-verification finds the
+  /// contained address already in place and would otherwise recompute this as
+  /// `false`, silently retracting the record of a real address this installation
+  /// really did overwrite — and the operator surface would then positively
+  /// assert that nothing was overwritten. The writer omits the column from its
+  /// update rather than setting it to `false`.
   rewroteAddress Boolean
 
   /// When containment was first established for this contact, and when it was
   /// last re-verified. Both, because "we have been containing this contact
   /// since June" and "we last checked five minutes ago" are different operator
-  /// questions.
+  /// questions, and both are read: the operator surface reports the earliest
+  /// `containedAt` and the latest `updatedAt`.
+  ///
+  /// `updatedAt` IS ALSO THE PROOF'S AGE, which is what bounds how long a
+  /// provider-side change can go unnoticed. Nothing this application does can
+  /// invalidate a proof from the Xero side — somebody editing the contact in
+  /// Xero, or the live site pushing the member's real address back onto it — so
+  /// the fast path additionally requires the proof to be younger than
+  /// `XERO_CONTAINMENT_PROOF_MAX_AGE_MS` and re-reads the contact past that.
   containedAt DateTime @default(now())
   updatedAt   DateTime @default(now()) @updatedAt
+
+  /// When a DELIVERABLE address was last actually replaced on this contact, or
+  /// `null` if one never was.
+  ///
+  /// Separate from `updatedAt`, which moves on every re-verification. The
+  /// operator question behind the urgent number is "when did this copy last edit
+  /// the club's real books", and answering it with the most recent re-check
+  /// would date the damage to whenever the copy last ran anything at all.
+  rewrittenAt DateTime?
 }

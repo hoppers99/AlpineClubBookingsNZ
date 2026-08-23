@@ -28,12 +28,21 @@
  *
  * ## The three answers
  *
- * - **PRODUCTION — nothing happens.** No transform, no provider read, no row
- *   written, no behaviour change of any kind. `applyXeroContactEmailPolicy` is
- *   the identity function on this branch, so every payload, every stored request
- *   payload and every idempotency key on the club's live site is byte-identical
- *   to what it was before this issue. That is the half a reviewer should check
- *   hardest and it is deliberately trivial to check.
+ * - **PRODUCTION — nothing is transformed and nothing is recorded.** No
+ *   transform, no provider read, no row written. `applyXeroContactEmailPolicy`
+ *   is the identity function on this branch, so every payload, every stored
+ *   request payload and every idempotency key on the club's live site is
+ *   byte-identical to what it was before this issue. That is the half a reviewer
+ *   should check hardest and it is deliberately trivial to check.
+ *
+ *   IT IS NOT "no behaviour change of any kind", and the earlier wording that
+ *   said so was overclaiming. Asking the question costs a read:
+ *   `resolveEnvironmentRole()` is deliberately uncached (see its docblock — a
+ *   cache would delay the safer override an administrator presses in an
+ *   emergency), so each contact resolution adds one primary-key read of a
+ *   one-row table on the live site too. A three-hundred-charge subscription run
+ *   adds three hundred of them. That is the price of the guarantee, and it is
+ *   written down rather than glossed.
  * - **NON_PRODUCTION — contain.** Addresses written into a contact payload are
  *   replaced by their contained form, and a contact that already exists is
  *   proved contained before its id is returned to whatever is about to invoice
@@ -310,18 +319,63 @@ type XeroContactContainmentClient = {
 type ContainmentDelegate = {
   findUnique: (args: {
     where: { xeroContactId: string };
-    select: { containedEmail: true };
-  }) => Promise<{ containedEmail: string } | null>;
+    select: { containedEmail: true; updatedAt: true };
+  }) => Promise<{ containedEmail: string; updatedAt: Date } | null>;
   upsert: (args: {
     where: { xeroContactId: string };
     create: {
       xeroContactId: string;
       containedEmail: string;
       rewroteAddress: boolean;
+      rewrittenAt: Date | null;
     };
-    update: { containedEmail: string; rewroteAddress: boolean };
+    /*
+      `rewroteAddress` and `rewrittenAt` are OPTIONAL on the update half, and
+      that is the monotonicity: a re-verification that finds the contained
+      address already in place omits them rather than writing `false` over a
+      rewrite this installation really did perform. See
+      {@link recordXeroContactContainment}.
+    */
+    update: {
+      containedEmail: string;
+      rewroteAddress?: boolean;
+      rewrittenAt?: Date;
+    };
   }) => Promise<unknown>;
 };
+
+/**
+ * How long a containment proof may be trusted without looking at Xero again.
+ *
+ * WHY A PROOF HAS TO EXPIRE AT ALL, which is the half the first version of this
+ * module did not say. The fast path invalidates a proof when the MEMBER's stored
+ * address moves, because that is the input the fingerprint is derived from.
+ * Nothing invalidates it when the PROVIDER side moves - and the provider side is
+ * the side the proof is a claim about. Two ways that happens, neither of them
+ * exotic:
+ *
+ * - somebody edits the contact's email address inside Xero, which is ordinary
+ *   while testing against a sandbox organisation;
+ * - a copy is connected to the club's REAL Xero organisation, the damage is
+ *   repaired from the live site (where addresses are written verbatim), and the
+ *   contact holds the member's real address again while this copy's row still
+ *   says it is contained. That is the chain that ends with Xero emailing a real
+ *   member an invoice reminder, and it was reachable by following this product's
+ *   own operator guide.
+ *
+ * So the proof is bounded, and past the bound the contact is re-read from Xero
+ * exactly as if there were no proof at all. THE RESIDUAL IS THE WINDOW ITSELF,
+ * and it is stated rather than hidden: a provider-side change made inside the
+ * window is not noticed until the window expires.
+ *
+ * TWENTY-FOUR HOURS, chosen against Xero's daily call ceiling rather than by
+ * feel. Re-verification costs one provider read per contact per window, so a copy
+ * exercising three hundred members spends three hundred reads a day against a
+ * five-thousand-call daily limit. Six hours would spend four times that for a
+ * tighter bound nothing measured says is needed; a week would leave a copy
+ * trusting a week-old claim about somebody else's data.
+ */
+export const XERO_CONTAINMENT_PROOF_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function containmentDelegate(): ContainmentDelegate | undefined {
   return (
@@ -341,14 +395,17 @@ function containmentDelegate(): ContainmentDelegate | undefined {
  *
  * ## The three paths, in cost order
  *
- * 1. **Durable proof already matches — zero provider calls.** One indexed
- *    primary-key-shaped read of `XeroSandboxContactContainment` by
- *    `xeroContactId`, compared against the contained address this member's
- *    CURRENT stored address maps to. This is the steady state: a batch
+ * 1. **Durable proof already matches AND IS STILL FRESH — zero provider
+ *    calls.** One indexed primary-key-shaped read of
+ *    `XeroSandboxContactContainment` by `xeroContactId`, compared against the
+ *    contained address this member's CURRENT stored address maps to, and against
+ *    {@link XERO_CONTAINMENT_PROOF_MAX_AGE_MS}. This is the steady state: a batch
  *    subscription run over three hundred members costs three hundred indexed
  *    reads and no Xero traffic at all, which is what keeps this out of N+1
  *    territory. The row is one per contact, upserted, so the table cannot grow
- *    per invoice.
+ *    per invoice. THE FRESHNESS HALF IS NOT DECORATION — see that constant: a
+ *    local address change is the only thing the fingerprint alone can notice,
+ *    and the proof is a claim about the PROVIDER side.
  * 2. **No proof, and Xero is already holding nothing deliverable.** One provider
  *    read, no write. A contact with no address, or one carrying a club-internal
  *    walk-in/deleted placeholder, can reach nobody — rewriting it would spend a
@@ -400,6 +457,13 @@ function containmentDelegate(): ContainmentDelegate | undefined {
  * has not been applied — this throws {@link XeroContactContainmentError} and the
  * invoice does not happen. A copy that could not contain a contact and invoiced
  * anyway is precisely the outcome this issue exists to prevent.
+ *
+ * THREE PROVIDER ERRORS PASS THROUGH WITH THEIR OWN IDENTITY rather than being
+ * re-labelled — see {@link XERO_PROVIDER_ERROR_NAMES_TO_RETHROW}. The refusal is
+ * identical either way (nothing is raised against an unproved contact); what
+ * would have been lost is the outbox's ability to tell a never-attempted
+ * cool-down refusal from a real failure, which is what keeps an un-attempted
+ * operation re-drivable instead of terminally FAILED.
  */
 export async function ensureXeroContactContained(params: {
   policy: XeroContactEmailPolicy;
@@ -428,11 +492,11 @@ export async function ensureXeroContactContained(params: {
     );
   }
 
-  let existing: { containedEmail: string } | null;
+  let existing: { containedEmail: string; updatedAt: Date } | null;
   try {
     existing = await delegate.findUnique({
       where: { xeroContactId },
-      select: { containedEmail: true },
+      select: { containedEmail: true, updatedAt: true },
     });
   } catch (error) {
     throw new XeroContactContainmentError(
@@ -442,7 +506,19 @@ export async function ensureXeroContactContained(params: {
         `Nothing was written to Xero. ${errorText(error)} (INV-CONFIG-005)`,
     );
   }
-  if (existing?.containedEmail === target) return;
+  /*
+    TWO conditions, not one. The recorded fingerprint has to match what this
+    application would write for this member today (the member's address has not
+    moved), AND the proof has to be young enough to still describe the provider
+    side - see XERO_CONTAINMENT_PROOF_MAX_AGE_MS for why a proof about what Xero
+    holds cannot be invalidated by a local change alone.
+  */
+  if (
+    existing?.containedEmail === target &&
+    Date.now() - existing.updatedAt.getTime() < XERO_CONTAINMENT_PROOF_MAX_AGE_MS
+  ) {
+    return;
+  }
 
   const { xero, tenantId } = await resolveContainmentClient(params);
 
@@ -459,6 +535,7 @@ export async function ensureXeroContactContained(params: {
     );
     stored = response.body.contacts?.[0]?.emailAddress ?? undefined;
   } catch (error) {
+    rethrowProviderErrorUnchanged(error);
     throw new XeroContactContainmentError(
       xeroContactId,
       `Could not read Xero contact ${xeroContactId}, so this copy cannot prove ` +
@@ -508,6 +585,7 @@ export async function ensureXeroContactContained(params: {
         },
       );
     } catch (error) {
+      rethrowProviderErrorUnchanged(error);
       throw new XeroContactContainmentError(
         xeroContactId,
         `Could not replace the email address on Xero contact ${xeroContactId} ` +
@@ -542,6 +620,52 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * The provider errors this module must NOT re-label, by `name`.
+ *
+ * WHY RE-LABELLING THEM IS A DEFECT AND NOT A COSMETIC LOSS. Two of these are
+ * raised by gates that run BEFORE any request reaches Xero — the daily-limit
+ * gate and the transient-outage breaker, both of which `withXeroRetry` and
+ * `getAuthenticatedXeroClient` consult on the way in. The outbox decides whether
+ * a failed operation may be returned to PENDING and re-driven by asking exactly
+ * this question (`isXeroCooldownRefusal` in `xero-operation-outbox.ts`, keyed on
+ * `error.name` plus `preHttp`), and its whole safety argument is that a refusal
+ * which sent nothing cannot have duplicated anything. Wrapping such a refusal in
+ * a `XeroContactContainmentError` makes it unrecognisable, so the outbox
+ * TERMINALLY FAILS an operation that was never attempted — #2423's F2 defect
+ * ("a pile of FAILED-unattempted invoices that nothing auto-recovers") arriving
+ * on a new path. The same wrapping defeats every downstream
+ * `err instanceof XeroDailyLimitError`, and `XeroReconnectRequiredError` is here
+ * for the same reason: `getXeroApiErrorInfo` maps it by name to the "reconnect
+ * Xero" message an administrator can act on, and a wrapped one becomes a generic
+ * 500.
+ *
+ * NOTHING IS WEAKENED BY LETTING THEM THROUGH. The caller still fails, so no
+ * document is raised against an unproved contact — which is the whole guarantee.
+ * All that changes is that the error keeps the identity its own recovery
+ * machinery needs, and gains a better operator message than this module could
+ * write for it.
+ *
+ * Keyed on `name` rather than `instanceof` on purpose: these classes travel
+ * through module boundaries the unit suite mocks, and a mocked module's class is
+ * not the same class object.
+ */
+const XERO_PROVIDER_ERROR_NAMES_TO_RETHROW = new Set([
+  "XeroDailyLimitError",
+  "XeroTransientOutageError",
+  "XeroReconnectRequiredError",
+]);
+
+/** Rethrow untouched if this is one of {@link XERO_PROVIDER_ERROR_NAMES_TO_RETHROW}. */
+function rethrowProviderErrorUnchanged(error: unknown): void {
+  if (
+    error instanceof Error &&
+    XERO_PROVIDER_ERROR_NAMES_TO_RETHROW.has(error.name)
+  ) {
+    throw error;
+  }
+}
+
 async function resolveContainmentClient(params: {
   xero?: XeroContactContainmentClient | XeroClient;
   tenantId?: string;
@@ -560,6 +684,7 @@ async function resolveContainmentClient(params: {
       tenantId: authenticated.tenantId,
     };
   } catch (error) {
+    rethrowProviderErrorUnchanged(error);
     throw new XeroContactContainmentError(
       params.xeroContactId,
       "Could not reach Xero to prove that contact " +
@@ -587,13 +712,33 @@ async function recordXeroContactContainment(
     rewroteAddress: boolean;
   },
 ): Promise<void> {
+  const now = new Date();
   try {
     await delegate.upsert({
       where: { xeroContactId: row.xeroContactId },
-      create: row,
-      update: {
+      create: {
+        xeroContactId: row.xeroContactId,
         containedEmail: row.containedEmail,
         rewroteAddress: row.rewroteAddress,
+        rewrittenAt: row.rewroteAddress ? now : null,
+      },
+      /*
+        MONOTONE. `rewroteAddress` answers "did this installation overwrite a
+        deliverable address on this contact", which is a fact about the past that
+        a later re-verification cannot undo. Re-verifying a contact this copy
+        already contained necessarily finds the CONTAINED address in place and
+        recomputes `rewroteAddress` as false - so writing it unconditionally
+        RETRACTED the record, and the operator surface then positively asserted
+        that nothing had been overwritten. Deterministic, no concurrency needed:
+        contain a contact, change that member's address locally (a copy is where
+        an email-change flow gets tested), and the next document write erased it.
+        So the false case omits both columns instead of writing them.
+      */
+      update: {
+        containedEmail: row.containedEmail,
+        ...(row.rewroteAddress
+          ? { rewroteAddress: true, rewrittenAt: now }
+          : {}),
       },
     });
   } catch (error) {
