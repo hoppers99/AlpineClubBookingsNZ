@@ -119,7 +119,7 @@ it, and the surfaces claiming "nothing is written to Xero" were therefore false.
 **Layer 2 — the contact funnel.** `findOrCreateXeroContact` is the funnel every
 Xero DOCUMENT writer goes through to obtain its contact, so the containment gate
 lives INSIDE it rather than at each caller. Counted on this branch there are
-**thirteen** direct call sites: `xero-booking-invoices.ts`,
+**twelve** direct call sites: `xero-booking-invoices.ts`,
 `xero-subscription-invoices.ts`, `xero-entrance-fee-invoices.ts`,
 `xero-supplementary-invoices.ts` and `xero-group-settlement-invoices.ts` (the five
 invoice creators, one each), `xero-credit-notes.ts` (**two**),
@@ -139,8 +139,16 @@ those are the ones Xero's own reminders can act on. Three qualify:
 which takes its contact from the invoice it is crediting),
 `updateXeroBookingInvoiceForBooking` (re-pricing can RAISE the amount due) and
 `deallocateExcessAppliedCreditForBooking` (removing credit raises it too). All
-three call `requireContainedMemberContactForInvoiceOperation` at their entry
-point. Recording a payment, allocating a credit note and voiding an invoice only
+three call `requireContainedXeroContactForInvoiceOperation`, and **each names the
+contact its own operation will act on** rather than letting the helper look one
+up: the first version resolved `Member.xeroContactId`, which is a DIFFERENT
+contact from the invoice's after a member merge or an admin re-link — so it proved
+containment of a contact the operation never touched. The cancellation credit note
+passes the invoice's contact, the booking re-price passes
+`currentInvoice.contact` (which is why its check sits below the invoice read
+rather than at the top of the function), and the deallocation asks Xero which
+contact its invoice belongs to — a read it spends only on a copy, because the
+contact is supplied as a lazily-called function. Recording a payment, allocating a credit note and voiding an invoice only
 reduce what is outstanding; archiving a contact and changing contact-group
 membership carry no document and no address. Those take layer 1 and not layer 2.
 

@@ -209,10 +209,21 @@ describe("readXeroContactContainment", () => {
       expect(mocks.findMany).toHaveBeenCalledWith({
         where: { rewroteAddress: true },
         select: { xeroContactId: true, rewrittenAt: true },
-        orderBy: { rewrittenAt: "desc" },
+        orderBy: { rewrittenAt: { sort: "desc", nulls: "last" } },
         take: REWRITTEN_CONTACT_SAMPLE_LIMIT,
       });
       expect(REWRITTEN_CONTACT_SAMPLE_LIMIT).toBeLessThanOrEqual(100);
+      /*
+        NULLS LAST, explicitly. Postgres sorts NULLs FIRST on a DESC order, and
+        nothing in the database ties `rewroteAddress: true` to a non-null
+        `rewrittenAt` — only this application's writer does. Without this, a pair
+        that ever came apart would put an undated row at the TOP of the list an
+        operator repairs from.
+      */
+      const [args] = mocks.findMany.mock.calls[0] as [
+        { orderBy: { rewrittenAt: unknown } },
+      ];
+      expect(args.orderBy.rewrittenAt).toEqual({ sort: "desc", nulls: "last" });
     });
 
     it("asks for no member names at all when nothing was rewritten", async () => {

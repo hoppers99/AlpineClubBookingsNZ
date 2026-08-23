@@ -1295,6 +1295,66 @@ describe("membership cancellation Xero operations", () => {
       );
     });
 
+    it("contains the INVOICE's contact, not the member's link, when they differ", async () => {
+      /*
+        The permissive defect this replaced. `contactId` on this path is
+        `invoice.contact?.contactID ?? subscription.member.xeroContactId`, and
+        that `??` exists because the two CAN differ: a member merge nulls the
+        loser's link while the loser's invoices keep the loser's contact, and the
+        admin re-link route writes a new link while existing invoices keep the old
+        one. The first version of this check resolved the member's link, so it
+        contained contact A and raised the credit note against contact B — which
+        nothing had proved contained, and which Xero would remind a real member
+        about if the allocation left the invoice outstanding.
+      */
+      declareEnvironmentRole("non-production");
+      await expectEnvironmentRolePremise("NON_PRODUCTION");
+      mocks.memberFindUnique.mockResolvedValue({
+        email: "alice@example.com",
+        xeroContactId: "contact_survivor",
+      });
+      mocks.getInvoice.mockResolvedValue({
+        body: {
+          invoices: [
+            {
+              invoiceID: "inv_sub_1",
+              invoiceNumber: "INV-1",
+              amountDue: 123.45,
+              contact: { contactID: "contact_loser" },
+            },
+          ],
+        },
+      });
+      mocks.getContact.mockResolvedValue({
+        body: {
+          contacts: [
+            { contactID: "contact_loser", emailAddress: "alice@example.com" },
+          ],
+        },
+      });
+      mocks.updateContact.mockResolvedValue({ body: {} });
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          createdByMemberId: "admin_1",
+          syncOperationId: "op_1",
+        }),
+      ).resolves.toBe("cn_1");
+
+      // The contact the credit note is raised against is the one contained.
+      expect(mocks.getContact).toHaveBeenCalledWith("tenant_1", "contact_loser");
+      expect(mocks.containmentUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { xeroContactId: "contact_loser" },
+        }),
+      );
+      const creditNote = mocks.createCreditNotes.mock.calls[0][1].creditNotes[0];
+      expect(creditNote.contact).toEqual({ contactID: "contact_loser" });
+    });
+
     it("raises NO credit note when containment cannot be proved", async () => {
       declareEnvironmentRole("non-production");
       await expectEnvironmentRolePremise("NON_PRODUCTION");

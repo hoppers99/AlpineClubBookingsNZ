@@ -28,7 +28,7 @@ import {
   stripXeroOrgShortCode,
 } from "@/lib/xero-links";
 import { sendAdminXeroSyncErrorAlert } from "@/lib/email";
-import { requireContainedMemberContactForInvoiceOperation } from "@/lib/xero-contact-containment-proof";
+import { requireContainedXeroContactForInvoiceOperation } from "@/lib/xero-contact-containment-proof";
 import logger from "@/lib/logger";
 import {
   callXeroApi,
@@ -652,8 +652,16 @@ export async function createXeroMembershipCancellationCreditNote(
     the credit note exists, leaves the invoice still outstanding against that
     contact — and Xero then emails its reminders to whatever address the contact
     holds, from its own servers, with no API call from here.
+
+    IT NAMES `contactId`, NOT THE MEMBER'S LINK, and the `??` twelve lines above
+    is why that matters: the invoice's contact and the member's current link can
+    differ, and when they do, containing the member's link proves nothing about
+    the contact this credit note lands on. A member merge nulls the loser's link
+    while the loser's invoices keep the loser's contact; the admin re-link route
+    writes a new link while existing invoices keep the old one. Both are ordinary.
   */
-  await requireContainedMemberContactForInvoiceOperation({
+  await requireContainedXeroContactForInvoiceOperation({
+    resolveXeroContactId: async () => contactId,
     memberId: subscription.memberId,
     workflow: "createXeroMembershipCancellationCreditNote",
     xero,

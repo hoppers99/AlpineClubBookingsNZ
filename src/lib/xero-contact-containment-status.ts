@@ -174,7 +174,16 @@ export async function readXeroContactContainment(): Promise<XeroContactContainme
       prisma.xeroSandboxContactContainment.findMany({
         where: { rewroteAddress: true },
         select: { xeroContactId: true, rewrittenAt: true },
-        orderBy: { rewrittenAt: "desc" },
+        /*
+          `nulls: "last"` is not decoration. Postgres sorts NULLs FIRST on a
+          DESC order, so a row with `rewroteAddress: true` and a null
+          `rewrittenAt` would head the list an operator repairs from — and
+          nothing in the database enforces that the pair is always written
+          together, only this application's writer. Ordering the nulls last means
+          a writer that ever came apart degrades to "listed last" rather than to
+          "listed first, undated, above the contacts that matter".
+        */
+        orderBy: { rewrittenAt: { sort: "desc", nulls: "last" } },
         take: REWRITTEN_CONTACT_SAMPLE_LIMIT,
       }),
     ]);

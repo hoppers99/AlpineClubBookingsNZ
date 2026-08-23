@@ -73,6 +73,13 @@ export function formatNZDateTime(date: Date): string {
  * did not expect has told the reader nothing, while the raw string at least says
  * what arrived. Client components on the environment-safety screens share this
  * rather than each carrying their own three-line copy.
+ *
+ * IT IS `formatNZDateTime`, which is the same formatter `/admin/audit-log` uses
+ * for the very same class of timestamp — the audit row an override save writes.
+ * One admin screen quietly spelling an instant in a different zone from the
+ * screen beside it is worse than both sitting on one shared formatter, and
+ * pinning locale and zone together is what `INV-DATE-015` and the ESLint date
+ * guard require of any formatter on this surface.
  */
 export function formatNZInstantOrRaw(iso: string): string {
   const parsed = new Date(iso);

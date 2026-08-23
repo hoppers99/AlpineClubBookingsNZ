@@ -173,8 +173,10 @@ failures=0
 # Pure bash `case` has no writer, no reader, and no exit status to lose. The
 # needle is quoted inside the pattern so it is matched literally, and the newline
 # padding keeps it a whole-LINE match exactly as `grep -Fx` did. Any new
-# membership test in these gates must use this helper:
-# review-findings-contracts.test.ts fails a reintroduced `printf | grep -q`.
+# membership test in these gates must use this helper. The guard is in
+# scripts/__tests__/same-release-expand-contract.test.ts, which fails both a
+# reintroduced `printf | grep -q` and a helper that has lost its newline padding
+# (whole-line match degraded to substring).
 list_contains_line() {
   # $1 = the exact line to look for, $2 = the newline-separated candidates.
   [ -n "${1:-}" ] || return 1

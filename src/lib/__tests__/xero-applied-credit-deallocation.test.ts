@@ -28,6 +28,7 @@ const h = vi.hoisted(() => {
   const linkFindMany = vi.fn();
   const linkUpsert = vi.fn();
   const getCreditNote = vi.fn();
+  const getInvoice = vi.fn();
   const deleteCreditNoteAllocations = vi.fn();
   const updateContact = vi.fn();
   const createCreditNoteAllocation = vi.fn();
@@ -112,6 +113,7 @@ const h = vi.hoisted(() => {
     containmentFindUnique,
     containmentUpsert,
     getContact,
+    getInvoice,
     updateContact,
     tx,
   };
@@ -132,6 +134,7 @@ vi.mock("@/lib/xero-api-client", () => ({
       accountingApi: {
         getContact: h.getContact,
         updateContact: h.updateContact,
+        getInvoice: h.getInvoice,
         getCreditNote: h.getCreditNote,
         deleteCreditNoteAllocations: h.deleteCreditNoteAllocations,
         createCreditNoteAllocation: h.createCreditNoteAllocation,
@@ -244,6 +247,11 @@ describe("deallocateExcessAppliedCreditForBooking (#1887 F3)", () => {
     });
     h.containmentFindUnique.mockResolvedValue(null);
     h.containmentUpsert.mockResolvedValue({});
+    h.getInvoice.mockResolvedValue({
+      body: {
+        invoices: [{ invoiceID: "inv-1", contact: { contactID: "contact-1" } }],
+      },
+    });
     h.getContact.mockResolvedValue({
       body: { contacts: [{ contactID: "contact-1", emailAddress: "" }] },
     });
@@ -1069,6 +1077,11 @@ describe("deallocation on a copy contains the contact first (INV-CONFIG-005)", (
     });
     h.containmentFindUnique.mockResolvedValue(null);
     h.containmentUpsert.mockResolvedValue({});
+    h.getInvoice.mockResolvedValue({
+      body: {
+        invoices: [{ invoiceID: "inv-1", contact: { contactID: "contact-1" } }],
+      },
+    });
     h.bookingFindUnique.mockResolvedValue({
       id: "booking-1",
       memberId: "member-1",
@@ -1141,12 +1154,18 @@ describe("deallocation on a copy contains the contact first (INV-CONFIG-005)", (
     expect(h.lockLedger).not.toHaveBeenCalled();
   });
 
-  it("refuses on a copy that cannot identify the contact at all", async () => {
+  it("refuses on a copy where the INVOICE names no contact", async () => {
+    /*
+      The contact this operation is about is the invoice's, not the member's —
+      those differ after a merge or an admin re-link, and containing the member's
+      would prove nothing about the invoice whose amount due this raises. So the
+      refusal is keyed on the invoice having no contact, and the member's link is
+      irrelevant to it (it is set here, and the call still refuses).
+    */
     declareEnvironmentRole("non-production");
     await expectEnvironmentRolePremise("NON_PRODUCTION");
-    h.memberFindUnique.mockResolvedValue({
-      email: "member@example.com",
-      xeroContactId: null,
+    h.getInvoice.mockResolvedValue({
+      body: { invoices: [{ invoiceID: "inv-1", contact: undefined }] },
     });
 
     await expect(
@@ -1155,6 +1174,55 @@ describe("deallocation on a copy contains the contact first (INV-CONFIG-005)", (
       }),
     ).rejects.toThrow(/cannot be identified from here/);
     expect(h.deleteCreditNoteAllocations).not.toHaveBeenCalled();
+  });
+
+  it("contains the INVOICE's contact, not the member's, when the two differ", async () => {
+    /*
+      The permissive defect this replaced: `Member.xeroContactId` is a different
+      contact from the invoice's after a member merge (which nulls the loser's
+      link while the loser's invoices keep the loser's contact) or an admin
+      re-link. Containing the member's link and then raising the amount due on an
+      invoice belonging to another contact left that contact holding a real
+      address for Xero to remind about.
+    */
+    declareEnvironmentRole("non-production");
+    await expectEnvironmentRolePremise("NON_PRODUCTION");
+    h.memberFindUnique.mockResolvedValue({
+      email: "member@example.com",
+      xeroContactId: "contact-survivor",
+    });
+    h.getInvoice.mockResolvedValue({
+      body: {
+        invoices: [
+          { invoiceID: "inv-1", contact: { contactID: "contact-loser" } },
+        ],
+      },
+    });
+    h.getContact.mockResolvedValue({
+      body: {
+        contacts: [
+          { contactID: "contact-loser", emailAddress: "member@example.com" },
+        ],
+      },
+    });
+    h.updateContact.mockResolvedValue({ body: {} });
+    h.linkFindMany.mockResolvedValue([regularAllocationLink()]);
+    h.getCreditNote
+      .mockResolvedValueOnce(providerNote(4000))
+      .mockResolvedValueOnce(providerNote(2500, "alloc-new"));
+    h.deleteCreditNoteAllocations.mockResolvedValue({ body: { isDeleted: true } });
+    h.createCreditNoteAllocation.mockResolvedValue(providerNote(2500));
+
+    await deallocateExcessAppliedCreditForBooking("booking-1", {
+      syncOperationId: "op-1",
+    });
+
+    expect(h.getContact).toHaveBeenCalledWith("tenant-1", "contact-loser");
+    expect(h.containmentUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { xeroContactId: "contact-loser" },
+      }),
+    );
   });
 
   it("refuses on an installation that has declared nothing", async () => {
@@ -1188,5 +1256,12 @@ describe("deallocation on a copy contains the contact first (INV-CONFIG-005)", (
     expect(h.containmentUpsert).not.toHaveBeenCalled();
     // Not even the member row is read: the policy answers first.
     expect(h.memberFindUnique).not.toHaveBeenCalled();
+    /*
+      AND NOT THE INVOICE EITHER. The contact is supplied as a FUNCTION precisely
+      so this read is never spent on the club's live site, where the whole check
+      is a no-op. A value would have cost every production deallocation a provider
+      round trip to answer a question production does not ask.
+    */
+    expect(h.getInvoice).not.toHaveBeenCalled();
   });
 });

@@ -616,6 +616,60 @@ describe("same-release expand/contract check (#3002)", () => {
   );
 
   it(
+    "FAILS a previous_expand_release that is a strict SUBSTRING of a real migration",
+    { timeout: MIGRATION_GATE_TIMEOUT_MS },
+    () => {
+      /*
+        THE SIBLING VACUITY, and the reason this case exists rather than a fourth
+        source assertion. `list_contains_line` matches a whole LINE, using newline
+        padding on both sides. Drop that padding — `case "$2" in *"$1"*` — and it
+        becomes a SUBSTRING match, which passes every source assertion in this
+        file: the helper is still there, both sites still call it, and there is
+        still no pipeline.
+
+        The existing check-5 case cannot see the difference either: its ledger
+        names `20990101000000_add_thing` against a directory
+        `20990101000000_expand_add_thing`, and that is not a substring of it. So
+        this case names a strict PREFIX instead —
+        `20990101000000_expand_add` against `20990101000000_expand_add_foo` — which
+        is exactly the dropped-word shape check 5 exists to catch, and which a
+        substring match would silently accept. In check 4 the same degradation
+        answers a false YES, which is the SILENT-pass direction: an expand and its
+        own contract in one deploy, reported as a pass.
+      */
+      const fixture = newFixture();
+      fixture.commit("base with no migrations");
+      fixture.branch("base-main");
+
+      fixture.addMigration("20990101000000_expand_add_foo");
+      fixture.addMigration("20990102000000_contract_drop_foo");
+      fixture.writeLedger([
+        expandRow("20990101000000_expand_add_foo"),
+        contractRow(
+          "20990102000000_contract_drop_foo",
+          // One word short of the real directory name, and a strict prefix of it.
+          "20990101000000_expand_add",
+        ),
+      ]);
+      fixture.commit("the ledger drops the last word of the expand's name");
+
+      const result = runGate(fixture, "base-main");
+
+      expect(result.status, result.stderr).not.toBe(0);
+      expect(result.stderr).toContain(
+        "previous_expand_release check FAILED: a ledger row names a release that does not exist.",
+      );
+      expect(result.stderr).toContain(
+        "previous_expand_release : 20990101000000_expand_add",
+      );
+      // The near-miss offered is the real directory, so the fix is a copy-paste.
+      expect(result.stderr).toContain("20990101000000_expand_add_foo");
+      // And check 4 was blind to the pair, which is what check 5 covers for.
+      expect(result.stderr).toContain("Same-release expand/contract check passed");
+    },
+  );
+
+  it(
     "REFUSES an acknowledgement on a row that does not declare itself windowed",
     { timeout: MIGRATION_GATE_TIMEOUT_MS },
     () => {
@@ -706,6 +760,34 @@ describe("check-migration-safety-coverage membership test", () => {
     );
     expect(source).toContain("Same-release expand/contract check FAILED");
     expect(source).toContain("set -Eeuo pipefail");
+  });
+
+  it("keeps the membership test a WHOLE-LINE match, not a substring one", () => {
+    /*
+      Dropping the newline padding is invisible to every other assertion here and
+      turns the check into a substring match — which accepts the dropped-word name
+      check 5 exists to catch, and makes check 4 answer a false YES over a real
+      expand/contract pair. The behavioural half is the strict-prefix fixture in
+      the suite above; this is the source half, because the padding is the whole
+      of the mechanism and it is one character each side.
+    */
+    const helper = source.slice(
+      source.indexOf("list_contains_line() {"),
+      source.indexOf("if [ ! -f "),
+    );
+    expect(helper.length, "the helper body must be bounded").toBeGreaterThan(120);
+    // Both sides padded, on the haystack and inside the pattern.
+    const padded = [...helper.matchAll(/\$'\\n'/g)];
+    expect(
+      padded.length,
+      "the haystack and the pattern must each be padded on both sides, so a " +
+        "needle can only match a complete line",
+    ).toBe(4);
+    expect(helper).toContain('case "$haystack" in');
+    expect(
+      helper,
+      "an unpadded `case \"$2\" in *\"$1\"*` is a substring match",
+    ).not.toMatch(/case\s+"\$2"\s+in/);
   });
 
   it("resolves membership without a pipeline, from one shared helper", () => {

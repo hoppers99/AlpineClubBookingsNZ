@@ -197,22 +197,6 @@ async function overrideStateFrom(
 }
 
 /**
- * The state a READ produces.
- *
- * IT READS THE ROW A SECOND TIME, on purpose, AND FOR ONE NARROW PURPOSE.
- * `resolveEnvironmentRole()` exposes `updatedAt` / `updatedByMemberId` only for an
- * override that is ON, because that is all the RESOLUTION needs — and widening its
- * type so a settings screen could show "switched off on 15 June by Ada" would put
- * a display concern into the module every safety decision in the platform goes
- * through. One extra primary-key read of a one-row table, on an administrator's
- * page load, is the cheaper side of that trade.
- *
- * WHAT THE SECOND READ MAY DECIDE IS THEREFORE LIMITED TO THOSE TWO DISPLAY
- * FIELDS. `on` and `readable` come from the resolution — see
- * {@link overrideStateFrom} for the payload this contradicted itself in when they
- * did not.
- */
-/**
  * The three payload sections that read the database, in parallel.
  *
  * They share no state and neither ordering nor a transaction: the override
@@ -238,6 +222,22 @@ async function independentPayloadReads(
   return { override, withheldEmail, xeroContactContainment };
 }
 
+/**
+ * The state a READ produces.
+ *
+ * IT READS THE ROW A SECOND TIME, on purpose, AND FOR ONE NARROW PURPOSE.
+ * `resolveEnvironmentRole()` exposes `updatedAt` / `updatedByMemberId` only for an
+ * override that is ON, because that is all the RESOLUTION needs — and widening its
+ * type so a settings screen could show "switched off on 15 June by Ada" would put
+ * a display concern into the module every safety decision in the platform goes
+ * through. One extra primary-key read of a one-row table, on an administrator's
+ * page load, is the cheaper side of that trade.
+ *
+ * WHAT THE SECOND READ MAY DECIDE IS THEREFORE LIMITED TO THOSE TWO DISPLAY
+ * FIELDS. `on` and `readable` come from the resolution — see
+ * {@link overrideStateFrom} for the payload this contradicted itself in when they
+ * did not.
+ */
 export async function stateFromResolution(
   resolution: EnvironmentRoleResolution,
 ): Promise<EnvironmentSafetyState> {

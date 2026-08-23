@@ -588,6 +588,33 @@ describe("Xero contact containment (INV-CONFIG-005)", () => {
       expect(xero.accountingApi.updateContact).toHaveBeenCalledTimes(1);
     });
 
+    it("treats a FUTURE-dated proof as stale rather than trusting it for ever", async () => {
+      /*
+        `updatedAt` is written by whichever process wrote the row, so a clock
+        that has since moved backwards — a container with a skewed clock, or a
+        restore carrying rows from a machine ahead of this one — leaves a
+        future-dated proof. `now - updatedAt` is then NEGATIVE, which is
+        arithmetically "inside" any window, so the proof would be trusted for
+        ever: the one state this bound exists to prevent. Fail closed.
+      */
+      const policy = await copyPolicy();
+      mocks.prisma.xeroSandboxContactContainment.findUnique.mockResolvedValue({
+        containedEmail: xeroSandboxContainmentTarget(REAL),
+        updatedAt: new Date(NOW_MS + 60 * 60 * 1000),
+      });
+      const xero = xeroClient(REAL);
+      await ensureXeroContactContained({
+        policy,
+        xeroContactId: CONTACT,
+        sourceEmail: REAL,
+        workflow: "test",
+        xero,
+        tenantId: "tenant-1",
+      });
+      expect(xero.accountingApi.getContact).toHaveBeenCalledTimes(1);
+      expect(xero.accountingApi.updateContact).toHaveBeenCalledTimes(1);
+    });
+
     it("still trusts a proof inside the bound, so the steady state stays free", async () => {
       const policy = await copyPolicy();
       mocks.prisma.xeroSandboxContactContainment.findUnique.mockResolvedValue(
@@ -673,6 +700,62 @@ describe("Xero contact containment (INV-CONFIG-005)", () => {
     });
   });
 
+  describe("a rewrite that could not be recorded says so", () => {
+    /*
+      The one direction this feature's numbers can be wrong in. The provider
+      write has already replaced a deliverable address on a real Xero contact
+      when the upsert fails, so the caller refuses (correctly) and the operator
+      count is one short of what actually happened. There is no repair available
+      — the address is replaced and the database is refusing writes — so the
+      honest handling is to say it in both places somebody will look.
+    */
+    it("logs the contact id and names the under-count in the refusal", async () => {
+      const policy = await copyPolicy();
+      mocks.prisma.xeroSandboxContactContainment.upsert.mockRejectedValue(
+        new Error("deadlock detected"),
+      );
+      const xero = xeroClient(REAL);
+      await expect(
+        ensureXeroContactContained({
+          policy,
+          xeroContactId: CONTACT,
+          sourceEmail: REAL,
+          workflow: "test",
+          xero,
+          tenantId: "tenant-1",
+        }),
+      ).rejects.toThrow(/count on Admin -> Environment will not include it/);
+      // The provider write really did happen, which is what makes the count wrong.
+      expect(xero.accountingApi.updateContact).toHaveBeenCalledTimes(1);
+      expect(mocks.logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ xeroContactId: CONTACT }),
+        expect.stringContaining("one short of what really happened"),
+      );
+    });
+
+    it("says nothing about a count when nothing was overwritten", async () => {
+      // A contact that was already unreachable had no address replaced, so the
+      // refusal must not claim an uncounted overwrite that did not occur.
+      const policy = await copyPolicy();
+      mocks.prisma.xeroSandboxContactContainment.upsert.mockRejectedValue(
+        new Error("deadlock detected"),
+      );
+      const xero = xeroClient("");
+      await expect(
+        ensureXeroContactContained({
+          policy,
+          xeroContactId: CONTACT,
+          sourceEmail: REAL,
+          workflow: "test",
+          xero,
+          tenantId: "tenant-1",
+        }),
+      ).rejects.toThrow(/the proof could not be recorded/);
+      expect(xero.accountingApi.updateContact).not.toHaveBeenCalled();
+      expect(mocks.logger.error).not.toHaveBeenCalled();
+    });
+  });
+
   describe("a refusal that never reached Xero keeps its own identity", () => {
     /*
       #2423 F2 on a new path. The outbox decides whether a FAILED operation may
@@ -688,6 +771,23 @@ describe("Xero contact containment (INV-CONFIG-005)", () => {
       "XeroDailyLimitError",
       "XeroTransientOutageError",
       "XeroReconnectRequiredError",
+      /*
+        #3036 third review round. `XeroTokenDecryptError` is name-keyed in FOUR
+        places that all treat it exactly like `XeroReconnectRequiredError`
+        (`xero-api-errors`, `xero-connection-probe`, `xero-organisation`,
+        `membership-cancellation-invoice-blockers`), so relabelling it turned the
+        admin's "reconnect Xero" message into an opaque 500 — and it bites
+        hardest on this module's own population, a copy restored with a different
+        AUTH_SECRET that cannot decrypt the tokens it inherited.
+      */
+      "XeroTokenDecryptError",
+      /*
+        And our OWN gate refusal, which containment's provider calls pass
+        through. Wrapping it destroys the `preHttp` marker the outbox keys its
+        never-attempted re-drive on, which is the whole reason that class carries
+        one.
+      */
+      "XeroContactEnvironmentUnknownError",
     ]) {
       it(`rethrows ${name} unchanged from the contact read`, async () => {
         const policy = await copyPolicy();

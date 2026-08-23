@@ -84,10 +84,37 @@ import {
  *
  * The name is `XeroContact…` for history rather than for scope: it was minted by
  * the contact gate and is now thrown by every Xero write. Renaming it would
- * churn the operator-facing string, the tests and the outbox's name-keyed error
- * handling for no gain.
+ * churn the operator-facing string and every test that keys on it for no gain —
+ * and note that the OUTBOX now keys on this name too, which the previous version
+ * of this sentence claimed as a reason before it was true.
+ *
+ * ## `preHttp` IS THE LOAD-BEARING PART
+ *
+ * This refusal is raised before `fn()` runs, so nothing reached Xero — provably,
+ * because the gate sits ahead of `withXeroRetry` and ahead of the usage meter.
+ * The outbox decides whether a FAILED operation may be returned to PENDING by
+ * asking exactly that question (`isXeroCooldownRefusal` in
+ * `xero-operation-outbox.ts`, keyed on `error.name` plus `preHttp === true`), so
+ * without the marker a refusal took the ordinary failure path — and twelve of
+ * fifteen handlers have already written `status: FAILED` by then. That is the
+ * outbox's own recorded defect, "a pile of FAILED-unattempted invoices that
+ * NOTHING auto-recovers" (#2423 F2), reached through the very gate added to
+ * prevent unattempted writes.
+ *
+ * The sharpest trigger is a declared-PRODUCTION site rather than an undeclared
+ * one: one failed `environmentSafetySettings.findUnique` — a pool timeout during
+ * a blue/green overlap — resolves UNKNOWN for an instant and would otherwise
+ * condemn a whole in-flight cron batch to hand requeues.
+ *
+ * It is `readonly` and always `true`: unlike `XeroDailyLimitError`, which has a
+ * post-HTTP construction site too, there is no way to raise this one after a
+ * request has gone out. If that ever changes, this is the field to make a
+ * constructor argument.
  */
 export class XeroContactEnvironmentUnknownError extends Error {
+  /** See the class docblock: this refusal always precedes the request. */
+  readonly preHttp = true;
+
   constructor(message: string) {
     super(message);
     this.name = "XeroContactEnvironmentUnknownError";

@@ -1223,6 +1223,80 @@ describe("createXeroInvoiceForBooking", () => {
     );
   });
 
+  it("contains the INVOICE's contact, not the member's link, when they differ", async () => {
+    /*
+      The permissive defect this replaced. The update re-sends
+      `currentInvoice.contact`, and after a member merge or an admin re-link that
+      is a DIFFERENT contact from `Member.xeroContactId`. The first version of
+      this check ran at the top of the function against the member's link, so it
+      proved containment of a contact this update never touches while raising the
+      amount due on one it does.
+    */
+    declareEnvironmentRole("non-production");
+    mocks.prisma.booking.findUnique.mockResolvedValue(
+      bookingWithExistingInvoice()
+    );
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      email: "member@example.com",
+      xeroContactId: "contact_survivor",
+    });
+    mocks.xeroClientInstance.accountingApi.getInvoice.mockResolvedValue({
+      body: {
+        invoices: [
+          {
+            invoiceID: "inv_1",
+            invoiceNumber: "INV-1",
+            type: "ACCREC",
+            status: "AUTHORISED",
+            contact: { contactID: "contact_loser" },
+            lineAmountTypes: "Inclusive",
+            reference: "Booking booking_",
+            lineItems: [
+              {
+                lineItemID: "line_1",
+                description: "old",
+                quantity: 1,
+                unitAmount: 100,
+                taxType: "OUTPUT2",
+                accountCode: "200",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    mocks.xeroClientInstance.accountingApi.getContact.mockResolvedValue({
+      body: {
+        contacts: [
+          { contactID: "contact_loser", emailAddress: "member@example.com" },
+        ],
+      },
+    });
+    mocks.xeroClientInstance.accountingApi.updateInvoice.mockResolvedValue({
+      body: { invoices: [{ invoiceID: "inv_1", invoiceNumber: "INV-1" }] },
+    });
+
+    await expect(updateXeroBookingInvoiceForBooking("booking_1")).resolves.toBe(
+      "inv_1"
+    );
+
+    expect(
+      mocks.xeroClientInstance.accountingApi.getContact
+    ).toHaveBeenCalledWith("tenant_1", "contact_loser");
+    expect(
+      mocks.xeroClientInstance.accountingApi.updateContact
+    ).toHaveBeenCalledWith(
+      "tenant_1",
+      "contact_loser",
+      expect.objectContaining({
+        contacts: [
+          expect.objectContaining({ contactID: "contact_loser" }),
+        ],
+      }),
+      expect.any(String)
+    );
+  });
+
   it("re-prices nothing on a copy that cannot prove the contact contained", async () => {
     declareEnvironmentRole("non-production");
     mocks.prisma.booking.findUnique.mockResolvedValue(

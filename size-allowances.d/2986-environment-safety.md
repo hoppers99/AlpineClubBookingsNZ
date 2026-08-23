@@ -168,7 +168,7 @@ reason: forty-eight lines across two sibling guards, and both fix defects rather
   across all three so a member never learns which internal reason applied.
 
 file: src/lib/xero-booking-invoices.ts
-lines: 1357
+lines: 1366
 reason: forty-two lines inside the invoice-email block that already holds two
   other non-send decisions — the booking's "No emails" switch and the
   unreadable-switch fault — and the new environment gate has to be read against
@@ -262,7 +262,7 @@ reason: fourteen lines, and they are the difference between a claim and a
   unavoidable.
 
 file: src/lib/membership-cancellation-xero.ts
-lines: 1387
+lines: 1395
 reason: twenty-three lines at the fifth credit-note creator — the one the
   original census of this issue got wrong. The other four resolve their contact
   through `findOrCreateXeroContact`, which contains it; this one takes its contact
@@ -277,7 +277,7 @@ reason: twenty-three lines at the fifth credit-note creator — the one the
   out would put the reasoning somewhere other than the line it justifies.
 
 file: src/lib/xero-applied-credit-deallocation.ts
-lines: 970
+lines: 992
 reason: fifteen lines at the entry point, before the fence and before any local
   claim, so a refusal leaves nothing half-done. Deallocation REMOVES credit from
   an invoice and therefore raises what is outstanding on it, which is the one
@@ -285,7 +285,13 @@ reason: fifteen lines at the entry point, before the fence and before any local
   path never touches the contact funnel. The comment is most of it and it has to
   be here: the reason this file needs a containment check at all is a property of
   what deallocation does to an invoice, which is not visible from the shared
-  helper it calls.
+  helper it calls. A third review round added twenty-two more: the contact this
+  operation is about is the INVOICE's, not the member's — the two differ after a
+  member merge or an admin re-link — and this module never reads the invoice, so
+  it asks Xero which contact the invoice belongs to. That read is passed as a
+  lazily-called function so the club's live site never spends it, and the comment
+  carries why the member's link was the wrong contact, because the wrong version
+  of this check read as coverage and gave none.
 
 file: src/lib/xero-bulk-contact-sync.ts
 lines: 725
@@ -297,6 +303,23 @@ reason: twenty lines, and they fix a FALSE operator report rather than adding a
   cannot be used. The skip has to sit in the per-contact loop beside the reasons it
   is a sibling of, because an operator reads one report and the reasons have to be
   tellable apart, and the comment carries why the obvious wording would be a lie.
+
+file: src/lib/xero-operation-outbox.ts
+lines: 2452
+reason: twenty-one lines, and twenty of them are comment. The outbox decides
+  whether a FAILED operation may go back to PENDING by asking whether the error
+  proves nothing was sent, and the environment-role gate added by this epic
+  raises exactly such a refusal — pre-HTTP by construction, since the gate sits
+  ahead of the retry ladder and the usage meter. Without its name in that
+  predicate a refusal took the ordinary path, and twelve of the fifteen handlers
+  have already written `status: FAILED` by then, so a whole in-flight cron batch
+  was condemned to hand requeues: the exact defect the predicate exists to
+  prevent (#2423 F2), reached through the gate added to prevent unattempted
+  writes. The name has to be IN the predicate, and the reasoning has to be beside
+  it — that function is three lines of condition carrying thirty lines of argument
+  about which errors prove what, and a reader who cannot see why a name is in the
+  list is a reader who removes it. Splitting a predicate away from the branch that
+  consumes it is what made this class of defect possible in the first place.
 
 file: src/app/api/admin/xero/import-member-contact/route.ts
 lines: 353

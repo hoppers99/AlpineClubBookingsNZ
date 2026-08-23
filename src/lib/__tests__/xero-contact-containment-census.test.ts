@@ -546,10 +546,15 @@ describe("Xero contact containment census (INV-CONFIG-005)", () => {
       click — and the guide's repair steps refer to it by name ("using the links
       below"), so a screen without it makes the documentation wrong too.
 
-      A SOURCE census rather than a React harness, following the precedent
-      `email-delivery-boundary-census.test.ts` set for these two files: there is
-      no harness for this screen and inventing one to assert a list exists is the
-      worse trade.
+      A SOURCE census AS WELL AS a render test, not instead of one. The earlier
+      version of this comment said there was no harness for this screen and that
+      inventing one was the worse trade, and that was false — `react-dom/server`
+      and `@testing-library/react` are both here and dozens of admin components
+      are rendered in tests. The render test is
+      `src/components/admin/__tests__/environment-xero-containment.test.tsx`. This
+      census earns its place on a different question: it pins WHICH FIELDS reach
+      the screen and that no email address can, which markup assertions express
+      poorly and which is the property an operator's repair depends on.
     */
     const block = readModule(
       "src/components/admin/environment-xero-containment.tsx",

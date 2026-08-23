@@ -183,7 +183,9 @@ function containmentDelegate(): ContainmentDelegate | undefined {
  * cannot hold a Member row locked.
  *
  * AND NO CALLER OF THE FUNNEL IS INSIDE A TRANSACTION — verified at all twelve
- * call sites on this branch, not assumed. The stronger-sounding claim ("they
+ * DIRECT call sites on this branch plus the one indirect one
+ * (`retryXeroWriteWithContactRepair`'s default `repairContactLink`), not
+ * assumed. The stronger-sounding claim ("they
  * cannot be") would be false and is not made: a caller inside an interactive
  * transaction would simply take a SECOND pooled connection, because the funnel
  * opens its own `$transaction` on both paths. That was already a pool hazard
@@ -205,7 +207,7 @@ function containmentDelegate(): ContainmentDelegate | undefined {
  * invoice does not happen. A copy that could not contain a contact and invoiced
  * anyway is precisely the outcome this issue exists to prevent.
  *
- * THREE PROVIDER ERRORS PASS THROUGH WITH THEIR OWN IDENTITY rather than being
+ * FIVE PROVIDER ERRORS PASS THROUGH WITH THEIR OWN IDENTITY rather than being
  * re-labelled — see {@link XERO_PROVIDER_ERROR_NAMES_TO_RETHROW}. The refusal is
  * identical either way (nothing is raised against an unproved contact); what
  * would have been lost is the outbox's ability to tell a never-attempted
@@ -260,9 +262,23 @@ export async function ensureXeroContactContained(params: {
     side - see XERO_CONTAINMENT_PROOF_MAX_AGE_MS for why a proof about what Xero
     holds cannot be invalidated by a local change alone.
   */
+  const proofAgeMs = existing
+    ? Date.now() - existing.updatedAt.getTime()
+    : null;
   if (
     existing?.containedEmail === target &&
-    Date.now() - existing.updatedAt.getTime() < XERO_CONTAINMENT_PROOF_MAX_AGE_MS
+    proofAgeMs !== null &&
+    /*
+      A NEGATIVE AGE IS STALE, not fresh. `updatedAt` is written by whichever
+      process wrote the row, so a clock that has since moved backwards — a
+      container with a skewed clock, a restore that carried rows from a machine
+      ahead of this one — leaves a future-dated proof whose age is negative and
+      therefore always "inside" the window. It would be trusted for ever, which
+      is the one direction this bound exists to prevent. Fail closed: re-read the
+      contact.
+    */
+    proofAgeMs >= 0 &&
+    proofAgeMs < XERO_CONTAINMENT_PROOF_MAX_AGE_MS
   ) {
     return;
   }
@@ -359,6 +375,7 @@ export async function ensureXeroContactContained(params: {
     xeroContactId,
     containedEmail: target,
     rewroteAddress,
+    workflow: params.workflow,
   });
 }
 
@@ -376,7 +393,8 @@ export async function ensureXeroContactContained(params: {
  * Three writers qualify and none of them touches the funnel:
  *
  * - the membership-cancellation credit note, which resolves its contact from the
- *   invoice it is crediting;
+ *   invoice it is crediting — NOT from the member's own link, which is why the
+ *   caller names the contact rather than this function guessing it;
  * - a booking-invoice line-item update, which can RAISE the amount due;
  * - applied-credit deallocation, which removes credit from an invoice and
  *   therefore also raises the amount due.
@@ -389,17 +407,52 @@ export async function ensureXeroContactContained(params: {
  * `callXeroApi` — that is a different question from containment, and it is
  * answered in one place for every writer.
  *
- * ## A COPY WITH NO CONTACT LINK IS A REFUSAL
+ * ## THE CALLER NAMES THE CONTACT, and the first version of this helper got
+ * that wrong
  *
- * The contact is identified from the member's own link, because that is the link
- * every one of these documents was raised through. When a copy holds no link, the
- * contact behind that invoice cannot be identified from here, so containment
- * cannot be proved and the operation is refused rather than proceeding on the
- * assumption that somebody else contained it. On PRODUCTION this function
- * returns before reading anything at all, so that refusal cannot reach the live
- * site.
+ * It resolved the contact from `Member.xeroContactId` — which is a DIFFERENT
+ * contact from the one two of these three operations use, and the code says so
+ * out loud: the cancellation credit note takes
+ * `invoice.contact?.contactID ?? subscription.member.xeroContactId`, and that
+ * `??` exists precisely because the two can differ. Containing the member's
+ * contact and raising the document against the invoice's meant proving
+ * containment of a contact the operation never touched — a check that reads as
+ * coverage and gives none. Both drifts are ordinary rather than exotic: a member
+ * merge nulls the loser's link while the loser's invoices keep the loser's
+ * contact, and the admin re-link route writes a new link while existing invoices
+ * keep the old one.
+ *
+ * So the contact is a REQUIRED input, supplied by the caller as a resolver
+ * function. A function rather than a value because one caller
+ * (`deallocateExcessAppliedCreditForBooking`) has to ASK Xero which contact its
+ * invoice belongs to: passing a value would spend that read on the club's live
+ * site, where this whole function is a no-op. The resolver runs only after the
+ * policy says "contain", so PRODUCTION still reads nothing and calls nothing.
+ *
+ * `memberId` remains, for the FINGERPRINT only. The row records the contained
+ * address this application would derive from that member's stored address, which
+ * is what the fast path compares against next time; the address actually written
+ * to Xero is derived from what Xero was HOLDING. Those two already diverge
+ * whenever a contact carries somebody else's address (see
+ * {@link ensureXeroContactContained}), and a foreign contact is simply that case
+ * again — consistent, because the same member is named every time this operation
+ * runs.
+ *
+ * ## A CONTACT THAT CANNOT BE NAMED IS A REFUSAL
+ *
+ * If the resolver comes back empty, the contact behind this document cannot be
+ * identified from here, so containment cannot be proved and the operation is
+ * refused rather than proceeding on the assumption that somebody else contained
+ * it. On PRODUCTION this function returns before reading anything at all, so
+ * that refusal cannot reach the live site.
  */
-export async function requireContainedMemberContactForInvoiceOperation(params: {
+export async function requireContainedXeroContactForInvoiceOperation(params: {
+  /**
+   * The contact the document will actually be raised against, or whose invoice
+   * this operation will leave outstanding. Resolved lazily — see the docblock.
+   */
+  resolveXeroContactId: () => Promise<string | null | undefined>;
+  /** Fingerprint source ONLY. Never used to choose the contact. */
   memberId: string;
   workflow: string;
   xero?: XeroContactContainmentClient | XeroClient;
@@ -408,25 +461,27 @@ export async function requireContainedMemberContactForInvoiceOperation(params: {
   const { policy } = await resolveXeroContactEmailPolicy();
   if (assertXeroContactEmailPolicyWitness(policy) === "verbatim") return;
 
-  const member = await prisma.member.findUnique({
-    where: { id: params.memberId },
-    select: { email: true, xeroContactId: true },
-  });
-  if (!member?.xeroContactId) {
+  const [xeroContactId, member] = await Promise.all([
+    params.resolveXeroContactId(),
+    prisma.member.findUnique({
+      where: { id: params.memberId },
+      select: { email: true },
+    }),
+  ]);
+  if (!xeroContactId) {
     throw new XeroContactContainmentError(
       "",
-      "This installation is a copy, and the Xero contact behind this member's " +
-        `invoice cannot be identified from here (member ${params.memberId} has ` +
-        "no linked Xero contact), so it cannot be proved that Xero is unable to " +
-        "email a real member about it. Nothing was written to Xero. Resolve the " +
-        "member's Xero contact first — raising or re-opening an invoice does " +
-        "that (INV-CONFIG-005).",
+      "This installation is a copy, and the Xero contact this operation would " +
+        "act on cannot be identified from here, so it cannot be proved that " +
+        "Xero is unable to email a real member about it. Nothing was written to " +
+        `Xero. Resolve the Xero contact for member ${params.memberId} first — ` +
+        "raising or re-opening an invoice does that (INV-CONFIG-005).",
     );
   }
   await ensureXeroContactContained({
     policy,
-    xeroContactId: member.xeroContactId,
-    sourceEmail: member.email,
+    xeroContactId,
+    sourceEmail: member?.email,
     workflow: params.workflow,
     xero: params.xero,
     tenantId: params.tenantId,
@@ -472,6 +527,27 @@ const XERO_PROVIDER_ERROR_NAMES_TO_RETHROW = new Set([
   "XeroDailyLimitError",
   "XeroTransientOutageError",
   "XeroReconnectRequiredError",
+  /*
+    Reached through `loadXeroTokens` inside `getAuthenticatedXeroClient`, and
+    name-keyed in FOUR places that all treat it exactly like
+    `XeroReconnectRequiredError` — `xero-api-errors.ts`,
+    `xero-connection-probe.ts`, `xero-organisation.ts` and
+    `membership-cancellation-invoice-blockers.ts`. Relabelling it turned the
+    admin's "reconnect Xero" message into an opaque 500, and it bites hardest on
+    exactly this module's population: a copy restored with a different
+    `AUTH_SECRET` cannot decrypt the tokens it inherited.
+  */
+  "XeroTokenDecryptError",
+  /*
+    OUR OWN refusal, raised by the gate inside `callXeroApi` when the role is
+    UNKNOWN — which containment's own provider calls pass through. It is reachable
+    here on one leg: an installation that declares nothing while the safer
+    override is ON resolves NON_PRODUCTION, so containment runs, and a failed
+    override read a moment later resolves UNKNOWN inside the gate. Wrapping it
+    would destroy the marker the outbox keys its never-attempted re-drive on,
+    which is the whole point of giving that class a `preHttp` marker at all.
+  */
+  "XeroContactEnvironmentUnknownError",
 ]);
 
 /** Rethrow untouched if this is one of {@link XERO_PROVIDER_ERROR_NAMES_TO_RETHROW}. */
@@ -521,6 +597,16 @@ async function resolveContainmentClient(params: {
  * contact from Xero, which is merely slow — but a row that cannot be written at
  * all means the database is not accepting the proof, and proceeding would leave
  * a copy invoicing on an unrecorded claim.
+ *
+ * AND WHEN THE PROVIDER WRITE ALREADY HAPPENED, THE COUNT UNDER-REPORTS. The
+ * caller refuses, correctly — but a deliverable address was replaced on a real
+ * Xero contact and no row records it, so `/admin/environment` will report one
+ * fewer overwrite than actually occurred. That is the one direction this
+ * feature's numbers can be wrong in, so it is logged at error level with the
+ * contact id rather than left to be inferred from a refusal, and the refusal
+ * message says it too. There is no repair available here: the address is already
+ * replaced and the database is refusing writes, so inventing a retry would only
+ * add a second provider call to a failing situation.
  */
 async function recordXeroContactContainment(
   delegate: ContainmentDelegate,
@@ -528,6 +614,7 @@ async function recordXeroContactContainment(
     xeroContactId: string;
     containedEmail: string;
     rewroteAddress: boolean;
+    workflow: string;
   },
 ): Promise<void> {
   const now = new Date();
@@ -560,10 +647,26 @@ async function recordXeroContactContainment(
       },
     });
   } catch (error) {
+    if (row.rewroteAddress) {
+      logger.error(
+        {
+          scope: "xero-contact-containment",
+          xeroContactId: row.xeroContactId,
+          workflow: row.workflow,
+          err: { message: errorText(error) },
+        },
+        "This installation replaced a deliverable email address on a Xero contact and then could not record it. The contact is contained, but the operator count of overwritten addresses on Admin -> Environment is now one short of what really happened. Note the contact id from this line.",
+      );
+    }
     throw new XeroContactContainmentError(
       row.xeroContactId,
       `Xero contact ${row.xeroContactId} was contained, but the proof could not ` +
         "be recorded, so this copy cannot show that it is safe to invoice. " +
+        (row.rewroteAddress
+          ? "A real email address WAS replaced on that contact before this " +
+            "failure, and the count on Admin -> Environment will not include " +
+            "it. "
+          : "") +
         `${errorText(error)} (INV-CONFIG-005)`,
     );
   }

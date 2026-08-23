@@ -216,16 +216,6 @@ function describeOverride(state: EnvironmentSafetyState): string {
     : "Off — the deployment's own setting decides.";
 }
 
-/**
- * "Last changed", in the same zone as every other admin timestamp.
- *
- * Deliberately NOT the club's configured zone. `/admin/audit-log` renders the
- * very same class of timestamp — the audit row this save writes — through
- * `APP_TIME_ZONE`, and one screen quietly spelling an instant in a different zone
- * from the screen beside it is worse than both sitting on the transitional
- * constant. `formatNZDateTime` pins locale and zone together, which is what
- * INV-DATE-015 and the ESLint date guard require of any formatter here.
- */
 export function EnvironmentSafetyPanel() {
   const [state, setState] = useState<EnvironmentSafetyState | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
