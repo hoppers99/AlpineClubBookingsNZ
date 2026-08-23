@@ -814,11 +814,11 @@ require_http_url_env_key() {
 # in the template, copy it across" is the normal upgrade move. Following that
 # through: the deploy passes, the migration runs, the new colour boots and resolves
 # NON_PRODUCTION, and then every confirmation, payment notice, waitlist offer and
-# renewal reminder for the club's REAL members is safety-suppressed — and once
-# #3036 lands, every application-managed contact on the club's REAL Xero
-# organisation has its email address rewritten to a sandbox address. Destructive
-# edits to live accounting, made confidently, by the very mechanism this epic added
-# to keep members safe.
+# renewal reminder for the club's REAL members is safety-suppressed — and every
+# application-managed contact on the club's REAL Xero organisation has its email
+# address rewritten to a non-deliverable one (INV-CONFIG-005). Destructive edits to
+# live accounting, made confidently, by the very mechanism this epic added to keep
+# members safe.
 #
 # So the safe-looking value is the unsafe outcome HERE, and only here. The correct
 # pairing is `non-production` in the template (safe by default on a laptop) and

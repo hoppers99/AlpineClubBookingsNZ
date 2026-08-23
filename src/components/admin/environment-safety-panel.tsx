@@ -5,7 +5,13 @@ import { useEffect, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { formatNZDateTime } from "@/lib/nzst-date";
+import { formatNZInstantOrRaw } from "@/lib/nzst-date";
+import {
+  EnvironmentXeroContainment,
+  type DeclarationKind,
+  type EnvironmentRole,
+  type XeroContactContainment,
+} from "@/components/admin/environment-xero-containment";
 
 /**
  * The environment-safety panel (ENV-SAFETY 1, #3034; epic #2986).
@@ -39,22 +45,26 @@ import { formatNZDateTime } from "@/lib/nzst-date";
  * `environment-role-declaration.ts` is a named forbidden leaf in the
  * client/server boundary census for exactly this reason.
  *
- * WHAT THIS SCREEN MAY CLAIM, which is narrower than it reads. #3034 RECORDS and
- * REPORTS the role; the containment that acts on it lands in #3035 (delivery) and
- * #3036 (Xero). So the copy below says what the role IS and what is coming, and
- * does not tell an operator that switching the override stops email today —
- * because today it does not. If you are the change that makes it true, this copy
- * is part of your diff.
+ * WHAT THIS SCREEN MAY CLAIM. #3034 recorded and reported the role and this copy
+ * said so; #3035 and #3036 are the changes that made the role ACT, so the copy
+ * now says what actually happens. A confirmed copy does not email members
+ * (#3035, INV-CONFIG-004), and every Xero contact it touches has its email
+ * address replaced with a non-deliverable one so Xero cannot email members from
+ * a copy either (#3036, INV-CONFIG-005).
+ *
+ * NOTE WHAT IT STILL MAY NOT CLAIM, because the previous version of this copy
+ * was going to be wrong in exactly this way: a copy does NOT "stop writing to
+ * the club's real Xero organisation". It keeps writing — invoices, credit notes
+ * and contacts, all of it, deliberately, so settlement behaviour stays testable
+ * — and what changes is that the contacts can no longer reach anybody. If it is
+ * pointed at the club's REAL Xero organisation, containment REWRITES real
+ * accounting records, which is why the block below reports how many.
  */
-
-type EnvironmentRole = "PRODUCTION" | "NON_PRODUCTION" | "UNKNOWN";
 
 type DecidedBy =
   | "deployment-declaration"
   | "database-safer-override"
   | "unresolved";
-
-type DeclarationKind = "production" | "non-production" | "absent" | "invalid";
 
 /**
  * How much application email this installation has held back for
@@ -92,6 +102,7 @@ type EnvironmentSafetyState = {
     updatedByName: string | null;
   };
   withheldEmail: WithheldApplicationEmail;
+  xeroContactContainment: XeroContactContainment;
   notes: string[];
 };
 
@@ -181,7 +192,7 @@ function describeWithheldEmail(state: EnvironmentSafetyState): {
   */
   if (withheld.captureInProduction > 0) {
     const recently = withheld.mostRecentAt
-      ? ` Most recently ${formatChangedAt(withheld.mostRecentAt)}.`
+      ? ` Most recently ${formatNZInstantOrRaw(withheld.mostRecentAt)}.`
       : "";
     return {
       headline: `${withheld.captureInProduction} message${withheld.captureInProduction === 1 ? "" : "s"} refused: this installation says it is BOTH the live site and a mail capture`,
@@ -191,7 +202,7 @@ function describeWithheldEmail(state: EnvironmentSafetyState): {
   return {
     headline: `${withheld.count} message${withheld.count === 1 ? "" : "s"} held back`,
     detail: withheld.mostRecentAt
-      ? `Most recently ${formatChangedAt(withheld.mostRecentAt)}. A steady and recent count is what a LIVE club looks like when it has been wrongly declared a copy, or left undeclared. If members are waiting for that mail, the answer above is wrong.`
+      ? `Most recently ${formatNZInstantOrRaw(withheld.mostRecentAt)}. A steady and recent count is what a LIVE club looks like when it has been wrongly declared a copy, or left undeclared. If members are waiting for that mail, the answer above is wrong.`
       : "A steady and recent count is what a LIVE club looks like when it has been wrongly declared a copy, or left undeclared. If members are waiting for that mail, the answer above is wrong.",
   };
 }
@@ -203,21 +214,6 @@ function describeOverride(state: EnvironmentSafetyState): string {
   return state.override.on
     ? "On — this installation is forced to be treated as a copy, whatever the deployment says."
     : "Off — the deployment's own setting decides.";
-}
-
-/**
- * "Last changed", in the same zone as every other admin timestamp.
- *
- * Deliberately NOT the club's configured zone. `/admin/audit-log` renders the
- * very same class of timestamp — the audit row this save writes — through
- * `APP_TIME_ZONE`, and one screen quietly spelling an instant in a different zone
- * from the screen beside it is worse than both sitting on the transitional
- * constant. `formatNZDateTime` pins locale and zone together, which is what
- * INV-DATE-015 and the ESLint date guard require of any formatter here.
- */
-function formatChangedAt(iso: string): string {
-  const changedAt = new Date(iso);
-  return Number.isNaN(changedAt.getTime()) ? iso : formatNZDateTime(changedAt);
 }
 
 export function EnvironmentSafetyPanel() {
@@ -358,6 +354,13 @@ export function EnvironmentSafetyPanel() {
         </div>
       ) : null}
 
+      <EnvironmentXeroContainment
+        role={state.role}
+        declarationKind={state.declaration.kind}
+        overrideReadable={state.override.readable}
+        containment={state.xeroContactContainment}
+      />
+
       <div className="space-y-4 rounded-md border bg-card p-6">
         <div className="space-y-1">
           <p className="text-sm font-semibold">
@@ -382,7 +385,7 @@ export function EnvironmentSafetyPanel() {
           </p>
           {state.override.updatedAt ? (
             <p className="text-xs text-muted-foreground">
-              {`Last changed ${formatChangedAt(state.override.updatedAt)}`}
+              {`Last changed ${formatNZInstantOrRaw(state.override.updatedAt)}`}
               {state.override.updatedByName
                 ? ` by ${state.override.updatedByName}`
                 : null}
@@ -435,8 +438,8 @@ export function EnvironmentSafetyPanel() {
                 </li>
                 <li>
                   {target
-                    ? "Once the rest of this work lands, a copy stops sending email to members and stops writing to the club's real Xero organisation."
-                    : "The decision goes back to this deployment's own APP_ENVIRONMENT_ROLE setting. If that setting says nothing, this installation becomes \"not configured\" — it does NOT become the live site."}
+                    ? "A copy sends no email to members, and every Xero contact it touches has its email address replaced with one that cannot be delivered — so Xero cannot email a member from here either. Switching this on is what STARTS that replacement, not what stops it: containment runs only on an installation confirmed to be a copy. So if this installation is connected to the club's REAL Xero organisation, switching this on begins editing real accounting records — disconnect Xero here first, or point it at a test organisation."
+                    : "The decision goes back to this deployment's own APP_ENVIRONMENT_ROLE setting. If that setting says nothing, this installation becomes \"not configured\" — it does NOT become the live site, and while it says nothing this application writes nothing to Xero at all."}
                 </li>
                 <li>
                   The change is recorded in the audit log with your name and the

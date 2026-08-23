@@ -55,6 +55,7 @@ import {
   retryXeroWriteWithContactRepair,
   type FindOrCreateXeroContactOptions,
 } from "./xero-contacts";
+import { requireContainedXeroContactForInvoiceOperation } from "@/lib/xero-contact-containment-proof";
 import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   getBookingInvoiceDueDate,
@@ -448,7 +449,13 @@ export async function createXeroInvoiceForBooking(
   const { xero, tenantId } = await getAuthenticatedXeroClient();
 
   // Ensure the member has a Xero contact
-  const contactId = await findOrCreateXeroContact(booking.memberId, options);
+  // #3036 review P1-12: this client was built two lines up, so hand it to the
+  // containment verification rather than making it authenticate a second time.
+  const contactId = await findOrCreateXeroContact(booking.memberId, {
+    ...options,
+    xero,
+    tenantId,
+  });
 
   // Resolve account codes, item codes, and season type
   const [hutFeeMapping, stripeBankCode, hutFeeItemCodeMap] = await Promise.all([
@@ -1202,6 +1209,29 @@ export async function updateXeroBookingInvoiceForBooking(
     if (!currentInvoice.contact) {
       throw new Error(`Xero invoice ${invoiceId} is missing its contact.`);
     }
+
+    /*
+      INV-CONFIG-005 (#3036): this path does NOT go through
+      `findOrCreateXeroContact`, and re-pricing an invoice can RAISE its amount
+      due. On a copy restored from the club's live database the invoice was
+      raised on the live site, so nothing here had ever looked at what its
+      contact holds — and Xero emails invoice reminders for an outstanding
+      AUTHORISED invoice from its own servers, to whatever address that contact
+      holds.
+
+      IT RUNS HERE, below the invoice read, because the contact this update
+      re-sends is `currentInvoice.contact` — not the member's link, which can be a
+      different contact after a merge or an admin re-link. The first version of
+      this check ran at the top of the function against the member's link and
+      therefore proved containment of a contact this update never touches.
+    */
+    await requireContainedXeroContactForInvoiceOperation({
+      resolveXeroContactId: async () => currentInvoice.contact?.contactID,
+      memberId: booking.memberId,
+      workflow: "updateXeroBookingInvoiceForBooking",
+      xero,
+      tenantId,
+    });
 
     const skipReason = getPrimaryInvoiceUpdateSkipReason(currentInvoice);
     if (skipReason) {

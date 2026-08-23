@@ -273,7 +273,8 @@ export async function createXeroInvoiceForGroupSettlement(
   }
 
   const { xero, tenantId } = await getAuthenticatedXeroClient();
-  const contactId = await findOrCreateXeroContact(organiserMemberId, options);
+  // #3036 review P1-12: reuse the client built above rather than rebuilding one.
+  const contactId = await findOrCreateXeroContact(organiserMemberId, { ...options, xero, tenantId });
 
   const [hutFeeMapping, hutFeeItemCodeMap] = await Promise.all([
     getResolvedAccountMapping("hutFeesIncome"),

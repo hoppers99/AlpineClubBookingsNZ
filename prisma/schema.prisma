@@ -6967,3 +6967,109 @@ model EnvironmentSafetySettings {
 
   @@index([updatedByMemberId])
 }
+
+/// Proof that one Xero contact's stored email address has been CONTAINED on this
+/// installation (ENV-SAFETY 3, #3036; epic #2986; INV-CONFIG-005).
+///
+/// WHY THE PROOF HAS TO BE DURABLE. A copy restored from the club's live
+/// database arrives with every member already linked to a real Xero contact, so
+/// `findOrCreateXeroContact` returns from its steady-state fast path without
+/// ever looking at what that contact holds. Xero then emails its own invoice
+/// reminders, from its own servers, to the address stored on the contact — with
+/// no API call from this application at all. So a copy has to KNOW, before it
+/// raises an invoice, that the contact it is invoicing can no longer reach a
+/// member; and it has to know it without asking Xero once per invoice.
+///
+/// ONE ROW PER XERO CONTACT, and deliberately NOT per member. Containment is a
+/// property of the provider-side contact, not of the person: two members can
+/// never share a contact (the link writers refuse it), a contact can outlive the
+/// member it was linked to, and a member merge moves a link without changing
+/// what Xero holds. Keying on the contact also means there is no `memberId`
+/// column here for a merge or a deletion sweep to have an opinion about.
+///
+/// `containedEmail` IS THE FINGERPRINT, not a second copy of anything. It is the
+/// contained address this application derives from the member's current stored
+/// address — a SHA-256 of that address on the reserved `.invalid` domain, so it
+/// identifies the source address without carrying it, and an operator surface
+/// can report containment without exposing a member's real email. The fast path
+/// requires it to MATCH what the application would write today: if the member's
+/// address has moved since, the row no longer describes the address we would
+/// put on this contact, so the application re-reads the contact from Xero
+/// instead of trusting a claim made before the change. That is the whole reason
+/// a bare "this contact is contained" boolean was rejected.
+///
+/// `rewroteAddress` records whether Xero was actually holding a deliverable
+/// address that this installation overwrote, as opposed to a contact that was
+/// already unreachable (blank, or a club-internal walk-in/deleted placeholder).
+/// It is what lets the operator surface say how much real accounting data a copy
+/// has rewritten, which is the number somebody wants when they discover a copy
+/// was pointed at the club's real Xero organisation.
+///
+/// PRODUCTION NEVER WRITES A ROW HERE. Containment runs only on a confirmed
+/// NON_PRODUCTION installation, so on the club's live site this table stays
+/// empty for ever — which is also why an empty table is not evidence of anything
+/// on its own and every surface shows the effective role beside the count.
+///
+/// NOTHING EVER DELETES A ROW, and that is a decision rather than an omission
+/// (#3036 review P2-18). A row for a Xero contact that has since been archived,
+/// deleted in Xero, or unlinked from every member is still a true record that
+/// THIS installation edited that contact in the club's accounting, and it is
+/// exactly the record somebody wants when they discover the copy was pointed at
+/// the real organisation. A sweep that tidied it away would delete the evidence
+/// and quietly reduce the number the operator surface reports — the
+/// reassuring-false-record shape this whole epic is about.
+///
+/// THE BOUND IS THEREFORE THE NUMBER OF CONTACTS A COPY HAS EVER RESOLVED, one
+/// row each, upserted. On the largest club that is thousands of narrow rows, not
+/// a log, and it grows only when the copy meets a contact it has not met before.
+/// A copy that has finished with a Xero organisation is thrown away with its
+/// database; there is no long-lived installation for this to accumulate on.
+model XeroSandboxContactContainment {
+  id String @id @default(cuid())
+
+  /// The Xero contact this row is about. Unique: one contact, one containment
+  /// record, upserted rather than appended, so the table cannot grow per
+  /// invoice.
+  xeroContactId String @unique
+
+  /// The contained address derived from the member's stored address at the
+  /// moment containment was last verified. See the model comment: this is the
+  /// staleness fingerprint, not decoration.
+  containedEmail String
+
+  /// True when Xero was holding a deliverable address and this installation
+  /// replaced it; false when the contact was already unreachable and nothing
+  /// was written to the provider.
+  ///
+  /// MONOTONE: it goes false -> true and never back. A re-verification finds the
+  /// contained address already in place and would otherwise recompute this as
+  /// `false`, silently retracting the record of a real address this installation
+  /// really did overwrite — and the operator surface would then positively
+  /// assert that nothing was overwritten. The writer omits the column from its
+  /// update rather than setting it to `false`.
+  rewroteAddress Boolean
+
+  /// When containment was first established for this contact, and when it was
+  /// last re-verified. Both, because "we have been containing this contact
+  /// since June" and "we last checked five minutes ago" are different operator
+  /// questions, and both are read: the operator surface reports the earliest
+  /// `containedAt` and the latest `updatedAt`.
+  ///
+  /// `updatedAt` IS ALSO THE PROOF'S AGE, which is what bounds how long a
+  /// provider-side change can go unnoticed. Nothing this application does can
+  /// invalidate a proof from the Xero side — somebody editing the contact in
+  /// Xero, or the live site pushing the member's real address back onto it — so
+  /// the fast path additionally requires the proof to be younger than
+  /// `XERO_CONTAINMENT_PROOF_MAX_AGE_MS` and re-reads the contact past that.
+  containedAt DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  /// When a DELIVERABLE address was last actually replaced on this contact, or
+  /// `null` if one never was.
+  ///
+  /// Separate from `updatedAt`, which moves on every re-verification. The
+  /// operator question behind the urgent number is "when did this copy last edit
+  /// the club's real books", and answering it with the most recent re-check
+  /// would date the damage to whenever the copy last ran anything at all.
+  rewrittenAt DateTime?
+}

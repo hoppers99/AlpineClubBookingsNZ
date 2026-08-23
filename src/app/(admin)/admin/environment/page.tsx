@@ -20,13 +20,20 @@ import { isFullAdmin } from "@/lib/access-roles";
  * `/api/admin/environment-safety` — and this check exists so the screen does not
  * offer an action it knows will be refused.
  *
- * THE BLURB SAYS WHAT IS TRUE TODAY, which is less than an operator will expect.
- * #3034 establishes and reports the role; the containment that acts on it is
- * #3035 (email delivery) and #3036 (Xero contact email). Saying otherwise here
- * would have somebody restore a copy of the live database, read this page, and
- * believe the copy could not email the club's members — which today it still can.
- * The second paragraph goes when those land; the change that makes the claim true
- * is the change that gets to make it.
+ * THE BLURB SAYS WHAT IS TRUE TODAY, and since #3035 and #3036 that is the whole
+ * of it: a confirmed copy sends no member email (INV-CONFIG-004) and no Xero
+ * contact it touches keeps an address that can reach anybody (INV-CONFIG-005).
+ * #3034 shipped a second paragraph saying the acting parts had not landed yet,
+ * precisely so nobody restored a copy of the live database, read this page and
+ * believed it was already safe; the change that made the claim true is the change
+ * that removed it.
+ *
+ * WHAT IT STILL DOES NOT SAY, because it would not be true: that a copy leaves
+ * the club's Xero alone. It does not. It goes on writing invoices, credit notes
+ * and contacts — on purpose, so settlement behaviour stays testable — and if it
+ * is connected to the club's real Xero organisation it rewrites the email
+ * addresses on real contacts. The panel below reports how many, which is the part
+ * an operator has to be able to see.
  */
 export default function EnvironmentSafetyPage() {
   const { data: session } = useSession();
@@ -55,10 +62,17 @@ export default function EnvironmentSafetyPage() {
           answer is &ldquo;not configured&rdquo; rather than either one.
         </p>
         <p className="text-sm text-muted-foreground">
-          Today this page RECORDS and REPORTS that answer. The parts that act on
-          it — holding back email to members, and keeping a copy&apos;s invoices
-          out of the club&apos;s real accounting — land with the rest of this
-          work, so do not treat a copy as safe to run against real data yet.
+          A copy sends no email to members, and it replaces the email address on
+          every Xero contact it touches with one that cannot be delivered, so
+          Xero cannot email a member from a copy either. A copy still writes
+          invoices and credit notes — deliberately, so settlement behaviour stays
+          testable — which means that if it is connected to the club&apos;s real
+          Xero organisation, those replaced addresses are real accounting records
+          being edited. Point a copy at a test Xero organisation wherever you
+          can. While nothing has declared which installation this is, nothing is
+          written to Xero at all — no invoice, credit note, contact, payment or
+          credit allocation — though reading from Xero still works, so these
+          screens keep loading.
         </p>
       </div>
       <EnvironmentSafetyPanel />
