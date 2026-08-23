@@ -130,6 +130,54 @@ describe("email delivery boundary census (INV-CONFIG-004)", () => {
     ).toEqual([XERO_EMAIL_MODULE]);
   });
 
+  /**
+   * Every stack that points the app at mailpit must DECLARE it a capture.
+   *
+   * This guard exists because the defect it catches is invisible until the
+   * browser suite runs. Since #3035 a non-production installation suppresses
+   * every send unless its transport is declared to be a capture mailbox, so a
+   * stack relaying to mailpit as an ordinary `USE_SMTP_RELAY` captures NOTHING —
+   * and `e2e/two-factor-email.spec.ts` reads a real two-factor code back over
+   * mailpit's HTTP API, so it and every other mail-reading spec fail with an
+   * empty mailbox rather than with anything that names the cause.
+   *
+   * It is deliberately keyed on `EMAIL_SERVER_HOST=mailpit` — the only place in
+   * this repository where a host name is allowed to imply anything, because this
+   * is a test over the repository's own tracked configuration files and not a
+   * runtime inference. The application itself never infers capture mode from a
+   * host name; see `email-delivery.ts`.
+   */
+  it("declares USE_LOCAL_CAPTURE in every stack that relays to mailpit", () => {
+    const STACKS = [
+      "docker-compose.staging.yml",
+      ".env.staging.example",
+      ".github/workflows/e2e.yml",
+      "measurement/stack/docker-compose.measure.yml",
+    ];
+    const offenders: string[] = [];
+    for (const stack of STACKS) {
+      const text = readFileSync(path.resolve(process.cwd(), stack), "utf8");
+      const relaysToMailpit = /EMAIL_SERVER_HOST[:=]\s*"?mailpit"?/.test(text);
+      if (!relaysToMailpit) continue;
+      if (!/USE_LOCAL_CAPTURE[:=]\s*"?true"?/.test(text)) {
+        offenders.push(`${stack}: relays to mailpit without USE_LOCAL_CAPTURE=true`);
+      }
+      if (/USE_SMTP_RELAY[:=]\s*"?true"?/.test(text)) {
+        offenders.push(
+          `${stack}: sets USE_SMTP_RELAY=true, which is a LIVE provider mode and is mutually exclusive with the capture mode`,
+        );
+      }
+    }
+    expect(
+      offenders,
+      "A stack pointed at mailpit must declare USE_LOCAL_CAPTURE=true. Without " +
+        "it a non-production installation suppresses every send (#3035), mailpit " +
+        "captures nothing, and every browser spec that reads mail back — " +
+        "including the two-factor email code — fails with an empty mailbox and no " +
+        "explanation (INV-CONFIG-004).",
+    ).toEqual([]);
+  });
+
   it("mints or casts a delivery clearance in exactly one module", () => {
     /*
       The cast shapes that defeat the brand: `as DeliveryClearance` and
