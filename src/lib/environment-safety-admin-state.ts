@@ -40,6 +40,10 @@ import {
   type WithheldApplicationEmail,
 } from "@/lib/environment-safety-withheld";
 import { prisma } from "@/lib/prisma";
+import {
+  readXeroContactContainment,
+  type XeroContactContainment,
+} from "@/lib/xero-contact-containment-status";
 
 /**
  * Name fields ONLY. The panel says WHO last changed the override, so it needs a
@@ -93,6 +97,18 @@ export type EnvironmentSafetyState = {
    * `{ available: false }` today for every installation. #3035 creates the rows.
    */
   withheldEmail: WithheldApplicationEmail;
+  /**
+   * How much of the club's Xero accounting this installation has contained
+   * (ENV-SAFETY 3, #3036; INV-CONFIG-005).
+   *
+   * On the payload for every role, and the panel gives it prominence only where
+   * it means something. Two numbers rather than one: how many contacts are
+   * proved unable to reach a member, and how many of those had a DELIVERABLE
+   * address that this installation overwrote — the second is the one that says a
+   * copy has been editing the club's real books. No address of any kind travels;
+   * see `xero-contact-containment-status.ts`.
+   */
+  xeroContactContainment: XeroContactContainment;
   /** The resolver's own operator-facing lines, rendered verbatim. */
   notes: string[];
 };
@@ -206,6 +222,7 @@ export async function stateFromResolution(
     declaration: declarationState(resolution),
     override: await overrideStateFrom(resolution, row),
     withheldEmail: await readWithheldApplicationEmail(),
+    xeroContactContainment: await readXeroContactContainment(),
     notes: resolution.notes,
   };
 }
@@ -234,6 +251,7 @@ export async function stateFromWrittenRow(
     declaration: declarationState(resolution),
     override: await overrideStateFrom(resolution, row),
     withheldEmail: await readWithheldApplicationEmail(),
+    xeroContactContainment: await readXeroContactContainment(),
     notes: resolution.notes,
   };
 }

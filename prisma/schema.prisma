@@ -6967,3 +6967,70 @@ model EnvironmentSafetySettings {
 
   @@index([updatedByMemberId])
 }
+
+/// Proof that one Xero contact's stored email address has been CONTAINED on this
+/// installation (ENV-SAFETY 3, #3036; epic #2986; INV-CONFIG-005).
+///
+/// WHY THE PROOF HAS TO BE DURABLE. A copy restored from the club's live
+/// database arrives with every member already linked to a real Xero contact, so
+/// `findOrCreateXeroContact` returns from its steady-state fast path without
+/// ever looking at what that contact holds. Xero then emails its own invoice
+/// reminders, from its own servers, to the address stored on the contact — with
+/// no API call from this application at all. So a copy has to KNOW, before it
+/// raises an invoice, that the contact it is invoicing can no longer reach a
+/// member; and it has to know it without asking Xero once per invoice.
+///
+/// ONE ROW PER XERO CONTACT, and deliberately NOT per member. Containment is a
+/// property of the provider-side contact, not of the person: two members can
+/// never share a contact (the link writers refuse it), a contact can outlive the
+/// member it was linked to, and a member merge moves a link without changing
+/// what Xero holds. Keying on the contact also means there is no `memberId`
+/// column here for a merge or a deletion sweep to have an opinion about.
+///
+/// `containedEmail` IS THE FINGERPRINT, not a second copy of anything. It is the
+/// contained address this application derives from the member's current stored
+/// address — a SHA-256 of that address on the reserved `.invalid` domain, so it
+/// identifies the source address without carrying it, and an operator surface
+/// can report containment without exposing a member's real email. The fast path
+/// requires it to MATCH what the application would write today: if the member's
+/// address has moved since, the row no longer describes the address we would
+/// put on this contact, so the application re-reads the contact from Xero
+/// instead of trusting a claim made before the change. That is the whole reason
+/// a bare "this contact is contained" boolean was rejected.
+///
+/// `rewroteAddress` records whether Xero was actually holding a deliverable
+/// address that this installation overwrote, as opposed to a contact that was
+/// already unreachable (blank, or a club-internal walk-in/deleted placeholder).
+/// It is what lets the operator surface say how much real accounting data a copy
+/// has rewritten, which is the number somebody wants when they discover a copy
+/// was pointed at the club's real Xero organisation.
+///
+/// PRODUCTION NEVER WRITES A ROW HERE. Containment runs only on a confirmed
+/// NON_PRODUCTION installation, so on the club's live site this table stays
+/// empty for ever — which is also why an empty table is not evidence of anything
+/// on its own and every surface shows the effective role beside the count.
+model XeroSandboxContactContainment {
+  id String @id @default(cuid())
+
+  /// The Xero contact this row is about. Unique: one contact, one containment
+  /// record, upserted rather than appended, so the table cannot grow per
+  /// invoice.
+  xeroContactId String @unique
+
+  /// The contained address derived from the member's stored address at the
+  /// moment containment was last verified. See the model comment: this is the
+  /// staleness fingerprint, not decoration.
+  containedEmail String
+
+  /// True when Xero was holding a deliverable address and this installation
+  /// replaced it; false when the contact was already unreachable and nothing
+  /// was written to the provider.
+  rewroteAddress Boolean
+
+  /// When containment was first established for this contact, and when it was
+  /// last re-verified. Both, because "we have been containing this contact
+  /// since June" and "we last checked five minutes ago" are different operator
+  /// questions.
+  containedAt DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+}

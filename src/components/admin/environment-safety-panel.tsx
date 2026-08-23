@@ -39,12 +39,20 @@ import { formatNZDateTime } from "@/lib/nzst-date";
  * `environment-role-declaration.ts` is a named forbidden leaf in the
  * client/server boundary census for exactly this reason.
  *
- * WHAT THIS SCREEN MAY CLAIM, which is narrower than it reads. #3034 RECORDS and
- * REPORTS the role; the containment that acts on it lands in #3035 (delivery) and
- * #3036 (Xero). So the copy below says what the role IS and what is coming, and
- * does not tell an operator that switching the override stops email today —
- * because today it does not. If you are the change that makes it true, this copy
- * is part of your diff.
+ * WHAT THIS SCREEN MAY CLAIM. #3034 recorded and reported the role and this copy
+ * said so; #3035 and #3036 are the changes that made the role ACT, so the copy
+ * now says what actually happens. A confirmed copy does not email members
+ * (#3035, INV-CONFIG-004), and every Xero contact it touches has its email
+ * address replaced with a non-deliverable one so Xero cannot email members from
+ * a copy either (#3036, INV-CONFIG-005).
+ *
+ * NOTE WHAT IT STILL MAY NOT CLAIM, because the previous version of this copy
+ * was going to be wrong in exactly this way: a copy does NOT "stop writing to
+ * the club's real Xero organisation". It keeps writing — invoices, credit notes
+ * and contacts, all of it, deliberately, so settlement behaviour stays testable
+ * — and what changes is that the contacts can no longer reach anybody. If it is
+ * pointed at the club's REAL Xero organisation, containment REWRITES real
+ * accounting records, which is why the block below reports how many.
  */
 
 type EnvironmentRole = "PRODUCTION" | "NON_PRODUCTION" | "UNKNOWN";
@@ -81,6 +89,27 @@ type WithheldApplicationEmail =
       captureInProduction: number;
     };
 
+/**
+ * How much of the club's Xero accounting this installation has contained
+ * (#3036). Declared here rather than imported for the same reason as the type
+ * above: the module that builds the payload is `server-only`.
+ *
+ * Two numbers, and the second is the urgent one. `containedContacts` climbing on
+ * a copy is the feature working. `rewrittenContacts` counts the contacts that
+ * were holding a DELIVERABLE address when this installation overwrote it, which
+ * on a copy pointed at a sandbox Xero organisation is ordinary and on a copy
+ * pointed at the club's real books is a destructive edit somebody needs to know
+ * about.
+ */
+type XeroContactContainment =
+  | { available: false }
+  | {
+      available: true;
+      containedContacts: number;
+      rewrittenContacts: number;
+      mostRecentAt: string | null;
+    };
+
 type EnvironmentSafetyState = {
   role: EnvironmentRole;
   decidedBy: DecidedBy;
@@ -92,6 +121,7 @@ type EnvironmentSafetyState = {
     updatedByName: string | null;
   };
   withheldEmail: WithheldApplicationEmail;
+  xeroContactContainment: XeroContactContainment;
   notes: string[];
 };
 
@@ -193,6 +223,64 @@ function describeWithheldEmail(state: EnvironmentSafetyState): {
     detail: withheld.mostRecentAt
       ? `Most recently ${formatChangedAt(withheld.mostRecentAt)}. A steady and recent count is what a LIVE club looks like when it has been wrongly declared a copy, or left undeclared. If members are waiting for that mail, the answer above is wrong.`
       : "A steady and recent count is what a LIVE club looks like when it has been wrongly declared a copy, or left undeclared. If members are waiting for that mail, the answer above is wrong.",
+  };
+}
+
+/**
+ * The Xero-containment sentence (#3036).
+ *
+ * WHY IT RENDERS UNDER NON_PRODUCTION AND UNKNOWN, and says opposite things
+ * there. On a confirmed copy containment is running, and the number an operator
+ * wants is how much of the club's accounting it has edited. On an UNDECLARED
+ * installation containment is NOT running and nothing is being written to Xero at
+ * all — every invoice, credit note and contact write is refused until the role is
+ * declared — and a count of zero there means "nothing has happened", not
+ * "nothing needed to happen". Rendering one number under both states with one
+ * sentence would tell the operator of an undeclared LIVE site that their Xero is
+ * fine, when in fact their invoicing has stopped. Same rule #3035 arrived at for
+ * the withheld-email block, reached here for the opposite reason.
+ *
+ * IT NAMES NO ADDRESS, and cannot: the payload carries counts and an instant.
+ */
+function describeXeroContainment(state: EnvironmentSafetyState): {
+  headline: string;
+  detail: string;
+} {
+  const containment = state.xeroContactContainment;
+  if (state.role === "UNKNOWN") {
+    return {
+      headline: "Nothing is being written to Xero",
+      detail:
+        "Until this installation says whether it is the club's live site or a copy, no invoice, credit note or contact is sent to Xero at all. The reason is that the answer decides what email address may sit on a Xero contact: the member's real one on the live site, a replaced one on a copy — because Xero emails invoice reminders from its own servers to whatever the contact holds. Guessing either way is wrong, so nothing is attempted. Declare the role and Xero writing resumes; anything that was refused can be re-driven from Admin → Xero.",
+    };
+  }
+  if (!containment.available) {
+    return {
+      headline: "Could not be counted on this installation",
+      detail:
+        "This is not the same as none. The count could not be read from the database — usually a migration that has not been applied here. Until it can be, this line cannot tell you whether this copy has been editing contacts in the club's real Xero organisation.",
+    };
+  }
+  if (containment.containedContacts === 0) {
+    return {
+      headline: "No Xero contact has been touched yet",
+      detail:
+        "Nothing has been invoiced or synced to Xero from this copy yet. The first time it resolves a Xero contact, it replaces that contact's email address with a non-deliverable one so Xero cannot email a real member from here — and that is a real edit in whichever Xero organisation this copy is connected to.",
+    };
+  }
+  const recently = containment.mostRecentAt
+    ? ` Most recently ${formatChangedAt(containment.mostRecentAt)}.`
+    : "";
+  const contacts = `${containment.containedContacts} Xero contact${containment.containedContacts === 1 ? "" : "s"}`;
+  if (containment.rewrittenContacts > 0) {
+    return {
+      headline: `${containment.rewrittenContacts} real email address${containment.rewrittenContacts === 1 ? "" : "es"} replaced on ${contacts}`,
+      detail: `Those contacts were holding a working email address and this copy overwrote it with one that cannot be delivered, so Xero can no longer email invoice reminders to a real member from here.${recently} If this copy is connected to the club's REAL Xero organisation, those are real accounting records and the addresses are gone from Xero — they are still correct in this database, and re-syncing each member from the live site restores them. If it is connected to a test organisation, this is simply the copy behaving correctly.`,
+    };
+  }
+  return {
+    headline: `${contacts} checked, none was holding a real address`,
+    detail: `Every Xero contact this copy has resolved was already unable to reach anybody — no address at all, or a club-internal placeholder — so nothing was overwritten.${recently}`,
   };
 }
 
@@ -358,6 +446,31 @@ export function EnvironmentSafetyPanel() {
         </div>
       ) : null}
 
+      {/*
+        Xero containment (#3036), rendered for the two states in which the role
+        changes what reaches the club's accounting: a confirmed copy (containment
+        is running, and this says how much it has edited) and an undeclared
+        installation (nothing is reaching Xero at all). NOT for PRODUCTION, where
+        containment never runs and this table is empty by definition — a "0
+        contacts contained" line on the live site would be noise that means
+        nothing, which is the same argument #3035 made for keeping the
+        withheld-email total off a healthy live site.
+      */}
+      {state.role === "NON_PRODUCTION" || state.role === "UNKNOWN" ? (
+        <div
+          className="space-y-1 rounded-md border bg-card p-6"
+          data-testid="environment-xero-containment"
+        >
+          <p className="text-sm font-semibold">
+            The club&apos;s Xero contacts
+          </p>
+          <p className="text-base">{describeXeroContainment(state).headline}</p>
+          <p className="text-sm text-muted-foreground">
+            {describeXeroContainment(state).detail}
+          </p>
+        </div>
+      ) : null}
+
       <div className="space-y-4 rounded-md border bg-card p-6">
         <div className="space-y-1">
           <p className="text-sm font-semibold">
@@ -435,8 +548,8 @@ export function EnvironmentSafetyPanel() {
                 </li>
                 <li>
                   {target
-                    ? "Once the rest of this work lands, a copy stops sending email to members and stops writing to the club's real Xero organisation."
-                    : "The decision goes back to this deployment's own APP_ENVIRONMENT_ROLE setting. If that setting says nothing, this installation becomes \"not configured\" — it does NOT become the live site."}
+                    ? "A copy sends no email to members, and every Xero contact it touches has its email address replaced with one that cannot be delivered — so Xero cannot email a member from here either. If this installation is connected to the club's REAL Xero organisation, that replacement is a real edit to real accounting records."
+                    : "The decision goes back to this deployment's own APP_ENVIRONMENT_ROLE setting. If that setting says nothing, this installation becomes \"not configured\" — it does NOT become the live site, and while it says nothing this application writes nothing to Xero at all."}
                 </li>
                 <li>
                   The change is recorded in the audit log with your name and the
