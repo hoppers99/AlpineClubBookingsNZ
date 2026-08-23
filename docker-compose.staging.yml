@@ -38,6 +38,22 @@ services:
       # Which container slot this is. A deployment naming convention, and
       # deliberately NOT an input to the environment-role decision above.
       APP_RUNTIME_ROLE: staging
+      # This stack's mail transport is the mailpit capture container below, and
+      # it is hard-coded here for the same reason the role above is (ENV-SAFETY 2
+      # #3035, INV-CONFIG-004). Two separate hazards:
+      #
+      #  - a copy suppresses every send unless its transport is DECLARED to be a
+      #    capture mailbox, so without USE_LOCAL_CAPTURE the mailbox stays empty
+      #    and every mail-reading browser spec fails on an empty inbox;
+      #  - the base anchor defaults USE_AWS_SES to `true`, so a run without an
+      #    env file would set two provider flags at once, resolve the transport
+      #    `invalid`, and throw on every send.
+      #
+      # Reading these from .env.staging would let a stray value there point the
+      # E2E or accessibility stack at a real provider. They are not overridable.
+      USE_AWS_SES: "false"
+      USE_SMTP_RELAY: "false"
+      USE_LOCAL_CAPTURE: "true"
       CRON_ENABLED: "false"
       # Backups are configured in-app (#2095); staging leaves them unconfigured.
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3001}
