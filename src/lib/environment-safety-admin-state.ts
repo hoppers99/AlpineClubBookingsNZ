@@ -35,6 +35,10 @@ import {
   type EnvironmentRoleResolution,
   type PersistedEnvironmentSafetySettings,
 } from "@/lib/environment-role";
+import {
+  readWithheldApplicationEmail,
+  type WithheldApplicationEmail,
+} from "@/lib/environment-safety-withheld";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -77,6 +81,18 @@ export type EnvironmentSafetyState = {
   decidedBy: EnvironmentRoleDecidedBy;
   declaration: EnvironmentSafetyDeclarationState;
   override: EnvironmentSafetyOverrideState;
+  /**
+   * How much application email this installation has held back for
+   * environment-safety reasons, and when the most recent was — the one signal
+   * that separates "a live club wrongly declared a copy" from "a copy nobody is
+   * using", because no property of the DATA can (see
+   * `environment-safety-withheld.ts`). It is on the payload for every role, and
+   * the panel gives it prominence only where it means something: on a
+   * NON_PRODUCTION installation.
+   *
+   * `{ available: false }` today for every installation. #3035 creates the rows.
+   */
+  withheldEmail: WithheldApplicationEmail;
   /** The resolver's own operator-facing lines, rendered verbatim. */
   notes: string[];
 };
@@ -114,36 +130,71 @@ function declarationState(
   };
 }
 
-async function overrideStateFromRow(
+/**
+ * The override half of the payload.
+ *
+ * `on` AND `readable` COME FROM THE RESOLUTION, NEVER FROM `row`, and that is the
+ * fix for a real defect rather than a tidy-up (#3034 review). This module reads
+ * the settings row a SECOND time (see {@link stateFromResolution}) and the first
+ * version built `on` / `readable` from that second read while `role` and
+ * `decidedBy` came from the first. An administrator flipping the override between
+ * the two reads produced a payload the panel rendered as "Production — the club's
+ * live site" beside "Safer override: ON". The unreadable case was shaped worse: a
+ * transient failure on read one and a success on read two gave `role: UNKNOWN`
+ * with `override.readable: true`, so the panel dropped its "the setting cannot be
+ * read, so it cannot be changed" hint while the notes still said it could not be
+ * read — and the Save button came back for a write the resolver had already
+ * refused to trust.
+ *
+ * `resolution.databaseOverride.kind` carries `force-non-production` / `none` /
+ * `unreadable` authoritatively, and it is the SAME read every safety decision in
+ * the platform is made from, so deriving from it is what makes this payload one
+ * coherent answer — which is what the issue asks for: "the effective state plus
+ * sanitized source state from ONE canonical resolver".
+ * `src/lib/setup-readiness.ts` already does it this way.
+ *
+ * The second read is used for the DISPLAY fields only — `updatedAt` and
+ * `updatedByName`, which the resolver deliberately omits when the override is
+ * off. Those cannot contradict anything: they answer "who last touched this",
+ * not "what is it now". When the resolution says the row is unreadable they are
+ * suppressed, because naming who last changed a setting we have just said we
+ * cannot read would be the same contradiction one field further along.
+ */
+async function overrideStateFrom(
+  resolution: EnvironmentRoleResolution,
   row:
     | PersistedEnvironmentSafetySettings
     | null
     | typeof ENVIRONMENT_SAFETY_SETTINGS_UNREADABLE,
 ): Promise<EnvironmentSafetyOverrideState> {
-  if (row === ENVIRONMENT_SAFETY_SETTINGS_UNREADABLE) {
+  if (resolution.databaseOverride.kind === "unreadable") {
     return { on: false, readable: false, updatedAt: null, updatedByName: null };
   }
-  if (!row) {
-    return { on: false, readable: true, updatedAt: null, updatedByName: null };
-  }
+
+  const stored = row === ENVIRONMENT_SAFETY_SETTINGS_UNREADABLE ? null : row;
   return {
-    on: row.forceNonProduction,
+    on: resolution.databaseOverride.kind === "force-non-production",
     readable: true,
-    updatedAt: row.updatedAt.toISOString(),
-    updatedByName: await readChangedByName(row.updatedByMemberId),
+    updatedAt: stored ? stored.updatedAt.toISOString() : null,
+    updatedByName: stored ? await readChangedByName(stored.updatedByMemberId) : null,
   };
 }
 
 /**
  * The state a READ produces.
  *
- * IT READS THE ROW A SECOND TIME, on purpose. `resolveEnvironmentRole()` exposes
- * `updatedAt` / `updatedByMemberId` only for an override that is ON, because that
- * is all the RESOLUTION needs — and widening its type so a settings screen could
- * show "switched off on 15 June by Ada" would put a display concern into the
- * module every safety decision in the platform goes through. One extra
- * primary-key read of a one-row table, on an administrator's page load, is the
- * cheaper side of that trade.
+ * IT READS THE ROW A SECOND TIME, on purpose, AND FOR ONE NARROW PURPOSE.
+ * `resolveEnvironmentRole()` exposes `updatedAt` / `updatedByMemberId` only for an
+ * override that is ON, because that is all the RESOLUTION needs — and widening its
+ * type so a settings screen could show "switched off on 15 June by Ada" would put
+ * a display concern into the module every safety decision in the platform goes
+ * through. One extra primary-key read of a one-row table, on an administrator's
+ * page load, is the cheaper side of that trade.
+ *
+ * WHAT THE SECOND READ MAY DECIDE IS THEREFORE LIMITED TO THOSE TWO DISPLAY
+ * FIELDS. `on` and `readable` come from the resolution — see
+ * {@link overrideStateFrom} for the payload this contradicted itself in when they
+ * did not.
  */
 export async function stateFromResolution(
   resolution: EnvironmentRoleResolution,
@@ -153,7 +204,8 @@ export async function stateFromResolution(
     role: resolution.role,
     decidedBy: resolution.decidedBy,
     declaration: declarationState(resolution),
-    override: await overrideStateFromRow(row),
+    override: await overrideStateFrom(resolution, row),
+    withheldEmail: await readWithheldApplicationEmail(),
     notes: resolution.notes,
   };
 }
@@ -180,7 +232,8 @@ export async function stateFromWrittenRow(
     role: resolution.role,
     decidedBy: resolution.decidedBy,
     declaration: declarationState(resolution),
-    override: await overrideStateFromRow(row),
+    override: await overrideStateFrom(resolution, row),
+    withheldEmail: await readWithheldApplicationEmail(),
     notes: resolution.notes,
   };
 }

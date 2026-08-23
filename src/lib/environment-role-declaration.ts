@@ -35,8 +35,11 @@
  * spelling of this variable would therefore give a browser a second, possibly
  * stale answer to "is this production?" — the split-brain second authority
  * `INV-CONFIG-002` forbids for the club timezone, with worse consequences here,
- * because the thing keyed on the answer is whether real members get emailed.
- * `environment-role-env-var-name.test.ts` pins the name.
+ * because the thing keyed on the answer is whether real members get emailed. The
+ * name is pinned in `environment-role-declaration.test.ts`, which asserts both
+ * the exact spelling and that it does NOT begin with `NEXT_PUBLIC_`. (This
+ * paragraph used to cite `environment-role-env-var-name.test.ts`, which has never
+ * existed — #3034 review.)
  *
  * WHY THIS IS ITS OWN MODULE, separate from the resolver, is the reason
  * `club-time-zone-env.ts` gives for the same split: a `process.env` read that

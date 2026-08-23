@@ -20,10 +20,18 @@
  * staging), not from a hostname, a branch, a URL, a `DATABASE_URL`, or a
  * provider organisation. Every one of those is a convention that holds until
  * somebody stands up a copy that breaks it, and that is the day it matters.
- * `environment-role-no-inference.test.ts` asserts the answer does not move when
- * all of them are set to production-looking and then non-production-looking
- * values, and a source-level contract test asserts neither this module nor
- * `environment-role-declaration.ts` so much as MENTIONS them.
+ *
+ * TWO GUARDS HOLD THAT, and they are named here exactly, because a docblock that
+ * cites a test file which does not exist is worse than one that cites nothing —
+ * the next reader trusts it and stops looking (#3034 review).
+ * `environment-role-resolver.test.ts` asserts the answer does not move when all
+ * of those variables are set to production-looking and then
+ * non-production-looking values. `environment-role-inference-census.test.ts`
+ * asserts at source level that neither this module nor
+ * `environment-role-declaration.ts` READS any of them — not that they avoid
+ * MENTIONING them, which they plainly do not: both explain at length why these
+ * variables cannot answer the question, and the census's own comment says the
+ * word may appear while a read may not.
  *
  * THE DATABASE CAN ONLY MAKE THE ANSWER SAFER. `EnvironmentSafetySettings` holds
  * one boolean, `forceNonProduction`, and the schema deliberately has no column
@@ -284,18 +292,29 @@ const UNREADABLE_OVERRIDE_NOTE =
  * combinations can be asserted without a database
  * (`environment-role-precedence.test.ts`).
  *
- * THE ORDER OF THESE BRANCHES IS THE INVARIANT:
+ * THE BRANCH ORDER, AND EXACTLY WHICH PART OF IT IS LOAD-BEARING. Stated
+ * precisely because the previous wording said the whole order was the invariant,
+ * which overstates it — and a docblock a future editor checks and finds wrong is
+ * a docblock they then reorder past (#3034 review).
  *
- * 1. A declared `non-production` is final. It is already the safest answer, so
- *    no database state and no database FAILURE can move it — and in particular
- *    the override cannot elevate it, because the override has no elevating
- *    direction to move it in.
+ * 1. A declared `non-production` is final, and BRANCH 1 MUST COME FIRST. It is
+ *    already the safest answer, so no database state and no database FAILURE can
+ *    move it — and in particular the override cannot elevate it, because the
+ *    override has no elevating direction to move it in. Put branch 2 or 3 above
+ *    it and a database blip turns a declared copy into UNKNOWN.
  * 2. Otherwise an unreadable override is UNKNOWN, even under a declared
  *    `production`. See the module docblock: we cannot rule out an operator
  *    having forced this instance safer.
  * 3. Otherwise the override, if on, forces NON_PRODUCTION.
- * 4. Otherwise the declaration decides: `production` gives PRODUCTION; `absent`
- *    and `invalid` give UNKNOWN. Neither of those two ever becomes PRODUCTION,
+ *
+ *    BRANCHES 2 AND 3 ARE INTERCHANGEABLE, and saying so is the honest version:
+ *    they test disjoint values of the same `kind`, so swapping them changes no
+ *    answer. What matters is only that both sit above branch 4.
+ * 4. Otherwise the declaration decides: `production` gives PRODUCTION (4a);
+ *    `absent` and `invalid` give UNKNOWN (4b). BRANCH 3 MUST COME BEFORE 4a —
+ *    that pair is the whole "the database can force safer" rule, and swapping
+ *    them makes a declared production ignore an override an administrator has
+ *    deliberately switched on. `absent` and `invalid` never become PRODUCTION,
  *    and they stay distinguishable so the operator surface can tell "you have
  *    not set it" from "you set it to something I refuse to interpret".
  */

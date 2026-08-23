@@ -233,6 +233,26 @@ function setPersisted(row: unknown) {
   h.tx.behaviour.set("environmentSafetySettings.findUnique", () => row);
 }
 
+/**
+ * Make the ROOT settings read answer DIFFERENTLY on each successive call.
+ *
+ * A GET does two of them — the resolver's, then the payload builder's display
+ * read — and `setPersisted` gives both the same answer, which is exactly why the
+ * contradiction below was invisible until somebody read the code (#3034 review).
+ * Each entry is one call, in order; the last is reused if more arrive. A thrown
+ * value is thrown rather than returned, so an "unreadable then readable" sequence
+ * can be expressed.
+ */
+function setPersistedSequence(...answers: unknown[]) {
+  let call = 0;
+  h.root.behaviour.set("environmentSafetySettings.findUnique", () => {
+    const answer = answers[Math.min(call, answers.length - 1)];
+    call += 1;
+    if (answer instanceof Error) throw answer;
+    return answer;
+  });
+}
+
 function row(forceNonProduction: boolean) {
   return {
     forceNonProduction,
@@ -334,6 +354,15 @@ describe("GET /api/admin/environment-safety — Full Admin only", () => {
           updatedAt: null,
           updatedByName: null,
         },
+        /*
+          NOT COUNTED YET, and typed as its own state rather than as a zero
+          (#3034, owner decision 23 Aug 2026). The rows this counts are the
+          safety-suppressed email records #3035 creates. A fabricated `count: 0`
+          would read as "this copy has held nothing back", which is exactly the
+          reassurance an operator must not be given on a live site that has been
+          wrongly declared a copy.
+        */
+        withheldEmail: { available: false },
         notes: [expect.stringContaining("APP_ENVIRONMENT_ROLE=production")],
       },
     });
@@ -388,6 +417,83 @@ describe("GET /api/admin/environment-safety — Full Admin only", () => {
     expect(state.role).toBe("UNKNOWN");
     expect(state.override.readable).toBe(false);
     expect(state.override.on).toBe(false);
+  });
+
+  /*
+    ONE COHERENT ANSWER EVEN WHEN THE TWO READS DISAGREE (#3034 review).
+
+    A GET reads the settings row twice: once through `resolveEnvironmentRole()`,
+    which is what every safety decision in the platform is made from, and once in
+    `stateFromResolution` for the display fields the resolution deliberately
+    omits. An administrator flipping the override between them — or a transient
+    database fault on one of them — used to produce a payload that contradicted
+    itself, because `on` / `readable` were built from the SECOND read while `role`
+    and `decidedBy` came from the first.
+
+    The tests below drive that window directly. The route suite could not see it
+    before because `setPersisted` fed both reads the same value.
+  */
+  it("never says PRODUCTION beside an override that is ON", async () => {
+    // Read one: no override, so the declaration decides and the role is
+    // PRODUCTION. Read two: an administrator has just switched it on.
+    setPersistedSequence(null, row(true));
+
+    const state = (await (await get()).json()).state;
+
+    expect(state.role).toBe("PRODUCTION");
+    expect(state.decidedBy).toBe("deployment-declaration");
+    // The panel renders these side by side. "Production — the club's live site"
+    // above "Safer override: ON" is not a state this installation can be in.
+    expect(state.override.on).toBe(false);
+  });
+
+  it("never says NON_PRODUCTION beside an override that is OFF", async () => {
+    // The mirror image: the resolver saw the override on, the display read saw it
+    // off. The role must still be explained by an override the payload admits to.
+    setPersistedSequence(row(true), null);
+
+    const state = (await (await get()).json()).state;
+
+    expect(state.role).toBe("NON_PRODUCTION");
+    expect(state.decidedBy).toBe("database-safer-override");
+    expect(state.override.on).toBe(true);
+  });
+
+  it("keeps 'we could not read it' when only the second read succeeded", async () => {
+    /*
+      The worse-shaped half. A transient failure on read one and a success on read
+      two gave `role: UNKNOWN` with `override.readable: true` — so the panel
+      dropped its "the setting cannot be read, so it cannot be changed" line and
+      re-enabled the Save button, while the notes beside it still said the
+      override could not be read.
+    */
+    setPersistedSequence(new Error("connection reset"), row(false));
+
+    const state = (await (await get()).json()).state;
+
+    expect(state.role).toBe("UNKNOWN");
+    expect(state.override.readable).toBe(false);
+    expect(state.override.on).toBe(false);
+    // And it does not name a last-changed date for a row it has just said it
+    // cannot read.
+    expect(state.override.updatedAt).toBeNull();
+    expect(state.override.updatedByName).toBeNull();
+  });
+
+  it("still shows who last changed it when only the display read failed", async () => {
+    // The resolution is sound — the override is off — and only the display read
+    // failed. That loses the "who and when", never the answer.
+    setPersistedSequence(row(false), new Error("connection reset"));
+
+    const state = (await (await get()).json()).state;
+
+    expect(state.role).toBe("PRODUCTION");
+    expect(state.override).toEqual({
+      on: false,
+      readable: true,
+      updatedAt: null,
+      updatedByName: null,
+    });
   });
 
   it("never returns an email, a connection string or a secret", async () => {
