@@ -11,6 +11,19 @@ import {
   classifyEnvironmentClubTimeZoneSeed,
   type EnvironmentClubTimeZoneSeed,
 } from "@/lib/club-time-zone-env";
+/*
+  TYPE-ONLY, and it has to stay that way. `environment-role.ts` imports
+  `@/lib/prisma`, and this module is imported by the `tsx` entrypoints
+  `npm run setup` / `npm run setup:check` as well as by the admin API. An
+  `import type` is erased before anything runs, so the resolution arrives here as
+  DATA on the injected snapshot (`SetupDatabaseSnapshot.environmentRole`,
+  resolved in `setup-readiness-db.ts`) and `buildSetupReadiness` stays
+  synchronous over injected data. Making it async to call the resolver from in
+  here would ripple through every caller and every test that builds a readiness
+  report.
+*/
+import type { EnvironmentRoleResolution } from "@/lib/environment-role";
+import type { EnvironmentRoleDeclaration } from "@/lib/environment-role-declaration";
 import { clubConfigSchema, type ClubConfig } from "../config/schema";
 import {
   DEFAULT_ADMIN_MODULE_SETTINGS,
@@ -28,6 +41,7 @@ import { authSecretWeaknessReason } from "@/lib/integration-crypto";
 export const SETUP_STEP_IDS = [
   "club-config",
   "club-time-zone",
+  "environment-role",
   "runtime-env",
   "auth-secret-strength",
   "seed-admin",
@@ -141,6 +155,15 @@ export interface SetupDatabaseSnapshot {
   // wait for something that cannot happen. Undefined (older callers, a snapshot
   // taken before this field existed) means the read succeeded.
   clubTimeZoneUnreadable?: boolean;
+  // Whether this installation is production, non-production or not yet declared
+  // (ENV-SAFETY 1, #3034; epic #2986), already RESOLVED by
+  // `resolveEnvironmentRole()` in `setup-readiness-db.ts`. It is carried as data
+  // rather than resolved here because the resolver reads the database and this
+  // file is deliberately synchronous over an injected snapshot. Optional so an
+  // older caller — and a DB-less `setup:check` run, which passes no snapshot at
+  // all — still compiles; undefined means the question was not asked, which the
+  // check below reports as "not checked" rather than guessing at an answer.
+  environmentRole?: EnvironmentRoleResolution;
   // Resolved booking capacity of the club's DEFAULT lodge
   // (getDefaultLodgeCapacity). Since #1982 the club-config check warns when this
   // is 0 — a default lodge with no active beds AND no capacity override accepts
@@ -910,6 +933,177 @@ function buildClubTimeZoneCheck(
               `Stored as "${stored}", which this runtime knows as ${canonical} — the same place, the current spelling.`,
             ]),
         CLUB_VERSUS_SERVER_TIME_ZONE_DETAIL,
+      ],
+    },
+    progress,
+  );
+}
+
+/**
+ * Plain-English state of the deployment declaration, for the readiness details.
+ *
+ * The raw value in the `invalid` case has ALREADY been stripped of control
+ * characters and capped by `sanitizeEnvironmentRoleRawValue`, which is why it can
+ * be quoted straight into a line that ends up in an operator's terminal.
+ */
+function describeEnvironmentRoleDeclaration(
+  declaration: EnvironmentRoleDeclaration,
+): string {
+  switch (declaration.kind) {
+    case "production":
+      return "Deployment declaration: APP_ENVIRONMENT_ROLE=production.";
+    case "non-production":
+      return "Deployment declaration: APP_ENVIRONMENT_ROLE=non-production.";
+    case "invalid":
+      return `Deployment declaration: APP_ENVIRONMENT_ROLE is set to "${declaration.raw}", which is not one of the two accepted values (production, non-production), so it is refused rather than guessed at.`;
+    case "absent":
+      return "Deployment declaration: APP_ENVIRONMENT_ROLE is not set.";
+  }
+}
+
+/** Plain-English state of the database safer override. */
+function describeEnvironmentRoleOverride(
+  resolution: EnvironmentRoleResolution,
+): string {
+  switch (resolution.databaseOverride.kind) {
+    case "force-non-production":
+      return "Safer override: ON — an administrator has forced this installation to behave as non-production. It can be switched off at /admin/environment, which hands the decision back to the deployment declaration and never makes an installation production on its own.";
+    case "none":
+      return "Safer override: off — nothing in the database is forcing this installation to be treated as non-production.";
+    case "unreadable":
+      return "Safer override: could not be read. The EnvironmentSafetySettings table is most likely missing because the migration has not been applied on this database yet — run prisma migrate deploy (or npm run db:migrate in development), then check again.";
+  }
+}
+
+/**
+ * The line that stops an operator repairing the WRONG variable.
+ *
+ * `APP_RUNTIME_ROLE` already exists in the same Compose environment block, and on
+ * the staging stack it holds the literal word "staging". Two variables whose
+ * names differ by one word, one of which looks like it answers this question and
+ * does not, is a mistake worth naming rather than hoping about.
+ */
+const ENVIRONMENT_ROLE_VERSUS_RUNTIME_ROLE_DETAIL =
+  "This is APP_ENVIRONMENT_ROLE, not APP_RUNTIME_ROLE. APP_RUNTIME_ROLE names which container slot this is (web-blue, web-green, cron-leader, staging) and is never read to decide whether this installation is production — setting it to production changes nothing here.";
+
+/**
+ * Environment-role gate (ENV-SAFETY 1, #3034; epic #2986). INV-CONFIG-003.
+ *
+ * WHY THIS IS A BLOCK AND NOT A WARNING when nothing has declared the
+ * installation. An UNKNOWN role is the state in which #3035 and #3036 refuse to
+ * send email and refuse to write to Xero, because neither can tell whether the
+ * recipients are the club's real members. So an operator meeting UNKNOWN is
+ * looking at a site that is not doing its job, and a warning would be the wrong
+ * volume for that. It is also entirely fixable in one line of deployment
+ * configuration, which is what the details say.
+ *
+ * THE STATES:
+ * 1. **No snapshot** — `setup:check` ran with no database access. "Not checked",
+ *    the same as its DB-backed siblings. It deliberately does not answer from the
+ *    environment alone: the safer override is half of the answer, and reporting
+ *    "production" from a declaration whose override could not be read is exactly
+ *    the confident-wrong answer the resolver itself refuses to give.
+ * 2. **The snapshot predates this field** — an older caller. Also "not checked",
+ *    for the same reason.
+ * 3. **PRODUCTION** — complete, and the message SAYS production, because an
+ *    operator who has just stood up a copy needs to see at a glance that they
+ *    are looking at the live club and not at their copy.
+ * 4. **NON_PRODUCTION** — complete, naming which source decided it. A declared
+ *    non-production and an administrator-forced one are both fine and are
+ *    different facts, so the message distinguishes them.
+ * 5. **UNKNOWN** — blocked, naming both sources, the repair, and the
+ *    APP_RUNTIME_ROLE trap. Two quite different situations land here — nothing
+ *    declared, and a declaration this app refuses to interpret — so the
+ *    declaration line says which.
+ *
+ * AN OPERATOR MAY ACKNOWLEDGE THIS STEP, exactly as they may acknowledge
+ * `runtime-env`, and that changes the CHECKLIST and nothing else: `applyProgress`
+ * moves `progress` to `completed` and never touches `status`. So a ticked box
+ * cannot make an UNKNOWN installation start sending email — the resolver is the
+ * only thing #3035 and #3036 read, and it has never heard of the checklist.
+ *
+ * Deliberately clock-free: nothing here formats a date, so the answer is the
+ * same at every instant.
+ */
+function buildEnvironmentRoleCheck(
+  db: SetupDatabaseSnapshot | undefined,
+  progress: SetupProgressState,
+): SetupStepCheck {
+  const base = {
+    id: "environment-role" as const,
+    title: "Production Or Non-Production",
+    description:
+      "Whether this installation is the club's live site or a copy — which decides whether real members can be emailed.",
+    required: true,
+    href: "/admin/environment",
+  };
+
+  // 1 / 2. Nothing to report on.
+  if (!db || !db.environmentRole) {
+    return applyProgress(
+      {
+        ...base,
+        status: "warning",
+        message: "Database state was not checked.",
+        details: [
+          "Run setup:check again inside an environment with database access, or review /admin/setup after login.",
+          "Half of this answer is a database setting (the safer override), so it cannot be reported from the deployment environment alone.",
+          ENVIRONMENT_ROLE_VERSUS_RUNTIME_ROLE_DETAIL,
+        ],
+      },
+      progress,
+    );
+  }
+
+  const resolution = db.environmentRole;
+  const sources = [
+    describeEnvironmentRoleDeclaration(resolution.declaration),
+    describeEnvironmentRoleOverride(resolution),
+  ];
+
+  // 3. Confirmed production.
+  if (resolution.role === "PRODUCTION") {
+    return applyProgress(
+      {
+        ...base,
+        status: "complete",
+        message:
+          "This installation is declared PRODUCTION — the club's live site. Emails go to real members and accounting goes to the club's real Xero organisation.",
+        details: [...sources, ENVIRONMENT_ROLE_VERSUS_RUNTIME_ROLE_DETAIL],
+      },
+      progress,
+    );
+  }
+
+  // 4. Confirmed non-production.
+  if (resolution.role === "NON_PRODUCTION") {
+    return applyProgress(
+      {
+        ...base,
+        status: "complete",
+        message:
+          resolution.decidedBy === "database-safer-override"
+            ? "This installation is treated as NON-PRODUCTION because an administrator has switched the safer override on."
+            : "This installation is declared NON-PRODUCTION — a copy, a staging site or a developer's checkout.",
+        details: [...sources, ENVIRONMENT_ROLE_VERSUS_RUNTIME_ROLE_DETAIL],
+      },
+      progress,
+    );
+  }
+
+  // 5. Nothing has said.
+  return applyProgress(
+    {
+      ...base,
+      status: "blocked",
+      message:
+        "Nothing says whether this installation is the club's live site or a copy, so it is treated as neither. Set APP_ENVIRONMENT_ROLE to production or non-production in this deployment's environment.",
+      details: [
+        ...sources,
+        "Until it is declared, anything whose safety depends on knowing which installation this is does not run: no email is sent to members and nothing is written to the club's Xero organisation. That is deliberate — a copy of the live database holds real members' real email addresses, and guessing wrong emails them.",
+        "It is NOT assumed to be production, and it is NOT assumed to be a copy either. Both would be a guess, and one of them is a guess that contacts the club's members from a test system.",
+        "Set APP_ENVIRONMENT_ROLE=production in the .env of the club's live deployment, or APP_ENVIRONMENT_ROLE=non-production on a copy, then restart. A production deploy through scripts/run-production-blue-green-deploy.sh refuses to start without it (step 3 of 20), so a live site cannot reach this state through that path.",
+        ENVIRONMENT_ROLE_VERSUS_RUNTIME_ROLE_DETAIL,
       ],
     },
     progress,
@@ -1778,6 +1972,7 @@ export function buildSetupReadiness(
     foundation: [
       buildClubConfigCheck(club, input.database, progress),
       buildClubTimeZoneCheck(input.database, progress),
+      buildEnvironmentRoleCheck(input.database, progress),
       buildRuntimeEnvCheck(env, progress),
       buildAuthSecretStrengthCheck(env, progress),
       buildSeedAdminCheck(input.database, progress),

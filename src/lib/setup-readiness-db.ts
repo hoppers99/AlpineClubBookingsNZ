@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { CLUB_TIME_SETTINGS_ID } from "@/lib/club-time-zone";
+import { resolveEnvironmentRole } from "@/lib/environment-role";
 import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import {
   computeMembershipTypeRateGaps,
@@ -36,9 +37,29 @@ type ClubTimeSettingsRead =
  * complete without any file on disk. The club-time-zone gate (CT-1, #2989) reads
  * `clubTimeZone` here for the same reason — the club's timezone is database
  * state, never the host's `TZ`.
+ *
+ * The environment-role gate (ENV-SAFETY 1, #3034) is the one entry here that is
+ * not a bare table read: `resolveEnvironmentRole()` combines the deployment's
+ * `APP_ENVIRONMENT_ROLE` declaration with the database safer override, and the
+ * readiness step is handed the resolved answer rather than the raw halves, so
+ * that the checklist and every other consumer cannot disagree about the rule.
  */
 export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot> {
   const now = new Date();
+  /*
+    The environment role (ENV-SAFETY 1, #3034), resolved HERE rather than in
+    `setup-readiness.ts` because the resolver reads the database and that module
+    is deliberately synchronous over an injected snapshot. `resolveEnvironmentRole`
+    never throws — an unreadable override resolves UNKNOWN, which is the answer
+    the readiness step then reports — so it needs no `.catch()` of its own and
+    cannot take the whole snapshot down.
+
+    It is deliberately NOT inside the `Promise.all` below: that array is one
+    `prisma.*` call per element and reads as a list of table reads. Putting a
+    composite resolver in it would hide a `process.env` read plus a database read
+    inside something that looks like a thirteenth query.
+  */
+  const environmentRole = await resolveEnvironmentRole();
   const [
     adminCount,
     adminModuleSettings,
@@ -412,5 +433,6 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
         ? null
         : (clubTimeSettings?.timeZone ?? null),
     clubTimeZoneUnreadable: clubTimeSettings === CLUB_TIME_SETTINGS_UNREADABLE,
+    environmentRole,
   };
 }
