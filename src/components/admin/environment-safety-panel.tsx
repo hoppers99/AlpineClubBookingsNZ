@@ -520,7 +520,8 @@ export function EnvironmentSafetyPanel() {
         Xero containment (#3036), rendered for the two states in which the role
         changes what reaches the club's accounting: a confirmed copy (containment
         is running, and this says how much it has edited) and an undeclared
-        installation (nothing is reaching Xero at all). NOT for PRODUCTION, where
+        installation (nothing is WRITTEN to Xero at all, though reading still
+        works). NOT for PRODUCTION, where
         containment never runs and this table is empty by definition — a "0
         contacts contained" line on the live site would be noise that means
         nothing, which is the same argument #3035 made for keeping the

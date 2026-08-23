@@ -384,9 +384,21 @@ describe("Xero contact containment census (INV-CONFIG-005)", () => {
   });
 
   it("spells the contained domain in exactly one module", () => {
-    const spellings = filesMatching(
-      new RegExp(XERO_SANDBOX_CONTACT_EMAIL_DOMAIN.replace(/\./g, "\\.")),
-    ).filter((file) => !file.includes("__tests__"));
+    /*
+      A SUBSTRING MATCH, not a regular expression. The previous version built one
+      by escaping `.` — which is correct for today's constant and incomplete in
+      general (CodeQL: js/incomplete-multi-character-sanitization), because it
+      leaves `\\` and every other metacharacter alone. The safety of the pattern
+      was a property of the constant rather than of the code, and the constant is
+      not this test's to guarantee. There is nothing a regex buys here: the
+      question is "does this file contain this literal string".
+    */
+    const spellings = PRODUCTION_FILES.filter((file) =>
+      readFileSync(file, "utf8").includes(XERO_SANDBOX_CONTACT_EMAIL_DOMAIN),
+    )
+      .map(repoRelative)
+      .sort()
+      .filter((file) => !file.includes("__tests__"));
     expect(
       spellings,
       "The contained domain is a constant, exported from " +
@@ -469,6 +481,15 @@ describe("Xero contact containment census (INV-CONFIG-005)", () => {
     const FALSE_COMFORT = [
       "stops writing to the club's real Xero",
       "out of the club's real accounting",
+      /*
+        The third false claim, and the one this issue's own first draft made on
+        seven surfaces: that an undeclared installation reaches Xero not at all.
+        Writes are refused; reads are not, and are not meant to be. A surface
+        saying "nothing reaches Xero" tells the operator of an undeclared LIVE
+        site that their Xero connection is broken when it is working perfectly.
+      */
+      "nothing reaches Xero",
+      "nothing is reaching Xero",
     ];
     for (const [file, proof] of SURFACES) {
       const source = readModule(file);
@@ -542,9 +563,28 @@ describe("Xero contact containment census (INV-CONFIG-005)", () => {
     ).toBeGreaterThan(300);
     expect(
       unknownBranch,
-      "the undeclared branch must say that nothing is reaching Xero, which is " +
-        "what is actually happening there",
+      "the undeclared branch must say that nothing is WRITTEN to Xero",
     ).toMatch(/Nothing is being written to Xero/);
+    /*
+      WRITTEN, NOT REACHED, and this case used to require the opposite. Its
+      message said the branch "must say that nothing is reaching Xero, which is
+      what is actually happening there" — and that was false twice over. Contact
+      resolution refused while seven writers that never touch it carried on, and
+      READS were never blocked at all and deliberately still are not: a read
+      marks nothing in the club's books, and an operator working out why their
+      invoicing has stopped needs the Xero screens to load. So the branch has to
+      name what is refused and disclose that reading still works, or the operator
+      of an undeclared LIVE site reads "nothing is reaching Xero" and concludes
+      the connection is broken.
+    */
+    expect(
+      unknownBranch,
+      "the undeclared branch must enumerate what is refused, not gesture at it",
+    ).toMatch(/invoice, credit note, payment, allocation or contact/);
+    expect(
+      unknownBranch,
+      "and must say that READING from Xero still works",
+    ).toMatch(/Reading from Xero still works/);
     // And the block is rendered for BOTH states, never for PRODUCTION — where
     // containment never runs and the table is empty by definition, so a
     // "0 contacts" line would be noise.

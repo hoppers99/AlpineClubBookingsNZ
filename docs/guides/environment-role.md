@@ -196,11 +196,47 @@ still correct in the database. So:
 - Point a copy at a **separate Xero organisation** wherever you can — a demo or
   trial organisation. Then containment only ever touches records nobody minds.
 - If a copy has already been connected to the real organisation, Admin →
-  Environment tells you **how many contacts had a working address replaced**. To
-  put them back, re-sync those members from the live site, which pushes each
-  member's stored address to their contact again.
-- Switching the safer override on does not undo anything already done. It stops
-  anything further.
+  Environment lists **which contacts had a working address replaced** — the
+  member's name, a link straight to that contact in Xero, and when it happened.
+  Putting them back is the next section.
+- **Switching the safer override on does not stop this — it starts it.** That
+  switch forces the installation to behave as a copy, and behaving as a copy is
+  the only state in which addresses are replaced at all. So on an installation
+  that was resolving *production* (or *not configured*) and is connected to the
+  club's real Xero organisation, switching it on **begins** editing real
+  contacts. What it does stop is email to members. To stop Xero work on a copy,
+  disconnect Xero on that installation, or point it at a different Xero
+  organisation.
+
+### Putting a replaced address back
+
+**Audience: operator.**
+
+This is a manual job, and the honest version of why is worth two sentences,
+because the obvious expectation is a button.
+
+**The application cannot do it for you, in either direction.** A copy is not
+allowed to write a real address to a Xero contact — that is the whole point of
+the replacement, and doing it would start Xero emailing real members again. And
+the club's live site cannot find the damage on its own: the record of what a copy
+changed lives in *that copy's* database, not in the live one. There is no route
+that pushes a member's stored address onto a contact that already holds
+something, either: the admin force-sync links a contact rather than pushing an
+address to it, "push to Xero" refuses a member who is already linked, and the
+ordinary contact update only fires when a field changes *locally*.
+
+So, per contact:
+
+1. On the **copy**, open Admin → Environment and read the list of contacts whose
+   address was replaced. Each row links to the contact in Xero and names the
+   member it belongs to.
+2. On the club's **live site**, open that member's page and copy their email
+   address. It was never changed there — only Xero's copy of it was.
+3. In **Xero**, on the club's real organisation, open that contact and put the
+   address back.
+
+Then point the copy at a separate Xero organisation, or disconnect Xero on it,
+before using it again.
 
 **What the replacement looks like.** Every contact gets an address like
 `contained-<a long string of letters and numbers>@xero-sandbox.invalid`. It is
@@ -221,15 +257,31 @@ member" tools refuse a contact whose address has been contained, and say so. The
 have to: a member created from a contained address would look reachable on every
 screen and be able to receive nothing at all. Do those imports on the live site.
 
-### While the role is "not configured", nothing reaches Xero at all
+**How often a contact is re-checked.** Once a contact's address has been
+replaced, the copy records that it has been dealt with and does not ask Xero
+about it again for a day — otherwise every invoice on a large club would cost a
+round trip per member. After a day it looks again. That matters if somebody
+edits the address back by hand, or repairs it from the live site: for up to a day
+afterwards the copy still believes that contact is dealt with, and will not
+notice. It is not a hole you can fall into by accident, but it is the reason to
+finish a repair by moving the copy off the real Xero organisation rather than by
+leaving it pointed there.
+
+### While the role is "not configured", nothing is WRITTEN to Xero
 
 This is stricter than the email rule, and it is worth knowing before you see it.
 An installation that has not said whether it is the live site or a copy writes
-**nothing** to Xero — no invoice, no credit note, no contact. The reason is that
-the answer decides what address may sit on a contact: the member's real one on the
-live site, a replaced one on a copy. Guessing wrong in one direction emails real
-members from a copy; guessing wrong in the other rewrites the club's real
-accounting. Neither is acceptable, so nothing is attempted.
+**nothing** to Xero — no invoice, no credit note, no contact, no payment, no
+credit allocation, nothing at all. The reason is that the answer decides what
+address may sit on a contact: the member's real one on the live site, a replaced
+one on a copy. Guessing wrong in one direction emails real members from a copy;
+guessing wrong in the other rewrites the club's real accounting. Neither is
+acceptable, so nothing is attempted.
+
+**Reading from Xero still works**, on purpose. The Xero screens in this
+application still load, reports still run, and the contact sync still refreshes
+its cache — none of that marks the club's books, and somebody working out why
+their invoicing has stopped needs to be able to look.
 
 Declare the role and Xero writing resumes. Anything that was refused can be
 re-driven from **Admin → Xero**; nothing was half-written, because the refusal
@@ -385,7 +437,8 @@ answer*, and on the club's live site the only correct one is production.
 | The deploy says a container reported the wrong **environmentRole** at step 14 | The container received a different value from the one `.env` holds, so the two checks above are worth re-reading | Nothing was switched — the previous release is still serving. Fix the shell or the file and run the deploy again |
 | Who put this site into "copy" mode? | — | **Admin → Audit Log**, action `ENVIRONMENT_SAFETY_OVERRIDE_UPDATED`. The entry names the administrator and the value before and after |
 | A copy stopped raising Xero invoices, saying it cannot tell what installation this is | The role is *not configured*, and Xero writing fails closed until it is | Declare `APP_ENVIRONMENT_ROLE`, then re-drive the refused operations from **Admin → Xero**. Nothing was half-written |
-| Xero contacts on our REAL organisation now hold `contained-…@xero-sandbox.invalid` | A copy was connected to the live Xero organisation, and containment did what it is for | Read the count on **Admin → Environment**, then re-sync those members from the live site to push their real addresses back. Point the copy at a separate Xero organisation before using it again |
+| Xero contacts on our REAL organisation now hold `contained-…@xero-sandbox.invalid` | A copy was connected to the live Xero organisation, and containment did what it is for | Read the list on the copy's **Admin → Environment**, then follow "Putting a replaced address back" above — it is a manual per-contact repair in Xero, and the section says why no button can do it |
+| We switched the safer override on to stop a copy touching Xero, and it got worse | That switch is what *starts* containment: it forces the installation to behave as a copy, and only a copy replaces addresses. It stops email to members, not Xero work | Disconnect Xero on that installation, or point it at a separate Xero organisation. Then repair the contacts as above |
 | A copy will not import a Xero contact as a member | That contact's address has been contained, so a member made from it could never receive anything | Do the import on the live site |
 | Admin → Environment says the contained count **could not be counted** | The database migration for this release has not been applied here | Run `prisma migrate deploy` (or `npm run db:migrate` in development) and reload |
 

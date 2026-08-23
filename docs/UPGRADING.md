@@ -116,11 +116,13 @@ real members and their real email addresses, and every convention people
 otherwise rely on is right until somebody stands up the copy that breaks it. An
 installation that has not declared itself resolves **UNKNOWN**, and UNKNOWN fails
 closed: member email is held back, and **nothing is written to the club's Xero
-organisation at all** — no invoice, no credit note, no contact — until it is
-declared. A copy that HAS declared itself does keep writing Xero documents, on
-purpose so settlement stays testable, but it replaces the email address on every
-Xero contact it touches with one that cannot be delivered, because Xero emails
-invoice reminders from its own servers to whatever the contact holds. See
+organisation at all** — no invoice, no credit note, no contact, no payment, no
+credit allocation — until it is declared. Reading from Xero is unaffected, so the
+Xero screens still load while an operator works out why. A copy that HAS declared
+itself does keep writing Xero documents, on purpose so settlement stays testable,
+but it replaces the email address on every Xero contact it touches with one that
+cannot be delivered, because Xero emails invoice reminders from its own servers to
+whatever the contact holds. See
 [`guides/environment-role.md`](guides/environment-role.md) -> "What a copy does to
 the club's Xero contacts" before pointing a copy at the real Xero organisation.
 

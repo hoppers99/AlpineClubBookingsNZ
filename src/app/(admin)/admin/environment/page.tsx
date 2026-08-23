@@ -70,7 +70,9 @@ export default function EnvironmentSafetyPage() {
           Xero organisation, those replaced addresses are real accounting records
           being edited. Point a copy at a test Xero organisation wherever you
           can. While nothing has declared which installation this is, nothing is
-          written to Xero at all.
+          written to Xero at all — no invoice, credit note, contact, payment or
+          credit allocation — though reading from Xero still works, so these
+          screens keep loading.
         </p>
       </div>
       <EnvironmentSafetyPanel />

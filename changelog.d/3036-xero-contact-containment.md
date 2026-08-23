@@ -24,8 +24,10 @@
     does live. What changes is that the contacts they are raised against can reach
     nobody.
   - **An installation nobody has declared writes nothing to Xero at all** — no
-    invoice, no credit note, no contact. This is stricter than the email rule and
-    on purpose: the answer decides what address may sit on a contact, the member's
+    invoice, no credit note, no contact, no payment, no credit allocation.
+    Reading from Xero still works, so the Xero screens keep loading and somebody
+    can work out what has happened. This is stricter than the email rule and on
+    purpose: the answer decides what address may sit on a contact, the member's
     real one on the live site and a replaced one on a copy, and guessing wrong in
     one direction emails real members while guessing wrong in the other rewrites
     the club's real accounting. Declare the role and Xero work resumes; anything
@@ -38,9 +40,21 @@
   organisation wherever you can. If one has already been connected to the real
   organisation, **Admin → Environment** now shows how many contacts have been
   contained and, separately, how many of those were holding a working address that
-  was overwritten — the second number is the one that means act now. Re-syncing
-  those members from the live site pushes their real addresses back. The figure
-  reports "not available" rather than a reassuring zero if it cannot be read.
+  was overwritten — the second number is the one that means act now — and it
+  **lists those contacts**: whose they are, a link straight to each one in Xero,
+  and when it happened. Putting an address back is a manual job in Xero, and the
+  screen and the operator guide both say so plainly and say why: a copy is not
+  allowed to write a real address to a Xero contact, and the live site has no
+  record of what the copy changed. The figures report "not available" rather than
+  a reassuring zero if they cannot be read.
+
+  **Switching the "treat this as a copy" override on does not stop this — it
+  starts it.** Replacing addresses is what an installation does once it is
+  confirmed to be a copy, so on an installation that was resolving *production*
+  and is connected to the club's real Xero organisation, switching the override on
+  begins editing real contacts. It stops email to members. To stop Xero work,
+  disconnect Xero there or point it at a different Xero organisation. An earlier
+  draft of the operator guide had this exactly the wrong way round.
 
   **The replacement address is deliberately recognisable and deliberately not a
   "no email address" marker.** It looks like
