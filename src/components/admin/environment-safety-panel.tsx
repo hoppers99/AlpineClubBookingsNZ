@@ -121,12 +121,12 @@ function describeDeclaration(state: EnvironmentSafetyState): string {
  * The withheld-email sentence.
  *
  * THIS IS THE SIGNAL THAT SEPARATES the two cases nothing else can tell apart: a
- * live club installation that has been wrongly declared a copy, and a copy nobody
- * is using. A copy restored from the live database holds the club's real members
- * and their real addresses, so no inspection of the DATA can distinguish them —
- * what distinguishes them is consequence. A real club wrongly declared a copy
- * holds back a steady stream of member mail; an idle copy holds back almost
- * nothing.
+ * live club installation that is not sending — because it has been wrongly
+ * declared a copy, or left undeclared — and a copy nobody is using. A copy
+ * restored from the live database holds the club's real members and their real
+ * addresses, so no inspection of the DATA can distinguish them; what distinguishes
+ * them is consequence. A real club in either of those states holds back a steady
+ * stream of member mail; an idle copy holds back almost nothing.
  *
  * The three states must read differently. "None" and "not counted yet" look
  * identical on a screen and mean opposite things: one says the copy is idle, the
@@ -155,8 +155,8 @@ function describeWithheldEmail(state: EnvironmentSafetyState): {
   return {
     headline: `${withheld.count} message${withheld.count === 1 ? "" : "s"} held back`,
     detail: withheld.mostRecentAt
-      ? `Most recently ${formatChangedAt(withheld.mostRecentAt)}. A steady and recent count is what a LIVE club that has been wrongly declared a copy looks like. If members are waiting for that mail, the role above is wrong.`
-      : "A steady and recent count is what a LIVE club that has been wrongly declared a copy looks like. If members are waiting for that mail, the role above is wrong.",
+      ? `Most recently ${formatChangedAt(withheld.mostRecentAt)}. A steady and recent count is what a LIVE club looks like when it has been wrongly declared a copy, or left undeclared. If members are waiting for that mail, the answer above is wrong.`
+      : "A steady and recent count is what a LIVE club looks like when it has been wrongly declared a copy, or left undeclared. If members are waiting for that mail, the answer above is wrong.",
   };
 }
 
@@ -285,20 +285,27 @@ export function EnvironmentSafetyPanel() {
       </div>
 
       {/*
-        Directly under the role, and only when this installation is treated as a
-        copy. That is the one state in which application email is held back, so it
-        is the one state in which the count answers a question — "is this costing
-        my members their mail?". On a production or unconfigured installation the
-        same line would be noise, and noise beside the most consequential setting
-        in the app is how the consequential part stops being read.
+        Directly under the role, whenever delivery is being held back — which is
+        NON_PRODUCTION *and* UNKNOWN. The first version showed it only for a
+        confirmed copy, on the premise that "nothing is being held back" otherwise;
+        a third review lens pointed out this codebase says the opposite about
+        UNKNOWN in three places (the boot advisory, the deploy script, and the
+        readiness step's own next sentence), and that UNKNOWN is precisely the
+        state a live installation reaches by upgrading without the declaration —
+        the scenario this whole issue exists for. Withholding the count from that
+        operator is the worst place to withhold it.
+
+        Still not shown for PRODUCTION, where nothing is held back for this reason
+        and the line would be noise beside the most consequential setting in the
+        app.
       */}
-      {state.role === "NON_PRODUCTION" ? (
+      {state.role === "NON_PRODUCTION" || state.role === "UNKNOWN" ? (
         <div
           className="space-y-1 rounded-md border bg-card p-6"
           data-testid="environment-withheld-email"
         >
           <p className="text-sm font-semibold">
-            Application email held back while this is a copy
+            Application email held back for environment safety
           </p>
           <p className="text-base">{describeWithheldEmail(state).headline}</p>
           <p className="text-sm text-muted-foreground">

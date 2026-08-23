@@ -986,7 +986,12 @@ function describeEnvironmentRoleOverride(
 
 /**
  * The withheld-email line, which is the ONLY signal that separates a live club
- * wrongly declared a copy from a copy nobody is using (ENV-SAFETY 1, #3034).
+ * that is not sending from a copy nobody is using (ENV-SAFETY 1, #3034).
+ *
+ * Rendered for NON_PRODUCTION **and** UNKNOWN, because both hold delivery back —
+ * UNKNOWN is the fail-closed state, and it is the one a live installation reaches
+ * by upgrading without adding the declaration. Not rendered for PRODUCTION, where
+ * nothing is held back for this reason and the line would be noise.
  *
  * The reasoning, and why a database-content heuristic cannot do this job, is in
  * `environment-safety-withheld.ts`. What matters here is that the three states
@@ -1012,7 +1017,7 @@ function describeWithheldEmail(
   const mostRecent = withheldEmail.mostRecentAt
     ? ` The most recent was ${withheldEmail.mostRecentAt}.`
     : "";
-  return `Held back email: ${withheldEmail.count} message(s) have been held back on this installation because it is treated as a copy.${mostRecent} A steady and recent count is what a LIVE club that has been wrongly declared a copy looks like — if members are waiting for that mail, this installation's role is wrong.`;
+  return `Held back email: ${withheldEmail.count} message(s) have been held back on this installation for environment-safety reasons.${mostRecent} A steady and recent count is what a LIVE club looks like when it has been wrongly declared a copy, or left undeclared — if members are waiting for that mail, the answer above is wrong.`;
 }
 
 /**
@@ -1126,13 +1131,11 @@ function buildEnvironmentRoleCheck(
             ? "This installation is treated as NON-PRODUCTION because an administrator has switched the safer override on."
             : "This installation is declared NON-PRODUCTION — a copy, a staging site or a developer's checkout.",
         /*
-          THE WITHHELD COUNT GOES FIRST, and only on this branch. It is the line
-          that answers the question an operator meeting an unexpected
-          non-production installation actually has — "is this costing my members
-          their mail?" — and it is the only signal that can answer it, because a
-          copy restored from the live database is indistinguishable from the live
-          site by its data (#3034). On a PRODUCTION or UNKNOWN installation
-          nothing is being held back for this reason, so the line would be noise.
+          THE WITHHELD COUNT GOES FIRST. It answers the question an operator
+          meeting an unexpected non-production installation actually has — "is
+          this costing my members their mail?" — and it is the only signal that
+          can answer it, because a copy restored from the live database is
+          indistinguishable from the live site by its data (#3034).
         */
         details: [
           describeWithheldEmail(db.withheldEmail),
@@ -1151,7 +1154,22 @@ function buildEnvironmentRoleCheck(
       status: "blocked",
       message:
         "Nothing says whether this installation is the club's live site or a copy, so it is treated as neither. Set APP_ENVIRONMENT_ROLE to production or non-production in this deployment's environment.",
+      /*
+        AND THE WITHHELD COUNT HERE TOO, which a third review lens was right to
+        insist on. The first version rendered it only for NON_PRODUCTION,
+        reasoning that "on a PRODUCTION or UNKNOWN installation nothing is being
+        held back for this reason" — and this file's own next sentence contradicts
+        that: UNKNOWN fails closed, so no email is sent to members and nothing is
+        written to Xero. The boot advisory and the deploy script say the same.
+
+        Which makes UNKNOWN the case the count matters MOST for: it is exactly the
+        live installation that upgraded without adding the declaration, the
+        scenario this whole issue exists to prevent. That operator needs to see
+        "312 held back, most recently four minutes ago" rather than have it
+        withheld from them on a premise the rest of the code denies.
+      */
       details: [
+        describeWithheldEmail(db.withheldEmail),
         ...sources,
         "Until it is declared, anything whose safety depends on knowing which installation this is does not run: no email is sent to members and nothing is written to the club's Xero organisation. That is deliberate — a copy of the live database holds real members' real email addresses, and guessing wrong emails them.",
         "It is NOT assumed to be production, and it is NOT assumed to be a copy either. Both would be a guess, and one of them is a guess that contacts the club's members from a test system.",

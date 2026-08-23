@@ -5,10 +5,15 @@
  *
  * WHY A COUNT IS THE SIGNAL, when nothing about the DATA can be one. The one
  * hole this epic cannot close by configuration is a live club installation that
- * has been wrongly declared a copy: the production deploy refuses it, and the
- * deploy re-reads each container's own declaration before the cutover, but a site
- * somebody brings up by hand with `docker compose up` runs none of that. It comes
- * up, resolves NON_PRODUCTION, and holds back mail its members are waiting for.
+ * is not sending: the production deploy refuses a `.env` saying `non-production`,
+ * and it asks each container what it actually received before the cutover, but a
+ * site somebody brings up by hand with `docker compose up` runs none of that. It
+ * comes up, resolves NON_PRODUCTION or UNKNOWN, and holds back mail its members
+ * are waiting for.
+ *
+ * BOTH of those states hold delivery back, so both surfaces render this line for
+ * both. UNKNOWN is if anything the likelier one, because it is what an existing
+ * live installation reaches simply by upgrading without adding the declaration.
  *
  * The tempting detector — "warn when the database looks like a real club's
  * records" — cannot work, and it is worth writing down why so nobody builds it.
