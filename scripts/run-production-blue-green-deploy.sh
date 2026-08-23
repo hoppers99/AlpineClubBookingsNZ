@@ -448,6 +448,25 @@ GREEN_SERVICE="app_green"
 ACTIVE_UPSTREAM_FILE_REL="deploy/caddy/tacbookings-active.caddy"
 READINESS_PATH="/api/health/ready"
 DEPLOY_RUNTIME_STATUS_PATH="/api/deploy/runtime-status"
+# What every container running app code must SAY IT PARSED out of
+# APP_ENVIRONMENT_ROLE (ENV-SAFETY 1 #3034, epic #2986; INV-CONFIG-003).
+#
+# THE DECLARATION KIND AND NOT THE EFFECTIVE ROLE, and the difference is the
+# reason this is safe to assert at all: a correctly declared production
+# installation whose administrator has switched the safer override on legitimately
+# RESOLVES non-production, so asserting the resolved role would refuse a
+# legitimate release. The declaration is the half a deployment owns.
+#
+# It is asserted from the CONTAINER's own self-report rather than from .env,
+# because those are different questions. The step-3 preflight validates the FILE;
+# the containers receive whatever Compose RESOLVED, and Compose prefers a value
+# exported in the invoking shell over the env file and takes the LAST duplicate
+# line rather than the first. The preflight now refuses both of those cases
+# explicitly, but a gate that is only right while it models Compose's precedence
+# correctly is one Compose release away from being wrong — so the value is
+# re-read from the process that actually got it, at step 14, with the old colour
+# still serving and nothing switched.
+EXPECTED_ENVIRONMENT_ROLE_DECLARATION="production"
 
 SHADOW_DATABASE_NAME="tacbookings_shadow_validate_$$"
 SHADOW_DATABASE_CREATED=0
@@ -530,6 +549,45 @@ trim_whitespace() {
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   printf '%s' "$value"
+}
+
+# How many non-comment lines in .env assign this key, counted the way
+# `get_env_file_value` matches so the two cannot disagree about what a line is.
+#
+# It exists because that reader `exit`s on the first match while Compose's
+# dotenv parsing is last-wins, and the only safe response to a key that appears
+# twice is to refuse. Deliberately a SEPARATE function rather than a change to
+# `get_env_file_value`, which every other `require_*_env_key` shares.
+count_env_file_key_occurrences() {
+  local key="$1"
+
+  awk -F= -v key="$key" '
+    /^[[:space:]]*#/ { next }
+    $1 == key { found++ }
+    END { print found + 0 }
+  ' .env
+}
+
+# A deployment-supplied value made safe to echo at an operator's terminal.
+#
+# The application deliberately reduces this same string to printable ASCII before
+# it reaches a log line or a page (`sanitizeEnvironmentRoleRawValue` in
+# src/lib/environment-role-declaration.ts), for the plain reason that a value
+# holding a newline or an escape sequence must not be able to write a second line
+# into — or repaint — the terminal of the person reading the refusal. A shell that
+# echoed the raw value would be the hole that module closes, reopened one layer
+# out. Control characters become `?` rather than being deleted, so the operator
+# can SEE that something is in there; the cap matches the app's 64 characters
+# including the `...` marker, so the whole result is printable ASCII.
+printable_deploy_value() {
+  local sanitized
+
+  sanitized="$(printf '%s' "$1" | tr -c ' -~' '?')"
+  if [ "${#sanitized}" -gt 64 ]; then
+    printf '%s...' "${sanitized:0:61}"
+  else
+    printf '%s' "$sanitized"
+  fi
 }
 
 get_env_file_value() {
@@ -719,13 +777,64 @@ require_environment_role_env_key() {
   local key="APP_ENVIRONMENT_ROLE"
   local value
   local normalised
+  local occurrences
+  local exported_normalised
 
   require_env_key "$key"
   value="$(trim_whitespace "$(get_env_file_value "$key")")"
   normalised="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
 
+  # A DUPLICATED KEY IS REFUSED, because this gate and Compose would read
+  # different lines. `get_env_file_value` awk-`exit`s on the FIRST match, and
+  # Compose's dotenv parsing is LAST-WINS — so a .env holding
+  # `APP_ENVIRONMENT_ROLE=production` followed later by
+  # `APP_ENVIRONMENT_ROLE=non-production` passes a first-match gate and hands the
+  # containers the second value. A duplicate is always an operator mistake, so it
+  # is refused outright rather than silently resolved in either direction: taking
+  # last-wins here would agree with Compose but would also quietly bless a file
+  # that says two different things about the most consequential setting in it.
+  # Scoped to THIS key on purpose — `get_env_file_value` is shared by every other
+  # `require_*_env_key` and is not this issue's to change.
+  occurrences="$(count_env_file_key_occurrences "$key")"
+  if [ "$occurrences" -gt 1 ]; then
+    echo ".env entry $key appears $occurrences times. Leave exactly one." >&2
+    echo "This gate reads the FIRST occurrence and Docker Compose reads the LAST," >&2
+    echo "so duplicates can pass the check and still hand the containers the other" >&2
+    echo "value — which is how a live site would come up believing it is a copy." >&2
+    return 1
+  fi
+
+  # A SHELL-EXPORTED VALUE BEATS THE FILE IN COMPOSE'S OWN PRECEDENCE, so a stale
+  # `export APP_ENVIRONMENT_ROLE=non-production` left in the invoking shell, a
+  # systemd unit or a restore-rehearsal script would override a correct .env and
+  # this gate would never see it. That is not hypothetical for this script: it
+  # already exports GIT_COMMIT_SHA / KNOWLEDGE_BUNDLE_OBSERVED_AT / RELEASE_ID
+  # for compose to forward, and it does not sanitise the caller's environment.
+  #
+  # Compared case-folded and trimmed, the same fold the file value gets, so a
+  # harmless `PRODUCTION` in the shell is not reported as a disagreement. Both
+  # values are named in the refusal, because "they disagree" without saying which
+  # said what is not something an operator can act on.
+  if [ -n "${APP_ENVIRONMENT_ROLE+x}" ]; then
+    exported_normalised="$(
+      printf '%s' "$(trim_whitespace "${APP_ENVIRONMENT_ROLE:-}")" |
+        tr '[:upper:]' '[:lower:]'
+    )"
+    if [ "$exported_normalised" != "$normalised" ]; then
+      echo "$key disagrees between this shell and .env, and Docker Compose would" >&2
+      echo "take the SHELL value. Refusing rather than deploying the one you did" >&2
+      echo "not edit." >&2
+      echo "  exported in this shell: $(printable_deploy_value "${APP_ENVIRONMENT_ROLE:-}")" >&2
+      echo "  in .env:                $(printable_deploy_value "$value")" >&2
+      echo "Run 'unset $key' in this shell (and remove it from whatever exported" >&2
+      echo "it — a systemd unit, a wrapper script, a restore rehearsal), then" >&2
+      echo "re-run so the .env is the only source." >&2
+      return 1
+    fi
+  fi
+
   if [ "$normalised" != "production" ]; then
-    echo ".env entry $key must be exactly production for this script (got: $value)" >&2
+    echo ".env entry $key must be exactly production for this script (got: $(printable_deploy_value "$value"))" >&2
     echo "This script deploys the club's LIVE site. There is no staging mode here." >&2
     if [ "$normalised" = "non-production" ]; then
       echo "The value says this installation is a COPY. Deploying it would suppress" >&2
@@ -744,6 +853,12 @@ require_environment_role_env_key() {
     echo "This is NOT APP_RUNTIME_ROLE, which names the container slot (web-blue, cron-leader)." >&2
     return 1
   fi
+
+  # Belt and braces now that the two agree: drop the variable from this shell so
+  # the .env is the ONLY source Compose can read it from. Nothing else in this
+  # script reads it, and the value is re-verified from each container's own
+  # self-report at step 14 (`assert_runtime_identity`), before the cutover.
+  unset APP_ENVIRONMENT_ROLE
 }
 
 require_domain_matches_url() {
@@ -1270,6 +1385,7 @@ assert_runtime_identity() {
   local payload="$2"
   local expected_role="$3"
   local expected_cron_enabled="$4"
+  local expected_environment_role="${5:-}"
 
   if [ -n "$expected_role" ] && ! printf '%s' "$payload" | grep -q "\"role\":\"${expected_role}\""; then
     echo "$source runtime payload did not report role=${expected_role}: $payload" >&2
@@ -1278,6 +1394,24 @@ assert_runtime_identity() {
 
   if [ -n "$expected_cron_enabled" ] && ! printf '%s' "$payload" | grep -q "\"cronEnabled\":${expected_cron_enabled}"; then
     echo "$source runtime payload did not report cronEnabled=${expected_cron_enabled}: $payload" >&2
+    return 1
+  fi
+
+  # The DECLARATION this container parsed for itself (ENV-SAFETY 1 #3034). Empty
+  # expectation means "not checked", the same convention the two assertions above
+  # use, so a caller that has nothing to compare against is not silently green.
+  if [ -n "$expected_environment_role" ] && ! printf '%s' "$payload" | grep -q "\"environmentRole\":\"${expected_environment_role}\""; then
+    echo "$source did not report environmentRole=${expected_environment_role}: $payload" >&2
+    echo "That is what THIS CONTAINER parsed out of APP_ENVIRONMENT_ROLE, which is" >&2
+    echo "not necessarily what .env says: Docker Compose prefers a value exported" >&2
+    echo "in the invoking shell over the env file, and takes the LAST duplicate" >&2
+    echo "line rather than the first." >&2
+    echo "A container reporting non-production would hold back every real member's" >&2
+    echo "email and, once Xero containment lands, rewrite the email addresses on" >&2
+    echo "the club's real accounting contacts. absent or invalid resolves UNKNOWN," >&2
+    echo "which holds back member email and Xero writes until it is declared." >&2
+    echo "Refusing before the cutover. Run 'unset APP_ENVIRONMENT_ROLE' in this" >&2
+    echo "shell, and check .env holds exactly one APP_ENVIRONMENT_ROLE=production." >&2
     return 1
   fi
 }
@@ -1327,6 +1461,17 @@ get_expected_cron_enabled() {
 get_service_runtime_payload() {
   local service="$1"
 
+  # The environment-role branch below mirrors readEnvironmentRoleDeclaration() in
+  # src/lib/environment-role-declaration.ts: trim, case-fold, accept ONLY the two
+  # words. It is folded the same way so a legitimate `PRODUCTION ` is not read as
+  # a disagreement, and it reports the four-way declaration KIND rather than the
+  # raw value, so this payload speaks the same vocabulary as
+  # /api/deploy/runtime-status — which reports that same enum from the running
+  # application's own parser (`getRuntimeStatus`).
+  #
+  # NO SINGLE QUOTE MAY APPEAR inside the snippet, comments included: the whole
+  # of it is one single-quoted argument, so one apostrophe ends the string and
+  # the script stops parsing. Hence this explanation lives out here.
   docker compose exec -T "$service" /bin/sh -lc '
 role="${APP_RUNTIME_ROLE:-unknown}"
 cron_enabled="${CRON_ENABLED:-true}"
@@ -1334,7 +1479,17 @@ case "$cron_enabled" in
   true|TRUE|1|yes|YES|on|ON) cron_json=true ;;
   *) cron_json=false ;;
 esac
-printf "{\"role\":\"%s\",\"cronEnabled\":%s}\n" "$role" "$cron_json"
+declared="${APP_ENVIRONMENT_ROLE:-}"
+declared="${declared#"${declared%%[![:space:]]*}"}"
+declared="${declared%"${declared##*[![:space:]]}"}"
+declared="$(printf "%s" "$declared" | tr "[:upper:]" "[:lower:]")"
+case "$declared" in
+  production) environment_role=production ;;
+  non-production) environment_role=non-production ;;
+  "") environment_role=absent ;;
+  *) environment_role=invalid ;;
+esac
+printf "{\"role\":\"%s\",\"cronEnabled\":%s,\"environmentRole\":\"%s\"}\n" "$role" "$cron_json" "$environment_role"
 '
 }
 
@@ -1370,7 +1525,7 @@ verify_internal_health() {
   payload="$(docker compose exec -T "$service" wget -qO- "http://127.0.0.1:3000${READINESS_PATH}")"
   assert_readiness_payload_healthy "Internal ${service}" "$payload"
   runtime_payload="$(get_service_runtime_payload "$service")"
-  assert_runtime_identity "Internal ${service}" "$runtime_payload" "$expected_role" "$expected_cron_enabled"
+  assert_runtime_identity "Internal ${service}" "$runtime_payload" "$expected_role" "$expected_cron_enabled" "$EXPECTED_ENVIRONMENT_ROLE_DECLARATION"
 }
 
 verify_external_health() {
@@ -1397,7 +1552,7 @@ verify_external_health() {
       "$runtime_url" \
       "$(trim_whitespace "$(get_env_file_value CRON_SECRET)")"
   )"
-  assert_runtime_identity "External deploy runtime status" "$runtime_payload" "$expected_role" "$expected_cron_enabled"
+  assert_runtime_identity "External deploy runtime status" "$runtime_payload" "$expected_role" "$expected_cron_enabled" "$EXPECTED_ENVIRONMENT_ROLE_DECLARATION"
 }
 
 verify_cron_registration() {

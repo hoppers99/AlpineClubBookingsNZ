@@ -1,3 +1,7 @@
+import {
+  readEnvironmentRoleDeclaration,
+  type EnvironmentRoleDeclaration,
+} from "@/lib/environment-role-declaration";
 import { prisma } from "@/lib/prisma";
 import { getRuntimeConfigCheck } from "@/lib/runtime-config";
 import { resolveEmailDeliveryConfig } from "@/lib/email-delivery";
@@ -46,6 +50,28 @@ export interface ReadinessHealthReport {
 export interface RuntimeStatusReport {
   cronEnabled: boolean;
   role: string;
+  /**
+   * What THIS RUNNING PROCESS parsed out of `APP_ENVIRONMENT_ROLE`
+   * (ENV-SAFETY 1, #3034; epic #2986; INV-CONFIG-003) — the container's own
+   * self-report, which is the only witness that cannot disagree with what the
+   * container actually got.
+   *
+   * THE DECLARATION KIND, NOT THE EFFECTIVE ROLE, and the difference is
+   * load-bearing. A correctly declared production installation whose
+   * administrator has switched the safer override on legitimately RESOLVES
+   * `NON_PRODUCTION`, so a deploy asserting the resolved role would refuse a
+   * legitimate release. The declaration is also the half a deployment owns.
+   * `readEnvironmentRoleDeclaration()` is the pure, database-free parser,
+   * which is what makes it safe to call from a health endpoint at all.
+   *
+   * Both routes that expose this are authenticated — `/api/deploy/runtime-status`
+   * behind `requireCronSecret` and `/api/admin/runtime-status` behind
+   * `requireAdmin` — so the four-value enum sits beside the `role`
+   * (`web-blue` / `cron-leader`) that is already there. It carries no secret:
+   * an `invalid` declaration is reported as `invalid` and the refused value
+   * itself is deliberately NOT included.
+   */
+  environmentRole: EnvironmentRoleDeclaration["kind"];
 }
 
 const CHECK_TIMEOUT_MS = 3000;
@@ -239,6 +265,7 @@ export function getRuntimeStatus(): RuntimeStatusReport {
   return {
     cronEnabled: (process.env.CRON_ENABLED ?? "true").toLowerCase() === "true",
     role: process.env.APP_RUNTIME_ROLE ?? "unknown",
+    environmentRole: readEnvironmentRoleDeclaration().kind,
   };
 }
 
