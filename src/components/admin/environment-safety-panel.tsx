@@ -56,6 +56,21 @@ type DecidedBy =
 
 type DeclarationKind = "production" | "non-production" | "absent" | "invalid";
 
+/**
+ * How much application email this installation has held back for
+ * environment-safety reasons.
+ *
+ * Declared here rather than imported, like every other type in this file: the
+ * module that builds the payload is `server-only`, so a client component cannot
+ * import from it. `available: false` is deliberately its own case and NOT a zero
+ * — see `src/lib/environment-safety-withheld.ts` for why "none held back" and
+ * "not counted yet" must not render the same, and why no heuristic over the
+ * database's contents can do this job.
+ */
+type WithheldApplicationEmail =
+  | { available: false }
+  | { available: true; count: number; mostRecentAt: string | null };
+
 type EnvironmentSafetyState = {
   role: EnvironmentRole;
   decidedBy: DecidedBy;
@@ -66,6 +81,7 @@ type EnvironmentSafetyState = {
     updatedAt: string | null;
     updatedByName: string | null;
   };
+  withheldEmail: WithheldApplicationEmail;
   notes: string[];
 };
 
@@ -99,6 +115,49 @@ function describeDeclaration(state: EnvironmentSafetyState): string {
     case "absent":
       return "This deployment does not set APP_ENVIRONMENT_ROLE at all.";
   }
+}
+
+/**
+ * The withheld-email sentence.
+ *
+ * THIS IS THE SIGNAL THAT SEPARATES the two cases nothing else can tell apart: a
+ * live club installation that has been wrongly declared a copy, and a copy nobody
+ * is using. A copy restored from the live database holds the club's real members
+ * and their real addresses, so no inspection of the DATA can distinguish them —
+ * what distinguishes them is consequence. A real club wrongly declared a copy
+ * holds back a steady stream of member mail; an idle copy holds back almost
+ * nothing.
+ *
+ * The three states must read differently. "None" and "not counted yet" look
+ * identical on a screen and mean opposite things: one says the copy is idle, the
+ * other says nobody knows. **#3035 supplies the numbers** — see
+ * `src/lib/environment-safety-withheld.ts`.
+ */
+function describeWithheldEmail(state: EnvironmentSafetyState): {
+  headline: string;
+  detail: string;
+} {
+  const withheld = state.withheldEmail;
+  if (!withheld.available) {
+    return {
+      headline: "Not counted yet on this installation",
+      detail:
+        "This is not the same as none. Nothing here records what environment safety holds back yet, so this line cannot tell you whether this installation is quietly holding back mail the club's members are waiting for. Until it can, check the role above is the answer you expect.",
+    };
+  }
+  if (withheld.count === 0) {
+    return {
+      headline: "None held back",
+      detail:
+        "Nothing has been held back on this installation for environment-safety reasons, which is what an unused copy looks like.",
+    };
+  }
+  return {
+    headline: `${withheld.count} message${withheld.count === 1 ? "" : "s"} held back`,
+    detail: withheld.mostRecentAt
+      ? `Most recently ${formatChangedAt(withheld.mostRecentAt)}. A steady and recent count is what a LIVE club that has been wrongly declared a copy looks like. If members are waiting for that mail, the role above is wrong.`
+      : "A steady and recent count is what a LIVE club that has been wrongly declared a copy looks like. If members are waiting for that mail, the role above is wrong.",
+  };
 }
 
 function describeOverride(state: EnvironmentSafetyState): string {
@@ -225,6 +284,29 @@ export function EnvironmentSafetyPanel() {
         <p className="text-sm">{DECIDED_BY_LABEL[state.decidedBy]}</p>
       </div>
 
+      {/*
+        Directly under the role, and only when this installation is treated as a
+        copy. That is the one state in which application email is held back, so it
+        is the one state in which the count answers a question — "is this costing
+        my members their mail?". On a production or unconfigured installation the
+        same line would be noise, and noise beside the most consequential setting
+        in the app is how the consequential part stops being read.
+      */}
+      {state.role === "NON_PRODUCTION" ? (
+        <div
+          className="space-y-1 rounded-md border bg-card p-6"
+          data-testid="environment-withheld-email"
+        >
+          <p className="text-sm font-semibold">
+            Application email held back while this is a copy
+          </p>
+          <p className="text-base">{describeWithheldEmail(state).headline}</p>
+          <p className="text-sm text-muted-foreground">
+            {describeWithheldEmail(state).detail}
+          </p>
+        </div>
+      ) : null}
+
       <div className="space-y-4 rounded-md border bg-card p-6">
         <div className="space-y-1">
           <p className="text-sm font-semibold">
@@ -272,7 +354,7 @@ export function EnvironmentSafetyPanel() {
             <p className="text-sm text-muted-foreground">
               {state.override.on
                 ? "Switching the override off hands the decision back to this deployment's own setting. It does not make this installation the live site."
-                : "Switching the override on forces this installation to be treated as a copy, whatever this deployment's setting says. Use it when you have restored a copy of the live database and want to be certain nothing reaches real members."}
+                : "Switching the override on forces this installation to be treated as a copy, whatever this deployment's setting says. Use it when you have restored a copy of the live database and want to be certain nothing reaches real members. It is stored in this database, so restoring the live database again removes it — the durable fix is APP_ENVIRONMENT_ROLE=non-production in this deployment's own environment."}
             </p>
             <Button onClick={startEditing} disabled={!state.override.readable}>
               {state.override.on

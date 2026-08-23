@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { CLUB_TIME_SETTINGS_ID } from "@/lib/club-time-zone";
 import { resolveEnvironmentRole } from "@/lib/environment-role";
+import { readWithheldApplicationEmail } from "@/lib/environment-safety-withheld";
 import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import {
   computeMembershipTypeRateGaps,
@@ -60,6 +61,15 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     inside something that looks like a thirteenth query.
   */
   const environmentRole = await resolveEnvironmentRole();
+  /*
+    How much application email this installation has held back for
+    environment-safety reasons (ENV-SAFETY 1, #3034). Answers
+    `{ available: false }` for every installation today; **#3035** creates the
+    rows and replaces the body of `readWithheldApplicationEmail`. Read here for
+    the same reason as the role above — `setup-readiness.ts` is synchronous over
+    an injected snapshot — and outside the `Promise.all` for the same reason too.
+  */
+  const withheldEmail = await readWithheldApplicationEmail();
   const [
     adminCount,
     adminModuleSettings,
@@ -434,5 +444,6 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
         : (clubTimeSettings?.timeZone ?? null),
     clubTimeZoneUnreadable: clubTimeSettings === CLUB_TIME_SETTINGS_UNREADABLE,
     environmentRole,
+    withheldEmail,
   };
 }

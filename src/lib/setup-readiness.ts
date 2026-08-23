@@ -24,6 +24,9 @@ import {
 */
 import type { EnvironmentRoleResolution } from "@/lib/environment-role";
 import type { EnvironmentRoleDeclaration } from "@/lib/environment-role-declaration";
+// Type-only for the same reason as the line above, so this module keeps no
+// runtime edge to anything that reads a database.
+import type { WithheldApplicationEmail } from "@/lib/environment-safety-withheld";
 import { clubConfigSchema, type ClubConfig } from "../config/schema";
 import {
   DEFAULT_ADMIN_MODULE_SETTINGS,
@@ -164,6 +167,12 @@ export interface SetupDatabaseSnapshot {
   // all — still compiles; undefined means the question was not asked, which the
   // check below reports as "not checked" rather than guessing at an answer.
   environmentRole?: EnvironmentRoleResolution;
+  // How much application email this installation has held back for
+  // environment-safety reasons (ENV-SAFETY 1, #3034), read in
+  // `setup-readiness-db.ts`. Optional so an older caller and a DB-less
+  // `setup:check` still compile; undefined is reported the same way
+  // `{ available: false }` is, because neither one is a count.
+  withheldEmail?: WithheldApplicationEmail;
   // Resolved booking capacity of the club's DEFAULT lodge
   // (getDefaultLodgeCapacity). Since #1982 the club-config check warns when this
   // is 0 — a default lodge with no active beds AND no capacity override accepts
@@ -976,6 +985,37 @@ function describeEnvironmentRoleOverride(
 }
 
 /**
+ * The withheld-email line, which is the ONLY signal that separates a live club
+ * wrongly declared a copy from a copy nobody is using (ENV-SAFETY 1, #3034).
+ *
+ * The reasoning, and why a database-content heuristic cannot do this job, is in
+ * `environment-safety-withheld.ts`. What matters here is that the three states
+ * read differently, because two of them look identical on a checklist and mean
+ * opposite things: "nothing has been held back" says the copy is idle, while
+ * "this installation does not count that yet" says nobody knows. A live club that
+ * has been wrongly declared a copy shows a steady, recent count — that is the
+ * shape an operator is meant to recognise.
+ *
+ * **#3035 supplies the numbers**; nothing here counts a stand-in from another
+ * table, because a number measuring the wrong thing is worse than an honest
+ * absence.
+ */
+function describeWithheldEmail(
+  withheldEmail: WithheldApplicationEmail | undefined,
+): string {
+  if (!withheldEmail || !withheldEmail.available) {
+    return "Held back email: not counted yet on this installation. That is NOT the same as none — nothing here records what environment safety holds back until the delivery boundary lands, so this line cannot yet tell you whether this installation is quietly holding back mail the club's members are waiting for.";
+  }
+  if (withheldEmail.count === 0) {
+    return "Held back email: none. Nothing has been held back on this installation for environment-safety reasons, which is what an unused copy looks like.";
+  }
+  const mostRecent = withheldEmail.mostRecentAt
+    ? ` The most recent was ${withheldEmail.mostRecentAt}.`
+    : "";
+  return `Held back email: ${withheldEmail.count} message(s) have been held back on this installation because it is treated as a copy.${mostRecent} A steady and recent count is what a LIVE club that has been wrongly declared a copy looks like — if members are waiting for that mail, this installation's role is wrong.`;
+}
+
+/**
  * The line that stops an operator repairing the WRONG variable.
  *
  * `APP_RUNTIME_ROLE` already exists in the same Compose environment block, and on
@@ -1085,7 +1125,20 @@ function buildEnvironmentRoleCheck(
           resolution.decidedBy === "database-safer-override"
             ? "This installation is treated as NON-PRODUCTION because an administrator has switched the safer override on."
             : "This installation is declared NON-PRODUCTION — a copy, a staging site or a developer's checkout.",
-        details: [...sources, ENVIRONMENT_ROLE_VERSUS_RUNTIME_ROLE_DETAIL],
+        /*
+          THE WITHHELD COUNT GOES FIRST, and only on this branch. It is the line
+          that answers the question an operator meeting an unexpected
+          non-production installation actually has — "is this costing my members
+          their mail?" — and it is the only signal that can answer it, because a
+          copy restored from the live database is indistinguishable from the live
+          site by its data (#3034). On a PRODUCTION or UNKNOWN installation
+          nothing is being held back for this reason, so the line would be noise.
+        */
+        details: [
+          describeWithheldEmail(db.withheldEmail),
+          ...sources,
+          ENVIRONMENT_ROLE_VERSUS_RUNTIME_ROLE_DETAIL,
+        ],
       },
       progress,
     );

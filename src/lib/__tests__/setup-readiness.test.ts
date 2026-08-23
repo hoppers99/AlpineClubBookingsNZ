@@ -859,7 +859,17 @@ describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
     });
 
     expect(check.status).toBe("complete");
-    expect(check.message).toContain("PRODUCTION");
+    /*
+      `toMatch`, NOT `toContain("PRODUCTION")` (#3034 review). The
+      non-production message — "This installation is declared NON-PRODUCTION — a
+      copy, a staging site or a developer's checkout." — CONTAINS the string
+      "PRODUCTION". So swapping this branch's message for that one left the
+      assertion green: the status is still `complete` and the details assertion
+      below reads the unchanged sources line. The checklist would then tell an
+      operator that their live club installation is a copy, which is the single
+      most consequential sentence on this surface.
+    */
+    expect(check.message).toMatch(/is declared PRODUCTION/);
     expect(check.details.join(" ")).toContain(
       "APP_ENVIRONMENT_ROLE=production",
     );
@@ -872,10 +882,82 @@ describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
     });
 
     expect(check.status).toBe("complete");
-    expect(check.message).toContain("NON-PRODUCTION");
+    // Precise for the same reason as its sibling above: the
+    // administrator-forced message also contains "NON-PRODUCTION", so only the
+    // full phrase distinguishes a DECLARED copy from a forced one.
+    expect(check.message).toMatch(/is declared NON-PRODUCTION/);
     expect(check.details.join(" ")).toContain(
       "APP_ENVIRONMENT_ROLE=non-production",
     );
+  });
+
+  /*
+    THE WITHHELD-EMAIL LINE, in all three of its states (owner decision, 23 Aug
+    2026).
+
+    It exists because it is the ONLY thing that separates a live club wrongly
+    declared a copy from a copy nobody is using: a copy is restored FROM
+    production, so no property of its data can tell them apart, while the amount
+    of member mail being held back can. The three states must therefore read
+    differently — and in particular "none held back" and "not counted yet" must
+    not read the same, because they look identical and mean opposite things.
+  */
+  it("says the withheld count is NOT YET COUNTED, distinctly from none", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("non-production"),
+      // No `withheldEmail` at all — an older caller, or a `setup:check` run.
+    });
+
+    const details = check.details.join(" ");
+    expect(details).toContain("not counted yet");
+    // The distinction is stated, not left for the reader to infer.
+    expect(details).toContain("NOT the same as none");
+    // And it must not claim an amount it does not have.
+    expect(details).not.toContain("Held back email: none");
+  });
+
+  it("says NONE when the count is available and zero", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("non-production"),
+      withheldEmail: { available: true, count: 0, mostRecentAt: null },
+    });
+
+    const details = check.details.join(" ");
+    expect(details).toContain("Held back email: none");
+    expect(details).not.toContain("not counted yet");
+  });
+
+  it("reports the count and the most recent one, and says what it means", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("non-production"),
+      withheldEmail: {
+        available: true,
+        count: 47,
+        mostRecentAt: "2026-08-23T09:15:00.000Z",
+      },
+    });
+
+    const details = check.details.join(" ");
+    expect(details).toContain("47 message(s)");
+    expect(details).toContain("2026-08-23T09:15:00.000Z");
+    // The sentence that makes the number actionable rather than trivia.
+    expect(details).toMatch(/wrongly declared a copy/);
+  });
+
+  it("leaves the line off a production installation, where it means nothing", () => {
+    // Nothing is held back for environment-safety reasons on a production
+    // installation, so the line would be noise beside the one setting on this
+    // step that matters.
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("production"),
+      withheldEmail: { available: true, count: 47, mostRecentAt: null },
+    });
+
+    expect(check.details.join(" ")).not.toContain("Held back email");
   });
 
   it("distinguishes an administrator-forced copy from a declared one", () => {

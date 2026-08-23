@@ -132,8 +132,10 @@ export async function register() {
       );
     }
 
-    // ENV-SAFETY 1 (#3034, epic #2986): say so at boot when this installation
-    // has not declared whether it is the club's live site or a copy. From this
+    // ENV-SAFETY 1 (#3034, epic #2986): say at boot what this installation IS,
+    // whenever that is not the ordinary answer — UNKNOWN at error level because
+    // it is a fault, and a confirmed COPY at info level because it is not (the
+    // else-branch below carries the measurement behind that choice). From this
     // release on, an UNKNOWN role fails closed — member email and Xero writes are
     // held back — and an operator who upgraded without setting
     // APP_ENVIRONMENT_ROLE needs to learn that from the log they are already
@@ -174,6 +176,60 @@ export async function register() {
             override: resolution.databaseOverride.kind,
           },
           `This installation's environment role is UNKNOWN, so anything whose safety depends on knowing whether these are the club's real members — sending email to members, writing to the club's Xero organisation — is held back until it is resolved. ${resolution.notes.join(" ")} See docs/guides/environment-role.md.`,
+        );
+      } else if (resolution.role === "NON_PRODUCTION") {
+        /*
+          A CONFIRMED COPY SAYS SO TOO, once, at boot.
+
+          This is the one hole the deploy cannot close. The production deploy
+          refuses a `.env` that says non-production and re-reads each container's
+          own declaration before the cutover — but a site brought up by hand with
+          `docker compose up` runs none of that, comes up as a copy, and holds back
+          mail its members are waiting for. Nothing about the DATA can tell that
+          case from a legitimate copy: a copy is restored FROM production, so it
+          contains exactly the same real members. What can tell them apart is
+          somebody reading this line and knowing it is wrong — which is why it
+          names the source that decided it, so they know whether to look at the
+          `.env` or at /admin/environment rather than guessing between two
+          settings whose names differ by one word.
+
+          INFO, NOT WARN, AND THAT WAS MEASURED RATHER THAN PREFERRED. It is not
+          a fault — a copy declaring itself a copy is the system working — so
+          `warn` would be the wrong volume on its own. It is also the wrong LEVEL
+          for a concrete reason: `measurement/current-main-refresh/run-log-noise.sh`
+          (MC-09) fails any warning-or-error signature that repeats three times
+          across the producer logs, and eight of its eleven producers
+          `--force-recreate app` inside their own `docker logs --since` window. So
+          one line per boot is one line per producer. Measured by running
+          `bin/analyse-log-noise.mjs` over eleven producer logs each holding this
+          exact line: at level 40 it reports `count: 11` and THROWS
+          `sustained/fatal log noise detected`; at level 30 it passes with zero
+          classified lines. The analyser also text-classifies any line containing
+          "error", "failed", "warning" or "exception" regardless of level, so the
+          sentence below deliberately says "held back" and not "failed".
+
+          Same best-effort try/catch as the UNKNOWN branch above, and the same
+          rule about the structured fields: the two source KINDS and the decision,
+          never `declaration.raw`, which is operator text.
+        */
+        const { default: logger } = await import("./lib/logger");
+        logger.info(
+          {
+            scope: "environment-role",
+            role: resolution.role,
+            decidedBy: resolution.decidedBy,
+            declaration: resolution.declaration.kind,
+            override: resolution.databaseOverride.kind,
+          },
+          `This installation is running as a COPY: its environment role is NON_PRODUCTION, decided by ${
+            resolution.decidedBy === "database-safer-override"
+              ? "the safer override in this database, which an administrator switched on — it can be switched off again at /admin/environment"
+              : "this deployment's own APP_ENVIRONMENT_ROLE=non-production setting"
+          }. Application email to members and writes to the club's real Xero organisation are held back on a copy rather than sent. If this IS the club's live site then that answer is wrong: ${
+            resolution.decidedBy === "database-safer-override"
+              ? "switch the safer override off at /admin/environment"
+              : "set APP_ENVIRONMENT_ROLE=production in this deployment's environment and restart"
+          }. See docs/guides/environment-role.md.`,
         );
       }
     } catch {
