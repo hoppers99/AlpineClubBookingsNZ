@@ -105,9 +105,12 @@ export async function retryFailedEmails(): Promise<{
     every thirty minutes would fill a staging copy's cron history with red runs
     that mean nothing.
 
-    An UNKNOWN role THROWS, exactly as an unusable delivery configuration already
-    did, because it IS a fault: something has to tell an operator that this
-    installation has stopped sending mail and cannot say why.
+    A CONFIGURATION FAULT THROWS. Both remaining answers are one: an undeclared
+    installation, and a live site that has declared a capture mailbox.
+
+    A DECLARED CAPTURE COPY REPLAYS NORMALLY, into the capture. That is the one
+    case where a copy legitimately transmits, and it is what lets the browser
+    suite exercise this job at all.
 
     NEITHER TOUCHES A ROW, and that is the part worth being careful about. The
     rows are left exactly as found, so no attempt is burned and no retained body
@@ -126,7 +129,14 @@ export async function retryFailedEmails(): Promise<{
     );
     return { retried: 0, succeeded: 0, failed: 0 };
   }
-  if (delivery.kind === "block_environment_unknown") {
+  if (delivery.kind !== "allow") {
+    /*
+      Every remaining answer is a CONFIGURATION FAULT — nothing has said what this
+      installation is, or a live site has declared a capture mailbox — so it
+      throws, exactly as an unusable delivery configuration already did. Something
+      has to tell an operator that this installation has stopped sending mail and
+      cannot say why.
+    */
     throw new Error(
       `Email retry skipped: ${describeDeliveryDecision(delivery)}`,
     );

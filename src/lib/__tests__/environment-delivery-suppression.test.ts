@@ -251,6 +251,106 @@ describe("confirmed NON_PRODUCTION", () => {
   });
 });
 
+/**
+ * The declared local capture mailbox (#3035).
+ *
+ * The one case where a copy legitimately transmits. It is what keeps the browser
+ * suite's email specs working — `e2e/two-factor-email.spec.ts` reads a real
+ * two-factor code back out of mailpit — while nothing can reach a member, because
+ * a capture forwards mail nowhere.
+ */
+describe("a declared local capture mailbox", () => {
+  function declareCaptureTransport() {
+    vi.stubEnv("USE_AWS_SES", "");
+    vi.stubEnv("USE_SMTP_RELAY", "");
+    vi.stubEnv("USE_LOCAL_CAPTURE", "true");
+    vi.stubEnv("EMAIL_SERVER_HOST", "mailpit");
+    vi.stubEnv("EMAIL_SERVER_PORT", "1025");
+    vi.stubEnv("EMAIL_SERVER_USER", "e2e");
+    vi.stubEnv("EMAIL_SERVER_PASSWORD", "e2e");
+  }
+
+  it("really transmits on a confirmed copy, and the row is SENT rather than suppressed", async () => {
+    declareEnvironmentRole("non-production");
+    declareCaptureTransport();
+    mocks.getEmailTransporter.mockResolvedValue({
+      transporter: { sendMail: mocks.sendMail },
+      modeLabel: "Local capture mailbox",
+    });
+
+    const outcome = await sendEmail({ ...MESSAGE });
+
+    expect(outcome).toEqual({
+      status: "sent",
+      emailLogId: "log_1",
+      messageId: "msg_1",
+    });
+    expect(mocks.sendMail).toHaveBeenCalledTimes(1);
+    // SENT, and NOT the terminal suppression status: it was transmitted, so
+    // calling it suppressed would be false — and it would inflate the
+    // withheld-email count the admin panel reads.
+    expect(mocks.emailLogUpdate).toHaveBeenCalledWith({
+      where: { id: "log_1" },
+      data: expect.objectContaining({ status: "SENT" }),
+    });
+    for (const call of mocks.emailLogUpdate.mock.calls) {
+      expect(call[0].data.status).not.toBe("SKIPPED_NON_PRODUCTION");
+    }
+    // Which transport carried it is named where an operator reads it, so
+    // "sent" on a copy is never mistaken for "sent to a member".
+    expect(mocks.logger.debug).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "Local capture mailbox" }),
+      "Email delivered",
+    );
+  });
+
+  it("is refused on the club's live site, and says why", async () => {
+    /*
+      The symmetric hazard: a live site in capture mode accepts every message,
+      reports every one as sent, and delivers none — a silent total mail outage.
+      Recorded as a retryable FAULT, because it clears the moment the flags are
+      corrected.
+    */
+    declareEnvironmentRole("production");
+    declareCaptureTransport();
+
+    const outcome = await sendEmail({ ...MESSAGE });
+
+    expect(outcome).toEqual({
+      status: "withheld_for_environment",
+      emailLogId: "log_1",
+      reason: "capture_transport_in_production",
+    });
+    expect(mocks.getEmailTransporter).not.toHaveBeenCalled();
+    expect(mocks.sendMail).not.toHaveBeenCalled();
+    expect(mocks.emailLogUpdate).toHaveBeenCalledWith({
+      where: { id: "log_1" },
+      data: {
+        status: "FAILED",
+        deliveryBlockReason: "CAPTURE_TRANSPORT_IN_PRODUCTION",
+        errorMessage: expect.stringContaining("USE_LOCAL_CAPTURE=true"),
+      },
+    });
+  });
+
+  it("earns an undeclared installation nothing: UNKNOWN still blocks", async () => {
+    // Deliberate asymmetry with the copy above. A capture declaration comes from
+    // the same deployment configuration that failed to say what this installation
+    // is, so it buys no exemption from the fail-closed rule.
+    undeclareEnvironmentRole();
+    declareCaptureTransport();
+
+    const outcome = await sendEmail({ ...MESSAGE });
+
+    expect(outcome).toEqual({
+      status: "withheld_for_environment",
+      emailLogId: "log_1",
+      reason: "environment_unknown",
+    });
+    expect(mocks.sendMail).not.toHaveBeenCalled();
+  });
+});
+
 describe("UNKNOWN environment", () => {
   it("contacts no provider, and leaves a RETRYABLE row that names why", async () => {
     undeclareEnvironmentRole();

@@ -5341,6 +5341,12 @@ enum EmailDeliveryBlockReason {
   ENVIRONMENT_DECLARATION_MISSING
   ENVIRONMENT_DECLARATION_INVALID
   ENVIRONMENT_OVERRIDE_UNREADABLE
+  // The deployment declares itself the club's live site AND declares a local
+  // capture mailbox (USE_LOCAL_CAPTURE). Those cannot both be true: left to run,
+  // it would accept every message, report every one as sent, and deliver none —
+  // a silent total mail outage, which is the same harm as a wrongly-declared copy
+  // arriving from the opposite direction.
+  CAPTURE_TRANSPORT_IN_PRODUCTION
 }
 
 enum EmailSuppressionReason {

@@ -1,12 +1,41 @@
 type EnvMap = Record<string, string | undefined>;
 
-type EmailDeliveryMode = "aws-ses" | "smtp-relay";
+/**
+ * The three transports, and why the third one exists (#3035).
+ *
+ * `local-capture` is an SMTP relay that an operator has DECLARED to be a capture
+ * mailbox — mailpit in the E2E stack, MailHog, a developer's local sink. It reads
+ * exactly the same `EMAIL_SERVER_*` settings as `smtp-relay`; the only difference
+ * is the declaration, and the declaration is the whole point. A capture cannot
+ * deliver onward, so a non-production installation may genuinely transmit into it
+ * (see `environment-delivery-policy.ts`), which is what keeps the browser suite's
+ * email specs working while nothing can reach a real member.
+ *
+ * IT IS NEVER INFERRED. "The host is called mailpit" is exactly the kind of
+ * convention `INV-CONFIG-003` forbids one layer up, and it would be no safer one
+ * layer down: a relay pointed at a host that happens to be named that way can
+ * still deliver. `smtp-relay` therefore stays classified as a LIVE provider
+ * however it is configured.
+ */
+type EmailDeliveryMode = "aws-ses" | "smtp-relay" | "local-capture";
+
+/**
+ * What a transport can DO, which is the only thing the delivery policy needs.
+ *
+ * `unresolved` is a third state rather than a default to `live-provider`, because
+ * an unusable configuration is not evidence of anything and the policy must not
+ * read it as an exemption.
+ */
+export type EmailTransportKind =
+  | "live-provider"
+  | "local-capture"
+  | "unresolved";
 
 /**
  * How the delivery mode was chosen (ENV-SAFETY 2, #3035).
  *
- * `implicit-legacy-default` is the one that matters: with NEITHER `USE_AWS_SES`
- * nor `USE_SMTP_RELAY` set, this parser resolves live AWS SES for backward
+ * `implicit-legacy-default` is the one that matters: with NONE of `USE_AWS_SES`,
+ * `USE_SMTP_RELAY` or `USE_LOCAL_CAPTURE` set, this parser resolves live AWS SES for backward
  * compatibility. That is a real hazard on anything that is not the club's live
  * site — a copy would connect to the club's live mail provider with the club's
  * live credentials — so the delivery boundary refuses it outside confirmed
@@ -84,30 +113,44 @@ export function resolveEmailDeliveryConfigFromEnv(
 
   const useAwsSes = parseBooleanFlag(env, "USE_AWS_SES", issues);
   const useSmtpRelay = parseBooleanFlag(env, "USE_SMTP_RELAY", issues);
+  const useLocalCapture = parseBooleanFlag(env, "USE_LOCAL_CAPTURE", issues);
 
   const selectedModes =
-    Number(useAwsSes === true) + Number(useSmtpRelay === true);
+    Number(useAwsSes === true) +
+    Number(useSmtpRelay === true) +
+    Number(useLocalCapture === true);
 
   let mode: EmailDeliveryMode | "invalid" = "invalid";
   let modeSource: EmailDeliveryModeSource = "unresolved";
   if (selectedModes === 1) {
-    mode = useAwsSes === true ? "aws-ses" : "smtp-relay";
+    mode =
+      useAwsSes === true
+        ? "aws-ses"
+        : useSmtpRelay === true
+          ? "smtp-relay"
+          : "local-capture";
     modeSource = "explicit-flag";
   } else if (selectedModes === 0) {
-    // Backward compatibility: if both flags are omitted, use legacy SES mode.
-    if (useAwsSes === undefined && useSmtpRelay === undefined) {
+    // Backward compatibility: if every flag is omitted, use legacy SES mode.
+    if (
+      useAwsSes === undefined &&
+      useSmtpRelay === undefined &&
+      useLocalCapture === undefined
+    ) {
       mode = "aws-ses";
       modeSource = "implicit-legacy-default";
       warnings.push(
-        "USE_AWS_SES/USE_SMTP_RELAY are not set. The club's live site still defaults to AWS SES for backward compatibility, but any other installation now refuses to open a mail transport at all — including the health check and the setup wizard's provider test — because a copy must never connect to the club's live mail provider by default. Set exactly one of them explicitly.",
+        "USE_AWS_SES/USE_SMTP_RELAY/USE_LOCAL_CAPTURE are not set. The club's live site still defaults to AWS SES for backward compatibility, but any other installation now refuses to open a mail transport at all — including the health check and the setup wizard's provider test — because a copy must never connect to the club's live mail provider by default. Set exactly one of them explicitly.",
       );
     } else {
       issues.push(
-        "Exactly one email provider flag must be true (USE_AWS_SES or USE_SMTP_RELAY)",
+        "Exactly one email provider flag must be true (USE_AWS_SES, USE_SMTP_RELAY or USE_LOCAL_CAPTURE)",
       );
     }
   } else {
-    issues.push("USE_AWS_SES and USE_SMTP_RELAY cannot both be true");
+    issues.push(
+      "Only one of USE_AWS_SES, USE_SMTP_RELAY and USE_LOCAL_CAPTURE may be true",
+    );
   }
 
   const emailFrom = readEnv(env, "EMAIL_FROM");
@@ -153,7 +196,10 @@ export function resolveEmailDeliveryConfigFromEnv(
     };
   }
 
-  if (mode === "smtp-relay") {
+  if (mode === "smtp-relay" || mode === "local-capture") {
+    // The capture mode reads the SAME four settings: a capture mailbox IS an SMTP
+    // relay, and duplicating four variables to say so would only invite them to
+    // drift apart.
     const host = readEnv(env, "EMAIL_SERVER_HOST");
     const portRaw = readEnv(env, "EMAIL_SERVER_PORT");
     const port = parsePort(portRaw);
@@ -173,7 +219,8 @@ export function resolveEmailDeliveryConfigFromEnv(
       ok: issues.length === 0,
       mode,
       modeSource,
-      modeLabel: "SMTP Relay",
+      modeLabel:
+        mode === "local-capture" ? "Local capture mailbox" : "SMTP Relay",
       issues,
       warnings,
       transportOptions:
@@ -242,6 +289,36 @@ export function refuseAmbiguousImplicitSesDefault(
     warnings: config.warnings,
     transportOptions: null,
   };
+}
+
+/**
+ * What the configured transport can DO, for the delivery policy.
+ *
+ * A pure classification of an already-resolved configuration, so the policy
+ * consumes one canonical parser for the transport exactly as it consumes one
+ * canonical resolver for the environment role, and neither reads an environment
+ * variable of its own.
+ */
+export function emailTransportKindOf(
+  config: ResolvedEmailDeliveryConfig,
+): EmailTransportKind {
+  if (config.mode === "local-capture") return "local-capture";
+  if (config.mode === "invalid") return "unresolved";
+  return "live-provider";
+}
+
+/**
+ * {@link emailTransportKindOf} over the live environment.
+ *
+ * Deliberately NOT filtered through {@link refuseAmbiguousImplicitSesDefault}: the
+ * question here is "what has this deployment declared its transport to be", and
+ * the answer must not depend on the role, or the policy that decides the role
+ * would be asking a question whose answer already assumed one.
+ */
+export function resolveEmailTransportKind(
+  env: EnvMap = process.env,
+): EmailTransportKind {
+  return emailTransportKindOf(resolveEmailDeliveryConfigFromEnv(env));
 }
 
 export function resolveEmailDeliveryConfig(

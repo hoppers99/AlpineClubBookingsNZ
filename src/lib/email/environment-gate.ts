@@ -11,6 +11,12 @@
  *
  * WHAT IS WRITTEN, AND WHY THE TWO ROWS DIFFER.
  *
+ * NOTHING IS WRITTEN AT ALL for a copy that has DECLARED a local capture mailbox,
+ * because nothing was withheld there: it really transmits, into a mailbox that
+ * cannot deliver onward, and the row goes on to be `SENT` like any other.
+ * Recording that as a withhold would be false, and would inflate the withheld
+ * count the admin panel reads.
+ *
  * - **Confirmed NON_PRODUCTION** -> `SKIPPED_NON_PRODUCTION`, a brand-new
  *   terminal status, with the retained HTML dropped. Terminal because there is
  *   nothing to retry: a copy is a copy until somebody re-declares it, and if they
@@ -20,6 +26,10 @@
  *   this person about this booking" and conflating the two would make the
  *   booking's withheld list claim an admin decision nobody made — and would make
  *   the withheld-email count this issue owes #3034 uncountable.
+ * - **A capture transport on the club's LIVE site** -> `FAILED` with
+ *   `deliveryBlockReason` `CAPTURE_TRANSPORT_IN_PRODUCTION`, and the HTML kept. A
+ *   misconfiguration rather than an environment fact, and retryable for exactly
+ *   the same reason as the row below: correct the flags and the mail goes out.
  * - **UNKNOWN** -> `FAILED` with `deliveryBlockReason` set, and the HTML kept.
  *   Retryable on purpose, so the message goes out by itself the moment an
  *   operator declares the role — the same self-healing shape the
@@ -44,12 +54,10 @@ import {
   type DeliveryBlockReason,
   type DeliveryClearance,
 } from "@/lib/environment-delivery-policy";
+import type { EmailDeliveryBlockReason } from "@prisma/client";
 
 /** How a blocked-environment reason is persisted on the mail log. */
-const BLOCK_REASON_COLUMN: Record<
-  DeliveryBlockReason,
-  "ENVIRONMENT_DECLARATION_MISSING" | "ENVIRONMENT_DECLARATION_INVALID" | "ENVIRONMENT_OVERRIDE_UNREADABLE"
-> = {
+const BLOCK_REASON_COLUMN: Record<DeliveryBlockReason, EmailDeliveryBlockReason> = {
   declaration_missing: "ENVIRONMENT_DECLARATION_MISSING",
   declaration_invalid: "ENVIRONMENT_DECLARATION_INVALID",
   override_unreadable: "ENVIRONMENT_OVERRIDE_UNREADABLE",
@@ -57,10 +65,21 @@ const BLOCK_REASON_COLUMN: Record<
 
 export type EmailEnvironmentGate =
   | { decision: "send"; clearance: DeliveryClearance }
-  | {
-      decision: "withheld";
-      reason: "environment_non_production" | "environment_unknown";
-    };
+  | { decision: "withheld"; reason: EmailEnvironmentWithheldReason };
+
+/**
+ * Why the boundary held a message back.
+ *
+ * ONE of these is terminal and the rest are faults, and that is the distinction
+ * every caller keys on — see `additional-payment-resend-service.ts`, which must
+ * not hand a reminder stamp back for a message the retry cron is going to replay.
+ * Callers therefore test `reason !== "environment_non_production"` rather than
+ * enumerating the faults, so a fault added later is replayable by default.
+ */
+export type EmailEnvironmentWithheldReason =
+  | "environment_non_production"
+  | "environment_unknown"
+  | "capture_transport_in_production";
 
 /**
  * Decide whether this installation may transmit, and record the outcome when it
@@ -82,6 +101,17 @@ export async function resolveEmailEnvironmentGate(params: {
 
   const suppressed = decision.kind === "suppress_non_production";
   const errorMessage = describeDeliveryDecision(decision);
+  const reason: EmailEnvironmentWithheldReason = suppressed
+    ? "environment_non_production"
+    : decision.kind === "block_capture_in_production"
+      ? "capture_transport_in_production"
+      : "environment_unknown";
+  const blockReason: EmailDeliveryBlockReason | null =
+    decision.kind === "block_capture_in_production"
+      ? "CAPTURE_TRANSPORT_IN_PRODUCTION"
+      : decision.kind === "block_environment_unknown"
+        ? BLOCK_REASON_COLUMN[decision.reason]
+        : null;
 
   if (params.emailLogId) {
     try {
@@ -96,7 +126,7 @@ export async function resolveEmailEnvironmentGate(params: {
             }
           : {
               status: "FAILED",
-              deliveryBlockReason: BLOCK_REASON_COLUMN[decision.reason],
+              deliveryBlockReason: blockReason,
               errorMessage,
             },
       });
@@ -117,17 +147,12 @@ export async function resolveEmailEnvironmentGate(params: {
     );
   } else {
     logger.error(
-      {
-        to: params.logRecipient,
-        templateName: params.templateName,
-        blockReason: decision.reason,
-      },
-      "Did not send an email: nothing has confirmed whether this installation is the club's live site or a copy, so no provider was contacted. It is queued and will go out once the environment role is declared",
+      { to: params.logRecipient, templateName: params.templateName, blockReason },
+      decision.kind === "block_capture_in_production"
+        ? "Did not send an email: this deployment declares itself the club's live site AND declares a local capture mailbox, so it would accept every message and deliver none. No provider was contacted. It is queued and goes out once the transport flags are corrected"
+        : "Did not send an email: nothing has confirmed whether this installation is the club's live site or a copy, so no provider was contacted. It is queued and will go out once the environment role is declared",
     );
   }
 
-  return {
-    decision: "withheld",
-    reason: suppressed ? "environment_non_production" : "environment_unknown",
-  };
+  return { decision: "withheld", reason };
 }

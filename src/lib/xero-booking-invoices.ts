@@ -38,7 +38,6 @@ import {
   getAuthenticatedXeroClient,
 } from "./xero-api-client";
 import {
-  classifyXeroInvoiceEmailWithheld,
   resolveXeroInvoiceEmailPolicy,
   sendXeroInvoiceEmail,
 } from "@/lib/xero-invoice-email";
@@ -852,15 +851,15 @@ export async function createXeroInvoiceForBooking(
         ? await resolveXeroInvoiceEmailPolicy()
         : null;
     const invoiceEmailWithheldForEnvironment =
-      invoiceEmailPolicy?.kind === "suppress_non_production";
-    if (invoiceEmailPolicy && invoiceEmailPolicy.kind !== "allow") {
-      const withheld = classifyXeroInvoiceEmailWithheld(invoiceEmailPolicy);
+      invoiceEmailPolicy?.kind === "withhold" &&
+      invoiceEmailPolicy.suppressedForNonProduction;
+    if (invoiceEmailPolicy?.kind === "withhold") {
       const context = { bookingId, invoiceId: createdInvoice.invoiceID };
-      if (withheld.error) {
-        invoiceEmailError = withheld.error;
-        logger.error(context, withheld.logMessage);
+      if (invoiceEmailPolicy.error) {
+        invoiceEmailError = invoiceEmailPolicy.error;
+        logger.error(context, invoiceEmailPolicy.logMessage);
       } else {
-        logger.info(context, withheld.logMessage);
+        logger.info(context, invoiceEmailPolicy.logMessage);
       }
     }
 
@@ -938,7 +937,7 @@ export async function createXeroInvoiceForBooking(
           !shouldEmailInvoice ||
           invoiceEmailWithheld ||
           invoiceEmailGateUnreadable ||
-          (invoiceEmailPolicy != null && invoiceEmailPolicy.kind !== "allow"),
+          invoiceEmailPolicy?.kind === "withhold",
         // #2258: a DELIBERATE withhold only. An unreadable switch is a fault and
         // is reported through invoiceEmailError above (status PARTIAL), never
         // here — the two must stay distinguishable to an operator.

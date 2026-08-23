@@ -41,7 +41,6 @@ import {
   getAuthenticatedXeroClient,
 } from "./xero-api-client";
 import {
-  classifyXeroInvoiceEmailWithheld,
   resolveXeroInvoiceEmailPolicy,
   sendXeroInvoiceEmail,
 } from "@/lib/xero-invoice-email";
@@ -499,7 +498,8 @@ export async function createXeroInvoiceForGroupSettlement(
     // holding one of its own. See `xero-invoice-email.ts` for the whole rule.
     const invoiceEmailPolicy = await resolveXeroInvoiceEmailPolicy();
     const invoiceEmailWithheldForEnvironment =
-      invoiceEmailPolicy.kind === "suppress_non_production";
+      invoiceEmailPolicy.kind === "withhold" &&
+      invoiceEmailPolicy.suppressedForNonProduction;
     try {
       const emailGate = await prisma.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
@@ -625,14 +625,13 @@ export async function createXeroInvoiceForGroupSettlement(
           'Skipped the Xero group settlement invoice email for an organiser booking with "No emails" turned on'
         );
       }
-      if (emailGate.environmentWithheld && invoiceEmailPolicy.kind !== "allow") {
-        const withheld = classifyXeroInvoiceEmailWithheld(invoiceEmailPolicy);
+      if (emailGate.environmentWithheld && invoiceEmailPolicy.kind === "withhold") {
         const context = { settlementId, invoiceId: createdInvoice.invoiceID };
-        if (withheld.error) {
-          invoiceEmailError = withheld.error;
-          logger.error(context, withheld.logMessage);
+        if (invoiceEmailPolicy.error) {
+          invoiceEmailError = invoiceEmailPolicy.error;
+          logger.error(context, invoiceEmailPolicy.logMessage);
         } else {
-          logger.info(context, withheld.logMessage);
+          logger.info(context, invoiceEmailPolicy.logMessage);
         }
       }
       if (emailGate.cancelled) {

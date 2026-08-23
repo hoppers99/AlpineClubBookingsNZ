@@ -240,11 +240,11 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
         const replayable =
           (outcome.status === "withheld_for_booking" &&
             outcome.reason === "booking_flag_unreadable") ||
-          // #3035: an unconfirmed environment role leaves the same replayable
-          // FAILED EmailLog row, so the stamp stays for the same reason. A
-          // confirmed copy is terminal and gets its stamp back.
+          // #3035: every environment-safety withhold except the confirmed-copy
+          // one leaves the same replayable FAILED EmailLog row, so the stamp stays
+          // for the same reason. Only the terminal case gets its stamp back.
           (outcome.status === "withheld_for_environment" &&
-            outcome.reason === "environment_unknown");
+            outcome.reason !== "environment_non_production");
         if (!replayable) {
           await restoreAdditionalPaymentStamps({ claim, now });
         }

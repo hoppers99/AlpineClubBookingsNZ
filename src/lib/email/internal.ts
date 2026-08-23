@@ -6,9 +6,10 @@
  *
  * - {@link getEmailTransporter} hands back a transport that can SEND, and takes a
  *   `DeliveryClearance` to do it. The token is mintable only inside
- *   `environment-delivery-policy.ts` and only when the environment role resolved
- *   `PRODUCTION`, so a sender cannot reach a live provider without going through
- *   that policy — enforced by the type system, not by a census over the senders
+ *   `environment-delivery-policy.ts`, and only on one of its two allow branches —
+ *   the club's live site, or a copy that has explicitly declared a local capture
+ *   mailbox. So a sender cannot reach a provider without going through that
+ *   policy, enforced by the type system rather than by a census over the senders
  *   that happen to exist today.
  * - {@link verifyEmailTransport} proves the provider is reachable and returns a
  *   LABEL. It grants no delivery at all: no `Transporter` escapes it, so the
@@ -28,10 +29,11 @@ import {
   type ImplicitSesDefault,
 } from "@/lib/email-delivery";
 import {
-  requireProductionDeliveryClearance,
+  requireDeliveryClearance,
+  resolveDeliveryPolicy,
   type DeliveryClearance,
+  type DeliveryGrounds,
 } from "@/lib/environment-delivery-policy";
-import { getEnvironmentRole, type EnvironmentRole } from "@/lib/environment-role";
 
 export type EmailAttachment = {
   filename: string;
@@ -45,19 +47,22 @@ let cachedTransportSignature: string | null = null;
 /**
  * The rule, written as a rule rather than as its conclusion.
  *
- * On the send path this always answers `permitted`, because a clearance means the
- * role re-resolved `PRODUCTION`. Writing `"permitted"` there as a constant would
- * be correct today and would silently stop being the rule the moment somebody
- * widened who may hold a clearance, so the role is threaded through and the
- * decision is spelled out once, here, for both callers.
+ * Only the club's live site keeps the legacy "no provider flag set means live AWS
+ * SES" fallback. Writing `"permitted"` as a constant on the send path would be
+ * correct for the production branch and would silently stop being the rule the
+ * moment somebody widened who may hold a clearance — which #3035 then did, by
+ * letting a declared capture installation send. So the grounds are threaded
+ * through and the decision is spelled out once, here, for every caller.
  */
-function implicitSesDefaultFor(role: EnvironmentRole): ImplicitSesDefault {
-  return role === "PRODUCTION" ? "permitted" : "refused";
+function implicitSesDefaultFor(
+  grounds: DeliveryGrounds | "unconfirmed",
+): ImplicitSesDefault {
+  return grounds === "production" ? "permitted" : "refused";
 }
 
 export async function getEmailTransporter(clearance: DeliveryClearance) {
-  const role = await requireProductionDeliveryClearance(clearance);
-  const config = resolveEmailDeliveryConfig(implicitSesDefaultFor(role));
+  const grounds = await requireDeliveryClearance(clearance);
+  const config = resolveEmailDeliveryConfig(implicitSesDefaultFor(grounds));
   if (!config.ok || !config.transportOptions) {
     throw new Error(
       `Email delivery is not configured: ${config.issues.join("; ")}`,
@@ -86,8 +91,20 @@ export async function getEmailTransporter(clearance: DeliveryClearance) {
  * timeout and error handling.
  */
 export async function verifyEmailTransport(): Promise<{ modeLabel: string }> {
-  const role = await getEnvironmentRole();
-  const config = resolveEmailDeliveryConfig(implicitSesDefaultFor(role));
+  /*
+    The VERIFY path asks the same policy, but for a different reason: it needs to
+    know whether the legacy implicit-SES fallback is allowed, not whether this
+    installation may send. So it keys on the policy's own answer rather than on the
+    role, which keeps the capture case correct — a declared capture installation
+    is an allow, and its explicitly-flagged transport was never subject to the
+    fallback rule anyway.
+  */
+  const decision = await resolveDeliveryPolicy();
+  const config = resolveEmailDeliveryConfig(
+    implicitSesDefaultFor(
+      decision.kind === "allow" ? decision.grounds : "unconfirmed",
+    ),
+  );
   if (!config.ok || !config.transportOptions) {
     throw new Error(
       `Email delivery config invalid: ${config.issues.join("; ")}`,

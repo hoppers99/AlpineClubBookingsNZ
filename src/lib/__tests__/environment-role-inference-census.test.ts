@@ -80,13 +80,13 @@ const ENVIRONMENT_SAFETY_READS: Allowance[] = [
     file: "src/lib/email/core.ts",
     reads: 1,
     reason:
-      "The dev-mode send short-circuit: NODE_ENV === 'development' logs instead of sending. It is the right INSTINCT keyed on the wrong fact — a staging container runs a production build, so this does not fire there. #3035 replaces it with the canonical resolver at one common delivery boundary.",
+      "The dev-mode send short-circuit, and it is NO LONGER THE SAFETY AUTHORITY: #3035 put the canonical resolver ABOVE it, so a message reaching this line has already been cleared by resolveEnvironmentRole(). It is KEPT deliberately as a local-development convenience and as a backstop for a developer's laptop that has been wrongly declared production; deleting it would remove today's protection for that case. It cannot decide safety on its own — a staging container runs a production build, so this never fires there — which is exactly why the boundary sits above it.",
   },
   {
     file: "src/lib/cron-email-retry.ts",
     reads: 1,
     reason:
-      "The same dev-mode short-circuit on the email RETRY path, which is a second copy of the same decision and exactly why #3035's boundary has to be one place rather than two.",
+      "The same dev-mode short-circuit on the email RETRY path, kept for the same reason and now underneath the same boundary. It used to be a SECOND copy of the safety decision, because this job built its own transport and never passed through sendEmail; since #3035 it asks the same policy and obtains its transport through the same clearance-gated accessor, so what is left here is a convenience rather than a duplicate authority.",
   },
   {
     file: "src/lib/xero-mock-endpoint.ts",

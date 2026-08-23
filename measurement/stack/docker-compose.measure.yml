@@ -65,7 +65,12 @@ services:
       KEEP_ALIVE_TIMEOUT: "65000"
       LOG_LEVEL: info
       USE_AWS_SES: "false"
-      USE_SMTP_RELAY: "true"
+      USE_SMTP_RELAY: "false"
+      # ENV-SAFETY 2 (#3035): this stack declares itself non-production, and a
+      # non-production installation suppresses every send unless its transport is
+      # DECLARED to be a capture mailbox. mailpit is one, so say so — otherwise
+      # this harness measures a stack that never sends anything.
+      USE_LOCAL_CAPTURE: "true"
       EMAIL_SERVER_HOST: mailpit
       EMAIL_SERVER_PORT: "1025"
       EMAIL_SERVER_USER: measurement

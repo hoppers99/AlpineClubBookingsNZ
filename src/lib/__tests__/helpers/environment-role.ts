@@ -19,7 +19,12 @@
  * vi.mock("@/lib/prisma", () => ({
  *   prisma: {
  *     emailLog: { ... },
- *     environmentSafetySettings: environmentSafetySettingsMock(),
+ *     // No override, which is the ordinary state of an installation that has
+ *     // never used the safer switch. Written INLINE rather than imported from
+ *     // this helper on purpose: `vi.mock` factories and `vi.hoisted` blocks are
+ *     // hoisted above the file's imports, so a helper binding is not reliably
+ *     // initialised when they run.
+ *     environmentSafetySettings: { findUnique: vi.fn().mockResolvedValue(null) },
  *   },
  * }));
  * // ...
@@ -27,6 +32,11 @@
  *   declareEnvironmentRole("production");
  * });
  * ```
+ *
+ * A suite that wants the other override states reaches for them on that same
+ * delegate: `mockResolvedValue({ forceNonProduction: true, updatedAt: new
+ * Date(0), updatedByMemberId: null })` for an administrator-forced copy, or
+ * `mockRejectedValue(new Error("boom"))` for the unreadable case.
  *
  * ONE HALF IS NOT ENOUGH, except in one direction. A declared `non-production` is
  * final and no database state can move it, so suppressing suites need only the
@@ -43,20 +53,6 @@ import {
   type EnvironmentRoleDeclaration,
 } from "@/lib/environment-role-declaration";
 import { getEnvironmentRole, type EnvironmentRole } from "@/lib/environment-role";
-
-/**
- * The `EnvironmentSafetySettings` delegate, preset to "there is no row" — which
- * the resolver reads as "no override", the ordinary state of every installation
- * that has never used the safer switch.
- *
- * Returned as a `vi.fn` so a suite that wants the other states can reach for
- * them: `mockResolvedValue({ forceNonProduction: true, updatedAt: new Date(0),
- * updatedByMemberId: null })` for an administrator-forced copy, or
- * `mockRejectedValue(new Error("boom"))` for the unreadable case.
- */
-export function environmentSafetySettingsMock() {
-  return { findUnique: vi.fn().mockResolvedValue(null) };
-}
 
 /**
  * Declare what this suite's installation is.
@@ -93,9 +89,10 @@ export async function expectEnvironmentRolePremise(
       `boundary will behave differently from what the assertions below expect. ` +
       `Check BOTH halves: declareEnvironmentRole("...") for the ` +
       `${ENVIRONMENT_ROLE_ENV_VAR} declaration, and ` +
-      `environmentSafetySettingsMock() in the @/lib/prisma mock factory — a ` +
-      `missing environmentSafetySettings delegate is an UNREADABLE override, ` +
-      `which resolves UNKNOWN even under a declared production.`,
+      `an environmentSafetySettings delegate in the @/lib/prisma mock factory — ` +
+      `a missing one is an UNREADABLE override, which resolves UNKNOWN even ` +
+      `under a declared production. A suite that expects a SEND from a copy ` +
+      `also has to declare a capture transport (USE_LOCAL_CAPTURE).`,
   ).toBe(expected);
 }
 

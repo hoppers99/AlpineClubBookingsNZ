@@ -331,13 +331,13 @@ export async function resendAdditionalPaymentEmail(params: {
     const replayable =
       (outcome.status === "withheld_for_booking" &&
         outcome.reason === "booking_flag_unreadable") ||
-      // #3035: an unconfirmed environment role also leaves a FAILED EmailLog the
-      // retry cron replays once the role is declared, so handing the stamp back
-      // here would risk the member getting two copies. A CONFIRMED copy is not
-      // replayable — that row is terminal — so it falls through and the stamp is
-      // restored like every other fixable case.
+      // #3035: every environment-safety withhold EXCEPT the confirmed-copy one
+      // leaves a FAILED EmailLog the retry cron replays once the configuration is
+      // fixed, so handing the stamp back here would risk the member getting two
+      // copies. Written as "not the terminal one" rather than as a list of faults,
+      // so a fault added later is replayable by default.
       (outcome.status === "withheld_for_environment" &&
-        outcome.reason === "environment_unknown");
+        outcome.reason !== "environment_non_production");
     if (!replayable) {
       await restoreStamps(outcome.status);
     }
@@ -492,13 +492,17 @@ function describeUntransmittedResend(outcome: EmailSendOutcome): string {
           // is already on its way.
           "We could not confirm this booking's email settings, so the message was held back and queued to be sent automatically once they can be read. Do not re-send it by hand — that is blocked for the next hour so the member cannot receive two copies.";
     case "withheld_for_environment":
-      return outcome.reason === "environment_non_production"
-        ? "This site is a test or staging copy, not the club's live site, so it does not email real members and nothing was sent. Send this from the club's live site instead."
-        : // Same shape as the unreadable-switch case above, and for the same
-          // reason: the message is already queued and goes out by itself once
-          // somebody declares what this installation is, so telling an admin to
-          // try again would only spend the hour's cooldown.
-          "This site has not been told whether it is the club's live site or a copy, so it held the message back rather than risk emailing a real member. It is queued and will go out on its own once that is set — do not re-send it by hand.";
+      if (outcome.reason === "environment_non_production") {
+        return "This site is a test or staging copy, not the club's live site, so it does not email real members and nothing was sent. Send this from the club's live site instead.";
+      }
+      if (outcome.reason === "capture_transport_in_production") {
+        return "This site is set up as the club's live site and as a test mail capture at the same time, so it held the message back rather than quietly throw it away. It is queued and will go out on its own once that is corrected — do not re-send it by hand.";
+      }
+      // Same shape as the unreadable-switch case above, and for the same reason:
+      // the message is already queued and goes out by itself once somebody
+      // declares what this installation is, so telling an admin to try again
+      // would only spend the hour's cooldown.
+      return "This site has not been told whether it is the club's live site or a copy, so it held the message back rather than risk emailing a real member. It is queued and will go out on its own once that is set — do not re-send it by hand.";
     case "suppressed":
       return "This member's email address is blocked after a bounce or spam complaint, so nothing was sent. Contact them another way, or clear the suppression first.";
     case "skipped_placeholder_recipient":

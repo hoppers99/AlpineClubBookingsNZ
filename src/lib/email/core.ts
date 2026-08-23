@@ -28,7 +28,10 @@ import {
   shouldPersistEmailHtml,
   type EmailAttachment,
 } from "./internal";
-import { resolveEmailEnvironmentGate } from "./environment-gate";
+import {
+  resolveEmailEnvironmentGate,
+  type EmailEnvironmentWithheldReason,
+} from "./environment-gate";
 // A pure string builder, and `email-message-renderer` above already pulls the
 // template layer in, so this adds no failure mode to the alert that reports a
 // failure (#2689).
@@ -76,7 +79,7 @@ export type EmailSendOutcome =
   // message back. `reason` separates the two cases, which need opposite
   // treatment and must never be collapsed into one another or into the
   // booking-scoped withhold above:
-  //   environment_non_production — this installation is a confirmed copy. A
+  //   environment_non_production — a confirmed copy pointed at a live provider. A
   //                                terminal outcome (EmailLog
   //                                SKIPPED_NON_PRODUCTION), nothing to retry,
   //                                nothing wrong.
@@ -84,10 +87,15 @@ export type EmailSendOutcome =
   //                                is. A FAULT: EmailLog FAILED with a
   //                                deliveryBlockReason, so the retry cron
   //                                replays it once the role is declared.
+  //   capture_transport_in_production — the live site declares a capture mailbox.
+  //                                Also a FAULT, also replayable; it clears when
+  //                                the transport flags are corrected.
+  // A copy that has DECLARED a capture mailbox never appears here: it transmits
+  // into the capture and the outcome is an ordinary `sent`.
   | {
       status: "withheld_for_environment";
       emailLogId: string | null;
-      reason: "environment_non_production" | "environment_unknown";
+      reason: EmailEnvironmentWithheldReason;
     };
 
 function assertNoCrlf(value: string, field: string) {

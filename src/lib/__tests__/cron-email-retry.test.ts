@@ -9,6 +9,10 @@ const mocks = vi.hoisted(() => ({
   memberFindUnique: vi.fn(),
   sendMail: vi.fn(),
   resolveEmailDeliveryConfig: vi.fn(),
+  // #3035: the delivery policy reads the DECLARED transport kind through this
+  // same canonical parser, so a partial mock of the module has to name it or the
+  // whole file dies at import.
+  resolveEmailTransportKind: vi.fn(() => "live-provider"),
   sendEmail: vi.fn(),
   getAdminEmails: vi.fn(),
   getActiveEmailSuppression: vi.fn(),
@@ -56,6 +60,7 @@ vi.mock("@/lib/email-text", () => ({
 
 vi.mock("@/lib/email-delivery", () => ({
   resolveEmailDeliveryConfig: mocks.resolveEmailDeliveryConfig,
+  resolveEmailTransportKind: mocks.resolveEmailTransportKind,
 }));
 
 vi.mock("@/lib/logger", () => ({

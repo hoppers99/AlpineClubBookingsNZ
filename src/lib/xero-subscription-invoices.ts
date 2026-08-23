@@ -21,7 +21,6 @@ import {
 } from "@/lib/xero-sync";
 import { XERO_OUTBOX_SUBSCRIPTION_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
 import {
-  classifyXeroInvoiceEmailWithheld,
   resolveXeroInvoiceEmailPolicy,
   sendXeroInvoiceEmail,
 } from "@/lib/xero-invoice-email";
@@ -485,22 +484,21 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
     than a second email if Xero has in fact already sent it.
   */
   const emailPolicy = await resolveXeroInvoiceEmailPolicy();
-  if (emailPolicy.kind !== "allow") {
-    const withheld = classifyXeroInvoiceEmailWithheld(emailPolicy);
+  if (emailPolicy.kind === "withhold") {
     const context = { chargeId: charge.id, invoiceId };
-    if (withheld.error) {
-      logger.error(context, withheld.logMessage);
+    if (emailPolicy.error) {
+      logger.error(context, emailPolicy.logMessage);
     } else {
-      logger.info(context, withheld.logMessage);
+      logger.info(context, emailPolicy.logMessage);
     }
     await completeXeroSyncOperation(input.syncOperationId, {
-      status: withheld.error ? "PARTIAL" : "SUCCEEDED",
+      status: emailPolicy.error ? "PARTIAL" : "SUCCEEDED",
       responsePayload: {
         invoice: providerInvoice, adopted, email: null,
-        emailError: withheld.error ? withheld.error.message : null,
+        emailError: emailPolicy.error ? emailPolicy.error.message : null,
         // A THIRD reason distinct from a provider failure and from the club's own
         // choice: this installation is a confirmed copy.
-        invoiceEmailWithheldForEnvironment: withheld.suppressedForNonProduction,
+        invoiceEmailWithheldForEnvironment: emailPolicy.suppressedForNonProduction,
       },
       xeroObjectType: "INVOICE", xeroObjectId: invoiceId, xeroObjectNumber: invoiceNumber,
       xeroObjectUrl: buildXeroInvoiceUrl(invoiceId),

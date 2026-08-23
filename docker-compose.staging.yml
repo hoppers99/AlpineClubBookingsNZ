@@ -56,8 +56,9 @@ services:
       # during keep-alive idle, so it does not need raising for this.
       KEEP_ALIVE_TIMEOUT: "65000"
     # mailpit is the non-production SMTP capture the E2E suite relays outbound
-    # mail to (USE_SMTP_RELAY). It is listed here so `up --wait app` also starts
-    # it and the app never comes up expecting an SMTP host that is not running.
+    # mail to (USE_LOCAL_CAPTURE). It is listed here so `up --wait app` also
+    # starts it and the app never comes up expecting an SMTP host that is not
+    # running.
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,7 +66,7 @@ services:
         condition: service_healthy
 
   # Non-production SMTP capture container. The staging app relays all outbound
-  # email here (see USE_SMTP_RELAY in .env.staging.example); Playwright reads the
+  # email here (see USE_LOCAL_CAPTURE in .env.staging.example); Playwright reads the
   # captured two-factor code back over mailpit's HTTP API
   # (e2e/two-factor-email.spec.ts, docs/E2E_PLAYWRIGHT.md). It accepts any SMTP
   # credentials over the compose-internal network and never forwards mail
