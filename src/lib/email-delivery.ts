@@ -2,6 +2,32 @@ type EnvMap = Record<string, string | undefined>;
 
 type EmailDeliveryMode = "aws-ses" | "smtp-relay";
 
+/**
+ * How the delivery mode was chosen (ENV-SAFETY 2, #3035).
+ *
+ * `implicit-legacy-default` is the one that matters: with NEITHER `USE_AWS_SES`
+ * nor `USE_SMTP_RELAY` set, this parser resolves live AWS SES for backward
+ * compatibility. That is a real hazard on anything that is not the club's live
+ * site — a copy would connect to the club's live mail provider with the club's
+ * live credentials — so the delivery boundary refuses it outside confirmed
+ * production. It is reported as a FIELD rather than inferred from the warning
+ * text, because a safety rule keyed on a string somebody may reword is a rule
+ * that stops holding the day somebody rewords it.
+ *
+ * This module deliberately does NOT resolve the environment role itself. It is a
+ * pure parser over an injected environment; the role belongs to
+ * `resolveEnvironmentRole()` (INV-CONFIG-003), and a second reader of that
+ * answer is what INV-CONFIG-003 forbids. The rule is applied by
+ * {@link refuseAmbiguousImplicitSesDefault}, whose caller holds the role.
+ */
+export type EmailDeliveryModeSource =
+  | "explicit-flag"
+  | "implicit-legacy-default"
+  | "unresolved";
+
+/** Whether the legacy implicit AWS SES default may be used at all. */
+export type ImplicitSesDefault = "permitted" | "refused";
+
 interface EmailTransportOptions {
   host: string;
   port: number;
@@ -15,6 +41,7 @@ interface EmailTransportOptions {
 export interface ResolvedEmailDeliveryConfig {
   ok: boolean;
   mode: EmailDeliveryMode | "invalid";
+  modeSource: EmailDeliveryModeSource;
   modeLabel: string;
   issues: string[];
   warnings: string[];
@@ -62,14 +89,17 @@ export function resolveEmailDeliveryConfigFromEnv(
     Number(useAwsSes === true) + Number(useSmtpRelay === true);
 
   let mode: EmailDeliveryMode | "invalid" = "invalid";
+  let modeSource: EmailDeliveryModeSource = "unresolved";
   if (selectedModes === 1) {
     mode = useAwsSes === true ? "aws-ses" : "smtp-relay";
+    modeSource = "explicit-flag";
   } else if (selectedModes === 0) {
     // Backward compatibility: if both flags are omitted, use legacy SES mode.
     if (useAwsSes === undefined && useSmtpRelay === undefined) {
       mode = "aws-ses";
+      modeSource = "implicit-legacy-default";
       warnings.push(
-        "USE_AWS_SES/USE_SMTP_RELAY are not set; defaulting to AWS SES mode for backward compatibility",
+        "USE_AWS_SES/USE_SMTP_RELAY are not set. The club's live site still defaults to AWS SES for backward compatibility, but any other installation now refuses to open a mail transport at all — including the health check and the setup wizard's provider test — because a copy must never connect to the club's live mail provider by default. Set exactly one of them explicitly.",
       );
     } else {
       issues.push(
@@ -107,6 +137,7 @@ export function resolveEmailDeliveryConfigFromEnv(
     return {
       ok: issues.length === 0,
       mode,
+      modeSource,
       modeLabel: "AWS SES",
       issues,
       warnings,
@@ -141,6 +172,7 @@ export function resolveEmailDeliveryConfigFromEnv(
     return {
       ok: issues.length === 0,
       mode,
+      modeSource,
       modeLabel: "SMTP Relay",
       issues,
       warnings,
@@ -159,6 +191,7 @@ export function resolveEmailDeliveryConfigFromEnv(
   return {
     ok: false,
     mode,
+    modeSource,
     modeLabel: "Not configured",
     issues,
     warnings,
@@ -166,6 +199,56 @@ export function resolveEmailDeliveryConfigFromEnv(
   };
 }
 
-export function resolveEmailDeliveryConfig(): ResolvedEmailDeliveryConfig {
-  return resolveEmailDeliveryConfigFromEnv(process.env);
+/**
+ * The one issue the ambiguous-configuration hole in #3035 names: with neither
+ * provider flag set this parser resolves LIVE AWS SES, so an installation that
+ * is not the club's live site would open a transport to the club's own mail
+ * provider using the club's own credentials.
+ *
+ * Confirmed production keeps the legacy default, because "production stays
+ * behaviourally equivalent" is one of this issue's acceptance criteria and every
+ * existing deployment relies on it. Everything else — a declared copy, and an
+ * installation whose role nobody has declared — is refused, and the refusal
+ * names the two flags so the repair is one line of deployment configuration.
+ *
+ * WHERE THIS ACTUALLY BITES, stated plainly rather than overclaimed. On the SEND
+ * path the delivery policy has already suppressed or blocked before any transport
+ * is asked for, so this refusal is defence in depth there — it is what stops a
+ * future sender that somehow reached the transport. On the VERIFY path
+ * (`verifyEmailTransport`, used by the health check and the setup wizard's
+ * provider test) it is the operative rule: a `verify()` is a real connection to a
+ * real provider with real credentials, and that is exactly what a copy must not
+ * make by default.
+ */
+export function refuseAmbiguousImplicitSesDefault(
+  config: ResolvedEmailDeliveryConfig,
+  implicitSesDefault: ImplicitSesDefault,
+): ResolvedEmailDeliveryConfig {
+  if (
+    implicitSesDefault === "permitted" ||
+    config.modeSource !== "implicit-legacy-default"
+  ) {
+    return config;
+  }
+  return {
+    ok: false,
+    mode: "invalid",
+    modeSource: config.modeSource,
+    modeLabel: "Not configured",
+    issues: [
+      "Neither USE_AWS_SES nor USE_SMTP_RELAY is set. This installation is not confirmed to be the club's live site, so it will not fall back to live AWS SES. Set exactly one of USE_AWS_SES or USE_SMTP_RELAY (a copy usually wants USE_SMTP_RELAY pointed at a local capture mailbox), or declare APP_ENVIRONMENT_ROLE=production if this really is the club's live installation.",
+      ...config.issues,
+    ],
+    warnings: config.warnings,
+    transportOptions: null,
+  };
+}
+
+export function resolveEmailDeliveryConfig(
+  implicitSesDefault: ImplicitSesDefault,
+): ResolvedEmailDeliveryConfig {
+  return refuseAmbiguousImplicitSesDefault(
+    resolveEmailDeliveryConfigFromEnv(process.env),
+    implicitSesDefault,
+  );
 }

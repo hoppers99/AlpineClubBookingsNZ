@@ -1,9 +1,12 @@
 import { prisma } from "./prisma";
-import nodemailer from "nodemailer";
 import { EMAIL_FROM, formatEmailFromAddress } from "./email-sender";
 import { htmlToPlainText } from "./email-text";
 import logger from "@/lib/logger";
-import { resolveEmailDeliveryConfig } from "@/lib/email-delivery";
+import { getEmailTransporter } from "@/lib/email/internal";
+import {
+  describeDeliveryDecision,
+  resolveDeliveryPolicy,
+} from "@/lib/environment-delivery-policy";
 import { getActiveEmailSuppression } from "@/lib/email-suppression";
 import {
   ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES,
@@ -86,21 +89,59 @@ export async function retryFailedEmails(): Promise<{
   succeeded: number;
   failed: number;
 }> {
-  const emailDelivery = resolveEmailDeliveryConfig();
-  if (!emailDelivery.ok || !emailDelivery.transportOptions) {
+  /*
+    Environment-safety boundary (#3035, ENV-SAFETY 2; epic #2986). INV-CONFIG-004.
+
+    This job used to build its own nodemailer transport, which is exactly why the
+    epic could not simply add a check to `sendEmail`: a replay never passed
+    through that function at all. It now asks the same policy and obtains its
+    transport through the same clearance-gated accessor, so there is one boundary
+    rather than two.
+
+    THE TWO NON-SEND ANSWERS ARE DIFFERENT SHAPES ON PURPOSE.
+
+    A confirmed copy returns cleanly with nothing retried. It is not a fault — a
+    copy declining to replay the club's mail is the job working — and throwing
+    every thirty minutes would fill a staging copy's cron history with red runs
+    that mean nothing.
+
+    An UNKNOWN role THROWS, exactly as an unusable delivery configuration already
+    did, because it IS a fault: something has to tell an operator that this
+    installation has stopped sending mail and cannot say why.
+
+    NEITHER TOUCHES A ROW, and that is the part worth being careful about. The
+    rows are left exactly as found, so no attempt is burned and no retained body
+    is dropped: the moment the role is declared, the very next run replays them.
+    Marking them instead would have been the tempting shortcut and it destroys
+    information — a copy restored from the club's live database holds the live
+    site's genuinely-failed rows, and rewriting those as "held back by this copy"
+    would both lie about their history and inflate the withheld count that #3034's
+    panel reads.
+  */
+  const delivery = await resolveDeliveryPolicy();
+  if (delivery.kind === "suppress_non_production") {
+    logger.info(
+      { job: "retryFailedEmails" },
+      "Skipped the email retry run: this installation is not the club's live site, so no message was replayed and no provider was contacted. Every failed row is left untouched",
+    );
+    return { retried: 0, succeeded: 0, failed: 0 };
+  }
+  if (delivery.kind === "block_environment_unknown") {
     throw new Error(
-      `Email retry skipped: delivery config invalid (${emailDelivery.issues.join("; ")})`,
+      `Email retry skipped: ${describeDeliveryDecision(delivery)}`,
     );
   }
-  const transporter = nodemailer.createTransport(
-    emailDelivery.transportOptions,
-  );
+  const { transporter } = await getEmailTransporter(delivery.clearance);
 
   // Backoff: don't retry emails until at least 15 minutes after the last attempt
   const backoffThreshold = new Date(Date.now() - 15 * 60 * 1000);
 
   const failedEmails = await prisma.emailLog.findMany({
     where: {
+      // `FAILED` alone, which is also what keeps a safety-suppressed row out of
+      // this job for good (#3035): `SKIPPED_NON_PRODUCTION` is terminal and is
+      // not in this filter, and the guarded claim below re-asserts `FAILED`
+      // before any send. Do not widen this to a status list.
       status: "FAILED",
       attempts: { lt: MAX_ATTEMPTS },
       OR: [

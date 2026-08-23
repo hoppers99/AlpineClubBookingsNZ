@@ -4,7 +4,6 @@ import {
 } from "@/lib/environment-role-declaration";
 import { prisma } from "@/lib/prisma";
 import { getRuntimeConfigCheck } from "@/lib/runtime-config";
-import { resolveEmailDeliveryConfig } from "@/lib/email-delivery";
 import { countExhaustedPaymentRecoveryOperations } from "@/lib/payment-recovery-health";
 import { getOperationalStripeSecretKey } from "@/lib/stripe-config";
 
@@ -170,23 +169,23 @@ async function checkXero(): Promise<CheckResult> {
   }
 }
 
+/**
+ * Prove the mail provider answers, WITHOUT acquiring anything that could send
+ * (#3035). `verifyEmailTransport` hands back a label and no transport, so this
+ * diagnostic cannot mail a member even by accident, and it needs no delivery
+ * clearance. It does inherit the ambiguous-configuration rule: an installation
+ * that is not confirmed production and sets neither provider flag now reports an
+ * invalid configuration rather than silently connecting to live AWS SES with the
+ * club's own credentials.
+ *
+ * Imported dynamically so a caller of this module does not statically pull
+ * nodemailer into its graph, which is what the previous shape did too.
+ */
 async function checkSmtp(): Promise<CheckResult> {
   const start = Date.now();
   try {
-    const config = resolveEmailDeliveryConfig();
-    if (!config.ok || !config.transportOptions) {
-      return {
-        status: "error",
-        latencyMs: 0,
-        error: `Email delivery config invalid: ${config.issues.join("; ")}`,
-      };
-    }
-
-    const nodemailer = await import("nodemailer");
-    const transporter = nodemailer.default.createTransport(
-      config.transportOptions,
-    );
-    await transporter.verify();
+    const { verifyEmailTransport } = await import("@/lib/email/internal");
+    await verifyEmailTransport();
     return { status: "ok", latencyMs: Date.now() - start };
   } catch (err) {
     return {

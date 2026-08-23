@@ -28,6 +28,7 @@ import {
   shouldPersistEmailHtml,
   type EmailAttachment,
 } from "./internal";
+import { resolveEmailEnvironmentGate } from "./environment-gate";
 // A pure string builder, and `email-message-renderer` above already pulls the
 // template layer in, so this adds no failure mode to the alert that reports a
 // failure (#2689).
@@ -70,6 +71,23 @@ export type EmailSendOutcome =
       emailLogId: string | null;
       bookingId: string;
       reason: "booking_no_emails" | "booking_flag_unreadable";
+    }
+  // #3035 (ENV-SAFETY 2): the environment-safety delivery boundary held the
+  // message back. `reason` separates the two cases, which need opposite
+  // treatment and must never be collapsed into one another or into the
+  // booking-scoped withhold above:
+  //   environment_non_production — this installation is a confirmed copy. A
+  //                                terminal outcome (EmailLog
+  //                                SKIPPED_NON_PRODUCTION), nothing to retry,
+  //                                nothing wrong.
+  //   environment_unknown        — nothing has declared which installation this
+  //                                is. A FAULT: EmailLog FAILED with a
+  //                                deliveryBlockReason, so the retry cron
+  //                                replays it once the role is declared.
+  | {
+      status: "withheld_for_environment";
+      emailLogId: string | null;
+      reason: "environment_non_production" | "environment_unknown";
     };
 
 function assertNoCrlf(value: string, field: string) {
@@ -455,6 +473,26 @@ export async function sendEmail({
     };
   }
 
+  // Environment-safety boundary (#3035, ENV-SAFETY 2; epic #2986). LAST of the
+  // four gates on purpose: the three above are facts about THIS message and
+  // recipient and are true on any installation, so each stays recorded as itself
+  // on a copy; this one is about the INSTALLATION and is the backstop underneath
+  // them. It sits ABOVE the dev-mode short-circuit below, which is now a local
+  // convenience and no longer the safety authority. Reasoning and the two
+  // EmailLog shapes: `environment-gate.ts`.
+  const environmentGate = await resolveEmailEnvironmentGate({
+    emailLogId,
+    templateName,
+    logRecipient: emailLogRecipient,
+  });
+  if (environmentGate.decision !== "send") {
+    return {
+      status: "withheld_for_environment",
+      emailLogId,
+      reason: environmentGate.reason,
+    };
+  }
+
   if (process.env.NODE_ENV === "development") {
     logger.info(
       { to: emailLogRecipient, subject: sanitizedSubject, templateName },
@@ -490,7 +528,9 @@ export async function sendEmail({
   }
 
   try {
-    const { transporter, modeLabel } = getEmailTransporter();
+    const { transporter, modeLabel } = await getEmailTransporter(
+      environmentGate.clearance,
+    );
     const result = await transporter.sendMail({
       from,
       to,
