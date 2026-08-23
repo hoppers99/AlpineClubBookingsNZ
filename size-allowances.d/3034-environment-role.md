@@ -1,10 +1,10 @@
 # File-size allowances for #3034 (ENV-SAFETY 1 — the environment role)
 
-Four already-over-budget files grow here, and each gains one entry in a list or
+Five already-over-budget files grow here, and each gains one entry in a list or
 one branch in a decision it already owns. None gains a new concern.
 
 **`size-allowances.d/3000-club-time-zone.md` is deleted in this change**, and
-that is required rather than tidying. Three of the four files below already
+that is required rather than tidying. Four of the five files below already
 appear in it, and the gate refuses two allowances for one file — "one file, one
 allowance". That file's own work merged some releases ago, so its lengths ARE the
 lengths on the base ref and its entries have no remaining effect;
@@ -22,7 +22,7 @@ that is the standard this list should be read against.** The resolver
 (`environment-safety-admin-state.ts`, 174) and the API route
 (`environment-safety/route.ts`, 248 against a 250 route-handler budget) are new
 modules carrying the whole of the new logic, so no size debt is created by this
-feature — only the four unavoidable registrations below.
+feature — only the five unavoidable registrations below.
 
 file: src/lib/setup-readiness.ts
 lines: 2088
@@ -57,6 +57,18 @@ reason: the two new prefixes belong in `ROUTE_AREA_PREFIXES` beside the
   rule this one needs — area registration for the route map, Full Admin enforced
   in the route itself. Splitting that table would put one area's routes away from
   every other area's, which is the drift the route-map guard exists to catch.
+
+file: src/lib/member-merge.ts
+lines: 3761
+reason: twelve lines, and they are the price of the new schema column rather than
+  of this feature's logic. `EnvironmentSafetySettings.updatedByMemberId` is an
+  FK-less actor column, so `member-merge-dmmf.test.ts` fails until it is
+  classified as a merge snapshot; the entry has to sit in that hand-kept list,
+  beside the `ClubTimeSettings.updatedByMemberId` it is identical in kind to. The
+  comment explains why the loser's id stays as immutable history — the question
+  the next reader of that list will have — and why a member merge must not move
+  this particular column at all: this row decides whether real members can be
+  emailed.
 
 file: src/components/admin-sidebar.tsx
 lines: 1101
