@@ -339,6 +339,15 @@ const ROUTE_AREA_PREFIXES: Array<{
       // routes), exactly like the backups credential + destination writes below.
       "/admin/club-time",
       "/api/admin/club-time-zone",
+      // Environment safety — whether this installation is the club's live site
+      // or a copy (ENV-SAFETY 1 #3034, epic #2986). Registered under support for
+      // the same reason as /admin/club-time and /admin/backups: so an
+      // unregistered path never falls back to the overview catch-all and the
+      // sidebar's matrix check resolves. The AREA only decides who can reach the
+      // surface; reading the role AND switching the safer override are Full Admin
+      // regardless of area level, enforced in the route itself.
+      "/admin/environment",
+      "/api/admin/environment-safety",
       // Login & Security page (epic #2030, child #2033): password policy today;
       // magic-link / Google sign-in cards land here in #2034/#2035. Pinned to
       // `support` alongside /admin/modules and the other system-config surfaces.
