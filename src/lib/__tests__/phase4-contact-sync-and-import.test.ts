@@ -33,6 +33,17 @@ const mocks = vi.hoisted(() => {
       xeroToken: {
         findFirst: vi.fn(),
       },
+      /*
+        #3034/#3036: `updateXeroContact` asks which installation this is before
+        it puts an email address on a Xero contact. A MISSING delegate here is an
+        UNREADABLE override, which resolves UNKNOWN whatever the declaration
+        says, and #3036 then refuses the write — so without this the suite would
+        test the refusal instead of the payload it is about. Declared inline
+        because `vi.hoisted` runs above this file's imports.
+      */
+      environmentSafetySettings: {
+        findUnique: vi.fn(),
+      },
       xeroSyncCursor: {
         findUnique: vi.fn(),
         upsert: vi.fn(),
@@ -209,11 +220,20 @@ import {
   CONTACT_GROUP_CACHE_CURSOR_RESOURCE,
   CONTACT_GROUP_FULL_REFRESH_CURSOR_RESOURCE,
 } from "@/lib/xero-contact-cache";
+import {
+  declareEnvironmentRole,
+  expectEnvironmentRolePremise,
+} from "@/lib/__tests__/helpers/environment-role";
+import { toXeroSandboxContactEmail } from "@/lib/xero-sandbox-contact-email";
 
 describe("Phase 4 contact sync and cached import", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("XERO_ENCRYPTION_KEY", TEST_KEY);
+    // The club's LIVE site, where #3036's containment is the identity function
+    // and every payload below is what it always was.
+    declareEnvironmentRole("production");
+    mocks.prisma.environmentSafetySettings.findUnique.mockResolvedValue(null);
 
     mocks.prisma.xeroToken.findFirst.mockResolvedValue({
       id: "token_1",
@@ -268,7 +288,81 @@ describe("Phase 4 contact sync and cached import", () => {
     });
   });
 
+  /*
+    INV-CONFIG-005 (ENV-SAFETY 3, #3036). `updateXeroContact` is the third
+    email-carrying Xero contact writer — a member editing their profile, an
+    admin editing their record, a confirmed email change — and it does not go
+    through the funnel, so it needs its own proof.
+  */
+  it("on a COPY, a contact update carries the contained address and never the member's", async () => {
+    declareEnvironmentRole("non-production");
+    await expectEnvironmentRolePremise("NON_PRODUCTION");
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      id: "member_1",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: "contact_1",
+      phoneCountryCode: "64",
+      phoneAreaCode: "21",
+      phoneNumber: "1234567",
+    });
+
+    await updateXeroContact(
+      "contact_1",
+      undefined,
+      { localModel: "Member", localId: "member_1", preserveXeroName: false },
+    );
+
+    const hashPayload = (mocks.buildXeroPayloadHash.mock.calls as unknown as Array<
+      [{ contacts: Array<Record<string, unknown>> }]
+    >)[0][0];
+    expect(hashPayload.contacts[0].emailAddress).toBe(
+      toXeroSandboxContactEmail("jane@example.com"),
+    );
+    expect(hashPayload.contacts[0].emailAddress).not.toBe("jane@example.com");
+    // The name, phone and address still travel: containment is about the
+    // ADDRESS, and a copy that stopped syncing everything else would stop
+    // behaving like production.
+    expect(hashPayload.contacts[0]).toEqual(
+      expect.objectContaining({ name: "Jane Doe", firstName: "Jane" }),
+    );
+    const [, , sentPayload] = mocks.accountingApi.updateContact.mock
+      .calls[0] as unknown as [string, string, { contacts: Array<Record<string, unknown>> }];
+    expect(sentPayload.contacts[0].emailAddress).toBe(
+      toXeroSandboxContactEmail("jane@example.com"),
+    );
+  });
+
+  it("REFUSES a contact update when nobody has said what this installation is", async () => {
+    vi.stubEnv("APP_ENVIRONMENT_ROLE", "");
+    await expectEnvironmentRolePremise("UNKNOWN");
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      id: "member_1",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@example.com",
+      passwordHash: "not-deleted",
+      xeroContactId: "contact_1",
+    });
+
+    await expect(
+      updateXeroContact("contact_1", undefined, {
+        localModel: "Member",
+        localId: "member_1",
+        preserveXeroName: false,
+      }),
+    ).rejects.toThrow(/APP_ENVIRONMENT_ROLE/);
+
+    expect(mocks.accountingApi.updateContact).not.toHaveBeenCalled();
+    // And it refuses before a reservation is even opened, so nothing local is
+    // left half-done either.
+    expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
   it("builds member contact updates from the locked row instead of stale caller PII", async () => {
+    await expectEnvironmentRolePremise("PRODUCTION");
     mocks.prisma.member.findUnique.mockResolvedValue({
       id: "member_1",
       firstName: "Jane",

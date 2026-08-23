@@ -363,6 +363,18 @@ describe("GET /api/admin/environment-safety — Full Admin only", () => {
           wrongly declared a copy.
         */
         withheldEmail: { available: false },
+        /*
+          Also its own state rather than a zero, and for the sharper version of
+          the same reason (#3036). This counts the Xero contacts a COPY has
+          proved can no longer reach a member. `available: false` here means the
+          count could not be read at all — usually an unapplied migration —
+          while a fabricated `containedContacts: 0` would tell the operator of a
+          copy that it has not touched the club's accounting when nobody knows
+          whether it has. This double supplies no
+          `xeroSandboxContactContainment` delegate, so unreadable is the honest
+          answer for it.
+        */
+        xeroContactContainment: { available: false },
         notes: [expect.stringContaining("APP_ENVIRONMENT_ROLE=production")],
       },
     });
