@@ -537,6 +537,64 @@ describe("Xero contact containment census (INV-CONFIG-005)", () => {
     }
   });
 
+  it("renders the rewritten contacts, not just a count of them", () => {
+    /*
+      #3036 review P0-5, and a gap a mutation probe found in this file's first
+      version: disabling the whole list rendered nothing and every case here
+      still passed. The list is the ONLY thing that makes the repair actionable
+      — the operator has to know which contacts, whose they are, and where to
+      click — and the guide's repair steps refer to it by name ("using the links
+      below"), so a screen without it makes the documentation wrong too.
+
+      A SOURCE census rather than a React harness, following the precedent
+      `email-delivery-boundary-census.test.ts` set for these two files: there is
+      no harness for this screen and inventing one to assert a list exists is the
+      worse trade.
+    */
+    const block = readModule(
+      "src/components/admin/environment-xero-containment.tsx",
+    );
+    // Anti-vacuity: this really is the component, and it really is non-trivial.
+    expect(block.length).toBeGreaterThan(2000);
+    expect(block).toContain("export function EnvironmentXeroContainment(");
+    // It reads the list from the payload, keys the block on there being
+    // something to repair, and renders one row per contact.
+    expect(
+      block,
+      "the component must read the rewritten-contact list from the payload",
+    ).toContain("containment.rewritten");
+    expect(
+      block,
+      "the list block must be keyed on there being something to repair, so an " +
+        "installation with nothing to fix shows no repair instructions",
+    ).toContain("listed.length > 0 ?");
+    expect(
+      block,
+      "and it must map over that list rather than reporting only a count",
+    ).toContain("listed.map((contact) =>");
+    for (const field of [
+      "contact.xeroContactUrl",
+      "contact.memberName",
+      "contact.memberId",
+      "contact.rewrittenAt",
+    ]) {
+      expect(block, `${field} must reach the screen`).toContain(field);
+    }
+    // The repair steps are what the operator guide's section points at.
+    expect(block).toContain("xeroContainmentRepairSteps()");
+    expect(
+      block,
+      "the total must still be shown when the list is truncated, so a page of " +
+        "fifty cannot read as the whole of the damage",
+    ).toContain("containment.rewrittenContacts > listed.length");
+    // No email address may reach this screen, in any form.
+    expect(
+      block,
+      "the payload carries no member email address and this screen must not " +
+        "invent one",
+    ).not.toMatch(/contact\.(?:email|emailAddress)/);
+  });
+
   it("says opposite things about Xero for a confirmed copy and an undeclared installation", () => {
     /*
       A copy IS containing, and the number an operator wants is how much of the
