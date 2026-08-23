@@ -713,3 +713,98 @@ describe('retryFailedEmails and the per-booking "No emails" switch (#2258)', () 
     expect(result.succeeded).toBe(2);
   });
 });
+
+describe("retryFailedEmails and the environment-safety boundary (#3035)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.resolveEmailDeliveryConfig.mockReturnValue({
+      ok: true,
+      mode: "smtp-relay",
+      modeSource: "explicit-flag",
+      modeLabel: "SMTP Relay",
+      transportOptions: {
+        host: "smtp.example.test",
+        port: 587,
+        secure: false,
+        auth: { user: "relay-user", pass: "relay-pass" },
+      },
+      issues: [],
+      warnings: [],
+    });
+    mocks.update.mockResolvedValue({});
+    mocks.updateMany.mockResolvedValue({ count: 1 });
+    mocks.getAdminEmails.mockResolvedValue([]);
+    mocks.getActiveEmailSuppression.mockResolvedValue(null);
+    mocks.bookingFindUnique.mockResolvedValue({ noEmails: false });
+    mocks.findMany.mockResolvedValue([failedEmail()]);
+  });
+
+  it("replays nothing and touches no row on a confirmed copy, and does not treat it as a failure", async () => {
+    /*
+      A copy declining to replay the club's mail is the job WORKING, so it returns
+      cleanly rather than throwing — a staging copy must not fill its cron history
+      with red runs every thirty minutes.
+
+      NO ROW IS TOUCHED, which is the part worth being careful about. A copy
+      restored from the club's live database holds the live site's genuinely-failed
+      rows; rewriting those as "held back by this copy" would lie about their
+      history and inflate the withheld count the admin panel reads. It also means
+      no attempt is burned, so nothing drifts towards the unretryable ceiling
+      while the installation is a copy.
+    */
+    declareEnvironmentRole("non-production");
+
+    await expect(retryFailedEmails()).resolves.toEqual({
+      retried: 0,
+      succeeded: 0,
+      failed: 0,
+    });
+    expect(mocks.findMany).not.toHaveBeenCalled();
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+    expect(mocks.sendMail).not.toHaveBeenCalled();
+  });
+
+  it("throws on an unconfirmed environment, because that IS a fault", async () => {
+    // Unlike a copy, an installation nobody has declared has stopped sending mail
+    // its members may be waiting for. Something has to say so out loud, and the
+    // job already throws for an unusable delivery configuration.
+    vi.stubEnv("APP_ENVIRONMENT_ROLE", "");
+
+    await expect(retryFailedEmails()).rejects.toThrow(
+      /Email retry skipped: Not sent/,
+    );
+    expect(mocks.findMany).not.toHaveBeenCalled();
+    expect(mocks.sendMail).not.toHaveBeenCalled();
+  });
+
+  it("never replays a row the boundary already held back terminally", async () => {
+    /*
+      Structural rather than incidental: the selection query filters
+      `status: "FAILED"`, and the guarded claim re-asserts it before any send, so a
+      SKIPPED_NON_PRODUCTION row is outside this job by construction. This test
+      pins that, because the tempting future edit — widening the filter to a status
+      list so "everything unsent" gets retried — would replay exactly the messages
+      a copy deliberately withheld.
+    */
+    declareEnvironmentRole("production");
+    await retryFailedEmails();
+
+    const where = mocks.findMany.mock.calls[0][0].where;
+    expect(where.status).toBe("FAILED");
+    const claim = mocks.updateMany.mock.calls[0][0];
+    expect(claim.where.status).toBe("FAILED");
+  });
+
+  it("replays normally on the club's live site", async () => {
+    declareEnvironmentRole("production");
+    mocks.sendMail.mockResolvedValue({ messageId: "msg-1" });
+
+    await expect(retryFailedEmails()).resolves.toEqual({
+      retried: 1,
+      succeeded: 1,
+      failed: 0,
+    });
+    expect(mocks.sendMail).toHaveBeenCalledTimes(1);
+  });
+});

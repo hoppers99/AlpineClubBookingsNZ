@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => {
   };
 
   const prisma = {
+  environmentSafetySettings: { findUnique: vi.fn().mockResolvedValue(null) },
     $transaction: vi.fn(async (callback) => callback(tx)),
     // #1355: contact resolution now reads the member on the GLOBAL client
     // (phase 0/1) and re-reads via the tx client (phase 2). Alias the same
@@ -223,6 +224,7 @@ import {
 } from "@/lib/xero";
 import { frozenTestNow } from "@/lib/__tests__/helpers/clock";
 import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
+import { declareEnvironmentRole } from "@/lib/__tests__/helpers/environment-role";
 
 // encryptToken is async (#2079); precompute the fixture ciphertexts once so the
 // synchronous mock-setup blocks below need no await. The stubbed token key
@@ -232,6 +234,17 @@ let encryptedRefresh: string;
 beforeAll(async () => {
   encryptedAccess = await encryptToken("access");
   encryptedRefresh = await encryptToken("refresh");
+});
+
+/*
+  #3035 (ENV-SAFETY 2): asking Xero to email an invoice is a provider SEND, so it
+  now goes through the environment-safety boundary. Both halves of the role have
+  to be declared or it resolves UNKNOWN and no invoice is emailed — a missing
+  `environmentSafetySettings` delegate is an UNREADABLE override, not "no
+  override". See src/lib/__tests__/helpers/environment-role.ts.
+*/
+beforeEach(() => {
+  declareEnvironmentRole("production");
 });
 
 describe("createXeroInvoiceForBooking", () => {
@@ -611,6 +624,103 @@ describe("createXeroInvoiceForBooking", () => {
         }),
       })
     );
+  });
+
+  /*
+    #3035 (ENV-SAFETY 2, INV-CONFIG-004). The invoice is still raised and its
+    ids still persisted; only the emailing is withheld, and the two non-allow
+    outcomes are reported differently because they need different remedies.
+  */
+  describe("the environment-safety boundary", () => {
+    function internetBankingBooking() {
+      return {
+        id: "booking_1",
+        memberId: "mem_1",
+        member: { id: "mem_1", email: "member@example.test" },
+        lodgeId: "lodge_1",
+        checkIn: "2026-07-31T00:00:00.000Z",
+        checkOut: "2026-08-02T00:00:00.000Z",
+        createdAt: "2026-05-15T10:30:00.000Z",
+        discountCents: 0,
+        promoAdjustmentCents: 0,
+        noEmails: false,
+        guests: [
+          {
+            firstName: "Jordan",
+            lastName: "Hartley-Smith",
+            ageTier: "ADULT",
+            isMember: true,
+            priceCents: 10000,
+          },
+        ],
+        payment: {
+          id: "pay_1",
+          status: "PENDING",
+          amountCents: 10000,
+          stripePaymentIntentId: null,
+          xeroInvoiceId: null,
+          xeroInvoiceNumber: null,
+          source: "INTERNET_BANKING",
+        },
+      };
+    }
+
+    it("raises the invoice but emails nobody on a confirmed copy, and stays SUCCEEDED", async () => {
+      declareEnvironmentRole("non-production");
+      mocks.prisma.booking.findUnique.mockResolvedValue(internetBankingBooking());
+
+      await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe(
+        "inv_1"
+      );
+
+      expect(
+        mocks.xeroClientInstance.accountingApi.emailInvoice
+      ).not.toHaveBeenCalled();
+      // NOT a withheld-email audit row: that row asserts an administrator turned
+      // the booking's "No emails" switch on, and nobody did.
+      expect(mocks.prisma.emailLog.create).not.toHaveBeenCalled();
+      // The invoice ids are still persisted, so the booking is not left thinking
+      // no invoice exists.
+      expect(mocks.prisma.payment.update).toHaveBeenCalled();
+      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+        "op_1",
+        expect.objectContaining({
+          status: "SUCCEEDED",
+          responsePayload: expect.objectContaining({
+            invoiceEmailError: null,
+            invoiceEmailSkipped: true,
+            invoiceEmailWithheldByNoEmails: false,
+            invoiceEmailWithheldForEnvironment: true,
+          }),
+        })
+      );
+    });
+
+    it("reports PARTIAL when nobody has said what this installation is", async () => {
+      vi.stubEnv("APP_ENVIRONMENT_ROLE", "");
+      mocks.prisma.booking.findUnique.mockResolvedValue(internetBankingBooking());
+
+      await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe(
+        "inv_1"
+      );
+
+      expect(
+        mocks.xeroClientInstance.accountingApi.emailInvoice
+      ).not.toHaveBeenCalled();
+      expect(mocks.prisma.emailLog.create).not.toHaveBeenCalled();
+      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+        "op_1",
+        expect.objectContaining({
+          status: "PARTIAL",
+          responsePayload: expect.objectContaining({
+            invoiceEmailError: expect.any(Error),
+            invoiceEmailSkipped: true,
+            invoiceEmailWithheldByNoEmails: false,
+            invoiceEmailWithheldForEnvironment: false,
+          }),
+        })
+      );
+    });
   });
 
   it("emails Internet Banking invoices and updates the Internet Banking transaction", async () => {
