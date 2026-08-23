@@ -162,13 +162,19 @@ export async function stateFromResolution(
  * The state a WRITE produces: the resolution recomputed from the row this
  * request just wrote, rather than re-read from the database.
  *
+ * `row` may be `null`, and that is not a write that failed. It is the dirty
+ * gate refusing a no-op: saving "override off" against an installation that has
+ * no row is already the stored answer, so nothing is written and there is no row
+ * to describe. The payload then says exactly what a read would — override off,
+ * readable, never changed.
+ *
  * Recomputing rather than re-reading is what makes the response describe the
  * write that just happened. A fresh `resolveEnvironmentRole()` here could pick
  * up a concurrent administrator's change and report it as this request's result.
  */
 export async function stateFromWrittenRow(
   resolution: EnvironmentRoleResolution,
-  row: PersistedEnvironmentSafetySettings,
+  row: PersistedEnvironmentSafetySettings | null,
 ): Promise<EnvironmentSafetyState> {
   return {
     role: resolution.role,

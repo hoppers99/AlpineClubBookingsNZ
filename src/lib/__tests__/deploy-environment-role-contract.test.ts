@@ -57,6 +57,21 @@ const envExample = readRepoFile(".env.example");
 const stagingEnvExample = readRepoFile(".env.staging.example");
 const instrumentation = readRepoFile("src/instrumentation.node.ts");
 
+/**
+ * The validator function's body, from its opening brace to its closing one.
+ *
+ * Extracted once because five cases below read it, and because slicing to the
+ * NEXT top-level `}` is what keeps an assertion about this function from
+ * accidentally passing on text from the function after it.
+ */
+function validatorBody(): string {
+  const start = script.indexOf("require_environment_role_env_key() {");
+  expect(start).toBeGreaterThan(0);
+  const end = script.indexOf("\n}\n", start);
+  expect(end).toBeGreaterThan(start);
+  return script.slice(start, end);
+}
+
 /** The offset of a `step "N/20" "…"` line, or -1. */
 function stepOffset(number: number): number {
   const match = script.indexOf(`step "${number}/20"`);
@@ -78,27 +93,86 @@ describe("the deploy refuses an undeclared production release", () => {
     expect(invocation).toBeGreaterThan(contract);
   });
 
-  it("accepts exactly the two declared values, and nothing near them", () => {
-    const start = script.indexOf("require_environment_role_env_key() {");
-    const body = script.slice(start, script.indexOf("\n}\n", start));
-    // Case-folded, then compared against the two words — the same rule
-    // `readEnvironmentRoleDeclaration` applies, so the deploy gate and the app
-    // cannot disagree about what counts as declared.
+  it("requires exactly `production`, because this script only ever deploys the live site", () => {
+    /*
+      THE NARROWEST AND MOST IMPORTANT ASSERTION IN THIS FILE (#3034 review).
+      The application parser accepts `production` OR `non-production`; this
+      script must accept only the first. It has no staging mode, no `--env`
+      switch and no alternate path — a non-production stack goes through
+      `docker-compose.staging.yml` and `scripts/e2e-stack.sh` — so a declaration
+      saying "this is a copy" is the one value it can prove is wrong.
+
+      And it is the likeliest operator error, not a theoretical one.
+      `.env.example` ships `non-production` (correct there: a template shipping
+      `production` would have a laptop declaring itself live), and `.env.example`
+      is also the file an operator diffs against their real `.env` when
+      upgrading. Copying the value across would pass a gate that accepted both,
+      migrate, boot, resolve NON_PRODUCTION — and then suppress every real
+      member's email and, once #3036 lands, rewrite the email addresses on the
+      club's real Xero contacts. The safe-LOOKING value is the unsafe outcome
+      here, and only here.
+    */
+    const body = validatorBody();
+
+    // Case-folded after trimming, the same rule `readEnvironmentRoleDeclaration`
+    // applies, so the gate and the app cannot disagree about what counts as set.
     expect(body).toContain("tr '[:upper:]' '[:lower:]'");
-    expect(body).toContain('!= "production"');
-    expect(body).toContain('!= "non-production"');
+
+    // The condition is a SINGLE comparison against `production`. Not an
+    // alternation that also admits `non-production` — that WAS the first draft,
+    // and it is the hole this case exists to keep closed.
+    expect(body).toContain('if [ "$normalised" != "production" ]; then');
+    expect(body).not.toContain('!= "non-production"');
+
+    // `non-production` may appear only inside the refusal, explaining itself —
+    // never in the condition that decides whether to refuse.
+    const condition = body.slice(0, body.indexOf("; then") + 6);
+    expect(condition).not.toContain("non-production");
+
     // It FAILS rather than warns.
     expect(body).toContain("return 1");
     // And it names the trap: the other variable that looks like it answers this.
     expect(body).toContain("APP_RUNTIME_ROLE");
   });
 
+  it("tells an operator who declared non-production what it would have done", () => {
+    // A refusal that only says "must be production" invites the operator to
+    // wonder whether the gate is being fussy. Naming the consequence — real
+    // members' email suppressed, real Xero contact addresses rewritten — is what
+    // makes it obvious the value is wrong rather than the check.
+    const body = validatorBody();
+    expect(body).toContain('if [ "$normalised" = "non-production" ]; then');
+
+    const branch = body.slice(body.indexOf('= "non-production"'));
+    expect(branch).toContain("COPY");
+    expect(branch.toLowerCase()).toContain("real members");
+    expect(branch.toLowerCase()).toContain("xero");
+    // And it explains where the wrong value most likely came from.
+    expect(branch).toContain(".env.example");
+    expect(body).toContain("docs/guides/environment-role.md");
+  });
+
+  it("keeps the undeclared case explained differently from the wrong-value case", () => {
+    // Two quite different mistakes reach this refusal and they need different
+    // instructions: "you have not set it" versus "you set it to the value that
+    // says this is a copy".
+    const body = validatorBody();
+    expect(body).toContain("resolves UNKNOWN");
+    expect(body).toContain("Set APP_ENVIRONMENT_ROLE=production");
+    // The absent case is caught by require_env_key, which fails on its own
+    // before the value comparison — so an absent AND a wrong value both abort.
+    expect(body).toContain('require_env_key "$key"');
+  });
+
+  it("points a non-production operator at the stack that is actually for them", () => {
+    expect(validatorBody()).toContain("docker-compose.staging.yml");
+  });
+
   it("names the variable the application actually reads", () => {
     // A gate demanding a variable nothing reads passes every deploy and protects
     // nothing, so the name comes from the module that parses it.
     expect(ENVIRONMENT_ROLE_ENV_VAR).toBe("APP_ENVIRONMENT_ROLE");
-    const start = script.indexOf("require_environment_role_env_key() {");
-    const body = script.slice(start, script.indexOf("\n}\n", start));
+    const body = validatorBody();
     expect(body).toContain(`local key="${ENVIRONMENT_ROLE_ENV_VAR}"`);
   });
 
@@ -248,6 +322,19 @@ describe("the boot advisory reaches the containers that serve traffic", () => {
     // Its own try/catch — a configuration advisory that stops the site coming up
     // would be a worse fault than the one it reports.
     expect(block).toContain("} catch {");
-    expect(block).toContain(ENVIRONMENT_ROLE_ENV_VAR);
+    /*
+      And it does NOT hard-code an instruction to set the variable. That reads
+      like a missing assertion and is the fix: an UNKNOWN caused by an unreadable
+      override has a perfectly correct APP_ENVIRONMENT_ROLE, and telling that
+      operator to set it sends them to repair the one thing that is already
+      right. The per-case instruction comes from `resolution.notes`, asserted in
+      the case above; the notes' own content is asserted in
+      environment-role-precedence.test.ts.
+    */
+    const sentence = block.slice(block.indexOf("logger.error"));
+    expect(sentence).not.toContain(`Set ${ENVIRONMENT_ROLE_ENV_VAR}`);
+    expect(sentence).not.toContain(
+      `${ENVIRONMENT_ROLE_ENV_VAR} does not say`,
+    );
   });
 });

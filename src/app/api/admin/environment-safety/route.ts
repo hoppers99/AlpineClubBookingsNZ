@@ -152,7 +152,29 @@ export async function PATCH(request: Request) {
           difference. The isolation level above — not the fact that this read sits
           inside the transaction — is what keeps `before` true at commit time.
         */
-        if (before && before.forceNonProduction === forceNonProduction) {
+        /*
+          ABSENT COUNTS AS `false` HERE, and that is the fix for a real hole
+          (#3034 review). The first version gated on `before &&`, so saving
+          `forceNonProduction: false` with NO row created one and wrote an audit
+          row summarised "switched off" — for an override that had never been on.
+          The effective role does not change either way, so that row claimed a
+          change that did not happen, which is exactly what the paragraph above
+          argues against.
+
+          Treating absent as `false` is the right resolution rather than merely
+          the cheaper one, for two reasons. An absent row and `false` ARE the same
+          answer — that is what the schema's `@default(false)` and the migration's
+          decision not to seed a row both rest on, and what lets every read path
+          avoid ever creating one. And the panel never offers this: with the
+          override off the button reads "Switch the override on", so a `false`
+          against an absent row can only arrive from a direct API call. The
+          "provenance of a deliberate confirmation" it would preserve is
+          provenance nobody asked for — and it would go on to make the panel say
+          "last changed <date> by <name>" for a change that never occurred, which
+          is the same untruth one layer up.
+        */
+        const beforeValue = before?.forceNonProduction ?? false;
+        if (beforeValue === forceNonProduction) {
           return { changed: false as const, row: before };
         }
 
@@ -215,7 +237,7 @@ export async function PATCH(request: Request) {
     */
     const resolution = decideEnvironmentRole(
       readEnvironmentRoleDeclaration(),
-      outcome.row.forceNonProduction
+      outcome.row?.forceNonProduction
         ? {
             kind: "force-non-production",
             updatedAt: outcome.row.updatedAt,

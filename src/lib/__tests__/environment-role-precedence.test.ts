@@ -222,6 +222,42 @@ describe("the notes explain the state without leaking anything", () => {
     expect(invalid.notes.join(" ")).toContain('"prodction"');
   });
 
+  it("gives each UNKNOWN cause its own repair, because they are different faults", () => {
+    /*
+      #3034 review. UNKNOWN has three causes and only two are "the variable is
+      not set". The third is a valid `production` declaration whose safer override
+      could not be READ — the app started before `prisma migrate deploy` — and the
+      boot log, the setup checklist and the admin panel all render these notes
+      verbatim. A single fixed sentence naming APP_ENVIRONMENT_ROLE would send
+      that operator to fix the one thing that is already correct, and never
+      mention the repair that works. So the notes are asserted to DIFFER, not
+      merely to exist.
+    */
+    const unreadable = decide("production", "unreadable").notes.join(" ");
+    const absent = decide("absent", "off").notes.join(" ");
+
+    // The unreadable case names the database repair and does NOT instruct
+    // anybody to set the variable.
+    expect(unreadable).toContain("prisma migrate deploy");
+    expect(unreadable).not.toContain(
+      "Set APP_ENVIRONMENT_ROLE to production or non-production",
+    );
+
+    // The undeclared case is the exact mirror.
+    expect(absent).toContain(
+      "Set APP_ENVIRONMENT_ROLE to production or non-production",
+    );
+    expect(absent).not.toContain("prisma migrate deploy");
+  });
+
+  it("states the valid declaration it DID find, when the override is what failed", () => {
+    // Without this the operator cannot tell whether their declaration was read
+    // at all, which is the first thing they will wonder.
+    const unreadable = decide("production", "unreadable").notes.join(" ");
+    expect(unreadable).toContain("APP_ENVIRONMENT_ROLE=production");
+    expect(unreadable).toContain("could not be read");
+  });
+
   it("carries no credential-shaped text", () => {
     for (const row of TABLE) {
       for (const note of decide(row.declaration, row.override).notes) {

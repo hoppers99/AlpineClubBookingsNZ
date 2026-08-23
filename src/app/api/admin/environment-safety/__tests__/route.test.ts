@@ -628,6 +628,56 @@ describe("PATCH — the safer override, confirmed and audited", () => {
     expect(h.tx.client.auditLog.create).not.toHaveBeenCalled();
   });
 
+  it("writes NOTHING when no row exists and the override is saved off", async () => {
+    /*
+      #3034 review. `before` is null here, so the first version's `before &&`
+      gate did not fire: it created a row and audited "switched off" for an
+      override that had never been on. Absent and `false` are the same answer —
+      that is what the schema default and the un-seeded migration rest on — so
+      this is a no-op and must leave no trace.
+    */
+    setPersisted(null);
+    const response = await patch({
+      forceNonProduction: false,
+      confirmed: true,
+    });
+
+    expect(response.status).toBe(200);
+    const payload = await response.json();
+    expect(payload.changed).toBe(false);
+    // No upsert, and no audit row claiming a switch-off that never happened.
+    expect(txDelegatesTouched()).toEqual(["environmentSafetySettings"]);
+    expect(h.tx.client.auditLog.create).not.toHaveBeenCalled();
+    expect(
+      h.tx.client.environmentSafetySettings.upsert,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("still describes the state honestly when that no-op happens", async () => {
+    // There is no row to describe, so the payload has to say what a READ would.
+    declare("production");
+    setPersisted(null);
+    const payload = await (
+      await patch({ forceNonProduction: false, confirmed: true })
+    ).json();
+
+    expect(payload.state.role).toBe("PRODUCTION");
+    expect(payload.state.override).toEqual({
+      on: false,
+      readable: true,
+      updatedAt: null,
+      updatedByName: null,
+    });
+  });
+
+  it("still writes when no row exists and the override is saved ON", async () => {
+    // The mirror of the case above: absent -> true IS a change.
+    setPersisted(null);
+    const response = await patch({ forceNonProduction: true, confirmed: true });
+    expect((await response.json()).changed).toBe(true);
+    expect(auditedRow().metadata).toEqual({ before: null, after: true });
+  });
+
   it("records the acting administrator as the last writer", async () => {
     await patch({ forceNonProduction: true, confirmed: true });
     const upsert = h.tx.client.environmentSafetySettings.upsert as ReturnType<

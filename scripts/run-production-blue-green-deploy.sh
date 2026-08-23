@@ -669,26 +669,52 @@ require_http_url_env_key() {
 }
 
 # The deployment's declaration of what this installation IS (ENV-SAFETY 1, #3034;
-# epic #2986; INV-CONFIG-003). Exactly `production` or `non-production`, matched
-# case-insensitively after trimming, exactly as
-# `src/lib/environment-role-declaration.ts` matches it.
+# epic #2986; INV-CONFIG-003).
 #
-# WHY THIS IS A HARD REFUSAL AND NOT A WARNING, and why it has to run in the
-# preflight. From this release on, an installation that has not declared itself
-# resolves UNKNOWN, and UNKNOWN fails closed: nothing whose safety depends on
-# knowing whether these are the club's real members goes out. An existing
-# production install upgrading into this release has no declaration, so without
-# this check the upgrade would succeed and then quietly stop sending mail — the
-# outcome epic #2986 explicitly forbids shipping. Refusing at step 3 of 20
-# instead means the old colour is still serving, the migration has not run
-# (step 13) and nothing has been switched (step 17): the operator adds one line
-# to .env and re-runs. `deploy-environment-role-contract.test.ts` pins that
-# ORDER, not merely this function's existence, because moving the check after
-# step 13 or step 14 brings the forbidden outcome straight back.
+# THIS SCRIPT DEPLOYS THE CLUB'S LIVE SITE AND NOTHING ELSE, so it requires
+# exactly `production`. That is narrower than the application parser, which
+# accepts `production` OR `non-production`, and the difference is the whole point.
+# There is no staging mode here, no `--env` switch and no alternate path: a
+# non-production stack goes through `docker-compose.staging.yml` and
+# `scripts/e2e-stack.sh`, which declare `non-production` themselves. A script
+# whose only job is the live site accepting a declaration that says "this is a
+# copy" would be accepting the one value it can prove is wrong.
 #
-# A near miss is refused rather than guessed at: `prod`, `staging`, `true` and
-# `APP_RUNTIME_ROLE`'s own values are all rejected, because guessing is how a
-# typo silently becomes "production".
+# THAT IS NOT A THEORETICAL HOLE, it is the likeliest operator error. `.env.example`
+# ships `APP_ENVIRONMENT_ROLE=non-production` — correct there, because it is a
+# local-development template and a template that shipped `production` would have a
+# developer's laptop declaring itself live. But `.env.example` is ALSO the file an
+# operator diffs against their real `.env` when upgrading, and "a new key appeared
+# in the template, copy it across" is the normal upgrade move. Following that
+# through: the deploy passes, the migration runs, the new colour boots and resolves
+# NON_PRODUCTION, and then every confirmation, payment notice, waitlist offer and
+# renewal reminder for the club's REAL members is safety-suppressed — and once
+# #3036 lands, every application-managed contact on the club's REAL Xero
+# organisation has its email address rewritten to a sandbox address. Destructive
+# edits to live accounting, made confidently, by the very mechanism this epic added
+# to keep members safe.
+#
+# So the safe-looking value is the unsafe outcome HERE, and only here. The correct
+# pairing is `non-production` in the template (safe by default on a laptop) and
+# `production` required at the one place that knows it is deploying production.
+#
+# WHY IT IS A HARD REFUSAL AND WHY IT RUNS IN THE PREFLIGHT. From this release on,
+# an installation that has not declared itself resolves UNKNOWN, and UNKNOWN fails
+# closed: nothing whose safety depends on knowing whether these are the club's real
+# members goes out. An existing production install upgrading into this release has
+# no declaration, so without this check the upgrade would succeed and then quietly
+# stop sending mail — the outcome epic #2986 explicitly forbids shipping. Refusing
+# at step 3 of 20 means the old colour is still serving, the migration has not run
+# (step 13) and nothing has been switched (step 17): the operator fixes one line in
+# .env and re-runs. `deploy-environment-role-contract.test.ts` pins that ORDER, not
+# merely this function's existence, because moving the check after step 13 or step
+# 14 brings the forbidden outcome straight back.
+#
+# The comparison is case-folded after trimming, exactly as
+# `src/lib/environment-role-declaration.ts` folds it, so the deploy gate and the
+# application cannot disagree about what counts as declared. A near miss is
+# refused rather than guessed at: `prod`, `staging`, `true` and APP_RUNTIME_ROLE's
+# own values are all rejected, because guessing is how a typo becomes "production".
 require_environment_role_env_key() {
   local key="APP_ENVIRONMENT_ROLE"
   local value
@@ -698,11 +724,23 @@ require_environment_role_env_key() {
   value="$(trim_whitespace "$(get_env_file_value "$key")")"
   normalised="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
 
-  if [ "$normalised" != "production" ] && [ "$normalised" != "non-production" ]; then
-    echo ".env entry $key must be exactly production or non-production (got: $value)" >&2
-    echo "It declares whether this installation is the club's live site or a copy." >&2
-    echo "Nothing infers it: an undeclared installation resolves UNKNOWN and holds back" >&2
-    echo "member email and Xero writes until it is declared. See docs/guides/environment-role.md." >&2
+  if [ "$normalised" != "production" ]; then
+    echo ".env entry $key must be exactly production for this script (got: $value)" >&2
+    echo "This script deploys the club's LIVE site. There is no staging mode here." >&2
+    if [ "$normalised" = "non-production" ]; then
+      echo "The value says this installation is a COPY. Deploying it would suppress" >&2
+      echo "real members' email and, once Xero containment lands, rewrite the email" >&2
+      echo "addresses on the club's real accounting contacts. Refusing." >&2
+      echo "If you copied this line from .env.example, that template is for a local" >&2
+      echo "checkout: production deployments set production here." >&2
+    else
+      echo "It declares whether this installation is the club's live site or a copy," >&2
+      echo "and nothing infers it: an undeclared installation resolves UNKNOWN and" >&2
+      echo "holds back member email and Xero writes until it is declared." >&2
+    fi
+    echo "Set APP_ENVIRONMENT_ROLE=production in this deployment's .env, then re-run." >&2
+    echo "Non-production stacks use docker-compose.staging.yml, which declares" >&2
+    echo "non-production itself. See docs/guides/environment-role.md." >&2
     echo "This is NOT APP_RUNTIME_ROLE, which names the container slot (web-blue, cron-leader)." >&2
     return 1
   fi

@@ -146,11 +146,22 @@ export async function register() {
     // the containers that serve traffic. Here it runs on every Node boot,
     // alongside the palette prime and the config self-heal.
     //
+    // THE SENTENCE COMES FROM THE RESOLVER, not from here, and that is the whole
+    // of this block's care (#3034 review). UNKNOWN has THREE causes and only two
+    // of them are "the variable is not set": the third is a perfectly valid
+    // `production` declaration whose safer override could not be READ, which is
+    // what happens when somebody starts the app before running
+    // `prisma migrate deploy` — the table does not exist, the read throws, and the
+    // resolver correctly answers UNKNOWN. A fixed sentence naming
+    // APP_ENVIRONMENT_ROLE would then send that operator to fix a variable that
+    // is already right, and never mention the repair that works. `resolution.notes`
+    // exists precisely so each case explains itself, so the notes ARE the message.
+    //
     // Best-effort, in its own try/catch, and it can never block or fail startup:
     // a configuration advisory that stops the site coming up would be a worse
-    // fault than the one it reports. It logs the ROLE and the repair path only —
-    // no environment values beyond the variable's own name, and nothing from the
-    // database.
+    // fault than the one it reports. The structured fields carry the two source
+    // KINDS and nothing else — never `declaration.raw`, which is operator text,
+    // and nothing from the database.
     try {
       const { resolveEnvironmentRole } = await import("./lib/environment-role");
       const resolution = await resolveEnvironmentRole();
@@ -162,7 +173,7 @@ export async function register() {
             declaration: resolution.declaration.kind,
             override: resolution.databaseOverride.kind,
           },
-          "APP_ENVIRONMENT_ROLE does not say whether this installation is the club's live site or a copy, so its environment role is UNKNOWN. Anything whose safety depends on knowing — sending email to members, writing to the club's Xero organisation — will be held back until it is set to production or non-production. This is not APP_RUNTIME_ROLE. See docs/guides/environment-role.md.",
+          `This installation's environment role is UNKNOWN, so anything whose safety depends on knowing whether these are the club's real members — sending email to members, writing to the club's Xero organisation — is held back until it is resolved. ${resolution.notes.join(" ")} See docs/guides/environment-role.md.`,
         );
       }
     } catch {
