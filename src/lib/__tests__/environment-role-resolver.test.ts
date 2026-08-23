@@ -4,7 +4,10 @@ const h = vi.hoisted(() => ({
   findUnique: vi.fn(),
   /** Set false to simulate a Prisma client generated before this model existed. */
   delegatePresent: { value: true },
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
+
+vi.mock("@/lib/logger", () => ({ default: h.logger }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: new Proxy(
@@ -25,6 +28,7 @@ vi.mock("@/lib/prisma", () => ({
 import {
   ENVIRONMENT_SAFETY_SETTINGS_ID,
   ENVIRONMENT_SAFETY_SETTINGS_SELECT,
+  __resetEnvironmentRoleUnreadableLogThrottle,
   getEnvironmentRole,
   resolveEnvironmentRole,
 } from "@/lib/environment-role";
@@ -97,6 +101,7 @@ function overrideRow(forceNonProduction: boolean) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  __resetEnvironmentRoleUnreadableLogThrottle();
   h.delegatePresent.value = true;
   h.findUnique.mockResolvedValue(null);
   // Every test starts from an environment that says NOTHING, including through
@@ -229,6 +234,156 @@ describe("an unreadable override fails closed", () => {
   it("does not throw — a configuration reader that throws is a blank page", async () => {
     h.findUnique.mockRejectedValue(new Error("boom"));
     await expect(resolveEnvironmentRole()).resolves.toBeTruthy();
+  });
+});
+
+describe("a failed override read says why, once per window", () => {
+  /*
+    #3034 review finding 1. "Our live site went UNKNOWN and stopped emailing
+    members" is the most confusing symptom this change can produce, and a bare
+    `catch {}` discards the only evidence of the cause. The operator note can
+    only guess between "the migration has not been applied" and "the database is
+    unreachable"; the Prisma error says which.
+
+    The throttle is what stops that becoming a log storm: this resolver runs once
+    per email send from #3035 onward, and a database outage is exactly when it
+    fires. The window is advanced with `vi.setSystemTime`, never waited out —
+    unit tests run with the clock frozen at 2026-07-01.
+  */
+  const FROZEN = new Date("2026-07-01T00:00:00.000Z");
+  const WINDOW_MS = 15 * 60 * 1000;
+
+  afterEach(() => {
+    vi.setSystemTime(FROZEN);
+  });
+
+  it("logs the first failure at error level, with the fault named", async () => {
+    h.findUnique.mockRejectedValue(
+      new Error(
+        'The table `public.EnvironmentSafetySettings` does not exist in the current database.',
+      ),
+    );
+    await expect(getEnvironmentRole()).resolves.toBe("UNKNOWN");
+
+    expect(h.logger.error).toHaveBeenCalledTimes(1);
+    const [context, message] = h.logger.error.mock.calls[0] as [
+      { scope: string; err: { message: string } },
+      string,
+    ];
+    expect(context.scope).toBe("environment-role");
+    expect(context.err.message).toContain("EnvironmentSafetySettings");
+    expect(message).toContain("UNKNOWN");
+    expect(message).toContain("prisma migrate deploy");
+  });
+
+  it("attaches the error MESSAGE only, never the whole error object", async () => {
+    /*
+      A Prisma error can carry the client's configuration on adjacent fields, and
+      `DATABASE_URL` holds the database password. The logger redacts known secret
+      keys as a backstop; this narrowness is the actual control.
+    */
+    const error = Object.assign(new Error("connection refused"), {
+      clientVersion: "7.9.1",
+      meta: {
+        database_url: "postgresql://tac:super-secret-password@postgres:5432/db",
+      },
+    });
+    h.findUnique.mockRejectedValue(error);
+    await getEnvironmentRole();
+
+    const logged = JSON.stringify(h.logger.error.mock.calls[0]);
+    expect(logged).toContain("connection refused");
+    expect(logged).not.toContain("super-secret-password");
+    expect(logged).not.toContain("postgresql://");
+    expect(logged).not.toContain("clientVersion");
+  });
+
+  it("does not log again inside the window", async () => {
+    h.findUnique.mockRejectedValue(new Error("connection refused"));
+
+    await getEnvironmentRole();
+    expect(h.logger.error).toHaveBeenCalledTimes(1);
+
+    // Nine more resolutions in the same window — the shape a cron sweep of
+    // pending emails would produce during an outage.
+    for (let i = 0; i < 9; i += 1) await getEnvironmentRole();
+    expect(h.logger.error).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(new Date(FROZEN.getTime() + WINDOW_MS - 1000));
+    await getEnvironmentRole();
+    expect(h.logger.error).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs again once the window has passed", async () => {
+    h.findUnique.mockRejectedValue(new Error("connection refused"));
+
+    await getEnvironmentRole();
+    expect(h.logger.error).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(new Date(FROZEN.getTime() + WINDOW_MS + 1));
+    await getEnvironmentRole();
+    expect(h.logger.error).toHaveBeenCalledTimes(2);
+  });
+
+  it("says nothing at all when the read succeeds", async () => {
+    declare("production");
+    h.findUnique.mockResolvedValue(null);
+    await getEnvironmentRole();
+    expect(h.logger.error).not.toHaveBeenCalled();
+  });
+
+  it("stays silent for a MISSING delegate, which is the unit suite's normal state", async () => {
+    /*
+      Almost every existing suite mocks `@/lib/prisma` with a partial object
+      naming only the delegates it uses, so from #3035 onward "the delegate is
+      not in the mock" is the default. An error line there would land in several
+      hundred unrelated suites and say nothing an operator could act on — while
+      the fail-closed BEHAVIOUR is still exactly the same, which is the part that
+      matters.
+    */
+    h.delegatePresent.value = false;
+    await expect(getEnvironmentRole()).resolves.toBe("UNKNOWN");
+    expect(h.logger.error).not.toHaveBeenCalled();
+  });
+});
+
+describe("an absent Prisma delegate is an interface contract, not an internal detail", () => {
+  /*
+    #3034 review finding 3. This is pinned rather than left implicit because
+    #3035 and #3036 will call `getEnvironmentRole()` from code paths whose
+    existing test suites mock `@/lib/prisma` partially. If this ever became a
+    throw it would break those suites at import time, in numbers, and the cause
+    would be nowhere near the failure.
+  */
+  it("resolves UNKNOWN rather than throwing", async () => {
+    h.delegatePresent.value = false;
+    await expect(resolveEnvironmentRole()).resolves.toEqual(
+      expect.objectContaining({
+        role: "UNKNOWN",
+        decidedBy: "unresolved",
+        databaseOverride: { kind: "unreadable" },
+      }),
+    );
+  });
+
+  it("resolves UNKNOWN rather than throwing even under a declared production", async () => {
+    declare("production");
+    h.delegatePresent.value = false;
+    await expect(getEnvironmentRole()).resolves.toBe("UNKNOWN");
+  });
+
+  it("still keeps a declared non-production intact", async () => {
+    declare("non-production");
+    h.delegatePresent.value = false;
+    await expect(getEnvironmentRole()).resolves.toBe("NON_PRODUCTION");
+  });
+
+  it("never throws for any declaration", async () => {
+    h.delegatePresent.value = false;
+    for (const value of [undefined, "production", "non-production", "staging"]) {
+      declare(value);
+      await expect(resolveEnvironmentRole()).resolves.toBeTruthy();
+    }
   });
 });
 

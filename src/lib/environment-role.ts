@@ -63,6 +63,7 @@ import {
   readEnvironmentRoleDeclaration,
   type EnvironmentRoleDeclaration,
 } from "@/lib/environment-role-declaration";
+import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
 /** The settings singleton's id, spelled once. */
@@ -167,19 +168,86 @@ export const ENVIRONMENT_SAFETY_SETTINGS_UNREADABLE: unique symbol = Symbol(
   "environment-safety-settings-unreadable",
 );
 
+/**
+ * How often a failed override read may say so, per process.
+ *
+ * The single most confusing symptom this change can produce is "our live site
+ * went UNKNOWN and stopped emailing members", and a bare `catch {}` throws away
+ * the only evidence of WHY — the operator note can only offer a guess between
+ * two very different faults ("apply the migration" versus "the database is
+ * unreachable"), while the Prisma error says which. So it is logged at error
+ * level.
+ *
+ * THROTTLED, because this resolver runs once per email send and once per Xero
+ * contact from #3035 and #3036 onward. A database outage is exactly when this
+ * fires, so logging unconditionally would turn one fault into a log storm at the
+ * moment the logs matter most. Same shape as
+ * `alertAdminsOfFailClosedWithhold` in `src/lib/email/core.ts`, which solved
+ * this identical hazard: the first occurrence logs immediately, then at most one
+ * per window.
+ *
+ * The window is wall-clock `Date.now()` and not a stopwatch, so the frozen test
+ * clock is not a problem: a test advances it with `vi.setSystemTime` rather than
+ * waiting. AGENTS.md's "`Date.now()` is no longer a stopwatch" rule is about
+ * measuring ELAPSED time, which this is not.
+ */
+const UNREADABLE_LOG_WINDOW_MS = 15 * 60 * 1000;
+
+/** 0 means "never logged in this process". */
+let unreadableLoggedAt = 0;
+
+/** Test seam: the throttle is module state and must not leak between tests. */
+export function __resetEnvironmentRoleUnreadableLogThrottle() {
+  unreadableLoggedAt = 0;
+}
+
+function logUnreadableOverride(error: unknown) {
+  const now = Date.now();
+  if (unreadableLoggedAt !== 0 && now - unreadableLoggedAt < UNREADABLE_LOG_WINDOW_MS) {
+    return;
+  }
+  unreadableLoggedAt = now;
+  /*
+    The error's MESSAGE and nothing else. A Prisma error can carry the client's
+    configuration on adjacent fields, and `DATABASE_URL` holds the database
+    password — so the whole error object is deliberately not attached, and
+    `err: { message }` is the shape that says "the fault, not the credentials".
+    The logger redacts known secret keys anyway; that is a backstop, not the
+    reason this is narrow.
+  */
+  logger.error(
+    {
+      scope: "environment-role",
+      err: { message: error instanceof Error ? error.message : String(error) },
+    },
+    "Could not read the environment-safety override, so this installation's role cannot be confirmed and resolves UNKNOWN. Anything whose safety depends on knowing whether this is the club's live site will fail closed until it can be read. Apply pending migrations (prisma migrate deploy) or restore database access.",
+  );
+}
+
 export async function loadPersistedEnvironmentSafetySettings(): Promise<
   | PersistedEnvironmentSafetySettings
   | null
   | typeof ENVIRONMENT_SAFETY_SETTINGS_UNREADABLE
 > {
   const delegate = environmentSafetySettingsDelegate();
+  /*
+    A MISSING DELEGATE IS DELIBERATELY SILENT, unlike a thrown read. In
+    production the delegate is generated from the same schema as this code, so
+    its absence is not a fault an operator can act on — while in the unit suite it
+    is the DEFAULT state, because almost every test mocks `@/lib/prisma` with a
+    partial object naming only the delegates it uses. Logging here would put an
+    error line in several hundred unrelated suites and say nothing the readiness
+    surface does not already say. `resolveEnvironmentRole` still fails closed for
+    it, which is the part that matters.
+  */
   if (!delegate) return ENVIRONMENT_SAFETY_SETTINGS_UNREADABLE;
   try {
     return await delegate.findUnique({
       where: { id: ENVIRONMENT_SAFETY_SETTINGS_ID },
       select: ENVIRONMENT_SAFETY_SETTINGS_SELECT,
     });
-  } catch {
+  } catch (error) {
+    logUnreadableOverride(error);
     return ENVIRONMENT_SAFETY_SETTINGS_UNREADABLE;
   }
 }

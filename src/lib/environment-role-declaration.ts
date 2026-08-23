@@ -90,11 +90,19 @@ export type EnvironmentRoleDeclaration =
  * something is in there — deleting it silently would render as `production`
  * beside a message saying that value was refused, which reads as a bug in the
  * app rather than a stray byte in their configuration.
+ *
+ * THE WHOLE RESULT IS PRINTABLE ASCII, marker included: the truncation marker
+ * is `...` and not an ellipsis character, so the promise the paragraph above
+ * makes is true of the string that is actually returned. It first used the
+ * single-character ellipsis, which reduced everything to ASCII and then
+ * appended a character that is not — harmless, but a docblock that overstates
+ * by one character is a docblock the next reader has to go and check (#3034
+ * review).
  */
 export function sanitizeEnvironmentRoleRawValue(value: string): string {
   const printable = value.replace(/[^\x20-\x7E]/g, "?");
   return printable.length > ENVIRONMENT_ROLE_RAW_DISPLAY_MAX_LENGTH
-    ? `${printable.slice(0, ENVIRONMENT_ROLE_RAW_DISPLAY_MAX_LENGTH - 1)}…`
+    ? `${printable.slice(0, ENVIRONMENT_ROLE_RAW_DISPLAY_MAX_LENGTH - 3)}...`
     : printable;
 }
 

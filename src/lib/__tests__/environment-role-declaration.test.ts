@@ -170,7 +170,10 @@ describe("the rejected value is shown back, safely", () => {
     const long = "x".repeat(500);
     const sanitized = sanitizeEnvironmentRoleRawValue(long);
     expect(sanitized.length).toBe(ENVIRONMENT_ROLE_RAW_DISPLAY_MAX_LENGTH);
-    expect(sanitized.endsWith("…")).toBe(true);
+    expect(sanitized.endsWith("...")).toBe(true);
+    // The marker is ASCII too, so "everything this returns is printable
+    // ASCII" is true of the whole string, not merely of the part before it.
+    expect(/^[ -~]*$/.test(sanitized)).toBe(true);
 
     const declaration = read(long);
     expect(declaration.kind).toBe("invalid");
