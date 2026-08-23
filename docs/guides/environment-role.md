@@ -149,10 +149,37 @@ process starts (step 14), and long before the traffic cutover (step 17). An
 undeclared upgrade therefore **aborts with the previous release still serving and
 nothing changed**. You add the line and run the deploy again.
 
-**And the app says so loudly if it ever does happen** — for example on a
-deployment brought up by hand rather than through that script. Start-up logs an
-error naming the setting, and the setup checklist reports the **Production Or
-Non-Production** step as blocked.
+**It refuses the opposite mistake too, and that one is easier to make.** That
+script deploys the club's live site and nothing else — there is no staging mode in
+it — so it also refuses a `.env` saying `APP_ENVIRONMENT_ROLE=non-production`.
+
+The reason is worth understanding, because the mistake is a natural one.
+`.env.example` ships `non-production`, which is correct for that file: it is a
+local-development template, and one shipping `production` would have every
+developer's laptop declaring itself the live site. But `.env.example` is also the
+file you diff against your real `.env` when upgrading, and "a new key appeared in
+the template, copy it across" is the normal move. If the deploy accepted it, the
+upgrade would succeed, the new release would come up believing it was a copy, and
+every real member's email would be held back — and once the Xero containment
+lands, the email addresses on the club's **real** accounting contacts would be
+rewritten to sandbox addresses. So the deploy stops, and says exactly that.
+
+**And the app says so loudly if an undeclared installation ever does come up** —
+for example on a deployment brought up by hand rather than through that script.
+Start-up logs an error explaining the specific cause, and the setup checklist
+reports the **Production Or Non-Production** step as blocked.
+
+### After the deploy, read the message and not the tick
+
+Open **Admin → Setup** and look at the **Production Or Non-Production** step. It
+must say **production**.
+
+This is worth spelling out because a *non-production* installation also shows a
+green tick there — both are validly configured states, and the checklist cannot
+know which one your installation is supposed to be. So the tick only tells you
+that the question has been answered; the step's message is what tells you *which
+answer*, and on the club's live site the only correct one is production.
+`/admin/environment` says the same thing in more detail.
 
 ## Settings reference
 
@@ -169,7 +196,9 @@ Non-Production** step as blocked.
 | It says a value was **refused**, and quotes it | The setting holds something other than the two accepted words — commonly `prod`, `staging`, or a value copied from `APP_RUNTIME_ROLE` | Correct it to exactly `production` or `non-production` |
 | I set `APP_RUNTIME_ROLE` and nothing changed | Wrong setting — that one names the container slot | Set `APP_ENVIRONMENT_ROLE` instead |
 | Members stopped receiving email after an upgrade | The installation is *not configured*, so delivery is being held back | Declare the role as above; check the **Production Or Non-Production** step on `/admin/setup` |
-| The deploy aborted at step 3 saying the entry must be `production` or `non-production` | Working as designed — the declaration is missing or wrong | Add the line to `.env` on the server and run the deploy again. Nothing was migrated or switched |
+| The deploy aborted at step 3 saying the entry must be exactly `production` | Working as designed — the declaration is missing, or it says `non-production` on the live site | Set `APP_ENVIRONMENT_ROLE=production` in `.env` on the server and run the deploy again. Nothing was migrated or switched |
+| The deploy refused a `.env` I copied from `.env.example` | That template holds `non-production`, which is right for a laptop and wrong for the live site | Change the value to `production`. The template is not meant to be copied wholesale into a live deployment |
+| The setup step shows a green tick but members still get no email | The tick means "declared", not "declared production" — read the message | If it says non-production, set `APP_ENVIRONMENT_ROLE=production` and restart |
 | The page says the override **could not be read** | The database migration for this release has not been applied here | Run `prisma migrate deploy` (or `npm run db:migrate` in development) and reload |
 | It says **Production** but this is a copy | The copy inherited the live `.env` | Set `APP_ENVIRONMENT_ROLE=non-production` on the copy, and switch the safer override on now if you need it safe immediately |
 | Who put this site into "copy" mode? | — | **Admin → Audit Log**, action `ENVIRONMENT_SAFETY_OVERRIDE_UPDATED`. The entry names the administrator and the value before and after |

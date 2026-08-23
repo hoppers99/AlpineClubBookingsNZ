@@ -1948,15 +1948,30 @@ audited (`ENVIRONMENT_SAFETY_OVERRIDE_UPDATED`).
 An installation that predates this release has no declaration, so it would
 resolve `UNKNOWN`. Two things stop that becoming a silent outage:
 
-1. **The production deploy refuses to run without it.**
-   `scripts/run-production-blue-green-deploy.sh` validates the `.env` entry at
-   **step 3 of 20** — before the migration (step 13), before the new release's
-   first process starts (step 14) and long before the Caddy cutover (step 17). An
-   undeclared upgrade aborts with the old release still serving and nothing
-   changed. Add the line to `.env` and run it again.
-2. **The app says so loudly.** A boot with an undeclared role logs an error
-   naming the variable, and the setup checklist's **Production Or Non-Production**
-   step reports `blocked` with the repair.
+1. **The production deploy refuses to run without it, and refuses the wrong
+   value too.** `scripts/run-production-blue-green-deploy.sh` validates the `.env`
+   entry at **step 3 of 20** — before the migration (step 13), before the new
+   release's first process starts (step 14) and long before the Caddy cutover
+   (step 17). It requires **exactly `production`**, which is narrower than the
+   application parser on purpose: that script deploys the club's live site and
+   nothing else, so a `.env` saying `non-production` is the one value it can prove
+   is wrong. `.env.example` ships `non-production` (right for a local checkout,
+   wrong for a live deployment) and is also the file operators diff against their
+   real `.env` when upgrading, so copying that value across is the likeliest
+   error — and it would produce a live site holding back member email and, once
+   Xero containment lands, rewriting the club's real contact addresses. Either
+   mistake aborts with the old release still serving and nothing changed.
+2. **The app says so loudly.** A boot with an unresolved role logs an error
+   explaining the specific cause — an absent declaration and an unreadable
+   override are different faults with different repairs — and the setup
+   checklist's **Production Or Non-Production** step reports `blocked` with the
+   repair.
+3. **Confirm the answer after the deploy, from the message rather than the
+   tick.** On `/admin/setup` the **Production Or Non-Production** step must read
+   *production*. A non-production installation shows a green tick there too, since
+   both are validly configured states and the checklist cannot know which one this
+   installation is meant to be — so the tick means "answered", and the message
+   means "which answer".
 
 For a deployment brought up by hand rather than through the deploy script, set
 `APP_ENVIRONMENT_ROLE` in the Compose `.env` before starting the app. The base

@@ -19,10 +19,17 @@ whole one-file-per-pull-request pattern exists to end.
 that is the standard this list should be read against.** The resolver
 (`environment-role.ts`, 416), its pure parser
 (`environment-role-declaration.ts`, 137), the browser payload
-(`environment-safety-admin-state.ts`, 174) and the API route
-(`environment-safety/route.ts`, 248 against a 250 route-handler budget) are new
+(`environment-safety-admin-state.ts`, 181), the write path
+(`environment-safety-override-write.ts`, 213) and the API route
+(`environment-safety/route.ts`, 127 against a 250 route-handler budget) are new
 modules carrying the whole of the new logic, so no size debt is created by this
-feature — only the five unavoidable registrations below.
+feature. The route reached 270 once the review findings were folded in, and an
+allowance is explicitly NOT available for a new file crossing its budget, so the
+Serializable transaction and its audit row moved into
+`environment-safety-override-write.ts` — the `src/app` authorises, `src/lib` does
+the work split `docs/ARCHITECTURE.md` asks for anyway. That is what the escape
+hatch is meant to look like from the outside: the split first, the allowance only
+where the split is genuinely worse — only the five unavoidable registrations below.
 
 file: src/lib/setup-readiness.ts
 lines: 2088
@@ -39,7 +46,7 @@ reason: this is where a setup step is defined, and the seventeen already there
   the staging stack, so every state names both variables explicitly.
 
 file: src/instrumentation.node.ts
-lines: 1551
+lines: 1562
 reason: a boot-time advisory has to be at boot, beside the four best-effort
   blocks already there (Sentry, the email-palette prime, the config self-heal,
   the ignored-email-env warning) — it is the fifth of a kind, not a new kind.

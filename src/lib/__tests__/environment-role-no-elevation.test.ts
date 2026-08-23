@@ -68,6 +68,9 @@ function readRepoFile(relativePath: string) {
 
 const schemaText = readRepoFile("prisma/schema.prisma");
 const routeText = readRepoFile("src/app/api/admin/environment-safety/route.ts");
+const writeText = readRepoFile(
+  "src/lib/environment-safety-override-write.ts",
+);
 
 /**
  * Comments removed, so a rule ABOUT a forbidden thing cannot be mistaken for the
@@ -100,6 +103,7 @@ function stripSqlComments(source: string): string {
 }
 
 const routeCode = stripTsComments(routeText);
+const writeCode = stripTsComments(writeText);
 
 function modelFromDmmf() {
   const model = Prisma.dmmf.datamodel.models.find((m) => m.name === MODEL);
@@ -236,8 +240,8 @@ describe("the API cannot carry a production claim either", () => {
   });
 
   it("only ever writes the one boolean and the actor", () => {
-    const upsert = routeCode.slice(
-      routeCode.indexOf("environmentSafetySettings.upsert"),
+    const upsert = writeCode.slice(
+      writeCode.indexOf("environmentSafetySettings.upsert"),
     );
     const body = upsert.slice(0, upsert.indexOf("});"));
     expect(body).toContain("forceNonProduction,");

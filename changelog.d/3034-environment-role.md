@@ -25,15 +25,35 @@
   Both directions are Full-Administrator-only, need an explicit confirmation, and
   are recorded in the audit log with who did it and the value before and after.
 
-  **Existing live deployments must add that one line before upgrading.** The
-  production deploy script now refuses to run without it, at step 3 of 20 —
-  before the database migration and long before any traffic moves — so an
+  **Existing live deployments must add `APP_ENVIRONMENT_ROLE=production` before
+  upgrading.** The production deploy script refuses to run without it, at step 3
+  of 20 — before the database migration and long before any traffic moves — so an
   undeclared upgrade stops with the previous release still serving and nothing
-  changed, rather than succeeding and quietly holding back member email. Watch
-  out for the near-miss: this is `APP_ENVIRONMENT_ROLE`, not the
+  changed, rather than succeeding and quietly holding back member email.
+
+  It refuses the opposite mistake too, and that one is easier to make: the deploy
+  script deploys the club's live site and nothing else, so it also refuses a
+  `.env` that says `non-production`. The sample file ships `non-production`
+  because it is a local-development template, and it is also the file people diff
+  against their real settings when upgrading — so copying that value across would
+  otherwise have produced a live site quietly behaving as a copy. Watch out for
+  the near-miss as well: this is `APP_ENVIRONMENT_ROLE`, not the
   `APP_RUNTIME_ROLE` already beside it, which names the container slot and is
-  never read for this. `docs/guides/environment-role.md` is the full walkthrough,
-  and `docs/UPGRADING.md` has the upgrade step.
+  never read for this. After the deploy, check the **Production Or
+  Non-Production** step on Admin → Setup actually reads *production*: a
+  non-production installation shows a green tick too, so it is the message that
+  carries the answer, not the tick.
+  `docs/guides/environment-role.md` is the full walkthrough, and
+  `docs/UPGRADING.md` has the upgrade step.
+
+  **One more audit entry is readable at support level.** Switching the safer
+  override on or off records an `ENVIRONMENT_SAFETY_OVERRIDE_UPDATED` entry filed
+  under the **admin** category, which admins holding support access can read
+  without membership access. The entry holds the value of that one switch before
+  and after, and who changed it — no member details, no settings values and
+  nothing about the database. It is filed as admin rather than security because it
+  records a change to what this installation *does*, not to who may sign in or
+  what they may reach.
 
   This release records and reports the answer; the parts that act on it — holding
   back email to members, and keeping a copy's invoices out of the club's real
