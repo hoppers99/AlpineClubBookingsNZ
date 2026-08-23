@@ -192,8 +192,8 @@ reason: four lines. `sendPreArrivalReminderEmail` swallowed the mailer's outcome
 ## #3036 — Xero contact containment
 
 file: src/lib/xero-contacts.ts
-lines: 1793
-reason: ninety-three lines, and they are the whole reason the twelve document
+lines: 1816
+reason: a hundred and sixteen lines, and they are the whole reason the twelve document
   writers needed no change at all. `findOrCreateXeroContact` is the single funnel
   every Xero document writer resolves its contact through, so the gate belongs
   INSIDE it — gating the twelve call sites instead would have shipped with the two
@@ -206,7 +206,13 @@ reason: ninety-three lines, and they are the whole reason the twelve document
   payload builder, the create-or-match resolution, the contact update — and the
   decision logic itself all moved OUT into `xero-contact-containment.ts` (598) and
   `xero-sandbox-contact-email.ts` (196), which is why nothing else in the Xero
-  subsystem needed an allowance.
+  subsystem needed an allowance. The last twenty-three of those lines are the
+  review-round fix that wraps `createXeroContactForMember`'s containment in the
+  partial-success phase this function already owns: a bare throw there loses the
+  created contact id, so the admin route tells the operator nothing was recorded
+  and pressing Create again is a dead end — the reservation refuses an
+  already-linked member. That wrapper has to sit at the call, because the phase it
+  raises is about this function's own commit sequence.
 
 file: src/lib/xero-member-import.ts
 lines: 1230

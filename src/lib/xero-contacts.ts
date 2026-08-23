@@ -1322,21 +1322,44 @@ export async function createXeroContactForMember(
   }
 
   const xeroContactId = createdContactId;
-  // Verified rather than assumed, exactly as on the funnel's create branch: the
-  // payload above already carried the contained address, and the row that proves
-  // it is still written only after reading back what Xero stored.
-  await ensureXeroContactContained({
-    policy: emailPolicy,
-    xeroContactId,
-    // Already the CONTAINED form (the payload builder above applied the
-    // policy), and `ensureXeroContactContained` fingerprints it through an
-    // idempotent transform — so this is the same fingerprint the funnel derives
-    // from the member's stored address for the same member.
-    sourceEmail: contact.emailAddress ?? "",
-    workflow: "createXeroContactForMember",
-    xero,
-    tenantId,
-  });
+  /*
+    Verified rather than assumed, exactly as on the funnel's create branch: the
+    payload above already carried the contained address, and the row that proves
+    it is still written only after reading back what Xero stored.
+
+    WRAPPED IN THE PARTIAL-SUCCESS PHASE THIS FUNCTION ALREADY OWNS, because a
+    bare throw here would lose the one fact the admin needs. The contact EXISTS
+    and is LINKED by the time this runs; only the proof is missing. A plain error
+    reaches `/api/admin/members/[id]/xero-push` with no created-contact id, so
+    the operator is told nothing was recorded, and pressing Create again is a
+    dead end — the reservation refuses an already-linked member without an
+    explicit repair. `LOCAL_MEMBER_LINK_COMMITTED` is the phase for exactly this
+    shape and the route already renders it as "created and linked, post-processing
+    pending", which is true. It still FAILS: the caller gets an error, and the
+    proof is re-attempted by the next document writer that resolves this member
+    (the funnel's steady-state path contains it), so it self-heals without an
+    operator retry.
+  */
+  try {
+    await ensureXeroContactContained({
+      policy: emailPolicy,
+      xeroContactId,
+      // Already the CONTAINED form (the payload builder above applied the
+      // policy), and `ensureXeroContactContained` fingerprints it through an
+      // idempotent transform — so this is the same fingerprint the funnel derives
+      // from the member's stored address for the same member.
+      sourceEmail: contact.emailAddress ?? "",
+      workflow: "createXeroContactForMember",
+      xero,
+      tenantId,
+    });
+  } catch (containmentError) {
+    throw new XeroContactCreatePartialSuccessError(
+      "LOCAL_MEMBER_LINK_COMMITTED",
+      xeroContactId,
+      containmentError,
+    );
+  }
   await syncContactGroupsBestEffort(memberId, xeroContactId, options);
   return xeroContactId;
 }

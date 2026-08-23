@@ -247,6 +247,28 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
     );
   });
 
+  it("reports created-and-linked when the containment proof fails afterwards (#3036)", async () => {
+    /*
+      The contact EXISTS and is LINKED by the time containment runs, so a bare
+      error would tell the operator nothing was recorded and leave them pressing
+      Create again — which the reservation refuses for an already-linked member.
+      The partial-success phase carries the created contact id instead, and the
+      route renders it as created-and-linked with post-processing pending, which
+      is exactly what is true. It still FAILS rather than proceeding.
+    */
+    declareEnvironmentRole("non-production");
+    await expectEnvironmentRolePremise("NON_PRODUCTION");
+    primeHappyPath(SPARSE_MEMBER);
+    mocks.getContact.mockRejectedValue(new Error("503 from Xero"));
+
+    await expect(createXeroContactForMember("member-1")).rejects.toMatchObject({
+      name: "XeroContactCreatePartialSuccessError",
+      phase: "LOCAL_MEMBER_LINK_COMMITTED",
+      xeroContactId: "contact-new",
+    });
+    expect(mocks.containmentUpsert).not.toHaveBeenCalled();
+  });
+
   it("creates a sparse member with no address blocks and no phone entry", async () => {
     await expectEnvironmentRolePremise("PRODUCTION");
     primeHappyPath(SPARSE_MEMBER);
