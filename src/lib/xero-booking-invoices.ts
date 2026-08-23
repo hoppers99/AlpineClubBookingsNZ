@@ -13,7 +13,6 @@ import {
   LineItem,
   LineAmountTypes,
   Payment as XeroPayment,
-  RequestEmpty,
 } from "xero-node";
 import { PaymentSource, PaymentTransactionKind } from "@prisma/client";
 import { prisma } from "./prisma";
@@ -38,6 +37,10 @@ import {
   callXeroApi,
   getAuthenticatedXeroClient,
 } from "./xero-api-client";
+import {
+  resolveXeroInvoiceEmailPolicy,
+  sendXeroInvoiceEmail,
+} from "@/lib/xero-invoice-email";
 import {
   describeGuestRateMembershipLabel,
   getAccountMapping,
@@ -826,7 +829,45 @@ export async function createXeroInvoiceForBooking(
       );
     }
 
-    if (shouldEmailInvoice && !invoiceEmailWithheld && !invoiceEmailGateUnreadable) {
+    /*
+      Environment-safety boundary (#3035, ENV-SAFETY 2; epic #2986).
+      INV-CONFIG-004. Asking Xero to email the invoice is a send to the member's
+      real address, so it is gated like a message this application sends itself.
+
+      Resolved AFTER the "No emails" gate above, so the club's own decision is
+      still recorded as the club's own decision on a copy, and the environment is
+      only consulted when something would otherwise be transmitted. What a
+      non-allow answer means for the sync operation is decided once, in
+      `resolveXeroInvoiceEmailPolicy` (`xero-invoice-email.ts`), which returns the
+      `logMessage`, the `suppressedForNonProduction` flag and the `error` — or
+      absence of one — that decide whether this operation reports SUCCEEDED or
+      PARTIAL. (An earlier draft of this comment named a
+      `classifyXeroInvoiceEmailWithheld` helper that never existed.)
+
+      NOT AUTOMATICALLY RECOVERABLE, exactly like the unreadable-switch case
+      above: re-driving this workflow short-circuits on `payment.xeroInvoiceId`
+      and never reaches the email block, so the truthful remediation for an
+      unconfirmed role is to declare the role and send that one invoice from Xero
+      by hand.
+    */
+    const invoiceEmailPolicy =
+      shouldEmailInvoice && !invoiceEmailWithheld && !invoiceEmailGateUnreadable
+        ? await resolveXeroInvoiceEmailPolicy()
+        : null;
+    const invoiceEmailWithheldForEnvironment =
+      invoiceEmailPolicy?.kind === "withhold" &&
+      invoiceEmailPolicy.suppressedForNonProduction;
+    if (invoiceEmailPolicy?.kind === "withhold") {
+      const context = { bookingId, invoiceId: createdInvoice.invoiceID };
+      if (invoiceEmailPolicy.error) {
+        invoiceEmailError = invoiceEmailPolicy.error;
+        logger.error(context, invoiceEmailPolicy.logMessage);
+      } else {
+        logger.info(context, invoiceEmailPolicy.logMessage);
+      }
+    }
+
+    if (invoiceEmailPolicy?.kind === "allow") {
       const invoiceEmailIdempotencyKey = buildXeroIdempotencyKey(
         "booking",
         bookingId,
@@ -836,22 +877,16 @@ export async function createXeroInvoiceForBooking(
       );
 
       try {
-        const emailResponse = await callXeroApi(
-          () =>
-            xero.accountingApi.emailInvoice(
-              tenantId,
-              createdInvoice.invoiceID!,
-              new RequestEmpty(),
-              invoiceEmailIdempotencyKey
-            ),
-          {
-            operation: "emailInvoice",
-            resourceType: "INVOICE",
-            workflow: "createXeroInvoiceForBooking",
-            context: `emailInvoice(booking ${bookingId})`,
-          }
-        );
-        invoiceEmailResponseBody = emailResponse.body ?? null;
+        const emailResponse = await sendXeroInvoiceEmail({
+          clearance: invoiceEmailPolicy.clearance,
+          xero,
+          tenantId,
+          invoiceId: createdInvoice.invoiceID!,
+          idempotencyKey: invoiceEmailIdempotencyKey,
+          workflow: "createXeroInvoiceForBooking",
+          context: `emailInvoice(booking ${bookingId})`,
+        });
+        invoiceEmailResponseBody = emailResponse.body;
       } catch (error) {
         invoiceEmailError = error;
         logger.warn(
@@ -903,11 +938,18 @@ export async function createXeroInvoiceForBooking(
         invoiceEmail: invoiceEmailResponseBody,
         invoiceEmailError,
         invoiceEmailSkipped:
-          !shouldEmailInvoice || invoiceEmailWithheld || invoiceEmailGateUnreadable,
+          !shouldEmailInvoice ||
+          invoiceEmailWithheld ||
+          invoiceEmailGateUnreadable ||
+          invoiceEmailPolicy?.kind === "withhold",
         // #2258: a DELIBERATE withhold only. An unreadable switch is a fault and
         // is reported through invoiceEmailError above (status PARTIAL), never
         // here — the two must stay distinguishable to an operator.
         invoiceEmailWithheldByNoEmails: invoiceEmailWithheld,
+        // #3035: the environment-safety suppression, which is a THIRD reason and
+        // must not be read as either of the two above. A confirmed copy did not
+        // email the invoice; nothing failed and nobody asked for silence.
+        invoiceEmailWithheldForEnvironment,
       },
       xeroObjectType: "INVOICE",
       xeroObjectId: createdInvoice.invoiceID,

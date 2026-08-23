@@ -38,6 +38,22 @@ services:
       # Which container slot this is. A deployment naming convention, and
       # deliberately NOT an input to the environment-role decision above.
       APP_RUNTIME_ROLE: staging
+      # This stack's mail transport is the mailpit capture container below, and
+      # it is hard-coded here for the same reason the role above is (ENV-SAFETY 2
+      # #3035, INV-CONFIG-004). Two separate hazards:
+      #
+      #  - a copy suppresses every send unless its transport is DECLARED to be a
+      #    capture mailbox, so without USE_LOCAL_CAPTURE the mailbox stays empty
+      #    and every mail-reading browser spec fails on an empty inbox;
+      #  - the base anchor defaults USE_AWS_SES to `true`, so a run without an
+      #    env file would set two provider flags at once, resolve the transport
+      #    `invalid`, and throw on every send.
+      #
+      # Reading these from .env.staging would let a stray value there point the
+      # E2E or accessibility stack at a real provider. They are not overridable.
+      USE_AWS_SES: "false"
+      USE_SMTP_RELAY: "false"
+      USE_LOCAL_CAPTURE: "true"
       CRON_ENABLED: "false"
       # Backups are configured in-app (#2095); staging leaves them unconfigured.
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3001}
@@ -56,8 +72,9 @@ services:
       # during keep-alive idle, so it does not need raising for this.
       KEEP_ALIVE_TIMEOUT: "65000"
     # mailpit is the non-production SMTP capture the E2E suite relays outbound
-    # mail to (USE_SMTP_RELAY). It is listed here so `up --wait app` also starts
-    # it and the app never comes up expecting an SMTP host that is not running.
+    # mail to (USE_LOCAL_CAPTURE). It is listed here so `up --wait app` also
+    # starts it and the app never comes up expecting an SMTP host that is not
+    # running.
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,7 +82,7 @@ services:
         condition: service_healthy
 
   # Non-production SMTP capture container. The staging app relays all outbound
-  # email here (see USE_SMTP_RELAY in .env.staging.example); Playwright reads the
+  # email here (see USE_LOCAL_CAPTURE in .env.staging.example); Playwright reads the
   # captured two-factor code back over mailpit's HTTP API
   # (e2e/two-factor-email.spec.ts, docs/E2E_PLAYWRIGHT.md). It accepts any SMTP
   # credentials over the compose-internal network and never forwards mail

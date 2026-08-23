@@ -1,8 +1,15 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { ENVIRONMENT_ROLE_ENV_VAR } from "@/lib/environment-role-declaration";
+import {
+  appServiceNames,
+  BASE_COMPOSE,
+  COMPOSE_FILENAME,
+  composeFiles,
+  composeServices,
+  NON_APP_COMPOSE_SERVICES,
+  readRepoFile,
+} from "@/lib/__tests__/helpers/compose";
 
 /**
  * The production-upgrade path for the environment declaration (ENV-SAFETY 1,
@@ -42,171 +49,19 @@ import { ENVIRONMENT_ROLE_ENV_VAR } from "@/lib/environment-role-declaration";
  *
  * `test:related` cannot select this file: it reads shell and YAML from disk, so
  * it has no import edge to any of them (`docs/TESTING.md`).
+ *
+ * The Compose discovery and parsing this file uses live in
+ * `helpers/compose.ts`, shared with `env-delivery-census.test.ts` — every hard
+ * lesson in that parser was learned by a probe defeating it, and a second copy
+ * would be the copy that drifts.
  */
 
-function readRepoFile(relativePath: string) {
-  // Test helper: reads a fixed repo file under process.cwd(); relativePath is test-controlled, not user input.
-  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-  return readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
-}
-
 const script = readRepoFile("scripts/run-production-blue-green-deploy.sh");
-const compose = readRepoFile("docker-compose.yml");
+const compose = readRepoFile(BASE_COMPOSE);
 const stagingCompose = readRepoFile("docker-compose.staging.yml");
 const envExample = readRepoFile(".env.example");
 const stagingEnvExample = readRepoFile(".env.staging.example");
 const instrumentation = readRepoFile("src/instrumentation.node.ts");
-
-/**
- * EVERY tracked Compose file, discovered rather than listed.
- *
- * A LIST WAS THE DEFECT (#3034 review). The census below used to name the base
- * and staging files, so `measurement/stack/docker-compose.measure.yml` — a THIRD
- * compose file, which runs the app over the BASE file and therefore inherits
- * `${APP_ENVIRONMENT_ROLE}` with no default and no tracked env file to supply one
- * — declared nothing and nobody noticed. That stack resolved UNKNOWN, so the new
- * boot advisory logged an error on every recreate, inside the harness whose own
- * MC-09 check fails a warning/error signature repeated three times. Eight of its
- * eleven producers `--force-recreate app` within their own `docker logs --since`
- * window, so one line per boot is ten-plus occurrences of one signature.
- *
- * Discovering them means the FOURTH compose file cannot be missed the same way.
- */
-const COMPOSE_SEARCH_SKIP = new Set([
-  "node_modules",
-  ".git",
-  ".next",
-  ".artifacts",
-  "coverage",
-  "playwright-report",
-  "test-results",
-  "dist",
-]);
-
-/**
- * Which filenames are a Compose file.
- *
- * `docker-compose*.yml` AND Compose's own modern defaults, `compose.yaml` /
- * `compose.yml` / `compose-*.y[a]ml`. The narrow `^docker-compose` glob was the
- * ONE fully silent defeat of this census: a `compose.yaml` was never scanned while
- * every assertion still passed.
- *
- * A MODULE CONSTANT so the case below tests THIS value rather than a copy of it.
- * The first version of that case declared its own regex literal inline, which
- * made it vacuous — narrowing the glob back left it green (measured). No `g`
- * flag, so sharing one RegExp carries no `lastIndex` state between callers.
- */
-const COMPOSE_FILENAME = /^(docker-)?compose.*\.ya?ml$/;
-
-function findComposeFiles(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    if (COMPOSE_SEARCH_SKIP.has(name)) continue;
-    const full = path.join(dir, name);
-    if (statSync(full).isDirectory()) findComposeFiles(full, out);
-    else if (COMPOSE_FILENAME.test(name)) out.push(full);
-  }
-  return out;
-}
-
-const BASE_COMPOSE = "docker-compose.yml";
-
-const composeFiles = findComposeFiles(process.cwd())
-  .map((file) => path.relative(process.cwd(), file).split(path.sep).join("/"))
-  .sort();
-
-/**
- * A Compose file's `services:` blocks, by name.
- *
- * A deliberately small indentation parser rather than a YAML dependency — this
- * repository has none, and the shape being read is two levels deep.
- *
- * TOLERANT OF THREE SHAPES IT USED TO RETURN ZERO SERVICES FOR, each of which
- * made this whole census pass vacuously (third review lens, measured against
- * synthetic files): a trailing comment on the `services:` line, an indentation
- * other than two spaces, and a YAML anchor or trailing comment on a service key
- * (`app: &app`). The indent is now LEARNED from the first child line rather than
- * assumed, and every caller asserts the result is non-empty, so an unparsed file
- * fails loudly instead of silently declaring nothing to check.
- */
-function composeServices(relativePath: string): Map<string, string> {
-  const lines = readRepoFile(relativePath).split(/\r?\n/);
-  const services = new Map<string, string>();
-  let inServices = false;
-  let indent: string | null = null;
-  let current: string | null = null;
-  let body: string[] = [];
-
-  const flush = () => {
-    if (current) services.set(current, body.join("\n"));
-    current = null;
-    body = [];
-  };
-
-  for (const line of lines) {
-    if (/^services:\s*(#.*)?$/.test(line)) {
-      inServices = true;
-      indent = null;
-      continue;
-    }
-    if (!inServices) continue;
-    if (line.trim() === "" || /^\s*#/.test(line)) continue;
-    // Any content back at column 0 ends the services mapping (volumes:,
-    // networks:, an x-anchor).
-    if (/^[^\s]/.test(line)) {
-      flush();
-      inServices = false;
-      indent = null;
-      continue;
-    }
-    const leading = line.slice(0, line.length - line.trimStart().length);
-    if (indent === null) indent = leading;
-    // A service key sits at exactly the learned indent. The value may carry a
-    // YAML anchor and/or a trailing comment and still be a mapping key.
-    if (leading === indent) {
-      const name = line
-        .trim()
-        .match(/^([A-Za-z0-9_.-]+):\s*(&[A-Za-z0-9_.-]+)?\s*(#.*)?$/);
-      if (name) {
-        flush();
-        current = name[1];
-        continue;
-      }
-    }
-    if (current) body.push(line);
-  }
-  flush();
-  return services;
-}
-
-/**
- * Services that do NOT run application code, and may therefore have no
- * declaration.
- *
- * AN ALLOWLIST OF INFRASTRUCTURE, not an allowlist of app services, and the
- * inversion is the fix for the second half of that finding. The check used to
- * skip any service whose name was not one of the base file's three app services,
- * so renaming one in an override file — `app_e2e:` — silently excused it. Now
- * anything this census does not RECOGNISE as infrastructure has to declare,
- * which is the fail-closed direction.
- *
- * `migrate` runs `prisma migrate deploy` and imports no application code; the
- * other three are Postgres, Caddy and the mailpit SMTP capture. The set is
- * asserted to be exactly these four, so widening it is a visible edit rather
- * than a quiet one.
- */
-const NON_APP_SERVICES = new Set(["postgres", "caddy", "mailpit", "migrate"]);
-
-/**
- * The services that run APPLICATION CODE, taken from the base file's own anchor
- * usage rather than from a hand-kept list — `migrate` merges no app environment
- * and runs `prisma migrate deploy` with no application code.
- */
-function appServiceNames(): string[] {
-  return [...composeServices(BASE_COMPOSE)]
-    .filter(([, body]) => body.includes("<<: *app-environment"))
-    .map(([name]) => name)
-    .sort();
-}
 
 /**
  * A shell function's bounds in the script, from its opening brace to the next
@@ -784,14 +639,14 @@ describe("EVERY compose file that runs the app declares the role", () => {
   it("names exactly four services as not running app code", () => {
     // Widening this set excuses a service from declaring, so it is pinned. Every
     // name in it must be a real service in the base file.
-    expect([...NON_APP_SERVICES].sort()).toEqual([
+    expect([...NON_APP_COMPOSE_SERVICES].sort()).toEqual([
       "caddy",
       "mailpit",
       "migrate",
       "postgres",
     ]);
     const base = composeServices(BASE_COMPOSE);
-    for (const name of NON_APP_SERVICES) {
+    for (const name of NON_APP_COMPOSE_SERVICES) {
       if (name === "mailpit") continue; // staging/measure only
       expect(base.has(name), `${name} must be a real service`).toBe(true);
     }
@@ -821,7 +676,7 @@ describe("EVERY compose file that runs the app declares the role", () => {
         [],
       );
       for (const [name, body] of services) {
-        if (NON_APP_SERVICES.has(name)) continue;
+        if (NON_APP_COMPOSE_SERVICES.has(name)) continue;
         if (!body.includes(`${ENVIRONMENT_ROLE_ENV_VAR}: non-production`)) {
           missing.push(`${file} -> ${name}`);
         }
@@ -836,7 +691,7 @@ describe("EVERY compose file that runs the app declares the role", () => {
         `and holds back member email and Xero writes. Add ` +
         `"${ENVIRONMENT_ROLE_ENV_VAR}: non-production" to each service listed, the ` +
         `way docker-compose.staging.yml does — or, if it genuinely runs no ` +
-        `application code, add it to NON_APP_SERVICES with a reason.`,
+        `application code, add it to NON_APP_COMPOSE_SERVICES with a reason.`,
     ).toEqual([]);
   });
 

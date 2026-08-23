@@ -69,7 +69,17 @@ type DeclarationKind = "production" | "non-production" | "absent" | "invalid";
  */
 type WithheldApplicationEmail =
   | { available: false }
-  | { available: true; count: number; mostRecentAt: string | null };
+  | {
+      available: true;
+      count: number;
+      mostRecentAt: string | null;
+      /**
+       * The subset that is the club's LIVE site declaring a capture mailbox —
+       * the one withhold reason a PRODUCTION installation can have, and the
+       * reason this block renders there at all (#3035).
+       */
+      captureInProduction: number;
+    };
 
 type EnvironmentSafetyState = {
   role: EnvironmentRole;
@@ -128,10 +138,19 @@ function describeDeclaration(state: EnvironmentSafetyState): string {
  * them is consequence. A real club in either of those states holds back a steady
  * stream of member mail; an idle copy holds back almost nothing.
  *
- * The three states must read differently. "None" and "not counted yet" look
- * identical on a screen and mean opposite things: one says the copy is idle, the
- * other says nobody knows. **#3035 supplies the numbers** — see
- * `src/lib/environment-safety-withheld.ts`.
+ * The three states must read differently. "None" and "could not be counted" look
+ * identical at a glance and mean opposite things: one says nobody is using this
+ * installation, the other says nobody knows. The numbers come from
+ * `src/lib/environment-safety-withheld.ts`, which counts what #3035's delivery
+ * boundary records.
+ *
+ * NO SENTENCE HERE MAY NAME ONE STATE'S REASON, because this block renders under
+ * two — a confirmed copy and an installation nobody has declared. Telling the
+ * operator of an undeclared LIVE site that its mail is held back "because it is
+ * treated as a copy" sends them looking for the safer override instead of the
+ * missing declaration, and the override is not what is holding their mail. The
+ * role is displayed directly above this block and says which state applies; this
+ * block says how much and how lately, in words true of both (#3035).
  */
 function describeWithheldEmail(state: EnvironmentSafetyState): {
   headline: string;
@@ -140,16 +159,33 @@ function describeWithheldEmail(state: EnvironmentSafetyState): {
   const withheld = state.withheldEmail;
   if (!withheld.available) {
     return {
-      headline: "Not counted yet on this installation",
+      headline: "Could not be counted on this installation",
       detail:
-        "This is not the same as none. Nothing here records what environment safety holds back yet, so this line cannot tell you whether this installation is quietly holding back mail the club's members are waiting for. Until it can, check the role above is the answer you expect.",
+        "This is not the same as none: one says nothing has been held back, the other says nobody knows. The count could not be read from the database — usually a migration that has not been applied here. Apply any pending migrations and check again; meanwhile this line cannot tell you whether this installation is quietly holding back mail the club's members are waiting for.",
     };
   }
   if (withheld.count === 0) {
     return {
       headline: "None held back",
       detail:
-        "Nothing has been held back on this installation for environment-safety reasons, which is what an unused copy looks like.",
+        "Nothing has been held back on this installation for environment-safety reasons, which is what an installation nobody is using looks like.",
+    };
+  }
+  /*
+    THE LIVE-SITE-IN-CAPTURE-MODE CASE GETS ITS OWN SENTENCE, because the generic
+    one is wrong here in the expensive direction: "wrongly declared a copy, or
+    left undeclared" would send this operator to check a declaration that is
+    perfectly correct, while the actual fault is two lines further down the same
+    env file. Named separately rather than folded in, since it is the one state a
+    PRODUCTION installation can be in and the repair is different.
+  */
+  if (withheld.captureInProduction > 0) {
+    const recently = withheld.mostRecentAt
+      ? ` Most recently ${formatChangedAt(withheld.mostRecentAt)}.`
+      : "";
+    return {
+      headline: `${withheld.captureInProduction} message${withheld.captureInProduction === 1 ? "" : "s"} refused: this installation says it is BOTH the live site and a mail capture`,
+      detail: `Those cannot both be true — a live site in capture mode would accept every message and deliver none of them — so nothing was sent rather than being silently swallowed.${recently} Set USE_AWS_SES or USE_SMTP_RELAY and remove USE_LOCAL_CAPTURE (or set it to false). Messages whose contents are stored then go out by themselves; ones carrying a sign-in link, a door code or a payment link keep no stored copy and are listed for a manual re-send.`,
     };
   }
   return {
@@ -295,11 +331,19 @@ export function EnvironmentSafetyPanel() {
         the scenario this whole issue exists for. Withholding the count from that
         operator is the worst place to withhold it.
 
-        Still not shown for PRODUCTION, where nothing is held back for this reason
-        and the line would be noise beside the most consequential setting in the
-        app.
+        AND FOR PRODUCTION TOO, but only when the fifth outcome has actually
+        happened — a live site that ALSO declares a capture mailbox is in a total
+        mail outage, and this panel used to show PRODUCTION with no withheld line
+        while every message was being refused (#3035 review). Keyed on the
+        capture-in-production count rather than the total, because
+        SKIPPED_NON_PRODUCTION rows are terminal: an installation that spent an
+        afternoon as a forced copy carries them for ever, and a permanent banner
+        on a healthy live site is a line an operator learns to scroll past.
       */}
-      {state.role === "NON_PRODUCTION" || state.role === "UNKNOWN" ? (
+      {state.role === "NON_PRODUCTION" ||
+      state.role === "UNKNOWN" ||
+      (state.withheldEmail.available &&
+        state.withheldEmail.captureInProduction > 0) ? (
         <div
           className="space-y-1 rounded-md border bg-card p-6"
           data-testid="environment-withheld-email"

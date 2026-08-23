@@ -114,7 +114,11 @@ jobs:
           # one provider flag is set, and all four SMTP_RELAY vars must be present
           # or every send throws.
           USE_AWS_SES=false
-          USE_SMTP_RELAY=true
+          USE_SMTP_RELAY=false
+          # ENV-SAFETY 2 (#3035): a non-production installation suppresses every
+          # send unless its transport is DECLARED to be a capture mailbox, so this
+          # flag — not USE_SMTP_RELAY — is what lets mailpit see anything at all.
+          USE_LOCAL_CAPTURE=true
           EMAIL_SERVER_HOST=mailpit
           EMAIL_SERVER_PORT=1025
           EMAIL_SERVER_USER=e2e
@@ -256,7 +260,11 @@ jobs:
           XERO_ENABLE_AUTOLOAD_XERO_CONTACT_GROUPS=false
           SMTP_PORT=587
           USE_AWS_SES=false
-          USE_SMTP_RELAY=true
+          USE_SMTP_RELAY=false
+          # ENV-SAFETY 2 (#3035): a non-production installation suppresses every
+          # send unless its transport is DECLARED to be a capture mailbox, so this
+          # flag — not USE_SMTP_RELAY — is what lets mailpit see anything at all.
+          USE_LOCAL_CAPTURE=true
           EMAIL_SERVER_HOST=mailpit
           EMAIL_SERVER_PORT=1025
           EMAIL_SERVER_USER=e2e

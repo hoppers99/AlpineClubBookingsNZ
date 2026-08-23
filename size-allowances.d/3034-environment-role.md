@@ -21,7 +21,9 @@ the standard this list should be read against.** The resolver
 (`environment-role-declaration.ts`, 143), the browser payload
 (`environment-safety-admin-state.ts`, 239), the write path
 (`environment-safety-override-write.ts`, 213), the withheld-email scaffold
-(`environment-safety-withheld.ts`, 83) and the API route
+(`environment-safety-withheld.ts`, 199 after #3035's review round, which broke the
+capture-in-production count out on its own so the live-site surfaces can act on
+it) and the API route
 (`environment-safety/route.ts`, 127 against a 250 route-handler budget) are new
 modules carrying the whole of the new logic, so no size debt is created by this
 feature. The route reached 270 once the review findings were folded in, and an
@@ -33,7 +35,7 @@ hatch is meant to look like from the outside: the split first, the allowance onl
 where the split is genuinely worse — only the five unavoidable registrations below.
 
 file: src/lib/setup-readiness.ts
-lines: 2159
+lines: 2194
 reason: this is where a setup step is defined, and the seventeen already there
   are all in this file and assembled into the readiness report a few lines below
   them — the same argument #3000 made for the club-timezone step, which is the
@@ -50,7 +52,13 @@ reason: this is where a setup step is defined, and the seventeen already there
   three renderable states because "none held back" and "not counted yet" look
   identical on a checklist and mean opposite things. A later round rendered that
   line for the UNDECLARED state too, which is the one a live installation reaches
-  by upgrading without the declaration.
+  by upgrading without the declaration. #3035's review round added thirty-five
+  more, and they are the fifth state finally getting a branch: a live site that
+  ALSO declares a capture mailbox sends nothing at all, and this step used to
+  report it "complete — emails go to real members". That branch is a warning with
+  its own repair (the transport flags, not the declaration, which is correct
+  there), so it cannot share the non-production wording, and it belongs beside the
+  other four states of the same check.
 
 file: src/instrumentation.node.ts
 lines: 1618

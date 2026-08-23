@@ -121,12 +121,89 @@ If you meet this on a live site, the fix is one line in the deployment's `.env`
 (above) and a restart. The setup checklist reports it as a **blocked** step with
 that instruction, and the app logs an error at start-up naming the setting.
 
-Both this state and *non-production* also show **how much application email has
-been held back**, on `/admin/environment` and on the checklist step. That number
-is what tells a live club apart from an idle test copy: a busy club that has
-stopped sending shows a steady, recent count, while a copy nobody is using shows
-almost none. Until the delivery boundary lands it reads *not counted yet*, which
-is deliberately not the same sentence as *none*.
+Held-back email is **not** lost while you sort this out. A message the site
+refused to send because it could not tell what this installation is is recorded
+as a failed send and goes out **by itself** on the next retry pass once you have
+declared the role — you do not have to re-trigger anything. The one exception is
+the deliberate case: on a confirmed **copy**, a held-back message is final and is
+never replayed, because a copy that is later re-declared as the live site must not
+suddenly post weeks of stale confirmations to real members.
+
+## Email held back, and the number that tells you whether it matters
+
+Both **not configured** and **non-production** show how much application email
+this installation has held back, and when the most recent one was — on
+Admin → Environment and on the checklist step.
+
+**The live site shows it too, in one case.** If a deployment says it is the club's
+live site *and* points its mail at a capture mailbox, those cannot both be true, so
+every message is refused rather than silently swallowed — a total mail outage. That
+count appears on the live site as well, with its own wording and its own repair,
+because the answer there is not "your declaration is wrong" but "your two mail
+settings contradict each other". Otherwise nothing is held back on the live site
+and the line is not shown.
+
+**That number is the one thing that tells a live club which has stopped sending
+apart from an ordinary idle copy**, because no property of the data can: a copy is
+restored from the live database and holds exactly the same records. What separates
+them is consequence. A real club withholds a steady, recent stream —
+confirmations, payment notices, renewal reminders, hour after hour. A copy nobody
+is using withholds almost nothing.
+
+Three readings, and they mean different things:
+
+- **A number, recent and climbing.** If members are waiting for that mail, the
+  answer above this line is wrong — either the declaration says *copy* when this
+  is the live site, or nothing has declared it at all. Fix that, and most of what
+  is queued goes out on its own.
+
+  **Some of it will not, and you have to send those by hand.** A message that
+  carries something which must not be stored — a sign-in link, a door code, a
+  payment link — keeps no copy of itself, so there is nothing left to re-send
+  automatically. Those messages are listed under **Admin -> Email** for review,
+  each one saying plainly that it needs a manual re-send, and the list is where to
+  go once the declaration is corrected.
+- **None.** Nothing has been held back. That is what an installation nobody is
+  using looks like.
+- **Not available.** The count could not be read from the database — usually a
+  migration that has not been applied here. It is *not* the same as none: one says
+  nothing has been held back, the other says nobody knows.
+
+## Letting a copy send into a capture mailbox
+
+A copy normally sends nothing at all. That is the point. But a test installation
+often needs to *see* the mail it would have sent — to check a template, or to
+read a sign-in code back during automated testing.
+
+Declare a **capture mailbox** for that: set `USE_LOCAL_CAPTURE=true` and point
+`EMAIL_SERVER_HOST` and its three companions at a local mail sink (mailpit,
+MailHog, or anything that accepts SMTP and forwards nothing). A confirmed copy is
+then allowed to transmit into it, and those messages appear as ordinary sent mail
+— because they *were* sent, into something that cannot pass them on.
+
+An installation that is **not configured** gets no such permission: a capture
+declaration comes from the same deployment configuration that has failed to say
+what this installation is, so it earns nothing until that is answered.
+
+Three things worth knowing:
+
+- **It is a declaration, not a detection.** The app does not look at the host name
+  and decide that something called `mailpit` must be safe. You say it is a
+  capture; nothing infers it. The flip side is that declaring capture mode against
+  a relay that really can deliver would send real mail from a copy, and the
+  application cannot tell. That is the same family of mistake as declaring the
+  live site a copy, and it has the same answer: the deployment says what it is,
+  explicitly, and somebody reads it back.
+- **The club's live site refuses it.** An installation declaring
+  `APP_ENVIRONMENT_ROLE=production` *and* `USE_LOCAL_CAPTURE=true` is refused
+  outright, because a live site in capture mode would accept every message,
+  record every one as sent, and deliver none of them — a silent total mail
+  outage. Set `USE_AWS_SES` or `USE_SMTP_RELAY` there instead.
+- **It does not cover invoice emails.** A capture catches the mail this
+  application sends itself. When the club's accounting system emails an invoice,
+  it sends that from its own servers to the address stored on the member's
+  contact, so no local capture ever sees it — and a copy therefore does not ask
+  for it at all, capture mailbox or no capture mailbox.
 
 ## Why nothing is guessed
 
