@@ -55,6 +55,7 @@ import {
   retryXeroWriteWithContactRepair,
   type FindOrCreateXeroContactOptions,
 } from "./xero-contacts";
+import { requireContainedMemberContactForInvoiceOperation } from "@/lib/xero-contact-containment";
 import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   getBookingInvoiceDueDate,
@@ -1113,6 +1114,20 @@ export async function updateXeroBookingInvoiceForBooking(
   }
 
   const { xero, tenantId } = await getAuthenticatedXeroClient();
+  /*
+    INV-CONFIG-005 (#3036 review P0-2): this path does NOT go through
+    `findOrCreateXeroContact`, and re-pricing an invoice can RAISE its amount
+    due. On a copy restored from the club's live database the invoice was raised
+    on the live site, so nothing here had ever looked at what its contact holds —
+    and Xero emails invoice reminders for an outstanding AUTHORISED invoice from
+    its own servers, to whatever address that contact holds.
+  */
+  await requireContainedMemberContactForInvoiceOperation({
+    memberId: booking.memberId,
+    workflow: "updateXeroBookingInvoiceForBooking",
+    xero,
+    tenantId,
+  });
   const [hutFeeMapping, hutFeeItemCodeMap] = await Promise.all([
     getResolvedAccountMapping("hutFeesIncome"),
     getHutFeeItemCodeMap(),

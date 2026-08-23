@@ -35,9 +35,9 @@ import {
   XERO_CONTAINMENT_PROOF_MAX_AGE_MS,
   XeroContactContainmentError,
   XeroContactEmailPolicyError,
-  XeroContactEnvironmentUnknownError,
   type XeroContactEmailPolicy,
 } from "@/lib/xero-contact-containment";
+import { XeroContactEnvironmentUnknownError } from "@/lib/xero-environment-write-gate";
 import {
   toXeroSandboxContactEmail,
   xeroSandboxContainmentTarget,

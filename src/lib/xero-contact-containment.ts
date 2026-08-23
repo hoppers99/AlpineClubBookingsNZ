@@ -81,7 +81,6 @@ import type { XeroClient } from "xero-node";
 import {
   resolveEnvironmentRole,
   type EnvironmentRole,
-  type EnvironmentRoleResolution,
 } from "@/lib/environment-role";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
@@ -89,6 +88,10 @@ import {
   getAuthenticatedXeroClient,
   callXeroApi,
 } from "@/lib/xero-api-client";
+import {
+  describeXeroContactEmailRefusal,
+  XeroContactEnvironmentUnknownError,
+} from "@/lib/xero-environment-write-gate";
 import {
   isXeroContactEmailUnreachable,
   toXeroSandboxContactEmail,
@@ -154,23 +157,6 @@ export class XeroContactEmailPolicyError extends Error {
   }
 }
 
-/**
- * Thrown when nothing has declared which installation this is.
- *
- * Named, and distinct from a containment failure, because the repairs are
- * different: this one is a missing or unreadable configuration and its remedy is
- * on the operator's screen, while a containment failure is a provider problem.
- * The message carries the role resolver's own notes verbatim — those are written
- * to be read by an operator, name `APP_ENVIRONMENT_ROLE` and the override
- * screen, and never carry a credential.
- */
-export class XeroContactEnvironmentUnknownError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "XeroContactEnvironmentUnknownError";
-  }
-}
-
 /** Thrown when a copy could not prove that a contact can no longer reach a member. */
 export class XeroContactContainmentError extends Error {
   readonly xeroContactId: string;
@@ -205,30 +191,6 @@ export function decideXeroContactEmailPolicy(
   if (role === "PRODUCTION") return { kind: "verbatim" };
   if (role === "NON_PRODUCTION") return { kind: "contain" };
   return { kind: "block_environment_unknown" };
-}
-
-/**
- * The operator-facing refusal for an unconfirmed installation.
- *
- * It says what did NOT happen and why that is the safe direction, then hands
- * over to the resolver's own notes for the repair. Written this way because the
- * two obvious short messages are both actively misleading: "this installation is
- * not production" invites somebody to declare it production, and "Xero is not
- * configured" sends them to the Xero screens, where nothing is wrong.
- */
-export function describeXeroContactEmailRefusal(
-  resolution: EnvironmentRoleResolution,
-): string {
-  return [
-    "Nothing was written to Xero: this application cannot tell whether it is " +
-      "the club's live site or a copy of it, and the answer decides what email " +
-      "address may go on a Xero contact. On the live site the member's real " +
-      "address belongs there; on a copy it must be replaced, because Xero emails " +
-      "invoice reminders from its own servers to whatever the contact holds. " +
-      "Guessing either way is wrong — one emails real members from a copy, the " +
-      "other rewrites the club's real accounting — so nothing was attempted.",
-    ...resolution.notes,
-  ].join(" ");
 }
 
 /**
@@ -612,6 +574,77 @@ export async function ensureXeroContactContained(params: {
     xeroContactId,
     containedEmail: target,
     rewroteAddress,
+  });
+}
+
+/**
+ * Prove the contact behind a member's Xero documents is contained, for an
+ * invoice operation that does NOT go through `findOrCreateXeroContact`.
+ *
+ * ## Which operations need this, and why the line is drawn there
+ *
+ * The rule is not "every Xero write": it is **every operation that raises a new
+ * document against a contact, or that can leave an invoice OUTSTANDING against
+ * one**. Xero's own reminders go to the address on the contact of an outstanding
+ * `AUTHORISED` invoice, with no API call from this application, so those are the
+ * operations that can end with a real member being chased for money on a copy.
+ * Three writers qualify and none of them touches the funnel:
+ *
+ * - the membership-cancellation credit note, which resolves its contact from the
+ *   invoice it is crediting;
+ * - a booking-invoice line-item update, which can RAISE the amount due;
+ * - applied-credit deallocation, which removes credit from an invoice and
+ *   therefore also raises the amount due.
+ *
+ * Deliberately NOT here: recording a payment, allocating a credit note, and
+ * voiding an invoice all reduce or remove what is outstanding, so none of them
+ * can create exposure that was not already there; and archiving a contact or
+ * changing its contact-group membership carries no document and no address. All
+ * of those are still refused on an UNDECLARED installation, by the gate inside
+ * `callXeroApi` — that is a different question from containment, and it is
+ * answered in one place for every writer.
+ *
+ * ## A COPY WITH NO CONTACT LINK IS A REFUSAL
+ *
+ * The contact is identified from the member's own link, because that is the link
+ * every one of these documents was raised through. When a copy holds no link, the
+ * contact behind that invoice cannot be identified from here, so containment
+ * cannot be proved and the operation is refused rather than proceeding on the
+ * assumption that somebody else contained it. On PRODUCTION this function
+ * returns before reading anything at all, so that refusal cannot reach the live
+ * site.
+ */
+export async function requireContainedMemberContactForInvoiceOperation(params: {
+  memberId: string;
+  workflow: string;
+  xero?: XeroContactContainmentClient | XeroClient;
+  tenantId?: string;
+}): Promise<void> {
+  const { policy } = await resolveXeroContactEmailPolicy();
+  if (assertXeroContactEmailPolicyWitness(policy) === "verbatim") return;
+
+  const member = await prisma.member.findUnique({
+    where: { id: params.memberId },
+    select: { email: true, xeroContactId: true },
+  });
+  if (!member?.xeroContactId) {
+    throw new XeroContactContainmentError(
+      "",
+      "This installation is a copy, and the Xero contact behind this member's " +
+        `invoice cannot be identified from here (member ${params.memberId} has ` +
+        "no linked Xero contact), so it cannot be proved that Xero is unable to " +
+        "email a real member about it. Nothing was written to Xero. Resolve the " +
+        "member's Xero contact first — raising or re-opening an invoice does " +
+        "that (INV-CONFIG-005).",
+    );
+  }
+  await ensureXeroContactContained({
+    policy,
+    xeroContactId: member.xeroContactId,
+    sourceEmail: member.email,
+    workflow: params.workflow,
+    xero: params.xero,
+    tenantId: params.tenantId,
   });
 }
 

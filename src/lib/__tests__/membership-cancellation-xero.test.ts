@@ -1,8 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Contact } from "xero-node";
 
+import {
+  declareEnvironmentRole,
+  expectEnvironmentRolePremise,
+  undeclareEnvironmentRole,
+} from "@/lib/__tests__/helpers/environment-role";
+
 const mocks = vi.hoisted(() => ({
   memberFindUnique: vi.fn(),
+  environmentSafetySettingsFindUnique: vi.fn(),
+  containmentFindUnique: vi.fn(),
+  containmentUpsert: vi.fn(),
   memberSubscriptionFindUnique: vi.fn(),
   xeroObjectLinkFindFirst: vi.fn(),
   xeroObjectLinkCreateMany: vi.fn(),
@@ -42,6 +51,22 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     member: {
       findUnique: mocks.memberFindUnique,
+    },
+    /*
+      #3034/#3036: the cancellation credit note is the fifth credit-note creator
+      and the one that does not go through `findOrCreateXeroContact`, so it asks
+      which installation this is and proves the contact contained before raising
+      anything. A MISSING `environmentSafetySettings` delegate is an UNREADABLE
+      override, which resolves UNKNOWN whatever the declaration says — so without
+      this the suite would test the refusal instead of the credit note. Declared
+      inline because `vi.hoisted` runs above this file's imports.
+    */
+    environmentSafetySettings: {
+      findUnique: mocks.environmentSafetySettingsFindUnique,
+    },
+    xeroSandboxContactContainment: {
+      findUnique: mocks.containmentFindUnique,
+      upsert: mocks.containmentUpsert,
     },
     memberSubscription: {
       findUnique: mocks.memberSubscriptionFindUnique,
@@ -129,6 +154,16 @@ function xeroClient() {
 describe("membership cancellation Xero operations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    /*
+      This suite is about the cancellation flow, so it runs as the club's LIVE
+      site — where INV-CONFIG-005 is a no-op and every assertion below is about
+      unchanged behaviour. The copy and undeclared cases have their own block.
+    */
+    declareEnvironmentRole("production");
+    mocks.environmentSafetySettingsFindUnique.mockResolvedValue(null);
+    mocks.containmentFindUnique.mockResolvedValue(null);
+    mocks.containmentUpsert.mockResolvedValue({});
     mocks.callXeroApi.mockImplementation(async (runner: () => unknown) => runner());
     mocks.getAuthenticatedXeroClient.mockResolvedValue({
       xero: xeroClient(),
@@ -1156,5 +1191,161 @@ describe("membership cancellation Xero operations", () => {
     expect(mocks.deleteContactGroupContact).not.toHaveBeenCalled();
     expect(mocks.createContactGroupContacts).not.toHaveBeenCalled();
     expect(mocks.updateContact).not.toHaveBeenCalled();
+  });
+
+  /**
+   * INV-CONFIG-005 (#3036 review P0-2). THE FIFTH CREDIT-NOTE CREATOR.
+   *
+   * The other four resolve their contact through `findOrCreateXeroContact`, which
+   * contains it. This one takes its contact from the invoice it is crediting, so on
+   * a copy restored from the club's live database it raised a credit note against a
+   * contact nothing on this installation had ever proved contained — exactly what
+   * this issue's acceptance criteria forbid.
+   *
+   * The exposure is not merely a consistency argument. The allocation is sized from
+   * Xero's `amountDue` read a moment earlier; a concurrent partial payment, or an
+   * allocation that fails after the credit note exists, leaves the invoice still
+   * outstanding against that contact, and Xero emails its reminders to whatever
+   * address the contact holds, from its own servers.
+   */
+  describe("the cancellation credit note on a copy (INV-CONFIG-005)", () => {
+    function subscriptionFixture() {
+      mocks.memberSubscriptionFindUnique.mockResolvedValue({
+        id: "sub_1",
+        memberId: "member_1",
+        seasonYear: 2026,
+        status: "UNPAID",
+        xeroInvoiceId: "inv_sub_1",
+        member: {
+          id: "member_1",
+          firstName: "Alice",
+          lastName: "Smith",
+          xeroContactId: "contact_1",
+        },
+      });
+      mocks.getInvoice.mockResolvedValue({
+        body: {
+          invoices: [
+            {
+              invoiceID: "inv_sub_1",
+              invoiceNumber: "INV-1",
+              amountDue: 123.45,
+              contact: { contactID: "contact_1" },
+            },
+          ],
+        },
+      });
+      mocks.createCreditNotes.mockResolvedValue({
+        body: {
+          creditNotes: [{ creditNoteID: "cn_1", creditNoteNumber: "CN-1" }],
+        },
+      });
+      mocks.createCreditNoteAllocation.mockResolvedValue({
+        body: { allocations: [{ amount: 123.45 }] },
+      });
+    }
+
+    beforeEach(() => {
+      subscriptionFixture();
+      mocks.memberFindUnique.mockResolvedValue({
+        email: "alice@example.com",
+        xeroContactId: "contact_1",
+      });
+    });
+
+    it("contains the contact before the credit note is raised", async () => {
+      declareEnvironmentRole("non-production");
+      await expectEnvironmentRolePremise("NON_PRODUCTION");
+      mocks.getContact.mockResolvedValue({
+        body: {
+          contacts: [
+            { contactID: "contact_1", emailAddress: "alice@example.com" },
+          ],
+        },
+      });
+      mocks.updateContact.mockResolvedValue({ body: {} });
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          createdByMemberId: "admin_1",
+          syncOperationId: "op_1",
+        }),
+      ).resolves.toBe("cn_1");
+
+      expect(mocks.updateContact).toHaveBeenCalledWith(
+        "tenant_1",
+        "contact_1",
+        {
+          contacts: [
+            {
+              contactID: "contact_1",
+              emailAddress: expect.stringContaining("@xero-sandbox.invalid"),
+            },
+          ],
+        },
+        expect.any(String),
+      );
+      expect(mocks.containmentUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({ rewroteAddress: true }),
+        }),
+      );
+    });
+
+    it("raises NO credit note when containment cannot be proved", async () => {
+      declareEnvironmentRole("non-production");
+      await expectEnvironmentRolePremise("NON_PRODUCTION");
+      mocks.getContact.mockRejectedValue(new Error("503 from Xero"));
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          createdByMemberId: "admin_1",
+          syncOperationId: "op_1",
+        }),
+      ).rejects.toThrow(/cannot prove the contact is unable to reach a member/);
+      expect(mocks.createCreditNotes).not.toHaveBeenCalled();
+      expect(mocks.createCreditNoteAllocation).not.toHaveBeenCalled();
+    });
+
+    it("raises NO credit note on an installation that has declared nothing", async () => {
+      undeclareEnvironmentRole();
+      await expectEnvironmentRolePremise("UNKNOWN");
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          createdByMemberId: "admin_1",
+          syncOperationId: "op_1",
+        }),
+      ).rejects.toThrow(/APP_ENVIRONMENT_ROLE/);
+      expect(mocks.createCreditNotes).not.toHaveBeenCalled();
+    });
+
+    it("changes nothing on the club's live site", async () => {
+      declareEnvironmentRole("production");
+      await expectEnvironmentRolePremise("PRODUCTION");
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          createdByMemberId: "admin_1",
+          syncOperationId: "op_1",
+        }),
+      ).resolves.toBe("cn_1");
+
+      expect(mocks.updateContact).not.toHaveBeenCalled();
+      expect(mocks.containmentFindUnique).not.toHaveBeenCalled();
+      expect(mocks.containmentUpsert).not.toHaveBeenCalled();
+    });
   });
 });

@@ -5,6 +5,7 @@ import {
   lockMemberCreditLedger,
 } from "./member-credit";
 import { callXeroApi, getAuthenticatedXeroClient } from "./xero-api-client";
+import { requireContainedMemberContactForInvoiceOperation } from "@/lib/xero-contact-containment";
 import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   buildXeroIdempotencyKey,
@@ -641,6 +642,20 @@ export async function deallocateExcessAppliedCreditForBooking(
     });
     return;
   }
+
+  /*
+    INV-CONFIG-005 (#3036 review P0-2): deallocation REMOVES credit from an
+    invoice, so it raises what is outstanding on it — and Xero emails reminders
+    for an outstanding AUTHORISED invoice to the address on its contact, from its
+    own servers. This path never touches `findOrCreateXeroContact`, so on a copy
+    restored from the club's live database nothing here had ever looked at what
+    that contact holds. Checked at the ENTRY POINT, before the fence or any local
+    claim, so a refusal leaves nothing half-done.
+  */
+  await requireContainedMemberContactForInvoiceOperation({
+    memberId: booking.memberId,
+    workflow: "deallocateExcessAppliedCreditForBooking",
+  });
 
   const conflicting = await prisma.xeroSyncOperation.findFirst({
     where: {

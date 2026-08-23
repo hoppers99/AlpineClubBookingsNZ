@@ -1127,6 +1127,169 @@ describe("createXeroInvoiceForBooking", () => {
     );
   });
 
+  /** The booking shape the update path needs: a payment carrying an invoice id. */
+  function bookingWithExistingInvoice() {
+    return {
+      id: "booking_1",
+      memberId: "mem_1",
+      member: { id: "mem_1" },
+      checkIn: "2026-08-03T00:00:00.000Z",
+      checkOut: "2026-08-05T00:00:00.000Z",
+      createdAt: "2026-05-15T10:30:00.000Z",
+      discountCents: 0,
+      guests: [
+        {
+          firstName: "Jordan",
+          lastName: "Hartley-Smith",
+          ageTier: "ADULT",
+          isMember: true,
+          priceCents: 10000,
+        },
+      ],
+      payment: {
+        id: "pay_1",
+        status: "SUCCEEDED",
+        amountCents: 10000,
+        stripePaymentIntentId: "pi_1",
+        xeroInvoiceId: "inv_1",
+        xeroInvoiceNumber: "INV-1",
+      },
+    };
+  }
+
+  /*
+    INV-CONFIG-005 (#3036 review P0-2). Re-pricing an invoice can RAISE its
+    amount due, and this path never goes through `findOrCreateXeroContact` — so
+    on a copy restored from the club's live database nothing here had ever looked
+    at what the invoice's contact holds, while Xero goes on emailing reminders
+    for an outstanding AUTHORISED invoice from its own servers.
+  */
+  it("contains the invoice's contact before re-pricing it on a copy", async () => {
+    declareEnvironmentRole("non-production");
+    mocks.prisma.booking.findUnique.mockResolvedValue(
+      bookingWithExistingInvoice()
+    );
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      email: "member@example.com",
+      xeroContactId: "contact_1",
+    });
+    mocks.xeroClientInstance.accountingApi.getInvoice.mockResolvedValue({
+      body: {
+        invoices: [
+          {
+            invoiceID: "inv_1",
+            invoiceNumber: "INV-1",
+            type: "ACCREC",
+            status: "AUTHORISED",
+            contact: { contactID: "contact_1" },
+            lineAmountTypes: "Inclusive",
+            reference: "Booking booking_",
+            lineItems: [
+              {
+                lineItemID: "line_1",
+                description: "old",
+                quantity: 1,
+                unitAmount: 100,
+                taxType: "OUTPUT2",
+                accountCode: "200",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    mocks.xeroClientInstance.accountingApi.updateInvoice.mockResolvedValue({
+      body: { invoices: [{ invoiceID: "inv_1", invoiceNumber: "INV-1" }] },
+    });
+
+    await expect(updateXeroBookingInvoiceForBooking("booking_1")).resolves.toBe(
+      "inv_1"
+    );
+
+    expect(
+      mocks.xeroClientInstance.accountingApi.updateContact
+    ).toHaveBeenCalledWith(
+      "tenant_1",
+      "contact_1",
+      {
+        contacts: [
+          {
+            contactID: "contact_1",
+            emailAddress: toXeroSandboxContactEmail("member@example.com"),
+          },
+        ],
+      },
+      expect.any(String)
+    );
+  });
+
+  it("re-prices nothing on a copy that cannot prove the contact contained", async () => {
+    declareEnvironmentRole("non-production");
+    mocks.prisma.booking.findUnique.mockResolvedValue(
+      bookingWithExistingInvoice()
+    );
+    mocks.prisma.member.findUnique.mockResolvedValue({
+      email: "member@example.com",
+      xeroContactId: "contact_1",
+    });
+    mocks.xeroClientInstance.accountingApi.getContact.mockRejectedValue(
+      new Error("503 from Xero")
+    );
+
+    await expect(
+      updateXeroBookingInvoiceForBooking("booking_1")
+    ).rejects.toThrow(/cannot prove the contact is unable to reach a member/);
+    expect(
+      mocks.xeroClientInstance.accountingApi.updateInvoice
+    ).not.toHaveBeenCalled();
+  });
+
+  it("asks none of that on the club's live site", async () => {
+    declareEnvironmentRole("production");
+    mocks.prisma.booking.findUnique.mockResolvedValue(
+      bookingWithExistingInvoice()
+    );
+    mocks.xeroClientInstance.accountingApi.getInvoice.mockResolvedValue({
+      body: {
+        invoices: [
+          {
+            invoiceID: "inv_1",
+            invoiceNumber: "INV-1",
+            type: "ACCREC",
+            status: "AUTHORISED",
+            contact: { contactID: "contact_1" },
+            lineAmountTypes: "Inclusive",
+            reference: "Booking booking_",
+            lineItems: [
+              {
+                lineItemID: "line_1",
+                description: "old",
+                quantity: 1,
+                unitAmount: 100,
+                taxType: "OUTPUT2",
+                accountCode: "200",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    mocks.xeroClientInstance.accountingApi.updateInvoice.mockResolvedValue({
+      body: { invoices: [{ invoiceID: "inv_1", invoiceNumber: "INV-1" }] },
+    });
+
+    await expect(updateXeroBookingInvoiceForBooking("booking_1")).resolves.toBe(
+      "inv_1"
+    );
+
+    expect(
+      mocks.xeroClientInstance.accountingApi.updateContact
+    ).not.toHaveBeenCalled();
+    expect(
+      mocks.prisma.xeroSandboxContactContainment.findUnique
+    ).not.toHaveBeenCalled();
+  });
+
   // The Stripe payment recorded against a freshly raised invoice is
   // bank-reconciliation input, and its date decides which GST period the cash
   // falls in. It read the clock's UTC day, which is still yesterday for roughly

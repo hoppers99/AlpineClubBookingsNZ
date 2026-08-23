@@ -202,7 +202,7 @@ import {
   toXeroSandboxContactEmail,
   xeroSandboxContainmentTarget,
 } from "@/lib/xero-sandbox-contact-email";
-import { XeroContactEnvironmentUnknownError } from "@/lib/xero-contact-containment";
+import { XeroContactEnvironmentUnknownError } from "@/lib/xero-environment-write-gate";
 
 describe("findOrCreateXeroContact", () => {
   beforeEach(() => {
