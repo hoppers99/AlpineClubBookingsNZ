@@ -88,7 +88,12 @@ const CLEARANCE_WITNESS: unique symbol = Symbol("delivery-clearance");
 type MintedClearance = { readonly [CLEARANCE_WITNESS]: true };
 
 function mintClearance(): DeliveryClearance {
-  return { [CLEARANCE_WITNESS]: true } as MintedClearance as DeliveryClearance;
+  // The double cast is the mint. `MintedClearance` and `DeliveryClearance` have
+  // no property in common by design — the brand is phantom and the witness is
+  // real — so TypeScript will not bridge them directly, and going through
+  // `unknown` here is the one place in the codebase allowed to do it.
+  const minted: MintedClearance = { [CLEARANCE_WITNESS]: true };
+  return minted as unknown as DeliveryClearance;
 }
 
 /**

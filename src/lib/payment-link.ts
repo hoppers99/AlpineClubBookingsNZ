@@ -467,6 +467,23 @@ export async function reissuePaymentLinkForToken(
     return { emailed: false };
   }
 
+  if (emailOutcome.status !== "sent") {
+    /*
+      FAIL CLOSED on anything else the mailer returns. This used to enumerate the
+      untransmitted outcomes and then `return { emailed: true }`, which meant the
+      environment-safety withhold added by #3035 would have reported a payment
+      link as emailed when nothing left the building — and so would the next new
+      outcome after it. The member is told the same neutral "we could not email
+      it" as for an undeliverable address; which internal reason applied is never
+      surfaced to them.
+    */
+    logger.warn(
+      { bookingId: booking.id, emailStatus: emailOutcome.status },
+      "Fresh payment link issued but the email was not transmitted"
+    );
+    return { emailed: false };
+  }
+
   return { emailed: true };
 }
 
