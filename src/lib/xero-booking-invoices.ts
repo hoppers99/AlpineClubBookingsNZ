@@ -55,7 +55,7 @@ import {
   retryXeroWriteWithContactRepair,
   type FindOrCreateXeroContactOptions,
 } from "./xero-contacts";
-import { requireContainedMemberContactForInvoiceOperation } from "@/lib/xero-contact-containment";
+import { requireContainedMemberContactForInvoiceOperation } from "@/lib/xero-contact-containment-proof";
 import { formatDateOnly, formatDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   getBookingInvoiceDueDate,
@@ -449,7 +449,13 @@ export async function createXeroInvoiceForBooking(
   const { xero, tenantId } = await getAuthenticatedXeroClient();
 
   // Ensure the member has a Xero contact
-  const contactId = await findOrCreateXeroContact(booking.memberId, options);
+  // #3036 review P1-12: this client was built two lines up, so hand it to the
+  // containment verification rather than making it authenticate a second time.
+  const contactId = await findOrCreateXeroContact(booking.memberId, {
+    ...options,
+    xero,
+    tenantId,
+  });
 
   // Resolve account codes, item codes, and season type
   const [hutFeeMapping, stripeBankCode, hutFeeItemCodeMap] = await Promise.all([

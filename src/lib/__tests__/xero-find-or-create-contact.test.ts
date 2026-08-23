@@ -769,6 +769,50 @@ describe("findOrCreateXeroContact contains the contact's address on a copy (INV-
     );
   });
 
+  it("reuses the caller's authenticated client instead of building a second one", async () => {
+    /*
+      #3036 review P1-12. The steady-state path returns BEFORE
+      `getAuthenticatedXeroClient()`, which is right — a proof that matches costs
+      no provider call at all. But when the proof is stale or absent, containment
+      then authenticated for itself, even though every document writer built a
+      client two lines before calling this function. On a restored copy's first
+      pass that was one extra token read plus one extra `xero.initialize()` (an
+      OIDC discovery round trip, not cached) PER CONTACT.
+    */
+    declareEnvironmentRole("non-production");
+    await expectEnvironmentRolePremise("NON_PRODUCTION");
+    // Deliberately NO token row: if containment authenticates for itself, it
+    // cannot, and the call fails. Passing the client is the only way through.
+    mocks.prisma.xeroToken.findFirst.mockResolvedValue(null);
+    mocks.tx.member.findUnique.mockResolvedValue({
+      id: "mem_1",
+      email: "member@example.com",
+      xeroContactId: "xero_existing",
+    });
+    mocks.xeroClientInstance.accountingApi.getContact.mockResolvedValue({
+      body: {
+        contacts: [
+          { contactID: "xero_existing", emailAddress: "member@example.com" },
+        ],
+      },
+    });
+
+    await expect(
+      findOrCreateXeroContact("mem_1", {
+        xero: mocks.xeroClientInstance as never,
+        tenantId: "tenant_1",
+      }),
+    ).resolves.toBe("xero_existing");
+
+    expect(
+      mocks.xeroClientInstance.accountingApi.getContact,
+    ).toHaveBeenCalledWith("tenant_1", "xero_existing");
+    expect(
+      mocks.prisma.xeroToken.findFirst,
+      "the caller's client was supplied, so nothing here may re-authenticate",
+    ).not.toHaveBeenCalled();
+  });
+
   it("a restored link that CANNOT be contained blocks the caller, so no invoice follows", async () => {
     declareEnvironmentRole("non-production");
     await expectEnvironmentRolePremise("NON_PRODUCTION");

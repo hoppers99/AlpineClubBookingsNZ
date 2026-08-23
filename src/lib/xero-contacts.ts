@@ -41,10 +41,10 @@ import { buildXeroContactCompanyNumberPatch } from "@/lib/xero-contact-date-of-b
 import { isPlaceholderContactEmail } from "@/lib/placeholder-contact-email";
 import {
   applyXeroContactEmailPolicy,
-  ensureXeroContactContained,
   resolveXeroContactEmailPolicy,
   type XeroContactEmailPolicy,
 } from "@/lib/xero-contact-containment";
+import { ensureXeroContactContained } from "@/lib/xero-contact-containment-proof";
 import {
   ambiguousMemberContactCreateReservationWhere,
   assertMemberAvailableForXeroContactChange,
@@ -75,6 +75,24 @@ export class XeroContactValidationError extends Error {
 export interface FindOrCreateXeroContactOptions {
   createdByMemberId?: string;
   repairExistingLink?: boolean;
+  /**
+   * An already-authenticated Xero client, for the containment verification on
+   * the steady-state path (#3036 review P1-12).
+   *
+   * PURELY AN OPTIMISATION, and it is safe to omit: containment builds its own
+   * client when it needs one. What it saves is a DUPLICATE build. The
+   * steady-state path returns before `getAuthenticatedXeroClient()` — which is
+   * right, since a proof that matches costs no provider call at all — but when
+   * the proof is stale or absent, containment then authenticates a second time
+   * even though every document writer built a client two lines before calling
+   * this function. On a restored copy's first pass that is one extra token read
+   * plus one extra `xero.initialize()` (an OIDC discovery round trip, not
+   * cached) PER CONTACT.
+   *
+   * Both must be supplied together or neither is used.
+   */
+  xero?: XeroClient;
+  tenantId?: string;
 }
 
 type ContactCreateOperationInput = Omit<
@@ -704,6 +722,11 @@ export async function findOrCreateXeroContact(
       xeroContactId,
       sourceEmail: member.email,
       workflow: "findOrCreateXeroContact",
+      // The caller's client when it has one — see the option's docblock. Only
+      // reached when the proof is stale or absent; a matching proof returns
+      // above without a provider call at all.
+      xero: options?.xero,
+      tenantId: options?.tenantId,
     });
     await syncContactGroupsBestEffort(memberId, xeroContactId, options);
     return xeroContactId;

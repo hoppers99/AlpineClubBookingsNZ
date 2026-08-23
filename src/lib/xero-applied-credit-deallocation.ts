@@ -5,7 +5,7 @@ import {
   lockMemberCreditLedger,
 } from "./member-credit";
 import { callXeroApi, getAuthenticatedXeroClient } from "./xero-api-client";
-import { requireContainedMemberContactForInvoiceOperation } from "@/lib/xero-contact-containment";
+import { requireContainedMemberContactForInvoiceOperation } from "@/lib/xero-contact-containment-proof";
 import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   buildXeroIdempotencyKey,

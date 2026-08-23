@@ -51,6 +51,14 @@
  * table stays empty for ever — an empty count there is not reassurance about
  * anything, it is the definition.
  *
+ * NOTHING IS EVER SWEPT, so these counts only grow. A row whose Xero contact has
+ * since been archived, deleted or unlinked is still a true record that this
+ * installation edited that contact in the club's accounting, and it is the
+ * record somebody wants when they discover a copy was pointed at the real
+ * organisation — so a cleanup would delete the evidence and quietly reduce the
+ * number reported here. The bound is one row per contact this copy has ever
+ * resolved; see the model comment in `prisma/schema.prisma`.
+ *
  * FAILS SOFT, deliberately: this runs inside an admin page's payload, and a
  * database that cannot answer must not turn the screen into a 500 when
  * `available: false` is a state the screen already renders.

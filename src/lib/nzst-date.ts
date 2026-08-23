@@ -66,6 +66,20 @@ export function formatNZDateTime(date: Date): string {
 }
 
 /**
+ * An ISO instant from a JSON payload, in club time, falling back to the raw
+ * string when it will not parse.
+ *
+ * The fallback is the point: a screen that renders `Invalid Date` for a value it
+ * did not expect has told the reader nothing, while the raw string at least says
+ * what arrived. Client components on the environment-safety screens share this
+ * rather than each carrying their own three-line copy.
+ */
+export function formatNZInstantOrRaw(iso: string): string {
+  const parsed = new Date(iso);
+  return Number.isNaN(parsed.getTime()) ? iso : formatNZDateTime(parsed);
+}
+
+/**
  * Long, spelled-out date in club time — "16 April 2026". Reserved for the
  * member-facing surfaces the owner asked to keep it on (#2264): booking
  * messages and the emails built from them, the lodge/hut-leader instruction

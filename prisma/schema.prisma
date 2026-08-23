@@ -7009,6 +7009,21 @@ model EnvironmentSafetySettings {
 /// NON_PRODUCTION installation, so on the club's live site this table stays
 /// empty for ever — which is also why an empty table is not evidence of anything
 /// on its own and every surface shows the effective role beside the count.
+///
+/// NOTHING EVER DELETES A ROW, and that is a decision rather than an omission
+/// (#3036 review P2-18). A row for a Xero contact that has since been archived,
+/// deleted in Xero, or unlinked from every member is still a true record that
+/// THIS installation edited that contact in the club's accounting, and it is
+/// exactly the record somebody wants when they discover the copy was pointed at
+/// the real organisation. A sweep that tidied it away would delete the evidence
+/// and quietly reduce the number the operator surface reports — the
+/// reassuring-false-record shape this whole epic is about.
+///
+/// THE BOUND IS THEREFORE THE NUMBER OF CONTACTS A COPY HAS EVER RESOLVED, one
+/// row each, upserted. On the largest club that is thousands of narrow rows, not
+/// a log, and it grows only when the copy meets a contact it has not met before.
+/// A copy that has finished with a Xero organisation is thrown away with its
+/// database; there is no long-lived installation for this to accumulate on.
 model XeroSandboxContactContainment {
   id String @id @default(cuid())
 

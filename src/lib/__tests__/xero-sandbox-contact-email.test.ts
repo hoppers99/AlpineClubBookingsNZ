@@ -50,6 +50,34 @@ describe("the contained Xero contact address (INV-CONFIG-005)", () => {
     expect(XERO_SANDBOX_CONTACT_EMAIL_DOMAIN.endsWith(".invalid")).toBe(true);
   });
 
+  it("has exactly the shape this feature's operator copy promises", () => {
+    /*
+      #3036 review P1-8b. Every case around this one asserts a PROPERTY -
+      deterministic, idempotent, non-deliverable, short enough - and a mutant
+      that changed the digest length, dropped the prefix or truncated to eight
+      characters satisfied all of them. Nothing pinned the SHAPE, and the shape
+      is a published promise: the changelog and the operator guide both tell an
+      administrator to expect
+      `contained-<letters and numbers>@xero-sandbox.invalid` and to recognise a
+      contained contact by it, and `docs/guides/environment-role.md` says the
+      same. So the shape is a contract with a person, not an implementation
+      detail.
+
+      128 bits of digest is the width, and it is a judgement worth pinning rather
+      than drifting: the population is one address per Xero contact, so this is
+      far past any collision concern, and the whole address stays inside every
+      provider field limit.
+    */
+    const contained = toXeroSandboxContactEmail(REAL);
+    expect(contained).toMatch(
+      /^contained-[0-9a-f]{32}@xero-sandbox\.invalid$/,
+    );
+    // The domain constant and the literal above must be the same string, or this
+    // case would be pinning a shape the module no longer produces.
+    expect(XERO_SANDBOX_CONTACT_EMAIL_DOMAIN).toBe("xero-sandbox.invalid");
+    expect(contained).toHaveLength("contained-".length + 32 + 1 + 20);
+  });
+
   it("carries no part of the real address", () => {
     const contained = toXeroSandboxContactEmail(REAL);
     expect(contained).not.toContain("member");

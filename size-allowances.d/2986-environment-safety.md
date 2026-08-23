@@ -27,11 +27,26 @@ standard this list should be read against.** #3034: the resolver
 the delivery policy (`environment-delivery-policy.ts`, 453), the mailer's half of
 the boundary (`email/environment-gate.ts`, 233), the Xero invoice-email wrapper
 (`xero-invoice-email.ts`, 196) and the transport module it moved logging into
-(`email/internal.ts`, 224). #3036: the containment gate
-(`xero-contact-containment.ts`, 607), the pure address leaf
-(`xero-sandbox-contact-email.ts`, 196) and the operator count
-(`xero-contact-containment-status.ts`, 109). Between them those fourteen modules
+(`email/internal.ts`, 224). #3036: the policy half of the
+containment gate (`xero-contact-containment.ts`, 249), the proof half
+(`xero-contact-containment-proof.ts`, 570), the fail-closed write gate
+(`xero-environment-write-gate.ts`, 149), the pure address leaf
+(`xero-sandbox-contact-email.ts`, 196), the operator count
+(`xero-contact-containment-status.ts`, 220) and the operator block it feeds
+(`environment-xero-containment.tsx`, 275). Between them those seventeen modules
 carry the whole of the new logic, so this feature creates no size debt of its own.
+
+**Two of those files are splits the review round forced, and both were the right
+answer rather than a way round the gate.** The containment module reached 785 of
+700 once the freshness bound, the monotonicity comment and the non-funnel
+invoice-operation gate landed, so it split along the line between a DECISION
+(pure, synchronous, database-free once the role is read) and an ACT with provider
+and database consequences — `xero-contact-containment.ts` and
+`xero-contact-containment-proof.ts`. `environment-safety-panel.tsx` reached 724
+of 700 once the Xero block gained its addressable list, and that block is a
+separate subject from the rest of the panel: it moved whole into
+`environment-xero-containment.tsx`, taking its own types and its census case with
+it. Neither file needs an allowance, which is the point.
 
 **Files that came close were COMPACTED rather than allowanced**, because an
 allowance is explicitly not available to a file crossing its budget for the first
@@ -153,7 +168,7 @@ reason: forty-eight lines across two sibling guards, and both fix defects rather
   across all three so a member never learns which internal reason applied.
 
 file: src/lib/xero-booking-invoices.ts
-lines: 1336
+lines: 1357
 reason: forty-two lines inside the invoice-email block that already holds two
   other non-send decisions — the booking's "No emails" switch and the
   unreadable-switch fault — and the new environment gate has to be read against
@@ -192,8 +207,8 @@ reason: four lines. `sendPreArrivalReminderEmail` swallowed the mailer's outcome
 ## #3036 — Xero contact containment
 
 file: src/lib/xero-contacts.ts
-lines: 1816
-reason: a hundred and sixteen lines, and they are the whole reason the twelve document
+lines: 1876
+reason: a hundred and seventy-six lines, and they are the whole reason the twelve document
   writers needed no change at all. `findOrCreateXeroContact` is the single funnel
   every Xero document writer resolves its contact through, so the gate belongs
   INSIDE it — gating the twelve call sites instead would have shipped with the two
@@ -204,9 +219,9 @@ reason: a hundred and sixteen lines, and they are the whole reason the twelve do
   issue exists, and it can only be understood beside the code that returns from
   it. The three other blocks each sit at the one point they describe — the create
   payload builder, the create-or-match resolution, the contact update — and the
-  decision logic itself all moved OUT into `xero-contact-containment.ts` (598) and
-  `xero-sandbox-contact-email.ts` (196), which is why nothing else in the Xero
-  subsystem needed an allowance. The last twenty-three of those lines are the
+  decision logic itself all moved OUT into `xero-contact-containment.ts` and its
+  proof half, plus `xero-sandbox-contact-email.ts`, which is why nothing else in
+  the Xero subsystem needed an allowance. The last twenty-three of those lines are the
   review-round fix that wraps `createXeroContactForMember`'s containment in the
   partial-success phase this function already owns: a bare throw there loses the
   created contact id, so the admin route tells the operator nothing was recorded
@@ -227,6 +242,61 @@ reason: twenty-one lines, and they close the inbound direction of the same rule.
   tellable apart. Most of the growth is the added `reason` on the skip detail and
   the comment saying why "no email address" would have been a FALSE report here:
   the contact HAS an address, it simply cannot be used.
+
+file: src/lib/xero-api-client.ts
+lines: 782
+reason: fourteen lines, and they are the difference between a claim and a
+  guarantee. Seven operator-facing surfaces of this product asserted that an
+  installation nobody has declared writes nothing to Xero, and that was false:
+  the contact funnel refused, while every writer that does not go through it
+  carried on — the membership-cancellation credit note, contact-group membership
+  from `/api/profile`, archiving a contact, voiding an invoice, recording a
+  payment, deallocating applied credit, re-pricing a booking invoice. `callXeroApi`
+  is the single wrapper every provider call in this subsystem goes through, so the
+  refusal belongs there and nowhere else: it has to sit ahead of the retry ladder
+  and ahead of the usage row, because nothing was attempted and a refused call
+  must not enter the quota ledger. The DECISION it consults is a leaf of its own
+  (`xero-environment-write-gate.ts`, 149) precisely so this file gained a call and
+  a comment rather than the policy; splitting the retry/metering wrapper itself to
+  buy fourteen lines would separate the gate from the one place it must be
+  unavoidable.
+
+file: src/lib/membership-cancellation-xero.ts
+lines: 1387
+reason: twenty-three lines at the fifth credit-note creator — the one the
+  original census of this issue got wrong. The other four resolve their contact
+  through `findOrCreateXeroContact`, which contains it; this one takes its contact
+  from the invoice it is crediting, so on a copy restored from the club's live
+  database it raised a credit note against a contact nothing here had ever proved
+  contained. The check must sit at this exact point, after the contact is resolved
+  and before the credit note is raised, and most of the growth is the comment
+  saying why it is not merely a consistency argument: the allocation is sized from
+  Xero's `amountDue` read a moment earlier, so a concurrent partial payment or a
+  failed allocation leaves the invoice outstanding against that contact, and Xero
+  emails its reminders from its own servers with no API call from here. Lifting it
+  out would put the reasoning somewhere other than the line it justifies.
+
+file: src/lib/xero-applied-credit-deallocation.ts
+lines: 970
+reason: fifteen lines at the entry point, before the fence and before any local
+  claim, so a refusal leaves nothing half-done. Deallocation REMOVES credit from
+  an invoice and therefore raises what is outstanding on it, which is the one
+  shape that can re-arm Xero's own reminders to a real member on a copy — and this
+  path never touches the contact funnel. The comment is most of it and it has to
+  be here: the reason this file needs a containment check at all is a property of
+  what deallocation does to an invoice, which is not visible from the shared
+  helper it calls.
+
+file: src/lib/xero-bulk-contact-sync.ts
+lines: 725
+reason: twenty lines, and they fix a FALSE operator report rather than adding a
+  feature. On a copy every contained contact stops matching a member by email, and
+  this file reported those as "No matching member by email" — the identical false
+  reason this change fixed on the member-import path, left behind and then
+  documented as "unaffected by design". The contact HAS an address; it simply
+  cannot be used. The skip has to sit in the per-contact loop beside the reasons it
+  is a sibling of, because an operator reads one report and the reasons have to be
+  tellable apart, and the comment carries why the obvious wording would be a lie.
 
 file: src/app/api/admin/xero/import-member-contact/route.ts
 lines: 353

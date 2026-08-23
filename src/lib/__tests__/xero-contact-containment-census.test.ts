@@ -51,6 +51,13 @@ const EXTENSIONS = new Set([".ts", ".tsx", ".mjs", ".js", ".cjs"]);
 
 const CONTACTS_MODULE = "src/lib/xero-contacts.ts";
 const CONTAINMENT_MODULE = "src/lib/xero-contact-containment.ts";
+/*
+  The proof half, split out of the module above when it outgrew the file-size
+  budget: the durable record, its freshness bound, the provider read-back and
+  the refusal. It is the module that WRITES a contact, so it is the one named in
+  the writer census below; the policy module holds the token and mints it.
+*/
+const CONTAINMENT_PROOF_MODULE = "src/lib/xero-contact-containment-proof.ts";
 const SANDBOX_MODULE = "src/lib/xero-sandbox-contact-email.ts";
 
 /**
@@ -130,6 +137,7 @@ describe("Xero contact containment census (INV-CONFIG-005)", () => {
     expect(PRODUCTION_FILES.length).toBeGreaterThan(1000);
     expect(PRODUCTION_FILES.map(repoRelative)).toContain(CONTACTS_MODULE);
     expect(PRODUCTION_FILES.map(repoRelative)).toContain(CONTAINMENT_MODULE);
+    expect(PRODUCTION_FILES.map(repoRelative)).toContain(CONTAINMENT_PROOF_MODULE);
     // The test filter really does remove tests, and really does keep production
     // files — a filter that removed everything would make every list below
     // trivially empty.
@@ -154,12 +162,18 @@ describe("Xero contact containment census (INV-CONFIG-005)", () => {
     expect(
       writers,
       "A Xero contact may only be written from the contact layer, the containment " +
-        "module, or the two writers that carry no email address at all. A new " +
+        "proof module, or the two writers that carry no email address at all. A new " +
         "call site here would be a contact write that never asked which " +
         "installation this is, and on a copy it would put a member's real " +
         "address back on the contact for Xero to email invoice reminders to " +
         "(INV-CONFIG-005).",
-    ).toEqual([CONTAINMENT_MODULE, CONTACTS_MODULE, ...NO_EMAIL_CONTACT_WRITERS].sort());
+    ).toEqual(
+      [
+        CONTAINMENT_PROOF_MODULE,
+        CONTACTS_MODULE,
+        ...NO_EMAIL_CONTACT_WRITERS,
+      ].sort(),
+    );
   });
 
   it("keeps the two no-email writers from COMPOSING an email address", () => {
@@ -471,6 +485,10 @@ describe("Xero contact containment census (INV-CONFIG-005)", () => {
         "src/components/admin/environment-safety-panel.tsx",
         "APP_ENVIRONMENT_ROLE",
       ],
+      [
+        "src/components/admin/environment-xero-containment.tsx",
+        "The club&apos;s Xero contacts",
+      ],
       ["src/app/(admin)/admin/environment/page.tsx", "Environment Safety"],
     ];
     const HEDGES = [
@@ -529,8 +547,13 @@ describe("Xero contact containment census (INV-CONFIG-005)", () => {
       invoicing has stopped. Same rule #3035 reached for the withheld-email
       block, arrived at here from the opposite direction.
     */
+    /*
+      The renderer moved into its own client component when the panel outgrew
+      its file-size budget (#3036 review P2-15). The subject moved with it, so
+      this case follows it rather than pinning a path.
+    */
     const panel = readModule(
-      "src/components/admin/environment-safety-panel.tsx",
+      "src/components/admin/environment-xero-containment.tsx",
     );
     const start = panel.indexOf("function describeXeroContainment(");
     expect(start, "the containment renderer must exist").toBeGreaterThan(-1);
@@ -553,6 +576,13 @@ describe("Xero contact containment census (INV-CONFIG-005)", () => {
       "the undeclared state must be answered FIRST and separately: it is not " +
         "containing anything, and a count means something different there",
     ).toContain('state.role === "UNKNOWN"');
+    // And it distinguishes the DECLARED-production installation whose override
+    // cannot be read, which also resolves UNKNOWN and for which "declare the
+    // role" is the wrong repair (#3036 review P1-10).
+    expect(
+      body,
+      "the two UNKNOWN causes have different repairs and must not share a sentence",
+    ).toContain('state.declarationKind === "production"');
     const unknownBranch = body.slice(
       body.indexOf('state.role === "UNKNOWN"'),
       body.indexOf("if (!containment.available)"),
@@ -588,9 +618,19 @@ describe("Xero contact containment census (INV-CONFIG-005)", () => {
     // And the block is rendered for BOTH states, never for PRODUCTION — where
     // containment never runs and the table is empty by definition, so a
     // "0 contacts" line would be noise.
-    expect(panel).toContain(
-      'state.role === "NON_PRODUCTION" || state.role === "UNKNOWN" ? (',
+    expect(
+      panel,
+      "the block must render for a confirmed copy and an undeclared installation, " +
+        "and for NEITHER production (where containment never runs and the table " +
+        "is empty by definition, so a zero would be noise)",
+    ).toContain(
+      'if (props.role !== "NON_PRODUCTION" && props.role !== "UNKNOWN") return null;',
     );
+    // And the panel really does render it, or the component above is dead code.
+    expect(
+      readModule("src/components/admin/environment-safety-panel.tsx"),
+      "the panel must still mount the containment block",
+    ).toContain("<EnvironmentXeroContainment");
   });
 
 });

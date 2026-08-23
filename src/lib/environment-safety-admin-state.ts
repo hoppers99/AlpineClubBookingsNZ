@@ -212,6 +212,32 @@ async function overrideStateFrom(
  * {@link overrideStateFrom} for the payload this contradicted itself in when they
  * did not.
  */
+/**
+ * The three payload sections that read the database, in parallel.
+ *
+ * They share no state and neither ordering nor a transaction: the override
+ * projection, the withheld-email count and the Xero-containment summary answer
+ * three independent questions, and awaiting them one after another made an
+ * administrator's page load wait for the sum of three round trips rather than the
+ * longest of them. Both builders below compose the same three, so the shape is
+ * spelled once — a second copy is how one of them comes to be missing a section
+ * the panel reads (#2989 is the precedent this repository already has for that).
+ */
+async function independentPayloadReads(
+  resolution: EnvironmentRoleResolution,
+  row:
+    | PersistedEnvironmentSafetySettings
+    | null
+    | typeof ENVIRONMENT_SAFETY_SETTINGS_UNREADABLE,
+) {
+  const [override, withheldEmail, xeroContactContainment] = await Promise.all([
+    overrideStateFrom(resolution, row),
+    readWithheldApplicationEmail(),
+    readXeroContactContainment(),
+  ]);
+  return { override, withheldEmail, xeroContactContainment };
+}
+
 export async function stateFromResolution(
   resolution: EnvironmentRoleResolution,
 ): Promise<EnvironmentSafetyState> {
@@ -220,9 +246,7 @@ export async function stateFromResolution(
     role: resolution.role,
     decidedBy: resolution.decidedBy,
     declaration: declarationState(resolution),
-    override: await overrideStateFrom(resolution, row),
-    withheldEmail: await readWithheldApplicationEmail(),
-    xeroContactContainment: await readXeroContactContainment(),
+    ...(await independentPayloadReads(resolution, row)),
     notes: resolution.notes,
   };
 }
@@ -249,9 +273,7 @@ export async function stateFromWrittenRow(
     role: resolution.role,
     decidedBy: resolution.decidedBy,
     declaration: declarationState(resolution),
-    override: await overrideStateFrom(resolution, row),
-    withheldEmail: await readWithheldApplicationEmail(),
-    xeroContactContainment: await readXeroContactContainment(),
+    ...(await independentPayloadReads(resolution, row)),
     notes: resolution.notes,
   };
 }

@@ -28,7 +28,7 @@ import {
   stripXeroOrgShortCode,
 } from "@/lib/xero-links";
 import { sendAdminXeroSyncErrorAlert } from "@/lib/email";
-import { requireContainedMemberContactForInvoiceOperation } from "@/lib/xero-contact-containment";
+import { requireContainedMemberContactForInvoiceOperation } from "@/lib/xero-contact-containment-proof";
 import logger from "@/lib/logger";
 import {
   callXeroApi,

@@ -30,13 +30,15 @@ vi.mock("@/lib/xero-api-client", async (importOriginal) => {
 import {
   applyXeroContactEmailPolicy,
   decideXeroContactEmailPolicy,
-  ensureXeroContactContained,
   resolveXeroContactEmailPolicy,
-  XERO_CONTAINMENT_PROOF_MAX_AGE_MS,
-  XeroContactContainmentError,
   XeroContactEmailPolicyError,
   type XeroContactEmailPolicy,
 } from "@/lib/xero-contact-containment";
+import {
+  ensureXeroContactContained,
+  XERO_CONTAINMENT_PROOF_MAX_AGE_MS,
+  XeroContactContainmentError,
+} from "@/lib/xero-contact-containment-proof";
 import { XeroContactEnvironmentUnknownError } from "@/lib/xero-environment-write-gate";
 import {
   toXeroSandboxContactEmail,
