@@ -63,6 +63,9 @@ vi.mock("@/lib/email/internal", () => ({
     modeLabel: "test",
   }),
   shouldPersistEmailHtml: () => true,
+  // #3035: `sendEmail` names which transport carried a delivered message
+  // through this helper, so a factory that omits it dies at import.
+  logDeliveredTransport: () => {},
 }));
 
 import {

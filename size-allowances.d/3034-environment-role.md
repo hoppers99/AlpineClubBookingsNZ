@@ -33,7 +33,7 @@ hatch is meant to look like from the outside: the split first, the allowance onl
 where the split is genuinely worse — only the five unavoidable registrations below.
 
 file: src/lib/setup-readiness.ts
-lines: 2159
+lines: 2194
 reason: this is where a setup step is defined, and the seventeen already there
   are all in this file and assembled into the readiness report a few lines below
   them — the same argument #3000 made for the club-timezone step, which is the
@@ -50,7 +50,13 @@ reason: this is where a setup step is defined, and the seventeen already there
   three renderable states because "none held back" and "not counted yet" look
   identical on a checklist and mean opposite things. A later round rendered that
   line for the UNDECLARED state too, which is the one a live installation reaches
-  by upgrading without the declaration.
+  by upgrading without the declaration. #3035's review round added thirty-five
+  more, and they are the fifth state finally getting a branch: a live site that
+  ALSO declares a capture mailbox sends nothing at all, and this step used to
+  report it "complete — emails go to real members". That branch is a warning with
+  its own repair (the transport flags, not the declaration, which is correct
+  there), so it cannot share the non-production wording, and it belongs beside the
+  other four states of the same check.
 
 file: src/instrumentation.node.ts
 lines: 1618

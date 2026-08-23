@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -37,8 +37,29 @@ import {
  * to be the backstop (`docs/TESTING.md`).
  */
 
+/**
+ * The roots scanned, widened past `src/` (#3035 review).
+ *
+ * `scripts/`, `prisma/` and `e2e/` were outside the scan, so a mail transport
+ * built in a maintenance script or a seed would have been invisible to every case
+ * in this file. Measured free to add: none of those roots names `createTransport`,
+ * `sendMail` or `emailInvoice` today. Nothing beyond these four is scanned, which
+ * is the stated limit — a transport built inside `node_modules` or generated code
+ * is not something this census can see, and the clearance TYPE is what covers
+ * that case.
+ */
+const SCAN_ROOTS = ["src", "scripts", "prisma", "e2e"]
+  .map((dir) => path.resolve(process.cwd(), dir))
+  .filter((dir) => existsSync(dir));
 const SRC = path.resolve(process.cwd(), "src");
-const EXTENSIONS = new Set([".ts", ".tsx"]);
+/**
+ * `.mjs` and `.js` as well, because `scripts/` is 31 ESM modules and no
+ * TypeScript at all — scanning that root while collecting only `.ts` would have
+ * been a widening that added nothing. Measured free: none of them names
+ * `createTransport`, `sendMail` or `emailInvoice`. No compiled output lives under
+ * the scanned roots (`src/`, `prisma/` and `e2e/` hold zero `.js`).
+ */
+const EXTENSIONS = new Set([".ts", ".tsx", ".mjs", ".js", ".cjs"]);
 
 const TRANSPORT_MODULE = "src/lib/email/internal.ts";
 const POLICY_MODULE = "src/lib/environment-delivery-policy.ts";
@@ -79,10 +100,38 @@ function repoRelative(file: string): string {
   return path.relative(process.cwd(), file).split(path.sep).join("/");
 }
 
-/** Every production file under `src/` whose text matches, repo-relative, sorted. */
+/** Every production file under the scanned roots whose text matches, sorted. */
 function filesMatching(pattern: RegExp): string[] {
-  return walk(SRC)
+  return SCAN_ROOTS.flatMap((root) => walk(root))
     .filter((file) => pattern.test(readFileSync(file, "utf8")))
+    .map(repoRelative)
+    .sort();
+}
+
+/**
+ * TypeScript comments removed, so a census may match a BARE identifier without
+ * being tripped by prose that merely mentions it.
+ *
+ * This is what lets the transport patterns widen from `createTransport\s*\(` to
+ * the bare name (#3035 review). The narrow forms were evadable by an ordinary
+ * tidy-up — `const ct = nodemailer.createTransport; ct(...)`, or
+ * `nodemailer["createTransport"](...)` — and matching the identifier itself
+ * closes both. Without stripping comments the same widening would fail the day
+ * somebody wrote "we do not call createTransport here" in a docblock, which is a
+ * false positive that teaches its reader to ignore the census.
+ */
+function withoutTypeScriptComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:"'`\\])\/\/.*$/gm, "$1");
+}
+
+/** {@link filesMatching}, over code with comments stripped. */
+function codeFilesMatching(pattern: RegExp): string[] {
+  return SCAN_ROOTS.flatMap((root) => walk(root))
+    .filter((file) =>
+      pattern.test(withoutTypeScriptComments(readFileSync(file, "utf8"))),
+    )
     .map(repoRelative)
     .sort();
 }
@@ -175,7 +224,10 @@ function captureCandidateBlocks(): ConfigBlock[] {
 describe("email delivery boundary census (INV-CONFIG-004)", () => {
   it("creates a mail transport in exactly one module", () => {
     expect(
-      filesMatching(/createTransport\s*\(/),
+      // The bare identifier, over comment-stripped code: `createTransport\s*\(`
+      // was defeated by `const ct = nodemailer.createTransport; ct(...)` and by
+      // `nodemailer["createTransport"](...)`, both ordinary tidy-ups.
+      codeFilesMatching(/\bcreateTransport\b/),
       "A mail transport may only be created in " +
         `${TRANSPORT_MODULE}, which requires a DeliveryClearance for the ` +
         "sending accessor and offers verifyEmailTransport() for a diagnostic " +
@@ -203,7 +255,10 @@ describe("email delivery boundary census (INV-CONFIG-004)", () => {
 
   it("calls transporter.sendMail in exactly those two modules", () => {
     expect(
-      filesMatching(/\.sendMail\s*\(/),
+      // Bare identifier, same reasoning as `createTransport` above: handing a
+      // message to a provider is the act that matters, and an aliased receiver
+      // still has to name the method.
+      codeFilesMatching(/\bsendMail\b/),
       "A message may only be handed to a provider from the mailer or the retry " +
         "cron (INV-CONFIG-004).",
     ).toEqual(TRANSPORT_CONSUMERS);

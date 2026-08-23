@@ -33,6 +33,9 @@ vi.mock("@/lib/email-suppression", () => ({
 vi.mock("@/lib/email/internal", () => ({
   getEmailTransporter: () => ({ sendMail: mocks.sendMail }),
   shouldPersistEmailHtml: () => false,
+  // #3035: `sendEmail` names which transport carried a delivered message
+  // through this helper, so a factory that omits it dies at import.
+  logDeliveredTransport: () => {},
 }));
 
 import { sendEmail } from "@/lib/email/core";

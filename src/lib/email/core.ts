@@ -25,6 +25,7 @@ import {
 } from "@/lib/booking-email-html";
 import {
   getEmailTransporter,
+  logDeliveredTransport,
   shouldPersistEmailHtml,
   type EmailAttachment,
 } from "./internal";
@@ -89,12 +90,10 @@ export type EmailSendOutcome =
   //   capture_transport_in_production — the live site declares a capture mailbox.
   //                                Also a FAULT; it clears when the transport
   //                                flags are corrected.
-  // BOTH FAULTS ARE REPLAYABLE ONLY IF THE ROW HOLDS A BODY. For the twenty-six
-  // SENSITIVE_EMAIL_LOG_TEMPLATES, and for any message whose log recipient is
-  // redacted, no body is persisted — so the retry cron cannot replay it and the
-  // gate writes the row at the retry ceiling instead, which lands it in the
-  // operator's email-failure review queue for a manual re-send. Detail and the
-  // reasoning: `environment-gate.ts`.
+  // BOTH FAULTS ARE REPLAYABLE ONLY IF THE ROW HOLDS A BODY — not so for the 26
+  // SENSITIVE_EMAIL_LOG_TEMPLATES or a redacted recipient, where the gate writes
+  // the retry ceiling instead so it lands in the review queue for a manual
+  // re-send. Reasoning: `environment-gate.ts`.
   // A copy that has DECLARED a capture mailbox never appears here: it transmits
   // into the capture and the outcome is an ordinary `sent`.
   | {
@@ -497,11 +496,8 @@ export async function sendEmail({
     emailLogId,
     templateName,
     logRecipient: emailLogRecipient,
-    // #3035: whether the row the gate is about to fail actually holds a body the
-    // retry cron could replay. `persistHtmlBody` is the same value the EmailLog
-    // row was created with, threaded in rather than recomputed so the two cannot
-    // disagree — see the gate's docblock on why "it goes out by itself" was false
-    // for twenty-six templates.
+    // #3035: does this row hold a body the retry cron could replay? The same
+    // value the EmailLog row was created with, so the two cannot disagree.
     bodyRetainedForReplay: persistHtmlBody,
   });
   if (environmentGate.decision !== "send") {
@@ -559,10 +555,13 @@ export async function sendEmail({
       attachments,
     });
 
-    logger.debug(
-      { templateName, to: emailLogRecipient, mode: modeLabel },
-      "Email delivered",
-    );
+    // Which transport carried it, at a level an operator sees when that matters
+    // (#3035 review). Reasoning in `logDeliveredTransport`.
+    logDeliveredTransport({
+      templateName,
+      to: emailLogRecipient,
+      modeLabel,
+    });
 
     // Update EmailLog to SENT
     if (emailLogId) {

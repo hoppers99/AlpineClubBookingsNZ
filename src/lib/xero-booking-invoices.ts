@@ -838,7 +838,11 @@ export async function createXeroInvoiceForBooking(
       still recorded as the club's own decision on a copy, and the environment is
       only consulted when something would otherwise be transmitted. What a
       non-allow answer means for the sync operation is decided once, in
-      `classifyXeroInvoiceEmailWithheld`.
+      `resolveXeroInvoiceEmailPolicy` (`xero-invoice-email.ts`), which returns the
+      `logMessage`, the `suppressedForNonProduction` flag and the `error` — or
+      absence of one — that decide whether this operation reports SUCCEEDED or
+      PARTIAL. (An earlier draft of this comment named a
+      `classifyXeroInvoiceEmailWithheld` helper that never existed.)
 
       NOT AUTOMATICALLY RECOVERABLE, exactly like the unreadable-switch case
       above: re-driving this workflow short-circuits on `payment.xeroInvoiceId`

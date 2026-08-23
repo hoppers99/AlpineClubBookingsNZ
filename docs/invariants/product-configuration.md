@@ -229,6 +229,17 @@ home for that explanation and is not repeated here.
   the diagnostic paths too — the health check and the setup wizard's provider test
   open a real connection with real credentials, so they go through the same rule
   and hold no transport that could send.
+
+  **A stated limit on that last sentence:** what the diagnostic paths refuse is
+  the AMBIGUOUS fallback, not every connection. An installation that has
+  *explicitly* declared `USE_AWS_SES=true` or `USE_SMTP_RELAY=true` still verifies
+  on a copy, so a real authenticated connection is opened there — no message is
+  sent, because no transport escapes `verifyEmailTransport`, and every send is
+  still suppressed by the boundary. That is deliberate: an SMTP relay counts as a
+  live provider however it is configured, so refusing every verification on a copy
+  would remove the one diagnostic an operator setting a staging relay up needs. A
+  copy holding the club's real provider credentials is forbidden by `AGENTS.md`
+  for the larger reason that such a copy could then send.
 - **A capture transport is an explicit declaration and never an inference.**
   `USE_LOCAL_CAPTURE=true` declares that the configured SMTP relay is a sink that
   forwards nothing, and a confirmed non-production installation may then transmit

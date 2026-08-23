@@ -112,6 +112,21 @@ export type XeroInvoiceEmailPolicy =
  * called `emailInvoice` would reach a real member. The type says so too: this
  * function returns a `LiveProviderClearance`, which only confirmed production
  * mints.
+ *
+ * ONE WITHHOLD REASON PER EVENT, WHICHEVER CALLER ASKS. This answer says what the
+ * ENVIRONMENT would do; it does not know whether something else has already
+ * withheld the message, and a caller must not report both. The booking path
+ * expresses that by not asking at all once the booking's own "No emails" switch
+ * has withheld. The group-settlement path cannot: it has to resolve this OUTSIDE
+ * its advisory-locked transaction (a second Prisma connection taken while holding
+ * `pg_advisory_xact_lock(1)` is a pool hazard, with every other invoice run queued
+ * behind it holding one of its own), so it records what its email GATE returned
+ * rather than what this function said. It used to record this answer
+ * unconditionally, and on a copy whose organiser had "No emails" on, the sync
+ * payload asserted `invoiceEmailWithheldByNoEmails: true` AND
+ * `invoiceEmailWithheldForEnvironment: true` — two reasons claiming one event,
+ * which is precisely the conflation INV-CONFIG-004 exists to forbid (#3035
+ * review).
  */
 export async function resolveXeroInvoiceEmailPolicy(): Promise<XeroInvoiceEmailPolicy> {
   const decision = await resolveDeliveryPolicy();

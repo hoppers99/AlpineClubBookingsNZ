@@ -24,7 +24,9 @@
  * `nodemailer.createTransport` now appears in this file alone.
  */
 import nodemailer from "nodemailer";
+import logger from "@/lib/logger";
 import {
+  CAPTURE_TRANSPORT_MODE_LABEL,
   resolveEmailDeliveryConfig,
   type ImplicitSesDefault,
 } from "@/lib/email-delivery";
@@ -89,6 +91,25 @@ export async function getEmailTransporter(clearance: DeliveryClearance) {
  * Throws on an unusable configuration and on a failed verify, so a caller
  * reports one error shape for both. Both callers already wrap it in their own
  * timeout and error handling.
+ *
+ * A STATED LIMIT, because #3035's acceptance criterion reads absolutely
+ * ("confirmed NON_PRODUCTION produces no live provider attempt") and this one
+ * path is narrower than that (#3035 review). What is refused here is the
+ * AMBIGUOUS fallback — no flag set, so the parser would have chosen live AWS SES
+ * for an installation nobody configured. An installation that has EXPLICITLY
+ * declared `USE_AWS_SES=true` or `USE_SMTP_RELAY=true` still verifies, on a copy
+ * as much as on the live site, so the health check and the setup wizard's
+ * provider test do open a real authenticated connection there. No message is
+ * ever sent — no `Transporter` escapes this function, which is the other half of
+ * the design — and every SEND is still suppressed by the delivery boundary.
+ *
+ * THAT IS DELIBERATE RATHER THAN AN OVERSIGHT, and the alternative is worse: a
+ * staging copy configuring its own relay needs to be able to test it, and an
+ * SMTP relay is classified `live-provider` however it is configured. Refusing
+ * every verification on a copy would take away the one diagnostic an operator
+ * setting one up actually needs. The hazard that remains is a copy handed the
+ * CLUB's real SES credentials — which `AGENTS.md` already forbids, for the larger
+ * reason that such a copy could then send.
  */
 export async function verifyEmailTransport(): Promise<{ modeLabel: string }> {
   /*
@@ -113,6 +134,49 @@ export async function verifyEmailTransport(): Promise<{ modeLabel: string }> {
   const transporter = nodemailer.createTransport(config.transportOptions);
   await transporter.verify();
   return { modeLabel: config.modeLabel };
+}
+
+/**
+ * Say which transport carried a delivered message, at a level an operator
+ * actually sees when that matters (#3035 review).
+ *
+ * IT USED TO BE ONE `logger.debug` in `sendEmail`, and the claim beside it — that
+ * the mode is "named where an operator reads it" — was false in the shipped
+ * configuration: the staging and measurement stacks both run `LOG_LEVEL: info`,
+ * so nobody ever saw the line. That matters because a capture send is otherwise
+ * indistinguishable from a real one — a plain `SENT` row with no transport marker
+ * on it — and "sent" on a copy must never be read as "sent to a member".
+ *
+ * So the CAPTURE case is `info` and everything else stays `debug`. The live site
+ * keeps its silence deliberately: an info line per message is thousands a day on
+ * a real club, which is how a log stops being read at all. A copy sends little,
+ * so the raised line is bounded there.
+ *
+ * The sentence avoids every word `measurement/current-main-refresh/bin/
+ * analyse-log-noise.mjs` classifies as a warning or an error, so MC-09 cannot
+ * count it however often the harness recreates the app.
+ *
+ * Lives HERE rather than in `sendEmail` because this module owns transports, and
+ * because `email/core.ts` sits four lines under its size budget.
+ */
+export function logDeliveredTransport(params: {
+  templateName: string;
+  to: string;
+  modeLabel: string;
+}): void {
+  const context = {
+    templateName: params.templateName,
+    to: params.to,
+    mode: params.modeLabel,
+  };
+  if (params.modeLabel === CAPTURE_TRANSPORT_MODE_LABEL) {
+    logger.info(
+      context,
+      "Email transmitted into the local capture mailbox, so it reached nobody outside it",
+    );
+    return;
+  }
+  logger.debug(context, "Email delivered");
 }
 
 // Token-bearing emails should never persist their rendered HTML in logs or retry

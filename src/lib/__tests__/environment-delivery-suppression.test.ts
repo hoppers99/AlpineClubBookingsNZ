@@ -304,10 +304,23 @@ describe("a declared local capture mailbox", () => {
     for (const call of mocks.emailLogUpdate.mock.calls) {
       expect(call[0].data.status).not.toBe("SKIPPED_NON_PRODUCTION");
     }
-    // Which transport carried it is named where an operator reads it, so
-    // "sent" on a copy is never mistaken for "sent to a member".
-    expect(mocks.logger.debug).toHaveBeenCalledWith(
+    /*
+      Which transport carried it is named where an operator ACTUALLY reads it, so
+      "sent" on a copy is never mistaken for "sent to a member".
+
+      AT INFO, and the level is the point (#3035 review). This assertion used to
+      pin `logger.debug` while the staging and measurement stacks both run
+      `LOG_LEVEL: info` — so the line the claim rested on was one nobody ever saw,
+      and the test certified a claim that was false in the shipped configuration.
+      Only the CAPTURE case is raised: an info line per message on the live site
+      would be thousands a day.
+    */
+    expect(mocks.logger.info).toHaveBeenCalledWith(
       expect.objectContaining({ mode: "Local capture mailbox" }),
+      expect.stringContaining("capture mailbox"),
+    );
+    expect(mocks.logger.debug).not.toHaveBeenCalledWith(
+      expect.anything(),
       "Email delivered",
     );
   });

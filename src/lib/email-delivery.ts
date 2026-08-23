@@ -57,6 +57,16 @@ export type EmailDeliveryModeSource =
 /** Whether the legacy implicit AWS SES default may be used at all. */
 export type ImplicitSesDefault = "permitted" | "refused";
 
+/**
+ * The label a resolved CAPTURE transport carries.
+ *
+ * Exported so `sendEmail` can recognise a capture send and say so at a level an
+ * operator sees (#3035 review), rather than comparing against a copy of the
+ * string. Two copies of a label used as a CONDITION is one rename away from a
+ * silent behaviour change.
+ */
+export const CAPTURE_TRANSPORT_MODE_LABEL = "Local capture mailbox";
+
 interface EmailTransportOptions {
   host: string;
   port: number;
@@ -220,7 +230,7 @@ export function resolveEmailDeliveryConfigFromEnv(
       mode,
       modeSource,
       modeLabel:
-        mode === "local-capture" ? "Local capture mailbox" : "SMTP Relay",
+        mode === "local-capture" ? CAPTURE_TRANSPORT_MODE_LABEL : "SMTP Relay",
       issues,
       warnings,
       transportOptions:
