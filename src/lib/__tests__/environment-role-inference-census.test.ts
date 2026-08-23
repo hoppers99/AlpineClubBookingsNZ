@@ -92,13 +92,13 @@ const ENVIRONMENT_SAFETY_READS: Allowance[] = [
     file: "src/lib/xero-mock-endpoint.ts",
     reads: 2,
     reason:
-      "isRealProductionRuntime(): NODE_ENV === 'production' AND APP_RUNTIME_ROLE !== 'staging'. A build mode plus a slot name, which is the inference INV-CONFIG-003 forbids. It gates the E2E mock-Xero harness and is #3036's surface.",
+      "isRealProductionRuntime() NO LONGER DECIDES ALONE (#3036): it asks readEnvironmentRoleDeclaration() FIRST, so a deployment that declares production is real production by the canonical answer, and these two reads are only the backstop underneath it. They are KEPT rather than collapsed, deliberately. They only ever DISABLE a harness that already requires an explicit XERO_MOCK_API_ORIGIN opt-in, so deleting them would let an UNDECLARED installation — the live club that upgraded without the line, this epic's headline case — past a gate the build-mode check catches today. Same shape as the email/core.ts entry above: not the authority, still the backstop.",
   },
   {
     file: "src/lib/xero-config.ts",
     reads: 2,
     reason:
-      "xeroMockHarnessActive() duplicates isRealProductionRuntime() verbatim, deliberately, to avoid an import cycle (see the comment there). Two copies of one guess; #3036 owns collapsing both onto the resolver.",
+      "xeroMockHarnessActive() duplicates only the BACKSTOP half of isRealProductionRuntime(), still to avoid the cycle xero-config -> xero-mock-endpoint -> xero-token-store -> xero-config (see the comment there). The DECLARATION half is not duplicated: both copies call the one canonical parser, which is a leaf and forms no cycle (#3036). What is left here is the same kept backstop, for the same reason as the entry above.",
   },
   {
     file: "src/lib/ses-sns.ts",

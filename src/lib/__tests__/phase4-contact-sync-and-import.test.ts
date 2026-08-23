@@ -1627,6 +1627,63 @@ describe("Phase 4 contact sync and cached import", () => {
     });
   });
 
+  it("REFUSES to import a contained contact as a member (#3036)", async () => {
+    /*
+      INV-CONFIG-005. A contained address must never become a `Member.email`. It
+      is a hash of somebody's real address on a reserved domain, so a member
+      created from it would read as REACHABLE — `isPlaceholderContactEmail` says
+      nothing about this domain, deliberately — while being able to receive
+      nothing at all. That is the silent-unreachability defect #2716 exists to
+      prevent, arriving from a new direction.
+    */
+    mocks.prisma.xeroSyncCursor.findUnique.mockResolvedValue({
+      cursorDateTime: new Date("2026-04-14T08:00:00.000Z"),
+      lastSuccessfulSyncAt: new Date("2026-04-14T08:05:00.000Z"),
+      metadata: {},
+    });
+    mocks.prisma.xeroContactGroupMembershipCache.findMany.mockResolvedValue([
+      {
+        contactGroupId: "group_1",
+        contactId: "contact_contained",
+        contactName: "Contained Person",
+      },
+    ]);
+    mocks.prisma.xeroContactCache.findMany.mockResolvedValue([]);
+    mocks.accountingApi.getContacts.mockResolvedValue({
+      body: {
+        contacts: [
+          {
+            contactID: "contact_contained",
+            name: "Contained Person",
+            firstName: "Contained",
+            lastName: "Person",
+            emailAddress: toXeroSandboxContactEmail("real@example.com"),
+            contactStatus: "ACTIVE",
+          },
+        ],
+      },
+    });
+
+    const result = await importMembersFromXeroGroups(
+      [{ groupId: "group_1", groupName: "Adults", ageTier: "ADULT" as any }],
+      false,
+      { allowLiveXeroFetch: true },
+    );
+
+    expect(mocks.prisma.member.create).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      created: 0,
+      skippedNoEmail: 1,
+      errors: 0,
+    });
+    // And it says WHY, rather than claiming the contact has no address — it has
+    // one, it just cannot be used.
+    expect(result.skippedNoEmailDetails[0]).toMatchObject({
+      xeroContactId: "contact_contained",
+      reason: expect.stringContaining("non-deliverable"),
+    });
+  });
+
   it("includes archived contacts during repair and skips them instead of erroring", async () => {
     mocks.prisma.xeroSyncCursor.findUnique
       .mockResolvedValueOnce({
