@@ -318,13 +318,27 @@ credentials and forwards nothing.
 The wiring is entirely non-production and lives only in the staging override and
 the E2E env files:
 
-- The staging app sends over **SMTP relay** rather than SES: the env sets
-  `USE_AWS_SES=false`, `USE_SMTP_RELAY=true`, and
-  `EMAIL_SERVER_HOST=mailpit` / `EMAIL_SERVER_PORT=1025` with dummy
-  `EMAIL_SERVER_USER` / `EMAIL_SERVER_PASSWORD` (see `.env.staging.example` and
-  the CI env writer in `.github/workflows/e2e.yml`). All four SMTP_RELAY vars
-  must be present and `USE_AWS_SES` must be false, or `resolveEmailDeliveryConfig`
-  returns `invalid` and every send throws.
+- The staging app sends into a **declared local capture mailbox** rather than to
+  SES: the env sets `USE_AWS_SES=false`, `USE_SMTP_RELAY=false`,
+  `USE_LOCAL_CAPTURE=true`, and `EMAIL_SERVER_HOST=mailpit` /
+  `EMAIL_SERVER_PORT=1025` with dummy `EMAIL_SERVER_USER` /
+  `EMAIL_SERVER_PASSWORD` (see `.env.staging.example` and the CI env writer in
+  `.github/workflows/e2e.yml`). All four `EMAIL_SERVER_*` vars must be present and
+  exactly one provider flag may be true, or `resolveEmailDeliveryConfig` returns
+  `invalid` and every send throws.
+
+  **`USE_LOCAL_CAPTURE`, not `USE_SMTP_RELAY`, and the difference is
+  load-bearing** (ENV-SAFETY 2, #3035; `INV-CONFIG-004`). The staging stack
+  declares `APP_ENVIRONMENT_ROLE=non-production`, and a non-production
+  installation SUPPRESSES every send rather than contacting a provider — that is
+  the whole point of epic #2986. An ordinary SMTP relay counts as a live provider
+  however it is configured, so a stack relaying to mailpit as
+  `USE_SMTP_RELAY=true` would capture nothing at all and every mail-reading spec
+  would fail with an empty mailbox and no explanation.
+  `USE_LOCAL_CAPTURE=true` declares that this transport is a sink which forwards
+  nothing, and such a copy is then allowed to transmit into it. Nothing is
+  inferred from the host name. `email-delivery-boundary-census.test.ts` fails any
+  tracked stack that points at mailpit without declaring it.
 - mailpit's HTTP API is published to the host on `MAILPIT_HTTP_PORT`
   (default 8025). `scripts/e2e-stack.sh` exports `E2E_MAILPIT_URL` so the
   Playwright process can reach it; `e2e/helpers/mailpit.ts` reads and clears
