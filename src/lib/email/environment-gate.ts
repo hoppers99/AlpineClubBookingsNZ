@@ -5,9 +5,9 @@
  * `sendEmail` asks this once per message, immediately before it would open a
  * transport. It exists as its own module for two reasons: `core.ts` is already
  * the longest module in the mail layer and this is a self-contained decision, and
- * keeping the EmailLog bookkeeping here means the three withhold shapes
- * (business, safety, unknown-environment) can be read side by side rather than
- * inferred from three scattered `prisma.emailLog.update` calls.
+ * keeping the EmailLog bookkeeping here means the withhold shapes can be read
+ * side by side rather than inferred from scattered `prisma.emailLog.update`
+ * calls.
  *
  * WHAT IS WRITTEN, AND WHY THE TWO ROWS DIFFER.
  *
