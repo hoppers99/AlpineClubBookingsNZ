@@ -1238,6 +1238,7 @@ test/demo mode or disabled:
 
 | Variable                | Description                                                      |
 | ----------------------- | ---------------------------------------------------------------- |
+| `APP_ENVIRONMENT_ROLE`  | **Required.** Whether this installation is the club's live site or a copy: exactly `production` or `non-production`. Nothing is inferred; see "Environment Role" below and [`docs/guides/environment-role.md`](docs/guides/environment-role.md). |
 | `DATABASE_URL`          | PostgreSQL connection string used by Prisma.                     |
 | `DB_PASSWORD`           | PostgreSQL password used by Docker Compose.                      |
 | `AUTH_SECRET`           | Auth.js session secret. Also the root of 2FA-secret and in-app provider-credential encryption (#2079) — use a strong value (>= 32 chars); rotating it is a planned maintenance event (see `DEPLOYMENT.md`). |
@@ -1886,10 +1887,85 @@ action; scoped admins cannot merge.
 | ~~`NEXT_PUBLIC_GA_MEASUREMENT_ID`~~ | **Removed as configuration (#2573).** The GA4 measurement id, the consent-banner mode and the banner wording now live **only** in the database, entered in-app at Admin → Integrations → Google Analytics. Nothing in the app reads the environment variable, there is no fallback to it, and its value is **not** imported automatically — so after deploying this release Google Analytics stays inactive until an authorised admin saves a valid measurement id in-app. Remove the variable from your environment. See the Google Analytics section below. |
 | ~~`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`~~ | **Removed as configuration (#2087).** Google OAuth credentials now live **only** in the encrypted `IntegrationCredential` store, entered and verified in-app (Admin → Integrations → Google sign-in). Any legacy `GOOGLE_CLIENT_*` env vars are **detected, warned about, and ignored** — re-enter the credentials in the wizard, then remove the env vars. This reverses the earlier #2035 "bootstrap-class secret, never in the DB" posture by owner decision (epic #2078). See the Google sign-in section below. |
 | `LOG_LEVEL`                        | Pino log level such as `debug`, `info`, `warn`, `error`, or `fatal`.                                 |
-| `APP_RUNTIME_ROLE`                 | Runtime label used by health/status reporting, usually set by Compose.                               |
+| `APP_ENVIRONMENT_ROLE`             | **Required, and the only authority for whether this installation is the club's live site.** Exactly `production` or `non-production`. See "Environment Role" below — and note it is **not** `APP_RUNTIME_ROLE` on the next line. |
+| `APP_RUNTIME_ROLE`                 | Runtime label used by health/status reporting, usually set by Compose (`web-blue`, `web-green`, `cron-leader`, `staging`). Names which container **slot** this is. **Never read to decide whether this installation is production** — that is `APP_ENVIRONMENT_ROLE` above (`INV-CONFIG-003`). |
 | `NODE_ENV`                         | Runtime mode set by Node/Next.                                                                       |
 | `NEXT_RUNTIME`                     | Runtime marker set by Next.js instrumentation.                                                       |
 | `npm_package_version`              | Package version exposed by npm scripts.                                                              |
+
+## Environment Role
+
+**Is this installation the club's live site, or a copy of it?** One environment
+variable answers that, and nothing else does:
+
+```
+APP_ENVIRONMENT_ROLE=production      # the club's live site
+APP_ENVIRONMENT_ROLE=non-production  # a staging site, a copy, a developer's checkout
+```
+
+It matters because a copy restored from the live database holds the club's real
+members and their real email addresses. Anything that leaves this application —
+an email to a member, an invoice written into the club's Xero organisation — has
+to know which installation it is running on before it goes out.
+
+**Nothing is inferred, deliberately** (`INV-CONFIG-003`). Not `NODE_ENV`, which
+is a build mode — a staging container runs a production build, so `NODE_ENV` says
+`production` there too. Not the hostname, the branch, the URL or the
+`DATABASE_URL`, because a restored copy looks identical to the site it was copied
+from. And **not `APP_RUNTIME_ROLE`**, which names which container slot this is
+(`web-blue`, `cron-leader`, `staging`) and is a deployment naming convention.
+Every one of those is right until somebody stands up a copy that breaks the
+convention, and that is precisely the day it matters.
+
+### The three states
+
+| Effective role | When | What it means |
+| --- | --- | --- |
+| `PRODUCTION` | `APP_ENVIRONMENT_ROLE=production` and the safer override is off | Ordinary live behaviour. |
+| `NON_PRODUCTION` | `APP_ENVIRONMENT_ROLE=non-production`, **or** an administrator has switched the safer override on | Treated as a copy. |
+| `UNKNOWN` | The variable is unset, or holds anything other than those two words | **Not production, and not confirmed non-production either.** Anything whose safety depends on knowing which installation this is is held back until it is declared. |
+
+A near miss — `prod`, `staging`, `true`, `non_production` — is **refused**, not
+guessed at, because guessing is how a typo silently becomes "production". The
+refused value is shown back to you on the setup checklist and at
+**Admin → Setup & Configuration → Environment Safety** (`/admin/environment`) so
+you can see the typo.
+
+### The safer override
+
+A Full Administrator can force an installation to be treated as a copy at
+`/admin/environment`, whatever the deployment says. It is stored in the database
+(`EnvironmentSafetySettings`), and it can only ever move the answer **towards**
+non-production — the table has no column in which "this is production" could be
+expressed, so a restored production dump cannot carry a production claim into a
+copy. Switching the override **off** is not an elevation: the deployment
+declaration decides again, so an undeclared installation goes back to `UNKNOWN`
+rather than becoming the live site. Both directions are Full-Admin-only and
+audited (`ENVIRONMENT_SAFETY_OVERRIDE_UPDATED`).
+
+### Upgrading an existing production installation
+
+An installation that predates this release has no declaration, so it would
+resolve `UNKNOWN`. Two things stop that becoming a silent outage:
+
+1. **The production deploy refuses to run without it.**
+   `scripts/run-production-blue-green-deploy.sh` validates the `.env` entry at
+   **step 3 of 20** — before the migration (step 13), before the new release's
+   first process starts (step 14) and long before the Caddy cutover (step 17). An
+   undeclared upgrade aborts with the old release still serving and nothing
+   changed. Add the line to `.env` and run it again.
+2. **The app says so loudly.** A boot with an undeclared role logs an error
+   naming the variable, and the setup checklist's **Production Or Non-Production**
+   step reports `blocked` with the repair.
+
+For a deployment brought up by hand rather than through the deploy script, set
+`APP_ENVIRONMENT_ROLE` in the Compose `.env` before starting the app. The base
+`docker-compose.yml` passes it through with **no default** on purpose: a default
+would be exactly the silent inference this design removes.
+`docker-compose.staging.yml` hard-codes `non-production`, so a staging or E2E
+stack is never blocked on it.
+
+Full operator walkthrough: [`docs/guides/environment-role.md`](docs/guides/environment-role.md).
 
 ## Module Controls And Admin Modules
 

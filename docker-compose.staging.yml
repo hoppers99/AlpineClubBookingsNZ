@@ -26,6 +26,17 @@ services:
     ports:
       - "${STAGING_HTTP_PORT:-3001}:3000"
     environment:
+      # This target is a COPY, always, by construction (ENV-SAFETY 1 #3034, epic
+      # #2986). Hard-coded rather than passed through from the env file: the whole
+      # point of this override is that it cannot accidentally be a production
+      # stack, and reading it from .env.staging would let a stray value there make
+      # this stack claim to be the club's live site. The base compose passes
+      # ${APP_ENVIRONMENT_ROLE} with no default; this line overrides it, so the
+      # staging and E2E stacks are never blocked on an undeclared role and the
+      # browser suite never meets the UNKNOWN fail-closed path by accident.
+      APP_ENVIRONMENT_ROLE: non-production
+      # Which container slot this is. A deployment naming convention, and
+      # deliberately NOT an input to the environment-role decision above.
       APP_RUNTIME_ROLE: staging
       CRON_ENABLED: "false"
       # Backups are configured in-app (#2095); staging leaves them unconfigured.

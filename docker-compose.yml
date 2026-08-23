@@ -1,5 +1,24 @@
 x-app-environment: &app-environment
   TZ: Pacific/Auckland
+  # Is this installation the club's LIVE site, or a copy of it (ENV-SAFETY 1
+  # #3034, epic #2986)? Exactly `production` or `non-production`, and there is
+  # DELIBERATELY NO `:-` DEFAULT: a default here would be the silent inference
+  # this whole epic exists to remove — one that would be wrong for every fork and
+  # every restored copy, in the direction that emails the club's real members from
+  # a test system. An unset variable makes the app resolve UNKNOWN and hold back
+  # member email and Xero writes until an operator declares it, which is loud and
+  # safe; a `:-production` would be quiet and wrong.
+  #
+  # NOT the same thing as APP_RUNTIME_ROLE below, which names which container SLOT
+  # this is (web-blue / web-green / cron-leader / staging). That is a deployment
+  # naming convention and is never read to decide whether this is production.
+  #
+  # scripts/run-production-blue-green-deploy.sh refuses to deploy without it, at
+  # step 3 of 20 — before the migration and long before cutover. Compose itself
+  # will pass an empty value through with a warning; that is the correct outcome
+  # for an operator running `docker compose up` by hand, because the app then says
+  # exactly what is missing on /admin/setup rather than guessing.
+  APP_ENVIRONMENT_ROLE: ${APP_ENVIRONMENT_ROLE}
   # Default DATABASE_URL for the WEB slots (app_blue / app_green). Prisma's
   # connection_limit is the hard pool ceiling per container. Advisory-lock
   # waiters hold their connection while blocked, so a single-lodge booking
@@ -325,6 +344,11 @@ services:
         condition: service_healthy
     environment:
       TZ: Pacific/Auckland
+      # APP_ENVIRONMENT_ROLE is deliberately ABSENT here, and that is not an
+      # oversight: this service runs `prisma migrate deploy` and nothing else. It
+      # imports no application code, so it never resolves an environment role and
+      # has nothing to decide with one. Every service that runs the APP takes the
+      # variable through the x-app-environment anchor above.
       # Bound the deploy-window migrate pool to 2 so a blue/green overlap that
       # also runs migrations still fits: blue(10)+green(10)+cron(5)+migrate(2)
       # = 27, within the max_connections=40 ceiling. The headroom above 27 is

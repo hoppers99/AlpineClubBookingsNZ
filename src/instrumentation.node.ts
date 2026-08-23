@@ -131,6 +131,44 @@ export async function register() {
         "Boot-time config bundle auto-import did not run (non-fatal)",
       );
     }
+
+    // ENV-SAFETY 1 (#3034, epic #2986): say so at boot when this installation
+    // has not declared whether it is the club's live site or a copy. From this
+    // release on, an UNKNOWN role fails closed — member email and Xero writes are
+    // held back — and an operator who upgraded without setting
+    // APP_ENVIRONMENT_ROLE needs to learn that from the log they are already
+    // watching, not from a member asking why they stopped getting confirmations.
+    //
+    // IT LIVES IN THIS BLOCK, NOT AT THE END OF `register()`, and that is
+    // load-bearing rather than tidy. The second `NEXT_RUNTIME === "nodejs"` block
+    // below `return`s early when CRON_ENABLED is false — which is exactly what
+    // app_blue and app_green set — so the end of this function is never reached on
+    // the containers that serve traffic. Here it runs on every Node boot,
+    // alongside the palette prime and the config self-heal.
+    //
+    // Best-effort, in its own try/catch, and it can never block or fail startup:
+    // a configuration advisory that stops the site coming up would be a worse
+    // fault than the one it reports. It logs the ROLE and the repair path only —
+    // no environment values beyond the variable's own name, and nothing from the
+    // database.
+    try {
+      const { resolveEnvironmentRole } = await import("./lib/environment-role");
+      const resolution = await resolveEnvironmentRole();
+      if (resolution.role === "UNKNOWN") {
+        const { default: logger } = await import("./lib/logger");
+        logger.error(
+          {
+            scope: "environment-role",
+            declaration: resolution.declaration.kind,
+            override: resolution.databaseOverride.kind,
+          },
+          "APP_ENVIRONMENT_ROLE does not say whether this installation is the club's live site or a copy, so its environment role is UNKNOWN. Anything whose safety depends on knowing — sending email to members, writing to the club's Xero organisation — will be held back until it is set to production or non-production. This is not APP_RUNTIME_ROLE. See docs/guides/environment-role.md.",
+        );
+      }
+    } catch {
+      // Ignore — a boot-time advisory must never block startup. The setup
+      // checklist and /admin/environment report the same state on demand.
+    }
   }
 
   if (process.env.NEXT_RUNTIME === "edge") {

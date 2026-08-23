@@ -115,3 +115,62 @@ home for that explanation and is not repeated here.
   consequences are `INV-DATE` — in particular the stay boundary in
   [`booking-dates-and-capacity.md`](booking-dates-and-capacity.md), which this
   rule supplies the zone for rather than restates.
+
+## INV-CONFIG-003
+
+- **One explicit deployment declaration says whether an installation is the
+  club's live site or a copy, and nothing infers it.** The declaration is the
+  `APP_ENVIRONMENT_ROLE` environment variable, whose only accepted values are
+  `production` and `non-production` (case-insensitively, after trimming). It is
+  read by
+  [`environment-role-declaration.ts`](../../src/lib/environment-role-declaration.ts)
+  and resolved by `resolveEnvironmentRole()` in
+  [`environment-role.ts`](../../src/lib/environment-role.ts), which is the ONE
+  place that answers "is this production?" for every caller.
+- **`NODE_ENV`, `APP_RUNTIME_ROLE`, the hostname, the branch, the URL, the
+  `DATABASE_URL` and the provider organisation are never inputs to that
+  answer.** `NODE_ENV` is a build mode — the staging stack runs a production
+  build, so it reads `production` there. `APP_RUNTIME_ROLE` names which container
+  slot a process is (`web-blue`, `cron-leader`, `staging`) and is a deployment
+  naming convention. Each is right until somebody stands up a copy that breaks
+  the convention, which is the day it matters. The two variable names are close
+  enough that operators reach for the wrong one, so both plausible mistakes fail
+  safely: `APP_ENVIRONMENT_ROLE=staging` is refused and resolves UNKNOWN, and
+  `APP_RUNTIME_ROLE=production` changes no safety decision at all.
+- **A database override may only force the SAFER non-production state.**
+  `EnvironmentSafetySettings` (id `"default"`) holds one boolean,
+  `forceNonProduction`. The schema deliberately contains no column in which "this
+  is production" could be expressed, so the rule is structural rather than a
+  convention the code has to keep — and a database restored from the club's live
+  site cannot carry a production claim into a copy, because there is nothing for
+  it to travel in. Switching the override off is **not** an elevation: the
+  declaration decides again, so an undeclared installation returns to UNKNOWN.
+  Changing it in either direction is Full-Admin-only, explicitly confirmed
+  server-side, and audited with the actor and the before/after value.
+- **A missing or unrecognised declaration is UNKNOWN, which is neither
+  production nor confirmed non-production.** It is never inferred to be either.
+  Callers whose safety depends on the answer fail closed on UNKNOWN; in
+  particular UNKNOWN must not be treated as non-production for the Xero
+  sandbox/containment transformation. An unreadable override also resolves
+  UNKNOWN — including under a declared `production`, because an unreadable
+  override cannot rule out that an operator has already forced this instance
+  safer. The one exception is a declared `non-production`, which is already the
+  safest answer, so no database state or database failure can move it.
+- **The unconfigured state is visible where an operator has to act**, which is
+  `INV-CONFIG-001`'s visibility rule applied here: the `environment-role` setup
+  step reports `blocked` naming both sources and the repair,
+  `/admin/environment` shows the same, and a boot with an undeclared role logs an
+  error once.
+- **A production deployment cannot proceed without the declaration.** An
+  installation that predates this rule has none, so shipping the fail-closed
+  behaviour alone would turn a working live site into a silent mail outage.
+  `scripts/run-production-blue-green-deploy.sh` therefore validates the `.env`
+  entry in its preflight — before the migration runs, before the new release's
+  first process starts, and long before the traffic cutover — so an undeclared
+  upgrade is a loud refusal with the previous release still serving. That
+  ordering is part of the invariant, not an implementation detail: a check that
+  ran after the cutover would restore exactly the outcome this rule forbids.
+- Decided on #3034 (ENV-SAFETY 1) under epic #2986; the consuming policies are
+  #3035 (delivery) and #3036 (Xero containment). Those issues hold the narrative
+  and the rejected alternatives; this entry holds only the rule. Operator guide:
+  [`environment-role.md`](../guides/environment-role.md).

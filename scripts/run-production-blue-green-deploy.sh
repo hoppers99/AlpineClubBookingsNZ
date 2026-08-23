@@ -668,6 +668,46 @@ require_http_url_env_key() {
   fi
 }
 
+# The deployment's declaration of what this installation IS (ENV-SAFETY 1, #3034;
+# epic #2986; INV-CONFIG-003). Exactly `production` or `non-production`, matched
+# case-insensitively after trimming, exactly as
+# `src/lib/environment-role-declaration.ts` matches it.
+#
+# WHY THIS IS A HARD REFUSAL AND NOT A WARNING, and why it has to run in the
+# preflight. From this release on, an installation that has not declared itself
+# resolves UNKNOWN, and UNKNOWN fails closed: nothing whose safety depends on
+# knowing whether these are the club's real members goes out. An existing
+# production install upgrading into this release has no declaration, so without
+# this check the upgrade would succeed and then quietly stop sending mail — the
+# outcome epic #2986 explicitly forbids shipping. Refusing at step 3 of 20
+# instead means the old colour is still serving, the migration has not run
+# (step 13) and nothing has been switched (step 17): the operator adds one line
+# to .env and re-runs. `deploy-environment-role-contract.test.ts` pins that
+# ORDER, not merely this function's existence, because moving the check after
+# step 13 or step 14 brings the forbidden outcome straight back.
+#
+# A near miss is refused rather than guessed at: `prod`, `staging`, `true` and
+# `APP_RUNTIME_ROLE`'s own values are all rejected, because guessing is how a
+# typo silently becomes "production".
+require_environment_role_env_key() {
+  local key="APP_ENVIRONMENT_ROLE"
+  local value
+  local normalised
+
+  require_env_key "$key"
+  value="$(trim_whitespace "$(get_env_file_value "$key")")"
+  normalised="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+
+  if [ "$normalised" != "production" ] && [ "$normalised" != "non-production" ]; then
+    echo ".env entry $key must be exactly production or non-production (got: $value)" >&2
+    echo "It declares whether this installation is the club's live site or a copy." >&2
+    echo "Nothing infers it: an undeclared installation resolves UNKNOWN and holds back" >&2
+    echo "member email and Xero writes until it is declared. See docs/guides/environment-role.md." >&2
+    echo "This is NOT APP_RUNTIME_ROLE, which names the container slot (web-blue, cron-leader)." >&2
+    return 1
+  fi
+}
+
 require_domain_matches_url() {
   local key="$1"
   local domain="$2"
@@ -721,6 +761,10 @@ validate_env_contract() {
   require_http_url_env_key NEXTAUTH_URL
   require_one_of_env_keys "AUTH_SECRET or NEXTAUTH_SECRET" AUTH_SECRET NEXTAUTH_SECRET
   require_non_placeholder_env_key CRON_SECRET
+  # Is this the club's live site or a copy (ENV-SAFETY 1 #3034, epic #2986)?
+  # Refused here, in the step-3 preflight, rather than discovered after cutover —
+  # see the helper's own comment for why an undeclared upgrade must abort.
+  require_environment_role_env_key
   # Stripe credentials moved to encrypted, DB-backed storage (#2082) — no longer
   # required (or read) from .env. Legacy vars are warned about below.
   require_non_placeholder_env_key SMTP_HOST
