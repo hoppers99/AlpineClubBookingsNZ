@@ -424,4 +424,133 @@ describe("Xero contact containment census (INV-CONFIG-005)", () => {
       ).toContain("isXeroSandboxContactEmail(");
     }
   });
+
+  /**
+   * The two operator surfaces must not promise behaviour that has not landed,
+   * and must not claim behaviour that is not what happens.
+   *
+   * A SOURCE census rather than a React harness, following the precedent
+   * `email-delivery-boundary-census.test.ts` set for the same two files: the
+   * panel has no test harness at all and inventing one to assert a sentence is
+   * the worse trade.
+   *
+   * TWO PROPERTIES, both of which #3034 deliberately left for this change.
+   *
+   * 1. #3034 shipped forward-looking hedges — "Once the rest of this work lands",
+   *    "land with the rest of this work" — because at the time the role recorded
+   *    and reported and nothing acted on it. Both halves have now landed, so a
+   *    surviving hedge would be telling an operator that a copy might still email
+   *    the club's members, which is the opposite of the mistake #3034 was
+   *    avoiding and just as misleading.
+   * 2. Neither surface may say a copy stops WRITING to the club's Xero. It does
+   *    not: it goes on raising invoices and credit notes, deliberately, so
+   *    settlement behaviour stays testable, and if it is pointed at the real
+   *    organisation it rewrites real contact records. That sentence was the
+   *    obvious replacement for the hedge and it would have been false.
+   */
+  it("keeps the environment-safety copy free of unlanded promises and false comfort", () => {
+    /*
+      Each surface is paired with a string that proves the file really is the
+      one being judged. A census that reads the wrong path, or a path that has
+      been renamed, must fail rather than pass over an empty string.
+    */
+    const SURFACES: Array<[string, string]> = [
+      [
+        "src/components/admin/environment-safety-panel.tsx",
+        "APP_ENVIRONMENT_ROLE",
+      ],
+      ["src/app/(admin)/admin/environment/page.tsx", "Environment Safety"],
+    ];
+    const HEDGES = [
+      "Once the rest of this work lands",
+      "land with the rest of this work",
+      "do not treat a copy as safe to run against real data yet",
+    ];
+    const FALSE_COMFORT = [
+      "stops writing to the club's real Xero",
+      "out of the club's real accounting",
+    ];
+    for (const [file, proof] of SURFACES) {
+      const source = readModule(file);
+      // Anti-vacuity: the file really is one of the surfaces, and really does
+      // carry operator copy about a copy of the club's site.
+      expect(source.length, `${file} must exist and be non-trivial`).toBeGreaterThan(
+        1000,
+      );
+      expect(source, `${file} must still be the surface it names`).toContain(proof);
+      for (const hedge of HEDGES) {
+        expect(
+          source,
+          `${file} still promises "${hedge}". #3035 and #3036 have landed, so ` +
+            "that hedge now tells an operator a copy might still email real " +
+            "members (INV-CONFIG-004, INV-CONFIG-005).",
+        ).not.toContain(hedge);
+      }
+      for (const claim of FALSE_COMFORT) {
+        expect(
+          source,
+          `${file} claims "${claim}", which is not what happens. A copy keeps ` +
+            "writing invoices and credit notes on purpose; what changes is that " +
+            "its Xero CONTACTS can no longer reach anybody, and on the club's " +
+            "real organisation that is a real edit (INV-CONFIG-005).",
+        ).not.toContain(claim);
+      }
+    }
+  });
+
+  it("says opposite things about Xero for a confirmed copy and an undeclared installation", () => {
+    /*
+      A copy IS containing, and the number an operator wants is how much of the
+      club's accounting it has edited. An UNDECLARED installation is containing
+      nothing, because nothing is reaching Xero at all — every invoice, credit
+      note and contact write is refused. One sentence for both would tell the
+      operator of an undeclared LIVE site that their Xero is fine while their
+      invoicing has stopped. Same rule #3035 reached for the withheld-email
+      block, arrived at here from the opposite direction.
+    */
+    const panel = readModule(
+      "src/components/admin/environment-safety-panel.tsx",
+    );
+    const start = panel.indexOf("function describeXeroContainment(");
+    expect(start, "the containment renderer must exist").toBeGreaterThan(-1);
+    const rest = panel.slice(start);
+    const end = rest.indexOf("\n}\n");
+    expect(end).toBeGreaterThan(0);
+    const body = rest.slice(0, end);
+    /*
+      The region really is the function's BODY and not its multi-line return
+      type — the exact vacuity a probe found in this file's neighbour during
+      #3035. A body that branches on the role and renders three states is
+      thousands of characters, and it has to contain sentences.
+    */
+    expect(body.length, "the renderer's body must be bounded, not a signature").toBeGreaterThan(
+      1200,
+    );
+    expect(body).toContain("state.role");
+    expect(
+      body,
+      "the undeclared state must be answered FIRST and separately: it is not " +
+        "containing anything, and a count means something different there",
+    ).toContain('state.role === "UNKNOWN"');
+    const unknownBranch = body.slice(
+      body.indexOf('state.role === "UNKNOWN"'),
+      body.indexOf("if (!containment.available)"),
+    );
+    expect(
+      unknownBranch.length,
+      "the undeclared branch must hold its own wording, not fall through",
+    ).toBeGreaterThan(300);
+    expect(
+      unknownBranch,
+      "the undeclared branch must say that nothing is reaching Xero, which is " +
+        "what is actually happening there",
+    ).toMatch(/Nothing is being written to Xero/);
+    // And the block is rendered for BOTH states, never for PRODUCTION — where
+    // containment never runs and the table is empty by definition, so a
+    // "0 contacts" line would be noise.
+    expect(panel).toContain(
+      'state.role === "NON_PRODUCTION" || state.role === "UNKNOWN" ? (',
+    );
+  });
+
 });
