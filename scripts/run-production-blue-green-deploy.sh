@@ -461,11 +461,16 @@ DEPLOY_RUNTIME_STATUS_PATH="/api/deploy/runtime-status"
 # because those are different questions. The step-3 preflight validates the FILE;
 # the containers receive whatever Compose RESOLVED, and Compose prefers a value
 # exported in the invoking shell over the env file and takes the LAST duplicate
-# line rather than the first. The preflight now refuses both of those cases
-# explicitly, but a gate that is only right while it models Compose's precedence
-# correctly is one Compose release away from being wrong — so the value is
-# re-read from the process that actually got it, at step 14, with the old colour
-# still serving and nothing switched.
+# line rather than the first. The preflight refuses those shapes it can see, but a
+# gate that is only right while it models Compose's precedence and dotenv grammar
+# correctly is one Compose release away from being wrong — so the value is re-read
+# from the process that actually got it, at step 14, with the old colour still
+# serving and nothing switched.
+#
+# And it is read by ASKING THE APPLICATION (/api/deploy/runtime-status), not by
+# parsing the container's environment in shell. A second parser is a second thing
+# to drift; see get_service_runtime_payload for the review that measured exactly
+# that.
 EXPECTED_ENVIRONMENT_ROLE_DECLARATION="production"
 
 SHADOW_DATABASE_NAME="tacbookings_shadow_validate_$$"
@@ -551,22 +556,85 @@ trim_whitespace() {
   printf '%s' "$value"
 }
 
-# How many non-comment lines in .env assign this key, counted the way
-# `get_env_file_value` matches so the two cannot disagree about what a line is.
+# Every shape Docker Compose accepts as an assignment of this key, as one
+# extended regular expression.
 #
-# It exists because that reader `exit`s on the first match while Compose's
-# dotenv parsing is last-wins, and the only safe response to a key that appears
-# twice is to refuse. Deliberately a SEPARATE function rather than a change to
-# `get_env_file_value`, which every other `require_*_env_key` shares.
-count_env_file_key_occurrences() {
+# THE SHAPE WAS THE FINDING. The first version counted with `awk -F=` and
+# `$1 == key`, which needs the key to be the WHOLE first `=`-field — so three
+# shapes Compose honours slipped past it, measured against real
+# `docker compose v5.3.1`: an INDENTED line, an `export `-prefixed line, and
+# spaces around the `=`. Any of those appearing a SECOND time further down a .env
+# whose first line is correct passed the duplicate check and handed every
+# container `non-production`. Appending to a .env by hand, or from a rehearsal
+# script, produces exactly those shapes.
+#
+# Deliberately scoped to THIS key rather than by changing `get_env_file_value`,
+# which every other `require_*_env_key` shares and which is not this issue to
+# change. A comment line cannot match: a `#` before the key fails the anchor.
+environment_role_env_pattern() {
+  printf '^[[:space:]]*(export[[:space:]]+)?%s[[:space:]]*=' "$1"
+}
+
+# How many lines in .env assign this key.
+#
+# `grep -c` prints 0 and EXITS 1 when nothing matches, which under `set -e` would
+# abort inside the assignment, so the status is discarded and the count kept.
+count_environment_role_env_assignments() {
   local key="$1"
 
-  awk -F= -v key="$key" '
-    /^[[:space:]]*#/ { next }
-    $1 == key { found++ }
-    END { print found + 0 }
-  ' .env
+  grep -cE "$(environment_role_env_pattern "$key")" .env || true
 }
+
+# The value Compose would resolve for this key.
+#
+# LAST-WINS, matching Compose dotenv parsing rather than the first-match reader
+# used for every other key. A duplicate is refused before this matters, but if
+# that refusal is ever relaxed this reader agrees with the containers instead of
+# disagreeing with them, which is the safer default of the two.
+#
+# It then undoes what Compose undoes: an `export ` prefix, whitespace around the
+# `=`, an inline comment (the same `[[:space:]]+#` rule `get_env_file_value`
+# applies for every other key), and ONE layer of matching surrounding quotes.
+# Those last three are why `APP_ENVIRONMENT_ROLE = production`,
+# `export APP_ENVIRONMENT_ROLE=production` and `APP_ENVIRONMENT_ROLE="production"`
+# no longer abort a deploy Compose would have resolved to `production` — and in
+# particular why the first two are no longer reported as a MISSING entry for a key
+# plainly present in the file, which is what gets an operator editing the wrong
+# line under deploy pressure.
+#
+# One place it stays narrower than Compose: a `#` INSIDE a quoted value is treated
+# as an inline comment and truncated. That can only shorten a value, so it can only
+# turn an accepted value into a refused one — never the reverse — and the refusal
+# names the sanitized value it read.
+environment_role_env_value() {
+  local key="$1"
+  local value
+  local first
+  local last
+
+  value="$(
+    sed -nE "s/$(environment_role_env_pattern "$key")[[:space:]]*(.*)$/\2/p" .env |
+      tail -n 1
+  )"
+  value="$(printf '%s' "$value" | sed -E 's/[[:space:]]+#.*$//')"
+  value="$(trim_whitespace "$value")"
+
+  # One layer of matching surrounding quotes, compared character by character
+  # rather than by a `case` pattern, because a pattern holding both quote
+  # characters inside a single-quoted shell word is unreadable and easy to get
+  # subtly wrong.
+  if [ "${#value}" -ge 2 ]; then
+    first="${value%"${value#?}"}"
+    last="${value#"${value%?}"}"
+    if [ "$first" = "$last" ] && { [ "$first" = '"' ] || [ "$first" = "'" ]; }; then
+      value="${value#?}"
+      value="${value%?}"
+    fi
+  fi
+
+  printf '%s' "$value"
+}
+
 
 # A deployment-supplied value made safe to echo at an operator's terminal.
 #
@@ -780,29 +848,49 @@ require_environment_role_env_key() {
   local occurrences
   local exported_normalised
 
-  require_env_key "$key"
-  value="$(trim_whitespace "$(get_env_file_value "$key")")"
-  normalised="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  # NOT `require_env_key` and NOT `get_env_file_value`, which is the fix for a
+  # second review finding rather than a refactor. Those read the first line whose
+  # whole first `=`-field is the key, so an indented or `export `-prefixed entry
+  # was reported as a MISSING .env entry for a key plainly present in the file —
+  # and a quoted value was refused as unrecognised — while Compose resolved all
+  # three to `production`. All three were fail-closed, but "missing" for a visible
+  # key is what gets an operator editing the wrong line under deploy pressure.
+  occurrences="$(count_environment_role_env_assignments "$key")"
+  if [ "$occurrences" -eq 0 ]; then
+    echo "Missing required .env entry: $key" >&2
+    echo "It declares whether this installation is the club's live site or a copy," >&2
+    echo "and nothing infers it: an undeclared installation resolves UNKNOWN and" >&2
+    echo "holds back member email and Xero writes until it is declared." >&2
+    echo "Add APP_ENVIRONMENT_ROLE=production to this deployment's .env, then re-run." >&2
+    echo "See docs/guides/environment-role.md." >&2
+    echo "This is NOT APP_RUNTIME_ROLE, which names the container slot (web-blue, cron-leader)." >&2
+    return 1
+  fi
 
-  # A DUPLICATED KEY IS REFUSED, because this gate and Compose would read
-  # different lines. `get_env_file_value` awk-`exit`s on the FIRST match, and
-  # Compose's dotenv parsing is LAST-WINS — so a .env holding
-  # `APP_ENVIRONMENT_ROLE=production` followed later by
-  # `APP_ENVIRONMENT_ROLE=non-production` passes a first-match gate and hands the
-  # containers the second value. A duplicate is always an operator mistake, so it
-  # is refused outright rather than silently resolved in either direction: taking
-  # last-wins here would agree with Compose but would also quietly bless a file
-  # that says two different things about the most consequential setting in it.
-  # Scoped to THIS key on purpose — `get_env_file_value` is shared by every other
-  # `require_*_env_key` and is not this issue's to change.
-  occurrences="$(count_env_file_key_occurrences "$key")"
+  # A DUPLICATED KEY IS REFUSED, because Compose and any first-match reader would
+  # take different lines: Compose's dotenv parsing is LAST-WINS. A duplicate is
+  # always an operator mistake, so it is refused outright rather than silently
+  # resolved in either direction — taking last-wins here would agree with Compose
+  # but would also quietly bless a file that says two different things about the
+  # most consequential setting in it. The count above sees every shape Compose
+  # accepts, including the indented and `export `-prefixed ones a `-F=` field
+  # comparison missed.
   if [ "$occurrences" -gt 1 ]; then
     echo ".env entry $key appears $occurrences times. Leave exactly one." >&2
-    echo "This gate reads the FIRST occurrence and Docker Compose reads the LAST," >&2
-    echo "so duplicates can pass the check and still hand the containers the other" >&2
+    echo "Docker Compose resolves the LAST one, so a file that says production" >&2
+    echo "on one line and non-production on another hands every container the" >&2
     echo "value — which is how a live site would come up believing it is a copy." >&2
     return 1
   fi
+
+  value="$(environment_role_env_value "$key")"
+  if [ -z "$value" ]; then
+    echo ".env entry $key is present but empty, so Compose would hand the" >&2
+    echo "containers an empty value and the app would resolve UNKNOWN." >&2
+    echo "Set APP_ENVIRONMENT_ROLE=production in this deployment's .env, then re-run." >&2
+    return 1
+  fi
+  normalised="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
 
   # A SHELL-EXPORTED VALUE BEATS THE FILE IN COMPOSE'S OWN PRECEDENCE, so a stale
   # `export APP_ENVIRONMENT_ROLE=non-production` left in the invoking shell, a
@@ -1461,36 +1549,57 @@ get_expected_cron_enabled() {
 get_service_runtime_payload() {
   local service="$1"
 
-  # The environment-role branch below mirrors readEnvironmentRoleDeclaration() in
-  # src/lib/environment-role-declaration.ts: trim, case-fold, accept ONLY the two
-  # words. It is folded the same way so a legitimate `PRODUCTION ` is not read as
-  # a disagreement, and it reports the four-way declaration KIND rather than the
-  # raw value, so this payload speaks the same vocabulary as
-  # /api/deploy/runtime-status — which reports that same enum from the running
-  # application's own parser (`getRuntimeStatus`).
+  # THE APPLICATION'S OWN ANSWER, asked of the container from inside it.
   #
-  # NO SINGLE QUOTE MAY APPEAR inside the snippet, comments included: the whole
-  # of it is one single-quoted argument, so one apostrophe ends the string and
-  # the script stops parsing. Hence this explanation lives out here.
-  docker compose exec -T "$service" /bin/sh -lc '
-role="${APP_RUNTIME_ROLE:-unknown}"
-cron_enabled="${CRON_ENABLED:-true}"
-case "$cron_enabled" in
-  true|TRUE|1|yes|YES|on|ON) cron_json=true ;;
-  *) cron_json=false ;;
-esac
-declared="${APP_ENVIRONMENT_ROLE:-}"
-declared="${declared#"${declared%%[![:space:]]*}"}"
-declared="${declared%"${declared##*[![:space:]]}"}"
-declared="$(printf "%s" "$declared" | tr "[:upper:]" "[:lower:]")"
-case "$declared" in
-  production) environment_role=production ;;
-  non-production) environment_role=non-production ;;
-  "") environment_role=absent ;;
-  *) environment_role=invalid ;;
-esac
-printf "{\"role\":\"%s\",\"cronEnabled\":%s,\"environmentRole\":\"%s\"}\n" "$role" "$cron_json" "$environment_role"
-'
+  # THIS DELIBERATELY RE-IMPLEMENTS NOTHING. It used to parse
+  # APP_ENVIRONMENT_ROLE in shell, mirroring readEnvironmentRoleDeclaration() --
+  # and a second review lens showed why that was the wrong shape rather than
+  # merely under-tested: it built six mutants of that snippet and FIVE survived
+  # the source-text assertions guarding it, four of them making a container that
+  # declares `non-production` report `production` so the deploy proceeded. A
+  # duplicated parser pinned by greps is a parser that drifts, and pre-cutover it
+  # was the SOLE witness -- the application`s own parse was only asserted after
+  # the cutover, by verify_external_health.
+  #
+  # So the pre-cutover witness is now the same endpoint the post-cutover check
+  # uses, /api/deploy/runtime-status, whose environmentRole comes from
+  # readEnvironmentRoleDeclaration() itself. There is no second implementation
+  # left to disagree, and this class of finding cannot recur. The contract test
+  # asserts that no shell-side kind mapping comes back.
+  #
+  # THE SECRET NEVER LEAVES THE CONTAINER. CRON_SECRET is already in the app
+  # environment (docker-compose.yml), so the request is authorised from inside
+  # rather than by interpolating the secret into a `docker compose exec` argument
+  # list, where it would be readable in the host`s process table. That is the same
+  # care `verify_external_health` takes by feeding curl its header on stdin.
+  # busybox wget (v1.37 in node:24.17-alpine) supports --header; the readiness
+  # fetch above already relies on the same wget being present.
+  #
+  # REACHABLE AT THIS POINT, verified from the step order: step 14 runs
+  # `up -d --force-recreate` then wait_for_health, and the container`s own
+  # healthcheck polls /api/health/ready on this exact loopback address, so the
+  # server is answering before this runs. The route is force-dynamic and touches
+  # no database.
+  #
+  # ONE DELIBERATE BEHAVIOUR CHANGE, which is a correctness gain: cronEnabled now
+  # comes from the application`s rule (CRON_ENABLED lowercased must equal "true")
+  # rather than from a permissive shell case list that also accepted 1/yes/on. A
+  # deployment setting CRON_ENABLED=1 would have the app run NO cron while the old
+  # shell parse reported cron enabled, so the deploy would have passed a
+  # cron-leader that does nothing. Every documented value is true or false
+  # (CONFIGURATION.md, .env.staging.example), so this refuses nothing that was
+  # ever documented, and where the two differ the application is right.
+  #
+  # The path is passed as a positional argument rather than interpolated into the
+  # single-quoted script, so no quoting of a host variable happens inside it.
+  docker compose exec -T "$service" /bin/sh -c '
+secret="${CRON_SECRET:-}"
+if [ -z "$secret" ]; then
+  echo "CRON_SECRET is empty inside this container, so the deploy cannot ask the application which release and which environment role it is running." >&2
+  exit 1
+fi
+wget -q -O- --header "x-cron-secret: $secret" "http://127.0.0.1:3000$1"
+' sh "$DEPLOY_RUNTIME_STATUS_PATH"
 }
 
 assert_logs_contain_any() {
