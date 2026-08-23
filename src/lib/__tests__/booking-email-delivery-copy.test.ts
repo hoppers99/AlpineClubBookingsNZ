@@ -113,6 +113,10 @@ vi.mock("nodemailer", () => ({
 
 vi.mock("@/lib/email-delivery", () => ({
   resolveEmailDeliveryConfig: mocks.resolveEmailDeliveryConfig,
+  // #3035: the delivery policy reads the DECLARED transport kind through this
+  // same canonical parser, so a partial mock of the module has to name it or the
+  // whole file dies at import.
+  resolveEmailTransportKind: () => "live-provider",
 }));
 
 vi.mock("@/lib/email-sender", () => ({
