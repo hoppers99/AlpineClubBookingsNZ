@@ -18,9 +18,15 @@
     against its own reason, kept separate from the per-booking "No emails" switch,
     so nobody reading the log later mistakes one for the other.
   - **An installation nobody has declared sends nothing either**, and this one is
-    treated as a fault rather than as a decision: the message is queued, and it
-    goes out by itself as soon as the role is declared. Nothing has to be
-    re-triggered by hand.
+    treated as a fault rather than as a decision: the message is queued, and most
+    messages go out by themselves as soon as the role is declared.
+
+    There is one honest exception, and the operator is told which case they are
+    looking at. Messages carrying something that must not be stored — a sign-in
+    link, a door code, a payment link — keep no copy of themselves, so nothing can
+    replay them. Those are listed for review under **Admin -> Email** and have to
+    be re-sent by hand once the role is declared, and each one says so in as many
+    words instead of promising it will sort itself out.
   - **A site declared as both the live site and a mail capture is refused.** That
     combination would accept every message and deliver none of them, which is a
     silent mail outage, so it is stopped and named rather than allowed to run.

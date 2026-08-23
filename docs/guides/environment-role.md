@@ -147,8 +147,15 @@ Three readings, and they mean different things:
 
 - **A number, recent and climbing.** If members are waiting for that mail, the
   answer above this line is wrong — either the declaration says *copy* when this
-  is the live site, or nothing has declared it at all. Fix that, and what is
-  queued goes out on its own.
+  is the live site, or nothing has declared it at all. Fix that, and most of what
+  is queued goes out on its own.
+
+  **Some of it will not, and you have to send those by hand.** A message that
+  carries something which must not be stored — a sign-in link, a door code, a
+  payment link — keeps no copy of itself, so there is nothing left to re-send
+  automatically. Those messages are listed under **Admin -> Email** for review,
+  each one saying plainly that it needs a manual re-send, and the list is where to
+  go once the declaration is corrected.
 - **None.** Nothing has been held back. That is what an installation nobody is
   using looks like.
 - **Not available.** The count could not be read from the database — usually a

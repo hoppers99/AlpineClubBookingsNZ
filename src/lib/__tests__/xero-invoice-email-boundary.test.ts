@@ -26,6 +26,7 @@ vi.mock("@/lib/xero-api-client", () => ({
   callXeroApi: async (fn: () => Promise<unknown>) => fn(),
 }));
 
+import { resolveDeliveryPolicy } from "@/lib/environment-delivery-policy";
 import {
   resolveXeroInvoiceEmailPolicy,
   sendXeroInvoiceEmail,
@@ -112,6 +113,50 @@ describe("sendXeroInvoiceEmail", () => {
       expect.anything(),
       "booking:bk_1:invoice-email:invoice-1:v1",
     );
+  });
+
+  it("refuses a GENUINE capture clearance rather than calling the provider", async () => {
+    /*
+      THE ONE ARGUMENT THE WHOLE TWO-BRAND DESIGN RESTS ON, and before #3035's
+      review NO test discriminated it. Mutating the wrapper's
+      `assertDeliveryClearanceWitness(params.clearance, "production")` to `"any"` —
+      which lets a capture-declared copy open the real Xero send — passed 218/218
+      across the nine relevant suites and 127/127 across every file naming
+      `clearance` or `xero-invoice-email`. One test exercised the assertion
+      directly; the other presented a forged `{} as never` token that fails the
+      FIRST check regardless of the required grounds.
+
+      This one presents a REAL capture clearance, minted by the real policy on an
+      installation that really is a declared capture copy, and demands the wrapper
+      refuse it. A capture mailbox intercepts the mail this application sends
+      itself; Xero sends an invoice from its own servers to the address stored on
+      the member's contact, so no capture container ever sees it.
+
+      The `as never` is the type-level half being deliberately defeated so the
+      RUNTIME half can be tested: `DeliveryClearance` is not assignable to
+      `LiveProviderClearance`, which is what stops this in real code.
+    */
+    declareEnvironmentRole("non-production");
+    declareCaptureTransport();
+    const capture = await resolveDeliveryPolicy();
+    expect(capture).toMatchObject({
+      kind: "allow",
+      grounds: "non-production-capture",
+    });
+    if (capture.kind !== "allow") throw new Error("unreachable");
+
+    await expect(
+      sendXeroInvoiceEmail({
+        clearance: capture.clearance as never,
+        xero: { accountingApi: { emailInvoice: mocks.emailInvoice } },
+        tenantId: "tenant-1",
+        invoiceId: "invoice-1",
+        idempotencyKey: "k",
+        workflow: "test",
+        context: "test",
+      }),
+    ).rejects.toThrow(/local capture mailbox/);
+    expect(mocks.emailInvoice).not.toHaveBeenCalled();
   });
 
   it("refuses a forged clearance rather than calling the provider", async () => {

@@ -235,6 +235,10 @@ describe("retryFailedEmails (issue #820)", () => {
     // Never claimed — a suppressed skip is not a retry attempt.
     expect(mocks.updateMany).not.toHaveBeenCalled();
     // Mirrors core.ts's suppressed write: BOUNCED, body dropped, same reason string.
+    // Plus `deliveryBlockReason: null` (#3035): this row may have been failed by
+    // the environment gate before, and that column was cleared NOWHERE — so a
+    // stale value would keep a bounced address inside the environment-withheld
+    // count for the life of the installation.
     expect(mocks.update).toHaveBeenCalledWith({
       where: { id: "email_1" },
       data: {
@@ -242,6 +246,7 @@ describe("retryFailedEmails (issue #820)", () => {
         htmlBody: null,
         bookingRetryHtmlBody: null,
         errorMessage: "Email suppressed after SES bounce feedback",
+        deliveryBlockReason: null,
       },
     });
     expect(result).toEqual({ retried: 0, succeeded: 0, failed: 0 });
@@ -811,5 +816,107 @@ describe("retryFailedEmails and the environment-safety boundary (#3035)", () => 
       failed: 0,
     });
     expect(mocks.sendMail).toHaveBeenCalledTimes(1);
+  });
+});
+
+// --- #3035 review: the block reason has to DRAIN, or the count cries wolf -----
+//
+// `deliveryBlockReason` was written in one place (the mail gate) and cleared in
+// NONE. So: the gate blocks an undeclared send and sets it; an operator declares
+// the role; this cron claims the row, the provider rejects it, and the failure
+// write left the stale block reason in place. `attempts` reaches 3, the row leaves
+// this cron's query, and it stays counted for the life of the installation —
+// `readWithheldApplicationEmail` selects exactly `FAILED` + a non-null reason.
+// Admin -> Environment then tells a healthy live club it is holding mail back,
+// which breaks owner decision 1: that count is the ONLY thing distinguishing a
+// live club wrongly declared a copy from a genuine one, so it has to drain after
+// the repair. The `SENT` path left it stale too.
+//
+// The lens that found this predicted that ADDING the fix would break no existing
+// test, which is what "entirely unguarded" looks like. These are the tests.
+describe("retryFailedEmails clears a stale environment block reason (#3035)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.resolveEmailDeliveryConfig.mockReturnValue({
+      ok: true,
+      mode: "smtp-relay",
+      modeSource: "explicit-flag",
+      modeLabel: "SMTP Relay",
+      transportOptions: {
+        host: "smtp.example.test",
+        port: 587,
+        secure: false,
+        auth: { user: "relay-user", pass: "relay-pass" },
+      },
+      issues: [],
+      warnings: [],
+    });
+    mocks.update.mockResolvedValue({});
+    mocks.updateMany.mockResolvedValue({ count: 1 });
+    mocks.getAdminEmails.mockResolvedValue([]);
+    mocks.getActiveEmailSuppression.mockResolvedValue(null);
+    mocks.bookingFindUnique.mockResolvedValue({ noEmails: false });
+    // A row the environment gate failed earlier, now being replayed after the
+    // operator declared the role.
+    mocks.findMany.mockResolvedValue([
+      failedEmail({ deliveryBlockReason: "ENVIRONMENT_DECLARATION_MISSING" }),
+    ]);
+    declareEnvironmentRole("production");
+  });
+
+  /** The last write this cron made to the row. */
+  function lastWrite() {
+    return mocks.update.mock.calls.at(-1)?.[0] as {
+      data: Record<string, unknown>;
+    };
+  }
+
+  it("clears it when the replay succeeds", async () => {
+    mocks.sendMail.mockResolvedValue({ messageId: "msg-1" });
+
+    await retryFailedEmails();
+
+    expect(lastWrite().data.status).toBe("SENT");
+    expect(lastWrite().data.deliveryBlockReason).toBeNull();
+  });
+
+  it("clears it when the replay hits a GENUINE transport failure", async () => {
+    /*
+      The important half. This row is now failing for a provider reason and its
+      `errorMessage` says so, so keeping the environment block reason would make a
+      transport failure indistinguishable from a safety block by anything except a
+      message string — exactly what INV-CONFIG-004 and the column's own contract in
+      schema.prisma ("NULL for … a genuine transport failure") forbid.
+    */
+    mocks.sendMail.mockRejectedValue(new Error("SES said no"));
+
+    await retryFailedEmails();
+
+    expect(lastWrite().data.status).toBe("FAILED");
+    expect(lastWrite().data.errorMessage).toContain("SES said no");
+    expect(lastWrite().data.deliveryBlockReason).toBeNull();
+  });
+
+  it("clears it when the recipient turns out to be suppressed", async () => {
+    mocks.getActiveEmailSuppression.mockResolvedValue({
+      id: "sup_1",
+      reason: "BOUNCE",
+    });
+
+    await retryFailedEmails();
+
+    expect(lastWrite().data.status).toBe("BOUNCED");
+    expect(lastWrite().data.deliveryBlockReason).toBeNull();
+  });
+
+  it("clears it when the booking's No emails switch has since been turned on", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({ noEmails: true });
+
+    await retryFailedEmails();
+
+    expect(lastWrite().data.status).toBe("SKIPPED_NO_EMAILS");
+    // A business withhold must never be counted as an environment-safety one:
+    // that is the exact conflation INV-CONFIG-004 forbids.
+    expect(lastWrite().data.deliveryBlockReason).toBeNull();
   });
 });

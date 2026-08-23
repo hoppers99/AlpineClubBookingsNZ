@@ -60,10 +60,18 @@ vi.mock("@/lib/email-suppression", () => ({
 vi.mock("@/lib/email/admin-alerts-shared", () => ({
   getAdminEmails: mocks.getAdminEmails,
 }));
-vi.mock("@/lib/email/internal", () => ({
-  getEmailTransporter: mocks.getEmailTransporter,
-  shouldPersistEmailHtml: () => true,
-}));
+/*
+  A PARTIAL mock, and the `shouldPersistEmailHtml` half is why (#3035 review).
+  This file used to stub it as `() => true`, which made every template look
+  retained — so the self-healing claim it certified below was certified against a
+  world where the broken case does not exist. Twenty-six templates never persist a
+  body, and for those "it goes out by itself" is false. The real implementation is
+  used instead, and the cases at the end of this file exercise both sides of it.
+*/
+vi.mock("@/lib/email/internal", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/email/internal")>();
+  return { ...actual, getEmailTransporter: mocks.getEmailTransporter };
+});
 
 import { sendEmail, __resetFailClosedAlertThrottle } from "@/lib/email/core";
 import {
@@ -430,5 +438,110 @@ describe("UNKNOWN environment", () => {
     await sendEmail({ ...MESSAGE });
 
     expect(mocks.getAdminEmails).not.toHaveBeenCalled();
+  });
+});
+
+// --- #3035 review: "it goes out by itself" was FALSE for 26 templates ---------
+//
+// A blocked row keeps whatever body it holds — and `sendEmail` persists NONE for
+// the twenty-six `SENSITIVE_EMAIL_LOG_TEMPLATES` (`booking-confirmed`,
+// `pre-arrival-reminder`, `split-guest-payment-link`, `age-up-invitation`, every
+// token template) nor for any message whose log recipient is redacted, because a
+// live sign-in link, a door code or a payment link must not sit at rest.
+//
+// The retry cron requires a body, so those rows were never replayed. And
+// `attempts` defaults to 1 while the operator review queue selects
+// `attempts >= 3`, so they surfaced in NO queue either: silently and permanently
+// lost, while seven places in this codebase told the operator otherwise.
+//
+// Retaining the body for them is not the fix — that reintroduces exactly the
+// hazard they are excluded for. So the row is written at the retry CEILING, which
+// drops it out of the retry query and lands it in the review queue, and the
+// operator sentence says "re-send it by hand".
+describe("a blocked message whose body is never retained (#3035)", () => {
+  const SENSITIVE_MESSAGE = { ...MESSAGE, templateName: "booking-confirmed" };
+
+  /** The last EmailLog update the gate wrote. */
+  function lastUpdate() {
+    return mocks.emailLogUpdate.mock.calls.at(-1)?.[0] as {
+      data: Record<string, unknown>;
+    };
+  }
+
+  it("lands in the operator review queue instead of nowhere", async () => {
+    undeclareEnvironmentRole();
+
+    const outcome = await sendEmail({ ...SENSITIVE_MESSAGE });
+
+    expect(outcome).toMatchObject({
+      status: "withheld_for_environment",
+      reason: "environment_unknown",
+    });
+    // AT the ceiling: below it the row sits inside the retry cron's query (which
+    // cannot replay it, there being no body) and below the review queue's
+    // threshold, so it is visible to nobody.
+    expect(lastUpdate().data.attempts).toBe(3);
+    expect(lastUpdate().data.status).toBe("FAILED");
+    expect(lastUpdate().data.deliveryBlockReason).toBe(
+      "ENVIRONMENT_DECLARATION_MISSING",
+    );
+  });
+
+  it("tells the operator to re-send it by hand, and does NOT claim it self-heals", async () => {
+    undeclareEnvironmentRole();
+
+    await sendEmail({ ...SENSITIVE_MESSAGE });
+
+    const message = String(lastUpdate().data.errorMessage);
+    expect(message).toContain("re-sent BY HAND");
+    expect(message).not.toContain("goes out by itself");
+    // And it still says what to fix.
+    expect(message).toContain("APP_ENVIRONMENT_ROLE");
+  });
+
+  it("says the same for a live site wrongly declaring a capture mailbox", async () => {
+    declareEnvironmentRole("production");
+    vi.stubEnv("USE_AWS_SES", "");
+    vi.stubEnv("USE_SMTP_RELAY", "");
+    vi.stubEnv("USE_LOCAL_CAPTURE", "true");
+    vi.stubEnv("EMAIL_SERVER_HOST", "mailpit");
+    vi.stubEnv("EMAIL_SERVER_PORT", "1025");
+    vi.stubEnv("EMAIL_SERVER_USER", "e2e");
+    vi.stubEnv("EMAIL_SERVER_PASSWORD", "e2e");
+
+    await sendEmail({ ...SENSITIVE_MESSAGE });
+
+    expect(lastUpdate().data.attempts).toBe(3);
+    expect(String(lastUpdate().data.errorMessage)).toContain("re-sent BY HAND");
+  });
+
+  it("leaves a RETAINABLE template alone, so it really does self-heal", async () => {
+    /*
+      The other side of the same rule, and the discriminating half of this pair:
+      `booking-modified` is not a sensitive template, so its body IS retained, the
+      retry cron can replay it, and burning its attempts would take a message that
+      was going to arrive by itself and strand it in a review queue instead.
+    */
+    undeclareEnvironmentRole();
+
+    await sendEmail({ ...MESSAGE });
+
+    expect(lastUpdate().data).not.toHaveProperty("attempts");
+    expect(String(lastUpdate().data.errorMessage)).toContain(
+      "goes out by itself",
+    );
+  });
+
+  it("treats a REDACTED log recipient as unreplayable too, whatever the template", async () => {
+    /*
+      The second half of `persistHtmlBody`, and easy to forget: a message whose
+      logged recipient is redacted retains no body either, however ordinary its
+      template. Same consequence, same remedy.
+    */
+    undeclareEnvironmentRole();
+
+    await sendEmail({ ...MESSAGE, logRecipient: "redacted@example.invalid" });
+
+    expect(lastUpdate().data.attempts).toBe(3);
   });
 });

@@ -2477,8 +2477,15 @@ installation is a confirmed copy, so nothing was transmitted and no provider was
 contacted. It is TERMINAL and the retry cron never selects it — that job filters
 on `FAILED` alone. An installation whose role nobody has declared, and a live
 installation that has declared a local capture mailbox, both land on `FAILED`
-instead, carrying a `deliveryBlockReason`: those are configuration faults, they
-stay retryable, and they go out by themselves once the deployment is corrected.
+instead, carrying a `deliveryBlockReason`: those are configuration faults, so they
+stay retryable and go out by themselves once the deployment is corrected —
+PROVIDED the row still holds a rendered body. It does not for the twenty-six
+`SENSITIVE_EMAIL_LOG_TEMPLATES`, nor for any message whose logged recipient is
+redacted, because a live sign-in link, a door code or a payment link must not sit
+at rest; and the retry cron selects only rows that still hold one. Such a row is
+therefore written AT `attempts = 3`, which drops it out of the retry query and
+into the operator's email-failure review queue for a manual re-send, and its
+`errorMessage` says exactly that rather than promising it will self-heal.
 A copy that has explicitly declared a capture mailbox transmits into it normally
 and its rows are ordinary `SENT`.
 

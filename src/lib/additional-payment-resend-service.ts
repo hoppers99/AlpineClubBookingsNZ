@@ -479,7 +479,25 @@ async function explainLostClaim(params: {
   return cooldownAnswer;
 }
 
-/** Plain English for a send the mailer withheld rather than transmitted. */
+/**
+ * Plain English for a send the mailer withheld rather than transmitted.
+ *
+ * THE "IT WILL GO OUT ON ITS OWN" SENTENCES BELOW DEPEND ON ONE FACT, and it is
+ * worth naming rather than leaving as a coincidence (#3035 review). A blocked
+ * EmailLog row is only replayable while it still holds a rendered body, and
+ * `sendEmail` persists none for the twenty-six `SENSITIVE_EMAIL_LOG_TEMPLATES`.
+ * This service sends `additional-payment-reminder`, which is NOT one of them, so
+ * the row keeps its body, the retry cron picks it up, and "do not re-send it by
+ * hand" is correct advice — telling an admin to retry would only spend the hour's
+ * cooldown on a message already on its way.
+ *
+ * If this service is ever pointed at a sensitive template, these sentences become
+ * false in the expensive direction: the message would be gone and the admin would
+ * have been told to leave it alone. The mail gate is what makes that visible —
+ * such a row is written at the retry ceiling and lands in the email-failure review
+ * queue — but the sentence here would still be wrong, so change it in the same
+ * breath.
+ */
 function describeUntransmittedResend(outcome: EmailSendOutcome): string {
   switch (outcome.status) {
     case "withheld_for_booking":

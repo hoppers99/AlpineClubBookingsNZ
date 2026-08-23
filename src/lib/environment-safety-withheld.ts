@@ -98,12 +98,26 @@ export const WITHHELD_APPLICATION_EMAIL_NOT_RECORDED: WithheldApplicationEmail =
  * exactly the population being counted. The blocked half scans `FAILED` rows,
  * which on a healthy installation is a small "something went wrong" population
  * and on an undeclared one is the very set being counted. Neither ever touches
- * the `SENT` rows, which are all of the volume. No new index was added for this:
- * the useful one would be partial (`WHERE deliveryBlockReason IS NOT NULL`),
- * Prisma cannot express a partial index, and a full-width index over a
- * mostly-NULL column on this repository's highest-volume log table is not worth
- * paying for on every insert to speed up an occasional admin read. See the
- * migration's row in `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`.
+ * the `SENT` rows, which are all of the volume.
+ *
+ * NO NEW INDEX, AND THE HONEST REASONING FOR THAT (corrected after review — the
+ * first version of this note was wrong twice). A composite
+ * `@@index([status, createdAt])` IS expressible in Prisma and WOULD make both
+ * aggregates index-only, so "Prisma cannot express it" is not the reason. The
+ * reason is that a seventh btree on this repository's highest-volume log table
+ * means an `ACCESS EXCLUSIVE` index build inside Prisma's per-migration
+ * transaction, where `CONCURRENTLY` is unavailable — a real deploy-window stall on
+ * a club with years of rows, for an occasional admin read. Nor is a PARTIAL index
+ * out of reach: this repository already ships six gated raw-SQL partial indexes
+ * (`prisma/partial-unique-indexes.tsv`, `scripts/check-partial-indexes.sh`), so
+ * that escalation is an established pattern rather than an impossibility.
+ *
+ * AND THE BOUNDEDNESS IS WEAKEST EXACTLY WHERE THIS COUNT MATTERS. On a live club
+ * wrongly declared a copy — the case the number exists to reveal — the counted
+ * population grows without bound, a row per message the club tries to send. That
+ * is accepted because it is the state an operator is being told to repair within
+ * hours; it is not a steady state to live with. See the migration's row in
+ * `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`.
  *
  * FAILS SOFT, deliberately. This runs inside the readiness snapshot and the admin
  * panel; a database that cannot answer must not turn either into a 500 when the

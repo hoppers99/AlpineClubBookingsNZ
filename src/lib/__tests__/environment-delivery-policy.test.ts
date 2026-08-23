@@ -29,7 +29,7 @@ import {
   requireDeliveryClearance,
   resolveDeliveryPolicy,
   type DeliveryClearance,
-  type DeliveryDecision,
+  type DeliveryOutcome,
   type LiveProviderClearance,
 } from "@/lib/environment-delivery-policy";
 import { decideEnvironmentRole } from "@/lib/environment-role";
@@ -48,7 +48,7 @@ function decide(
   declaration: keyof typeof environmentRoleDeclaration,
   override: typeof NO_OVERRIDE | typeof UNREADABLE_OVERRIDE | typeof FORCED_OVERRIDE,
   transport: "live-provider" | "local-capture" | "unresolved",
-): DeliveryDecision {
+): DeliveryOutcome {
   return decideDeliveryPolicy(
     decideEnvironmentRole(environmentRoleDeclaration[declaration], override),
     transport,
@@ -80,14 +80,33 @@ beforeEach(() => {
 });
 
 describe("decideDeliveryPolicy (INV-CONFIG-004)", () => {
-  it("allows delivery, with a clearance, for a declared production installation", () => {
+  it("allows delivery for a declared production installation, and mints NOTHING", async () => {
+    /*
+      THE PURE FUNCTION HANDS OUT NO CLEARANCE, and that is a security boundary
+      rather than tidiness (#3035 review). It takes an `EnvironmentRoleResolution`
+      from its CALLER, so while it minted the real token anybody could pass
+      `{ role: "PRODUCTION" }` and receive a genuine `LiveProviderClearance`
+      stamped with the module-private witness. No cast is involved, so the cast
+      census does not fire — and a review lens used exactly that to drive
+      `accountingApi.emailInvoice` to a real call on an installation whose real
+      declaration was `non-production`, because `sendXeroInvoiceEmail` checks the
+      witness only.
+
+      The decision table is still fully assertable here. The token is not.
+    */
     const decision = decide("production", NO_OVERRIDE, "live-provider");
-    expect(decision).toMatchObject({ kind: "allow", grounds: "production" });
-    // The clearance is a real value, not a type-level fiction: the runtime
-    // witness check has to accept it.
-    if (decision.kind !== "allow") throw new Error("unreachable");
+    expect(decision).toEqual({ kind: "allow", grounds: "production" });
+    expect(decision).not.toHaveProperty("clearance");
+
+    // The mint lives in `resolveDeliveryPolicy`, which reads the real sources
+    // itself, and the token it produces is a real value rather than a type-level
+    // fiction: the runtime witness check has to accept it.
+    vi.stubEnv("APP_ENVIRONMENT_ROLE", "production");
+    stubTransport("live-provider");
+    const resolved = await resolveDeliveryPolicy();
+    if (resolved.kind !== "allow") throw new Error("unreachable");
     expect(() =>
-      assertDeliveryClearanceWitness(decision.clearance, "production"),
+      assertDeliveryClearanceWitness(resolved.clearance, "production"),
     ).not.toThrow();
   });
 
@@ -261,10 +280,12 @@ describe("the clearance tokens", () => {
     }
   });
 
-  it("does not survive a round trip through JSON", () => {
+  it("does not survive a round trip through JSON", async () => {
     // The witness is a symbol, so a clearance cannot be smuggled through a queue
     // payload, a cache or a request body and re-presented later.
-    const decision = decide("production", NO_OVERRIDE, "live-provider");
+    vi.stubEnv("APP_ENVIRONMENT_ROLE", "production");
+    stubTransport("live-provider");
+    const decision = await resolveDeliveryPolicy();
     if (decision.kind !== "allow") throw new Error("unreachable");
     const revived = JSON.parse(
       JSON.stringify(decision.clearance),
@@ -274,7 +295,7 @@ describe("the clearance tokens", () => {
     );
   });
 
-  it("refuses a CAPTURE clearance wherever production is required", () => {
+  it("refuses a CAPTURE clearance wherever production is required", async () => {
     /*
       What stops a capture copy asking Xero to email an invoice. A capture mailbox
       intercepts the mail this application sends itself; Xero sends an invoice from
@@ -283,7 +304,9 @@ describe("the clearance tokens", () => {
       narrower brand — and this is the runtime half, so a cast cannot buy what the
       type refuses.
     */
-    const capture = decide("nonProduction", NO_OVERRIDE, "local-capture");
+    vi.stubEnv("APP_ENVIRONMENT_ROLE", "non-production");
+    stubTransport("local-capture");
+    const capture = await resolveDeliveryPolicy();
     if (capture.kind !== "allow") throw new Error("unreachable");
     expect(() =>
       assertDeliveryClearanceWitness(capture.clearance, "any"),

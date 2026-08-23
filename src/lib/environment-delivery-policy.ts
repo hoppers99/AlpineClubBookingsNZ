@@ -26,13 +26,20 @@
  *   outcome: a copy behaving correctly, not a fault.
  * - **block_environment_unknown** — nothing has declared which installation this
  *   is, or the safer override could not be read. Nothing transmitted, and this IS
- *   a fault: it is recorded as retryable and clears itself the moment an operator
- *   declares the role.
+ *   a fault: it is recorded as retryable, and for a message whose body is
+ *   retained it clears itself the moment an operator declares the role.
  * - **block_capture_in_production** — the club's live site declares a capture
  *   transport. Refused, loudly, because a live installation quietly dropping
  *   every member's mail into a sink is the same class of harm as declaring the
- *   live site a copy. Also a fault, also retryable, and it clears when the flag
- *   is corrected.
+ *   live site a copy. Also a fault, also retryable on the same terms.
+ *
+ * "RETRYABLE" IS CONDITIONAL, and saying so is not a caveat — it was a false
+ * claim in seven places before #3035's review. Twenty-six templates never persist
+ * their rendered body (a sign-in link, a door code, a payment link must not sit
+ * at rest), and the retry cron cannot replay a row with no body. Those rows are
+ * pushed to the retry ceiling so they land in the operator's email-failure review
+ * queue, and every sentence about them says "re-send it by hand" instead. See
+ * {@link DeliveryReplayability}.
  *
  * WHY THE OUTCOMES MUST STAY APART, since collapsing any pair is the defect this
  * issue exists to prevent. A business withhold (the booking's "No emails" switch)
@@ -159,6 +166,32 @@ export type DeliveryBlockReason =
   | "declaration_invalid"
   | "override_unreadable";
 
+/**
+ * The decision, WITHOUT a clearance.
+ *
+ * WHY THE SPLIT EXISTS, because it is a security boundary and not tidiness. This
+ * shape is what the pure {@link decideDeliveryPolicy} returns, and it is exported
+ * so every combination stays assertable from a test without a database. If that
+ * function minted the real token — which it did — then anybody holding an
+ * `EnvironmentRoleResolution` could hand it `{ role: "PRODUCTION" }` and receive a
+ * genuine `LiveProviderClearance` stamped with the real witness. No cast is
+ * involved, so the cast census does not fire; and while the send path survives
+ * because `getEmailTransporter` re-resolves, `sendXeroInvoiceEmail` checks the
+ * witness ONLY. A review lens drove `accountingApi.emailInvoice` to a real call
+ * that way on an installation whose real declaration was `non-production`.
+ *
+ * So the mint moved to {@link resolveDeliveryPolicy}, which reads the real
+ * sources itself. The module's central claim — "there is no other way to produce
+ * the argument" — is now true.
+ */
+export type DeliveryOutcome =
+  | { kind: "allow"; grounds: "production" }
+  | { kind: "allow"; grounds: "non-production-capture" }
+  | { kind: "suppress_non_production"; decidedBy: EnvironmentRoleDecidedBy }
+  | { kind: "block_environment_unknown"; reason: DeliveryBlockReason }
+  | { kind: "block_capture_in_production" };
+
+/** {@link DeliveryOutcome} with the clearance the allow branches carry. */
 export type DeliveryDecision =
   | { kind: "allow"; grounds: "production"; clearance: LiveProviderClearance }
   | {
@@ -175,6 +208,10 @@ export type DeliveryDecision =
  * decision, as a pure function so every combination is assertable without a
  * database or an environment.
  *
+ * IT MINTS NOTHING. See {@link DeliveryOutcome} for why that matters — it takes
+ * caller-supplied input, so a clearance produced here would be a clearance
+ * anybody could ask for.
+ *
  * THE ORDER OF THE UNKNOWN BRANCHES MATTERS, and it mirrors the resolver's own
  * precedence: an unreadable override resolves UNKNOWN even under a declared
  * `production`, so it is checked FIRST. Reading the declaration first would
@@ -185,7 +222,7 @@ export type DeliveryDecision =
 export function decideDeliveryPolicy(
   resolution: EnvironmentRoleResolution,
   transport: EmailTransportKind,
-): DeliveryDecision {
+): DeliveryOutcome {
   if (resolution.role === "PRODUCTION") {
     /*
       A live site declaring a capture transport is refused rather than allowed
@@ -198,11 +235,7 @@ export function decideDeliveryPolicy(
     if (transport === "local-capture") {
       return { kind: "block_capture_in_production" };
     }
-    return {
-      kind: "allow",
-      grounds: "production",
-      clearance: mintLiveProviderClearance(),
-    };
+    return { kind: "allow", grounds: "production" };
   }
   if (resolution.role === "NON_PRODUCTION") {
     /*
@@ -219,11 +252,7 @@ export function decideDeliveryPolicy(
       says what it is, and says it explicitly.
     */
     if (transport === "local-capture") {
-      return {
-        kind: "allow",
-        grounds: "non-production-capture",
-        clearance: mintCaptureClearance(),
-      };
+      return { kind: "allow", grounds: "non-production-capture" };
     }
     return { kind: "suppress_non_production", decidedBy: resolution.decidedBy };
   }
@@ -239,13 +268,60 @@ export function decideDeliveryPolicy(
   };
 }
 
-/** {@link decideDeliveryPolicy} over the live role and the live transport. */
+/**
+ * {@link decideDeliveryPolicy} over the live role and the live transport, and the
+ * ONLY place a clearance is minted.
+ *
+ * The mint sits here rather than in the pure function above because this is where
+ * the inputs are read from their canonical sources instead of handed in by a
+ * caller. A test can still assert every row of the decision table; it can no
+ * longer manufacture the token that opens a live provider path.
+ */
 export async function resolveDeliveryPolicy(): Promise<DeliveryDecision> {
-  return decideDeliveryPolicy(
+  const outcome = decideDeliveryPolicy(
     await resolveEnvironmentRole(),
     resolveEmailTransportKind(),
   );
+  if (outcome.kind !== "allow") return outcome;
+  return outcome.grounds === "production"
+    ? { kind: "allow", grounds: "production", clearance: mintLiveProviderClearance() }
+    : {
+        kind: "allow",
+        grounds: "non-production-capture",
+        clearance: mintCaptureClearance(),
+      };
 }
+
+/**
+ * Whether a blocked message can actually be replayed once the fault is repaired.
+ *
+ * THE CLAIM HAD TO BECOME CONDITIONAL BECAUSE IT WAS FALSE FOR TWENTY-SIX
+ * TEMPLATES (#3035 review). A blocked row keeps whatever body it holds — but
+ * `sendEmail` persists NO body for `SENSITIVE_EMAIL_LOG_TEMPLATES`
+ * (`booking-confirmed`, `pre-arrival-reminder`, `split-guest-payment-link`,
+ * `membership-application-approved`, `age-up-invitation`, every token template …)
+ * nor for any message whose log recipient is redacted, because retaining it would
+ * leave live sign-in links, door codes and payment links at rest. The email retry
+ * cron requires a body, so those rows can never be replayed, and telling an
+ * operator "it goes out by itself" sends them away from the one action that would
+ * actually get the message delivered.
+ *
+ * Retaining the body for those templates is NOT the fix — that is the hazard they
+ * are excluded for. So the claim is made conditional and true, and the row is
+ * landed where an operator sees it: see `email/environment-gate.ts`, which pushes
+ * `attempts` to the retry ceiling for exactly these rows so they surface in the
+ * email-failure review queue instead of surfacing nowhere.
+ */
+export type DeliveryReplayability =
+  | "replayed-automatically"
+  | "needs-a-manual-resend";
+
+const REPLAY_CLAUSE: Record<DeliveryReplayability, string> = {
+  "replayed-automatically":
+    " The message is queued and goes out by itself once that is done.",
+  "needs-a-manual-resend":
+    " This message then has to be re-sent BY HAND: its contents are deliberately not stored — it carries something like a sign-in link, a door code or a payment link — so nothing can replay it automatically. It is listed under Admin -> Email for review.",
+};
 
 /**
  * Operator-facing, secret-free reason a send did not happen, or happened into a
@@ -254,28 +330,39 @@ export async function resolveDeliveryPolicy(): Promise<DeliveryDecision> {
  * Written for whoever reads an email log row or a Xero sync operation months
  * later, so it says what happened, what it is NOT, and what to do. It names
  * variables and screens, and never a credential, an address or a message body.
+ *
+ * `replay` defaults to `replayed-automatically`, which is right for every caller
+ * that holds a retained body (the retry cron) or no EmailLog row at all (the Xero
+ * invoice-email wrapper, where the operator's action is the panel's own Retry).
+ * The mail gate passes the real answer for the row it is about to write.
  */
-export function describeDeliveryDecision(decision: DeliveryDecision): string {
+export function describeDeliveryDecision(
+  decision: DeliveryOutcome,
+  replay: DeliveryReplayability = "replayed-automatically",
+): string {
   if (decision.kind === "allow") {
     return decision.grounds === "production"
       ? "This installation is the club's live site, so the message was delivered normally."
       : "This installation is a copy with a local capture mailbox declared (USE_LOCAL_CAPTURE), so the message was transmitted into that capture and can reach nobody outside it.";
   }
   if (decision.kind === "suppress_non_production") {
+    // Terminal, so no replay clause: a copy is a copy until somebody
+    // re-declares it, and replaying weeks of stale mail at real members if they
+    // ever did would be worse than not sending it.
     return decision.decidedBy === "database-safer-override"
       ? "Held back: an administrator has switched this installation's safer override on, so it behaves as a copy and does not contact real members. Nothing was sent and no provider was contacted. Turn the override off under Admin -> Environment if this really is the club's live site."
       : "Held back: this deployment declares itself a copy (APP_ENVIRONMENT_ROLE=non-production), so it does not contact real members. Nothing was sent and no provider was contacted. To let a copy send into a local capture mailbox instead, declare USE_LOCAL_CAPTURE=true and point EMAIL_SERVER_HOST at it.";
   }
   if (decision.kind === "block_capture_in_production") {
-    return "Not sent: this deployment declares itself the club's live site (APP_ENVIRONMENT_ROLE=production) AND declares a local capture mailbox (USE_LOCAL_CAPTURE=true). Those cannot both be true — a live site in capture mode would accept every message and deliver none of them. Nothing was sent and no provider was contacted. Set USE_AWS_SES or USE_SMTP_RELAY instead, and this message goes out by itself.";
+    return `Not sent: this deployment declares itself the club's live site (APP_ENVIRONMENT_ROLE=production) AND declares a local capture mailbox (USE_LOCAL_CAPTURE=true). Those cannot both be true — a live site in capture mode would accept every message and deliver none of them. Nothing was sent and no provider was contacted. Set USE_AWS_SES or USE_SMTP_RELAY instead.${REPLAY_CLAUSE[replay]}`;
   }
   if (decision.reason === "override_unreadable") {
-    return "Not sent: this installation's environment-safety override could not be read from the database, so we cannot confirm whether this is the club's live site or a copy. Nothing was sent and no provider was contacted. Apply pending migrations (prisma migrate deploy) or restore database access; the message is queued and goes out by itself once the role can be confirmed.";
+    return `Not sent: this installation's environment-safety override could not be read from the database, so we cannot confirm whether this is the club's live site or a copy. Nothing was sent and no provider was contacted. Apply pending migrations (prisma migrate deploy) or restore database access.${REPLAY_CLAUSE[replay]}`;
   }
   if (decision.reason === "declaration_invalid") {
-    return "Not sent: APP_ENVIRONMENT_ROLE is set to a value this application refuses to interpret, so we cannot tell whether this is the club's live site or a copy. Nothing was sent and no provider was contacted. Set it to exactly production or non-production — it is not APP_RUNTIME_ROLE — and the message goes out by itself.";
+    return `Not sent: APP_ENVIRONMENT_ROLE is set to a value this application refuses to interpret, so we cannot tell whether this is the club's live site or a copy. Nothing was sent and no provider was contacted. Set it to exactly production or non-production — it is not APP_RUNTIME_ROLE.${REPLAY_CLAUSE[replay]}`;
   }
-  return "Not sent: nothing in this deployment says whether it is the club's live site or a copy, so we will not risk emailing real members. Nothing was sent and no provider was contacted. Set APP_ENVIRONMENT_ROLE to production or non-production — it is not APP_RUNTIME_ROLE, which names the container slot — and the message goes out by itself.";
+  return `Not sent: nothing in this deployment says whether it is the club's live site or a copy, so we will not risk emailing real members. Nothing was sent and no provider was contacted. Set APP_ENVIRONMENT_ROLE to production or non-production — it is not APP_RUNTIME_ROLE, which names the container slot.${REPLAY_CLAUSE[replay]}`;
 }
 
 /** Thrown when a delivery entry point is reached without a genuine clearance. */

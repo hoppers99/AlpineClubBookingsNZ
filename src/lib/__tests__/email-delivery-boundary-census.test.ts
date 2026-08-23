@@ -565,6 +565,140 @@ describe("email delivery boundary census (INV-CONFIG-004)", () => {
     ).toEqual([]);
   });
 
+  /**
+   * The retry ceiling is one number in three files, and they must agree (#3035).
+   *
+   * The email retry cron stops at `MAX_ATTEMPTS`; the operator review queue
+   * selects `attempts >= EMAIL_FAILURE_MAX_ATTEMPTS`; and the mail gate writes a
+   * body-less blocked row AT the ceiling so it leaves the first query and enters
+   * the second. If those three drift the row lands in NEITHER — which is exactly
+   * the state this issue found and fixed, where a blocked sensitive-template row
+   * sat at `attempts: 1`, below the review threshold and outside the retry query,
+   * visible nowhere at all.
+   *
+   * They are three separate constants rather than one import because
+   * `cron-email-retry.ts` imports `@/lib/email` for its failure alert, so the
+   * mailer importing the cron's constant would be a cycle. This is the guard that
+   * makes the duplication safe.
+   */
+  it("keeps the retry ceiling identical in the cron, the gate and the review queue", () => {
+    const declarations: [string, RegExp][] = [
+      ["src/lib/cron-email-retry.ts", /const MAX_ATTEMPTS = (\d+);/],
+      ["src/lib/email/environment-gate.ts", /const EMAIL_RETRY_CEILING = (\d+);/],
+      [
+        "src/lib/email-failure-review.ts",
+        /const EMAIL_FAILURE_MAX_ATTEMPTS = (\d+);/,
+      ],
+    ];
+    const values = declarations.map(([file, pattern]) => {
+      const match = readFileSync(
+        path.resolve(process.cwd(), file),
+        "utf8",
+      ).match(pattern);
+      // Anti-vacuity: an unmatched pattern would otherwise contribute `undefined`
+      // and a set of one, which passes.
+      expect(match?.[1], `${file} no longer declares its attempt ceiling`).toBeDefined();
+      return `${file}=${match?.[1]}`;
+    });
+    expect(
+      new Set(values.map((value) => value.split("=")[1])).size,
+      `the retry ceiling disagrees across ${values.join(", ")}. A body-less ` +
+        "blocked row is written AT the ceiling so it drops out of the retry query " +
+        "and lands in the operator review queue; if these three numbers differ it " +
+        "lands in neither and the message is silently lost (INV-CONFIG-004).",
+    ).toBe(1);
+  });
+
+  /**
+   * The clearance witness is stamped in exactly two functions, both of which read
+   * the real sources (#3035 review).
+   *
+   * THE HOLE THIS CLOSES. `decideDeliveryPolicy` is exported and pure — it takes
+   * an `EnvironmentRoleResolution` the CALLER supplies. While it also minted the
+   * token, anybody could hand it `{ role: "PRODUCTION" }` and receive a genuine
+   * `LiveProviderClearance` carrying the real module-private witness. No cast is
+   * involved, so the cast census above does not fire; the send path survives
+   * because `getEmailTransporter` re-resolves, but `sendXeroInvoiceEmail` checks
+   * the witness ONLY — and a review lens drove `accountingApi.emailInvoice` to a
+   * real call that way, on an installation whose real declaration was
+   * `non-production`.
+   *
+   * So the module's central claim ("there is no other way to produce the
+   * argument") is only true while the mint is unreachable from caller-supplied
+   * input. This asserts the shape that makes it so: the two `mint*` helpers are
+   * private, and they are called from `resolveDeliveryPolicy` alone.
+   */
+  it("stamps the clearance witness only where the real sources are read", () => {
+    const policy = readFileSync(
+      path.resolve(process.cwd(), POLICY_MODULE),
+      "utf8",
+    );
+
+    /*
+      The witness symbol is given a VALUE in the two mint helpers and nowhere
+      else. Keyed on the string literal rather than on the property name, because
+      `type MintedClearance = { readonly [CLEARANCE_WITNESS]: DeliveryGrounds }`
+      names the property too and is a type, not a stamp.
+    */
+    const writers = [...policy.matchAll(/\[CLEARANCE_WITNESS\]:\s*"/g)];
+    expect(
+      writers.length,
+      "the clearance witness must be stamped in exactly the two mint helpers",
+    ).toBe(2);
+
+    // Neither helper is exported, so no caller can reach one directly.
+    for (const helper of ["mintLiveProviderClearance", "mintCaptureClearance"]) {
+      expect(policy).toContain(`function ${helper}(`);
+      expect(
+        policy,
+        `${helper} must stay module-private: exporting it hands out the token`,
+      ).not.toContain(`export function ${helper}`);
+    }
+
+    /*
+      And they are CALLED only inside `resolveDeliveryPolicy`, which reads the
+      role and the transport from their canonical resolvers rather than taking
+      them as arguments. Bounded to that function's body, because an unbounded
+      search would be satisfied by a call from the pure function — which is the
+      exact defect.
+    */
+    const start = policy.indexOf("export async function resolveDeliveryPolicy(");
+    expect(start, "resolveDeliveryPolicy must still be defined").toBeGreaterThan(-1);
+    const rest = policy.slice(start);
+    const end = rest.indexOf("\n}\n");
+    expect(end, "resolveDeliveryPolicy must have a closing brace").toBeGreaterThan(0);
+    const body = rest.slice(0, end);
+    for (const helper of ["mintLiveProviderClearance", "mintCaptureClearance"]) {
+      expect(
+        body,
+        `${helper} must be called from resolveDeliveryPolicy, which reads the real sources`,
+      ).toContain(`${helper}()`);
+      // Once, and only from there. The lookbehind excludes the helper's own
+      // declaration, which is also spelled `name()` before its return type.
+      expect(
+        [...policy.matchAll(new RegExp(`(?<!function )${helper}\\(\\)`, "g"))]
+          .length,
+        `${helper} must be called exactly once, inside resolveDeliveryPolicy`,
+      ).toBe(1);
+    }
+
+    // The pure decision function must not name either helper at all.
+    const pureStart = policy.indexOf("export function decideDeliveryPolicy(");
+    expect(pureStart).toBeGreaterThan(-1);
+    const pureRest = policy.slice(pureStart);
+    const pureBody = pureRest.slice(0, pureRest.indexOf("\n}\n"));
+    expect(pureBody.length, "decideDeliveryPolicy's body must be bounded").toBeGreaterThan(
+      200,
+    );
+    for (const helper of ["mintLiveProviderClearance", "mintCaptureClearance"]) {
+      expect(
+        pureBody,
+        "decideDeliveryPolicy takes caller-supplied input, so it must mint nothing " +
+          "(INV-CONFIG-004)",
+      ).not.toContain(helper);
+    }
+  });
+
   it("mints or casts a delivery clearance in exactly one module", () => {
     /*
       The cast shapes that defeat the brand: `as DeliveryClearance` and

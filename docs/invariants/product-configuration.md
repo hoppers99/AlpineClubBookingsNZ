@@ -204,6 +204,25 @@ home for that explanation and is not repeated here.
   transport failure by more than a message string. UNKNOWN gets no exemption from
   any declaration that travels with it, a capture transport included: an
   installation that cannot say what it is has not earned one.
+- **"Retryable" holds only while the row still carries a body, and a row nothing
+  can replay is landed where an operator sees it.** No rendered body is persisted
+  for the twenty-six `SENSITIVE_EMAIL_LOG_TEMPLATES`, nor for any message whose
+  logged recipient is redacted, because a live sign-in link, a door code or a
+  payment link must not sit at rest — and the retry cron selects only rows that
+  still hold one. Such a row is therefore written AT the retry ceiling, which
+  drops it out of the retry query and into the `attempts >= 3` operator
+  email-failure review queue, and every operator sentence about it says it must be
+  re-sent by hand rather than claiming it will self-heal. Retaining the body for
+  those templates is not an acceptable alternative: that is the hazard they are
+  excluded for.
+- **A `deliveryBlockReason` describes the row as it stands, and is cleared the
+  moment something else becomes the reason.** The column is the only sturdy thing
+  separating a safety block from a transport failure, and the withheld-email count
+  `INV-CONFIG-003`'s operator surface reads is `FAILED` plus a non-null reason. So
+  every later terminal write on that row — a provider failure, a delivery, a
+  bounce, a business withhold, a retirement — sets it back to NULL. A stale value
+  would keep a repaired installation inside the withheld population for the life
+  of the installation, and a count that never drains cannot distinguish anything.
 - **An ambiguous mail transport must not fall through to live AWS SES.** With no
   provider flag set, only confirmed production keeps the legacy default; anywhere
   else the configuration resolves invalid and names the flags to set. This binds
