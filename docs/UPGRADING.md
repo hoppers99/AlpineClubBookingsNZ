@@ -118,15 +118,29 @@ installation that has not declared itself resolves **UNKNOWN**, and UNKNOWN fail
 closed: from #3035 and #3036 onward, member email and writes into the club's Xero
 organisation are held back until it is declared.
 
-**You will not discover this the hard way.** Because an existing deployment has
-no declaration, shipping the fail-closed behaviour alone would have turned a
-working live site into a silent mail outage. So
-`scripts/run-production-blue-green-deploy.sh` validates the entry in its
+**The supported deploy path will not let you discover this the hard way.**
+Because an existing deployment has no declaration, shipping the fail-closed
+behaviour alone would have turned a working live site into a silent mail outage.
+So `scripts/run-production-blue-green-deploy.sh` validates the entry in its
 preflight — **step 3 of 20**, before the migration (step 13), before the new
 release's first process starts (step 14) and long before the traffic cutover
-(step 17). An undeclared upgrade aborts with the **previous release still
-serving and nothing changed**: no migration applied, no container switched. Add
-the line and run the deploy again.
+(step 17). An undeclared upgrade aborts with the **previous release still serving
+and nothing changed**: no migration applied, no container switched. Add the line
+and run the deploy again. It also refuses a `.env` that says
+`non-production` — see below — refuses a duplicated `APP_ENVIRONMENT_ROLE` line,
+and refuses a value exported in your shell that disagrees with the file, because
+Compose would take the shell's.
+
+Then, at **step 14**, it asks each newly started container which declaration it
+actually parsed, and aborts before the cutover if any of them answers anything
+other than `production`. That second check exists because validating the file and
+validating what the containers received are different questions.
+
+**What that promise does NOT cover, stated plainly:** a deployment brought up by
+hand — `docker compose up` — runs none of it. Such an installation comes up
+undeclared, resolves UNKNOWN, logs an error at start-up naming the specific
+cause, and reports the **Production Or Non-Production** step on `/admin/setup` as
+blocked. It will not quietly behave as production, but nothing stops it starting.
 
 **Do not confuse it with `APP_RUNTIME_ROLE`, which you already have.** They sit
 next to each other in the Compose environment and differ by one word, and on the

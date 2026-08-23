@@ -55,6 +55,26 @@
   records a change to what this installation *does*, not to who may sign in or
   what they may reach.
 
+  **The deploy also asks each container what it actually received.** Validating
+  the settings file and validating what the containers were given turn out to be
+  different questions: Docker Compose prefers a value set in the shell the deploy
+  was started from over the one in the file, and reads the last duplicate line
+  rather than the first. So the deploy now refuses a duplicated entry and a shell
+  value that disagrees with the file, and then — with the new release started and
+  the previous one still serving every request — asks each container which answer
+  it parsed for itself, stopping before the switch-over if any of them says
+  anything other than production.
+
+  **A copy says so in its own start-up log.** An installation that comes up as a
+  copy now records one line saying so, and which of the two sources decided it, so
+  somebody reading the log of a site brought up by hand can tell that a live club
+  has been declared a copy by mistake. Alongside it, the Environment Safety page
+  and the setup checklist have a place for how much application email has been
+  held back while an installation is treated as a copy — the number that tells a
+  busy live club apart from an idle test copy. Nothing counts it yet, and the page
+  says so in those words rather than showing a zero, because "none held back" and
+  "not counted yet" mean opposite things. The counting arrives with #3035.
+
   This release records and reports the answer; the parts that act on it — holding
   back email to members, and keeping a copy's invoices out of the club's real
   accounting — follow in #3035 and #3036, so do not yet treat a copy as safe to

@@ -82,6 +82,16 @@ Use this when you have just restored a copy of the live database and want a
 belt-and-braces guarantee while you work on it — particularly if you are not
 certain what the deployment's own setting says.
 
+> **It is stored in the database, so the next restore removes it.** This switch
+> lives in the copy's own database — which is the file you replace every time you
+> restore a fresh copy of the live data. After such a restore the row is gone,
+> absent means off, and the copy goes back to whatever the deployment's own
+> setting says. On a copy that inherited the live `.env` that means it resolves
+> **Production** again, which is the very case this switch was protecting you
+> from. So treat it as the immediate fix, and make it durable by setting
+> `APP_ENVIRONMENT_ROLE=non-production` in the copy's own environment (above) —
+> that lives outside the database and survives every restore.
+
 1. Go to **Admin → Setup & Configuration → Environment Safety**. You must be a
    **Full Administrator**; other admins, including one holding every permission
    area at *edit*, see a short "available to full administrators only" panel.
@@ -139,7 +149,7 @@ breaks it — and that is precisely the copy that will email the club's members.
 ## Upgrading an existing live site
 
 An installation set up before this release has no declaration, so on its own it
-would come back as *not configured* and stop sending member email. Two things
+would come back as *not configured* and stop sending member email. Three things
 stop that happening quietly.
 
 **The production deploy refuses to run without it.**
@@ -164,10 +174,24 @@ every real member's email would be held back — and once the Xero containment
 lands, the email addresses on the club's **real** accounting contacts would be
 rewritten to sandbox addresses. So the deploy stops, and says exactly that.
 
+**The deploy also checks what each container actually received.** Validating the
+`.env` file and validating what the containers were given are different
+questions: Docker Compose prefers a value exported in the shell you ran the
+deploy from over the file, and takes the last duplicate line rather than the
+first. So at **step 14** — the new release started, the previous one still taking
+every request — the deploy asks each app container which declaration it parsed
+for itself, and stops before the cutover if any of them says anything other than
+`production`. It also refuses a duplicated line and a shell value that disagrees
+with the file, and says which is which.
+
 **And the app says so loudly if an undeclared installation ever does come up** —
-for example on a deployment brought up by hand rather than through that script.
-Start-up logs an error explaining the specific cause, and the setup checklist
-reports the **Production Or Non-Production** step as blocked.
+for example on a deployment brought up by hand with `docker compose up` rather
+than through that script, which runs none of the checks above. Start-up logs an
+error explaining the specific cause, and the setup checklist reports the
+**Production Or Non-Production** step as blocked. An installation that comes up
+as a *copy* says so at start-up too, and names which of the two sources decided
+it, so an operator who did not expect it can tell whether to look at the `.env`
+or at this page.
 
 ### After the deploy, read the message and not the tick
 
@@ -201,6 +225,11 @@ answer*, and on the club's live site the only correct one is production.
 | The setup step shows a green tick but members still get no email | The tick means "declared", not "declared production" — read the message | If it says non-production, set `APP_ENVIRONMENT_ROLE=production` and restart |
 | The page says the override **could not be read** | The database migration for this release has not been applied here | Run `prisma migrate deploy` (or `npm run db:migrate` in development) and reload |
 | It says **Production** but this is a copy | The copy inherited the live `.env` | Set `APP_ENVIRONMENT_ROLE=non-production` on the copy, and switch the safer override on now if you need it safe immediately |
+| It says **Not configured**, but the line is clearly there in `.env` | The line is indented, or begins with `export `. The value is read as a plain `KEY=value` line at the start of a line | Remove the leading spaces and the `export `, so the line begins with `APP_ENVIRONMENT_ROLE=` |
+| It says a value was **refused**, and the value it quotes looks correct | The value is quoted in the file — `APP_ENVIRONMENT_ROLE="production"` — and the quotes are part of it | Write it without quotes: `APP_ENVIRONMENT_ROLE=production` |
+| The deploy says the entry appears **twice** | `APP_ENVIRONMENT_ROLE` is set on two lines of `.env` | Delete all but one. This is refused rather than resolved because Docker Compose would use the last line and the deploy check reads the first, so the two could disagree about the most consequential setting in the file |
+| The deploy says the value **disagrees between this shell and `.env`** | Something exported `APP_ENVIRONMENT_ROLE` into the shell you ran the deploy from — a wrapper script, a systemd unit, a restore rehearsal. Compose would use the shell's value, not the file's | Run `unset APP_ENVIRONMENT_ROLE`, remove it from whatever exported it, then run the deploy again |
+| The deploy says a container reported the wrong **environmentRole** at step 14 | The container received a different value from the one `.env` holds, so the two checks above are worth re-reading | Nothing was switched — the previous release is still serving. Fix the shell or the file and run the deploy again |
 | Who put this site into "copy" mode? | — | **Admin → Audit Log**, action `ENVIRONMENT_SAFETY_OVERRIDE_UPDATED`. The entry names the administrator and the value before and after |
 
 ## Related links

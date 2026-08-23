@@ -1946,7 +1946,7 @@ audited (`ENVIRONMENT_SAFETY_OVERRIDE_UPDATED`).
 ### Upgrading an existing production installation
 
 An installation that predates this release has no declaration, so it would
-resolve `UNKNOWN`. Two things stop that becoming a silent outage:
+resolve `UNKNOWN`. Four things stop that becoming a silent outage:
 
 1. **The production deploy refuses to run without it, and refuses the wrong
    value too.** `scripts/run-production-blue-green-deploy.sh` validates the `.env`
@@ -1961,12 +1961,22 @@ resolve `UNKNOWN`. Two things stop that becoming a silent outage:
    error — and it would produce a live site holding back member email and, once
    Xero containment lands, rewriting the club's real contact addresses. Either
    mistake aborts with the old release still serving and nothing changed.
-2. **The app says so loudly.** A boot with an unresolved role logs an error
+2. **The deploy also asks each container what IT got, not only what the file
+   says.** Those are different questions. The step-3 check reads `.env`; Docker
+   Compose prefers a value exported in the invoking shell over the env file, and
+   takes the last duplicate line rather than the first. So at **step 14** — new
+   colour started, old colour still serving every request — the deploy asks each
+   app container which declaration it actually parsed, and aborts before the
+   cutover if any of them answers anything other than `production`. It checks the
+   *declaration*, not the effective role, so a production deployment whose
+   administrator has switched the safer override on still deploys normally.
+3. **The app says so loudly.** A boot with an unresolved role logs an error
    explaining the specific cause — an absent declaration and an unreadable
    override are different faults with different repairs — and the setup
    checklist's **Production Or Non-Production** step reports `blocked` with the
-   repair.
-3. **Confirm the answer after the deploy, from the message rather than the
+   repair. A boot that resolves non-production says that too, at info level, and
+   names which source decided it.
+4. **Confirm the answer after the deploy, from the message rather than the
    tick.** On `/admin/setup` the **Production Or Non-Production** step must read
    *production*. A non-production installation shows a green tick there too, since
    both are validly configured states and the checklist cannot know which one this

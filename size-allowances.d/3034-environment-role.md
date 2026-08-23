@@ -15,12 +15,13 @@ change's allowance to hold this change's numbers would make its stated lengths
 untrue and put two branches back in the same file, which is the conflict this
 whole one-file-per-pull-request pattern exists to end.
 
-**The four files this change actually invents are all well inside budget, and
-that is the standard this list should be read against.** The resolver
-(`environment-role.ts`, 416), its pure parser
-(`environment-role-declaration.ts`, 137), the browser payload
-(`environment-safety-admin-state.ts`, 181), the write path
-(`environment-safety-override-write.ts`, 213) and the API route
+**The files this change actually invents are all well inside budget, and that is
+the standard this list should be read against.** The resolver
+(`environment-role.ts`, 435), its pure parser
+(`environment-role-declaration.ts`, 143), the browser payload
+(`environment-safety-admin-state.ts`, 239), the write path
+(`environment-safety-override-write.ts`, 213), the withheld-email scaffold
+(`environment-safety-withheld.ts`, 78) and the API route
 (`environment-safety/route.ts`, 127 against a 250 route-handler budget) are new
 modules carrying the whole of the new logic, so no size debt is created by this
 feature. The route reached 270 once the review findings were folded in, and an
@@ -32,7 +33,7 @@ hatch is meant to look like from the outside: the split first, the allowance onl
 where the split is genuinely worse — only the five unavoidable registrations below.
 
 file: src/lib/setup-readiness.ts
-lines: 2088
+lines: 2141
 reason: this is where a setup step is defined, and the seventeen already there
   are all in this file and assembled into the readiness report a few lines below
   them — the same argument #3000 made for the club-timezone step, which is the
@@ -43,10 +44,14 @@ reason: this is where a setup step is defined, and the seventeen already there
   answer, because an operator who repairs the wrong variable changes nothing and
   has no way to tell why. APP_RUNTIME_ROLE already exists, sits in the same
   Compose block, differs by one word, and holds the literal value "staging" on
-  the staging stack, so every state names both variables explicitly.
+  the staging stack, so every state names both variables explicitly. Review added
+  the withheld-email line to the non-production branch — the one signal that
+  separates a live club wrongly declared a copy from a copy nobody is using, and
+  three renderable states because "none held back" and "not counted yet" look
+  identical on a checklist and mean opposite things.
 
 file: src/instrumentation.node.ts
-lines: 1562
+lines: 1618
 reason: a boot-time advisory has to be at boot, beside the four best-effort
   blocks already there (Sentry, the email-palette prime, the config self-heal,
   the ignored-email-env warning) — it is the fifth of a kind, not a new kind.
@@ -55,15 +60,22 @@ reason: a boot-time advisory has to be at boot, beside the four best-effort
   second such block returns early when CRON_ENABLED is false, which is exactly
   what app_blue and app_green set, so an advisory appended at the end of the
   function would never run on the containers that serve traffic. That is a
-  measured fact about this file and it belongs in this file.
+  measured fact about this file and it belongs in this file. Review added the
+  confirmed-copy branch beside the UNKNOWN one, and the measurement behind its
+  log LEVEL: at warn, `measurement/current-main-refresh/bin/analyse-log-noise.mjs`
+  counts the line eleven times and fails MC-09, because eight of that harness's
+  producers recreate the app inside their own log-capture window.
 
 file: src/lib/admin-permissions.ts
-lines: 780
+lines: 788
 reason: the two new prefixes belong in `ROUTE_AREA_PREFIXES` beside the
   `/admin/club-time` and `/admin/backups` entries, which already state the same
   rule this one needs — area registration for the route map, Full Admin enforced
   in the route itself. Splitting that table would put one area's routes away from
   every other area's, which is the drift the route-map guard exists to catch.
+  Review corrected the comment: reading the role is available at `support:view`
+  through the setup checklist, and only the WRITE is Full-Admin-only, so the
+  boundary is now stated as it actually is rather than one tier too narrow.
 
 file: src/lib/member-merge.ts
 lines: 3761
