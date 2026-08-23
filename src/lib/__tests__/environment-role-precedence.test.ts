@@ -173,15 +173,26 @@ describe("the database can never elevate", () => {
   });
 
   it("only ever moves an answer towards NON_PRODUCTION", () => {
+    /*
+      ONE ASSERTION, NOT A BRANCH (#3034 review). This case used to be an
+      `if`/`else` whose two arms both asserted `toBe("NON_PRODUCTION")`. It read
+      as a monotonicity check and was not one: no input made the arms differ, so
+      the branch could be deleted with no effect on what was proved, and a reader
+      scanning for the monotonicity property found something that looked like it
+      and was not.
+
+      The property that IS true, and is worth stating unconditionally, is
+      stronger than monotonicity: switching the override on yields the safest
+      CONFIRMED state from every starting point. So there is no declaration from
+      which the override can produce PRODUCTION, and none from which it can leave
+      UNKNOWN standing — including `invalid`, which is the one that needed a
+      decision and is recorded in the resolver's docblock.
+    */
     for (const declaration of ALL_DECLARATIONS) {
-      const withoutOverride = decide(declaration, "off").role;
-      const withOverride = decide(declaration, "on").role;
-      if (withoutOverride === "NON_PRODUCTION") {
-        expect(withOverride).toBe("NON_PRODUCTION");
-      } else {
-        // PRODUCTION or UNKNOWN both become the safer, confirmed state.
-        expect(withOverride).toBe("NON_PRODUCTION");
-      }
+      expect(
+        decide(declaration, "on").role,
+        `declaration ${declaration} with the override on`,
+      ).toBe("NON_PRODUCTION");
     }
   });
 

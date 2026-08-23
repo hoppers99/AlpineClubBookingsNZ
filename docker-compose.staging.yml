@@ -90,11 +90,25 @@ services:
     mem_limit: 128m
     cpus: 0.2
 
+  # The blue/green slots are the production deploy runner's concern; a staging or
+  # E2E stack runs the single `app` service above. Parking them behind a profile
+  # disables them — but they still DECLARE the role (ENV-SAFETY 1 #3034, epic
+  # #2986), because a profile is a switch somebody can turn on and an app service
+  # started from THIS file must never inherit the base file's
+  # ${APP_ENVIRONMENT_ROLE}: that is the live deployment's variable, and a staging
+  # stack reading it would be one stray env value away from claiming to be the
+  # club's live site. Hard-coded for the same reason as the `app` service above.
+  # The compose census in
+  # src/lib/__tests__/deploy-environment-role-contract.test.ts found this gap.
   app_blue:
     profiles: ["production-bluegreen"]
+    environment:
+      APP_ENVIRONMENT_ROLE: non-production
 
   app_green:
     profiles: ["production-bluegreen"]
+    environment:
+      APP_ENVIRONMENT_ROLE: non-production
 
   caddy:
     profiles: ["production-caddy"]

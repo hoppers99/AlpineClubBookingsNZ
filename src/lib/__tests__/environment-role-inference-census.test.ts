@@ -353,6 +353,60 @@ describe("environment-role inference census (INV-CONFIG-003)", () => {
     ).toEqual([]);
   });
 
+  /*
+    THE DECLARATION VARIABLE ITSELF HAS EXACTLY ONE READER (#3034 review).
+
+    `APP_ENVIRONMENT_ROLE` is deliberately NOT in TRACKED_VARIABLES: that array's
+    own case below asserts the tracked variables are never read in the declaration
+    module, which is the one place this one MUST be read. So it gets its own,
+    opposite-shaped assertion — not "nowhere reads it" but "exactly one module
+    does".
+
+    WHY IT MATTERS FOR #3035 AND #3036. Both are about to branch on the role, and
+    the cheap way to do that is to read this variable directly and skip the
+    database round trip. That would be a SECOND authority which ignores the safer
+    override — so a copy whose administrator had switched the override on would
+    still be treated as production by that caller. Split-brain is exactly what
+    INV-CONFIG-003 exists to prevent, and nothing else in this file would notice.
+
+    SAME BLIND SPOT AS THE REST OF THIS CENSUS, said plainly: it matches the
+    literal read shapes, so a name taken apart at runtime is invisible to it.
+  */
+  it("is read by exactly one module, the canonical declaration parser", () => {
+    const DECLARATION_MODULE = "src/lib/environment-role-declaration.ts";
+    /*
+      Read SHAPES, never the mere appearance of the name — which would be useless
+      here, because the operator-facing copy in the resolver, the readiness step
+      and the admin panel all quote `APP_ENVIRONMENT_ROLE` to tell somebody which
+      setting to fix. `ENVIRONMENT_ROLE_ENV_VAR` is included as an index because
+      that is how the one legitimate read is actually spelled.
+    */
+    const READ = new RegExp(
+      `(?:process\\.)?env(?:\\.${ENVIRONMENT_ROLE_ENV_VAR}\\b` +
+        `|\\[\\s*(?:"${ENVIRONMENT_ROLE_ENV_VAR}"|'${ENVIRONMENT_ROLE_ENV_VAR}'` +
+        `|ENVIRONMENT_ROLE_ENV_VAR)\\s*\\])`,
+    );
+
+    const readers = walk(SRC)
+      .filter((file) => READ.test(readFileSync(file, "utf8")))
+      .map(repoRelative)
+      .sort();
+
+    expect(
+      readers,
+      `${ENVIRONMENT_ROLE_ENV_VAR} must be read in ${DECLARATION_MODULE} and ` +
+        `nowhere else. A second reader is a second authority on "is this ` +
+        `production?" that does not consult the database safer override, so a ` +
+        `copy an administrator has deliberately forced safer would still be ` +
+        `treated as the live site by that caller (INV-CONFIG-003). Call ` +
+        `resolveEnvironmentRole() / getEnvironmentRole() from ` +
+        `src/lib/environment-role.ts instead, or readEnvironmentRoleDeclaration() ` +
+        `if you genuinely want the deployment's declaration alone and not the ` +
+        `effective role — which is what src/lib/health-check.ts does, and why it ` +
+        `is not in this list.`,
+    ).toEqual([DECLARATION_MODULE]);
+  });
+
   it("keeps the canonical resolver itself free of every one of them", () => {
     for (const file of [
       "src/lib/environment-role.ts",

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -58,18 +58,153 @@ const stagingEnvExample = readRepoFile(".env.staging.example");
 const instrumentation = readRepoFile("src/instrumentation.node.ts");
 
 /**
- * The validator function's body, from its opening brace to its closing one.
+ * EVERY tracked Compose file, discovered rather than listed.
  *
- * Extracted once because five cases below read it, and because slicing to the
- * NEXT top-level `}` is what keeps an assertion about this function from
- * accidentally passing on text from the function after it.
+ * A LIST WAS THE DEFECT (#3034 review). The census below used to name the base
+ * and staging files, so `measurement/stack/docker-compose.measure.yml` — a THIRD
+ * compose file, which runs the app over the BASE file and therefore inherits
+ * `${APP_ENVIRONMENT_ROLE}` with no default and no tracked env file to supply one
+ * — declared nothing and nobody noticed. That stack resolved UNKNOWN, so the new
+ * boot advisory logged an error on every recreate, inside the harness whose own
+ * MC-09 check fails a warning/error signature repeated three times. Eight of its
+ * eleven producers `--force-recreate app` within their own `docker logs --since`
+ * window, so one line per boot is ten-plus occurrences of one signature.
+ *
+ * Discovering them means the FOURTH compose file cannot be missed the same way.
  */
-function validatorBody(): string {
-  const start = script.indexOf("require_environment_role_env_key() {");
-  expect(start).toBeGreaterThan(0);
+const COMPOSE_SEARCH_SKIP = new Set([
+  "node_modules",
+  ".git",
+  ".next",
+  ".artifacts",
+  "coverage",
+  "playwright-report",
+  "test-results",
+  "dist",
+]);
+
+function findComposeFiles(dir: string, out: string[] = []): string[] {
+  for (const name of readdirSync(dir)) {
+    if (COMPOSE_SEARCH_SKIP.has(name)) continue;
+    const full = path.join(dir, name);
+    if (statSync(full).isDirectory()) findComposeFiles(full, out);
+    else if (/^docker-compose.*\.ya?ml$/.test(name)) out.push(full);
+  }
+  return out;
+}
+
+const BASE_COMPOSE = "docker-compose.yml";
+
+const composeFiles = findComposeFiles(process.cwd())
+  .map((file) => path.relative(process.cwd(), file).split(path.sep).join("/"))
+  .sort();
+
+/**
+ * A Compose file's `services:` blocks, by name.
+ *
+ * A deliberately small indentation parser rather than a YAML dependency — this
+ * repository has none, and the shape being read is two levels deep. It is exact
+ * about what it does: `services:` at column 0, service names at two spaces, and a
+ * block runs to the next name at that indentation.
+ */
+function composeServices(relativePath: string): Map<string, string> {
+  const lines = readRepoFile(relativePath).split(/\r?\n/);
+  const services = new Map<string, string>();
+  let inServices = false;
+  let current: string | null = null;
+  let body: string[] = [];
+
+  const flush = () => {
+    if (current) services.set(current, body.join("\n"));
+    current = null;
+    body = [];
+  };
+
+  for (const line of lines) {
+    if (/^services:\s*$/.test(line)) {
+      inServices = true;
+      continue;
+    }
+    if (!inServices) continue;
+    // Any column-0 content ends the services mapping (volumes:, networks:, an
+    // x-anchor). A comment at column 0 does not.
+    if (/^[^\s#]/.test(line)) {
+      flush();
+      inServices = false;
+      continue;
+    }
+    const name = line.match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
+    if (name) {
+      flush();
+      current = name[1];
+      continue;
+    }
+    if (current) body.push(line);
+  }
+  flush();
+  return services;
+}
+
+/**
+ * The services that run APPLICATION CODE, taken from the base file's own anchor
+ * usage rather than from a hand-kept list — `migrate` merges no app environment
+ * and runs `prisma migrate deploy` with no application code.
+ */
+function appServiceNames(): string[] {
+  return [...composeServices(BASE_COMPOSE)]
+    .filter(([, body]) => body.includes("<<: *app-environment"))
+    .map(([name]) => name)
+    .sort();
+}
+
+/**
+ * A shell function's bounds in the script, from its opening brace to the next
+ * top-level `}`.
+ *
+ * BOUNDING IS THE WHOLE POINT, and getting it wrong cost this file a real
+ * assertion (#3034 review). The ordering case below used to search for the
+ * validator's CALL from `validate_env_contract`'s opening brace **to the end of
+ * the file**, so a mutant that deleted the call from step 3 and inserted it into
+ * `verify_prisma_migration_status()` — which runs at step 13, AFTER
+ * `prisma migrate deploy` — still satisfied it. Measured: all four ordering
+ * assertions passed against that mutant. A docblock saying THE ORDER IS THE
+ * POINT does not make a test discriminate order.
+ */
+function functionBounds(name: string): { start: number; end: number } {
+  const start = script.indexOf(`${name}() {`);
+  expect(start, `${name} must be defined in the deploy script`).toBeGreaterThan(0);
   const end = script.indexOf("\n}\n", start);
-  expect(end).toBeGreaterThan(start);
+  expect(end, `${name} must have a closing brace`).toBeGreaterThan(start);
+  return { start, end };
+}
+
+/** {@link functionBounds}, as the text between them. */
+function functionBody(name: string): string {
+  const { start, end } = functionBounds(name);
   return script.slice(start, end);
+}
+
+/** The role validator's own body — five cases below read it. */
+function validatorBody(): string {
+  return functionBody("require_environment_role_env_key");
+}
+
+/**
+ * Where the validator is CALLED, and nowhere else.
+ *
+ * Two spaces of indentation and nothing else on the line, which is a call rather
+ * than the definition (column 0) or a mention in a comment (`#`). Asserted to be
+ * unique, so the check cannot be added to a second, later function while the
+ * step-3 one is quietly deleted.
+ */
+function soleValidatorInvocation(): number {
+  const call = "\n  require_environment_role_env_key\n";
+  const occurrences = script.split(call).length - 1;
+  expect(
+    occurrences,
+    "require_environment_role_env_key must be invoked exactly once, in validate_env_contract",
+  ).toBe(1);
+  return script.indexOf(call) + 1;
 }
 
 /** The offset of a `step "N/20" "…"` line, or -1. */
@@ -79,18 +214,19 @@ function stepOffset(number: number): number {
 }
 
 describe("the deploy refuses an undeclared production release", () => {
-  it("requires the declaration in the .env contract", () => {
-    expect(script).toContain("require_environment_role_env_key");
-    // Defined AND invoked. A helper nothing calls is a comment.
-    const definition = script.indexOf("require_environment_role_env_key() {");
-    const contract = script.indexOf("validate_env_contract() {");
-    const invocation = script.indexOf(
-      "  require_environment_role_env_key\n",
-      contract,
-    );
-    expect(definition).toBeGreaterThan(0);
-    expect(contract).toBeGreaterThan(definition);
-    expect(invocation).toBeGreaterThan(contract);
+  it("invokes the check INSIDE validate_env_contract, not merely after it", () => {
+    // Defined AND invoked. A helper nothing calls is a comment — and a helper
+    // invoked from some LATER function is worse than a comment, because it reads
+    // as protection while running after the migration.
+    const definition = functionBounds("require_environment_role_env_key");
+    const contract = functionBounds("validate_env_contract");
+    const invocation = soleValidatorInvocation();
+
+    expect(contract.start).toBeGreaterThan(definition.start);
+    // The bound that does the work: strictly inside the contract validator's
+    // body. This is what the previous unbounded search let through.
+    expect(invocation).toBeGreaterThan(contract.start);
+    expect(invocation).toBeLessThan(contract.end);
   });
 
   it("requires exactly `production`, because this script only ever deploys the live site", () => {
@@ -124,10 +260,27 @@ describe("the deploy refuses an undeclared production release", () => {
     expect(body).toContain('if [ "$normalised" != "production" ]; then');
     expect(body).not.toContain('!= "non-production"');
 
-    // `non-production` may appear only inside the refusal, explaining itself —
-    // never in the condition that decides whether to refuse.
-    const condition = body.slice(0, body.indexOf("; then") + 6);
-    expect(condition).not.toContain("non-production");
+    /*
+      `non-production` may appear only inside the refusal, explaining itself —
+      never in the condition that decides whether to refuse.
+
+      Asserted over the guard LINES rather than over "everything before the first
+      `; then`" (#3034 review). That earlier form silently stopped meaning what it
+      said the moment the function grew an earlier `if` — the duplicate-key and
+      shell-export refusals below — because the slice then ended at THEIR `; then`
+      and the case still passed while asserting nothing about the deciding
+      comparison. Collecting every line that both tests `$normalised` and opens a
+      block, and pinning the FIRST of them exactly, cannot drift that way: it
+      fails if a second value is admitted by an alternation, and it fails if the
+      explanatory `= "non-production"` branch is ever reordered above the refusal.
+    */
+    const normalisedGuards = body
+      .split("\n")
+      .filter((line) => /^\s*if \[ "\$normalised" (!=|=) /.test(line));
+    expect(normalisedGuards[0]).toBe(
+      '  if [ "$normalised" != "production" ]; then',
+    );
+    expect(normalisedGuards[0]).not.toContain("non-production");
 
     // It FAILS rather than warns.
     expect(body).toContain("return 1");
@@ -193,16 +346,90 @@ describe("the deploy refuses an undeclared production release", () => {
       expect(offset).toBeGreaterThan(0);
     }
 
-    // The env contract is invoked inside step 3's block, not merely defined
-    // somewhere above it.
-    expect(script.slice(envContract, schemaCheck)).toContain(
-      "validate_env_contract",
-    );
+    /*
+      `validate_env_contract` is CALLED in step 3's own block — between the
+      `step "3/20"` line and the `step "4/20"` line, not merely somewhere in the
+      forty lines that follow step 3. The old form sliced from step 3 all the way
+      to step 12, which the string `validate_env_contract` satisfied even when the
+      role check had been moved out of that function entirely (#3034 review).
+    */
+    const stepThreeBlock = script.slice(envContract, stepOffset(4));
+    expect(stepThreeBlock).toContain("validate_env_contract");
+
+    /*
+      And the role check itself is textually above the step-12/13 blocks. A weak
+      backstop rather than the load-bearing assertion — the case above is what
+      pins the check inside `validate_env_contract` — but it is what would notice
+      the whole validator being relocated below the migration steps.
+    */
+    expect(soleValidatorInvocation()).toBeLessThan(schemaCheck);
+    expect(soleValidatorInvocation()).toBeLessThan(migrate);
 
     expect(envContract).toBeLessThan(schemaCheck);
     expect(schemaCheck).toBeLessThan(migrate);
     expect(migrate).toBeLessThan(targetStart);
     expect(targetStart).toBeLessThan(cutover);
+  });
+
+  it("refuses a DUPLICATED key, which the file reader and Compose disagree about", () => {
+    /*
+      `get_env_file_value` awk-`exit`s on the FIRST match; Compose's dotenv
+      parsing is LAST-WINS. So a .env holding `APP_ENVIRONMENT_ROLE=production`
+      and, further down, `APP_ENVIRONMENT_ROLE=non-production` passed this gate
+      and handed the containers the second value (#3034 review, measured against
+      real `docker compose`). Refused outright rather than resolved last-wins: a
+      duplicate is always an operator mistake, and silently agreeing with Compose
+      would bless a file that says two different things about the most
+      consequential setting in it.
+    */
+    const body = validatorBody();
+    expect(body).toContain('count_env_file_key_occurrences "$key"');
+    expect(body).toContain('if [ "$occurrences" -gt 1 ]; then');
+    expect(body).toContain("return 1");
+    // Scoped to this key. `get_env_file_value` is shared by every other
+    // `require_*_env_key` and is deliberately not changed.
+    expect(script).toContain("count_env_file_key_occurrences() {");
+  });
+
+  it("refuses a shell-exported value that disagrees with .env", () => {
+    /*
+      Compose prefers a value exported in the invoking shell over the env file, so
+      a stale `export APP_ENVIRONMENT_ROLE=non-production` in a shell, a systemd
+      unit or a restore-rehearsal script overrode a correct .env and this gate
+      never saw it. Not hypothetical for this script: it already exports
+      GIT_COMMIT_SHA / KNOWLEDGE_BUNDLE_OBSERVED_AT / RELEASE_ID for compose to
+      forward and does not sanitise the caller's environment.
+    */
+    const body = validatorBody();
+    expect(body).toContain('if [ -n "${APP_ENVIRONMENT_ROLE+x}" ]; then');
+    expect(body).toContain('if [ "$exported_normalised" != "$normalised" ]; then');
+    // Both values are NAMED. "They disagree" is not something an operator can act
+    // on without being told which said what.
+    expect(body).toContain("exported in this shell:");
+    expect(body).toContain("in .env:");
+    // And once they agree, the file becomes the only source Compose can read.
+    expect(body).toContain("unset APP_ENVIRONMENT_ROLE");
+  });
+
+  it("sanitizes the refused value before echoing it at a terminal", () => {
+    /*
+      The application reduces this same operator-supplied string to printable
+      ASCII before it reaches a log line or a page
+      (`sanitizeEnvironmentRoleRawValue`), because a value holding a newline or an
+      escape sequence must not be able to write a second line into — or repaint —
+      the terminal of the person reading the refusal. A shell echoing the raw
+      value reopens that hole one layer out.
+    */
+    expect(script).toContain("printable_deploy_value() {");
+    const sanitizer = functionBody("printable_deploy_value");
+    // Control characters become `?` rather than being deleted, so the operator
+    // can SEE something is in there, and the result is capped like the app's.
+    expect(sanitizer).toContain("tr -c");
+    expect(sanitizer).toContain("64");
+    // Every echo of the value goes through it.
+    const body = validatorBody();
+    expect(body).toContain('printable_deploy_value "$value"');
+    expect(body).not.toContain("(got: $value)");
   });
 
   it("applies the migration before the first new-code process starts", () => {
@@ -212,6 +439,79 @@ describe("the deploy refuses an undeclared production release", () => {
     const migrateStep = script.slice(stepOffset(13), stepOffset(14));
     expect(migrateStep).toContain('run --rm "$MIGRATE_SERVICE"');
     expect(migrateStep).toContain("verify_prisma_migration_status");
+  });
+});
+
+describe("the deploy re-reads the declaration from the container itself", () => {
+  /*
+    WHY A SECOND CHECK AT ALL, when step 3 already validates `.env` (#3034
+    review). The preflight validates the FILE; the containers receive whatever
+    Compose RESOLVED, and those are different questions — Compose prefers a value
+    exported in the invoking shell over the env file, and takes the LAST duplicate
+    line rather than the first. Both of those are now refused explicitly in the
+    preflight, but a gate that is only right while it models Compose's precedence
+    correctly is one Compose release away from being wrong. So the value is read
+    back from the process that actually got it.
+
+    IT ASSERTS THE DECLARATION KIND, NOT THE EFFECTIVE ROLE. A correctly declared
+    production installation whose administrator has switched the safer override on
+    legitimately resolves NON_PRODUCTION; asserting the resolved role there would
+    refuse a legitimate deploy.
+  */
+  it("expects exactly `production` from every container that runs app code", () => {
+    expect(script).toContain(
+      `EXPECTED_ENVIRONMENT_ROLE_DECLARATION="production"`,
+    );
+  });
+
+  it("has the container report what IT parsed, folded the way the app folds it", () => {
+    const payload = functionBody("get_service_runtime_payload");
+    expect(payload).toContain(`${ENVIRONMENT_ROLE_ENV_VAR}:-`);
+    // The same four kinds the application parser produces, so the deploy and the
+    // app cannot disagree about what counts as declared.
+    for (const kind of [
+      "production",
+      "non-production",
+      "absent",
+      "invalid",
+    ]) {
+      expect(payload).toContain(`environment_role=${kind}`);
+    }
+    // Case-folded after trimming, exactly as readEnvironmentRoleDeclaration does.
+    expect(payload).toContain(`tr "[:upper:]" "[:lower:]"`);
+    expect(payload).toContain("environmentRole");
+  });
+
+  it("fails the deploy when a container reports anything else", () => {
+    const assertion = functionBody("assert_runtime_identity");
+    expect(assertion).toContain('local expected_environment_role="${5:-}"');
+    expect(assertion).toContain('if [ -n "$expected_environment_role" ]');
+    expect(assertion).toContain("environmentRole");
+    expect(assertion).toContain("return 1");
+  });
+
+  it("checks it at step 14 — new colour up, old colour still serving", () => {
+    /*
+      THE ORDER IS THE POINT HERE TOO. Step 14 starts the target web service and
+      step 17 switches Caddy, so a container that came up with the wrong
+      declaration aborts the deploy while the previous release is still taking
+      every request. Both verifiers pass the expectation; the INTERNAL one is the
+      pre-cutover check, and its call sits inside step 14's block.
+    */
+    for (const verifier of ["verify_internal_health", "verify_external_health"]) {
+      expect(functionBody(verifier)).toContain(
+        '"$EXPECTED_ENVIRONMENT_ROLE_DECLARATION"',
+      );
+    }
+
+    const targetStart = stepOffset(14);
+    const cronRefresh = stepOffset(15);
+    const cutover = stepOffset(17);
+    expect(targetStart).toBeGreaterThan(0);
+    expect(script.slice(targetStart, cronRefresh)).toContain(
+      "verify_internal_health",
+    );
+    expect(targetStart).toBeLessThan(cutover);
   });
 });
 
@@ -254,6 +554,67 @@ describe("every service that runs the app is given the declaration", () => {
   });
 });
 
+describe("EVERY compose file that runs the app declares the role", () => {
+  it("finds the compose files by scanning, not from a list in this test", () => {
+    // The three that exist today. A new one appears here automatically, which is
+    // the point: it then has to satisfy the case below or fail.
+    expect(composeFiles).toEqual([
+      "docker-compose.staging.yml",
+      "docker-compose.yml",
+      "measurement/stack/docker-compose.measure.yml",
+    ]);
+  });
+
+  it("derives the app services from the base file's own anchor", () => {
+    expect(appServiceNames()).toEqual(["app", "app_blue", "app_green"]);
+  });
+
+  it("makes every override file declare it LITERALLY on every app service", () => {
+    /*
+      The base file interpolates `${APP_ENVIRONMENT_ROLE}` with no default,
+      because it is the file the club's live deployment uses and only the
+      deployment can know. Every OTHER compose file exists to stand up something
+      that is by construction NOT the live site — a staging stack, an E2E stack, a
+      measurement harness — so each must hard-code `non-production` on every app
+      service it touches. Interpolated is not good enough there: a stray value in
+      whatever env file that stack is given must not be able to make it claim to
+      be the club's live site.
+    */
+    const appServices = new Set(appServiceNames());
+    const missing: string[] = [];
+
+    for (const file of composeFiles) {
+      if (file === BASE_COMPOSE) continue;
+      for (const [name, body] of composeServices(file)) {
+        if (!appServices.has(name)) continue;
+        if (!body.includes(`${ENVIRONMENT_ROLE_ENV_VAR}: non-production`)) {
+          missing.push(`${file} -> ${name}`);
+        }
+      }
+    }
+
+    expect(
+      missing,
+      `A compose service that runs application code does not declare ` +
+        `${ENVIRONMENT_ROLE_ENV_VAR}. It inherits the base file's ` +
+        `\${${ENVIRONMENT_ROLE_ENV_VAR}} with no default, so it resolves UNKNOWN ` +
+        `and holds back member email and Xero writes — and its boot advisory logs ` +
+        `on every start. Add "${ENVIRONMENT_ROLE_ENV_VAR}: non-production" to ` +
+        `each service listed, the way docker-compose.staging.yml does.`,
+    ).toEqual([]);
+  });
+
+  it("never lets an override file interpolate the value", () => {
+    for (const file of composeFiles) {
+      if (file === BASE_COMPOSE) continue;
+      expect(
+        readRepoFile(file),
+        `${file} must hard-code the role, not read it from an env file`,
+      ).not.toContain(`${ENVIRONMENT_ROLE_ENV_VAR}: \${`);
+    }
+  });
+});
+
 describe("non-production targets declare themselves", () => {
   it("hard-codes non-production on the staging app service", () => {
     expect(stagingCompose).toContain(
@@ -266,10 +627,40 @@ describe("non-production targets declare themselves", () => {
     );
   });
 
-  it("keeps the E2E and staging env template declared, so the suite never meets UNKNOWN", () => {
+  it("declares it in the staging env template and in CI's generated env file", () => {
+    /*
+      NOT what keeps the suite off the UNKNOWN path — that is
+      `docker-compose.staging.yml`, which hard-codes the value on the `app`
+      service and overrides anything an env file says. This case used to CLAIM
+      otherwise in its own name ("so the suite never meets UNKNOWN"), which was
+      false and would have sent the next reader to repair the wrong file (#3034
+      review).
+
+      What it actually pins is the absence of noise. The BASE compose file passes
+      `${APP_ENVIRONMENT_ROLE}` through with no default, so an env file that omits
+      the key makes Compose emit four "variable is not set" warnings on every
+      invocation — measured on `docker compose -f docker-compose.yml -f
+      docker-compose.staging.yml config` with the variable unset. A CI log full of
+      warnings that mean nothing is how a warning that means something gets
+      missed.
+    */
     expect(stagingEnvExample).toContain(
       `${ENVIRONMENT_ROLE_ENV_VAR}=non-production`,
     );
+
+    /*
+      CI does not use `.env.staging.example`: both e2e jobs WRITE `.env.staging`
+      inline with a heredoc, so the template being right says nothing about them.
+      Asserted per heredoc rather than once for the file, because the multi-lodge
+      job's copy has drifted from the single-lodge job's before.
+    */
+    const workflow = readRepoFile(".github/workflows/e2e.yml");
+    const heredocs = workflow.split("cat > .env.staging <<EOF").slice(1);
+    expect(heredocs.length).toBe(2);
+    for (const heredoc of heredocs) {
+      const body = heredoc.slice(0, heredoc.indexOf("\nEOF"));
+      expect(body).toContain(`${ENVIRONMENT_ROLE_ENV_VAR}=non-production`);
+    }
   });
 
   it("ships the safe value in the local-development template", () => {
@@ -289,6 +680,24 @@ describe("non-production targets declare themselves", () => {
     expect(block).toContain("docs/guides/environment-role.md");
   });
 });
+
+/**
+ * The boot advisory's own try-block, and nothing after it.
+ *
+ * Bounded at its `} catch {` because `register()` holds another `logger.info(`
+ * further down — the cron-disabled line — and an unbounded slice silently reads
+ * THAT one when the branch under test is deleted, turning a clear failure into a
+ * confusing one. Measured while mutation-checking the case below.
+ */
+function bootAdvisoryBlock(): string {
+  const start = instrumentation.indexOf(
+    'const { resolveEnvironmentRole } = await import("./lib/environment-role")',
+  );
+  expect(start).toBeGreaterThan(0);
+  const end = instrumentation.indexOf("\n    } catch {", start);
+  expect(end).toBeGreaterThan(start);
+  return instrumentation.slice(start, end);
+}
 
 describe("the boot advisory reaches the containers that serve traffic", () => {
   it("sits in the Node block that runs regardless of cron configuration", () => {
@@ -312,11 +721,74 @@ describe("the boot advisory reaches the containers that serve traffic", () => {
     expect(advisory).toBeLessThan(cronBlock);
   });
 
+  it("says so at INFO when the role is a confirmed copy, and names the source", () => {
+    /*
+      The one hole the deploy cannot close (owner decision, 23 Aug 2026): a site
+      brought up by hand with `docker compose up` runs none of the deploy's checks,
+      so a LIVE club installation wrongly declared a copy comes up and holds back
+      mail its members are waiting for. Nothing about the DATA can tell that case
+      from a legitimate copy — a copy is restored FROM production and contains the
+      same real members — so the signal has to be somebody reading this line and
+      knowing it is wrong. Which means it has to name WHICH source decided it, or
+      the reader does not know whether to look at the `.env` or at
+      /admin/environment.
+    */
+    const block = bootAdvisoryBlock();
+    expect(block).toContain('resolution.role === "NON_PRODUCTION"');
+
+    const nonProduction = block.slice(
+      block.indexOf('resolution.role === "NON_PRODUCTION"'),
+    );
+    const call = nonProduction.slice(nonProduction.indexOf("logger."));
+    const args = call.slice(0, call.indexOf("\n        );"));
+    expect(call.startsWith("logger.info(")).toBe(true);
+    expect(args).toContain("decidedBy");
+    expect(args).toContain("database-safer-override");
+    expect(args).toContain("APP_ENVIRONMENT_ROLE=production");
+    expect(args).toContain("/admin/environment");
+    // The refused value is operator text and never goes in a log line.
+    expect(args).not.toContain("declaration.raw");
+  });
+
+  it("keeps that line at a level the log-noise measurement does not count", () => {
+    /*
+      MEASURED, not preferred (owner instruction). MC-09 in
+      `measurement/current-main-refresh/run-log-noise.sh` fails any
+      warning-or-error signature that repeats three times across the producer
+      logs, and eight of that harness's eleven producers `--force-recreate app`
+      INSIDE their own `docker logs --since` window — so a once-per-boot line is
+      once per producer. Running `bin/analyse-log-noise.mjs` over eleven producer
+      logs each holding this exact line: at level 40 it reports `count: 11` and
+      throws `sustained/fatal log noise detected`; at level 30 it passes with zero
+      classified lines.
+
+      The analyser ALSO text-classifies any line containing "error", "failed",
+      "warning" or "exception" whatever its level, so the sentence itself has to
+      avoid those words — which is why it says "held back". That is the assertion
+      below, and it is the one that would notice a future rewording undoing the
+      measurement.
+    */
+    const block = bootAdvisoryBlock();
+    const nonProduction = block.slice(
+      block.indexOf('resolution.role === "NON_PRODUCTION"'),
+    );
+    const call = nonProduction.slice(nonProduction.indexOf("logger."));
+    const args = call.slice(0, call.indexOf("\n        );"));
+
+    expect(call.startsWith("logger.info(")).toBe(true);
+    for (const classified of ["error", "failed", "warning", "exception", "fatal"]) {
+      expect(
+        args.toLowerCase(),
+        `the copy-at-boot line must not contain "${classified}" — analyse-log-noise.mjs classifies any line holding it, whatever the level`,
+      ).not.toContain(classified);
+    }
+  });
+
   it("logs at error level only for UNKNOWN, and never blocks startup", () => {
     const advisory = instrumentation.indexOf(
       'const { resolveEnvironmentRole } = await import("./lib/environment-role")',
     );
-    const block = instrumentation.slice(advisory - 400, advisory + 1600);
+    const block = instrumentation.slice(advisory - 400, advisory + 6000);
     expect(block).toContain('resolution.role === "UNKNOWN"');
     expect(block).toContain("logger.error");
     // Its own try/catch — a configuration advisory that stops the site coming up
@@ -331,9 +803,20 @@ describe("the boot advisory reaches the containers that serve traffic", () => {
       the case above; the notes' own content is asserted in
       environment-role-precedence.test.ts.
     */
-    const sentence = block.slice(block.indexOf("logger.error"));
-    expect(sentence).not.toContain(`Set ${ENVIRONMENT_ROLE_ENV_VAR}`);
-    expect(sentence).not.toContain(
+    /*
+      BOUNDED TO THE UNKNOWN BRANCH. This used to slice from `logger.error` to the
+      end of the window, which stopped meaning anything the moment a second branch
+      was added below it: the confirmed-copy line DOES say
+      "set APP_ENVIRONMENT_ROLE=production", correctly, because there the variable
+      IS the thing to change.
+    */
+    const unknownBranch = block.slice(
+      block.indexOf("logger.error"),
+      block.indexOf('resolution.role === "NON_PRODUCTION"'),
+    );
+    expect(unknownBranch.length).toBeGreaterThan(200);
+    expect(unknownBranch).not.toContain(`Set ${ENVIRONMENT_ROLE_ENV_VAR}`);
+    expect(unknownBranch).not.toContain(
       `${ENVIRONMENT_ROLE_ENV_VAR} does not say`,
     );
   });
