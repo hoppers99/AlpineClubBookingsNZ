@@ -127,14 +127,19 @@ release's first process starts (step 14) and long before the traffic cutover
 (step 17). An undeclared upgrade aborts with the **previous release still serving
 and nothing changed**: no migration applied, no container switched. Add the line
 and run the deploy again. It also refuses a `.env` that says
-`non-production` — see below — refuses a duplicated `APP_ENVIRONMENT_ROLE` line,
-and refuses a value exported in your shell that disagrees with the file, because
-Compose would take the shell's.
+`non-production` — see below — refuses a SECOND `APP_ENVIRONMENT_ROLE`
+assignment anywhere in the file (Compose would use the last one), and refuses a
+value set in your shell that disagrees with the file, because Compose would take
+the shell's. The usual `.env` shapes are all fine: an `export ` prefix, spaces
+around the `=`, quotes round the value, a leading indent.
 
-Then, at **step 14**, it asks each newly started container which declaration it
-actually parsed, and aborts before the cutover if any of them answers anything
-other than `production`. That second check exists because validating the file and
-validating what the containers received are different questions.
+Then, at **step 14**, it asks each newly started container — by calling the
+application's own `GET /api/deploy/runtime-status` from inside it — which
+declaration the app read, and aborts before the cutover if any of them answers
+anything other than `production`. That second check exists because validating the
+file and validating what the containers received are different questions, and it
+asks the application rather than re-reading the container's settings so there is
+only ever one implementation of the rule.
 
 **What that promise does NOT cover, stated plainly:** a deployment brought up by
 hand — `docker compose up` — runs none of it. Such an installation comes up

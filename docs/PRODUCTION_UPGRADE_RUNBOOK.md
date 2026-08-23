@@ -175,11 +175,15 @@ in its own preflight at step 3 of 20:
 APP_ENVIRONMENT_ROLE=production
 ```
 
-Exactly one such line, unquoted, not indented, and with no `export ` prefix; and
-make sure nothing has exported `APP_ENVIRONMENT_ROLE` into the shell you will run
-the deploy from (`unset APP_ENVIRONMENT_ROLE` if in doubt) — Docker Compose would
-prefer the shell's value over the file's, and the deploy refuses when the two
-disagree.
+**Exactly one such line.** The usual `.env` shapes are all accepted — an
+`export ` prefix, spaces around the `=`, quotes round the value, a leading indent
+— but a SECOND line assigning the same key is refused, in any of those shapes,
+because Docker Compose would use the last one and you would not know which you
+had deployed. Search the file rather than trusting the top of it.
+
+Also make sure nothing has exported `APP_ENVIRONMENT_ROLE` into the shell you will
+run the deploy from (`unset APP_ENVIRONMENT_ROLE` if in doubt): Compose prefers
+the shell's value over the file's, and the deploy refuses when the two disagree.
 
 An abort here is safe by design: the previous release is still serving, nothing
 has been migrated and nothing has been switched. Fix the line and run the deploy

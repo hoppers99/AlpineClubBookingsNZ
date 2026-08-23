@@ -21,7 +21,7 @@ the standard this list should be read against.** The resolver
 (`environment-role-declaration.ts`, 143), the browser payload
 (`environment-safety-admin-state.ts`, 239), the write path
 (`environment-safety-override-write.ts`, 213), the withheld-email scaffold
-(`environment-safety-withheld.ts`, 78) and the API route
+(`environment-safety-withheld.ts`, 83) and the API route
 (`environment-safety/route.ts`, 127 against a 250 route-handler budget) are new
 modules carrying the whole of the new logic, so no size debt is created by this
 feature. The route reached 270 once the review findings were folded in, and an
@@ -33,7 +33,7 @@ hatch is meant to look like from the outside: the split first, the allowance onl
 where the split is genuinely worse — only the five unavoidable registrations below.
 
 file: src/lib/setup-readiness.ts
-lines: 2141
+lines: 2159
 reason: this is where a setup step is defined, and the seventeen already there
   are all in this file and assembled into the readiness report a few lines below
   them — the same argument #3000 made for the club-timezone step, which is the
@@ -48,7 +48,9 @@ reason: this is where a setup step is defined, and the seventeen already there
   the withheld-email line to the non-production branch — the one signal that
   separates a live club wrongly declared a copy from a copy nobody is using, and
   three renderable states because "none held back" and "not counted yet" look
-  identical on a checklist and mean opposite things.
+  identical on a checklist and mean opposite things. A later round rendered that
+  line for the UNDECLARED state too, which is the one a live installation reaches
+  by upgrading without the declaration.
 
 file: src/instrumentation.node.ts
 lines: 1618

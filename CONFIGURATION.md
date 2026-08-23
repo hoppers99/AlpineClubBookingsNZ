@@ -1963,11 +1963,15 @@ resolve `UNKNOWN`. Four things stop that becoming a silent outage:
    mistake aborts with the old release still serving and nothing changed.
 2. **The deploy also asks each container what IT got, not only what the file
    says.** Those are different questions. The step-3 check reads `.env`; Docker
-   Compose prefers a value exported in the invoking shell over the env file, and
-   takes the last duplicate line rather than the first. So at **step 14** — new
-   colour started, old colour still serving every request — the deploy asks each
-   app container which declaration it actually parsed, and aborts before the
-   cutover if any of them answers anything other than `production`. It checks the
+   Compose prefers a value set in the invoking shell over the env file, and takes
+   the last of any duplicate assignments rather than the first. So at **step 14**
+   — new colour started, old colour still serving every request — the deploy
+   asks **the running application** (`GET /api/deploy/runtime-status`, from inside
+   the container) which declaration it read, and aborts before the cutover if any
+   container answers anything other than `production`. Asking the application
+   rather than re-parsing the container's environment is deliberate: a second
+   implementation of the rule is a second thing that can drift from the first, and
+   this is the check that has to hold when the file check does not. It checks the
    *declaration*, not the effective role, so a production deployment whose
    administrator has switched the safer override on still deploys normally.
 3. **The app says so loudly.** A boot with an unresolved role logs an error
