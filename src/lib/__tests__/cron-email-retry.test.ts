@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    environmentSafetySettings: { findUnique: vi.fn().mockResolvedValue(null) },
     emailLog: {
       findMany: mocks.findMany,
       update: mocks.update,
@@ -69,6 +70,7 @@ vi.mock("@/lib/email", () => ({
 }));
 
 import { retryFailedEmails } from "@/lib/cron-email-retry";
+import { declareEnvironmentRole } from "@/lib/__tests__/helpers/environment-role";
 
 function failedEmail(overrides: Record<string, unknown> = {}) {
   return {
@@ -89,13 +91,39 @@ function failedEmail(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/*
+  #3035 (ENV-SAFETY 2): this suite exercises a real SEND, so it has to say which
+  installation it is pretending to be. `resolveEnvironmentRole()` answers from the
+  APP_ENVIRONMENT_ROLE declaration AND the EnvironmentSafetySettings row, and both
+  are absent by default in the unit suite — a missing Prisma delegate is an
+  UNREADABLE override, not "no override", so the role resolves UNKNOWN and the
+  delivery boundary withholds every message. Declaring production plus a
+  no-override delegate is what makes these tests exercise live behaviour.
+  See src/lib/__tests__/helpers/environment-role.ts.
+*/
+beforeEach(() => {
+  declareEnvironmentRole("production");
+});
+
 describe("retryFailedEmails (issue #820)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.resolveEmailDeliveryConfig.mockReturnValue({
       ok: true,
-      transportOptions: { host: "smtp.example.test" },
+      mode: "smtp-relay",
+      modeSource: "explicit-flag",
+      modeLabel: "SMTP Relay",
+      // #3035: the retry cron now obtains its transport through
+      // getEmailTransporter, which builds a cache signature from the auth pair
+      // instead of reading transportOptions.host alone.
+      transportOptions: {
+        host: "smtp.example.test",
+        port: 587,
+        secure: false,
+        auth: { user: "relay-user", pass: "relay-pass" },
+      },
       issues: [],
+      warnings: [],
     });
     mocks.update.mockResolvedValue({});
     mocks.updateMany.mockResolvedValue({ count: 1 });
@@ -272,11 +300,20 @@ describe("retryFailedEmails (issue #820)", () => {
   it("throws when email delivery configuration is invalid", async () => {
     mocks.resolveEmailDeliveryConfig.mockReturnValue({
       ok: false,
+      mode: "invalid",
+      modeSource: "unresolved",
+      modeLabel: "Not configured",
       transportOptions: null,
       issues: ["missing EMAIL_FROM"],
+      warnings: [],
     });
 
-    await expect(retryFailedEmails()).rejects.toThrow(/delivery config invalid/);
+    // #3035: the refusal now comes from getEmailTransporter, the one accessor
+    // that builds a transport, rather than from a second copy of the same check
+    // in this job.
+    await expect(retryFailedEmails()).rejects.toThrow(
+      /Email delivery is not configured/,
+    );
     expect(mocks.findMany).not.toHaveBeenCalled();
   });
 });
@@ -286,8 +323,20 @@ describe('retryFailedEmails and the per-booking "No emails" switch (#2258)', () 
     vi.clearAllMocks();
     mocks.resolveEmailDeliveryConfig.mockReturnValue({
       ok: true,
-      transportOptions: { host: "smtp.example.test" },
+      mode: "smtp-relay",
+      modeSource: "explicit-flag",
+      modeLabel: "SMTP Relay",
+      // #3035: the retry cron now obtains its transport through
+      // getEmailTransporter, which builds a cache signature from the auth pair
+      // instead of reading transportOptions.host alone.
+      transportOptions: {
+        host: "smtp.example.test",
+        port: 587,
+        secure: false,
+        auth: { user: "relay-user", pass: "relay-pass" },
+      },
       issues: [],
+      warnings: [],
     });
     mocks.update.mockResolvedValue({});
     mocks.updateMany.mockResolvedValue({ count: 1 });
