@@ -2,6 +2,12 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
+import {
+  composeFiles,
+  composeServices,
+  readRepoFile,
+} from "@/lib/__tests__/helpers/compose";
+
 /**
  * INV-CONFIG-004: every application-controlled send goes through ONE
  * environment-aware boundary (ENV-SAFETY 2, #3035; epic #2986).
@@ -81,6 +87,91 @@ function filesMatching(pattern: RegExp): string[] {
     .sort();
 }
 
+// ---------------------------------------------------------------------------
+// Configuration BLOCKS, for the capture-declaration case below.
+// ---------------------------------------------------------------------------
+
+/** One place a transport can be configured, with an id a reader can act on. */
+type ConfigBlock = { id: string; text: string };
+
+/**
+ * Comments stripped the way this repository's own dotenv reader strips them:
+ * a whole-line `#`, and an inline `#` preceded by whitespace.
+ *
+ * Needed because `.env.example` and `.env.staging.example` both EXPLAIN the
+ * mutually-exclusive rule in prose containing `USE_LOCAL_CAPTURE=true`, and a
+ * guard satisfied by its own documentation is a guard that has stopped working.
+ */
+function withoutComments(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*#/.test(line))
+    .map((line) => line.replace(/\s+#.*$/, ""))
+    .join("\n");
+}
+
+/** `NAME: "true"` / `NAME='TRUE'` / `NAME=true`, quoting and case normalised. */
+function flagIsTrue(text: string, name: string): boolean {
+  return new RegExp(`\\b${name}\\s*[:=]\\s*["']?\\s*true\\s*["']?`, "i").test(text);
+}
+
+/** A relay host this repository's own configuration files use as a capture. */
+const CAPTURE_HOST = /\bEMAIL_SERVER_HOST\s*[:=]\s*["']?(mailpit|mailhog)\b/i;
+
+/**
+ * Every discovered block in which a transport could be configured: each tracked
+ * dotenv file, each workflow env heredoc, and — per Compose file — the shared
+ * anchor plus every individual service.
+ *
+ * DISCOVERED, NOT LISTED. A hardcoded four-element array of stacks left a fifth
+ * unguarded, and iterating whole FILES let one correct block excuse a sibling.
+ */
+function captureCandidateBlocks(): ConfigBlock[] {
+  const root = process.cwd();
+  const blocks: ConfigBlock[] = [];
+
+  for (const name of readdirSync(root).sort()) {
+    if (!/^\.env($|\.)/.test(name)) continue;
+    blocks.push({ id: name, text: withoutComments(readRepoFile(name)) });
+  }
+
+  const workflows = path.join(root, ".github", "workflows");
+  for (const name of readdirSync(workflows).sort()) {
+    if (!/\.ya?ml$/.test(name)) continue;
+    const text = readFileSync(path.join(workflows, name), "utf8");
+    const opener = /cat > ([^\s]+) <<'?EOF'?/g;
+    let match: RegExpExecArray | null;
+    let index = 0;
+    while ((match = opener.exec(text)) !== null) {
+      index += 1;
+      const rest = text.slice(match.index + match[0].length);
+      const end = rest.indexOf("\nEOF");
+      blocks.push({
+        id: `.github/workflows/${name} -> ${match[1]} #${index}`,
+        text: withoutComments(end === -1 ? rest : rest.slice(0, end)),
+      });
+    }
+  }
+
+  for (const file of composeFiles) {
+    const text = readRepoFile(file);
+    const anchor = text.indexOf("x-app-environment:");
+    if (anchor > -1) {
+      const rest = text.slice(anchor);
+      const end = rest.search(/\n[^\s#]/);
+      blocks.push({
+        id: `${file} -> x-app-environment`,
+        text: withoutComments(end === -1 ? rest : rest.slice(0, end)),
+      });
+    }
+    for (const [service, body] of composeServices(file)) {
+      blocks.push({ id: `${file} -> ${service}`, text: withoutComments(body) });
+    }
+  }
+
+  return blocks;
+}
+
 describe("email delivery boundary census (INV-CONFIG-004)", () => {
   it("creates a mail transport in exactly one module", () => {
     expect(
@@ -119,8 +210,19 @@ describe("email delivery boundary census (INV-CONFIG-004)", () => {
   });
 
   it("asks Xero to email an invoice in exactly one module", () => {
+    /*
+      `\.emailInvoice\s*\(` rather than `accountingApi\.emailInvoice\s*\(`. The
+      narrower form was defeated by three ORDINARY tidy-ups, all measured:
+      `const api = xero.accountingApi; api.emailInvoice(...)`,
+      `const { emailInvoice } = xero.accountingApi`, and
+      `xero.accountingApi["emailInvoice"](...)`. Aliasing a long provider
+      accessor is exactly the kind of edit nobody thinks twice about. Widening is
+      free: all twenty `accountingApi` accesses under `src/` use the literal
+      `xero.accountingApi` receiver today, so the wider pattern still resolves to
+      exactly this wrapper.
+    */
     expect(
-      filesMatching(/accountingApi\.emailInvoice\s*\(/),
+      filesMatching(/\.emailInvoice\s*\(/),
       "Asking Xero to email an invoice is a send to a real member's real " +
         `address, and it must go through ${XERO_EMAIL_MODULE}, which requires ` +
         "a DeliveryClearance. Three workflows raise invoices (booking, group " +
@@ -131,7 +233,8 @@ describe("email delivery boundary census (INV-CONFIG-004)", () => {
   });
 
   /**
-   * Every stack that points the app at mailpit must DECLARE it a capture.
+   * Every BLOCK that points the app at a capture container must DECLARE it a
+   * capture.
    *
    * This guard exists because the defect it catches is invisible until the
    * browser suite runs. Since #3035 a non-production installation suppresses
@@ -146,35 +249,67 @@ describe("email delivery boundary census (INV-CONFIG-004)", () => {
    * is a test over the repository's own tracked configuration files and not a
    * runtime inference. The application itself never infers capture mode from a
    * host name; see `email-delivery.ts`.
+   *
+   * THREE THINGS A PROBE BROKE IN THE FIRST VERSION, all fixed here:
+   *
+   * 1. It tested WHOLE-FILE text, so one correct declaring block satisfied a
+   *    file holding several. Reproduced on a synthetic two-heredoc file: it
+   *    PASSED. Both `e2e.yml` heredocs happen to be right today, but either one
+   *    being right satisfied the file.
+   * 2. It iterated a hardcoded four-element list of stacks, so a fifth stack was
+   *    unguarded. The blocks are now DISCOVERED.
+   * 3. It matched only double quotes and only lower case, so
+   *    `USE_SMTP_RELAY: 'true'` evaded the mutual-exclusion check — the UNSAFE
+   *    direction — while `USE_LOCAL_CAPTURE: 'true'` was a false positive.
+   *    `parseBooleanFlag` is case-insensitive, so the guard and the application
+   *    now normalise the same way.
+   *
+   * The RENDERED plumbing — whether a container is given the variable at all —
+   * is a different question and is asserted in `env-delivery-census.test.ts`.
+   * This one is about what the tracked files SAY.
    */
-  it("declares USE_LOCAL_CAPTURE in every stack that relays to mailpit", () => {
-    const STACKS = [
-      "docker-compose.staging.yml",
+  it("declares USE_LOCAL_CAPTURE in every block that relays to a capture container", () => {
+    const blocks = captureCandidateBlocks();
+
+    // Anti-vacuity: discovery must actually find the blocks that exist today,
+    // or this case judges nothing while passing. Named rather than counted, so a
+    // block disappearing is a failure rather than a smaller number.
+    const declaring = blocks
+      .filter((block) => CAPTURE_HOST.test(block.text))
+      .map((block) => block.id)
+      .sort();
+    expect(blocks.length, "no configuration blocks were discovered").toBeGreaterThan(6);
+    expect(declaring).toEqual([
       ".env.staging.example",
-      ".github/workflows/e2e.yml",
-      "measurement/stack/docker-compose.measure.yml",
-    ];
+      ".github/workflows/e2e.yml -> .env.staging #1",
+      ".github/workflows/e2e.yml -> .env.staging #2",
+      "measurement/stack/docker-compose.measure.yml -> app",
+    ]);
+
     const offenders: string[] = [];
-    for (const stack of STACKS) {
-      const text = readFileSync(path.resolve(process.cwd(), stack), "utf8");
-      const relaysToMailpit = /EMAIL_SERVER_HOST[:=]\s*"?mailpit"?/.test(text);
-      if (!relaysToMailpit) continue;
-      if (!/USE_LOCAL_CAPTURE[:=]\s*"?true"?/.test(text)) {
-        offenders.push(`${stack}: relays to mailpit without USE_LOCAL_CAPTURE=true`);
+    for (const block of blocks) {
+      if (!CAPTURE_HOST.test(block.text)) continue;
+      if (!flagIsTrue(block.text, "USE_LOCAL_CAPTURE")) {
+        offenders.push(`${block.id}: relays to a capture container without USE_LOCAL_CAPTURE=true`);
       }
-      if (/USE_SMTP_RELAY[:=]\s*"?true"?/.test(text)) {
+      if (flagIsTrue(block.text, "USE_SMTP_RELAY")) {
         offenders.push(
-          `${stack}: sets USE_SMTP_RELAY=true, which is a LIVE provider mode and is mutually exclusive with the capture mode`,
+          `${block.id}: sets USE_SMTP_RELAY=true, which is a LIVE provider mode and is mutually exclusive with the capture mode`,
+        );
+      }
+      if (flagIsTrue(block.text, "USE_AWS_SES")) {
+        offenders.push(
+          `${block.id}: sets USE_AWS_SES=true, which is a LIVE provider mode and is mutually exclusive with the capture mode`,
         );
       }
     }
     expect(
       offenders,
-      "A stack pointed at mailpit must declare USE_LOCAL_CAPTURE=true. Without " +
-        "it a non-production installation suppresses every send (#3035), mailpit " +
-        "captures nothing, and every browser spec that reads mail back — " +
-        "including the two-factor email code — fails with an empty mailbox and no " +
-        "explanation (INV-CONFIG-004).",
+      "A block pointed at a capture container must declare USE_LOCAL_CAPTURE=true " +
+        "and no live provider flag. Without it a non-production installation " +
+        "suppresses every send (#3035), the capture sees nothing, and every " +
+        "browser spec that reads mail back — including the two-factor email code " +
+        "— fails with an empty mailbox and no explanation (INV-CONFIG-004).",
     ).toEqual([]);
   });
 
@@ -251,9 +386,16 @@ describe("email delivery boundary census (INV-CONFIG-004)", () => {
       `<DeliveryClearance>`. The TYPE NAME alone is deliberately not matched —
       every consumer names it in a parameter type, which is the whole point of
       the design — so this looks for the assertion syntax only.
+
+      BOTH BRANDS, and the second one is the important one. The first version
+      matched `DeliveryClearance` only, so `as unknown as LiveProviderClearance`,
+      `as LiveProviderClearance` and `<LiveProviderClearance>` were all MISSED
+      (probed) — and that is the NARROWER, stronger token, the only one that opens
+      the Xero invoice-email path to a real member's real inbox. The expectation
+      is unchanged at `[POLICY_MODULE]`, so the alternation costs nothing.
     */
     const casts = filesMatching(
-      /\bas\s+(?:unknown\s+as\s+)?DeliveryClearance\b|<DeliveryClearance>/,
+      /\bas\s+(?:unknown\s+as\s+)?(?:Delivery|LiveProvider)Clearance\b|<(?:Delivery|LiveProvider)Clearance>/,
     );
     expect(
       casts,
