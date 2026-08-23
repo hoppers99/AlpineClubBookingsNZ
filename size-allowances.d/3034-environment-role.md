@@ -21,7 +21,9 @@ the standard this list should be read against.** The resolver
 (`environment-role-declaration.ts`, 143), the browser payload
 (`environment-safety-admin-state.ts`, 239), the write path
 (`environment-safety-override-write.ts`, 213), the withheld-email scaffold
-(`environment-safety-withheld.ts`, 83) and the API route
+(`environment-safety-withheld.ts`, 199 after #3035's review round, which broke the
+capture-in-production count out on its own so the live-site surfaces can act on
+it) and the API route
 (`environment-safety/route.ts`, 127 against a 250 route-handler budget) are new
 modules carrying the whole of the new logic, so no size debt is created by this
 feature. The route reached 270 once the review findings were folded in, and an
