@@ -201,12 +201,31 @@ describe("email delivery boundary census (INV-CONFIG-004)", () => {
     const offenders: string[] = [];
     for (const file of RENDERERS) {
       const source = readFileSync(path.resolve(process.cwd(), file), "utf8");
-      const start = source.indexOf("function describeWithheldEmail");
+      /*
+        COMMENTS ARE STRIPPED FIRST, and the region is bounded by the NEXT
+        top-level declaration rather than by the next `}` on its own line. Both
+        halves were learned from a probe: the first version sliced to the next
+        newline-brace, which in the panel lands on the end of that function's own
+        multi-line RETURN TYPE — so the slice was the signature alone, held none of
+        the sentences, and the guard was VACUOUSLY GREEN for that file. Restoring
+        the panel's old wording did not fail it. Docblocks are excluded because
+        they deliberately QUOTE the wrong sentence in order to explain why it is
+        wrong.
+      */
+      const stripped = source
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^[ \t]*\/\/.*$/gm, "");
+      const start = stripped.indexOf("function describeWithheldEmail");
       expect(start, `${file} should still define describeWithheldEmail`).toBeGreaterThan(-1);
-      // The function body only: the docblocks above deliberately QUOTE the wrong
-      // wording to explain why it is wrong, and banning that would ban the
-      // explanation.
-      const body = source.slice(start, source.indexOf("\n}", start));
+      const rest = stripped.slice(start + 1);
+      const nextDeclaration = rest.search(/\n(?:export )?function /);
+      const body = nextDeclaration === -1 ? rest : rest.slice(0, nextDeclaration);
+      // The assertion that stops this guard going vacuous again: the extracted
+      // region must actually contain the sentences being judged.
+      expect(
+        body,
+        `${file}: the extracted describeWithheldEmail body holds no wording to check — this guard would be vacuous`,
+      ).toMatch(/held back on this installation|steady and recent count/);
       if (/treated as a copy|because it is a copy/i.test(body)) {
         offenders.push(`${file}: attributes the withholding to being a copy`);
       }
