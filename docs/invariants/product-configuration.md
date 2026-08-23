@@ -174,3 +174,70 @@ home for that explanation and is not repeated here.
   #3035 (delivery) and #3036 (Xero containment). Those issues hold the narrative
   and the rejected alternatives; this entry holds only the rule. Operator guide:
   [`environment-role.md`](../guides/environment-role.md).
+
+## INV-CONFIG-004
+
+- **Every application-controlled send passes through ONE environment-aware
+  delivery boundary.** The boundary is `resolveDeliveryPolicy()` in
+  [`environment-delivery-policy.ts`](../../src/lib/environment-delivery-policy.ts),
+  which consumes `INV-CONFIG-003`'s effective role and the deployment's declared
+  transport kind and answers with one of five outcomes. Its verdict is carried by
+  an unforgeable clearance token: `getEmailTransporter` (the ONLY place a mail
+  transport is created) and `sendXeroInvoiceEmail` (the ONLY place
+  `accountingApi.emailInvoice` is called) both require one, so a new sender
+  cannot reach a provider without asking the policy — a compile-time property,
+  not a convention. The token is re-validated at runtime as well, so a cast past
+  the type fails closed.
+- **Confirmed PRODUCTION delivers, and is behaviourally unchanged** apart from
+  passing through the boundary, including the legacy "no provider flag set means
+  AWS SES" fallback that existing deployments rely on.
+- **A confirmed NON_PRODUCTION installation contacts no provider.** The send is
+  suppressed *before* any provider attempt and recorded as
+  `EmailLogStatus.SKIPPED_NON_PRODUCTION`: terminal, non-retryable, body dropped.
+  That is a distinct status from `SKIPPED_NO_EMAILS`, which means the club chose
+  not to email a person about a booking; conflating them would attribute a
+  decision to an administrator who made none, and would make the withheld-email
+  count unmeasurable.
+- **An UNKNOWN role fails closed, retryably.** Nothing is transmitted, and the
+  row is `FAILED` carrying a `deliveryBlockReason`, so the message goes out by
+  itself once an operator declares the role and so it is distinguishable from a
+  transport failure by more than a message string. UNKNOWN gets no exemption from
+  any declaration that travels with it, a capture transport included: an
+  installation that cannot say what it is has not earned one.
+- **An ambiguous mail transport must not fall through to live AWS SES.** With no
+  provider flag set, only confirmed production keeps the legacy default; anywhere
+  else the configuration resolves invalid and names the flags to set. This binds
+  the diagnostic paths too — the health check and the setup wizard's provider test
+  open a real connection with real credentials, so they go through the same rule
+  and hold no transport that could send.
+- **A capture transport is an explicit declaration and never an inference.**
+  `USE_LOCAL_CAPTURE=true` declares that the configured SMTP relay is a sink that
+  forwards nothing, and a confirmed non-production installation may then transmit
+  into it — recorded as an ordinary `SENT`, because it was sent. Nothing infers
+  this from a host name. The club's live site declaring it is **refused**
+  (`CAPTURE_TRANSPORT_IN_PRODUCTION`), because a live installation in capture mode
+  accepts every message and delivers none, which is the same harm as a
+  wrongly-declared copy arriving from the opposite direction. A capture does not
+  cover a provider that sends on our behalf: a Xero invoice email leaves Xero's
+  servers for the member's stored address, so a capture copy does not ask for one
+  at all, and the narrower `LiveProviderClearance` makes that a compile error
+  rather than a rule.
+- **The four non-delivery outcomes stay distinguishable in operations, audit and
+  tests**: business suppression, environment-safety suppression,
+  environment-configuration block, and provider failure. None of them may move
+  booking, payment, charge or invoice business state as though a provider call had
+  failed — in particular a safety suppression never populates the
+  `invoiceEmailError` that marks a Xero sync operation `PARTIAL`, and never writes
+  a withheld-booking-email audit row.
+- **How much has been held back is countable**, because that count is the only
+  signal separating a live club wrongly declared a copy from a legitimate copy
+  nobody is using. `readWithheldApplicationEmail()` counts the suppressed rows and
+  the environment-blocked rows together, and reports an honest "unavailable"
+  rather than a zero when it cannot read them.
+- Logs and operator copy stay sanitized: no message bodies, no credentials, no
+  unnecessary PII, and a refused configuration value is never echoed back
+  unbounded.
+- Decided on #3035 (ENV-SAFETY 2) under epic #2986, consuming #3034's resolver.
+  That issue holds the narrative and the rejected alternatives; this entry holds
+  only the rule. Operator guide:
+  [`environment-role.md`](../guides/environment-role.md).
