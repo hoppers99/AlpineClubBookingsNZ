@@ -28,7 +28,7 @@ the delivery policy (`environment-delivery-policy.ts`, 453), the mailer's half o
 the boundary (`email/environment-gate.ts`, 233), the Xero invoice-email wrapper
 (`xero-invoice-email.ts`, 196) and the transport module it moved logging into
 (`email/internal.ts`, 224). #3036: the containment gate
-(`xero-contact-containment.ts`, 598), the pure address leaf
+(`xero-contact-containment.ts`, 607), the pure address leaf
 (`xero-sandbox-contact-email.ts`, 196) and the operator count
 (`xero-contact-containment-status.ts`, 109). Between them those fourteen modules
 carry the whole of the new logic, so this feature creates no size debt of its own.

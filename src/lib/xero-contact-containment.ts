@@ -376,13 +376,22 @@ function containmentDelegate(): ContainmentDelegate | undefined {
  * OUTSIDE every transaction, like every other provider call in the contact
  * layer. `findOrCreateXeroContact` and `createXeroContactForMember` call it after
  * their short advisory-locked link transactions have committed, so a slow Xero
- * cannot hold a Member row locked, and no caller of the funnel is itself inside a
- * transaction (they cannot be: the funnel opens its own). #3035 recorded the
- * matching hazard for the group-settlement path — it holds
- * `pg_advisory_xact_lock(1)` while it emails, and a second Prisma connection
- * taken in there is a pool-timeout risk because that lock is exclusive — and that
- * path resolves its contact BEFORE the fence opens, so nothing here runs inside
- * it.
+ * cannot hold a Member row locked.
+ *
+ * AND NO CALLER OF THE FUNNEL IS INSIDE A TRANSACTION — verified at all twelve
+ * call sites on this branch, not assumed. The stronger-sounding claim ("they
+ * cannot be") would be false and is not made: a caller inside an interactive
+ * transaction would simply take a SECOND pooled connection, because the funnel
+ * opens its own `$transaction` on both paths. That was already a pool hazard
+ * before this change — it is what F7 (#1355) restructured this function around —
+ * so containment adds a provider call where provider calls already legitimately
+ * happen rather than introducing a new exposure. #3035 recorded the sharpest
+ * instance: the group-settlement path holds `pg_advisory_xact_lock(1)` while it
+ * emails, and a second Prisma connection taken in there is a pool-timeout risk
+ * because that lock is exclusive and every other invoice run queues behind it
+ * holding one of its own. That path resolves its contact BEFORE the fence opens
+ * (its `initialFence` transaction has committed by then), so nothing here runs
+ * inside it.
  *
  * ## Failure is a refusal, never a shrug
  *
