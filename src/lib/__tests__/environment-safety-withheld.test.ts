@@ -48,21 +48,57 @@ describe("readWithheldApplicationEmail", () => {
       )
       .mockResolvedValueOnce(
         aggregateResult(5, new Date("2026-06-25T02:00:00.000Z")),
-      );
+      )
+      // The capture-in-production subset (#3035 review): part of the `blocked`
+      // five above, counted separately so the LIVE-site surfaces can act on it.
+      .mockResolvedValueOnce(aggregateResult(2, null));
 
     expect(await readWithheldApplicationEmail()).toEqual({
       available: true,
       count: 17,
       mostRecentAt: "2026-06-25T02:00:00.000Z",
+      captureInProduction: 2,
     });
 
-    const [suppressed, blocked] = mocks.aggregate.mock.calls.map(
+    const [suppressed, blocked, capture] = mocks.aggregate.mock.calls.map(
       (call) => call[0],
     );
     expect(suppressed.where).toEqual({ status: "SKIPPED_NON_PRODUCTION" });
     expect(blocked.where).toEqual({
       status: "FAILED",
       deliveryBlockReason: { not: null },
+    });
+    // A SUBSET of `blocked`, so it must not be added into `count` — the total
+    // above is 12 + 5, not 12 + 5 + 2.
+    expect(capture.where).toEqual({
+      status: "FAILED",
+      deliveryBlockReason: "CAPTURE_TRANSPORT_IN_PRODUCTION",
+    });
+  });
+
+  /*
+    #3035 review: THE ONE WITHHOLD A PRODUCTION INSTALLATION CAN HAVE.
+
+    Both operator surfaces rendered the withheld line only under NON_PRODUCTION
+    and UNKNOWN, on the premise that a live site holds nothing back. A live club
+    that declares USE_LOCAL_CAPTURE=true is in a total mail outage and the premise
+    is false — so this number exists to let those surfaces say so there, and it is
+    kept apart from the total because SKIPPED_NON_PRODUCTION rows are terminal and
+    would otherwise nag a repaired live site for ever.
+  */
+  it("breaks out the capture-in-production rows without double-counting them", async () => {
+    mocks.aggregate
+      .mockResolvedValueOnce(aggregateResult(0, null))
+      .mockResolvedValueOnce(
+        aggregateResult(9, new Date("2026-06-30T03:00:00.000Z")),
+      )
+      .mockResolvedValueOnce(aggregateResult(9, null));
+
+    expect(await readWithheldApplicationEmail()).toEqual({
+      available: true,
+      count: 9,
+      mostRecentAt: "2026-06-30T03:00:00.000Z",
+      captureInProduction: 9,
     });
   });
 
@@ -73,7 +109,8 @@ describe("readWithheldApplicationEmail", () => {
       )
       .mockResolvedValueOnce(
         aggregateResult(1, new Date("2026-06-01T00:00:00.000Z")),
-      );
+      )
+      .mockResolvedValueOnce(aggregateResult(0, null));
 
     expect(await readWithheldApplicationEmail()).toMatchObject({
       mostRecentAt: "2026-06-28T00:00:00.000Z",
@@ -87,6 +124,7 @@ describe("readWithheldApplicationEmail", () => {
       available: true,
       count: 0,
       mostRecentAt: null,
+      captureInProduction: 0,
     });
   });
 

@@ -446,6 +446,70 @@ describe("createXeroInvoiceForGroupSettlement cancellation fence", () => {
     });
   });
 
+  /*
+    #3035 review: TWO WITHHOLD REASONS MUST NEVER BOTH CLAIM THE SAME EVENT.
+
+    The environment withhold used to be computed from the policy alone, outside
+    the advisory-locked transaction, and written into the payload
+    unconditionally — while the transaction checks the organiser's own "No emails"
+    switch FIRST. So on a copy whose organiser has that switch on, the payload
+    asserted `invoiceEmailWithheldByNoEmails: true` AND
+    `invoiceEmailWithheldForEnvironment: true`, only one of which happened.
+
+    Every existing case in the describe above sets `noEmails: false`, which is why
+    this went unnoticed: the two conditions were never true together. The
+    booking-invoice path already got this right by leaving its policy null once
+    something else had withheld.
+  */
+  it("attributes ONE reason when a copy's organiser also has No emails on", async () => {
+    declareEnvironmentRole("non-production");
+    mocks.settlementFindUnique
+      .mockResolvedValueOnce(settlement(GroupBookingStatus.OPEN))
+      .mockResolvedValueOnce({
+        groupBooking: {
+          status: GroupBookingStatus.OPEN,
+          organiserBookingId: "organiser-booking-1",
+          organiserBooking: {
+            noEmails: false,
+            member: { email: "organiser@example.test" },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        groupBooking: {
+          status: GroupBookingStatus.OPEN,
+          organiserBookingId: "organiser-booking-1",
+          organiserBooking: {
+            noEmails: true,
+            member: { email: "organiser@example.test" },
+          },
+        },
+      });
+
+    await expect(
+      createXeroInvoiceForGroupSettlement("settle-1", {
+        syncOperationId: "op-1",
+      })
+    ).resolves.toBe("inv-1");
+
+    expect(mocks.accountingApi.emailInvoice).not.toHaveBeenCalled();
+    const completion = mocks.completeSync.mock.calls.at(-1)?.[1];
+    // The club's own decision is what happened, and it is the only thing claimed.
+    expect(completion.responsePayload.invoiceEmailWithheldByNoEmails).toBe(true);
+    expect(
+      completion.responsePayload.invoiceEmailWithheldForEnvironment
+    ).toBe(false);
+    // And the withheld-email audit row still attributes it to the organiser's
+    // booking, because an administrator really did set that switch.
+    expect(vi.mocked(prisma.emailLog.create)).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        bookingId: "organiser-booking-1",
+        status: "SKIPPED_NO_EMAILS",
+      }),
+      select: { id: true },
+    });
+  });
+
   it("resolves each child's item-code season from that child's own lodge", async () => {
     // Lodges may run different season windows, so an unscoped season read can
     // match another lodge's row — and Season.type picks the hut-fee item code,

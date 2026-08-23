@@ -1108,6 +1108,41 @@ function buildEnvironmentRoleCheck(
 
   // 3. Confirmed production.
   if (resolution.role === "PRODUCTION") {
+    /*
+      THE ONE WAY A LIVE SITE HOLDS MAIL BACK, and it used to be invisible here
+      (#3035 review). A live club that declares `USE_LOCAL_CAPTURE=true` is in a
+      total mail outage: every message lands `FAILED` carrying
+      `CAPTURE_TRANSPORT_IN_PRODUCTION`, and this step reported "complete —
+      emails go to real members" with no withheld line at all, because the line
+      was rendered only under NON_PRODUCTION and UNKNOWN.
+
+      Keyed on the capture-in-production count specifically, not on the total:
+      `SKIPPED_NON_PRODUCTION` rows are terminal, so an installation that spent an
+      afternoon as a forced copy carries them for ever and a permanent banner on a
+      healthy live site is a line operators learn to scroll past. This number can
+      only be non-zero while the transport flags are wrong.
+    */
+    const captureInProduction =
+      db.withheldEmail?.available === true
+        ? db.withheldEmail.captureInProduction
+        : 0;
+    if (captureInProduction > 0) {
+      return applyProgress(
+        {
+          ...base,
+          status: "warning",
+          message:
+            "This installation is declared PRODUCTION — the club's live site — but it ALSO declares a local capture mailbox, so it is sending no member email at all.",
+          details: [
+            `Held back email: ${captureInProduction} message(s) were refused because this deployment says it is the club's live site AND that its mail goes to a capture mailbox that forwards nothing. Those cannot both be true, so nothing was sent rather than every message being silently swallowed.`,
+            "Set USE_AWS_SES or USE_SMTP_RELAY and remove USE_LOCAL_CAPTURE (or set it to false). Messages whose contents are stored then go out by themselves; ones carrying a sign-in link, a door code or a payment link keep no stored copy and are listed for a manual re-send under Admin -> Email.",
+            ...sources,
+            ENVIRONMENT_ROLE_VERSUS_RUNTIME_ROLE_DETAIL,
+          ],
+        },
+        progress,
+      );
+    }
     return applyProgress(
       {
         ...base,

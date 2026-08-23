@@ -283,7 +283,21 @@ export function refuseAmbiguousImplicitSesDefault(
     modeSource: config.modeSource,
     modeLabel: "Not configured",
     issues: [
-      "Neither USE_AWS_SES nor USE_SMTP_RELAY is set. This installation is not confirmed to be the club's live site, so it will not fall back to live AWS SES. Set exactly one of USE_AWS_SES or USE_SMTP_RELAY (a copy usually wants USE_SMTP_RELAY pointed at a local capture mailbox), or declare APP_ENVIRONMENT_ROLE=production if this really is the club's live installation.",
+      /*
+        THE ADVICE HERE HAS TO BE ADVICE THAT WORKS (#3035 review). The first
+        version said "Set exactly one of USE_AWS_SES or USE_SMTP_RELAY (a copy
+        usually wants USE_SMTP_RELAY pointed at a local capture mailbox)". Follow
+        that on a copy and the transport resolves `live-provider`, so the delivery
+        policy suppresses every send — the operator has done exactly as told and
+        nothing goes anywhere. It also named two of the three flags, and
+        contradicted `describeDeliveryDecision` twenty lines away, which tells the
+        same operator to declare `USE_LOCAL_CAPTURE`.
+
+        This string matters more than most: on the VERIFY path it is the only
+        thing an operator sees — the health check and the setup wizard's SMTP test
+        both surface it verbatim.
+      */
+      "No email provider flag is set (USE_AWS_SES, USE_SMTP_RELAY, USE_LOCAL_CAPTURE). This installation is not confirmed to be the club's live site, so it will not fall back to live AWS SES. Set exactly ONE of them: USE_AWS_SES or USE_SMTP_RELAY for a site that really sends, or USE_LOCAL_CAPTURE=true for a copy relaying into a capture mailbox that forwards mail nowhere — a copy pointed at an ordinary SMTP relay still counts as a live provider and has every send held back. If this IS the club's live installation, declare APP_ENVIRONMENT_ROLE=production instead.",
       ...config.issues,
     ],
     warnings: config.warnings,

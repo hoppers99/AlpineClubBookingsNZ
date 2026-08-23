@@ -133,8 +133,15 @@ suddenly post weeks of stale confirmations to real members.
 
 Both **not configured** and **non-production** show how much application email
 this installation has held back, and when the most recent one was — on
-Admin → Environment and on the checklist step. It is not shown on the live site,
-where nothing is held back for this reason.
+Admin → Environment and on the checklist step.
+
+**The live site shows it too, in one case.** If a deployment says it is the club's
+live site *and* points its mail at a capture mailbox, those cannot both be true, so
+every message is refused rather than silently swallowed — a total mail outage. That
+count appears on the live site as well, with its own wording and its own repair,
+because the answer there is not "your declaration is wrong" but "your two mail
+settings contradict each other". Otherwise nothing is held back on the live site
+and the line is not shown.
 
 **That number is the one thing that tells a live club which has stopped sending
 apart from an ordinary idle copy**, because no property of the data can: a copy is

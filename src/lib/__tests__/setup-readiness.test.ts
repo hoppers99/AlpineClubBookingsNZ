@@ -922,11 +922,68 @@ describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
     expect(details).toContain("pending migrations");
   });
 
+  /*
+    #3035 review: A LIVE SITE IN CAPTURE MODE IS A TOTAL MAIL OUTAGE, AND IT WAS
+    INVISIBLE HERE.
+
+    This step reported "complete — emails go to real members" for any PRODUCTION
+    installation, and the withheld line was rendered only under NON_PRODUCTION and
+    UNKNOWN. But a live club that declares USE_LOCAL_CAPTURE=true has every
+    message refused with CAPTURE_TRANSPORT_IN_PRODUCTION, so the count climbs
+    while the checklist says all is well.
+  */
+  it("warns a PRODUCTION installation that is refusing every message as a capture", () => {
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("production"),
+      withheldEmail: {
+        available: true,
+        count: 31,
+        mostRecentAt: "2026-08-23T09:15:00.000Z",
+        captureInProduction: 31,
+      },
+    });
+
+    expect(check.status).toBe("warning");
+    expect(check.message).toContain("no member email at all");
+    const details = check.details.join(" ");
+    expect(details).toContain("31 message(s)");
+    // The repair is the TRANSPORT flags, not the declaration — which is correct
+    // here and must not be what the operator is sent to change.
+    expect(details).toContain("USE_LOCAL_CAPTURE");
+    expect(details).toContain("USE_AWS_SES");
+    // And it does not repeat the wording that blames the declaration.
+    expect(details).not.toContain("wrongly declared a copy");
+  });
+
+  it("leaves a healthy PRODUCTION installation complete, with no withheld line", () => {
+    /*
+      The discriminating half. Terminal SKIPPED_NON_PRODUCTION rows survive an
+      afternoon spent as a forced copy, so a live site can carry a non-zero TOTAL
+      for ever — and a permanent banner there is a line an operator learns to
+      scroll past. Only the capture count, which cannot be non-zero once the flags
+      are right, raises the warning.
+    */
+    const check = environmentRoleCheck({
+      ...completeDatabase,
+      environmentRole: environmentRoleResolution("production"),
+      withheldEmail: {
+        available: true,
+        count: 31,
+        mostRecentAt: "2026-08-23T09:15:00.000Z",
+        captureInProduction: 0,
+      },
+    });
+
+    expect(check.status).toBe("complete");
+    expect(check.details.join(" ")).not.toContain("Held back email");
+  });
+
   it("says NONE when the count is available and zero", () => {
     const check = environmentRoleCheck({
       ...completeDatabase,
       environmentRole: environmentRoleResolution("non-production"),
-      withheldEmail: { available: true, count: 0, mostRecentAt: null },
+      withheldEmail: { available: true, count: 0, mostRecentAt: null, captureInProduction: 0 },
     });
 
     const details = check.details.join(" ");
@@ -942,6 +999,7 @@ describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
         available: true,
         count: 47,
         mostRecentAt: "2026-08-23T09:15:00.000Z",
+        captureInProduction: 0,
       },
     });
 
@@ -973,6 +1031,7 @@ describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
         available: true,
         count: 312,
         mostRecentAt: "2026-08-23T09:15:00.000Z",
+        captureInProduction: 0,
       },
     });
 
@@ -1014,7 +1073,7 @@ describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
     { label: "unavailable", withheldEmail: undefined },
     {
       label: "zero",
-      withheldEmail: { available: true as const, count: 0, mostRecentAt: null },
+      withheldEmail: { available: true as const, count: 0, mostRecentAt: null, captureInProduction: 0 },
     },
     {
       label: "counted",
@@ -1022,6 +1081,7 @@ describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
         available: true as const,
         count: 312,
         mostRecentAt: "2026-08-23T09:15:00.000Z",
+        captureInProduction: 0,
       },
     },
   ];
@@ -1072,7 +1132,7 @@ describe("setup-readiness environment role (ENV-SAFETY 1, #3034)", () => {
     const check = environmentRoleCheck({
       ...completeDatabase,
       environmentRole: environmentRoleResolution("production"),
-      withheldEmail: { available: true, count: 47, mostRecentAt: null },
+      withheldEmail: { available: true, count: 47, mostRecentAt: null, captureInProduction: 0 },
     });
 
     expect(check.details.join(" ")).not.toContain("Held back email");

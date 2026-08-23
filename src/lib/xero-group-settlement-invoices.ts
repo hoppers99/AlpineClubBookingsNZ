@@ -497,9 +497,24 @@ export async function createXeroInvoiceForGroupSettlement(
     // is a pool hazard while every other writer is queued behind that lock
     // holding one of its own. See `xero-invoice-email.ts` for the whole rule.
     const invoiceEmailPolicy = await resolveXeroInvoiceEmailPolicy();
-    const invoiceEmailWithheldForEnvironment =
-      invoiceEmailPolicy.kind === "withhold" &&
-      invoiceEmailPolicy.suppressedForNonProduction;
+    /*
+      RECORDED FROM WHAT THE GATE ACTUALLY DID, not from the policy alone (#3035
+      review). This used to be derived here, outside the transaction, and written
+      into the payload unconditionally — while the transaction below checks the
+      organiser's own "No emails" switch FIRST. So on a copy whose organiser has
+      that switch on, the payload asserted `invoiceEmailWithheldByNoEmails: true`
+      AND `invoiceEmailWithheldForEnvironment: true`, only one of which happened.
+
+      That is not cosmetic: the whole point of this issue is that a safety
+      suppression, a business withhold and a provider failure stay
+      DISTINGUISHABLE, and two of them claiming the same event is the conflation
+      it forbids. The booking-invoice path already gets this right by leaving its
+      policy null when something else withheld first; this is the same rule,
+      expressed the only way it can be here — the policy has to be resolved
+      outside the advisory-locked transaction, so the ANSWER is taken from the
+      gate's own return value instead.
+    */
+    let invoiceEmailWithheldForEnvironment = false;
     try {
       const emailGate = await prisma.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
@@ -598,6 +613,14 @@ export async function createXeroInvoiceForGroupSettlement(
         };
       });
       invoiceEmailWithheld = emailGate.withheld;
+      // Mutually exclusive by construction: the transaction returns
+      // `environmentWithheld: false` on the no-emails branch. Narrowed to the
+      // confirmed-copy case, matching the booking path — an UNKNOWN role is
+      // recorded as an ERROR (below), not as a suppression.
+      invoiceEmailWithheldForEnvironment =
+        emailGate.environmentWithheld &&
+        invoiceEmailPolicy.kind === "withhold" &&
+        invoiceEmailPolicy.suppressedForNonProduction;
       if (
         emailGate.withheld &&
         emailGate.organiserBookingId &&

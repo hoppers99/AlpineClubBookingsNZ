@@ -353,7 +353,24 @@ describe("email delivery boundary census (INV-CONFIG-004)", () => {
       const start = stripped.indexOf("function describeWithheldEmail");
       expect(start, `${file} should still define describeWithheldEmail`).toBeGreaterThan(-1);
       const rest = stripped.slice(start + 1);
-      const nextDeclaration = rest.search(/\n(?:export )?function /);
+      /*
+        THE END BOUND, WIDENED AND THEN TIGHTENED (#3035 review). It used to look
+        only for `\n(?:export )?function `, which over-reached in
+        `setup-readiness.ts` past the end of this function and swallowed the next
+        top-level CONST — so the region judged wording that is not
+        describeWithheldEmail's. It also could not see a `const` arrow or an
+        `export default function` declaration at all, which is how a rewritten
+        renderer would silently leave this guard reading the whole rest of the
+        file.
+
+        Now: the next thing at column 0 that starts ANY top-level declaration.
+        The vacuity assertion below still requires the region to hold the wording
+        being judged, so an over-tight bound fails loudly rather than passing on an
+        empty slice.
+      */
+      const nextDeclaration = rest.search(
+        /\n(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|const|let|var|class|type|interface|enum)\s/,
+      );
       const body = nextDeclaration === -1 ? rest : rest.slice(0, nextDeclaration);
       // The assertion that stops this guard going vacuous again: the extracted
       // region must actually contain the sentences being judged.

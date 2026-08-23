@@ -78,6 +78,28 @@ export type WithheldApplicationEmail =
       count: number;
       /** ISO instant of the most recent, or `null` when the count is 0. */
       mostRecentAt: string | null;
+      /**
+       * How many of those are the FIFTH outcome — the club's LIVE site declaring
+       * a capture mailbox — broken out on its own.
+       *
+       * WHY IT NEEDS ITS OWN NUMBER (#3035 review). Both operator surfaces
+       * rendered the withheld line only under NON_PRODUCTION and UNKNOWN, on the
+       * premise that a live site holds nothing back. That premise is false for
+       * exactly this outcome: a live club that declares `USE_LOCAL_CAPTURE=true`
+       * is in a total mail outage, every message lands as `FAILED` carrying
+       * `CAPTURE_TRANSPORT_IN_PRODUCTION`, the count climbs — and Admin →
+       * Environment showed PRODUCTION with no withheld line at all.
+       *
+       * A SEPARATE COUNT RATHER THAN JUST SHOWING THE TOTAL, because the total is
+       * not actionable on a live site. `SKIPPED_NON_PRODUCTION` rows are terminal
+       * by design, so an installation that spent an afternoon as a forced copy
+       * during a restore rehearsal carries those rows for ever — and a permanent
+       * "42 messages held back" banner on a healthy live site is the kind of
+       * line an operator learns to scroll past. This number can only be non-zero
+       * while the transport flags are wrong, so it is the one that means *act
+       * now*.
+       */
+      captureInProduction: number;
     };
 
 /** The answer when the count cannot be read at all. */
@@ -125,7 +147,7 @@ export const WITHHELD_APPLICATION_EMAIL_NOT_RECORDED: WithheldApplicationEmail =
  */
 export async function readWithheldApplicationEmail(): Promise<WithheldApplicationEmail> {
   try {
-    const [suppressed, blocked] = await Promise.all([
+    const [suppressed, blocked, captureInProduction] = await Promise.all([
       prisma.emailLog.aggregate({
         where: { status: "SKIPPED_NON_PRODUCTION" },
         _count: { _all: true },
@@ -135,6 +157,17 @@ export async function readWithheldApplicationEmail(): Promise<WithheldApplicatio
         where: { status: "FAILED", deliveryBlockReason: { not: null } },
         _count: { _all: true },
         _max: { createdAt: true },
+      }),
+      // A SUBSET of `blocked`, not a third population: it is the same
+      // `FAILED` + non-null-reason scan narrowed to the one reason that can be
+      // true on the club's LIVE site. Counted separately so the operator surfaces
+      // can act on it there — see `captureInProduction` above.
+      prisma.emailLog.aggregate({
+        where: {
+          status: "FAILED",
+          deliveryBlockReason: "CAPTURE_TRANSPORT_IN_PRODUCTION",
+        },
+        _count: { _all: true },
       }),
     ]);
     const instants = [
@@ -149,6 +182,7 @@ export async function readWithheldApplicationEmail(): Promise<WithheldApplicatio
       available: true,
       count: suppressed._count._all + blocked._count._all,
       mostRecentAt: mostRecent ? mostRecent.toISOString() : null,
+      captureInProduction: captureInProduction._count._all,
     };
   } catch (error) {
     logger.error(

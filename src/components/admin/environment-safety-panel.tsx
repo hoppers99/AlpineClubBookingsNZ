@@ -69,7 +69,17 @@ type DeclarationKind = "production" | "non-production" | "absent" | "invalid";
  */
 type WithheldApplicationEmail =
   | { available: false }
-  | { available: true; count: number; mostRecentAt: string | null };
+  | {
+      available: true;
+      count: number;
+      mostRecentAt: string | null;
+      /**
+       * The subset that is the club's LIVE site declaring a capture mailbox —
+       * the one withhold reason a PRODUCTION installation can have, and the
+       * reason this block renders there at all (#3035).
+       */
+      captureInProduction: number;
+    };
 
 type EnvironmentSafetyState = {
   role: EnvironmentRole;
@@ -159,6 +169,23 @@ function describeWithheldEmail(state: EnvironmentSafetyState): {
       headline: "None held back",
       detail:
         "Nothing has been held back on this installation for environment-safety reasons, which is what an installation nobody is using looks like.",
+    };
+  }
+  /*
+    THE LIVE-SITE-IN-CAPTURE-MODE CASE GETS ITS OWN SENTENCE, because the generic
+    one is wrong here in the expensive direction: "wrongly declared a copy, or
+    left undeclared" would send this operator to check a declaration that is
+    perfectly correct, while the actual fault is two lines further down the same
+    env file. Named separately rather than folded in, since it is the one state a
+    PRODUCTION installation can be in and the repair is different.
+  */
+  if (withheld.captureInProduction > 0) {
+    const recently = withheld.mostRecentAt
+      ? ` Most recently ${formatChangedAt(withheld.mostRecentAt)}.`
+      : "";
+    return {
+      headline: `${withheld.captureInProduction} message${withheld.captureInProduction === 1 ? "" : "s"} refused: this installation says it is BOTH the live site and a mail capture`,
+      detail: `Those cannot both be true — a live site in capture mode would accept every message and deliver none of them — so nothing was sent rather than being silently swallowed.${recently} Set USE_AWS_SES or USE_SMTP_RELAY and remove USE_LOCAL_CAPTURE (or set it to false). Messages whose contents are stored then go out by themselves; ones carrying a sign-in link, a door code or a payment link keep no stored copy and are listed for a manual re-send.`,
     };
   }
   return {
@@ -304,11 +331,19 @@ export function EnvironmentSafetyPanel() {
         the scenario this whole issue exists for. Withholding the count from that
         operator is the worst place to withhold it.
 
-        Still not shown for PRODUCTION, where nothing is held back for this reason
-        and the line would be noise beside the most consequential setting in the
-        app.
+        AND FOR PRODUCTION TOO, but only when the fifth outcome has actually
+        happened — a live site that ALSO declares a capture mailbox is in a total
+        mail outage, and this panel used to show PRODUCTION with no withheld line
+        while every message was being refused (#3035 review). Keyed on the
+        capture-in-production count rather than the total, because
+        SKIPPED_NON_PRODUCTION rows are terminal: an installation that spent an
+        afternoon as a forced copy carries them for ever, and a permanent banner
+        on a healthy live site is a line an operator learns to scroll past.
       */}
-      {state.role === "NON_PRODUCTION" || state.role === "UNKNOWN" ? (
+      {state.role === "NON_PRODUCTION" ||
+      state.role === "UNKNOWN" ||
+      (state.withheldEmail.available &&
+        state.withheldEmail.captureInProduction > 0) ? (
         <div
           className="space-y-1 rounded-md border bg-card p-6"
           data-testid="environment-withheld-email"

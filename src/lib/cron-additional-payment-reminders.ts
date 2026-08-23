@@ -11,6 +11,10 @@ import { readBookingNoEmails } from "@/lib/booking-email-suppression";
 import { getTodayDateOnly } from "@/lib/date-only";
 import { sendAdditionalPaymentReminderEmail } from "@/lib/email";
 import { getActiveEmailSuppression } from "@/lib/email-suppression";
+import {
+  describeDeliveryDecision,
+  resolveDeliveryPolicy,
+} from "@/lib/environment-delivery-policy";
 import type { GeneralCronJobName } from "@/lib/general-cron-runner";
 import logger from "@/lib/logger";
 import { isPlaceholderContactEmail } from "@/lib/placeholder-contact-email";
@@ -92,6 +96,40 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
   // This pass IS the cutover (or we could not read it). Either way, emailing
   // now would be the bulk mailing the guard exists to prevent.
   if (!chaseStartsAt) {
+    return result;
+  }
+
+  /*
+    NOTHING IS CLAIMED ON AN INSTALLATION THAT CANNOT SEND (#3035 review), and
+    this is about the DETECTOR rather than about the mail.
+
+    The stamp-restoring path below is correct, and it is also why this early
+    return is needed. Without it a copy re-claims every eligible booking on every
+    run, has each message suppressed, restores each stamp, and starts again three
+    hours later — writing N NEW counted `SKIPPED_NON_PRODUCTION` rows per pass,
+    with `mostRecentAt` always minutes old. That is exactly the signature owner
+    decision 1 asks the withheld-email count to MEAN: "a live club is being held
+    back, steadily and right now". An ordinary idle staging box would produce it
+    forever, and a detector that fires on every legitimate copy is a detector
+    nobody reads.
+
+    The pre-existing justification for restoring a stamp is that the checks above
+    the claim have already skipped an unreachable recipient, so reaching the
+    restore at all means the state changed under this very pass. That is not true
+    of an environment withhold: it is a standing fact about the installation, not
+    a race. So it is answered where standing facts belong — before any work.
+
+    The email retry cron got the same early return for the same reason. Note the
+    asymmetry with the withhold-handling below, which stays: this check reads the
+    policy ONCE per run, and an administrator can switch the safer override on
+    mid-pass, so the per-message handling is still the thing that catches it.
+  */
+  const delivery = await resolveDeliveryPolicy();
+  if (delivery.kind !== "allow") {
+    logger.info(
+      { job: "additionalPaymentReminders", outcome: delivery.kind },
+      `Skipped the additional-payment reminder run: ${describeDeliveryDecision(delivery)}`,
+    );
     return result;
   }
 
