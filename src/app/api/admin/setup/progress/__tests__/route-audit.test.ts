@@ -22,6 +22,17 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
+// C2 (#217) made the route recompute the stale set on every write. That
+// computation has its own tests (`setup-progress-staleness.test.ts`) and its own
+// route-level tests (`route-stale-state.test.ts`); stubbing it to "nothing is
+// stale" here keeps THIS file about the five transition event types, and pins
+// that an ordinary transition still writes exactly one audit row.
+const mockRecomputeSetupStaleStepIds = vi.fn();
+vi.mock("@/lib/setup-progress-staleness", () => ({
+  recomputeSetupStaleStepIds: (...args: unknown[]) =>
+    mockRecomputeSetupStaleStepIds(...args),
+}));
+
 import { PATCH } from "@/app/api/admin/setup/progress/route";
 
 /**
@@ -55,10 +66,12 @@ beforeEach(() => {
     ok: true as const,
     session: { user: { id: "admin1" } },
   });
+  mockRecomputeSetupStaleStepIds.mockResolvedValue([]);
   mockFindUnique.mockResolvedValue({
     id: "default",
     completedStepIds: [],
     skippedStepIds: [],
+    staleStepIds: [],
     completedAt: null,
     completedByMemberId: null,
   });
@@ -66,6 +79,7 @@ beforeEach(() => {
     id: "default",
     completedStepIds: [],
     skippedStepIds: [],
+    staleStepIds: [],
     completedAt: null,
     completedByMemberId: null,
     ...args.update,
