@@ -70,11 +70,36 @@ function StateIcon({ state }: { state: SetupWizardStepState }) {
  */
 export const SETUP_WIZARD_STATE_LABEL: Record<SetupWizardStepState, string> = {
   complete: "Done",
-  current: "You are here",
+  current: "Up next",
   stale: "Needs another look",
   deferred: "Skipped for now",
   "not-started": "Not started",
 };
+
+/**
+ * The label a step carries in the rail and in the step frame's badge — which is
+ * NOT always its own state's label.
+ *
+ * `current` is the traversal's RESUME POINT, and it wins over `stale` and
+ * `deferred` when a step is both (`SetupWizardStepState` says so, and the two
+ * flags are carried on the step precisely so a reader can recover what the
+ * precedence hid). That is right for the state machine and lossy for a rail:
+ * deferring the step you are on leaves it CURRENT, because `currentStepId` is
+ * the first step that is not COMPLETE and deferring completes nothing. Without
+ * this the row would go on reading like an ordinary next step while the
+ * deferral — the whole point of pressing the button — vanished from the rail.
+ *
+ * It also says "up next" rather than "you are here": the row the operator is
+ * LOOKING at is the selected one, marked separately by `aria-current="step"` and
+ * the highlight, and the two are different rows the moment somebody walks past a
+ * step they deferred.
+ */
+export function setupWizardStepLabel(step: SetupWizardRailStep): string {
+  if (step.state !== "current") return SETUP_WIZARD_STATE_LABEL[step.state];
+  if (step.isStale) return "Up next — needs another look";
+  if (step.isDeferred) return "Up next — skipped for now";
+  return SETUP_WIZARD_STATE_LABEL.current;
+}
 
 function stateClasses(state: SetupWizardStepState, selected: boolean): string {
   if (selected) return "border-brand-gold bg-brand-gold/10 text-foreground";
@@ -102,7 +127,7 @@ function RailRow({
   onSelect: (id: SetupStepId) => void;
   rowRef?: (node: HTMLElement | null) => void;
 }) {
-  const label = SETUP_WIZARD_STATE_LABEL[step.state];
+  const label = setupWizardStepLabel(step);
   const body = (
     <>
       <StateIcon state={step.state} />

@@ -17,7 +17,7 @@ import {
 } from "@/components/admin/view-only-action";
 import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
 import type { SetupWizardStepDetail } from "@/lib/setup-wizard-view";
-import { SETUP_WIZARD_STATE_LABEL } from "./setup-wizard-rail";
+import { setupWizardStepLabel } from "./setup-wizard-rail";
 
 /**
  * The step frame (epic #213, child C5) — the right-hand pane.
@@ -112,7 +112,7 @@ export function SetupWizardStepFrame({
           </div>
           <div className="flex flex-wrap gap-2">
             <Badge variant={stateBadgeVariant(step)} className="w-fit">
-              {SETUP_WIZARD_STATE_LABEL[step.state]}
+              {setupWizardStepLabel(step)}
             </Badge>
             {step.required ? <Badge variant="outline">Required</Badge> : null}
           </div>

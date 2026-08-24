@@ -95,9 +95,41 @@ describe("SetupWizardRail", () => {
     // …and says so in words as well as in colour, because colour alone is not a
     // state an operator can read out.
     expect(screen.getByText("Done")).toBeTruthy();
-    expect(screen.getByText("You are here")).toBeTruthy();
+    expect(screen.getByText("Up next")).toBeTruthy();
     expect(screen.getByText("Needs another look")).toBeTruthy();
     expect(screen.getByText("Skipped for now")).toBeTruthy();
+  });
+
+  // The traversal's `current` wins over `deferred` and `stale`, and
+  // `currentStepId` is the first step that is not COMPLETE — so the step you
+  // just deferred STAYS current. Without the compound label the rail would go
+  // on reading like an ordinary next step and the deferral would vanish from
+  // it. Mutation-verified: labelling rows straight off
+  // SETUP_WIZARD_STATE_LABEL fails this test.
+  it("still says a current step was deferred, or has gone stale", () => {
+    cleanup();
+    render(
+      <SetupWizardRail
+        groups={[
+          {
+            id: "foundation",
+            title: "Foundation",
+            description: "",
+            steps: [
+              step("skipped-here", { state: "current", isDeferred: true }),
+              step("stale-here", { state: "current", isStale: true }),
+            ],
+          },
+        ]}
+        percentComplete={0}
+        currentStepId={"skipped-here" as SetupStepId}
+        selectedId={"skipped-here" as SetupStepId}
+        launchUnlocked={false}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Up next — skipped for now")).toBeTruthy();
+    expect(screen.getByText("Up next — needs another look")).toBeTruthy();
   });
 
   it("shows the traversal's percentage and nothing it computed itself", () => {
