@@ -176,6 +176,17 @@ export async function retryFailedEmails(): Promise<{
     compile-time guarantee that no sender reaches a provider without asking. See
     the loop below.
   */
+
+  /*
+    AND ONCE HERE AS WELL, PURELY TO FAIL FAST. An unusable mail configuration
+    should stop this job before it selects fifty rows, not after — which is what
+    the run-level call did when it was the ONLY call, and an existing test pins
+    it. The transporter it returns is deliberately discarded: the loop obtains its
+    own per message, because that is where the guarantee lives. This call is a
+    configuration check, not the send path's licence.
+  */
+  await getEmailTransporter(delivery.clearance);
+
   // Backoff: don't retry emails until at least 15 minutes after the last attempt
   const backoffThreshold = new Date(Date.now() - 15 * 60 * 1000);
 

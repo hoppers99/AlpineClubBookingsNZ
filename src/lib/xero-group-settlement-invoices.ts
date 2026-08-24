@@ -43,6 +43,7 @@ import {
 import {
   resolveXeroInvoiceEmailPolicy,
   sendXeroInvoiceEmail,
+  type XeroInvoiceEmailPolicy,
 } from "@/lib/xero-invoice-email";
 import {
   getHutFeeItemCodeMap,
@@ -546,6 +547,7 @@ export async function createXeroInvoiceForGroupSettlement(
             responseBody: null,
             withheld: false,
             environmentWithheld: false,
+            environmentPolicy: null as XeroInvoiceEmailPolicy | null,
             organiserBookingId: null as string | null,
             organiserEmail: null as string | null,
           };
@@ -573,6 +575,7 @@ export async function createXeroInvoiceForGroupSettlement(
             responseBody: null,
             withheld: true,
             environmentWithheld: false,
+            environmentPolicy: null as XeroInvoiceEmailPolicy | null,
             organiserBookingId: fresh.groupBooking
               .organiserBookingId as string | null,
             organiserEmail: fresh.groupBooking.organiserBooking.member
@@ -607,11 +610,23 @@ export async function createXeroInvoiceForGroupSettlement(
         // recorded as the club's decision on a copy. No withheld-email audit row
         // for this branch — that row asserts an administrator set the switch.
         if (freshPolicy.kind !== "allow") {
+          /*
+            THE POLICY THAT ACTUALLY DECIDED IS CARRIED OUT OF THE GATE, and it
+            has to be (#3071). The recording below used to read the OUTER
+            `invoiceEmailPolicy`, which was correct while that was the only
+            answer there was. Once the re-read can withhold on its own, keying the
+            record on the outer answer makes a re-read withhold invisible: the
+            sync payload would claim nothing was withheld, and nothing would be
+            logged at all. That is the same "record what the GATE did, never what
+            the policy said" rule the #3035 review established, applied to a
+            second decision point.
+          */
           return {
             cancelled: false,
             responseBody: null,
             withheld: false,
             environmentWithheld: true,
+            environmentPolicy: freshPolicy as XeroInvoiceEmailPolicy | null,
             organiserBookingId: null as string | null,
             organiserEmail: null as string | null,
           };
@@ -630,6 +645,7 @@ export async function createXeroInvoiceForGroupSettlement(
           responseBody: emailResponse.body,
           withheld: false,
           environmentWithheld: false,
+          environmentPolicy: null as XeroInvoiceEmailPolicy | null,
           organiserBookingId: null as string | null,
           organiserEmail: null as string | null,
         };
@@ -639,8 +655,8 @@ export async function createXeroInvoiceForGroupSettlement(
       // case exactly as the booking path is: an UNKNOWN role is an ERROR below.
       invoiceEmailWithheldForEnvironment =
         emailGate.environmentWithheld &&
-        invoiceEmailPolicy.kind === "withhold" &&
-        invoiceEmailPolicy.suppressedForNonProduction;
+        emailGate.environmentPolicy?.kind === "withhold" &&
+        emailGate.environmentPolicy.suppressedForNonProduction;
       if (
         emailGate.withheld &&
         emailGate.organiserBookingId &&
@@ -668,13 +684,17 @@ export async function createXeroInvoiceForGroupSettlement(
           'Skipped the Xero group settlement invoice email for an organiser booking with "No emails" turned on'
         );
       }
-      if (emailGate.environmentWithheld && invoiceEmailPolicy.kind === "withhold") {
+      if (
+        emailGate.environmentWithheld &&
+        emailGate.environmentPolicy?.kind === "withhold"
+      ) {
+        const withholding = emailGate.environmentPolicy;
         const context = { settlementId, invoiceId: createdInvoice.invoiceID };
-        if (invoiceEmailPolicy.error) {
-          invoiceEmailError = invoiceEmailPolicy.error;
-          logger.error(context, invoiceEmailPolicy.logMessage);
+        if (withholding.error) {
+          invoiceEmailError = withholding.error;
+          logger.error(context, withholding.logMessage);
         } else {
-          logger.info(context, invoiceEmailPolicy.logMessage);
+          logger.info(context, withholding.logMessage);
         }
       }
       if (emailGate.cancelled) {
