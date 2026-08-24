@@ -423,3 +423,41 @@ describe("the ambiguous-transport repair string names the host", () => {
     ).toBe("aws-ses");
   });
 });
+
+describe("a capture with no host is not reported as a public host", () => {
+  /**
+   * Found reviewing this change rather than by a failing test, and it is the
+   * same defect shape as the one being fixed: an absent `EMAIL_SERVER_HOST`
+   * would have been classified `public-address`, so the operator would have been
+   * told their host "names a host on the public internet" when it names nothing,
+   * and sent to the wrong repair.
+   */
+  it("reports the missing setting, and only that", () => {
+    const config = resolveEmailDeliveryConfigFromEnv({
+      EMAIL_FROM: "club@club.test",
+      USE_LOCAL_CAPTURE: "true",
+      EMAIL_SERVER_PORT: "1025",
+      EMAIL_SERVER_USER: "capture",
+      EMAIL_SERVER_PASSWORD: "capture-only",
+    });
+
+    expect(config.ok).toBe(false);
+    expect(config.captureHost).toBe("missing-host");
+    expect(config.transportOptions).toBeNull();
+    expect(config.issues).toContain("EMAIL_SERVER_HOST is missing");
+    // The public-host refusal must NOT also fire: it would claim something about
+    // a value that is not set.
+    expect(config.issues.join(" ")).not.toContain("public internet");
+  });
+
+  it("does not route it to the public-host refusal outcome", () => {
+    const config = resolveEmailDeliveryConfigFromEnv({
+      EMAIL_FROM: "club@club.test",
+      USE_LOCAL_CAPTURE: "true",
+    });
+    // An ordinary capture kind, exactly as before this check existed. Nothing can
+    // be sent regardless: the configuration is not ok and holds no transport.
+    expect(emailTransportKindOf(config)).toBe("local-capture");
+    expect(emailTransportKindOf(config)).not.toBe("capture-public-host");
+  });
+});

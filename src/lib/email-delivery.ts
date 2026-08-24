@@ -113,6 +113,13 @@ export type CaptureHostVerdict =
   | "private-address"
   | "operator-declared-public"
   | "public-address"
+  /**
+   * `USE_LOCAL_CAPTURE=true` with no `EMAIL_SERVER_HOST` at all. Its own state,
+   * because "there is nothing to check" and "what I checked is a public mail
+   * host" carry different repairs, and reporting the second for the first would
+   * be a false claim of exactly the kind this check was added to remove.
+   */
+  | "missing-host"
   | "not-applicable";
 
 /**
@@ -426,20 +433,28 @@ export function resolveEmailDeliveryConfigFromEnv(
         CAPTURE_ALLOW_PUBLIC_HOST_FLAG,
         issues,
       );
-      const verdict = classifyCaptureHost(host ?? "");
-      if (verdict === "private-address") {
+      if (!host) {
+        /*
+          NO HOST AT ALL IS NOT A PUBLIC HOST, and saying so would be the very
+          thing this change exists to stop. "EMAIL_SERVER_HOST is missing" is
+          already reported above, and it is the accurate repair; classifying this
+          as `public-address` would additionally tell the operator their host
+          "names a host on the public internet" when it names nothing, and would
+          send them to the wrong remedy. The kind therefore stays an ordinary
+          capture, exactly as it was before this check existed — the
+          configuration is already `ok: false` with no transport options, so
+          nothing can be sent either way.
+        */
+        captureHost = "missing-host";
+      } else if (classifyCaptureHost(host) === "private-address") {
         captureHost = "private-address";
       } else if (allowPublicHost === true) {
         captureHost = "operator-declared-public";
-      } else if (host) {
+      } else {
         captureHost = "public-address";
         issues.push(
           `USE_LOCAL_CAPTURE=true declares that EMAIL_SERVER_HOST is a capture mailbox that forwards mail nowhere, but it is set to a host on the public internet. Refused: a copy pointed at a real relay would email the club's real members while every log line said the message reached nobody. Point EMAIL_SERVER_HOST at the capture itself (a container name such as mailpit, localhost, or a private address), or set USE_SMTP_RELAY=true instead if this host really does deliver mail. If that host genuinely is a sink that forwards nothing and simply has a public name, declare ${CAPTURE_ALLOW_PUBLIC_HOST_FLAG}=true — only do that if you have checked it cannot deliver onward, because nothing else can check it for you.`,
         );
-      } else {
-        // No host at all is already reported above; do not claim a verdict the
-        // check could not reach.
-        captureHost = "public-address";
       }
     }
 
