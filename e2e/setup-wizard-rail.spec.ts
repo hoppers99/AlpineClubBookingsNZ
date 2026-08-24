@@ -242,8 +242,15 @@ test("marking a step done advances the journey and the percentage", async () => 
 test("a module toggle redraws the rail without a page reload", async () => {
   const wizard = await adminContext.newPage();
   await wizard.goto("/admin/setup/wizard");
-  const elsewhere = await adminContext.newPage();
-  await elsewhere.goto("/admin/modules");
+
+  // The client refetches on the window's real `focus` and `visibilitychange`
+  // listeners (setup-wizard-client.tsx). In HEADLESS CI there is no window
+  // manager, so `bringToFront()` delivers neither event and the refetch never
+  // fires — measured on this suite's first CI run. Dispatching `focus` as a
+  // DOM event exercises the identical listener → refetch → render path; only
+  // the OS-level trigger is simulated, because headless Chromium cannot
+  // produce one.
+  const refocus = () => wizard.evaluate(() => window.dispatchEvent(new Event("focus")));
 
   // xeroIntegration is off in the E2E stack, so its two steps are absent (D4).
   await expect(wizard.getByTestId("setup-wizard-rail-row-xero-operational")).toHaveCount(0);
@@ -252,8 +259,7 @@ test("a module toggle redraws the rail without a page reload", async () => {
     xeroIntegration: true,
   });
 
-  await elsewhere.bringToFront();
-  await wizard.bringToFront();
+  await refocus();
   await expect(wizard.getByTestId("setup-wizard-rail-row-xero-operational")).toBeAttached();
   // No navigation happened: this is the same document the assertions above ran
   // against.
@@ -262,10 +268,8 @@ test("a module toggle redraws the rail without a page reload", async () => {
   // …and switching it back off removes them again.
   await setModuleSettings(adminContext.request, previousModules);
   previousModules = undefined;
-  await elsewhere.bringToFront();
-  await wizard.bringToFront();
+  await refocus();
   await expect(wizard.getByTestId("setup-wizard-rail-row-xero-operational")).toHaveCount(0);
 
-  await elsewhere.close();
   await wizard.close();
 });
