@@ -73,9 +73,14 @@ function progressOf(
 /**
  * The traversal over a synthetic registry, with module state UNKNOWN by default
  * so applicability never quietly removes a step a navigation test is about.
+ *
+ * `registry` is required here (F8): `buildSetupWizardTraversal`'s overloads
+ * make it required for any Id other than the real `SetupStepId`, and every
+ * call site in this file already supplies one.
  */
 function traverse(
-  input: Omit<SetupWizardTraversalInput<string>, "progress"> & {
+  input: Omit<SetupWizardTraversalInput<string>, "progress" | "registry"> & {
+    readonly registry: readonly SetupStepDefinitionOf<string>[];
     progress?: SetupWizardTraversalProgress;
   },
 ) {
@@ -452,6 +457,37 @@ describe("setup wizard traversal: D2 navigation (#219)", () => {
     expect(canNavigateToSetupStep(traversal, "s4")).toBe(false);
   });
 
+  it("caps the frontier at a step that is stale even though it is also deferred (F2)", () => {
+    // The reviewer's reproducer, verbatim (#219 review round, binding decision):
+    // s1, s2 (prereq s1), s3, s4; s1 and s2 both skipped; s2's own readiness
+    // check reports complete. That makes s2 recorded complete (via its
+    // readiness check) AND stale (s1, its prerequisite, is outstanding) AND
+    // deferred (it was skipped and, once staleness clears `isComplete`, is not
+    // complete). Deferred does not cap the frontier on its own (the previous
+    // test), but staleness always does, even on a step that is also deferred —
+    // the frontier must stop at s2, and s3 must stay unreachable.
+    const registry = syntheticRegistry([
+      { id: "s1" },
+      { id: "s2", prerequisites: ["s1"] },
+      { id: "s3" },
+      { id: "s4" },
+    ]);
+    const traversal = traverse({
+      registry,
+      progress: progressOf([], ["s1", "s2"]),
+      readinessStatuses: { s2: "complete" },
+    });
+    expect(traversal.steps.find((step) => step.id === "s2")).toMatchObject({
+      isStale: true,
+      isDeferred: true,
+      isComplete: false,
+    });
+    expect(traversal.navigationFrontierStepId).toBe("s2");
+    expect(canNavigateToSetupStep(traversal, "s2")).toBe(true);
+    expect(canNavigateToSetupStep(traversal, "s3")).toBe(false);
+    expect(reachableIds(traversal)).toEqual(["s1", "s2"]);
+  });
+
   it("keeps a deferred step outstanding and out of the percentage", () => {
     const traversal = traverse({
       registry: linear("s1", "s2", "s3", "s4"),
@@ -625,6 +661,39 @@ describe("setup wizard traversal: staleness derivation (#219, D11)", () => {
         moduleSettings: { ...ALL_MODULES_ON, xeroIntegration: false },
       }),
     ).toEqual([]);
+  });
+
+  it("fails a dependent toward stale when its prerequisite is a ghost — unknown to the whole registry (F3)", () => {
+    // #219 review finding F3, recorded decision: an id absent from the WHOLE
+    // registry (a typo, a renamed step whose dependents were not updated)
+    // reads oppositely from the case above, where "s1" is a real step merely
+    // excluded by a disabled module. The ghost must mark its dependent stale,
+    // not leave it ignored the same way.
+    const registry = syntheticRegistry([
+      { id: "s2", prerequisites: ["ghost-of-s1"] },
+    ]);
+    expect(findSetupStepRegistryViolations(registry)).not.toEqual([]);
+    expect(
+      deriveStaleSetupStepIds({ registry, progress: progressOf(["s2"]) }),
+    ).toEqual(["s2"]);
+  });
+
+  it("keeps ignoring a disabled-module prerequisite even alongside a genuine ghost (F3)", () => {
+    // Both s3's prerequisites are absent from the applicable set for the same
+    // surface reason (`applicable.has` is false for both), but only one of
+    // them is a ghost. s2's module being off must stay ignored; "ghost-of-s1"
+    // must still force s3 stale.
+    const registry = syntheticRegistry([
+      { id: "s2", ownerModule: "xeroIntegration" },
+      { id: "s3", prerequisites: ["s2", "ghost-of-s1"] },
+    ]);
+    expect(
+      deriveStaleSetupStepIds({
+        registry,
+        progress: progressOf(["s2", "s3"]),
+        moduleSettings: { ...ALL_MODULES_ON, xeroIntegration: false },
+      }),
+    ).toEqual(["s3"]);
   });
 
   it("is only reachable through registries C1 rejects", () => {
@@ -810,5 +879,72 @@ describe("setup wizard traversal: progress percentage (D7, #219)", () => {
     });
     expect(traversal.staleStepIds).toEqual(["s2"]);
     expect(traversal.percentComplete).toBe(25);
+  });
+});
+
+describe("setup wizard traversal: allResolved and blockingStepIds (#219 F9, D9's launch panel)", () => {
+  it("is resolved when every applicable step is complete", () => {
+    const traversal = traverse({
+      registry: linear("s1", "s2"),
+      progress: progressOf(["s1", "s2"]),
+    });
+    expect(traversal.blockingStepIds).toEqual([]);
+    expect(traversal.allResolved).toBe(true);
+  });
+
+  it("is resolved when the remaining steps are complete or deferred", () => {
+    const traversal = traverse({
+      registry: linear("s1", "s2", "s3"),
+      progress: progressOf(["s1"], ["s2", "s3"]),
+    });
+    expect(traversal.blockingStepIds).toEqual([]);
+    expect(traversal.allResolved).toBe(true);
+  });
+
+  it("is not resolved while a step is not-started", () => {
+    const traversal = traverse({
+      registry: linear("s1", "s2"),
+      progress: progressOf(["s1"]),
+    });
+    expect(traversal.blockingStepIds).toEqual(["s2"]);
+    expect(traversal.allResolved).toBe(false);
+  });
+
+  it("is not resolved while a step is stale", () => {
+    const registry = syntheticRegistry([
+      { id: "s1" },
+      { id: "s2", prerequisites: ["s1"] },
+    ]);
+    const traversal = traverse({
+      registry,
+      progress: progressOf(["s2"]),
+    });
+    expect(traversal.staleStepIds).toEqual(["s2"]);
+    expect(traversal.blockingStepIds).toEqual(["s1", "s2"]);
+    expect(traversal.allResolved).toBe(false);
+  });
+
+  it("is not resolved when a step is both stale and deferred (consistent with F2)", () => {
+    const registry = syntheticRegistry([
+      { id: "s1" },
+      { id: "s2", prerequisites: ["s1"] },
+    ]);
+    const traversal = traverse({
+      registry,
+      progress: progressOf([], ["s1", "s2"]),
+      readinessStatuses: { s2: "complete" },
+    });
+    expect(traversal.steps.find((step) => step.id === "s2")).toMatchObject({
+      isStale: true,
+      isDeferred: true,
+    });
+    expect(traversal.blockingStepIds).toContain("s2");
+    expect(traversal.allResolved).toBe(false);
+  });
+
+  it("is resolved for an empty applicable set", () => {
+    const traversal = traverse({ registry: [], progress: progressOf() });
+    expect(traversal.blockingStepIds).toEqual([]);
+    expect(traversal.allResolved).toBe(true);
   });
 });

@@ -92,6 +92,11 @@ import {
  *   Nothing here asks who is looking. A step being *reachable* is a statement
  *   about the journey, never about authorisation, and a caller must still apply
  *   its own permission gate before letting anybody act on one.
+ *
+ * NOTHING IS WIRED TO THE ADMIN UI YET. C4 is the substrate only, and its
+ * acceptance criteria are about the pure functions below, not a rendered rail.
+ * `buildSetupWizardTraversal` and `canNavigateToSetupStep` exist, are tested,
+ * and have no production caller until C5 introduces one.
  */
 
 /** The readiness verdict half of C1's completion predicate. */
@@ -152,6 +157,19 @@ export interface SetupWizardTraversalInput<Id extends string = SetupStepId> {
    * Ids that are not applicable, or that are not recorded complete, are
    * discarded — "stale" means "was done and now needs another look", so a step
    * nobody ever did is simply not started, whatever a stored row claims.
+   *
+   * THE CONTRACT (binding on #217 too — mirror it there, do not diverge): a
+   * supplied set MUST already be the full transitive closure. The cascade
+   * (staleness of a prerequisite propagating to its dependents) lives in
+   * `deriveStaleSetupStepIds` and does NOT re-run over a supplied set — this
+   * function only intersects it against "applicable and recorded complete". A
+   * persistence layer that stores only direct dependents and hands them
+   * straight in will silently under-report everything downstream as complete.
+   * `[]` and `undefined` are different answers, not interchangeable absences:
+   * `[]` means "computed: nothing is stale"; `undefined` means "derive it".
+   * A reader that cannot compute the set at all must pass `undefined` (falling
+   * back to derivation) or fail toward stale — never invent an empty answer it
+   * does not have.
    */
   readonly staleStepIds?: readonly string[];
 }
@@ -194,10 +212,27 @@ export interface SetupWizardTraversal<Id extends string = SetupStepId> {
   readonly staleStepIds: readonly Id[];
   /** Everything not complete — deferred and stale included (#219 AC 4). */
   readonly outstandingStepIds: readonly Id[];
+  /**
+   * Not complete AND not deferred: a step that is genuinely blocking, i.e. it
+   * caps the navigation frontier (stale steps are included — F2's decision
+   * means a stale-and-deferred step still blocks). `isDeferred`-only steps are
+   * already visible per-step and are deliberately excluded here, so a
+   * consumer summing this list gets the same set the frontier walk stops on.
+   */
+  readonly blockingStepIds: readonly Id[];
   /** Where the operator resumes: the first applicable step that is not complete. */
   readonly currentStepId: Id | null;
   /** The furthest step reachable by walking forward from the start. */
   readonly navigationFrontierStepId: Id | null;
+  /**
+   * D9's launch-panel signal (#219 review round): every applicable step is
+   * complete or deferred, i.e. `blockingStepIds` is empty. Exported explicitly
+   * so C5 never re-derives it from the step list — a step that is BOTH stale
+   * and deferred (F2) must read as unresolved here exactly as it does for the
+   * frontier, and computing that inline at each call site is how the two would
+   * eventually drift.
+   */
+  readonly allResolved: boolean;
   /**
    * D7: progress is a PERCENTAGE, because the denominator moves as modules are
    * switched on and off and a changing count reads as though work was lost. Do
@@ -263,47 +298,107 @@ function recordedCompleteIds<Id extends string>(
  * outstanding, where "outstanding" itself includes being stale. Returned in
  * registry declaration order.
  *
- * Two rules that only a malformed or exotic registry can reach, stated so the
+ * Four rules that only a malformed or exotic registry can reach, stated so the
  * behaviour is a decision rather than a discovery:
  *
- * - **A prerequisite that is not APPLICABLE is ignored.** It can never be
- *   completed, so counting it as outstanding would pin its dependent stale
- *   forever and make the wizard unfinishable. C1's cross-module prerequisite
- *   guard means this cannot arise in the real registry: a prerequisite is
- *   either `core` (never excluded) or owned by the same module as its dependent
- *   (so the two disappear together).
+ * - **A prerequisite that is not APPLICABLE, but IS a real id somewhere in the
+ *   whole registry, is ignored.** It can never be completed, so counting it as
+ *   outstanding would pin its dependent stale forever and make the wizard
+ *   unfinishable. C1's cross-module prerequisite guard means this cannot arise
+ *   in the real registry: a prerequisite is either `core` (never excluded) or
+ *   owned by the same module as its dependent (so the two disappear together).
+ * - **A prerequisite id that matches NO entry in the whole registry — a ghost,
+ *   not merely excluded by a disabled module — fails toward stale (#219 review
+ *   finding F3).** The two look alike (neither is in the applicable set) but
+ *   read oppositely: an excluded id is a real step that this club's module
+ *   flags happen to have turned off, and ignoring it is correct; an id absent
+ *   from the registry entirely is a broken reference — a typo, a step that was
+ *   renamed without updating its dependents, a synthetic registry under test —
+ *   and the same fail-toward-stale direction #217's own acceptance criterion
+ *   asks for ("IF the stale set cannot be computed, treat affected steps as
+ *   stale rather than complete") applies here too. `applicable` alone cannot
+ *   tell the two apart, because both are absent from it; `known` (the full
+ *   registry's ids, unfiltered by module) is what distinguishes them.
  * - **A prerequisite CYCLE among mutually-complete steps yields no stale
  *   steps.** The fixpoint below never opens such a component, because no member
  *   of it is outstanding to begin with. C1's Tarjan cycle guard fails the build
  *   on any cycle, so this is unreachable in the real registry; it is pinned by
  *   test so that a future change to either guard is a named failure rather than
  *   an infinite loop or a surprise.
+ * - **A DUPLICATE id degrades rather than crashes.** Nothing here deduplicates
+ *   `entries`, so two definitions sharing one id double-count that id in the
+ *   applicable denominator (`toPercentComplete`) and render it twice in
+ *   `steps`. C1's `findSetupStepRegistryViolations` rejects a duplicate id at
+ *   CI (`setup-step-registry.test.ts`'s contract test), so this cannot reach
+ *   the real registry; it is named here, not fixed here, because this module
+ *   has no registry of its own to validate and must not silently paper over a
+ *   guard that belongs one layer down.
  */
+export function deriveStaleSetupStepIds(
+  input: SetupWizardTraversalInput<SetupStepId>,
+): SetupStepId[];
+export function deriveStaleSetupStepIds<Id extends string>(
+  input: SetupWizardTraversalInput<Id> & {
+    readonly registry: readonly SetupStepDefinitionOf<Id>[];
+  },
+): Id[];
 export function deriveStaleSetupStepIds<Id extends string = SetupStepId>(
   input: SetupWizardTraversalInput<Id>,
 ): Id[] {
+  // Delegates to the unexported, un-overloaded implementation below. Overload
+  // resolution only constrains CALLERS of the exported name; `Id` is still
+  // fully generic inside this file (`buildSetupWizardTraversal` calls the
+  // internal function directly, with a `registry` it cannot statically prove
+  // present), so the implementation keeps the wider, cast-bearing signature.
+  return computeStaleSetupStepIds(input);
+}
+
+/**
+ * The un-overloaded implementation `deriveStaleSetupStepIds` and
+ * `buildSetupWizardTraversal` both call. See `deriveStaleSetupStepIds` above
+ * for the documented contract and rules; this split exists only so the
+ * overloads that make `registry` required for external callers (F8) do not
+ * also block the internal call from `buildSetupWizardTraversal`, which holds
+ * the same generic, possibly-registry-less `input` its own caller was handed.
+ */
+function computeStaleSetupStepIds<Id extends string = SetupStepId>(
+  input: SetupWizardTraversalInput<Id>,
+): Id[] {
+  // F8: `deriveStaleSetupStepIds`'s overloads make `registry` REQUIRED
+  // whenever an external caller narrows Id away from the default.
+  // `SETUP_STEP_REGISTRY` only ever supplies `SetupStepId`, so this fallback —
+  // and the cast it needs, because this signature is necessarily wider than
+  // either overload — is sound for every input reachable through the exported
+  // name; a caller cannot reach this line with a narrowed Id and no registry.
   const registry = (input.registry ??
     SETUP_STEP_REGISTRY) as readonly SetupStepDefinitionOf<Id>[];
   const entries = applicableEntries(registry, input.moduleSettings);
   const applicable = new Set<string>(entries.map((entry) => entry.id));
+  // F3: the WHOLE registry's ids, not the module-filtered `applicable` set —
+  // this is what tells a genuinely unknown prerequisite apart from one that is
+  // merely excluded by a disabled module.
+  const known = new Set<string>(registry.map((entry) => entry.id));
   const complete = recordedCompleteIds(entries, input);
 
   // Fixpoint rather than a topological walk: declaration order is guaranteed to
   // put a prerequisite before its dependent in the REAL registry (C1 fails the
   // build otherwise), but a synthetic one carries no such promise, and a walk
   // that assumed it would silently under-report. Each pass adds at least one
-  // member or ends the loop, so this terminates in at most |entries| passes.
+  // member or ends the loop, so this terminates in at most |entries|+1 passes
+  // (the last being the pass that finds nothing new and stops).
   const stale = new Set<Id>();
   let changed = true;
   while (changed) {
     changed = false;
     for (const entry of entries) {
       if (!complete.has(entry.id) || stale.has(entry.id)) continue;
-      const invalidated = entry.prerequisites.some(
-        (prerequisite) =>
-          applicable.has(prerequisite) &&
-          (!complete.has(prerequisite) || stale.has(prerequisite)),
-      );
+      const invalidated = entry.prerequisites.some((prerequisite) => {
+        // Ghost: not a real id anywhere in the registry. Fails toward stale.
+        if (!known.has(prerequisite)) return true;
+        // Known but excluded by a disabled module: ignored, as designed.
+        if (!applicable.has(prerequisite)) return false;
+        return !complete.has(prerequisite) || stale.has(prerequisite);
+      });
       if (invalidated) {
         stale.add(entry.id);
         changed = true;
@@ -318,9 +413,19 @@ export function deriveStaleSetupStepIds<Id extends string = SetupStepId>(
  * The whole traversal, in one pass. See the module doc for the three readings
  * of D2 this encodes; every branch below is one of them.
  */
+export function buildSetupWizardTraversal(
+  input: SetupWizardTraversalInput<SetupStepId>,
+): SetupWizardTraversal<SetupStepId>;
+export function buildSetupWizardTraversal<Id extends string>(
+  input: SetupWizardTraversalInput<Id> & {
+    readonly registry: readonly SetupStepDefinitionOf<Id>[];
+  },
+): SetupWizardTraversal<Id>;
 export function buildSetupWizardTraversal<Id extends string = SetupStepId>(
   input: SetupWizardTraversalInput<Id>,
 ): SetupWizardTraversal<Id> {
+  // F8: see the matching note on `deriveStaleSetupStepIds` — the overloads
+  // above are what make this fallback sound.
   const registry = (input.registry ??
     SETUP_STEP_REGISTRY) as readonly SetupStepDefinitionOf<Id>[];
   const entries = applicableEntries(registry, input.moduleSettings);
@@ -329,7 +434,7 @@ export function buildSetupWizardTraversal<Id extends string = SetupStepId>(
   const suppliedStale = input.staleStepIds;
   const stale = new Set<Id>(
     suppliedStale === undefined
-      ? deriveStaleSetupStepIds(input)
+      ? computeStaleSetupStepIds(input)
       : // Intersect rather than trust: a stored id for a step that is not
         // recorded complete, or no longer applicable, describes a step that is
         // simply not started.
@@ -366,9 +471,19 @@ export function buildSetupWizardTraversal<Id extends string = SetupStepId>(
   // for everything else, so it does not cap the frontier. Reading 2: the
   // frontier is how far forward the operator may WALK; a completed step beyond
   // it stays reachable on its own account.
-  const firstUnresolvedIndex = facts.findIndex(
-    (fact) => !fact.complete && !fact.deferred,
-  );
+  //
+  // #219 review finding F2 (recorded decision, binding): STALENESS ALWAYS CAPS
+  // THE FRONTIER, deferred or not. A step can be both — recorded complete via
+  // its own readiness check while also sitting in `skippedStepIds` from an
+  // earlier pass — and when it is, the stale half wins: `isDeferred` stays
+  // true (both facts are visible on the step; see `SetupWizardTraversalStep`),
+  // but it is excluded from "resolved" here. Without the `fact.stale ||` half
+  // a stale-and-deferred step read as resolved purely because `deferred` is
+  // computed off `!stepComplete`, which staleness itself flips — the frontier
+  // would then walk straight past a step that still needs another look.
+  const isBlocking = (fact: (typeof facts)[number]) =>
+    !fact.complete && (fact.stale || !fact.deferred);
+  const firstUnresolvedIndex = facts.findIndex(isBlocking);
   const frontierIndex =
     firstUnresolvedIndex === -1 ? facts.length - 1 : firstUnresolvedIndex;
 
@@ -394,6 +509,14 @@ export function buildSetupWizardTraversal<Id extends string = SetupStepId>(
     };
   });
 
+  // F9 (#219 review round, for D9's launch panel): the same `isBlocking`
+  // predicate the frontier walk uses, applied to every applicable step rather
+  // than stopped at the first hit. A stale-and-deferred step (F2) is blocking
+  // here too, for the same reason it caps the frontier.
+  const blockingStepIds = facts
+    .filter((fact) => isBlocking(fact))
+    .map((fact) => fact.entry.id);
+
   return {
     steps,
     applicableStepIds: facts.map((fact) => fact.entry.id),
@@ -403,6 +526,8 @@ export function buildSetupWizardTraversal<Id extends string = SetupStepId>(
     outstandingStepIds: facts
       .filter((fact) => !fact.complete)
       .map((fact) => fact.entry.id),
+    blockingStepIds,
+    allResolved: blockingStepIds.length === 0,
     currentStepId: currentIndex === -1 ? null : facts[currentIndex].entry.id,
     navigationFrontierStepId:
       frontierIndex >= 0 ? facts[frontierIndex].entry.id : null,

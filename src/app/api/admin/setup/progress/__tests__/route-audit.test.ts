@@ -107,7 +107,17 @@ describe("PATCH /api/admin/setup/progress audit trail (#219)", () => {
   ];
 
   it.each(cases)(
-    "records %s under its own event type",
+    // `docs/guides/audit-log.md` puts "Setup, backups, platform-level events"
+    // under `system`, and `INV-PRIV-012` files a row by affected domain. Moving
+    // these to `admin` would change which rows an operator can correlate and
+    // would owe a backfill under `INV-OPS-012`. This is the assertion that
+    // makes that a deliberate decision rather than a drive-by edit: it reads
+    // the RECORDED `category` off each of the five actual `logAudit` calls, not
+    // the fixture table's own action-name prefixes (a prior version of this
+    // file asserted `action.startsWith("setup_progress.")` against `cases`
+    // itself, which is true by construction of the table and proves nothing
+    // about what the route recorded).
+    "records %s under its own event type and files it under system, never admin (INV-PRIV-012)",
     async (_label, body, action, summary) => {
       const response = await PATCH(patch(body));
       expect(response.status).toBe(200);
@@ -127,17 +137,6 @@ describe("PATCH /api/admin/setup/progress audit trail (#219)", () => {
   it("gives every transition a distinct event type", () => {
     const actions = cases.map(([, , action]) => action);
     expect(new Set(actions).size).toBe(actions.length);
-  });
-
-  it("files every transition under system, never admin", () => {
-    // `docs/guides/audit-log.md` puts "Setup, backups, platform-level events"
-    // under `system`, and `INV-PRIV-012` files a row by affected domain. Moving
-    // these to `admin` would change which rows an operator can correlate and
-    // would owe a backfill under `INV-OPS-012`; this is the guard that makes
-    // that a deliberate decision rather than a drive-by edit.
-    expect(
-      cases.every(([, , action]) => action.startsWith("setup_progress.")),
-    ).toBe(true);
   });
 
   it("records nothing when the caller is not an administrator", async () => {
