@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  455
+row-producing sites:  456
 uncategorised:        0
-category values: admin 104, booking 101, xero 34, family 35, payment 37,
+category values: admin 105, booking 101, xero 34, family 35, payment 37,
                  lodge 65, account 19, security 22, privacy 19,
                  communication 14, system 4
 ```
@@ -614,15 +614,19 @@ maintenance-report writers (`lodge` 55 → 65, 443 → 453). Since then CT-1
 (#2989) added the club-timezone change record (`admin` 102 → 103, 453 → 454) —
 one writer, because the timezone change is a single audited event and a
 re-save of the unchanged zone deliberately records nothing at all. Since then
-#220 added `markClubThemeSetupComplete`'s `site_style.updated` write (`admin`
-103 → 104, 454 → 455) — the launch panel's completeSetup call now flips only
-`completedAt` under the theme row's existing lock rather than replaying the
-whole PUT body, and that narrower path needed its own audit row, categorised
-the same way the sibling PUT route's write already is. That is the figure
-above, and it was taken from `npm run audit:census` on the merged tree rather
-than by adding one branch's delta to the other's total. The category values
-sum to 454 rather than 455 because one site forwards its category rather than
-naming one.
+two disjoint changes landed on top of 454 and, being disjoint, both count.
+ENV-SAFETY 1 (#3034) added the environment-safety override record
+(`admin` 103 → 104, 454 → 455) - one writer, and a no-op records nothing,
+because that route's dirty gate counts an absent settings row as "override
+off". #220 added `markClubThemeSetupComplete`'s `site_style.updated` write
+(`admin` 104 → 105, 455 → 456) — the launch panel's completeSetup call now
+flips only `completedAt` under the theme row's existing lock rather than
+replaying the whole PUT body, and that narrower path needed its own audit row,
+categorised the same way the sibling PUT route's write already is. That is the
+figure above, and it was taken from `npm run audit:census` on the merged tree
+rather than by adding one branch's delta to the other's total. The category
+values sum to 455 rather than 456 because one site forwards its category rather
+than naming one.
 
 The 22 moves are pinned **per site**, not only by that
 distribution: `REVIEWED_ADMIN_CATEGORIES_2730` in

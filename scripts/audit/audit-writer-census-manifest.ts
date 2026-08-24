@@ -340,7 +340,24 @@ export const AUDIT_CENSUS_TOTALS = {
   // `UNCATEGORISED_AUDIT_WRITERS` below, and it is a new writer categorised at
   // the source rather than a reclassification, so it joins none of the four
   // per-site-pinned maps either.
-  writeSites: 455,
+  // 455 -> 456 (ENV-SAFETY 1, #3034, arriving with the merge of `main`): the
+  // environment-safety override writer.
+  // `ENVIRONMENT_SAFETY_OVERRIDE_UPDATED` records who forced this installation to
+  // be treated as a copy, or stopped forcing it, and the before/after value of the
+  // one flag. Written with `buildStructuredAuditLogCreateArgs` through
+  // `tx.auditLog.create` in the same Serializable transaction as the
+  // `EnvironmentSafetySettings` upsert, so a rolled-back save records nothing and
+  // a no-op (the dirty gate, which counts an absent row as `false`) never reaches
+  // the write at all. Category `admin`, the same installation-configuration answer
+  // `CLUB_TIME_ZONE_UPDATED` and `CLUB_IDENTITY_SETTINGS_UPDATED` give — NOT
+  // `security`, because this changes what the installation DOES rather than who may
+  // sign in or what they may reach; the read gate is identical for both anyway. So
+  // it does not join `UNCATEGORISED_AUDIT_WRITERS` below. Measured by RUNNING
+  // `npx tsx scripts/audit/audit-writer-census.ts` on this MERGED tree (456
+  // sites), not by adding one to either side's 455 — `main` and this epic branch
+  // each reached 455 by adding a DIFFERENT writer, so only a measurement on the
+  // merged tree gives the right total.
+  writeSites: 456,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -439,7 +456,12 @@ export const AUDIT_CENSUS_TOTALS = {
     // with `buildStructuredAuditLogCreateArgs`, matching the sibling settings
     // singleton it was cloned from (`/api/admin/club-identity`) rather than
     // introducing a fourth form on a route that does exactly the same job.
-    "auditLog.create": { total: 73, uncategorised: 0 },
+    // 73 -> 74 (ENV-SAFETY 1, #3034): the environment-safety override writer.
+    // `tx.auditLog.create` with `buildStructuredAuditLogCreateArgs`, the same form
+    // as the club-timezone writer beside it, inside the route's own Serializable
+    // transaction — so the two-table contract that route's test enumerates stays
+    // enumerable.
+    "auditLog.create": { total: 74, uncategorised: 0 },
   },
   /**
    * Literal category values written, and by how many sites. The three `membership`
@@ -627,7 +649,18 @@ export const AUDIT_CENSUS_TOTALS = {
     // same row a support-only operator could already read when setup completed
     // through the old whole-body PUT path, now also reachable through the
     // narrower launch-panel path.
-    admin: 104,
+    // 104 -> 105 (ENV-SAFETY 1, #3034, arriving with the merge of `main`):
+    // ENVIRONMENT_SAFETY_OVERRIDE_UPDATED. THIS
+    // IS A WIDENING OF WHO CAN READ WHAT, by one site, and it is stated rather than
+    // counted: `admin` is readable with `support:view` ALONE, so one more write site
+    // becomes correlatable at support level. What that row contains is the
+    // before/after value of a boolean and the id of the administrator who changed
+    // it — no member data, no environment values, no connection details — so the
+    // widening is one operational configuration event, not a member-record
+    // disclosure. `security` was considered and rejected: this changes what the
+    // installation DOES, not who may sign in or what they may reach, and its read
+    // gate is `support:view` either way.
+    admin: 105,
     // 16 -> 19 (#2581 child 2): `member.password-reset-sent` and
     // `member.setup-invite-sent` (decision 3 — the affected domain is the
     // CREDENTIAL, not the mailing), plus the `member.bulk-set-role` branch
