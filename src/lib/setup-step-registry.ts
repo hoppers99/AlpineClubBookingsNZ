@@ -25,12 +25,18 @@ import { SETUP_STEP_DEFINITIONS } from "@/lib/setup-step-registry-definitions";
  *   array's positions. There is no second list to keep in step, which is the
  *   whole point: the flat array gained three hand-added ids in a fortnight and
  *   said nothing about who owned them.
- * - **Order is declaration order.** The derived tuple preserves its literal
- *   element types (`z.enum(SETUP_STEP_IDS)` in the setup-progress route depends
- *   on that), which is only possible from the array's POSITIONS — a `sort()`
- *   would erase them to `string[]`. So `order` and position must agree, and
- *   `findSetupStepRegistryViolations` enforces it. Move a step by moving its
- *   entry.
+ * - **`SETUP_STEP_IDS` stays a readonly tuple of LITERALS.** This is load-bearing
+ *   and fails silently if broken. `z.enum(SETUP_STEP_IDS)` in
+ *   `src/app/api/admin/setup/progress/route.ts` is the only non-test consumer
+ *   outside `setup-readiness.ts`, and `z.enum` also accepts a plain
+ *   `readonly string[]` — so if this export ever widens, `SetupStepId` degrades
+ *   to `string`, the API stops validating step ids, and everything still
+ *   typechecks. The contract test asserts the type is a literal union, because
+ *   no runtime assertion can see the difference.
+ * - **Order is declaration order.** The literal tuple above is only derivable
+ *   from the array's POSITIONS — a `sort()` erases it to `string[]`. So `order`
+ *   and position must agree, and `findSetupStepRegistryViolations` enforces it.
+ *   Move a step by moving its entry.
  * - **Applicability is derived, never persisted.** A step whose owning module is
  *   disabled is excluded from the applicable set (epic #213 D4: a declined
  *   module contributes nothing and leaves no record beyond its own toggle).
@@ -141,13 +147,30 @@ export function isSetupStepComplete(
 /**
  * The step ids that apply to a club with these module flags, in presentation
  * order. `moduleSettings` is the `adminModuleSettings` field of
- * `SetupDatabaseSnapshot` — null or undefined means the club has not saved its
- * Modules page (or no snapshot was taken), which resolves to the first-install
- * defaults exactly as `buildModuleLayerState` does in `setup-readiness.ts`.
+ * `SetupDatabaseSnapshot`, and its three states are NOT interchangeable:
+ *
+ * - `undefined` — module state is UNKNOWN. No snapshot was taken at all: a
+ *   DB-less `npm run setup:check` (`scripts/setup.ts` passes none), or a caller
+ *   older than this field. Applicability FAILS OPEN and every step is returned.
+ *   Excluding a step here would hide setup work from an operator on the exact
+ *   run that could not see the club's configuration, which is the wrong
+ *   direction to be wrong in: a step shown unnecessarily costs a glance, a step
+ *   hidden wrongly is never done.
+ * - `null` — the club has no saved `ClubModuleSettings` row. That is a KNOWN
+ *   answer, not a missing one: it resolves to the first-install defaults, the
+ *   same reading `buildModuleLayerState` and `formatModuleActivationDetail`
+ *   already take in `setup-readiness.ts` ("first-install defaults until settings
+ *   are saved"). Under `DEFAULT_MODULE_SETTINGS` four modules are off, so the
+ *   four module-owned steps are excluded.
+ * - a record — the club's saved flags, used as given.
  */
 export function getApplicableSetupStepIds(
   moduleSettings?: ModuleSettingsValues | null,
 ): SetupStepId[] {
+  if (moduleSettings === undefined) {
+    return SETUP_STEP_REGISTRY.map((entry) => entry.id);
+  }
+
   const flags = moduleSettings ?? DEFAULT_MODULE_SETTINGS;
   return SETUP_STEP_REGISTRY.filter(
     (entry) =>
@@ -164,6 +187,15 @@ export function getApplicableSetupStepIds(
  * `SetupStepEntry` type already makes an unknown prerequisite id a type error,
  * so a validator that only accepted entries could never be shown the failure it
  * exists to catch.
+ *
+ * SCOPED TO THE ARGUMENT, DELIBERATELY. Every check reads only the definitions
+ * it was handed; no other registry is consulted. Step ids are namespaced by
+ * their registry, and ids DO repeat across namespaces already —
+ * `config-self-heal-steps.ts` declares a self-heal step named `club-time-zone`,
+ * byte-identical to this registry's 17th id and entirely unrelated to it.
+ * Treating that as a collision would fail the build over two files that never
+ * meet. Cross-registry collision within ONE namespace is C3's guard, when
+ * modules start contributing their own steps, and it is namespace-scoped too.
  */
 export function findSetupStepRegistryViolations(
   definitions: readonly SetupStepDefinition[],
