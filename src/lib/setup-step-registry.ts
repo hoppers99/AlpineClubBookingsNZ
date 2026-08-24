@@ -131,9 +131,16 @@ export interface SetupStepCompletionInput {
  * alone does not make a step complete — a check that already passes stays
  * complete even when deferred; epic #213 D4 keeps a deferred step that has NOT
  * yet passed outstanding, and only a disabled module removes a step altogether.
+ *
+ * Takes the LOOSE `SetupStepDefinition` shape rather than the narrowed
+ * `SetupStepEntry` (widened by #219, C4). It reads only `completion`, and the
+ * traversal layer runs it over synthetic registries whose ids are not
+ * `SetupStepId` — the same reason `findSetupStepRegistryViolations` below takes
+ * the loose shape. Every existing caller passes an entry, which still satisfies
+ * this.
  */
 export function isSetupStepComplete(
-  entry: SetupStepEntry,
+  entry: SetupStepDefinition,
   input: SetupStepCompletionInput,
 ): boolean {
   switch (entry.completion) {
