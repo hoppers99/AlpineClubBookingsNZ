@@ -40,7 +40,10 @@ enough — every sub-page is captured and detailed where it lives.
 
 2. Work through the **checklist categories**. A check can be marked done or
    skipped, and provider checks offer a **test** button (Stripe, SMTP, Sentry,
-   Xero) that pings the live service and reports the result.
+   Xero) that pings the live service and reports the result. Marking a check
+   done, skipping it and reopening it are each recorded in the
+   [Audit Log](audit-log.md) under their own event type and in the **system**
+   category, so you can see who changed what and when.
 3. Use the **hub cards** to open a configuration area: Initial Setup, Finance,
    Booking Rules, Operational Integrations, Membership & Members, Cancellation,
    or Email Messages / Notifications.
