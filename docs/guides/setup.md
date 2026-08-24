@@ -48,6 +48,67 @@ enough — every sub-page is captured and detailed where it lives.
    Booking Rules, Operational Integrations, Membership & Members, Cancellation,
    or Email Messages / Notifications.
 
+### Or walk the guided journey instead
+
+The checklist tells you what is outstanding. The **setup wizard** walks you
+through it, one step at a time, and remembers where you got to — so it can be
+left and picked up again, and a club that set up a year ago and then upgraded is
+told what is new rather than left to find it.
+
+Both surfaces are live and they read the same configuration, so nothing is lost
+either way. Use the wizard when you are setting a club up (or coming back to
+finish); use the checklist when you know what you are looking for.
+
+1. On **Admin → Setup & Configuration → Setup**, choose **Open the setup
+   wizard** — or go straight to `/admin/setup/wizard`. It opens at the step you
+   left off at, not back at the beginning.
+2. The **rail** down the left carries the whole journey, grouped under the same
+   headings as the checklist. Each row says where that step stands:
+
+   | The row says | It means |
+   | --- | --- |
+   | Done | The step's check passes, or you marked it done |
+   | Up next | Where the wizard will resume you |
+   | Needs another look | You finished it, but something it depends on has changed since |
+   | Skipped for now | You chose to pass over it. It stays on the list as outstanding |
+   | Not started | Nothing has happened here yet |
+
+   Progress reads as a **percentage** rather than "x of y" on purpose: the
+   number of steps changes as you switch modules on and off, and a count would
+   look as though work had been lost. It stays visible while the rail scrolls.
+3. The right-hand pane shows the step's live check — what is outstanding, in the
+   same words the checklist uses — with a link through to the settings page
+   where that work is actually done. The wizard never becomes a second place to
+   store a setting.
+4. **Mark this step done**, **Skip for now**, or **Reopen** it, then
+   **Continue**. Skipping buys you passage past a step; it does not hide it. A
+   skipped step stays on the rail and on the outstanding list until it is done
+   or no longer applies. You cannot skip *ahead* of a step you have not settled
+   one way or the other — those rows are greyed and will not open.
+5. Switching a module off removes its steps entirely (a module you have declined
+   has nothing to configure). Change one on the **Modules** page and the rail
+   redraws when you come back to the wizard's tab.
+6. Once every step is done or skipped, **Ready to open** unlocks at the foot of
+   the rail. It carries two separate things:
+   - **Make the public site visible** — until you do this, visitors see the
+     holding screen rather than the club's pages. This is the only place in the
+     wizard that publishes the site.
+   - **Confirm what this instance is for** — whether this installation is the
+     club's real site or a test copy, which decides whether it may email the
+     real membership. That is declared in the environment rather than switched
+     on from a screen, so the panel tells you where it lives. It does not gate
+     the lever above: an internal test site that is deliberately visible and
+     deliberately not production is a perfectly normal, permanent state.
+
+   Anything you skipped is listed on that panel in plain words rather than
+   quietly dropped.
+
+**What you can change depends on your role.** The wizard is reachable by anyone
+who can reach the Setup page, and everyone can read and walk the whole journey.
+A step whose settings belong to an area you only have view access to renders
+read-only: its buttons are disabled and one banner at the top of the step says
+why.
+
 ## Settings reference
 
 The Setup page itself only tracks checklist progress; the real settings live in
@@ -90,6 +151,10 @@ or run `npm run config:self-heal`.
 | **Club Time Zone** stays blocked right after an upgrade | The application has not restarted since the migration, so the zone has not been recorded yet. The zone in use is still the right one | Restart the application, or run `npm run config:self-heal`. See the [Club Time Zone guide](club-time.md) |
 | **Club Time Zone** shows a warning about confirming the zone | The server's `TZ` named no actual place, so `Pacific/Auckland` was recorded rather than guessed at from a value that names no location | If the club is in New Zealand, acknowledge the step. If not, set the real zone at [`/admin/club-time`](club-time.md) — this is the case that would otherwise put a non-NZ club's times out by hours |
 | Setup shows incomplete after go-live | Optional checks were left unskipped | Mark genuinely-skipped checks as skipped so the summary reflects reality |
+| A wizard step will not open | It is further ahead than you have reached | Settle the steps before it — finish them, or skip the ones that do not apply |
+| **Ready to open** stays locked in the wizard | Something is still outstanding and has not been skipped | Work down the rail; anything you genuinely do not need can be skipped, which counts as settled |
+| A wizard step's buttons are all disabled | Your role has view-only access to the area that step's settings belong to | Ask an admin with edit access to that area; the banner at the top of the step names it |
+| The rail still shows a module's steps after switching it off | The wizard has not re-read the journey yet | Return to the wizard's tab, or press **Refresh** |
 
 ## Related links
 
