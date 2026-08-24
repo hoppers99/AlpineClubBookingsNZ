@@ -100,6 +100,17 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
   "xero-mappings": "finance",
 };
 
+/**
+ * What `GET /api/admin/setup/wizard` answers with — declared HERE, in the pure
+ * module both ends already import, so the route and the shell cannot drift into
+ * two different readings of the same response. Neither could import the other's
+ * copy without dragging a server route into a client bundle or vice versa.
+ */
+export interface SetupWizardPayload {
+  readonly readiness: SetupReadiness;
+  readonly traversal: SetupWizardTraversal<SetupStepId>;
+}
+
 export interface SetupWizardRailStep {
   readonly id: SetupStepId;
   readonly title: string;

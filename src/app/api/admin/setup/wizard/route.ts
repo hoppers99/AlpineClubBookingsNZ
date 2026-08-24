@@ -10,7 +10,6 @@ import {
 import type { SetupStepId } from "@/lib/setup-step-registry";
 import {
   buildSetupWizardTraversal,
-  type SetupWizardTraversal,
   type SetupWizardTraversalInput,
 } from "@/lib/setup-wizard-traversal";
 
@@ -37,12 +36,6 @@ import {
  * may EDIT which step is a per-area question the shell answers from the
  * permission matrix (D12); admission to the surface is not.
  */
-
-export interface SetupWizardPayload {
-  readiness: SetupReadiness;
-  progress: ReturnType<typeof normalizeSetupProgress>;
-  traversal: SetupWizardTraversal<SetupStepId>;
-}
 
 /**
  * Each step's readiness verdict, keyed by id — what

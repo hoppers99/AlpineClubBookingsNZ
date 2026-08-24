@@ -5,14 +5,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
-import type { SetupReadiness } from "@/lib/setup-readiness";
 import type { SetupStepId } from "@/lib/setup-step-registry";
-import type { SetupWizardTraversal } from "@/lib/setup-wizard-traversal";
 import {
   buildSetupWizardView,
   canEditSetupStep,
   resolveInitialStepId,
   setupWizardNeighbours,
+  type SetupWizardPayload,
 } from "@/lib/setup-wizard-view";
 import {
   SETUP_WIZARD_LAUNCH_ID,
@@ -45,11 +44,6 @@ import {
  *    subscription and does not claim to be: a flag changed in another tab shows
  *    up here the moment this tab is focused, and the Refresh button forces it.
  */
-
-interface SetupWizardPayload {
-  readiness: SetupReadiness;
-  traversal: SetupWizardTraversal<SetupStepId>;
-}
 
 function errorMessageFrom(body: unknown, fallback: string) {
   if (
