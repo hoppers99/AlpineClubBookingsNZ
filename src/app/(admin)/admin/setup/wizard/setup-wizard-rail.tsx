@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CheckCircle2,
   CircleDashed,
@@ -22,12 +22,18 @@ import { cn } from "@/lib/utils";
  * Four things this component is responsible for, each an acceptance criterion:
  *
  * - **the summary stays put while the list scrolls.** The percentage and its bar
- *   are a `sticky top-0` header INSIDE the scroll container's parent, and the
- *   list below is its own `overflow-y-auto` region. The rail scrolls; the page
- *   does not have to.
- * - **the list signals overflow.** A non-interactive gradient sits over the last
- *   few pixels of the scroll region, so a list longer than its box never ends on
- *   a hard edge that reads as the end of the journey.
+ *   are a `sticky top-0` header INSIDE the scrolling element itself, which is
+ *   what makes `sticky` do anything: a sticky box positions against its nearest
+ *   SCROLLING ancestor, so the same markup one level up — where this header used
+ *   to sit — sticks against the page's scroll and never against the list's. The
+ *   rail scrolls under its own summary; the page does not have to move.
+ * - **the list signals overflow, and only when there IS overflow.** A
+ *   non-interactive gradient sits over the last few pixels of the scroll region
+ *   while the list is longer than its box AND not scrolled to the bottom, so a
+ *   long list never ends on a hard edge that reads as the end of the journey —
+ *   and a short one, or a list read to its end, is not permanently dimmed across
+ *   its last row. That row is the launch CTA, so an unconditional fade greyed
+ *   out the one control the whole journey leads to.
  * - **the current step is scrolled into view on open.** Once, on the first
  *   render that has a current step — not on every re-render, or a refetch would
  *   yank an operator back from the row they were reading.
@@ -229,6 +235,26 @@ function RailRow({
   );
 }
 
+/**
+ * Should the bottom fade be painted, given the scroller's geometry?
+ *
+ * Pure and exported because it is the whole of the decision, and jsdom gives
+ * every element a zero height — so a component test can pin the rule exactly
+ * while the layout it reads can only be checked in a real browser. The one-pixel
+ * tolerances absorb sub-pixel scroll positions, which otherwise leave a
+ * scrolled-to-the-bottom list showing a fade forever.
+ */
+export function setupWizardRailFadeVisible(metrics: {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+}): boolean {
+  const overflowing = metrics.scrollHeight > metrics.clientHeight + 1;
+  const atBottom =
+    metrics.scrollTop + metrics.clientHeight >= metrics.scrollHeight - 1;
+  return overflowing && !atBottom;
+}
+
 export function SetupWizardRail({
   groups,
   percentComplete,
@@ -246,6 +272,8 @@ export function SetupWizardRail({
 }) {
   const currentRowRef = useRef<HTMLElement | null>(null);
   const scrolledRef = useRef(false);
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const [fadeVisible, setFadeVisible] = useState(false);
 
   useEffect(() => {
     if (scrolledRef.current) return;
@@ -257,96 +285,137 @@ export function SetupWizardRail({
     node.scrollIntoView?.({ block: "center" });
   }, [currentStepId, groups]);
 
+  const measureFade = useCallback(() => {
+    const node = scrollerRef.current;
+    if (!node) return;
+    setFadeVisible(setupWizardRailFadeVisible(node));
+  }, []);
+
+  // Three things change the answer: the list itself (a module toggled off), the
+  // box (a window resize, or the viewport-relative max-height changing under
+  // it), and the scroll position. The first two are handled here; the third is
+  // the scroller's own onScroll.
+  useEffect(() => {
+    measureFade();
+    const node = scrollerRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measureFade);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [measureFade, groups, launchUnlocked]);
+
   return (
     <div className="rounded-md border bg-card" data-testid="setup-wizard-rail">
-      <div className="sticky top-0 z-10 space-y-2 rounded-t-md border-b bg-card px-4 py-3">
-        <div className="flex items-baseline justify-between gap-2">
-          <p className="text-sm font-medium text-foreground">Setup progress</p>
-          <p
-            className="text-2xl font-semibold text-foreground"
-            data-testid="setup-wizard-percent"
-          >
-            {percentComplete}%
-          </p>
-        </div>
-        <div
-          className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
-          role="progressbar"
-          aria-valuenow={percentComplete}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-label="Setup progress"
-        >
-          <div
-            className="h-full rounded-full bg-brand-gold transition-all"
-            style={{ width: `${percentComplete}%` }}
-          />
-        </div>
-      </div>
-
       <div className="relative">
-        <div className="max-h-[60vh] space-y-4 overflow-y-auto px-2 py-3 lg:max-h-[calc(100vh-16rem)]">
-          {groups.map((group) => (
-            <div key={group.id} className="space-y-1">
-              <p className="px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                {group.title}
+        <div
+          ref={scrollerRef}
+          onScroll={measureFade}
+          data-testid="setup-wizard-rail-scroller"
+          className="max-h-[60vh] overflow-y-auto lg:max-h-[calc(100vh-16rem)]"
+        >
+          {/* INSIDE the scroller, or `sticky` sticks to the page instead. */}
+          <div className="sticky top-0 z-10 space-y-2 rounded-t-md border-b bg-card px-4 py-3">
+            <div className="flex items-baseline justify-between gap-2">
+              <p className="text-sm font-medium text-foreground">Setup progress</p>
+              <p
+                className="text-2xl font-semibold text-foreground"
+                data-testid="setup-wizard-percent"
+              >
+                {percentComplete}%
               </p>
-              {group.steps.map((step) => (
-                <RailRow
-                  key={step.id}
-                  step={step}
-                  selected={selectedId === step.id}
-                  onSelect={onSelect}
-                  rowRef={
-                    step.id === currentStepId
-                      ? (node) => {
-                          currentRowRef.current = node;
-                        }
-                      : undefined
-                  }
-                />
-              ))}
             </div>
-          ))}
-
-          <div className="space-y-1">
-            <p className="px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Finish
-            </p>
-            {launchUnlocked ? (
-              <button
-                type="button"
-                data-testid="setup-wizard-rail-row-launch"
-                data-reachable="true"
-                aria-current={selectedId === SETUP_WIZARD_LAUNCH_ID ? "step" : undefined}
-                onClick={() => onSelect(SETUP_WIZARD_LAUNCH_ID)}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left transition-colors",
-                  selectedId === SETUP_WIZARD_LAUNCH_ID
-                    ? "border-brand-gold bg-muted text-foreground"
-                    : "border-transparent text-foreground hover:border-border",
-                )}
-              >
-                <Rocket className="h-4 w-4 shrink-0 text-success-11" />
-                <span className="min-w-0 flex-1 truncate text-sm">Ready to open</span>
-              </button>
-            ) : (
+            <div
+              className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+              role="progressbar"
+              aria-valuenow={percentComplete}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label="Setup progress"
+            >
               <div
-                data-testid="setup-wizard-rail-row-launch"
-                data-reachable="false"
-                aria-disabled="true"
-                title="Finish or skip every remaining step to unlock this."
-                className="flex w-full cursor-not-allowed items-center gap-2 rounded-md border border-transparent px-2 py-2 text-left opacity-50"
-              >
-                <Lock className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate text-sm">Ready to open</span>
+                className="h-full rounded-full bg-brand-gold transition-all"
+                style={{ width: `${percentComplete}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-4 px-2 py-3">
+            {groups.map((group) => (
+              <div key={group.id} className="space-y-1">
+                <p className="px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {group.title}
+                </p>
+                {group.steps.map((step) => (
+                  <RailRow
+                    key={step.id}
+                    step={step}
+                    selected={selectedId === step.id}
+                    onSelect={onSelect}
+                    rowRef={
+                      step.id === currentStepId
+                        ? (node) => {
+                            currentRowRef.current = node;
+                          }
+                        : undefined
+                    }
+                  />
+                ))}
               </div>
-            )}
+            ))}
+
+            <div className="space-y-1">
+              <p className="px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Finish
+              </p>
+              {launchUnlocked ? (
+                <button
+                  type="button"
+                  data-testid="setup-wizard-rail-row-launch"
+                  data-reachable="true"
+                  aria-current={
+                    selectedId === SETUP_WIZARD_LAUNCH_ID ? "step" : undefined
+                  }
+                  onClick={() => onSelect(SETUP_WIZARD_LAUNCH_ID)}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left transition-colors",
+                    selectedId === SETUP_WIZARD_LAUNCH_ID
+                      ? "border-brand-gold bg-muted text-foreground"
+                      : "border-transparent text-foreground hover:border-border",
+                  )}
+                >
+                  <Rocket className="h-4 w-4 shrink-0 text-success-11" />
+                  <span className="min-w-0 flex-1 truncate text-sm">
+                    Ready to open
+                  </span>
+                </button>
+              ) : (
+                <div
+                  data-testid="setup-wizard-rail-row-launch"
+                  data-reachable="false"
+                  aria-disabled="true"
+                  title="Finish or skip every remaining step to unlock this."
+                  className="flex w-full cursor-not-allowed items-center gap-2 rounded-md border border-transparent px-2 py-2 text-left opacity-50"
+                >
+                  <Lock className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate text-sm">
+                    Ready to open
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
-        {/* Overflow signal. `pointer-events-none` so it never eats a click on
-            the row underneath it. */}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 rounded-b-md bg-gradient-to-t from-card to-transparent" />
+
+        {/* Overflow signal, painted only while there is overflow left to signal.
+            `pointer-events-none` so it never eats a click on the row underneath
+            it — and, unconditional, it permanently dimmed that row, which at the
+            foot of this list is the launch CTA. */}
+        {fadeVisible ? (
+          <div
+            data-testid="setup-wizard-rail-fade"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-8 rounded-b-md bg-gradient-to-t from-card to-transparent"
+          />
+        ) : null}
       </div>
     </div>
   );

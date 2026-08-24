@@ -7,6 +7,7 @@ import type { SetupWizardRailGroup, SetupWizardRailStep } from "@/lib/setup-wiza
 import {
   SETUP_WIZARD_LAUNCH_ID,
   SetupWizardRail,
+  setupWizardRailFadeVisible,
 } from "@/app/(admin)/admin/setup/wizard/setup-wizard-rail";
 
 /**
@@ -253,6 +254,100 @@ describe("SetupWizardRail", () => {
     expect(locked.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(locked);
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  // The scroll mechanics. jsdom lays nothing out — every element reports a zero
+  // height — so what a component test CAN pin is the structure and the rule,
+  // and the visual half is verified in a browser. Both halves were wrong: the
+  // "sticky" header sat OUTSIDE the scrolling element, where `sticky` positions
+  // against the page rather than the list; and the fade was rendered
+  // unconditionally, permanently dimming the last row, which is the launch CTA.
+  describe("scroll mechanics", () => {
+    it("puts the sticky summary INSIDE the element that scrolls", () => {
+      renderRail();
+      const scroller = screen.getByTestId("setup-wizard-rail-scroller");
+      expect(scroller.className).toContain("overflow-y-auto");
+      const header = screen
+        .getByTestId("setup-wizard-percent")
+        .closest("div.sticky");
+      expect(header).toBeTruthy();
+      // Contained by the scroller, which is what makes `sticky` stick to the
+      // list's scroll instead of the page's.
+      expect(scroller.contains(header!)).toBe(true);
+    });
+
+    it("paints no fade when the list is not overflowing", () => {
+      // jsdom's zero heights ARE the non-overflowing case, honestly measured.
+      renderRail();
+      expect(screen.queryByTestId("setup-wizard-rail-fade")).toBeNull();
+    });
+
+    it("decides the fade from overflow AND distance from the bottom", () => {
+      // Short list, nothing to signal.
+      expect(
+        setupWizardRailFadeVisible({
+          scrollTop: 0,
+          scrollHeight: 200,
+          clientHeight: 400,
+        }),
+      ).toBe(false);
+      // Exactly filling its box is not overflow either.
+      expect(
+        setupWizardRailFadeVisible({
+          scrollTop: 0,
+          scrollHeight: 400,
+          clientHeight: 400,
+        }),
+      ).toBe(false);
+      // Long list, more below: signal it.
+      expect(
+        setupWizardRailFadeVisible({
+          scrollTop: 0,
+          scrollHeight: 900,
+          clientHeight: 400,
+        }),
+      ).toBe(true);
+      // Scrolled to the end — the launch CTA is the last row, and dimming it
+      // there is the defect this rule exists to prevent.
+      expect(
+        setupWizardRailFadeVisible({
+          scrollTop: 500,
+          scrollHeight: 900,
+          clientHeight: 400,
+        }),
+      ).toBe(false);
+      // Sub-pixel scroll positions still count as the bottom.
+      expect(
+        setupWizardRailFadeVisible({
+          scrollTop: 499.6,
+          scrollHeight: 900,
+          clientHeight: 400,
+        }),
+      ).toBe(false);
+    });
+
+    it("re-measures on scroll", () => {
+      renderRail();
+      const scroller = screen.getByTestId("setup-wizard-rail-scroller");
+      // Give the scroller a geometry jsdom would never produce, then scroll:
+      // the handler re-reads it and the fade appears.
+      for (const [key, value] of [
+        ["scrollHeight", 900],
+        ["clientHeight", 400],
+        ["scrollTop", 0],
+      ] as const) {
+        Object.defineProperty(scroller, key, { configurable: true, value });
+      }
+      fireEvent.scroll(scroller);
+      expect(screen.getByTestId("setup-wizard-rail-fade")).toBeTruthy();
+
+      Object.defineProperty(scroller, "scrollTop", {
+        configurable: true,
+        value: 500,
+      });
+      fireEvent.scroll(scroller);
+      expect(screen.queryByTestId("setup-wizard-rail-fade")).toBeNull();
+    });
   });
 
   it("scrolls the current step into view once, on open", () => {
