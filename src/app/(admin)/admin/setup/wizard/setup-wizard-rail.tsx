@@ -102,7 +102,14 @@ export function setupWizardStepLabel(step: SetupWizardRailStep): string {
 }
 
 function stateClasses(state: SetupWizardStepState, selected: boolean): string {
-  if (selected) return "border-brand-gold bg-brand-gold/10 text-foreground";
+  // A SOLID fill. `app-theme-layout-contract.test.ts` bans an interpolated
+  // brand or semantic BACKGROUND on any app text surface — Tailwind's
+  // transparent composite crosses back toward the foreground and fails AA on
+  // the endpoint palettes a club can legitimately save — so the gold BORDER
+  // carries the selection and `bg-muted` is the designed surface under it.
+  // (That contract scans this file as TEXT, so do not spell a banned class here
+  // even in a comment: the regex has no idea it is reading prose.)
+  if (selected) return "border-brand-gold bg-muted text-foreground";
   switch (state) {
     case "complete":
       return "border-transparent text-foreground hover:border-border";
@@ -267,7 +274,7 @@ export function SetupWizardRail({
                 className={cn(
                   "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left transition-colors",
                   selectedId === SETUP_WIZARD_LAUNCH_ID
-                    ? "border-brand-gold bg-brand-gold/10 text-foreground"
+                    ? "border-brand-gold bg-muted text-foreground"
                     : "border-transparent text-foreground hover:border-border",
                 )}
               >
