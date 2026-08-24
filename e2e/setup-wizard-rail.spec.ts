@@ -149,15 +149,36 @@ test("skipping a step buys passage and leaves it visibly outstanding (D4)", asyn
 
   const before = await readTraversal(adminContext.request);
   const current = String(before.currentStepId);
-  const nextId = before.applicableStepIds[before.applicableStepIds.indexOf(current) + 1];
-  // Same defensive read as above: a resume point that is the LAST applicable
-  // step leaves nothing for skipping to buy passage to, which is a seed this
+  const resumeIndex = before.applicableStepIds.indexOf(current);
+  const reachability = new Map(before.steps.map((step) => [step.id, step.isReachable]));
+
+  // The skip target is derived, not assumed: the first APPLICABLE step after
+  // the resume point that the PRE-READ traversal reports as blocked — never
+  // simply index+1. A CI seed can leave the immediately-next applicable step
+  // already complete on its own merits (e.g. age-tiers passes its own
+  // readiness check independently of where the resume point sits), so
+  // asserting data-reachable="false" on literally-the-next step fails there
+  // even though a skip still buys real passage further along the rail.
+  //
+  // The post-skip assertion below then holds BY CONSTRUCTION, not by luck:
+  // skipping the CURRENT blocking step advances the reachability frontier to
+  // exactly the first step after it that this pre-read traversal found
+  // blocked. Every step between `current` and that target was already
+  // reachable (non-blocking, per the very isReachable read above) — so
+  // skipping `current` changes nothing about any of them, and the derived
+  // target is the one row whose reachability the skip actually flips.
+  const nextId = before.applicableStepIds
+    .slice(resumeIndex + 1)
+    .find((id) => reachability.get(id) === false);
+
+  // Same defensive read as above: nothing after the resume point is locked in
+  // this seed, so there is no next step for a skip to unlock — a seed this
   // spec cannot exercise rather than a product failure.
   if (!nextId) {
     await page.close();
     test.skip(
       true,
-      "this stack's seed resumes at the last applicable step, so there is no next step for a skip to unlock",
+      "nothing after the resume point is locked in this seed, so there is no next step for a skip to unlock",
     );
     return;
   }

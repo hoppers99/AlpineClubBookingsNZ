@@ -1231,6 +1231,17 @@ mispricing a booking.
   (409) rather than dangling the theme or deleting a blob that is still
   referenced.
 
+  `markClubThemeSetupComplete` (#220 F3) is a SECOND site of this same
+  singleton-row lock, deliberately kept separate from `saveClubTheme` rather
+  than folded into it with a conditional: the launch panel's completeSetup
+  click flips only `completedAt`, guarded by
+  `updateMany({ where: { completedAt: null } })` so a repeat click or a retry
+  finds the row already stamped and leaves the original completion time
+  alone, and it touches no logo field at all. Same key, same statement shape
+  (materialise via `createMany … skipDuplicates`, then
+  `SELECT 1 … FOR UPDATE`), same order — no other tier composes here — so it
+  needs no new counterpart analysis of its own; it inherits `saveClubTheme`'s.
+
   Counterpart writers, and why there is no cycle:
   - **Config-transfer apply** (`src/lib/config-transfer/apply.ts`) takes
     `pg_advisory_xact_lock(hashtext('config-transfer-import'))` and then writes the

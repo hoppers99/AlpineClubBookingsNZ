@@ -330,7 +330,17 @@ export const AUDIT_CENSUS_TOTALS = {
   // `npx tsx scripts/audit/audit-writer-census.ts` on this tree (454 sites,
   // 2109 files scanned), not by adding one to the literal above — which is the
   // only way this file has ever been right after a merge.
-  writeSites: 454,
+  // 454 -> 455 (#220): `markClubThemeSetupComplete` in `src/lib/club-theme.ts`
+  // gained a `site_style.updated` write. The launch panel's completeSetup call
+  // (#220 F3) flips only `completedAt` under the same row lock `saveClubTheme`
+  // uses, rather than replaying the whole PUT body, so that narrower path needs
+  // its own audit row instead of completing setup silently. Category `admin` at
+  // the site, matching `PUT /api/admin/site-style`'s write for the same
+  // transition (`site_style.updated`, `admin`, `important`), so it does not join
+  // `UNCATEGORISED_AUDIT_WRITERS` below, and it is a new writer categorised at
+  // the source rather than a reclassification, so it joins none of the four
+  // per-site-pinned maps either.
+  writeSites: 455,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -371,7 +381,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // sign create/rotate/pause/resume, queue triage and photo disclosure/deletion,
     // and the two submit records. None sits inside the submit transaction, so a
     // failed audit write never fails a submitted report.
-    logAudit: { total: 255, uncategorised: 0 },
+    // 255 -> 256 (#220): `markClubThemeSetupComplete`'s `site_style.updated`
+    // write, above. `logAudit`, matching the sibling write in the PUT route it
+    // mirrors, and fire-and-forget for the same reason: nothing downstream
+    // depends on the row existing before the response returns.
+    logAudit: { total: 256, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     // 104 -> 105 (#2649): the return-to-waitlist repair, above.
@@ -607,7 +621,13 @@ export const AUDIT_CENSUS_TOTALS = {
     // investigating "why did the nightly job run an hour late" needs to find.
     // Retention is unchanged from every other `admin` row: `critical`, seven
     // years, because the action name normalises to no access-event word.
-    admin: 103,
+    // 103 -> 104 (#220): `markClubThemeSetupComplete`'s `site_style.updated`
+    // write, above. `admin` is the answer the sibling PUT-route write for the
+    // same transition already gives, so this widens nobody's access — it is the
+    // same row a support-only operator could already read when setup completed
+    // through the old whole-body PUT path, now also reachable through the
+    // narrower launch-panel path.
+    admin: 104,
     // 16 -> 19 (#2581 child 2): `member.password-reset-sent` and
     // `member.setup-invite-sent` (decision 3 — the affected domain is the
     // CREDENTIAL, not the mailing), plus the `member.bulk-set-role` branch
