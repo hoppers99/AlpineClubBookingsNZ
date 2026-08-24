@@ -273,6 +273,122 @@ describe("SetupWizardClient", () => {
     expect(screen.getByTestId("admin-view-only-banner").textContent).toBe("");
   });
 
+  // F9's other half: the fallback is right, and it used to be SILENT. An
+  // operator who chose a step and then found a different one on screen had
+  // watched the pane change under them for no stated reason.
+  it("says so when a refetch moves the operator off the step they chose", async () => {
+    stubFetch([
+      {
+        readiness: readinessWith([
+          ["club-config", "Club Configuration"],
+          ["xero-operational", "Operational Xero"],
+        ]),
+        traversal: traversalWith(["club-config", "xero-operational"], {
+          currentIndex: 0,
+          frontierIndex: 1,
+        }),
+      },
+      {
+        readiness: readinessWith([["club-config", "Club Configuration"]]),
+        traversal: traversalWith(["club-config"], { currentIndex: 0 }),
+      },
+    ]);
+    render(<SetupWizardClient permissionMatrix={admin} />);
+    fireEvent.click(await screen.findByTestId("setup-wizard-rail-row-xero-operational"));
+    // Nothing to announce while the operator is where they asked to be.
+    expect(screen.queryByTestId("setup-wizard-moved-notice")).toBeNull();
+
+    fireEvent.focus(window);
+    const notice = await screen.findByTestId("setup-wizard-moved-notice");
+    expect(notice.textContent).toContain("returned to the next step");
+
+    // Dismissible, and it does not come back on the next refetch — the
+    // selection was cleared when it fired, so there is nothing left to
+    // re-invalidate.
+    fireEvent.click(screen.getByRole("button", { name: /Dismiss/ }));
+    expect(screen.queryByTestId("setup-wizard-moved-notice")).toBeNull();
+    fireEvent.focus(window);
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
+      ).toBe("club-config"),
+    );
+    expect(screen.queryByTestId("setup-wizard-moved-notice")).toBeNull();
+  });
+
+  // F2 at the shell: Back must target a step the operator may actually open.
+  // With a locked step immediately behind the selected one, the old
+  // `steps[index - 1]` handed Back an unreachable target, and the fallback then
+  // teleported them to the resume point instead.
+  it("skips a locked step when walking Back, rather than teleporting", async () => {
+    stubFetch([
+      {
+        readiness: readinessWith([
+          ["club-config", "Club Configuration"],
+          ["runtime-env", "Runtime Environment"],
+          ["seed-admin", "Administrator Account"],
+        ]),
+        traversal: {
+          ...traversalWith(["club-config", "runtime-env", "seed-admin"], {
+            currentIndex: 1,
+          }),
+          // club-config complete and reachable; runtime-env stale, capping the
+          // frontier under it; seed-admin complete, so reachable on its own
+          // account despite sitting past that frontier (#219 F2).
+          steps: [
+            {
+              id: "club-config" as SetupStepId,
+              ownerModule: "core" as const,
+              order: 10,
+              state: "complete" as const,
+              isComplete: true,
+              isStale: false,
+              isDeferred: false,
+              isReachable: true,
+            },
+            {
+              id: "runtime-env" as SetupStepId,
+              ownerModule: "core" as const,
+              order: 20,
+              state: "not-started" as const,
+              isComplete: false,
+              isStale: false,
+              isDeferred: false,
+              isReachable: false,
+            },
+            {
+              id: "seed-admin" as SetupStepId,
+              ownerModule: "core" as const,
+              order: 30,
+              state: "complete" as const,
+              isComplete: true,
+              isStale: false,
+              isDeferred: false,
+              isReachable: true,
+            },
+          ],
+          currentStepId: "runtime-env" as SetupStepId,
+        },
+      },
+    ]);
+    render(<SetupWizardClient permissionMatrix={admin} />);
+    fireEvent.click(await screen.findByTestId("setup-wizard-rail-row-seed-admin"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
+      ).toBe("seed-admin"),
+    );
+
+    fireEvent.click(screen.getByTestId("setup-wizard-back"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
+        // Not runtime-env (locked), and not the teleport to the resume point.
+      ).toBe("club-config"),
+    );
+    expect(screen.queryByTestId("setup-wizard-moved-notice")).toBeNull();
+  });
+
   it("falls back to the current step when the selected one disappears", async () => {
     stubFetch([
       {

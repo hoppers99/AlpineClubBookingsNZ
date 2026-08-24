@@ -69,6 +69,8 @@ export function SetupWizardClient({
   const [selectedId, setSelectedId] = useState<SetupWizardRailSelection | null>(
     null,
   );
+  /** The step the operator chose stopped being available, and they were moved. */
+  const [moved, setMoved] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -131,6 +133,35 @@ export function SetupWizardClient({
     }
     return resolveInitialStepId(view, selectedId);
   }, [view, selectedId]);
+
+  // …and when that fallback FIRES, say so. An operator who chose a step
+  // explicitly and then finds the pane showing a different one has, from where
+  // they are sitting, watched the screen change under them for no reason — the
+  // module owning it was switched off in another tab, or somebody else settled
+  // the step and moved the frontier. Landing them somewhere else without a word
+  // is the same defect as the Back button's teleport, one refetch later.
+  //
+  // The selection is cleared at the same moment, deliberately: left set, this
+  // would re-fire on every subsequent refetch, and the operator has already been
+  // moved once.
+  useEffect(() => {
+    if (!view || selectedId === null) return;
+    const resolved =
+      selectedId === SETUP_WIZARD_LAUNCH_ID
+        ? view.allResolved
+          ? SETUP_WIZARD_LAUNCH_ID
+          : view.currentStepId
+        : resolveInitialStepId(view, selectedId);
+    if (resolved === selectedId) return;
+    setSelectedId(null);
+    setMoved(true);
+  }, [view, selectedId]);
+
+  /** Any deliberate move retires the notice — they can see where they are now. */
+  const select = useCallback((id: SetupWizardRailSelection) => {
+    setMoved(false);
+    setSelectedId(id);
+  }, []);
 
   const activeStep =
     view && activeStepId && activeStepId !== SETUP_WIZARD_LAUNCH_ID
@@ -215,6 +246,27 @@ export function SetupWizardClient({
         </div>
       ) : null}
 
+      {moved ? (
+        <div
+          className="flex items-start justify-between gap-3 rounded-md border border-warning-6 bg-warning-3 px-4 py-3 text-sm text-warning-11"
+          role="status"
+          data-testid="setup-wizard-moved-notice"
+        >
+          <p>
+            This step changed elsewhere — you have been returned to the next
+            step.
+          </p>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setMoved(false)}
+          >
+            Dismiss
+          </Button>
+        </div>
+      ) : null}
+
       {view ? (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:items-start">
           <SetupWizardRail
@@ -223,7 +275,7 @@ export function SetupWizardClient({
             currentStepId={view.currentStepId}
             selectedId={activeStepId}
             launchUnlocked={view.allResolved}
-            onSelect={setSelectedId}
+            onSelect={select}
           />
 
           {activeStepId === SETUP_WIZARD_LAUNCH_ID ? (
@@ -239,8 +291,8 @@ export function SetupWizardClient({
               previousStep={neighbours.previous}
               nextStep={neighbours.next}
               launchUnlocked={view.allResolved}
-              onNavigate={setSelectedId}
-              onOpenLaunch={() => setSelectedId(SETUP_WIZARD_LAUNCH_ID)}
+              onNavigate={select}
+              onOpenLaunch={() => select(SETUP_WIZARD_LAUNCH_ID)}
               onProgress={(action) => void updateProgress(action, activeStep.id)}
             />
           ) : (

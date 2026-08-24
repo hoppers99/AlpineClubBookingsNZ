@@ -80,14 +80,32 @@ export const SETUP_WIZARD_STATE_LABEL: Record<SetupWizardStepState, string> = {
  * The label a step carries in the rail and in the step frame's badge — which is
  * NOT always its own state's label.
  *
- * `current` is the traversal's RESUME POINT, and it wins over `stale` and
- * `deferred` when a step is both (`SetupWizardStepState` says so, and the two
- * flags are carried on the step precisely so a reader can recover what the
- * precedence hid). That is right for the state machine and lossy for a rail:
- * deferring the step you are on leaves it CURRENT, because `currentStepId` is
- * the first step that is not COMPLETE and deferring completes nothing. Without
- * this the row would go on reading like an ordinary next step while the
- * deferral — the whole point of pressing the button — vanished from the rail.
+ * The state machine's precedence is LOSSY on purpose, and this puts back what it
+ * dropped. `current` wins over `stale` and `deferred`, and `stale` wins over
+ * `deferred` (`SetupWizardStepState` says so, and the two flags are carried on
+ * the step precisely so a reader can recover what the precedence hid). A step can
+ * genuinely be all three: `currentStepId` is the first step that is not COMPLETE
+ * and deferring completes nothing, so the step you just skipped stays current;
+ * and a step recorded complete but re-opened by an upstream change is stale while
+ * still sitting in `skippedStepIds` from an earlier pass.
+ *
+ * So the label is built by ACCUMULATION rather than by picking one branch —
+ * position first, then stale, then deferred — and every combination keeps every
+ * fact:
+ *
+ * | state | stale | deferred | reads |
+ * | --- | --- | --- | --- |
+ * | current | — | — | Up next |
+ * | current | yes | — | Up next — needs another look |
+ * | current | — | yes | Up next — skipped for now |
+ * | current | yes | yes | Up next — needs another look, skipped for now |
+ * | stale | yes | — | Needs another look |
+ * | stale | yes | yes | Needs another look — skipped for now |
+ *
+ * The two `current`+one-flag rows were already right; the other two dropped a
+ * fact each. The stale-and-deferred pair matters most, because it is exactly the
+ * step that still CAPS THE FRONTIER (#219 F2) while looking, in the old wording,
+ * like an ordinary skipped step the operator had already dealt with.
  *
  * It also says "up next" rather than "you are here": the row the operator is
  * LOOKING at is the selected one, marked separately by `aria-current="step"` and
@@ -95,10 +113,36 @@ export const SETUP_WIZARD_STATE_LABEL: Record<SetupWizardStepState, string> = {
  * step they deferred.
  */
 export function setupWizardStepLabel(step: SetupWizardRailStep): string {
-  if (step.state !== "current") return SETUP_WIZARD_STATE_LABEL[step.state];
-  if (step.isStale) return "Up next — needs another look";
-  if (step.isDeferred) return "Up next — skipped for now";
-  return SETUP_WIZARD_STATE_LABEL.current;
+  const position = SETUP_WIZARD_STATE_LABEL[step.state];
+  if (step.state === "complete" || step.state === "not-started") return position;
+
+  const qualifiers: string[] = [];
+  // `state` already carries one of these when it is not `current`; only the
+  // facts the state did NOT say need appending.
+  if (step.isStale && step.state !== "stale") qualifiers.push("needs another look");
+  if (step.isDeferred && step.state !== "deferred") qualifiers.push("skipped for now");
+  if (qualifiers.length === 0) return position;
+  return `${position} — ${qualifiers.join(", ")}`;
+}
+
+/**
+ * The state a row is DRAWN as, which is not always the state it is IN.
+ *
+ * `current` is a neutral, unalarming look — a gold ring saying "you are heading
+ * here next". A step that is current AND stale is not unalarming: it is work
+ * that has to be redone, and it caps the frontier. Drawing it as an ordinary
+ * current row leaves that warning living only in the row's text, which is
+ * exactly the failure colour-blind and low-vision operators are left with when a
+ * status is carried by one channel. So staleness takes the surface, and the
+ * label above still carries the position.
+ *
+ * Deferral deliberately does NOT do this. It is the operator's own choice, made
+ * seconds earlier by pressing the button, and it does not cap the frontier — so
+ * the amber it earns is the amber of an ordinary `deferred` row, and where it
+ * coincides with `current` the position is the more useful thing to show.
+ */
+function railVisualState(step: SetupWizardRailStep): SetupWizardStepState {
+  return step.state === "current" && step.isStale ? "stale" : step.state;
 }
 
 function stateClasses(state: SetupWizardStepState, selected: boolean): string {
@@ -135,9 +179,10 @@ function RailRow({
   rowRef?: (node: HTMLElement | null) => void;
 }) {
   const label = setupWizardStepLabel(step);
+  const visualState = railVisualState(step);
   const body = (
     <>
-      <StateIcon state={step.state} />
+      <StateIcon state={visualState} />
       <span className="min-w-0 flex-1 truncate text-sm">{step.title}</span>
       <span className="shrink-0 text-xs text-muted-foreground">{label}</span>
     </>
@@ -170,10 +215,14 @@ function RailRow({
       type="button"
       data-testid={`setup-wizard-rail-row-${step.id}`}
       data-state={step.state}
+      // The state it is DRAWN as — equal to `data-state` except where staleness
+      // takes the surface off `current`. Published so the colour-parity rule can
+      // be asserted without a test reading Tailwind class names.
+      data-visual-state={visualState}
       data-reachable="true"
       aria-current={selected ? "step" : undefined}
       onClick={() => onSelect(step.id)}
-      className={cn(shared, "transition-colors", stateClasses(step.state, selected))}
+      className={cn(shared, "transition-colors", stateClasses(visualState, selected))}
     >
       {body}
     </button>

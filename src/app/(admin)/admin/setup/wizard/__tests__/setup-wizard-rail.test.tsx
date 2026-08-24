@@ -132,6 +132,102 @@ describe("SetupWizardRail", () => {
     expect(screen.getByText("Up next — needs another look")).toBeTruthy();
   });
 
+  // The three combinations the single-branch label dropped a fact from. Each is
+  // a state the traversal really produces: a step you skip stays CURRENT
+  // (deferring completes nothing), and a step recorded complete then re-opened
+  // by an upstream change is STALE while still sitting in `skippedStepIds`.
+  // Mutation-verified: returning on the first matching flag fails all three.
+  it("keeps every fact when a step is stale AND deferred", () => {
+    cleanup();
+    render(
+      <SetupWizardRail
+        groups={[
+          {
+            id: "foundation",
+            title: "Foundation",
+            description: "",
+            steps: [
+              // Current + stale + deferred: the position and BOTH flags.
+              step("all-three", {
+                state: "current",
+                isStale: true,
+                isDeferred: true,
+              }),
+              // Not current, stale + deferred: the state says "stale", and the
+              // deferral used to vanish entirely. This is the one that matters
+              // most — it still caps the frontier (#219 F2) while reading, in
+              // the old wording, like a step already dealt with.
+              step("stale-and-skipped", {
+                state: "stale",
+                isStale: true,
+                isDeferred: true,
+              }),
+              // Not current, deferred only: unchanged, and pinned so the
+              // accumulation cannot start double-naming it.
+              step("just-skipped", { state: "deferred", isDeferred: true }),
+            ],
+          },
+        ]}
+        percentComplete={0}
+        currentStepId={"all-three" as SetupStepId}
+        selectedId={"all-three" as SetupStepId}
+        launchUnlocked={false}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByText("Up next — needs another look, skipped for now"),
+    ).toBeTruthy();
+    expect(screen.getByText("Needs another look — skipped for now")).toBeTruthy();
+    expect(screen.getByText("Skipped for now")).toBeTruthy();
+  });
+
+  // Colour-blind parity: a current step that is ALSO stale is work to be redone
+  // and caps the frontier, so the warning must not live only in the row's text.
+  // Mutation-verified: drawing straight off `step.state` fails this.
+  it("draws a current step that is stale as stale, not as an ordinary next step", () => {
+    cleanup();
+    render(
+      <SetupWizardRail
+        groups={[
+          {
+            id: "foundation",
+            title: "Foundation",
+            description: "",
+            steps: [
+              step("stale-here", { state: "current", isStale: true }),
+              step("plain-here", { state: "current" }),
+              // Deferral deliberately does NOT take the surface: it is the
+              // operator's own choice and it does not cap the frontier.
+              step("skipped-here", { state: "current", isDeferred: true }),
+            ],
+          },
+        ]}
+        percentComplete={0}
+        currentStepId={"stale-here" as SetupStepId}
+        selectedId={null}
+        launchUnlocked={false}
+        onSelect={vi.fn()}
+      />,
+    );
+    const visual = (id: string) =>
+      screen
+        .getByTestId(`setup-wizard-rail-row-${id}`)
+        .getAttribute("data-visual-state");
+    expect(visual("stale-here")).toBe("stale");
+    expect(visual("plain-here")).toBe("current");
+    expect(visual("skipped-here")).toBe("current");
+    // The underlying state is untouched — the rail draws it differently, it
+    // does not relabel the state machine.
+    expect(
+      screen.getByTestId("setup-wizard-rail-row-stale-here").getAttribute("data-state"),
+    ).toBe("current");
+    // …and the amber surface really is on the row, not merely announced.
+    expect(
+      screen.getByTestId("setup-wizard-rail-row-stale-here").className,
+    ).toContain("border-warning-6");
+  });
+
   it("shows the traversal's percentage and nothing it computed itself", () => {
     renderRail();
     expect(screen.getByTestId("setup-wizard-percent").textContent).toBe("42%");
