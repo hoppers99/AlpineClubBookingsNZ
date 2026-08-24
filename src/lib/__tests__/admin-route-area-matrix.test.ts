@@ -425,11 +425,22 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/setup/finance-report-mappings/backfill": "finance",
   "/api/admin/setup/progress": "support",
   "/api/admin/setup/provider-test": "support",
+  // The setup wizard's single read (epic #213, C5). `support`, exactly like
+  // `/api/admin/setup` beside it and for the same reason: it answers the same
+  // question about the same club configuration. WHICH STEPS an officer may act
+  // on is a separate, per-area question the wizard's own controls answer
+  // (D12) — admission to the surface is not.
+  "/api/admin/setup/wizard": "support",
   "/api/admin/site-banners": "content",
   "/api/admin/site-banners/[id]": "content",
   "/api/admin/site-content": "content",
   "/api/admin/site-images": "content",
   "/api/admin/site-style": "content",
+  // #220 review F3: the setup wizard's launch panel publishes the site through
+  // this rather than round-tripping the whole theme through the PUT above.
+  // Same privilege, same area — it is the same transition, and deliberately NOT
+  // the `support` area the wizard's progress bookkeeping uses.
+  "/api/admin/site-style/complete-setup": "content",
   "/api/admin/site-style/logo": "content",
   "/api/admin/stuck-states": "support",
   "/api/admin/subscriptions": "finance",

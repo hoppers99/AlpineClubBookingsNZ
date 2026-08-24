@@ -955,7 +955,18 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // both delete the same replaced LOGO blob. Order: ClubTheme row -> MediaImage.
   // Singleton-keyed; no advisory lock; disjoint from booking/money writers. See
   // docs/CONCURRENCY_AND_LOCKING.md -> "Club-theme logo writer".
-  "src/lib/club-theme.ts": 1,
+  //
+  // 1 -> 2 (#220): `markClubThemeSetupComplete` is a SECOND site of the SAME
+  // ClubTheme-row lock, copied deliberately rather than shared, because it is a
+  // narrower write than `saveClubTheme`'s (completedAt only, guarded by
+  // `updateMany({ where: { completedAt: null } })`) and the two must not
+  // become one function with a conditional body. Same key (the ClubTheme
+  // singleton row), same statement shape (`SELECT 1 … FOR UPDATE` after
+  // materialising via `createMany` + `skipDuplicates`), same order (no other
+  // tier composes here) — so this is a second SITE of an existing key, not a
+  // new key needing new counterpart-writer analysis. See
+  // docs/CONCURRENCY_AND_LOCKING.md -> "Club-theme logo writer".
+  "src/lib/club-theme.ts": 2,
   // Member-photo upload (POST) and remove (DELETE) each lock the member row
   // (`SELECT 1 … FOR UPDATE`) so concurrent replace/remove
   // serialise and never orphan a MEMBER_PHOTO blob. Member-id keyed; no

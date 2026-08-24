@@ -333,12 +333,18 @@ const FIGURES = {
    * add eleven gated controls. Main's three and this branch's eleven are
    * DISJOINT, so the merged figure is 338 — MEASURED by re-running this census
    * on the merged tree, never by adding one branch's delta to the other's total.
+   *
+   * 338 -> 342 (#220, the setup wizard shell): the wizard's step frame gates its
+   * three progress transitions, and its launch panel gates the one control that
+   * makes the public site visible. All four are STATIC opt-outs — each of the
+   * two files renders its own banner — so `optOuts` and `staticOptOuts` move by
+   * the same four and the vouched split is untouched.
    */
-  callSites: 338,
+  callSites: 342,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 285,
+  optOuts: 289,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 251,
+  staticOptOuts: 255,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *
@@ -366,8 +372,11 @@ const FIGURES = {
    *
    * 85 -> 89 (#2780 merged with main): the four maintenance-report admin
    * surfaces each head their section with one. Measured, not added up.
+   *
+   * 89 -> 91 (#220): the setup wizard's step frame and its launch panel each
+   * head their own section with one.
    */
-  bannerComponents: 89,
+  bannerComponents: 91,
   /**
    * Admin files that render an `AdminViewOnlyNotice` and NO
    * `ViewOnlyActionButton` — the first of the three cases in which the older

@@ -57,7 +57,7 @@ export default async function FinanceSetupPage() {
     <div className="space-y-8">
       <div>
         <div className="mb-2">
-          <BackLink href="/admin/setup" label="Setup Wizard" />
+          <BackLink href="/admin/setup" label="Setup checklist" />
         </div>
         <h1 className="text-2xl font-bold text-foreground">Finance</h1>
         <p className="mt-1 text-sm text-muted-foreground">

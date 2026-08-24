@@ -19,6 +19,7 @@ import {
   RotateCcw,
   SkipForward,
   UserX,
+  Wand2,
   type LucideIcon,
 } from "lucide-react";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
@@ -432,13 +433,27 @@ export function SetupPageClient({
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-foreground">Setup Wizard</h1>
+          <h1 className="text-3xl font-bold text-foreground">Setup checklist</h1>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
             Finish first-install readiness for club configuration, booking rules,
             provider connections, and finance mappings.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {/*
+            The wizard launcher (epic #213, C5). Per D6 the readiness cards below
+            are UNCHANGED and stay — the wizard ships alongside them first, and
+            C8 (#223) owns the transition to replacing them. This is deliberately
+            only an entry point: it resumes at whatever step the wizard's own
+            traversal calls current, so an operator who left halfway picks up
+            where they were rather than at the top.
+          */}
+          <Button asChild>
+            <Link href="/admin/setup/wizard">
+              <Wand2 className="h-4 w-4" />
+              Open the setup wizard
+            </Link>
+          </Button>
           <Button variant="outline" onClick={loadSetup} disabled={loading}>
             <RefreshCw className="h-4 w-4" />
             Refresh
