@@ -103,6 +103,40 @@ finish); use the checklist when you know what you are looking for.
    Anything you skipped is listed on that panel in plain words rather than
    quietly dropped.
 
+#### When a finished step needs another look
+
+Some steps only make sense once an earlier one is settled. If you go back and
+reopen one of those earlier steps, anything that depended on it — and anything
+that depended on *that* — moves to **Needs another look**.
+
+Four things are worth knowing about that state, because it is the one people
+find surprising:
+
+- **It is remembered.** The wizard writes down which steps went back into
+  question, so closing the tab, coming back tomorrow, or another officer opening
+  the wizard all show the same picture rather than a fresh guess each time.
+- **Nothing you did is thrown away.** A step that needs another look is still
+  recorded as done. The wizard is asking you to confirm it still reads correctly
+  now the thing underneath it has changed — not telling you to do it again. When
+  the step it depends on is settled, it goes quietly back to **Done** without
+  your having to open it at all.
+- **It counts as outstanding while it lasts**, so it holds the percentage back
+  and keeps **Ready to open** locked. That is the point: a club is not finished
+  setting up while something is waiting to be checked.
+- **"Setup complete" is withdrawn while anything needs another look.** If you
+  had already finished setup, the Setup page stops saying so until the list is
+  empty again. A club should never be told it has finished over work that is
+  still open.
+
+Each change is recorded in the [Audit Log](audit-log.md) under its own event
+type — one for steps that started needing another look, one for steps that
+stopped — so you can see when it happened and which step caused it.
+
+Upgrading the platform does **not** put finished steps back into question. A
+step that a new release *adds* arrives as **Not started**, which is a different
+thing: nobody has done it yet, rather than somebody having done it and something
+having changed underneath it.
+
 **What you can change depends on your role, and there are two different
 answers.** The wizard is reachable by anyone who can reach the Setup page, and
 everyone can read and walk the whole journey.
