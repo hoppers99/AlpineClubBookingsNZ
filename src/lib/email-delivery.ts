@@ -135,6 +135,25 @@ const RESERVED_PRIVATE_SUFFIXES = [
   ".example",
 ];
 
+/**
+ * Whether every dot-separated label is a legal hostname label (RFC 1123: letters,
+ * digits and inner hyphens, 1-63 characters).
+ *
+ * Checked because the "no dot means it cannot be a public FQDN" rule below is
+ * only sound for something that IS a hostname. Without this, `EMAIL_SERVER_HOST`
+ * set to a stray sentence would have no dot in it and would therefore have been
+ * accepted as a private capture — harmless in practice, since it resolves
+ * nowhere, but the check would have been reasoning about a string it had not
+ * established was a host name at all. Unrecognised input is refused instead.
+ */
+function isHostnameShaped(host: string): boolean {
+  if (host.length > 253) return false;
+  const labels = host.split(".");
+  return labels.every((label) =>
+    /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(label),
+  );
+}
+
 /** The four octets of a dotted-quad, or `null` when it is not one. */
 function parseIpv4(host: string): number[] | null {
   const parts = host.split(".");
@@ -205,6 +224,9 @@ export function classifyCaptureHost(
 
   const ipv4 = parseIpv4(literal);
   if (ipv4) return isPrivateIpv4(ipv4) ? "private-address" : "public-address";
+
+  // Everything below reasons about a HOST NAME, so establish that it is one.
+  if (!isHostnameShaped(host)) return "public-address";
 
   if (host === "localhost") return "private-address";
   // No dot at all: a container/service name or a hosts-file entry, never a
