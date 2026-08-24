@@ -1,14 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { logAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
+import { recordSetupProgressTransition } from "@/lib/setup-progress-audit";
 import { recomputeSetupStaleStepIds } from "@/lib/setup-progress-staleness";
 import {
   SETUP_STEP_IDS,
   normalizeSetupProgress,
   type SetupStepId,
 } from "@/lib/setup-readiness";
+
+/**
+ * The setup wizard's one write (epic #213, C4/#219 and C2/#217).
+ *
+ * Five transitions the operator can ask for, and one derived answer they cannot:
+ * `staleStepIds`, which this route recomputes from the step registry's
+ * prerequisite graph on every write. What gets RECORDED about any of it lives in
+ * `setup-progress-audit.ts`; how the stale set is computed, and which way each
+ * failure falls, lives in `setup-progress-staleness.ts`.
+ */
 
 const progressSchema = z.discriminatedUnion("action", [
   z.object({
@@ -19,76 +29,6 @@ const progressSchema = z.discriminatedUnion("action", [
     action: z.enum(["finish", "reset"]),
   }),
 ]);
-
-type SetupProgressAction = z.infer<typeof progressSchema>["action"];
-
-/**
- * One audit `action` per transition (epic #213, C4/#219).
- *
- * These used to be one row, `setup_progress.update`, distinguished only by a
- * summary reading "Setup progress skip". `AuditLog.action` is what the audit
- * log's **Event Type** filter selects on, so a single value meant an operator
- * could ask "what happened to setup progress" and never "who deferred a step",
- * and the wizard C5 builds drives far more of these than the readiness cards
- * ever did.
- *
- * CATEGORY IS UNCHANGED AND STAYS `system`. `docs/guides/audit-log.md` puts
- * "Setup, backups, platform-level events" there, and `INV-PRIV-012` files a row
- * by its affected domain — which is the club's setup, not an administrator's
- * settings — so this is deliberately NOT the `admin` an adjacent settings write
- * would take. Because the category does not move, no row changes audience and
- * `INV-OPS-012`'s backfill obligation does not arise. The rows already written
- * keep the old action value, so an Event Type filter splits at this release;
- * that is disclosed in the changelog and costs a filter choice, never a
- * permission.
- *
- * THE STALE TRANSITIONS ARE HERE TOO, as of C2 (#217), for the reason the
- * earlier note in this place gave for their absence: under D11 staleness was
- * DERIVED on read, so there was no moment at which a step BECAME stale — only a
- * request at which it was computed to be — and an audit writer on the read path
- * would have written a row per page load. Persisting the set gives the
- * transition an instant, and this route is where it happens.
- *
- * They are two more entries in the same table and two more `logAudit` calls
- * beside the one below, in the same `system` category, for the same reason the
- * five above are five values rather than one: `AuditLog.action` is what the
- * Event Type filter selects on, and "which steps went back into question, and
- * when" is a question an operator will ask separately from "who marked what
- * done". Marked-stale and stale-cleared are separate actions rather than one
- * "stale set changed", because a single request CAN do both — the set is
- * recomputed over the whole graph, so one transition can invalidate one branch
- * while a readiness check that has started passing clears another.
- */
-const AUDIT_ACTION_BY_PROGRESS_ACTION: Record<SetupProgressAction, string> = {
-  complete: "setup_progress.step_completed",
-  skip: "setup_progress.step_deferred",
-  reopen: "setup_progress.step_reopened",
-  finish: "setup_progress.finished",
-  reset: "setup_progress.reset",
-};
-
-const AUDIT_ACTION_STEPS_MARKED_STALE = "setup_progress.steps_marked_stale";
-const AUDIT_ACTION_STEPS_STALE_CLEARED = "setup_progress.steps_stale_cleared";
-
-/** `"a", "b"` — the same quoting the per-step summaries above use. */
-function quoteStepIds(ids: readonly string[]): string {
-  return ids.map((id) => `"${id}"`).join(", ");
-}
-
-function auditSummaryFor(parsed: z.infer<typeof progressSchema>): string {
-  switch (parsed.action) {
-    case "complete":
-      return `Setup step "${parsed.stepId}" marked complete`;
-    case "skip":
-      return `Setup step "${parsed.stepId}" deferred for now`;
-    case "reopen":
-      return `Setup step "${parsed.stepId}" reopened`;
-    case "finish":
-      return "Setup marked finished";
-    case "reset":
-      return "Setup progress reset";
-  }
-}
 
 function withoutStep(ids: string[], stepId: SetupStepId) {
   return ids.filter((id) => id !== stepId);
@@ -215,54 +155,16 @@ export async function PATCH(request: NextRequest) {
     },
   });
 
-  await logAudit({
-    action: AUDIT_ACTION_BY_PROGRESS_ACTION[parsed.data.action],
-    memberId: session.user.id,
+  // Recorded only after the row is written, so a transition that never landed
+  // records nothing. The two stale rows come with it when the set actually
+  // moved — see `setup-progress-audit.ts`.
+  recordSetupProgressTransition({
+    payload: parsed.data,
     actorMemberId: session.user.id,
-    category: "system",
-    entityType: "SetupProgress",
     entityId: record.id,
-    summary: auditSummaryFor(parsed.data),
-    metadata: parsed.data,
+    previousStaleStepIds: currentStale,
+    nextStaleStepIds: record.staleStepIds,
   });
-
-  // The two stale transitions, recorded only when the set actually MOVED. A
-  // request that leaves it unchanged — which is every request on a registry
-  // whose steps declare no prerequisites, i.e. every request today — writes
-  // nothing here, so these rows appear when something really did go back into
-  // question and never as background noise beside the transition above.
-  const markedStale = record.staleStepIds.filter(
-    (id) => !currentStale.includes(id),
-  );
-  const clearedStale = currentStale.filter(
-    (id) => !record.staleStepIds.includes(id),
-  );
-
-  if (markedStale.length > 0) {
-    await logAudit({
-      action: AUDIT_ACTION_STEPS_MARKED_STALE,
-      memberId: session.user.id,
-      actorMemberId: session.user.id,
-      category: "system",
-      entityType: "SetupProgress",
-      entityId: record.id,
-      summary: `Setup steps ${quoteStepIds(markedStale)} now need another look`,
-      metadata: { ...parsed.data, stepIds: markedStale },
-    });
-  }
-
-  if (clearedStale.length > 0) {
-    await logAudit({
-      action: AUDIT_ACTION_STEPS_STALE_CLEARED,
-      memberId: session.user.id,
-      actorMemberId: session.user.id,
-      category: "system",
-      entityType: "SetupProgress",
-      entityId: record.id,
-      summary: `Setup steps ${quoteStepIds(clearedStale)} no longer need another look`,
-      metadata: { ...parsed.data, stepIds: clearedStale },
-    });
-  }
 
   return NextResponse.json({
     progress: normalizeSetupProgress({
