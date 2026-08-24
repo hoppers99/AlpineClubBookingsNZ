@@ -492,11 +492,22 @@ export async function createXeroInvoiceForGroupSettlement(
       createdInvoice.invoiceID,
       "v1"
     );
-    // Environment-safety boundary (#3035; INV-CONFIG-004), resolved OUT HERE
-    // rather than inside the transaction below, which holds the exclusive
-    // `pg_advisory_xact_lock(1)`: a second Prisma connection taken from in there
-    // is a pool hazard while every other writer is queued behind that lock
-    // holding one of its own. See `xero-invoice-email.ts` for the whole rule.
+    /*
+      Environment-safety boundary (#3035; INV-CONFIG-004), resolved OUT HERE
+      first, so a copy does nothing further and no lock is taken on its behalf.
+      Taking a second Prisma CONNECTION from inside the transaction below — which
+      holds the exclusive `pg_advisory_xact_lock(1)` while every other writer is
+      queued behind it holding one of its own — is still forbidden.
+
+      BUT THIS ANSWER IS RE-PROVED INSIDE THE LOCK BEFORE THE SEND (#3071 review,
+      hoppers99), because the wait for that lock is unbounded and this answer was
+      being carried across it unchecked. An administrator who switched the safer
+      override on during the wait was not seen, and the send went ahead on a
+      clearance minted before they clicked. The re-read passes the TRANSACTION
+      client, which uses the connection the transaction already holds and so takes
+      no second one — the objection above is about connections, not about reads,
+      and it never applied to a read on `tx`.
+    */
     const invoiceEmailPolicy = await resolveXeroInvoiceEmailPolicy();
     // Recorded from what the GATE did, never from the policy alone (#3035
     // review) — see `resolveXeroInvoiceEmailPolicy` on why two withhold reasons
@@ -568,10 +579,34 @@ export async function createXeroInvoiceForGroupSettlement(
               .email as string | null,
           };
         }
+        /*
+          RE-READ ON `tx`, IMMEDIATELY BEFORE THE PROVIDER CALL (#3071 review,
+          hoppers99) — the whole point of the change, so it is worth being precise
+          about what is re-read and what is not.
+
+          Only asked when the outer answer was an ALLOW. A withhold decided before
+          the lock stays that withhold: it is already the safe direction, the
+          answer cannot have become MORE permissive in a way this workflow may act
+          on, and re-asking would spend a read to change nothing.
+
+          The re-read can only move the answer to a withhold, because the safer
+          override is one-directional (`INV-CONFIG-003`: the database may only
+          force the safer state). So this is a narrowing check, not a second
+          chance at permission.
+
+          `environmentWithheld` is recorded from what THIS gate returned rather
+          than from the outer policy, which is the #3035 review's rule and is why
+          the branch reads `freshPolicy` and not `invoiceEmailPolicy`: two withhold
+          reasons must never both claim one event.
+        */
+        const freshPolicy =
+          invoiceEmailPolicy.kind === "allow"
+            ? await resolveXeroInvoiceEmailPolicy(tx)
+            : invoiceEmailPolicy;
         // #3035: the club's own switch above is checked FIRST, so it stays
         // recorded as the club's decision on a copy. No withheld-email audit row
         // for this branch — that row asserts an administrator set the switch.
-        if (invoiceEmailPolicy.kind !== "allow") {
+        if (freshPolicy.kind !== "allow") {
           return {
             cancelled: false,
             responseBody: null,
@@ -582,7 +617,7 @@ export async function createXeroInvoiceForGroupSettlement(
           };
         }
         const emailResponse = await sendXeroInvoiceEmail({
-          clearance: invoiceEmailPolicy.clearance,
+          clearance: freshPolicy.clearance,
           xero,
           tenantId,
           invoiceId: createdInvoice.invoiceID!,

@@ -102,6 +102,7 @@ import {
   resolveEnvironmentRole,
   type EnvironmentRoleDecidedBy,
   type EnvironmentRoleResolution,
+  type EnvironmentSafetySettingsStore,
 } from "@/lib/environment-role";
 
 /**
@@ -304,9 +305,11 @@ export function decideDeliveryPolicy(
  * caller. A test can still assert every row of the decision table; it can no
  * longer manufacture the token that opens a live provider path.
  */
-export async function resolveDeliveryPolicy(): Promise<DeliveryDecision> {
+export async function resolveDeliveryPolicy(
+  store?: EnvironmentSafetySettingsStore,
+): Promise<DeliveryDecision> {
   const outcome = decideDeliveryPolicy(
-    await resolveEnvironmentRole(),
+    await resolveEnvironmentRole(store),
     resolveEmailTransportKind(),
   );
   if (outcome.kind !== "allow") return outcome;
@@ -458,6 +461,16 @@ export function assertDeliveryClearanceWitness(
  * genuine and is no longer true. An administrator can switch the safer override on
  * while a batch is mid-flight, and that click is the one somebody makes when they
  * have just realised a copy is about to email the club's real members.
+ *
+ * THIS FUNCTION CAN ONLY PROTECT WHAT ASKS IT, and that sentence is here because
+ * omitting it made the paragraph above false in one place (#3071 review,
+ * hoppers99). A caller that resolves once and then sends fifty messages gets ONE
+ * check, however carefully this function re-resolves. Both callers now ask per
+ * message: `sendEmail` through `getEmailTransporter` for every message it renders,
+ * and `cron-email-retry.ts` inside its own loop rather than once above it, which
+ * is what it used to do. A future third sender that hoists the call out of its
+ * loop reopens the same hole, and nothing here can stop it — the check is
+ * per-call by construction, so the discipline belongs at the call site.
  *
  * The second half costs one primary-key read per call, and it is spent here rather
  * than in the Xero wrapper for a stated reason: this function guards a CACHED

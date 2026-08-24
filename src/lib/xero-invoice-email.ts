@@ -53,6 +53,7 @@ import {
   resolveDeliveryPolicy,
   type LiveProviderClearance,
 } from "@/lib/environment-delivery-policy";
+import type { EnvironmentSafetySettingsStore } from "@/lib/environment-role";
 
 /**
  * The narrowest shape of the Xero client this module needs.
@@ -102,8 +103,17 @@ export type XeroInvoiceEmailPolicy =
  * Exposed separately from the send so a caller can ask BEFORE it enters a
  * transaction or takes an advisory lock. The group-settlement workflow needs
  * exactly that: its `emailInvoice` call is the one deliberately
- * provider-spanning fence inside `pg_advisory_xact_lock(1)`, and resolving the
- * role in there would open a second database connection while that lock is held.
+ * provider-spanning fence inside `pg_advisory_xact_lock(1)`.
+ *
+ * AND IT ASKS AGAIN INSIDE THE LOCK, PASSING `store` (#3071 review, hoppers99).
+ * The original reasoning for not re-asking was that resolving the role in there
+ * would open a second database connection while an exclusive lock is held, with
+ * every other invoice run queued behind it holding one of its own — a genuine
+ * pool-timeout hazard. That objection was sound and it is now dissolved rather
+ * than accepted: reading the override on the TRANSACTION client takes no second
+ * connection. It matters because the wait for `pg_advisory_xact_lock(1)` is
+ * unbounded, so a clearance minted before the wait could be arbitrarily stale,
+ * and the safer override an administrator switched on during it was not seen.
  *
  * A DECLARED LOCAL CAPTURE MAILBOX IS NOT AN ALLOW HERE, and that asymmetry with
  * `sendEmail` is the point rather than an inconsistency. A capture intercepts the
@@ -128,8 +138,10 @@ export type XeroInvoiceEmailPolicy =
  * which is precisely the conflation INV-CONFIG-004 exists to forbid (#3035
  * review).
  */
-export async function resolveXeroInvoiceEmailPolicy(): Promise<XeroInvoiceEmailPolicy> {
-  const decision = await resolveDeliveryPolicy();
+export async function resolveXeroInvoiceEmailPolicy(
+  store?: EnvironmentSafetySettingsStore,
+): Promise<XeroInvoiceEmailPolicy> {
+  const decision = await resolveDeliveryPolicy(store);
   if (decision.kind === "allow" && decision.grounds === "production") {
     return { kind: "allow", clearance: decision.clearance };
   }
@@ -160,12 +172,19 @@ export async function resolveXeroInvoiceEmailPolicy(): Promise<XeroInvoiceEmailP
  * THE RUNTIME CHECK HERE IS THE WITNESS ONLY, not a second role read, and the
  * reason is stated rather than left as an inconsistency with
  * `getEmailTransporter`. A clearance reaches this function microseconds after
- * {@link resolveXeroInvoiceEmailPolicy} read the database for it, and the
- * group-settlement caller is inside `pg_advisory_xact_lock(1)` when it calls —
- * where a second Prisma connection is a genuine hazard, because that lock is
- * exclusive, so every other invoice run is queued behind it holding a connection
- * of its own. The witness check needs no connection and is what closes the cast
- * escape hatch, which is the part a type cannot defend.
+ * {@link resolveXeroInvoiceEmailPolicy} read the database for it. The witness
+ * check needs no connection and is what closes the cast escape hatch, which is
+ * the part a type cannot defend.
+ *
+ * "MICROSECONDS AFTER" IS THE CALLER'S OBLIGATION, NOT THIS FUNCTION'S PROPERTY,
+ * and it was false in one place (#3071 review, hoppers99). The group-settlement
+ * caller used to mint the clearance, then wait an unbounded time for
+ * `pg_advisory_xact_lock(1)`, then call this — so the gap was the lock wait, not
+ * microseconds. It now re-resolves inside its transaction by passing `store` to
+ * {@link resolveXeroInvoiceEmailPolicy}, which restores the premise this
+ * paragraph rests on. The other two callers (booking and subscription invoices)
+ * resolve and send with no lock in between, which is where the premise was true
+ * all along.
  */
 export async function sendXeroInvoiceEmail(params: {
   clearance: LiveProviderClearance;
