@@ -357,7 +357,31 @@ export const AUDIT_CENSUS_TOTALS = {
   // sites), not by adding one to either side's 455 — `main` and this epic branch
   // each reached 455 by adding a DIFFERENT writer, so only a measurement on the
   // merged tree gives the right total.
-  writeSites: 456,
+  // 456 -> 458 (setup wizard C2, #217): the two stale-transition writers in
+  // `src/app/api/admin/setup/progress/route.ts`.
+  // `setup_progress.steps_marked_stale` and `setup_progress.steps_stale_cleared`
+  // record which finished setup steps an upstream change put back in question,
+  // and which have stopped needing another look. TWO SITES RATHER THAN ONE, and
+  // both cheaper shapes were worse: a single row with a computed action loses
+  // information when one request does both at once (the set is recomputed over
+  // the whole prerequisite graph, so one transition can invalidate one branch
+  // while a readiness check that has started passing clears another), and a loop
+  // over an array of event objects would have counted as one site while making
+  // its category `forwarded` — this census resolves a top-level `category` on an
+  // inline literal, never on a loop variable, so the cheaper count would have
+  // cost exactly the property the census exists to measure.
+  // Both are `logAudit` and both are categorised `system` at the site, matching
+  // the five setup-progress transition writers beside them that #219 split out:
+  // `docs/guides/audit-log.md` files "Setup, backups, platform-level events"
+  // there, and `INV-PRIV-012` files a row by its affected domain, which is the
+  // club's setup rather than an administrator's own settings. So neither joins
+  // `UNCATEGORISED_AUDIT_WRITERS` below, and neither is a reclassification, so
+  // neither joins any of the four per-site-pinned maps. NO EXISTING ROW CHANGES
+  // AUDIENCE and `INV-OPS-012`'s backfill obligation does not arise — these are
+  // new rows in a category that already existed, not old rows moved into one.
+  // Measured by RUNNING `npx tsx scripts/audit/audit-writer-census.ts` on this
+  // tree (458 sites), not by adding two to the literal below.
+  writeSites: 458,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -402,7 +426,12 @@ export const AUDIT_CENSUS_TOTALS = {
     // write, above. `logAudit`, matching the sibling write in the PUT route it
     // mirrors, and fire-and-forget for the same reason: nothing downstream
     // depends on the row existing before the response returns.
-    logAudit: { total: 256, uncategorised: 0 },
+    // 256 -> 258 (setup wizard C2, #217): the two stale-transition writers,
+    // above. `logAudit`, matching the five setup-progress transition writers in
+    // the same route, and fire-and-forget for the same reason: they are written
+    // AFTER the upsert commits, so a failed write never fails the operator's
+    // transition and a rolled-back transition records nothing.
+    logAudit: { total: 258, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     // 104 -> 105 (#2649): the return-to-waitlist repair, above.
@@ -739,7 +768,15 @@ export const AUDIT_CENSUS_TOTALS = {
     privacy: 19,
     // UNCHANGED by #2581 child 2. `system` is for genuine platform events with
     // no narrower business domain, and none of the 82 was one.
-    system: 4,
+    //
+    // 4 -> 6 (setup wizard C2, #217): `setup_progress.steps_marked_stale` and
+    // `setup_progress.steps_stale_cleared`. `system` is readable with
+    // `support:view` alone, so this DOES move the weakest-gate count two sites
+    // — and it widens nobody's access, because the rows say which setup steps
+    // need another look and the five setup-progress rows beside them, in the
+    // same category and about the same journey, are already readable by exactly
+    // the same operator. Nothing here names a member, a booking or an amount.
+    system: 6,
   },
 } as const;
 
