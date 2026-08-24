@@ -13,7 +13,7 @@ their original module so no importer, no document and no schema comment had to
 change. So the club-timezone backfill step carries no size debt at all.
 
 file: src/lib/setup-readiness.ts
-lines: 1893
+lines: 1882
 reason: this is the change. The setup checklist gains a seventeenth step, and the
   sixteen already there are all defined in this file and assembled into the
   readiness report a few lines below them. A seventeenth check in its own module

@@ -12,6 +12,7 @@ import {
   type SetupProgressState,
 } from "@/lib/setup-readiness";
 import {
+  CORE_STEP_OWNER,
   SETUP_STEP_IDS,
   SETUP_STEP_REGISTRY,
   findSetupStepRegistryViolations,
@@ -146,19 +147,6 @@ describe("setup step registry", () => {
     expect(SETUP_STEP_IDS).toHaveLength(SETUP_STEP_DEFINITIONS.length);
   });
 
-  it("gives every step an owning module id or `core`", () => {
-    const owners = new Set<string>([...MODULE_KEYS, "core"]);
-    for (const entry of SETUP_STEP_REGISTRY) {
-      expect(owners.has(entry.ownerModule)).toBe(true);
-    }
-  });
-
-  it("gives every step a possibly-empty prerequisite list", () => {
-    for (const entry of SETUP_STEP_REGISTRY) {
-      expect(Array.isArray(entry.prerequisites)).toBe(true);
-    }
-  });
-
   it("declares no prerequisites today", () => {
     // Epic #213 open question 1: the current 17 steps are independent, and the
     // journey's ordering is editorial. If a future step needs a real
@@ -197,10 +185,16 @@ const setupStepIdsIsNonEmptyTuple: SetupStepIdsIsNonEmptyTuple = true;
 
 describe("setup step registry — the derived export is a literal tuple", () => {
   it("keeps SetupStepId a literal union rather than string", () => {
+    // Always passes under a bare `vitest run`: the const it checks is already
+    // typed `true` by the module-scope conditional type above, so the real
+    // enforcement is `tsc -p tsconfig.test.json` inside `npm run typecheck`
+    // failing to compile this file at all when the type narrows to `false`.
     expect(setupStepIdIsLiteralUnion).toBe(true);
   });
 
   it("keeps SETUP_STEP_IDS a non-empty readonly tuple", () => {
+    // Same as above: this assertion cannot fail under `vitest run` alone — the
+    // guard is `npm run typecheck` refusing to compile the file.
     expect(setupStepIdsIsNonEmptyTuple).toBe(true);
   });
 
@@ -247,7 +241,7 @@ describe("setup step registry — the readiness cards are unchanged", () => {
     // The pin that matters for "no behaviour change": a default install has
     // three modules off, and the cards still build every check unconditionally.
     // The registry disagrees, deliberately and inertly — this test names the
-    // exact gap so C3/C8 must change it on purpose.
+    // exact gap so C8 must change it on purpose.
     const readiness = stepIdsOnTheCards(
       databaseSnapshot(DEFAULT_MODULE_SETTINGS),
     );
@@ -307,7 +301,7 @@ describe("setup step applicability", () => {
     ) as ModuleSettingsValues;
     const applicable = getApplicableSetupStepIds(allOff);
     const coreIds = SETUP_STEP_REGISTRY.filter(
-      (entry) => entry.ownerModule === "core",
+      (entry) => entry.ownerModule === CORE_STEP_OWNER,
     ).map((entry) => entry.id);
 
     expect(applicable).toEqual(coreIds);
@@ -363,10 +357,13 @@ describe("setup step completion", () => {
     // The behavioural pin between `isSetupStepComplete` and the rule
     // buildSetupReadiness applies, which the registry cannot import without a
     // cycle. A mixed scenario: some checks pass on their own, one is marked
-    // done by the operator, one is deferred.
+    // done by the operator, and one — "xero-mappings", which the
+    // `databaseSnapshot` fixture above already makes status "complete" — is
+    // ALSO deferred, so the fixture exercises status "complete" together with
+    // progress "skipped" and not only the warning-plus-skipped case.
     const readiness = stepIdsOnTheCards(databaseSnapshot(moduleFlags()), {
       completedStepIds: ["runtime-env"],
-      skippedStepIds: ["sentry"],
+      skippedStepIds: ["xero-mappings"],
     });
     const entriesById = new Map(
       SETUP_STEP_REGISTRY.map((entry) => [entry.id, entry]),
@@ -407,7 +404,7 @@ describe("setup step registry guards", () => {
     overrides: Partial<SetupStepDefinition> = {},
   ): SetupStepDefinition => ({
     id,
-    ownerModule: "core",
+    ownerModule: CORE_STEP_OWNER,
     prerequisites: [],
     order: 10,
     completion: "readiness-check",

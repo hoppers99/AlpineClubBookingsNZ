@@ -1,8 +1,5 @@
-import {
-  DEFAULT_MODULE_SETTINGS,
-  type ModuleKey,
-  type ModuleSettingsValues,
-} from "@/config/modules";
+import { type ModuleKey, type ModuleSettingsValues } from "@/config/modules";
+import { normalizeClubModuleSettings } from "@/lib/module-settings";
 import { SETUP_STEP_DEFINITIONS } from "@/lib/setup-step-registry-definitions";
 
 /**
@@ -130,9 +127,10 @@ export interface SetupStepCompletionInput {
 /**
  * Whether a step counts as complete. The `readiness-check` rule is exactly the
  * predicate `buildSetupReadiness` already uses for its `complete` summary
- * figure: the check passed on its own, OR the operator marked it done. A
- * SKIPPED step is deliberately not complete — epic #213 D4 keeps a deferred step
- * outstanding, and only a disabled module removes a step altogether.
+ * figure: the check passed on its own, OR the operator marked it done. Skipping
+ * alone does not make a step complete — a check that already passes stays
+ * complete even when deferred; epic #213 D4 keeps a deferred step that has NOT
+ * yet passed outstanding, and only a disabled module removes a step altogether.
  */
 export function isSetupStepComplete(
   entry: SetupStepEntry,
@@ -141,6 +139,18 @@ export function isSetupStepComplete(
   switch (entry.completion) {
     case "readiness-check":
       return input.status === "complete" || input.progress === "completed";
+    default: {
+      // Exhaustiveness guard: `tsconfig` has neither `noImplicitReturns` nor a
+      // switch-exhaustiveness lint rule, so nothing else fails the build the
+      // day `SetupStepCompletionSource` gains a second member. This assignment
+      // is the guard — a new member makes `entry.completion` fail to narrow to
+      // `never` here, which is a typecheck error at THIS switch rather than a
+      // silently-`undefined` return discovered in production.
+      const _exhaustive: never = entry.completion;
+      throw new Error(
+        `Unhandled setup step completion source: ${String(_exhaustive)}`,
+      );
+    }
   }
 }
 
@@ -160,9 +170,14 @@ export function isSetupStepComplete(
  *   answer, not a missing one: it resolves to the first-install defaults, the
  *   same reading `buildModuleLayerState` and `formatModuleActivationDetail`
  *   already take in `setup-readiness.ts` ("first-install defaults until settings
- *   are saved"). Under `DEFAULT_MODULE_SETTINGS` four modules are off, so the
- *   four module-owned steps are excluded.
- * - a record — the club's saved flags, used as given.
+ *   are saved"). Under `DEFAULT_MODULE_SETTINGS` ten modules are off, but only
+ *   three of them — `addressAutocomplete`, `xeroIntegration` and
+ *   `financeDashboard` — own a setup step, so it is those three modules' four
+ *   owned steps (`xeroIntegration` owns two) that are excluded.
+ * - a record — the club's saved flags, used as given. A `Partial` record (a
+ *   caller that only ever writes the keys it touches) resolves its missing
+ *   keys to module defaults through `normalizeClubModuleSettings`, exactly like
+ *   every other reader of `ClubModuleSettings`.
  */
 export function getApplicableSetupStepIds(
   moduleSettings?: ModuleSettingsValues | null,
@@ -171,7 +186,7 @@ export function getApplicableSetupStepIds(
     return SETUP_STEP_REGISTRY.map((entry) => entry.id);
   }
 
-  const flags = moduleSettings ?? DEFAULT_MODULE_SETTINGS;
+  const flags = normalizeClubModuleSettings(moduleSettings);
   return SETUP_STEP_REGISTRY.filter(
     (entry) =>
       entry.ownerModule === CORE_STEP_OWNER || flags[entry.ownerModule],
@@ -260,8 +275,9 @@ function findPrerequisiteCycles(
     if (settled.has(id)) return;
     if (onPath.has(id)) {
       const closes = path.slice(path.indexOf(id));
-      // Report a cycle once however many entry points reach it: rotate to the
-      // alphabetically-first member so the same loop always keys the same way.
+      // Report a cycle once however many entry points reach it: key on the
+      // SORTED member set (not the path itself) so the same loop, entered from
+      // any of its members, resolves to the same key.
       const key = [...closes].sort().join(",");
       if (!reported.has(key)) {
         reported.add(key);

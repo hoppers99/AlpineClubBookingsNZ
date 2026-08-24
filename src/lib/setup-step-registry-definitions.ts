@@ -36,6 +36,13 @@ import type { SetupStepDefinition } from "@/lib/setup-step-registry";
 export const SETUP_STEP_DEFINITIONS = [
   {
     id: "club-config",
+    // The bare literal, not the exported `CORE_STEP_OWNER` constant, is
+    // deliberate: this file's module doc says it imports only a TYPE from
+    // `setup-step-registry.ts` so the two modules have no runtime import
+    // cycle. `CORE_STEP_OWNER` is a VALUE — importing it here would create
+    // exactly that cycle, since `setup-step-registry.ts` imports
+    // `SETUP_STEP_DEFINITIONS` from this file. Every `ownerModule: "core"`
+    // below is the same deliberate literal.
     ownerModule: "core",
     prerequisites: [],
     order: 10,
