@@ -97,7 +97,7 @@ describe("SetupPageClient — permission-aware cross-area cards (#1548)", () => 
     renderSetup({ support: "view" });
 
     await waitFor(() => {
-      expect(screen.getByText("Setup Wizard")).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Setup checklist" })).toBeTruthy();
     });
     expect(screen.queryByTestId("lodge-card")).toBeNull();
   });
@@ -114,7 +114,7 @@ describe("SetupPageClient — permission-aware cross-area cards (#1548)", () => 
     const { container } = renderSetup({ support: "view" });
 
     await waitFor(() => {
-      expect(screen.getByText("Setup Wizard")).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Setup checklist" })).toBeTruthy();
     });
     expect(screen.queryByTestId("finance-panel")).toBeNull();
     expect(container.querySelector('a[href="/admin/setup/finance"]')).toBeNull();
@@ -133,15 +133,20 @@ describe("SetupPageClient — permission-aware cross-area cards (#1548)", () => 
   // Epic #213, C5: the wizard's entry point. Per D6 it ships ALONGSIDE the
   // cards — C8 (#223) owns replacing them — so this asserts both halves: the
   // launcher is there, and the readiness checks it sits beside are still there.
+  //
+  // The old version of this waited on `getByText("Setup Wizard")` — which was
+  // this page's OWN h1 at the time, so it asserted nothing about the launcher
+  // and would have passed with no wizard in the product at all. Two surfaces
+  // both called "Setup Wizard" is also what made the assertion look sound; the
+  // checklist is now named for what it is (#220 review F4).
   it("offers the setup wizard without displacing the readiness cards", async () => {
-    const { container } = renderSetup({ support: "view" });
-
-    await waitFor(() => {
-      expect(screen.getByText("Setup Wizard")).toBeTruthy();
+    renderSetup({ support: "view" });
+    const launcher = await screen.findByRole("link", {
+      name: /Open the setup wizard/,
     });
-    const launcher = container.querySelector('a[href="/admin/setup/wizard"]');
-    expect(launcher).toBeTruthy();
-    expect(launcher?.textContent).toContain("Open the setup wizard");
+    expect(launcher.getAttribute("href")).toBe("/admin/setup/wizard");
+    // …alongside the checklist, per D6: the cards stay until C8 (#223).
+    expect(screen.getByRole("heading", { name: "Setup checklist" })).toBeTruthy();
     expect(screen.getByText("Readiness checks")).toBeTruthy();
   });
 

@@ -204,9 +204,11 @@ describe("admin setup hub pages", () => {
     expect(html).not.toContain("/admin/appearance/identity");
   });
 
-  it("renders a back link to the Setup Wizard on every setup sub-hub", async () => {
+  it("renders a back link to the setup checklist on every setup sub-hub", async () => {
     // The sub-hubs are drilled into from /admin/setup, so each gets the shared
-    // BackLink (label matches the destination page's heading, "Setup Wizard").
+    // BackLink, and its label MATCHES THE DESTINATION PAGE'S HEADING — which is
+    // why both moved together in #220: "Setup Wizard" was that page's h1 and is
+    // now the guided journey's name, one route along at /admin/setup/wizard.
     // Distinct from Foundations' own "Setup Checklist" card, which is a grid link.
     const pages = [
       FoundationsSetupHubPage,
@@ -217,7 +219,7 @@ describe("admin setup hub pages", () => {
     ];
     for (const Page of pages) {
       const html = await renderPage(Page);
-      expect(html).toContain("Setup Wizard");
+      expect(html).toContain("Setup checklist");
       expect(html).toContain('href="/admin/setup"');
     }
   });

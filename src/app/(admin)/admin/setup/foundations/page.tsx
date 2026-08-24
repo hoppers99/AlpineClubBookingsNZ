@@ -63,7 +63,7 @@ export default async function FoundationsSetupHubPage() {
       features={features}
       permissionMatrix={permissionMatrix}
       backHref="/admin/setup"
-      backLabel="Setup Wizard"
+      backLabel="Setup checklist"
     />
   );
 }

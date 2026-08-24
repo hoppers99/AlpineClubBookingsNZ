@@ -39,3 +39,11 @@
   in one banner when you do not have it. Doing the step's actual work still
   needs edit access to whichever area its settings page belongs to, and the
   wizard names that area underneath the link to the page.
+
+  **The Setup page's own heading is now "Setup checklist".** It used to read
+  "Setup Wizard", and the guided journey this release adds is the thing that
+  name describes — two surfaces answering to one name, with the sub-pages' back
+  links (Cancellation, Booking Rules, Integrations, Foundations, Finance)
+  pointing at "Setup Wizard" and meaning the checklist. Those back links now say
+  **Setup checklist** too. Nothing moved: the page is at the same address and
+  does the same job.

@@ -433,7 +433,7 @@ export function SetupPageClient({
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-foreground">Setup Wizard</h1>
+          <h1 className="text-3xl font-bold text-foreground">Setup checklist</h1>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
             Finish first-install readiness for club configuration, booking rules,
             provider connections, and finance mappings.
