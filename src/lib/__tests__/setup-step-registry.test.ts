@@ -20,6 +20,7 @@ import {
   isSetupStepComplete,
   type SetupStepDefinition,
   type SetupStepId,
+  type SetupStepOwner,
 } from "@/lib/setup-step-registry";
 import { SETUP_STEP_DEFINITIONS } from "@/lib/setup-step-registry-definitions";
 
@@ -159,8 +160,47 @@ describe("setup step registry", () => {
   });
 
   it("has no registry violations", () => {
-    // This assertion IS the build failure for a bad declaration.
-    expect(findSetupStepRegistryViolations(SETUP_STEP_DEFINITIONS)).toEqual([]);
+    // This assertion IS the build failure for a bad declaration. Checked
+    // against SETUP_STEP_REGISTRY (the shipped export), not the raw
+    // definitions array, so this test also covers C3's assembly seam — a
+    // module-contributed step spliced in after the definitions array is
+    // built stays under this guard.
+    expect(findSetupStepRegistryViolations(SETUP_STEP_REGISTRY)).toEqual([]);
+  });
+
+  it("pins the exact ownerModule for all 17 registered steps", () => {
+    // A single source of truth, deliberately NOT derived from the registry
+    // itself: re-owning a `core` step to a default-ON module would still
+    // typecheck and pass every other test here (`getApplicableSetupStepIds`
+    // just reads whatever `ownerModule` says), so only a hand-written map
+    // pins today's ownership and turns a silent re-owning into a visible
+    // diff.
+    const expectedOwnerModuleById: Record<SetupStepId, SetupStepOwner> = {
+      "club-config": CORE_STEP_OWNER,
+      "club-time-zone": CORE_STEP_OWNER,
+      "runtime-env": CORE_STEP_OWNER,
+      "auth-secret-strength": CORE_STEP_OWNER,
+      "seed-admin": CORE_STEP_OWNER,
+      "feature-flags": CORE_STEP_OWNER,
+      "booking-policies": CORE_STEP_OWNER,
+      "membership-cancellation": CORE_STEP_OWNER,
+      "age-tiers": CORE_STEP_OWNER,
+      "seasons-rates": CORE_STEP_OWNER,
+      stripe: CORE_STEP_OWNER,
+      "email-ses": CORE_STEP_OWNER,
+      sentry: CORE_STEP_OWNER,
+      "address-autocomplete": "addressAutocomplete",
+      "xero-operational": "xeroIntegration",
+      "finance-dashboard": "financeDashboard",
+      "xero-mappings": "xeroIntegration",
+    };
+
+    expect(Object.keys(expectedOwnerModuleById)).toHaveLength(17);
+
+    const actualOwnerModuleById = Object.fromEntries(
+      SETUP_STEP_REGISTRY.map((entry) => [entry.id, entry.ownerModule]),
+    );
+    expect(actualOwnerModuleById).toEqual(expectedOwnerModuleById);
   });
 });
 
@@ -425,12 +465,25 @@ describe("setup step registry guards", () => {
     expect(violations[0]).toContain("not-a-real-step");
   });
 
+  // A genuine cycle cannot avoid the forward-prerequisite guard below: `order`
+  // is a total order over the steps, and going around a cycle would require
+  // it to strictly decrease at every hop, which is impossible in a finite
+  // loop — so at least one edge in any cycle is ALSO a forward reference by
+  // construction. These fixtures therefore trip both guards at once; each
+  // test filters to the cycle-specific message(s) so it keeps verifying only
+  // what its name says, and the forward-reference co-violation itself is
+  // covered by the dedicated fixtures below.
+  const cycleViolations = (violations: string[]) =>
+    violations.filter((violation) => violation.includes("cycle"));
+
   it("names every step in a prerequisite cycle", () => {
-    const violations = findSetupStepRegistryViolations([
-      stepDefinition("a", { prerequisites: ["c"] }),
-      stepDefinition("b", { order: 20, prerequisites: ["a"] }),
-      stepDefinition("c", { order: 30, prerequisites: ["b"] }),
-    ]);
+    const violations = cycleViolations(
+      findSetupStepRegistryViolations([
+        stepDefinition("a", { prerequisites: ["c"] }),
+        stepDefinition("b", { order: 20, prerequisites: ["a"] }),
+        stepDefinition("c", { order: 30, prerequisites: ["b"] }),
+      ]),
+    );
 
     expect(violations).toHaveLength(1);
     expect(violations[0]).toContain("a");
@@ -439,9 +492,11 @@ describe("setup step registry guards", () => {
   });
 
   it("names a step that is its own prerequisite", () => {
-    const violations = findSetupStepRegistryViolations([
-      stepDefinition("club-config", { prerequisites: ["club-config"] }),
-    ]);
+    const violations = cycleViolations(
+      findSetupStepRegistryViolations([
+        stepDefinition("club-config", { prerequisites: ["club-config"] }),
+      ]),
+    );
 
     expect(violations).toHaveLength(1);
     expect(violations[0]).toContain("cycle");
@@ -449,14 +504,149 @@ describe("setup step registry guards", () => {
   });
 
   it("reports one cycle once however many steps lead into it", () => {
+    const violations = cycleViolations(
+      findSetupStepRegistryViolations([
+        stepDefinition("entry-one", { prerequisites: ["a"] }),
+        stepDefinition("entry-two", { order: 20, prerequisites: ["b"] }),
+        stepDefinition("a", { order: 30, prerequisites: ["b"] }),
+        stepDefinition("b", { order: 40, prerequisites: ["a"] }),
+      ]),
+    );
+
+    expect(violations).toHaveLength(1);
+  });
+
+  it("names every step in a three-member cycle sharing an out-edge", () => {
+    // Reproducer 1 from the C1 review round: a -> [b, c], b -> [c], c -> [a].
+    // All three are mutually reachable (a -> c -> a directly, and a -> b -> c
+    // -> a through b), so they form one three-member SCC.
+    const violations = cycleViolations(
+      findSetupStepRegistryViolations([
+        stepDefinition("a", { prerequisites: ["b", "c"] }),
+        stepDefinition("b", { order: 20, prerequisites: ["c"] }),
+        stepDefinition("c", { order: 30, prerequisites: ["a"] }),
+      ]),
+    );
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("a");
+    expect(violations[0]).toContain("b");
+    expect(violations[0]).toContain("c");
+  });
+
+  it("names every step in a cycle a settled-early-return DFS would drop one from", () => {
+    // Reproducer 2 from the C1 review round: s0 -> [s1, s2], s1 -> [s0],
+    // s2 -> [s1]. This is the shape that broke the old settled/on-path DFS: it
+    // visits s0, then s1 (which closes a cycle back to s0 and is then marked
+    // SETTLED), then reaches s2 — whose only prerequisite is the now-settled
+    // s1 — and stops there without ever re-opening s1's cycle through s2. s0,
+    // s1 and s2 are mutually reachable (s0 -> s2 -> s1 -> s0), so this is one
+    // three-member SCC and s2 MUST appear in the reported message.
+    const violations = cycleViolations(
+      findSetupStepRegistryViolations([
+        stepDefinition("s0", { prerequisites: ["s1", "s2"] }),
+        stepDefinition("s1", { order: 20, prerequisites: ["s0"] }),
+        stepDefinition("s2", { order: 30, prerequisites: ["s1"] }),
+      ]),
+    );
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("s0");
+    expect(violations[0]).toContain("s1");
+    expect(violations[0]).toContain("s2");
+  });
+
+  it("flags a prerequisite presented after its dependent", () => {
+    // seed-admin (order 10) depends on club-config (order 20): under the
+    // wizard's no-jumping-forward navigation (D2), an operator reaches
+    // seed-admin before club-config is ever shown, so the prerequisite is
+    // unreachable from where it is declared to matter.
     const violations = findSetupStepRegistryViolations([
-      stepDefinition("entry-one", { prerequisites: ["a"] }),
-      stepDefinition("entry-two", { order: 20, prerequisites: ["b"] }),
-      stepDefinition("a", { order: 30, prerequisites: ["b"] }),
-      stepDefinition("b", { order: 40, prerequisites: ["a"] }),
+      stepDefinition("seed-admin", { prerequisites: ["club-config"] }),
+      stepDefinition("club-config", { order: 20 }),
     ]);
 
     expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("seed-admin");
+    expect(violations[0]).toContain("club-config");
+    expect(violations[0]).toContain("order 10");
+    expect(violations[0]).toContain("order 20");
+  });
+
+  it("does not flag a prerequisite that is genuinely presented first", () => {
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("club-config"),
+      stepDefinition("seed-admin", {
+        order: 20,
+        prerequisites: ["club-config"],
+      }),
+    ]);
+
+    expect(violations).toEqual([]);
+  });
+
+  it("flags a prerequisite whose module is neither core nor the dependent's own", () => {
+    // finance-fixture (module financeDashboard) depends on
+    // xero-operational-fixture (module xeroIntegration): the dependent can be
+    // applicable while xeroIntegration is switched off, at which point its
+    // prerequisite can never be satisfied.
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("xero-operational-fixture", {
+        ownerModule: "xeroIntegration",
+      }),
+      stepDefinition("finance-fixture", {
+        ownerModule: "financeDashboard",
+        order: 20,
+        prerequisites: ["xero-operational-fixture"],
+      }),
+    ]);
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("finance-fixture");
+    expect(violations[0]).toContain("xero-operational-fixture");
+    expect(violations[0]).toContain("xeroIntegration");
+    expect(violations[0]).toContain("financeDashboard");
+  });
+
+  it("does not flag a core prerequisite or a same-module prerequisite", () => {
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("core-fixture"),
+      stepDefinition("same-module-fixture-one", {
+        order: 20,
+        ownerModule: "xeroIntegration",
+      }),
+      stepDefinition("same-module-fixture-two", {
+        order: 30,
+        ownerModule: "xeroIntegration",
+        prerequisites: ["core-fixture", "same-module-fixture-one"],
+      }),
+    ]);
+
+    expect(violations).toEqual([]);
+  });
+
+  it("flags an empty or whitespace-only step id", () => {
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition(""),
+      stepDefinition("   ", { order: 20 }),
+    ]);
+
+    expect(
+      violations.filter((violation) =>
+        violation.includes("empty or whitespace-only"),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("flags a non-finite order", () => {
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("club-config", { order: Number.NaN }),
+      stepDefinition("seed-admin", { order: Number.POSITIVE_INFINITY }),
+    ]);
+
+    expect(
+      violations.filter((violation) => violation.includes("non-finite order")),
+    ).toHaveLength(2);
   });
 
   it("names a duplicated step id", () => {
@@ -497,8 +687,9 @@ describe("setup step registry guards", () => {
         ),
       ),
     ).toEqual([]);
-    // And the real registry, which shares that id, is clean.
-    expect(findSetupStepRegistryViolations(SETUP_STEP_DEFINITIONS)).toEqual([]);
+    // And the real registry, which shares that id, is clean. Bound to
+    // SETUP_STEP_REGISTRY (the shipped export) for the same reason as above.
+    expect(findSetupStepRegistryViolations(SETUP_STEP_REGISTRY)).toEqual([]);
   });
 
   it("accepts a well-formed registry with real prerequisites", () => {

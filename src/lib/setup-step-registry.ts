@@ -170,14 +170,19 @@ export function isSetupStepComplete(
  *   answer, not a missing one: it resolves to the first-install defaults, the
  *   same reading `buildModuleLayerState` and `formatModuleActivationDetail`
  *   already take in `setup-readiness.ts` ("first-install defaults until settings
- *   are saved"). Under `DEFAULT_MODULE_SETTINGS` ten modules are off, but only
- *   three of them — `addressAutocomplete`, `xeroIntegration` and
+ *   are saved"). Under `DEFAULT_MODULE_SETTINGS` SEVENTEEN modules are off
+ *   (counted directly from `src/config/modules.ts`'s `false` entries), but
+ *   only three of them — `addressAutocomplete`, `xeroIntegration` and
  *   `financeDashboard` — own a setup step, so it is those three modules' four
  *   owned steps (`xeroIntegration` owns two) that are excluded.
- * - a record — the club's saved flags, used as given. A `Partial` record (a
- *   caller that only ever writes the keys it touches) resolves its missing
- *   keys to module defaults through `normalizeClubModuleSettings`, exactly like
- *   every other reader of `ClubModuleSettings`.
+ * - a record — the club's saved flags, used as given. This function's
+ *   signature takes the full `ModuleSettingsValues` record (or `null`/
+ *   `undefined`), never a `Partial` one — the type checker rejects a partial
+ *   object here. `normalizeClubModuleSettings` still runs on it because ITS
+ *   OWN signature accepts `Partial<ClubModuleSettingsRecord> | null |
+ *   undefined`: it fills any key a caller further upstream left unset from
+ *   module defaults internally, exactly like every other reader of
+ *   `ClubModuleSettings`.
  */
 export function getApplicableSetupStepIds(
   moduleSettings?: ModuleSettingsValues | null,
@@ -225,6 +230,26 @@ export function findSetupStepRegistryViolations(
     seen.add(definition.id);
   }
 
+  // Degenerate ids and orders would otherwise pass every check below
+  // silently — an empty/whitespace id still "matches" as a prerequisite
+  // string comparison, and a non-finite order still compares with `<=`
+  // (always false against NaN, always true against Infinity) without ever
+  // reporting anything. The registry has no other layer that would catch
+  // either: the type-level non-empty-tuple assertion covers an EMPTY
+  // registry, not a malformed entry inside a non-empty one.
+  for (const definition of definitions) {
+    if (definition.id.trim().length === 0) {
+      violations.push(
+        `Setup step id "${definition.id}" is empty or whitespace-only`,
+      );
+    }
+    if (!Number.isFinite(definition.order)) {
+      violations.push(
+        `Setup step "${definition.id}" has a non-finite order (${definition.order})`,
+      );
+    }
+  }
+
   for (const definition of definitions) {
     for (const prerequisite of definition.prerequisites) {
       if (!seen.has(prerequisite)) {
@@ -248,16 +273,88 @@ export function findSetupStepRegistryViolations(
     }
   }
 
+  // A prerequisite must be presented BEFORE its dependent, because the
+  // wizard shell never lets an operator jump forward (D2). A prerequisite
+  // whose own `order` is not strictly less than its dependent's is a step the
+  // operator could reach the dependent from without ever having seen the
+  // prerequisite — unreachable, not just out of order.
+  const definitionsById = new Map<string, SetupStepDefinition>(
+    definitions.map((definition) => [definition.id, definition]),
+  );
+  for (const dependent of definitions) {
+    for (const prerequisiteId of dependent.prerequisites) {
+      const prerequisite = definitionsById.get(prerequisiteId);
+      // Unknown prerequisites are already reported above; skip so one bad id
+      // is not also announced as a forward reference.
+      if (!prerequisite) continue;
+      if (prerequisite.order >= dependent.order) {
+        violations.push(
+          `Setup step "${dependent.id}" (order ${dependent.order}) depends on prerequisite "${prerequisite.id}" (order ${prerequisite.order}), which is presented after its dependent; unreachable under the wizard's no-jumping-forward navigation`,
+        );
+      }
+    }
+  }
+
+  // A prerequisite from a DIFFERENT, switchable module is a trap: the
+  // dependent can be applicable (its own module on) while the prerequisite's
+  // module is off, so the prerequisite would never be satisfiable. `core`
+  // prerequisites are always safe because `core` steps are never excluded by
+  // applicability; a same-module prerequisite is safe because both steps
+  // disappear together when that module is off.
+  for (const dependent of definitions) {
+    for (const prerequisiteId of dependent.prerequisites) {
+      const prerequisite = definitionsById.get(prerequisiteId);
+      if (!prerequisite) continue;
+      const prerequisiteModuleIsSafe =
+        prerequisite.ownerModule === CORE_STEP_OWNER ||
+        prerequisite.ownerModule === dependent.ownerModule;
+      if (!prerequisiteModuleIsSafe) {
+        violations.push(
+          `Setup step "${dependent.id}" (module "${dependent.ownerModule}") depends on prerequisite "${prerequisite.id}" (module "${prerequisite.ownerModule}"): the dependent can be applicable while its prerequisite's module is disabled`,
+        );
+      }
+    }
+  }
+
   violations.push(...findPrerequisiteCycles(definitions));
 
   return violations;
 }
 
 /**
- * Depth-first cycle search over the prerequisite graph. Reports each cycle once,
- * as the path that closes it, so the message names every step involved rather
- * than just the edge that tripped the detector. A step that lists itself is a
- * one-step cycle and is reported the same way.
+ * Strongly-connected-component search over the prerequisite graph (Tarjan's
+ * algorithm), not a plain DFS. A DFS that settles a node the first time it
+ * finishes exploring it can walk into that settled node again from a SECOND
+ * path and stop right there without ever re-opening it — so a step can sit
+ * inside a genuine cycle and still never appear in any reported message. That
+ * is not hypothetical: `s0 -> [s1, s2]`, `s1 -> [s0]`, `s2 -> [s1]` is one
+ * three-member cycle (s0 and s2 are mutually reachable via s1), but a
+ * settled-early-return DFS visits s0, then s1 (which closes a cycle back to
+ * s0 and reports `s0 -> s1 -> s0`), marks s1 settled, then reaches s2, whose
+ * only prerequisite is the now-settled s1 — so the walk stops there and s2 is
+ * never named. Tarjan's algorithm does not have this hole: it computes the
+ * graph's strongly-connected components directly, and every step that is
+ * mutually reachable with another step ends up in the same component
+ * regardless of which node the search started from or in what order.
+ *
+ * A violation is a component of size > 1 (every member can reach every other
+ * member, i.e. a genuine cycle), OR a size-1 component whose single step
+ * lists itself as its own prerequisite (a one-step cycle). A size-1
+ * component with no self-loop is just a step with no cyclic prerequisite and
+ * is not reported. Each violation message lists the full, SORTED member set
+ * of its component, so the same cluster reads identically no matter which
+ * step's declaration order happened to discover it first — determinism the
+ * old path-based messages ("a -> b -> c -> a") could not offer once the
+ * reporting path itself became ambiguous.
+ *
+ * Duplicate ids: `prerequisitesById` below is built by `Map`, which resolves
+ * a duplicate key last-wins — so if two definitions share an id, only the
+ * LAST one's prerequisite edges are visible to this analysis; the first
+ * duplicate's own edges are dropped. That is acceptable because a duplicate
+ * id is already its own violation (see the id-uniqueness check above), which
+ * always fires alongside — this function never has to be the one to catch
+ * it, and a silently-dropped edge from a definition that is itself invalid
+ * cannot hide a real cycle from the rest of a well-formed registry.
  */
 function findPrerequisiteCycles(
   definitions: readonly SetupStepDefinition[],
@@ -265,42 +362,73 @@ function findPrerequisiteCycles(
   const prerequisitesById = new Map<string, readonly string[]>(
     definitions.map((definition) => [definition.id, definition.prerequisites]),
   );
-  const settled = new Set<string>();
-  const onPath = new Set<string>();
-  const path: string[] = [];
-  const cycles: string[] = [];
-  const reported = new Set<string>();
 
-  const visit = (id: string): void => {
-    if (settled.has(id)) return;
-    if (onPath.has(id)) {
-      const closes = path.slice(path.indexOf(id));
-      // Report a cycle once however many entry points reach it: key on the
-      // SORTED member set (not the path itself) so the same loop, entered from
-      // any of its members, resolves to the same key.
-      const key = [...closes].sort().join(",");
-      if (!reported.has(key)) {
-        reported.add(key);
-        cycles.push(
-          `Setup step prerequisite cycle: ${[...closes, id].join(" -> ")}`,
+  const index = new Map<string, number>();
+  const lowlink = new Map<string, number>();
+  const onStack = new Set<string>();
+  const stack: string[] = [];
+  const components: string[][] = [];
+  let counter = 0;
+
+  const strongConnect = (id: string): void => {
+    index.set(id, counter);
+    lowlink.set(id, counter);
+    counter += 1;
+    stack.push(id);
+    onStack.add(id);
+
+    for (const prerequisite of prerequisitesById.get(id) ?? []) {
+      // An unknown prerequisite is already reported by the check above;
+      // skipping it here keeps one bad id from also being announced as part
+      // of a cycle.
+      if (!prerequisitesById.has(prerequisite)) continue;
+
+      if (!index.has(prerequisite)) {
+        strongConnect(prerequisite);
+        lowlink.set(
+          id,
+          Math.min(lowlink.get(id) as number, lowlink.get(prerequisite) as number),
+        );
+      } else if (onStack.has(prerequisite)) {
+        lowlink.set(
+          id,
+          Math.min(lowlink.get(id) as number, index.get(prerequisite) as number),
         );
       }
-      return;
     }
 
-    onPath.add(id);
-    path.push(id);
-    for (const prerequisite of prerequisitesById.get(id) ?? []) {
-      // An unknown prerequisite is already reported above; skipping it here
-      // keeps one bad id from also being announced as a cycle.
-      if (prerequisitesById.has(prerequisite)) visit(prerequisite);
+    if (lowlink.get(id) === index.get(id)) {
+      const component: string[] = [];
+      let member: string;
+      do {
+        member = stack.pop() as string;
+        onStack.delete(member);
+        component.push(member);
+      } while (member !== id);
+      components.push(component);
     }
-    path.pop();
-    onPath.delete(id);
-    settled.add(id);
   };
 
-  for (const definition of definitions) visit(definition.id);
+  for (const definition of definitions) {
+    if (!index.has(definition.id)) strongConnect(definition.id);
+  }
+
+  const cycles = components
+    .filter((component) => {
+      if (component.length > 1) return true;
+      const [only] = component;
+      return (prerequisitesById.get(only) ?? []).includes(only);
+    })
+    .map((component) => {
+      const members = [...component].sort();
+      return `Setup step prerequisite cycle: ${members.join(", ")}`;
+    });
+
+  // Component discovery order depends on Tarjan's traversal, not on any
+  // property of the registry itself, so sort the final messages too — the
+  // same malformed registry must always report its violations in the same
+  // order.
+  cycles.sort();
 
   return cycles;
 }
