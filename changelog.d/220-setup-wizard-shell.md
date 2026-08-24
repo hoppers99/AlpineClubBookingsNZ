@@ -22,7 +22,9 @@
 
   That final screen, **Ready to open**, unlocks once every step is done or
   skipped. It carries two separate things that do not depend on each other:
-  making the public site visible, and confirming what this installation is for
+  making the public site visible — which now changes only that one setting, so
+  it can never overwrite colours or a logo somebody else changed while the
+  screen was open — and confirming what this installation is for
   (the club's real site or a test copy). The second is declared in the
   environment rather than switched on from a screen, so for now the panel says
   where it lives and what is still to come. A club running an internal test site

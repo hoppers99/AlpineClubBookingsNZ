@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { CheckCircle2, Globe, Loader2, ServerCog } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -20,13 +20,24 @@ import type { SetupWizardView } from "@/lib/setup-wizard-view";
  * - **Unlocked by the traversal**, never by this component. `traversal.allResolved`
  *   (#219's F9 export) is the whole gate, and the shell will not render this
  *   panel without it.
- * - **Lever 1 is real.** Making the public site visible is the theme's
- *   `completeSetup` flag, and this panel is the ONLY wizard surface allowed to
- *   set it — D9 puts it here explicitly and takes it away from the styling step
- *   (C7). It is set through the EXISTING `PUT /api/admin/site-style` path, which
- *   already owns the cache invalidation, the audit row and the `content`-area
- *   permission check; the theme values are read first and round-tripped
- *   unchanged, exactly as the site-style wizard does.
+ * - **Lever 1 is real, and it sends no theme.** Making the public site visible
+ *   is the theme's `completedAt`, and this panel is the ONLY wizard surface
+ *   allowed to set it — D9 puts it here explicitly and takes it away from the
+ *   styling step (C7). It goes through `POST /api/admin/site-style/complete-setup`,
+ *   which owns the same cache invalidation, audit row and `content`-area check
+ *   the site-style PUT does, and touches one column.
+ *
+ *   IT USED TO USE THAT PUT, and that was a LOST UPDATE (#220 review F3). The
+ *   PUT body is `.strict()` and rewrites every theme column, so publishing meant
+ *   reading the whole theme on mount and posting it back — and a panel left open
+ *   while another administrator changed the club's colours wrote the copy it read
+ *   minutes earlier over their work. Reading the theme here at all was the
+ *   defect; the panel now holds no theme.
+ *
+ *   Whether the site is already visible arrives on the wizard's own payload
+ *   (`isSiteVisible`), which the shell refetches on focus — so this display
+ *   follows the club rather than freezing at mount time, which the panel's own
+ *   fetch never did.
  * - **Lever 2 is a stub, and says so.** The environment role belongs to
  *   upstream's ENV-SAFETY work; declaring production is a `.env` action by that
  *   design, so there is nothing here to mutate even once it lands. C9 (#224)
@@ -40,92 +51,55 @@ import type { SetupWizardView } from "@/lib/setup-wizard-view";
  *   steps can still open, and is told exactly what it skipped.
  */
 
-interface SiteStyleTheme {
-  brandGold: string;
-  brandDeep: string;
-  brandSafety: string;
-  headingFontKey: string;
-  bodyFontKey: string;
-  logoUrl: string | null;
-  logoDataUrl: string | null;
-  rawCss: string | null;
-  completedAt: string | null;
-}
-
-type SiteVisibility = "loading" | "visible" | "hidden" | "forbidden" | "error";
-
 export function SetupWizardLaunchPanel({
   view,
+  isSiteVisible,
   permissionMatrix,
+  onPublishActivity,
 }: {
   view: SetupWizardView;
+  /** From the wizard payload, refreshed by the shell's focus refetch. */
+  isSiteVisible: boolean;
   permissionMatrix: AdminPermissionMatrix;
+  /**
+   * Told the moment a publish starts, and left true afterwards.
+   *
+   * The shell unmounts this panel when the traversal stops saying `allResolved`,
+   * and a refetch can legitimately say that while a publish is in flight — a
+   * step going stale under an upgrade, say. Unmounting mid-request would discard
+   * the result: the operator would see the panel vanish with no idea whether the
+   * site went live. So the panel tells the shell to pin it, and stays pinned
+   * once the request finishes — SUCCESS OR FAILURE — so the answer, or the
+   * error explaining why there is none, is actually read before it disappears.
+   */
+  onPublishActivity: (active: boolean) => void;
 }) {
-  const [theme, setTheme] = useState<SiteStyleTheme | null>(null);
-  const [visibility, setVisibility] = useState<SiteVisibility>("loading");
+  const [published, setPublished] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   const canEditSite = permissionMatrix.content === "edit";
-
-  const loadTheme = useCallback(async () => {
-    try {
-      const response = await fetch("/api/admin/site-style", {
-        credentials: "same-origin",
-      });
-      if (response.status === 403) {
-        setVisibility("forbidden");
-        return;
-      }
-      const body = (await response.json()) as { theme?: SiteStyleTheme };
-      if (!response.ok || !body.theme) {
-        setVisibility("error");
-        return;
-      }
-      setTheme(body.theme);
-      setVisibility(body.theme.completedAt ? "visible" : "hidden");
-    } catch {
-      setVisibility("error");
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadTheme();
-  }, [loadTheme]);
+  // The server's answer wins for as long as this panel holds one, because the
+  // payload behind `isSiteVisible` is a read that may predate the publish.
+  const visible = published || isSiteVisible;
 
   async function makeSiteVisible() {
-    if (!theme) return;
     setSaving(true);
     setError("");
+    onPublishActivity(true);
     try {
-      const response = await fetch("/api/admin/site-style", {
-        method: "PUT",
+      const response = await fetch("/api/admin/site-style/complete-setup", {
+        method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          // The whole theme, round-tripped unchanged. The PUT body is `.strict()`
-          // and rewrites every column, so sending only `completeSetup` would be
-          // rejected — and sending a partial one would reset the club's colours.
-          brandGold: theme.brandGold,
-          brandDeep: theme.brandDeep,
-          brandSafety: theme.brandSafety,
-          headingFontKey: theme.headingFontKey,
-          bodyFontKey: theme.bodyFontKey,
-          logoUrl: theme.logoUrl,
-          logoDataUrl: theme.logoDataUrl,
-          rawCss: theme.rawCss ?? "",
-          completeSetup: true,
-        }),
       });
       const body = (await response.json().catch(() => null)) as {
-        theme?: SiteStyleTheme;
+        isComplete?: boolean;
         error?: string;
       } | null;
-      if (!response.ok || !body?.theme) {
+      if (!response.ok || body?.isComplete !== true) {
         throw new Error(body?.error ?? "Failed to make the public site visible");
       }
-      setTheme(body.theme);
-      setVisibility(body.theme.completedAt ? "visible" : "hidden");
+      setPublished(true);
     } catch (saveError) {
       setError(
         saveError instanceof Error
@@ -177,28 +151,13 @@ export function SetupWizardLaunchPanel({
           <h3 className="text-base font-semibold text-foreground">
             Make the public site visible
           </h3>
-          {visibility === "visible" ? (
+          {visible ? (
             <Badge variant="success">Live</Badge>
-          ) : visibility === "hidden" ? (
+          ) : (
             <Badge variant="secondary">Not yet visible</Badge>
-          ) : null}
+          )}
         </div>
-        {visibility === "loading" ? (
-          <p className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Checking whether the public site is visible
-          </p>
-        ) : visibility === "forbidden" ? (
-          <p className="text-sm text-muted-foreground">
-            Your admin role cannot read the site style settings, so this lever is
-            not available to you. An administrator with Content access can open
-            the public site.
-          </p>
-        ) : visibility === "error" ? (
-          <p className="text-sm text-danger-11">
-            Could not read whether the public site is visible. Try again shortly.
-          </p>
-        ) : visibility === "visible" ? (
+        {visible ? (
           <p className="text-sm text-muted-foreground">
             The public site is live. Visitors see the club&apos;s pages rather
             than the holding screen.
@@ -210,13 +169,13 @@ export function SetupWizardLaunchPanel({
           </p>
         )}
         {error ? <p className="text-sm text-danger-11">{error}</p> : null}
-        {visibility === "hidden" ? (
+        {visible ? null : (
           <ViewOnlyActionButton
             type="button"
             size="sm"
             canEdit={canEditSite}
             describeReason={false}
-            disabled={saving || !theme}
+            disabled={saving}
             onClick={makeSiteVisible}
             data-testid="setup-wizard-make-site-visible"
           >
@@ -227,7 +186,7 @@ export function SetupWizardLaunchPanel({
             )}
             Make the public site visible
           </ViewOnlyActionButton>
-        ) : null}
+        )}
       </div>
 
       <div

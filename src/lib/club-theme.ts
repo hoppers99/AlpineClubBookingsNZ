@@ -1,3 +1,4 @@
+import { logAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import {
   buildClubThemeCss,
@@ -171,6 +172,72 @@ export async function saveClubTheme(input: ClubThemeUpdateInput) {
     completedAt: theme.completedAt?.toISOString() ?? null,
     contrastWarnings: getContrastWarnings(values),
   };
+}
+
+/**
+ * Flip the club theme's `completedAt` on, and touch NOTHING else (#220 review
+ * F3).
+ *
+ * This exists because the alternative was a LOST UPDATE. The wizard's launch
+ * panel used to publish the site by reading the whole theme on mount and PUTting
+ * every column back with `completeSetup: true` — so a panel left open while
+ * another administrator changed the club's colours would, on the click, write
+ * the colours it read minutes earlier straight over theirs. The PUT body is
+ * `.strict()` and rewrites every column, so there was no partial body to send
+ * instead; the fix is to stop sending a theme at all.
+ *
+ * The lock is `saveClubTheme`'s, for `saveClubTheme`'s reason: `FOR UPDATE`
+ * locks nothing when the row does not exist, so the singleton is materialised
+ * first (a no-op once it exists) and then locked. Under that lock this is the
+ * whole write — a one-column `update` guarded on `completedAt: null`, so a
+ * second click, a double submit or a retry finds the row already stamped and
+ * leaves the ORIGINAL completion time alone rather than moving it.
+ *
+ * The audit row is written HERE rather than in the route, and only when the flip
+ * really happened, so a repeat click does not lay down a second "completed
+ * setup" row for a transition that did not occur. Its `action`, `category` and
+ * `severity` match what `PUT /api/admin/site-style` writes for the same
+ * transition, because it IS the same transition and an operator reading the log
+ * should not have to know which screen it came from.
+ */
+export async function markClubThemeSetupComplete(actorMemberId: string) {
+  const isComplete = await prisma.$transaction(
+    async (tx) => {
+      await tx.clubTheme.createMany({
+        data: [{ id: CLUB_THEME_ID, ...DEFAULT_CLUB_THEME_VALUES }],
+        skipDuplicates: true,
+      });
+      await tx.$executeRaw`SELECT 1 FROM "ClubTheme" WHERE "id" = ${CLUB_THEME_ID} FOR UPDATE`;
+
+      // Guarded claim: `updateMany` with `completedAt: null` in the WHERE, so
+      // the count tells us whether THIS call is the one that completed setup.
+      const claimed = await tx.clubTheme.updateMany({
+        where: { id: CLUB_THEME_ID, completedAt: null },
+        data: { completedAt: new Date() },
+      });
+
+      const row = await tx.clubTheme.findUnique({
+        where: { id: CLUB_THEME_ID },
+        select: { completedAt: true },
+      });
+      return { flipped: claimed.count > 0, complete: Boolean(row?.completedAt) };
+    },
+    { maxWait: 10_000, timeout: 15_000 },
+  );
+
+  if (isComplete.flipped) {
+    logAudit({
+      action: "site_style.updated",
+      memberId: actorMemberId,
+      targetId: "default",
+      category: "admin",
+      severity: "important",
+      summary: "Completed public site style setup",
+      metadata: { completed: true, source: "setup-wizard-launch-panel" },
+    });
+  }
+
+  return isComplete.complete;
 }
 
 /**

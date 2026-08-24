@@ -21,16 +21,27 @@ vi.mock("@/lib/setup-readiness-db", () => ({
   getSetupDatabaseSnapshot: (...args: unknown[]) => mockSnapshot(...args),
 }));
 
+// The panel's site-visible answer rides on this payload (#220 review F3), so
+// the route reads it. Mocked rather than driven through a stubbed `clubTheme`
+// delegate: this suite is about the wizard's shape, and the render state's own
+// read-failure contract is pinned where it lives.
+const mockThemeState = vi.fn();
+vi.mock("@/lib/club-theme", () => ({
+  getWebsiteThemeRenderState: (...args: unknown[]) => mockThemeState(...args),
+}));
+
 import { GET } from "@/app/api/admin/setup/wizard/route";
 
 /**
  * The wizard's read (epic #213, C5).
  *
- * Three things this route has to get right, each of which is silent when wrong:
+ * Four things this route has to get right, each of which is silent when wrong:
  * it must refuse before it reads anything, it must pass the module flags into
- * the traversal (or a disabled module's steps stay on the rail), and it must
- * pass the readiness verdicts in (or every step reads not-started and the wizard
- * opens parked on step one).
+ * the traversal (or a disabled module's steps stay on the rail), it must pass
+ * the readiness verdicts in (or every step reads not-started and the wizard
+ * opens parked on step one), and it must answer with EXACTLY the payload the
+ * shared interface declares — a key the shell cannot read is a key nobody knows
+ * is unused.
  */
 
 const allModulesOn = Object.fromEntries(
@@ -45,11 +56,18 @@ beforeEach(() => {
   });
   mockFindUnique.mockResolvedValue(null);
   mockSnapshot.mockResolvedValue({ adminModuleSettings: allModulesOn });
+  mockThemeState.mockResolvedValue({ isComplete: false, readFailed: false });
 });
+
+async function raw() {
+  const response = await GET();
+  return (await response.json()) as Record<string, unknown>;
+}
 
 async function body() {
   const response = await GET();
   return (await response.json()) as {
+    isSiteVisible: boolean;
     traversal: {
       applicableStepIds: string[];
       percentComplete: number;
@@ -71,13 +89,31 @@ describe("GET /api/admin/setup/wizard", () => {
     expect(response.status).toBe(403);
     expect(mockSnapshot).not.toHaveBeenCalled();
     expect(mockFindUnique).not.toHaveBeenCalled();
+    expect(mockThemeState).not.toHaveBeenCalled();
   });
 
-  it("returns readiness, progress and the traversal together", async () => {
-    const payload = await body();
-    expect(payload.readiness.categories.length).toBeGreaterThan(0);
-    expect(payload.traversal.applicableStepIds.length).toBeGreaterThan(0);
-    expect(typeof payload.traversal.percentComplete).toBe("number");
+  // EXACTLY `SetupWizardPayload` — no more and no less. This used to send a
+  // fourth key, `progress`, which the interface never declared and no client
+  // could read; asserting "these three are present" is what let that sit there
+  // (#220 review F6, drift-1).
+  it("answers with the declared payload and nothing besides", async () => {
+    const payload = await raw();
+    expect(Object.keys(payload).sort()).toEqual([
+      "isSiteVisible",
+      "readiness",
+      "traversal",
+    ]);
+
+    const typed = await body();
+    expect(typed.readiness.categories.length).toBeGreaterThan(0);
+    expect(typed.traversal.applicableStepIds.length).toBeGreaterThan(0);
+    expect(typeof typed.traversal.percentComplete).toBe("number");
+  });
+
+  it("reports whether the public site is live, for D9's launch panel", async () => {
+    expect((await body()).isSiteVisible).toBe(false);
+    mockThemeState.mockResolvedValue({ isComplete: true, readFailed: false });
+    expect((await body()).isSiteVisible).toBe(true);
   });
 
   it("applies the club's module flags to the applicable set (D4)", async () => {

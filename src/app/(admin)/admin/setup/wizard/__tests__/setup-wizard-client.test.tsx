@@ -23,6 +23,8 @@ afterEach(() => {
 });
 
 const admin = { ...emptyAdminPermissionMatrix(), support: "edit" as const };
+/** Support edit records progress; CONTENT edit publishes the site (D9). */
+const publisher = { ...admin, content: "edit" as const };
 
 function check(id: string, title: string) {
   return {
@@ -88,32 +90,34 @@ function traversalWith(
   };
 }
 
-/** A fetch stub that answers the wizard read, and the launch panel's theme read. */
-function stubFetch(payloads: { readiness: SetupReadiness; traversal: unknown }[]) {
+/**
+ * A fetch stub answering the wizard read — and, when a test asks for it, the
+ * launch panel's publish.
+ *
+ * Successive `payloads` are handed out one per wizard read, so a test can make
+ * the world change under a refetch; the last one repeats.
+ */
+function stubFetch(
+  payloads: {
+    readiness: SetupReadiness;
+    traversal: unknown;
+    isSiteVisible?: boolean;
+  }[],
+  options: { publish?: () => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }> } = {},
+) {
   let call = 0;
   const fetchMock = vi.fn(async (url: string) => {
     if (String(url).startsWith("/api/admin/site-style")) {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          theme: {
-            brandGold: "#c8a04a",
-            brandDeep: "#12263a",
-            brandSafety: "#d94f2b",
-            headingFontKey: "inter",
-            bodyFontKey: "inter",
-            logoUrl: null,
-            logoDataUrl: null,
-            rawCss: "",
-            completedAt: null,
-          },
-        }),
-      };
+      if (options.publish) return options.publish();
+      return { ok: true, status: 200, json: async () => ({ isComplete: true }) };
     }
     const payload = payloads[Math.min(call, payloads.length - 1)];
     call += 1;
-    return { ok: true, status: 200, json: async () => payload };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ isSiteVisible: false, ...payload }),
+    };
   });
   vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
   return fetchMock;
@@ -271,6 +275,58 @@ describe("SetupWizardClient", () => {
     // The banner element is the section's always-mounted live region; with edit
     // access it says nothing at all.
     expect(screen.getByTestId("admin-view-only-banner").textContent).toBe("");
+  });
+
+  // F3c. The panel is rendered only while the traversal says `allResolved`, and
+  // a refetch can stop saying that at any moment — a step going stale under an
+  // upgrade. Unmounting mid-publish DISCARDS the result: the panel vanishes and
+  // the operator never learns whether the site went live.
+  it("keeps the launch panel mounted across a refetch while publishing", async () => {
+    const publishGate: { settle: () => void } = { settle: () => {} };
+    stubFetch(
+      [
+        {
+          readiness: readinessWith([["club-config", "Club Configuration"]]),
+          traversal: traversalWith(["club-config"], { allResolved: true }),
+        },
+        // The refetch that would otherwise pull the panel out from under them.
+        {
+          readiness: readinessWith([["club-config", "Club Configuration"]]),
+          traversal: traversalWith(["club-config"], { currentIndex: 0 }),
+        },
+      ],
+      {
+        publish: () =>
+          new Promise((resolve) => {
+            publishGate.settle = () =>
+              resolve({ ok: true, status: 200, json: async () => ({ isComplete: true }) });
+          }),
+      },
+    );
+    render(<SetupWizardClient permissionMatrix={publisher} />);
+    fireEvent.click(await screen.findByTestId("setup-wizard-rail-row-launch"));
+    expect(await screen.findByTestId("setup-wizard-launch-panel")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("setup-wizard-make-site-visible"));
+    // Mid-flight, and the world moves: allResolved is now false.
+    fireEvent.focus(window);
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("setup-wizard-rail-row-launch").getAttribute("data-reachable"),
+      ).toBe("false"),
+    );
+    // …and the panel is still there to receive the answer.
+    expect(screen.getByTestId("setup-wizard-launch-panel")).toBeTruthy();
+
+    publishGate.settle();
+    expect(await screen.findByText(/The public site is live/)).toBeTruthy();
+
+    // The pin is the operator's to release: choosing another step drops it, and
+    // the panel goes.
+    fireEvent.click(screen.getByTestId("setup-wizard-rail-row-club-config"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("setup-wizard-launch-panel")).toBeNull(),
+    );
   });
 
   // F9's other half: the fallback is right, and it used to be SILENT. An

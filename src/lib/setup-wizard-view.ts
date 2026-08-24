@@ -141,10 +141,25 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
  * module both ends already import, so the route and the shell cannot drift into
  * two different readings of the same response. Neither could import the other's
  * copy without dragging a server route into a client bundle or vice versa.
+ *
+ * **This is the WHOLE response, not a subset of it.** The route's own test pins
+ * the exact key set, because a key the route sends and this interface does not
+ * declare is a key no client can read and nobody is told about — the route
+ * shipped a `progress` one in exactly that condition.
  */
 export interface SetupWizardPayload {
   readonly readiness: SetupReadiness;
   readonly traversal: SetupWizardTraversal<SetupStepId>;
+  /**
+   * Whether the public site is live — the club theme's `completedAt`, which D9's
+   * launch panel reports and publishes.
+   *
+   * It rides on the wizard's read rather than being fetched by the panel itself
+   * because the shell already refetches this whole payload on focus, so the
+   * panel's answer stays current instead of being whatever it was when the panel
+   * happened to mount.
+   */
+  readonly isSiteVisible: boolean;
 }
 
 export interface SetupWizardRailStep {

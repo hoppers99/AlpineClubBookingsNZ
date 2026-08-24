@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getWebsiteThemeRenderState } from "@/lib/club-theme";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
 import { getSetupDatabaseSnapshot } from "@/lib/setup-readiness-db";
@@ -12,6 +13,7 @@ import {
   buildSetupWizardTraversal,
   type SetupWizardTraversalInput,
 } from "@/lib/setup-wizard-traversal";
+import type { SetupWizardPayload } from "@/lib/setup-wizard-view";
 
 /**
  * The wizard shell's single read (epic #213, child C5).
@@ -60,9 +62,12 @@ export async function GET() {
   const guard = await requireAdmin();
   if (!guard.ok) return guard.response;
 
-  const [database, progressRecord] = await Promise.all([
+  const [database, progressRecord, themeState] = await Promise.all([
     getSetupDatabaseSnapshot(),
     prisma.setupProgress.findUnique({ where: { id: "default" } }),
+    // D9's launch panel reports and publishes this. Read here rather than by the
+    // panel, so the shell's focus refetch keeps it current (#220 review F3).
+    getWebsiteThemeRenderState(),
   ]);
 
   const progress = normalizeSetupProgress(
@@ -87,5 +92,14 @@ export async function GET() {
     readinessStatuses: readinessStatusesOf(readiness),
   });
 
-  return NextResponse.json({ readiness, progress, traversal });
+  // EXACTLY `SetupWizardPayload`, and nothing besides. The `progress` this used
+  // to send alongside was never declared on that interface and was therefore
+  // unreadable by the shell — the wizard's rail is built from the traversal,
+  // which already has progress folded into every step's state (#220 review F6).
+  const payload: SetupWizardPayload = {
+    readiness,
+    traversal,
+    isSiteVisible: themeState.isComplete,
+  };
+  return NextResponse.json(payload);
 }

@@ -29,10 +29,13 @@ import {
  *
  * It owns three things and delegates the rest:
  *
- * 1. **One read.** `GET /api/admin/setup/wizard` returns readiness, progress and
- *    C4's traversal together, and `buildSetupWizardView` marries them. Nothing
- *    here derives a percentage, a frontier or a step state — D7's percentage in
- *    particular is copied through untouched.
+ * 1. **One read.** `GET /api/admin/setup/wizard` returns readiness, C4's
+ *    traversal and whether the public site is live, and `buildSetupWizardView`
+ *    marries the first two. Nothing here derives a percentage, a frontier or a
+ *    step state — D7's percentage in particular is copied through untouched.
+ *    That read is the ONLY one on this screen: the launch panel used to fetch
+ *    the club theme for itself, which both froze at mount time and set up a
+ *    lost update when it posted the theme back (#220 review F3).
  * 2. **Where the operator is.** The landing step is the traversal's
  *    `currentStepId`, so leaving and coming back resumes rather than restarts.
  * 3. **Refetching, so the rail follows the module flags (D4/D5).** Switching a
@@ -71,6 +74,17 @@ export function SetupWizardClient({
   );
   /** The step the operator chose stopped being available, and they were moved. */
   const [moved, setMoved] = useState(false);
+  /**
+   * A publish is in flight on the launch panel, or has just finished.
+   *
+   * D9's panel is rendered only while the traversal says `allResolved`, and a
+   * refetch can stop saying that at any moment — a step going stale under an
+   * upgrade, say. Unmounting the panel mid-publish would DISCARD the result and
+   * leave the operator with no idea whether the site went live, so the panel
+   * pins itself for the duration and stays pinned afterwards, until they
+   * navigate away from it themselves.
+   */
+  const [launchPinned, setLaunchPinned] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -129,10 +143,12 @@ export function SetupWizardClient({
   const activeStepId = useMemo(() => {
     if (!view) return null;
     if (selectedId === SETUP_WIZARD_LAUNCH_ID) {
-      return view.allResolved ? SETUP_WIZARD_LAUNCH_ID : view.currentStepId;
+      return view.allResolved || launchPinned
+        ? SETUP_WIZARD_LAUNCH_ID
+        : view.currentStepId;
     }
     return resolveInitialStepId(view, selectedId);
-  }, [view, selectedId]);
+  }, [view, selectedId, launchPinned]);
 
   // …and when that fallback FIRES, say so. An operator who chose a step
   // explicitly and then finds the pane showing a different one has, from where
@@ -148,18 +164,21 @@ export function SetupWizardClient({
     if (!view || selectedId === null) return;
     const resolved =
       selectedId === SETUP_WIZARD_LAUNCH_ID
-        ? view.allResolved
+        ? view.allResolved || launchPinned
           ? SETUP_WIZARD_LAUNCH_ID
           : view.currentStepId
         : resolveInitialStepId(view, selectedId);
     if (resolved === selectedId) return;
     setSelectedId(null);
     setMoved(true);
-  }, [view, selectedId]);
+  }, [view, selectedId, launchPinned]);
 
   /** Any deliberate move retires the notice — they can see where they are now. */
   const select = useCallback((id: SetupWizardRailSelection) => {
     setMoved(false);
+    // Leaving the launch panel releases its pin: the operator has read whatever
+    // the publish had to say and chosen to go elsewhere.
+    if (id !== SETUP_WIZARD_LAUNCH_ID) setLaunchPinned(false);
     setSelectedId(id);
   }, []);
 
@@ -281,7 +300,9 @@ export function SetupWizardClient({
           {activeStepId === SETUP_WIZARD_LAUNCH_ID ? (
             <SetupWizardLaunchPanel
               view={view}
+              isSiteVisible={payload?.isSiteVisible ?? false}
               permissionMatrix={permissionMatrix}
+              onPublishActivity={setLaunchPinned}
             />
           ) : activeStep ? (
             <SetupWizardStepFrame
