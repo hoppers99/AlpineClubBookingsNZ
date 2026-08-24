@@ -81,14 +81,17 @@ describe("SetupWizardStepFrame", () => {
     expect(screen.queryByRole("button", { name: /Skip for now/ })).toBeNull();
   });
 
-  // D12. An officer outside the step's area gets NO reachable edit affordance:
-  // every transition is disabled and one banner states why. Mutation-verified:
+  // D12. An officer who cannot change progress gets NO reachable transition:
+  // every button is disabled and one banner states why. Mutation-verified:
   // dropping `canEdit` from the ViewOnlyActionButtons fails this test.
-  it("gives an officer outside the area no edit affordance", () => {
+  it("gives an officer who cannot change progress no edit affordance", () => {
     const { onProgress } = renderFrame({ canEdit: false });
     const banner = screen.getByTestId("admin-view-only-banner");
     expect(banner.textContent).toContain(ADMIN_VIEW_ONLY_SECTION_HEADING);
-    expect(banner.textContent).toContain("Bookings & Beds edit access is required");
+    // The banner names the axis the SERVER enforces (support), not the step's
+    // own settings area — this step's is Bookings & Beds.
+    expect(banner.textContent).toContain("Support edit access is required");
+    expect(banner.textContent).not.toContain("Bookings & Beds");
 
     for (const name of [/Mark this step done/, /Skip for now/]) {
       const button = screen.getByRole("button", { name }) as HTMLButtonElement;
@@ -96,6 +99,16 @@ describe("SetupWizardStepFrame", () => {
       fireEvent.click(button);
     }
     expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  // The step's own area is still ON the screen — it is what decides whether the
+  // settings link's destination is any use — but as context for that link
+  // rather than as the gate on the buttons.
+  it("names the step's own area against the settings link, not against the buttons", () => {
+    renderFrame();
+    expect(
+      screen.getByTestId("setup-wizard-step-settings-area").textContent,
+    ).toContain("Bookings & Beds");
   });
 
   it("still lets a view-only officer walk the journey", () => {

@@ -8,7 +8,7 @@ import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
 import type { SetupStepId } from "@/lib/setup-step-registry";
 import {
   buildSetupWizardView,
-  canEditSetupStep,
+  canChangeSetupProgress,
   resolveInitialStepId,
   setupWizardNeighbours,
   type SetupWizardPayload,
@@ -234,7 +234,7 @@ export function SetupWizardClient({
           ) : activeStep ? (
             <SetupWizardStepFrame
               step={activeStep}
-              canEdit={canEditSetupStep(permissionMatrix, activeStep)}
+              canEdit={canChangeSetupProgress(permissionMatrix)}
               saving={saving}
               previousStep={neighbours.previous}
               nextStep={neighbours.next}

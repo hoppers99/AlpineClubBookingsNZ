@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { MODULE_KEYS, type ModuleSettingsValues } from "@/config/modules";
-import { ADMIN_PERMISSION_AREAS, emptyAdminPermissionMatrix } from "@/lib/admin-permissions";
+import {
+  ADMIN_PERMISSION_AREAS,
+  emptyAdminPermissionMatrix,
+  getAdminRouteRequirement,
+} from "@/lib/admin-permissions";
 import { buildSetupReadiness, normalizeSetupProgress } from "@/lib/setup-readiness";
 import { SETUP_STEP_IDS, type SetupStepId } from "@/lib/setup-step-registry";
 import { buildSetupWizardTraversal } from "@/lib/setup-wizard-traversal";
 import {
   SETUP_STEP_PERMISSION_AREA,
   buildSetupWizardView,
-  canEditSetupStep,
+  canChangeSetupProgress,
   resolveInitialStepId,
   setupWizardNeighbours,
   type SetupWizardView,
@@ -168,16 +172,44 @@ describe("navigation helpers", () => {
   });
 });
 
-describe("canEditSetupStep (D12)", () => {
-  it("requires edit on the step's own area, not merely any admin access", () => {
+describe("canChangeSetupProgress (D12)", () => {
+  // The gate has to agree with the SERVER, which enforces
+  // PATCH /api/admin/setup/progress at support:edit for every step. Gating on
+  // the step's own area was wrong in both directions on shipped role bundles,
+  // and both directions are asserted here.
+  it("asks for support edit, whatever area the step's settings page belongs to", () => {
     const view = viewFor();
     const bookingStep = view.steps.find((step) => step.permissionArea === "bookings");
     expect(bookingStep).toBeDefined();
-    const supportOnly = { ...emptyAdminPermissionMatrix(), support: "edit" as const };
-    expect(canEditSetupStep(supportOnly, bookingStep!)).toBe(false);
-    const viewOnly = { ...emptyAdminPermissionMatrix(), bookings: "view" as const };
-    expect(canEditSetupStep(viewOnly, bookingStep!)).toBe(false);
-    const editor = { ...emptyAdminPermissionMatrix(), bookings: "edit" as const };
-    expect(canEditSetupStep(editor, bookingStep!)).toBe(true);
+
+    // Direction 1 — the false ENABLE: a bookings officer with only support view
+    // would have been handed a button whose PATCH answers 403.
+    const bookingsEditor = {
+      ...emptyAdminPermissionMatrix(),
+      bookings: "edit" as const,
+      support: "view" as const,
+    };
+    expect(canChangeSetupProgress(bookingsEditor)).toBe(false);
+
+    // Direction 2 — the false DISABLE: a support officer may change progress on
+    // every step, including one whose settings page is another area's.
+    const supportEditor = { ...emptyAdminPermissionMatrix(), support: "edit" as const };
+    expect(canChangeSetupProgress(supportEditor)).toBe(true);
+
+    const supportViewer = { ...emptyAdminPermissionMatrix(), support: "view" as const };
+    expect(canChangeSetupProgress(supportViewer)).toBe(false);
+    expect(canChangeSetupProgress(emptyAdminPermissionMatrix())).toBe(false);
+  });
+
+  it("matches the area the route resolver really enforces for the progress API", () => {
+    // Not a restatement of the line above: this reads the answer out of the
+    // REAL resolver, so a later prefix edit that moves /api/admin/setup off
+    // `support` fails here rather than silently re-opening the gap.
+    const requirement = getAdminRouteRequirement(
+      "/api/admin/setup/progress",
+      "PATCH",
+    );
+    expect(requirement?.area).toBe("support");
+    expect(requirement?.level).toBe("edit");
   });
 });

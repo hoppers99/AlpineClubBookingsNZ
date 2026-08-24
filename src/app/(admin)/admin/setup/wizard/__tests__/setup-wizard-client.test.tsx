@@ -216,6 +216,63 @@ describe("SetupWizardClient", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  // The permission AXIS, at the only place the matrix meets a step: the three
+  // transitions are `PATCH /api/admin/setup/progress`, which the server enforces
+  // at support:edit for every step. Both directions of the old per-step-area
+  // gate were live on shipped role bundles, so both are pinned.
+  //
+  // Mutation-verified: gating on the step's own area again fails both of these.
+  it("disables the progress buttons for an officer with the step's area but not support", async () => {
+    // `booking-policies` maps to the BOOKINGS area, and this officer holds
+    // bookings edit — the old gate enabled the buttons here, and the PATCH
+    // behind them answers 403.
+    stubFetch([
+      {
+        readiness: readinessWith([["booking-policies", "Booking Policy"]]),
+        traversal: traversalWith(["booking-policies"], { currentIndex: 0 }),
+      },
+    ]);
+    render(
+      <SetupWizardClient
+        permissionMatrix={{
+          ...emptyAdminPermissionMatrix(),
+          bookings: "edit",
+          support: "view",
+        }}
+      />,
+    );
+    const button = (await screen.findByRole("button", {
+      name: /Mark this step done/,
+    })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(screen.getByTestId("admin-view-only-banner").textContent).toContain(
+      "Support edit access is required",
+    );
+  });
+
+  it("enables them for a support editor on a step whose settings are another area's", async () => {
+    // The mirror-image failure: the old gate DISABLED this, withholding a
+    // transition the server would have accepted.
+    stubFetch([
+      {
+        readiness: readinessWith([["booking-policies", "Booking Policy"]]),
+        traversal: traversalWith(["booking-policies"], { currentIndex: 0 }),
+      },
+    ]);
+    render(
+      <SetupWizardClient
+        permissionMatrix={{ ...emptyAdminPermissionMatrix(), support: "edit" }}
+      />,
+    );
+    const button = (await screen.findByRole("button", {
+      name: /Mark this step done/,
+    })) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    // The banner element is the section's always-mounted live region; with edit
+    // access it says nothing at all.
+    expect(screen.getByTestId("admin-view-only-banner").textContent).toBe("");
+  });
+
   it("falls back to the current step when the selected one disappears", async () => {
     stubFetch([
       {

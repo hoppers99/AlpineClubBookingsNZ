@@ -31,6 +31,9 @@
 
   **The readiness checklist is unchanged and stays where it is.** Both surfaces
   read the same configuration, so nothing is lost by using either. Officers see
-  the whole journey and can walk all of it; a step whose settings belong to an
-  area they only have view access to renders read-only, with one banner
-  explaining why.
+  the whole journey and can walk all of it. Recording a step as done, skipped or
+  reopened needs Support edit access — the same access the checklist's own
+  buttons already need, because it is the same action — and the wizard says so
+  in one banner when you do not have it. Doing the step's actual work still
+  needs edit access to whichever area its settings page belongs to, and the
+  wizard names that area underneath the link to the page.

@@ -35,6 +35,16 @@ import { setupWizardStepLabel } from "./setup-wizard-rail";
  * as many words, because a control called "skip" that does not hide anything
  * needs to explain itself once.
  *
+ * **TWO DIFFERENT PERMISSION QUESTIONS LIVE ON THIS SCREEN, and they have
+ * different answers.** Changing a step's PROGRESS is one API for every step, and
+ * the server enforces it at `support: edit` — so `canEdit` is that one answer,
+ * and the banner names Support. Doing the step's actual WORK happens on another
+ * page, governed by that page's own area, which is why the settings link says
+ * which area it belongs to rather than pretending the progress gate covered it.
+ * Gating the three buttons on the step's own area was wrong in both directions
+ * on shipped role bundles: an enabled button whose PATCH 403s, and a disabled
+ * button for a transition the server would have accepted.
+ *
  * D12's view-only pattern: ONE `AdminViewOnlySectionBanner` heads the controls
  * and every gated control is a `ViewOnlyActionButton` with
  * `describeReason={false}`, which is the canonical shape (the banner is in this
@@ -143,12 +153,23 @@ export function SetupWizardStepFrame({
         ) : null}
 
         {step.href ? (
-          <Button asChild variant="outline" size="sm">
-            <a href={step.href}>
-              <ExternalLink className="h-4 w-4" />
-              Open the settings for this step
-            </a>
-          </Button>
+          <div className="space-y-1">
+            <Button asChild variant="outline" size="sm">
+              <a href={step.href}>
+                <ExternalLink className="h-4 w-4" />
+                Open the settings for this step
+              </a>
+            </Button>
+            {/* The step's OWN area, which is a different question from the
+                progress gate below and is the one that decides whether this
+                link's destination is any use. */}
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="setup-wizard-step-settings-area"
+            >
+              That page belongs to {areaLabel(step.permissionArea)}.
+            </p>
+          </div>
         ) : null}
       </div>
 
@@ -156,9 +177,9 @@ export function SetupWizardStepFrame({
           no gap for an edit-capable admin. */}
       <div className="px-5">
         <AdminViewOnlySectionBanner canEdit={canEdit} className="mb-3">
-          {areaLabel(step.permissionArea)} edit access is required to change this
-          step&apos;s progress. You can still read it and move through the
-          wizard.
+          Support edit access is required to change any step&apos;s progress —
+          that is one setting for the whole journey, not one per step. You can
+          still read every step and move through the wizard.
         </AdminViewOnlySectionBanner>
       </div>
 

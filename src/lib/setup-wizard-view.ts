@@ -46,15 +46,32 @@ type SetupReadinessCategory = SetupReadiness["categories"][number];
 export type SetupReadinessCheck = SetupReadinessCategory["checks"][number];
 
 /**
- * Which admin permission area governs each step (epic #213 **D12**).
+ * Which admin permission area governs each step's **settings page** (epic #213
+ * **D12**).
+ *
+ * ## What this map is NOT used for
+ *
+ * It does **not** gate the wizard's three progress transitions. Those call
+ * `PATCH /api/admin/setup/progress`, which the server enforces at
+ * `support: edit` through the `/api/admin/setup` prefix in `ROUTE_AREA_PREFIXES`
+ * — so gating the buttons per-step-area was wrong in both directions at once,
+ * with role bundles this product actually ships: a bookings-edit officer without
+ * support saw an enabled "Mark this step done" that 403s, and a support-edit
+ * officer without bookings saw a disabled button for a transition the server
+ * would have accepted. `canChangeSetupProgress` is the gate; it asks the one
+ * question the server asks.
+ *
+ * ## What it IS used for
+ *
+ * The step frame's **"Open the settings for this step"** link, whose destination
+ * is an ordinary admin page governed by an ordinary area — and, when C6 (lodges)
+ * and C7 (styling) grow in-frame editors, those editors, which really will write
+ * through their own area's API.
  *
  * THE RULE, stated once: a step's area is the area that governs **the admin page
  * the step's work is actually done on** — the page its readiness check links to.
- * Not the area of the API that stores the value, and not the area of
- * `/admin/setup` itself. An officer who cannot open the page a step sends them
- * to cannot do that step, so gating the wizard's controls on anything else would
- * either hand them a button whose destination 403s, or withhold one they are
- * entitled to press.
+ * Not the area of the API that records the step's progress, and not the area of
+ * `/admin/setup` itself.
  *
  * That rule produces two mappings that look surprising and are correct:
  *
@@ -63,6 +80,25 @@ export type SetupReadinessCheck = SetupReadinessCategory["checks"][number];
  * - `membership-cancellation` is **support**, because its editor lives on
  *   `/admin/setup/cancellation`, and `/admin/setup` is a support-area prefix —
  *   a membership officer without support cannot open that page at all.
+ *
+ * …and it has three edges where "the page the work is done on" does not settle
+ * the answer by itself. Each is assigned by judgement, and named here so a later
+ * reader does not mistake one for a mechanical derivation:
+ *
+ * - **`runtime-env` links nowhere.** Its readiness check carries no `href` at
+ *   all (the work is editing `.env` and restarting), so there is no destination
+ *   page to read an area off. `support` is the deployment-health area every
+ *   other environment-shaped step uses.
+ * - **`finance-dashboard` points at `/finance`, which is not an admin route.**
+ *   It is the member-facing finance surface, so `ROUTE_AREA_PREFIXES` has
+ *   nothing to say about it; `finance` is the area whose officers read it.
+ * - **`club-time-zone` points at `/admin/club-time`, which is registered under
+ *   `support` but is Full-Admin-enforced IN ROUTE** — both verbs of
+ *   `/api/admin/club-time-zone` use `requireAdmin({ permission: false })`, and
+ *   the page itself refuses a non-full admin. So a support officer's `edit` on
+ *   this map does not mean they can complete that step's work; the page tells
+ *   them so on arrival, which is the honest place for a rule the area system
+ *   cannot express.
  *
  * A `Record` over the id union rather than a lookup with a fallback, on purpose:
  * a step added by a later child (C3 contributes module-owned steps) fails the
@@ -280,17 +316,23 @@ export function setupWizardNeighbours(
 }
 
 /**
- * Whether this admin may act on this step (D12).
+ * Whether this admin may change a step's PROGRESS — mark it done, skip it, or
+ * reopen it (D12).
  *
- * Two gates, both of which must pass, and they are different questions: the
- * JOURNEY gate (`isReachable`, D2) says the wizard is not letting anybody jump
- * ahead, and the PERMISSION gate says this particular officer owns the area.
+ * **This asks the question the server asks, and takes no step argument.** All
+ * three transitions are one API — `PATCH /api/admin/setup/progress` — and every
+ * route under `/api/admin/setup` resolves to the `support` area, so `support`
+ * edit is the whole answer for every step in the journey. A per-step gate would
+ * disagree with the server in both directions on role bundles this product
+ * ships (see `SETUP_STEP_PERMISSION_AREA` above), and the readiness cards on
+ * `/admin/setup` — the same transitions, the same API — already gate exactly
+ * here.
+ *
+ * The JOURNEY gate is a separate question and stays separate: `isReachable` (D2)
+ * says the wizard is not letting anybody jump ahead, whoever they are.
  * `setup-wizard-traversal.ts` is deliberately permission-agnostic and says so;
  * this is the other half it names.
  */
-export function canEditSetupStep(
-  matrix: AdminPermissionMatrix,
-  step: Pick<SetupWizardStepDetail, "permissionArea">,
-): boolean {
-  return matrix[step.permissionArea] === "edit";
+export function canChangeSetupProgress(matrix: AdminPermissionMatrix): boolean {
+  return matrix.support === "edit";
 }

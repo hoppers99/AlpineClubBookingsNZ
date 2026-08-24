@@ -103,11 +103,26 @@ finish); use the checklist when you know what you are looking for.
    Anything you skipped is listed on that panel in plain words rather than
    quietly dropped.
 
-**What you can change depends on your role.** The wizard is reachable by anyone
-who can reach the Setup page, and everyone can read and walk the whole journey.
-A step whose settings belong to an area you only have view access to renders
-read-only: its buttons are disabled and one banner at the top of the step says
-why.
+**What you can change depends on your role, and there are two different
+answers.** The wizard is reachable by anyone who can reach the Setup page, and
+everyone can read and walk the whole journey.
+
+- **Marking a step done, skipping it, or reopening it** needs **Support** edit
+  access. That is one answer for the whole journey rather than one per step,
+  because all three are the same underlying action — the same one the readiness
+  checklist's own buttons perform. Without it those three buttons are disabled,
+  and one banner at the top of the step says so.
+- **Doing the step's actual work** happens on the settings page the step links
+  to, and needs edit access to **that page's** area — which the wizard names
+  underneath the link. So a Support officer can record that a step is done but
+  may still need a Bookings or Finance officer to make the change itself; and an
+  officer who can make the change may need someone with Support access to tick
+  it off.
+
+Two of those settings pages ask for more than their area implies: **Club Time
+Zone** is full-administrator only whatever your Support level, and **Runtime
+Environment** is edited in the deployment's `.env` file rather than on any
+screen.
 
 ## Settings reference
 
@@ -153,7 +168,7 @@ or run `npm run config:self-heal`.
 | Setup shows incomplete after go-live | Optional checks were left unskipped | Mark genuinely-skipped checks as skipped so the summary reflects reality |
 | A wizard step will not open | It is further ahead than you have reached | Settle the steps before it — finish them, or skip the ones that do not apply |
 | **Ready to open** stays locked in the wizard | Something is still outstanding and has not been skipped | Work down the rail; anything you genuinely do not need can be skipped, which counts as settled |
-| A wizard step's buttons are all disabled | Your role has view-only access to the area that step's settings belong to | Ask an admin with edit access to that area; the banner at the top of the step names it |
+| A wizard step's Done / Skip / Reopen buttons are all disabled | Your role has view-only access to **Support**, which is what recording progress needs — on every step, not just this one | Ask an admin with Support edit access to record it. Note this is separate from being able to make the change itself, which needs the settings page's own area |
 | The rail still shows a module's steps after switching it off | The wizard has not re-read the journey yet | Return to the wizard's tab, or press **Refresh** |
 
 ## Related links
