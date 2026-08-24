@@ -679,6 +679,37 @@ export async function findOrCreateXeroContact(
   //             this is, `resolveXeroContactEmailPolicy` throws here, so an
   //             undeclared installation raises no invoice against a contact it
   //             cannot vouch for.
+  /*
+    THE POLICY IS RESOLVED ONCE AND THIS FUNCTION IS LONG, WHICH IS A REAL
+    TIME-OF-CHECK/TIME-OF-USE WINDOW (#3071 review, hoppers99). Stated rather than
+    fixed, and the shape of it decides why.
+
+    Phase 1 does all the Xero work — an OAuth refresh, up to two searches, a
+    `createContacts`, and `callXeroApi`'s retry sleeps, which reach 120 seconds. An
+    administrator can switch the safer override on during that, and the payload
+    Xero has already accepted was built under the previous answer. Re-resolving
+    later cannot un-send it: on the created path the contact exists in Xero with an
+    uncontained address by the time Phase 2 begins.
+
+    IT SELF-HEALS, AND NOT INSTANTLY — the distinction matters. The next document
+    writer to resolve this member takes the steady-state path above, which resolves
+    the policy afresh and calls `ensureXeroContactContained`, so the address is
+    replaced then. Until that happens the contact holds a real address, and an
+    invoice raised inside the same workflow is raised against it — which is the
+    residual, because Xero emails its own reminders for outstanding AUTHORISED
+    invoices from its own servers. The operator remedy is the one the guide already
+    documents for every uncontained contact on a copy: Admin -> Environment lists
+    them, and `guides/environment-role.md` -> "Putting a replaced address back"
+    covers the manual repair.
+
+    WHY NOT HOLD THE ANSWER STILL INSTEAD. The alternatives are worse rather than
+    merely costlier: re-resolving between Phase 1 and Phase 2 would narrow the
+    window without closing it and would invite the reader to believe it was
+    closed, and a lock spanning the provider calls is exactly the F7 (#1355)
+    failure this function was restructured to remove. An operator flipping the
+    override mid-workflow is a deliberate action taken over seconds, so the
+    honest arrangement is a bounded, self-closing window that is written down.
+  */
   const { policy: emailPolicy } = await resolveXeroContactEmailPolicy();
   const member = await prisma.member.findUnique({
     where: { id: memberId },
