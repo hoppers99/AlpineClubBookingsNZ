@@ -112,6 +112,19 @@ export interface RecordSetupProgressTransitionInput {
 export function recordSetupProgressTransition(
   input: RecordSetupProgressTransitionInput,
 ): void {
+  // A `finish` THAT DID NOT TAKE EFFECT EXPLAINS ITSELF ON ITS OWN ROW. The
+  // record-level completion is withheld while anything is stale (#217's
+  // inherited acceptance criterion), so a reader would otherwise find
+  // "Setup marked finished" recorded against a record that is not marked
+  // finished, with nothing on the row saying why. The blocking set travels in
+  // the metadata. It is NOT the same thing as the two rows below, which record
+  // the set MOVING — a finish blocked by a set that was already stale moves
+  // nothing and would write neither.
+  const withheldFinishMetadata =
+    input.payload.action === "finish" && input.nextStaleStepIds.length > 0
+      ? { staleStepIds: [...input.nextStaleStepIds] }
+      : {};
+
   // THE FIVE SHARED FIELDS ARE REPEATED AT EACH SITE ON PURPOSE, and a spread of
   // a shared `common` object was tried first and reverted. The audit-writer
   // census resolves a write site's `category` from the event object's OWN
@@ -127,7 +140,7 @@ export function recordSetupProgressTransition(
     entityType: "SetupProgress",
     entityId: input.entityId,
     summary: summaryFor(input.payload),
-    metadata: input.payload,
+    metadata: { ...input.payload, ...withheldFinishMetadata },
   });
 
   const markedStale = input.nextStaleStepIds.filter(

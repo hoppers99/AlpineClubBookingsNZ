@@ -87,9 +87,10 @@ import type { SetupReadiness } from "@/lib/setup-readiness";
  * `setup-progress-staleness.test.ts` covers the computation. This file covers
  * what the ROUTE does with it: what lands in `staleStepIds`, that
  * `completedStepIds` is never reduced by it, that the record-level
- * "Setup Complete" flag reverts while anything is stale, that the two stale
- * transitions are audited, and that a set which could not be computed is not
- * quietly replaced with an empty one.
+ * "Setup Complete" flag reverts while anything is stale and is never quietly
+ * put back, that the two stale transitions are audited only when the set really
+ * moves, and that a set which could not be computed refuses the whole
+ * transition rather than being replaced with an answer nobody computed.
  */
 
 function patch(body: unknown) {
@@ -275,7 +276,113 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
     expect(auditFor("setup_progress.step_completed")).not.toBeNull();
   });
 
-  it("keeps the stored set — never [] — when the recompute cannot run", async () => {
+  it("records no stale transition when a NON-EMPTY set survives a successful recompute unchanged", async () => {
+    mockFindUnique.mockResolvedValue(
+      storedRow({
+        completedStepIds: ["stripe", "sentry"],
+        staleStepIds: ["stripe", "sentry"],
+      }),
+    );
+
+    // Unrelated to the graph: `club-config` has no prerequisites and is nobody's
+    // prerequisite, so the recompute RUNS, succeeds, and returns the same set.
+    await PATCH(patch({ action: "complete", stepId: "club-config" }));
+
+    expect(persisted().staleStepIds).toEqual(["stripe", "sentry"]);
+    // The pair above only covers a set that moved from empty. Without these two
+    // the suite passes on a route that re-announces the whole standing stale set
+    // on every unrelated click — one audit row per step, per click, for as long
+    // as the staleness lasts. The rows record the set MOVING, not its being
+    // non-empty.
+    expect(auditFor("setup_progress.steps_marked_stale")).toBeNull();
+    expect(auditFor("setup_progress.steps_stale_cleared")).toBeNull();
+    expect(mockLogAudit).toHaveBeenCalledTimes(1);
+  });
+
+  it("cascades staleness when a prerequisite is DEFERRED rather than reopened", async () => {
+    mockFindUnique.mockResolvedValue(
+      storedRow({ completedStepIds: ["age-tiers", "stripe", "sentry"] }),
+    );
+
+    await PATCH(patch({ action: "skip", stepId: "age-tiers" }));
+
+    // D4 fixed the meaning of the two existing arrays — `skippedStepIds` holds
+    // genuine deferrals only — and left unstated what deferring a PREREQUISITE
+    // does to the steps above it. The answer this ships, recorded here because
+    // nothing else states it: DEFERRING INVALIDATES ITS DEPENDENTS, and it does
+    // so without changing what either array means. `skip` removes the step from
+    // `completedStepIds`, and `isSetupStepComplete` treats a skipped step as not
+    // complete, so an unsatisfied prerequisite falls out of the rules already
+    // there rather than needing one of its own. The alternative — treating a
+    // deferral as "settled enough" — would let a club defer the step everything
+    // hangs off and see no consequence anywhere.
+    expect(persisted().skippedStepIds).toEqual(["age-tiers"]);
+    expect(persisted().completedStepIds).toEqual(["stripe", "sentry"]);
+    expect(persisted().staleStepIds).toEqual(["stripe", "sentry"]);
+    expect(auditFor("setup_progress.step_deferred")).not.toBeNull();
+  });
+
+  it("does not restore the completion record when the stale set empties", async () => {
+    mockFindUnique.mockResolvedValue(
+      storedRow({
+        completedStepIds: ["stripe", "sentry"],
+        staleStepIds: ["stripe", "sentry"],
+        completedAt: new Date("2026-06-01T00:00:00.000Z"),
+        completedByMemberId: "admin0",
+      }),
+    );
+
+    await PATCH(patch({ action: "complete", stepId: "age-tiers" }));
+
+    // #217's resolution amendment: `completedAt` does NOT auto-restore when the
+    // stale set empties — `finish` remains its only writer, which is the
+    // pre-existing semantics and is the club rather than the software deciding
+    // it has finished. Settling the prerequisite clears the staleness and leaves
+    // the record incomplete until an administrator finishes setup again.
+    //
+    // The stored row here is also the one shape that can really carry a stamped
+    // `completedAt` beside a non-empty stale set: a release predating #217
+    // serving a `finish` during a blue/green drain. This pins that the new code
+    // does not adopt that stamp on its way past.
+    expect(persisted().staleStepIds).toEqual([]);
+    expect(persisted().completedAt).toBeNull();
+    expect(persisted().completedByMemberId).toBeNull();
+  });
+
+  it("records WHY a finish did not take effect, on the finish row itself", async () => {
+    mockFindUnique.mockResolvedValue(
+      storedRow({
+        completedStepIds: ["stripe", "sentry"],
+        staleStepIds: ["stripe", "sentry"],
+      }),
+    );
+
+    await PATCH(patch({ action: "finish" }));
+
+    // The set did not move, so neither stale row is written — and without the
+    // blocking list on the finish row itself the trail would read "Setup marked
+    // finished" against a record that is not marked finished, with nothing
+    // anywhere saying why.
+    expect(auditFor("setup_progress.finished")).toMatchObject({
+      metadata: { action: "finish", staleStepIds: ["stripe", "sentry"] },
+    });
+    expect(auditFor("setup_progress.steps_marked_stale")).toBeNull();
+  });
+
+  it("leaves the finish row unadorned when the finish really did take effect", async () => {
+    mockFindUnique.mockResolvedValue(
+      storedRow({ completedStepIds: ["age-tiers", "stripe", "sentry"] }),
+    );
+
+    await PATCH(patch({ action: "finish" }));
+
+    // The blocking list is present only when there was something to explain.
+    expect(auditFor("setup_progress.finished")?.metadata).toEqual({
+      action: "finish",
+    });
+  });
+
+  it("refuses the whole transition — writing and recording nothing — when the recompute cannot run", async () => {
     mockFindUnique.mockResolvedValue(
       storedRow({
         completedStepIds: ["stripe", "sentry"],
@@ -286,12 +393,40 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
 
     const response = await PATCH(patch({ action: "complete", stepId: "age-tiers" }));
 
-    // AC 6, fail toward stale: an unreadable world does not get to assert that
-    // nothing is stale. The operator's own transition still goes through.
-    expect(response.status).toBe(200);
-    expect(persisted().staleStepIds).toEqual(["stripe", "sentry"]);
-    expect(persisted().completedStepIds).toContain("age-tiers");
-    expect(auditFor("setup_progress.steps_stale_cleared")).toBeNull();
+    // AC 6 as #217's resolution amendment settled it. `[]` on this column means
+    // "computed: nothing is stale", so a recompute that did not run has NO value
+    // it may honestly write — and carrying the previously stored set forward is
+    // no better, because that set was computed against the arrays this very
+    // request replaces. So the route writes nothing, records nothing, and says
+    // why. An earlier version of this file asserted the safe HALF of that
+    // fallback and passed while the dangerous half (below) shipped inverted.
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("nothing was changed"),
+    });
+    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLogAudit).not.toHaveBeenCalled();
+  });
+
+  it("refuses rather than writing [] when the failed transition is the one CREATING staleness", async () => {
+    // The dangerous direction, and the one the `?? currentStale` fallback got
+    // exactly wrong. The stored set is empty, so falling back to it wrote `[]` —
+    // an assertion that nothing is stale, made about the one request whose whole
+    // effect is to make `stripe` and `sentry` stale. Fail-toward-complete, which
+    // is AC 6 inverted rather than merely unmet.
+    mockFindUnique.mockResolvedValue(
+      storedRow({
+        completedStepIds: ["age-tiers", "stripe", "sentry"],
+        staleStepIds: [],
+      }),
+    );
+    mockGetSetupDatabaseSnapshot.mockRejectedValue(new Error("no database"));
+
+    const response = await PATCH(patch({ action: "reopen", stepId: "age-tiers" }));
+
+    expect(response.status).toBe(503);
+    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLogAudit).not.toHaveBeenCalled();
   });
 
   it("empties the stale set on reset even when the recompute cannot run", async () => {

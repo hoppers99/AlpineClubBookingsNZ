@@ -18,6 +18,22 @@ import {
  * prerequisite graph on every write. What gets RECORDED about any of it lives in
  * `setup-progress-audit.ts`; how the stale set is computed, and which way each
  * failure falls, lives in `setup-progress-staleness.ts`.
+ *
+ * ## The read-modify-write window, and why it stays unguarded
+ *
+ * This handler reads the row, computes the next state in application code, and
+ * writes it back, with no lock and no transaction spanning the two. That is
+ * PRE-EXISTING and last-writer-wins was already the behaviour before #217; what
+ * #217 changes is the WIDTH of the window, because the stale recompute — a wide
+ * database snapshot plus a full readiness pass — now sits between the read and
+ * the write where previously there was only a handful of array operations.
+ *
+ * Left unguarded deliberately. Two administrators clicking different setup steps
+ * within the same window lose one of the two clicks: the loser's step keeps its
+ * previous state on a screen that re-reads it, and the operator clicks again.
+ * There is no money, no capacity, no allocation and no permission on this path,
+ * and the row is one deployment-local checklist. See the PR's concurrency
+ * declaration for the full argument against a `FOR UPDATE` here.
  */
 
 const progressSchema = z.discriminatedUnion("action", [
@@ -116,12 +132,27 @@ export async function PATCH(request: NextRequest) {
     const recomputed = await recomputeSetupStaleStepIds({
       progress: { completedStepIds, skippedStepIds },
     });
-    // FAIL TOWARD STALE (#217 AC 6). A set that could not be computed is not an
-    // empty set: storing `[]` would assert "nothing is stale", which is the one
-    // claim this route does not have evidence for. Keeping what was already
-    // stored never clears staleness on the strength of a failed read, and the
-    // operator's transition still goes through.
-    staleStepIds = recomputed ?? currentStale;
+    // FAIL TOWARD STALE (#217 AC 6), BY REFUSING THE WHOLE TRANSITION — the
+    // AC-6 resolution amendment on #217. `[]` on this column asserts "computed:
+    // nothing is stale", so a recompute that could not run has no value it may
+    // honestly write: `[]` inverts the acceptance criterion outright, and
+    // carrying the PREVIOUS set forward is no better, because it was computed
+    // against the arrays this request is replacing and would be stored beside
+    // arrays it does not describe. So nothing is written, nothing is audited,
+    // and the operator is told why. The failure is retryable by construction and
+    // the refusal is the consistent answer rather than a new one: the same
+    // snapshot read backs the wizard's own GET, which is already failing
+    // whenever this is.
+    if (recomputed === null) {
+      return NextResponse.json(
+        {
+          error:
+            "The setup snapshot could not be read; nothing was changed — try again",
+        },
+        { status: 503 },
+      );
+    }
+    staleStepIds = recomputed;
   }
 
   // The record-level "Setup Complete" flag reverts while anything is stale
