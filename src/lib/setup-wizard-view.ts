@@ -81,7 +81,7 @@ export type SetupReadinessCheck = SetupReadinessCategory["checks"][number];
  *   `/admin/setup/cancellation`, and `/admin/setup` is a support-area prefix —
  *   a membership officer without support cannot open that page at all.
  *
- * …and it has three edges where "the page the work is done on" does not settle
+ * …and it has four edges where "the page the work is done on" does not settle
  * the answer by itself. Each is assigned by judgement, and named here so a later
  * reader does not mistake one for a mechanical derivation:
  *
@@ -99,6 +99,15 @@ export type SetupReadinessCheck = SetupReadinessCategory["checks"][number];
  *   this map does not mean they can complete that step's work; the page tells
  *   them so on arrival, which is the honest place for a rule the area system
  *   cannot express.
+ * - **`environment-role` points at `/admin/environment`, which is the same
+ *   shape as `club-time-zone`** (ENV-SAFETY 1, #3034). The path is registered
+ *   under `support` in `ROUTE_AREA_PREFIXES`, so `support` is the admission
+ *   answer — but both the page and `/api/admin/environment-safety`'s write are
+ *   Full-Admin-enforced IN ROUTE, so this entry is ADMISSION AREA ONLY and a
+ *   support officer's `edit` here does not mean they can change the safer
+ *   override. Reading the role is genuinely `support:view` (it travels on the
+ *   readiness check), which is why `support` is right rather than merely
+ *   convenient; the Full-Admin half is the page's to enforce and it does.
  *
  * A `Record` over the id union rather than a lookup with a fallback, on purpose:
  * a step added by a later child (C3 contributes module-owned steps) fails the
@@ -114,6 +123,7 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
   // support surfaces.
   "club-config": "support",
   "club-time-zone": "support",
+  "environment-role": "support",
   "runtime-env": "support",
   "auth-secret-strength": "support",
   "seed-admin": "membership",

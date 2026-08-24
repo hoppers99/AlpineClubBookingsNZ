@@ -179,6 +179,39 @@ describe("buildSetupWizardView", () => {
     expect(clubConfig?.title).not.toBe("club-config");
     expect(clubConfig?.categoryTitle).toBe("Foundation");
   });
+
+  /*
+    MOCKUP 7'S SCENARIO, at the view layer: a club that finished setup on the
+    previous version, updated, and now has a step it has never seen. The
+    traversal suite proves the STATE is right for every id; this proves the
+    RENDERED ROW is right for the step that actually arrived this way
+    (`environment-role`, ENV-SAFETY 1 #3034), because `buildSetupWizardView`
+    falls back to rendering a bare id when readiness and the registry disagree
+    about a step — a fallback that is deliberate, quiet, and exactly what a
+    half-done merge would leave behind.
+  */
+  it("renders a step added by an update as a real rail row, not a bare id", () => {
+    const before = SETUP_STEP_IDS.filter((id) => id !== "environment-role");
+    const view = viewFor({ completedStepIds: [...before] });
+
+    const added = view.steps.find((step) => step.id === "environment-role");
+    expect(added, "the new step is missing from the journey entirely").toBeTruthy();
+    // Titled and categorised from the readiness check, not from the id.
+    expect(added?.title).not.toBe("environment-role");
+    expect(added?.categoryId).toBe("foundation");
+    expect(added?.categoryTitle).toBe("Foundation");
+    expect(added?.permissionArea).toBe("support");
+    // Third in the rail's Foundation group, where upstream ships it.
+    const foundation = view.groups.find((group) => group.id === "foundation");
+    expect(foundation?.steps.map((step) => step.id).slice(0, 3)).toEqual([
+      "club-config",
+      "club-time-zone",
+      "environment-role",
+    ]);
+    // And it is stated as outstanding rather than silently swallowed.
+    expect(view.outstanding.map((item) => item.id)).toContain("environment-role");
+    expect(view.allResolved).toBe(false);
+  });
 });
 
 describe("navigation helpers", () => {

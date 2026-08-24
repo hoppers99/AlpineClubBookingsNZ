@@ -18,9 +18,13 @@ import type { SetupStepDefinition } from "@/lib/setup-step-registry";
  * compile time, so the two modules have no runtime import cycle.
  *
  * `order` values are spaced by 10 so a later child (C3 onwards) can insert a
- * step without renumbering seventeen entries in a file several lanes are
+ * step without renumbering eighteen entries in a file several lanes are
  * editing at once. Nothing reads the numbers themselves; only their relative
- * order is meaningful.
+ * order is meaningful. `environment-role` is the first entry to use that gap: it
+ * arrived on `main` (ENV-SAFETY 1, #3034) as an eighteenth id in the flat array
+ * this file replaced, positioned THIRD, and it takes `order: 25` here so it keeps
+ * that position without a single other entry being renumbered — which is the
+ * whole reason for the gaps.
  *
  * PREREQUISITES ARE EMPTY, DELIBERATELY. Epic #213's open question 1 asked
  * whether genuine prerequisites exist among the current steps. They do not: no
@@ -53,6 +57,25 @@ export const SETUP_STEP_DEFINITIONS = [
     ownerModule: "core",
     prerequisites: [],
     order: 20,
+    completion: "readiness-check",
+  },
+  {
+    // Whether this installation is the club's live site or a copy
+    // (ENV-SAFETY 1, #3034; INV-CONFIG-003). `core`, and it must stay `core`: no
+    // module flag governs it, and the answer decides whether real members can be
+    // emailed at all — a club that switched this step off by disabling a module
+    // would be switching off the one question that stops a copy mailing the
+    // membership.
+    //
+    // No prerequisites, for the reason the module doc gives: the readiness check
+    // reads the resolved role off the snapshot directly, not another step's
+    // verdict. It sits third because that is where `main` shipped it in the flat
+    // array — immediately after the two club-identity steps and before the rest
+    // of the environment ones.
+    id: "environment-role",
+    ownerModule: "core",
+    prerequisites: [],
+    order: 25,
     completion: "readiness-check",
   },
   {

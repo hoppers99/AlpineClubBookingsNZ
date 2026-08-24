@@ -179,6 +179,75 @@ describe("setup wizard traversal: applicability agrees with C1 (#219)", () => {
       "club-config",
     ]);
   });
+
+  /*
+    THE MIRROR OF THE TEST ABOVE, and the one that was missing. That one covers a
+    progress record naming a step the registry has since REMOVED. This covers a
+    progress record written before a step was ADDED — which is not hypothetical
+    and is not rare: it is what every club's saved progress looks like the moment
+    they take an update, and it is the scenario mockup 7 exists for. It became
+    real when `environment-role` arrived from upstream (ENV-SAFETY 1, #3034) as
+    an eighteenth step slotted into the middle of a journey clubs are already
+    part-way through.
+
+    Parameterised over EVERY id rather than written once for `environment-role`,
+    because the property is general — no step may depend on having been in the
+    registry when the club's progress row was written — and because a single
+    hand-picked case would go quiet the day somebody moved that step. The
+    positional assertion for `environment-role` specifically is the test after
+    this one.
+  */
+  it.each([...SETUP_STEP_IDS])(
+    "treats %s as unstarted, applicable and the resume point when the saved progress predates it",
+    (addedId) => {
+      // Every OTHER step complete: the record of a club that finished setup on
+      // the previous version and has just been updated.
+      const progress = progressOf(SETUP_STEP_IDS.filter((id) => id !== addedId));
+      const traversal = buildSetupWizardTraversal({
+        progress,
+        // No readiness check passes on its own, so completeness comes only from
+        // the progress record — otherwise a step whose check happens to pass
+        // would report complete and this test would prove nothing about it.
+        readinessStatuses: {},
+      });
+
+      // Nothing crashed, nothing was dropped, and the new step did not displace
+      // the ones the club had already done.
+      expect(traversal.applicableStepIds).toEqual([...SETUP_STEP_IDS]);
+      expect(traversal.steps).toHaveLength(SETUP_STEP_IDS.length);
+
+      const added = traversal.steps.find((step) => step.id === addedId);
+      expect(added?.isComplete).toBe(false);
+      expect(added?.isDeferred).toBe(false);
+      expect(added?.isStale).toBe(false);
+      // It is where the operator resumes, and it is the only thing left.
+      expect(traversal.currentStepId).toBe(addedId);
+      expect(traversal.navigationFrontierStepId).toBe(addedId);
+      expect(added?.state).toBe("current");
+      expect(added?.isReachable).toBe(true);
+      expect(traversal.outstandingStepIds).toEqual([addedId]);
+      expect(traversal.allResolved).toBe(false);
+      expect(traversal.percentComplete).toBe(
+        Math.round(((SETUP_STEP_IDS.length - 1) / SETUP_STEP_IDS.length) * 100),
+      );
+    },
+  );
+
+  it("keeps environment-role third in the journey, where upstream ships it", () => {
+    // The registry derives `SETUP_STEP_IDS` POSITIONALLY, so this is the pin
+    // that the merge of upstream's eighteenth step preserved the checklist order
+    // its readiness cards are written against rather than appending it.
+    const traversal = buildSetupWizardTraversal({
+      progress: progressOf(),
+      readinessStatuses: {},
+    });
+    expect(traversal.steps.map((step) => step.id).slice(0, 4)).toEqual([
+      "club-config",
+      "club-time-zone",
+      "environment-role",
+      "runtime-env",
+    ]);
+  });
 });
 
 describe("setup wizard traversal: the real registry has no stale steps (#219)", () => {

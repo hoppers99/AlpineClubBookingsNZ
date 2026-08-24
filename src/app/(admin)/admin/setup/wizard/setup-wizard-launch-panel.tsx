@@ -40,10 +40,14 @@ import type { SetupWizardView } from "@/lib/setup-wizard-view";
  *   fetch never did.
  * - **Lever 2 is a stub, and says so.** The environment role belongs to
  *   upstream's ENV-SAFETY work; declaring production is a `.env` action by that
- *   design, so there is nothing here to mutate even once it lands. C9 (#224)
- *   consumes it. This section states what is missing and where it will live
- *   rather than inventing a reading of an undeclared role — #224's own
- *   acceptance criteria forbid that.
+ *   design, so there is nothing here to mutate. That work has now LANDED
+ *   (ENV-SAFETY 1, #3034): `APP_ENVIRONMENT_ROLE`, `/admin/environment`, and the
+ *   `environment-role` readiness step this wizard already walks. What has not
+ *   landed is this PANEL's consumption of it, which is C9 (#224) — so the copy
+ *   below says the answer exists and points at where it is reported, rather than
+ *   claiming the feature is missing (it is not) or inventing a reading of the
+ *   role here (#224's own acceptance criteria forbid that). Do not un-stub this
+ *   section outside #224.
  * - **The two are independent.** A configured internal staging site is
  *   legitimately visible AND non-production forever, so neither lever gates the
  *   other and neither is presented as unfinished business.
@@ -198,7 +202,7 @@ export function SetupWizardLaunchPanel({
           <h3 className="text-base font-semibold text-foreground">
             Confirm what this instance is for
           </h3>
-          <Badge variant="secondary">Not yet available</Badge>
+          <Badge variant="secondary">Not shown here yet</Badge>
         </div>
         <p className="text-sm text-muted-foreground">
           Whether this installation is the club&apos;s real site or a test copy
@@ -208,12 +212,13 @@ export function SetupWizardLaunchPanel({
           screen.
         </p>
         <p className="text-sm text-muted-foreground">
-          Until the environment-safety feature lands, this wizard cannot tell you
-          which role you are running as. When it does, this panel will name the
-          role, say where that answer came from, and list which sends are held
-          back while the role is anything other than production. Nothing here is
-          waiting on you in the meantime — the public site lever above is
-          independent of it.
+          The installation already knows its role — the Production Or
+          Non-Production step earlier in this checklist reports it, and Admin
+          &rsaquo; Environment shows it in full. What has not arrived yet is this
+          panel reading it: when it does, this section will name the role, say
+          where that answer came from, and list which sends are held back while
+          the role is anything other than production. Nothing here is waiting on
+          you in the meantime — the public site lever above is independent of it.
         </p>
       </div>
     </section>
