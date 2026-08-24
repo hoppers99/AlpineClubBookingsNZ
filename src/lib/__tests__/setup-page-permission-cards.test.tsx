@@ -130,6 +130,21 @@ describe("SetupPageClient — permission-aware cross-area cards (#1548)", () => 
     expect(screen.queryByTestId("finance-panel")).toBeNull();
   });
 
+  // Epic #213, C5: the wizard's entry point. Per D6 it ships ALONGSIDE the
+  // cards — C8 (#223) owns replacing them — so this asserts both halves: the
+  // launcher is there, and the readiness checks it sits beside are still there.
+  it("offers the setup wizard without displacing the readiness cards", async () => {
+    const { container } = renderSetup({ support: "view" });
+
+    await waitFor(() => {
+      expect(screen.getByText("Setup Wizard")).toBeTruthy();
+    });
+    const launcher = container.querySelector('a[href="/admin/setup/wizard"]');
+    expect(launcher).toBeTruthy();
+    expect(launcher?.textContent).toContain("Open the setup wizard");
+    expect(screen.getByText("Readiness checks")).toBeTruthy();
+  });
+
   it("places KPIs, blockers, hubs, and checks in the expected order", async () => {
     const { container } = renderSetup({
       support: "view",
