@@ -358,7 +358,9 @@ export const AUDIT_CENSUS_TOTALS = {
   // each reached 455 by adding a DIFFERENT writer, so only a measurement on the
   // merged tree gives the right total.
   // 456 -> 458 (setup wizard C2, #217): the two stale-transition writers in
-  // `src/app/api/admin/setup/progress/route.ts`.
+  // `src/lib/setup-progress-audit.ts`, which is where EVERY setup-progress audit
+  // write lives — the progress route calls that module and writes none itself,
+  // so a reader following this note to the route would find no `logAudit` there.
   // `setup_progress.steps_marked_stale` and `setup_progress.steps_stale_cleared`
   // record which finished setup steps an upstream change put back in question,
   // and which have stopped needing another look. TWO SITES RATHER THAN ONE, and

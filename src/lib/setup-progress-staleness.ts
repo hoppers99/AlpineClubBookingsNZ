@@ -60,16 +60,40 @@ import {
  * failures and they are answered differently:
  *
  * - **The write cannot compute the set** (`recomputeSetupStaleStepIds` returns
- *   `null`): the caller keeps whatever was already stored. It must NOT store
- *   `[]`, which on this column asserts "computed: nothing is stale" — an answer
- *   it does not have. Keeping the previous set never clears staleness on the
- *   strength of a failed read, and the transition itself still goes through, so
- *   an operator is never blocked from marking a step done because an unrelated
- *   readiness probe was unavailable.
+ *   `null`): the caller writes NOTHING and refuses the transition, per #217's
+ *   AC-6 resolution amendment. This column cannot represent "unknown" — Prisma
+ *   list columns cannot be optional, so it is `NOT NULL DEFAULT []` and `[]`
+ *   asserts "computed: nothing is stale". There is therefore no value a failed
+ *   recompute may honestly store: `[]` inverts the criterion, and the previously
+ *   stored set was computed against the arrays the write is replacing. Refusing
+ *   keeps `[]` meaning exactly one thing, and costs the operator a retry of a
+ *   click rather than a silently wrong record.
  * - **The read cannot trust the stored set** (`storedSetupStaleStepIds` returns
  *   `undefined`): the traversal derives it fresh, which is the seam's own
  *   documented fallback and computes the honest answer rather than a stored
  *   guess. `[]` is never invented for an absent row.
+ *
+ * ## THE STORED SET MOVES ONLY ON A WIZARD TRANSITION — the standing limit
+ *
+ * Recomputing on every write makes the set honest about the PROGRESS ARRAYS, and
+ * nothing more. Staleness that arises somewhere else does not cascade until the
+ * next progress write happens to run:
+ *
+ * - a prerequisite step whose underlying readiness DEGRADES through an ordinary
+ *   settings edit — somebody empties a field the step's check reads, on the
+ *   settings page rather than in the wizard — leaves its dependents recorded
+ *   complete and NOT stale, because no progress transition occurred to trigger a
+ *   recompute. Only the next wizard write re-cascades it;
+ * - the degraded step ITSELF still shows the change immediately, because its own
+ *   status is computed on read from live readiness rather than from this column.
+ *   So the operator sees the cause without seeing the consequences.
+ *
+ * No write path outside this module's caller exists to close that, and adding a
+ * recompute to the read side would reintroduce exactly the derive-on-read design
+ * the storage decision replaced. C3 is where it is revisited: it introduces
+ * module-contributed steps and therefore the first real prerequisite edges, at
+ * which point this stops being theoretical and can be measured against a graph
+ * that actually has depth.
  */
 
 /**
@@ -120,9 +144,11 @@ export interface RecomputeSetupStaleStepIdsInput {
  * The stale set to store for `progress`, or `null` when it could not be
  * computed at all.
  *
- * `null` is a third answer and not an error: the caller keeps the previously
- * stored set (see the fail direction above). The only way to reach it is the
- * database snapshot read failing, because everything after that is pure.
+ * `null` is a third answer and not an error — "could not compute", which this
+ * function's return type can express and the column it feeds cannot. The caller
+ * refuses the whole transition on it (see the fail direction above). The only
+ * way to reach it is the database snapshot read failing, because everything
+ * after that is pure.
  *
  * NOT WRAPPED IN THE CALLER'S TRANSACTION, deliberately. The snapshot is a wide
  * multi-table read whose subject matter — whether Stripe keys are present,

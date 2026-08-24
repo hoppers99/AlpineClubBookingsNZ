@@ -124,13 +124,35 @@ find surprising:
   and keeps **Ready to open** locked. That is the point: a club is not finished
   setting up while something is waiting to be checked.
 - **"Setup complete" is withdrawn while anything needs another look.** If you
-  had already finished setup, the Setup page stops saying so until the list is
-  empty again. A club should never be told it has finished over work that is
-  still open.
+  had already finished setup, the wizard stops showing **Setup complete** while
+  steps need another look, and once they are settled an administrator finishes
+  setup again from the checklist. A club should never be told it has finished
+  over work that is still open — and the club, not the software, decides when it
+  is finished, so the flag is never quietly put back.
 
 Each change is recorded in the [Audit Log](audit-log.md) under its own event
 type — one for steps that started needing another look, one for steps that
-stopped — so you can see when it happened and which step caused it.
+stopped — so you can see when it happened and which step caused it. If you press
+**Finish setup** while something still needs another look, that is recorded too,
+along with which steps held it back, so the trail explains why the club is not
+showing as finished.
+
+**If the wizard cannot work the list out, it changes nothing.** Deciding which
+steps need another look means reading the rest of the installation's settings,
+and if that read fails — a database hiccup, say — the wizard refuses the change
+and says so rather than saving it with the list guessed at. Nothing is recorded
+and nothing is logged, so pressing the button again once the problem clears does
+exactly what you asked the first time.
+
+**One thing the wizard does not notice on its own.** The list of steps needing
+another look is worked out when you mark a step done, defer it, reopen it, or
+finish or reset the checklist — not continuously. So if a setting a completed
+step depends on is changed on its own settings page rather than through the
+wizard, the steps *downstream* of it are not moved to **Needs another look**
+until the next time somebody makes one of those wizard changes. The step whose
+own check the setting broke does show it straight away, because that is read
+live. In practice this cannot arise yet — no step depends on another today — and
+it is revisited when modules start contributing their own steps.
 
 Upgrading the platform does **not** put finished steps back into question. A
 step that a new release *adds* arrives as **Not started**, which is a different

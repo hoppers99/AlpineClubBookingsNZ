@@ -176,8 +176,10 @@ deeper reference for what each category contains and the import safety model.
       school-group soft cap) keyed to a specific lodge via `lodgeId`; lodge
       identity and capacity travel through the **lodge-config** category's Lodge
       rows, not this singleton.
-    - `SetupProgress` — deployment-local setup-wizard progress (which steps THIS
-      install completed/skipped); operational install state, not club policy.
+    - `SetupProgress` — deployment-local setup-wizard progress, all three arrays
+      (which steps THIS install completed, which it skipped, and which are
+      recorded as needing another look); operational install state, not club
+      policy.
     - `AiAssistantSettings` — the deployment-specific AI monthly spend cap; an
       operational spend control a source club must never reset on a target
       (a fresh import keeps the target's own cap, #2211).
