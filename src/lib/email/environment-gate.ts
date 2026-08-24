@@ -162,31 +162,53 @@ export async function resolveEmailEnvironmentGate(params: {
     : "needs-a-manual-resend";
   const errorMessage = describeDeliveryDecision(decision, replay);
   /*
-    EVERY BRANCH IS NAMED, and the new one had to be added HERE as well as in the
-    policy (#3071 review, hoppers99). Both of these used to end in a fallback —
-    `: "environment_unknown"` and `: null` — so a delivery outcome added later
-    landed silently in the wrong bucket: `block_capture_public_host` would have
-    been recorded as "nobody has declared what this installation is", which is
-    false (it is a declared copy), and with a NULL block reason, which drops the
-    row out of the withheld-email count that `INV-CONFIG-004` defines as `FAILED`
-    plus a non-null reason. The fallbacks are gone; an unhandled kind now falls to
-    an explicit `environment_unknown` only for the outcome that really means it.
+    EXHAUSTIVE BY COMPILATION, RATHER THAN BY A TRAILING FALLBACK (#3071 review,
+    hoppers99).
+
+    This was two ternary chains ending `: "environment_unknown"` and `: null`, and
+    that trailing branch is what made adding a delivery outcome unsafe: the new
+    `block_capture_public_host` fell into it silently and would have been recorded
+    as "nobody has declared what this installation is" — false, it is a declared
+    copy — carrying a NULL block reason, which drops the row out of the
+    withheld-email count `INV-CONFIG-004` defines as `FAILED` plus a non-null
+    reason. Two wrong facts about a message that was not sent, from a default
+    nobody chose.
+
+    Adding the case to the chain would have fixed today and left the next one
+    exposed, so the shape changed instead. The `never` assignment means a seventh
+    outcome is a COMPILE ERROR here, not a silent mis-bucket — the same reason
+    this module's `BLOCK_REASON_COLUMN` is a total `Record` rather than a lookup
+    with a default.
   */
-  const reason: EmailEnvironmentWithheldReason = suppressed
-    ? "environment_non_production"
-    : decision.kind === "block_capture_in_production"
-      ? "capture_transport_in_production"
-      : decision.kind === "block_capture_public_host"
-        ? "capture_transport_public_host"
-        : "environment_unknown";
-  const blockReason: EmailDeliveryBlockReason | null =
-    decision.kind === "block_capture_in_production"
-      ? "CAPTURE_TRANSPORT_IN_PRODUCTION"
-      : decision.kind === "block_capture_public_host"
-        ? "CAPTURE_TRANSPORT_PUBLIC_HOST"
-        : decision.kind === "block_environment_unknown"
-          ? BLOCK_REASON_COLUMN[decision.reason]
-          : null;
+  const [reason, blockReason]: [
+    EmailEnvironmentWithheldReason,
+    EmailDeliveryBlockReason | null,
+  ] = (() => {
+    switch (decision.kind) {
+      case "suppress_non_production":
+        // Terminal, and recorded as its own STATUS rather than a block reason —
+        // see the row write below.
+        return ["environment_non_production", null];
+      case "block_capture_in_production":
+        return [
+          "capture_transport_in_production",
+          "CAPTURE_TRANSPORT_IN_PRODUCTION",
+        ];
+      case "block_capture_public_host":
+        return [
+          "capture_transport_public_host",
+          "CAPTURE_TRANSPORT_PUBLIC_HOST",
+        ];
+      case "block_environment_unknown":
+        return ["environment_unknown", BLOCK_REASON_COLUMN[decision.reason]];
+      default: {
+        const unhandled: never = decision;
+        throw new Error(
+          `Unhandled delivery outcome in the mail environment gate: ${JSON.stringify(unhandled)}. Every outcome must name its own withheld reason and block reason (INV-CONFIG-004).`,
+        );
+      }
+    }
+  })();
 
   if (params.emailLogId) {
     try {

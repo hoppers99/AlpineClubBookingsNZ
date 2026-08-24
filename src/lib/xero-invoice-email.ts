@@ -163,6 +163,49 @@ export async function resolveXeroInvoiceEmailPolicy(
 }
 
 /**
+ * Re-ask the boundary from INSIDE a transaction, immediately before the provider
+ * call, and narrow the earlier answer if it has changed (#3071 review,
+ * hoppers99).
+ *
+ * WHY THIS EXISTS AT ALL. The group-settlement workflow resolves the policy,
+ * then opens a transaction whose first act is `pg_advisory_xact_lock(1)` — an
+ * exclusive lock every other invoice run queues on — and only then asks Xero to
+ * email the invoice. The wait for that lock is UNBOUNDED, so the clearance the
+ * workflow carried across it could be arbitrarily stale, and a safer override an
+ * administrator switched on during the wait was not seen. The send then went
+ * ahead on the strength of a witness check, which proves the token is genuine and
+ * says nothing about whether it is still true.
+ *
+ * WHY IT TAKES A `store`. Re-resolving was deliberately NOT done here before, and
+ * the stated reason was sound as far as it went: a second Prisma CONNECTION taken
+ * from inside that exclusive lock is a real pool-timeout hazard, because every
+ * queued writer is holding one of its own. Reading on the TRANSACTION client
+ * dissolves it — that uses the connection the transaction already holds. The
+ * objection was about connections, not about reads, and it never applied to a
+ * read on `tx`.
+ *
+ * IT ONLY EVER NARROWS. Two properties make that true, and both matter:
+ *
+ * - It is asked only when the earlier answer was an ALLOW. A withhold decided
+ *   before the lock stays that withhold — it is already the safe direction, and
+ *   re-asking would spend a read inside an exclusive lock to change nothing.
+ * - It cannot come back MORE permissive, because `INV-CONFIG-003` lets the
+ *   database override force only the safer state.
+ *
+ * THE CALLER MUST RECORD FROM WHAT THIS RETURNED, not from the answer it passed
+ * in. That is the #3035 review's rule ("record what the GATE did, never what the
+ * policy said") and it is load-bearing here: keying the sync payload or the log
+ * on the outer answer makes a withhold decided by THIS call completely silent.
+ */
+export async function reassertXeroInvoiceEmailPolicy(
+  earlier: XeroInvoiceEmailPolicy,
+  store: EnvironmentSafetySettingsStore,
+): Promise<XeroInvoiceEmailPolicy> {
+  if (earlier.kind !== "allow") return earlier;
+  return resolveXeroInvoiceEmailPolicy(store);
+}
+
+/**
  * The provider call, gated on a clearance.
  *
  * Metered and retried through `callXeroApi` exactly as the three call sites did

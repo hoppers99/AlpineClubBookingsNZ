@@ -41,9 +41,9 @@ import {
   getAuthenticatedXeroClient,
 } from "./xero-api-client";
 import {
+  reassertXeroInvoiceEmailPolicy,
   resolveXeroInvoiceEmailPolicy,
   sendXeroInvoiceEmail,
-  type XeroInvoiceEmailPolicy,
 } from "@/lib/xero-invoice-email";
 import {
   getHutFeeItemCodeMap,
@@ -493,22 +493,9 @@ export async function createXeroInvoiceForGroupSettlement(
       createdInvoice.invoiceID,
       "v1"
     );
-    /*
-      Environment-safety boundary (#3035; INV-CONFIG-004), resolved OUT HERE
-      first, so a copy does nothing further and no lock is taken on its behalf.
-      Taking a second Prisma CONNECTION from inside the transaction below — which
-      holds the exclusive `pg_advisory_xact_lock(1)` while every other writer is
-      queued behind it holding one of its own — is still forbidden.
-
-      BUT THIS ANSWER IS RE-PROVED INSIDE THE LOCK BEFORE THE SEND (#3071 review,
-      hoppers99), because the wait for that lock is unbounded and this answer was
-      being carried across it unchecked. An administrator who switched the safer
-      override on during the wait was not seen, and the send went ahead on a
-      clearance minted before they clicked. The re-read passes the TRANSACTION
-      client, which uses the connection the transaction already holds and so takes
-      no second one — the objection above is about connections, not about reads,
-      and it never applied to a read on `tx`.
-    */
+    // Environment-safety boundary (#3035; INV-CONFIG-004), resolved OUT HERE so a
+    // copy does nothing further and no lock is taken on its behalf. #3071: it is
+    // RE-PROVED inside the lock before the send — `reassertXeroInvoiceEmailPolicy`.
     const invoiceEmailPolicy = await resolveXeroInvoiceEmailPolicy();
     // Recorded from what the GATE did, never from the policy alone (#3035
     // review) — see `resolveXeroInvoiceEmailPolicy` on why two withhold reasons
@@ -546,8 +533,7 @@ export async function createXeroInvoiceForGroupSettlement(
             cancelled: true,
             responseBody: null,
             withheld: false,
-            environmentWithheld: false,
-            environmentPolicy: null as XeroInvoiceEmailPolicy | null,
+            environmentPolicy: null,
             organiserBookingId: null as string | null,
             organiserEmail: null as string | null,
           };
@@ -574,59 +560,25 @@ export async function createXeroInvoiceForGroupSettlement(
             cancelled: false,
             responseBody: null,
             withheld: true,
-            environmentWithheld: false,
-            environmentPolicy: null as XeroInvoiceEmailPolicy | null,
+            environmentPolicy: null,
             organiserBookingId: fresh.groupBooking
               .organiserBookingId as string | null,
             organiserEmail: fresh.groupBooking.organiserBooking.member
               .email as string | null,
           };
         }
-        /*
-          RE-READ ON `tx`, IMMEDIATELY BEFORE THE PROVIDER CALL (#3071 review,
-          hoppers99) — the whole point of the change, so it is worth being precise
-          about what is re-read and what is not.
-
-          Only asked when the outer answer was an ALLOW. A withhold decided before
-          the lock stays that withhold: it is already the safe direction, the
-          answer cannot have become MORE permissive in a way this workflow may act
-          on, and re-asking would spend a read to change nothing.
-
-          The re-read can only move the answer to a withhold, because the safer
-          override is one-directional (`INV-CONFIG-003`: the database may only
-          force the safer state). So this is a narrowing check, not a second
-          chance at permission.
-
-          `environmentWithheld` is recorded from what THIS gate returned rather
-          than from the outer policy, which is the #3035 review's rule and is why
-          the branch reads `freshPolicy` and not `invoiceEmailPolicy`: two withhold
-          reasons must never both claim one event.
-        */
-        const freshPolicy =
-          invoiceEmailPolicy.kind === "allow"
-            ? await resolveXeroInvoiceEmailPolicy(tx)
-            : invoiceEmailPolicy;
         // #3035: the club's own switch above is checked FIRST, so it stays
         // recorded as the club's decision on a copy. No withheld-email audit row
         // for this branch — that row asserts an administrator set the switch.
+        const freshPolicy =
+          await reassertXeroInvoiceEmailPolicy(invoiceEmailPolicy, tx);
         if (freshPolicy.kind !== "allow") {
-          /*
-            THE POLICY THAT ACTUALLY DECIDED IS CARRIED OUT OF THE GATE, and it
-            has to be (#3071). The recording below used to read the OUTER
-            `invoiceEmailPolicy`, which was correct while that was the only
-            answer there was. Once the re-read can withhold on its own, keying the
-            record on the outer answer makes a re-read withhold invisible: the
-            sync payload would claim nothing was withheld, and nothing would be
-            logged at all. That is the same "record what the GATE did, never what
-            the policy said" rule the #3035 review established, applied to a
-            second decision point.
-          */
+          // Record from THIS answer, not the outer one (the helper says why).
           return {
             cancelled: false,
             responseBody: null,
             withheld: false,
-            environmentWithheld: true,
-            environmentPolicy: freshPolicy as XeroInvoiceEmailPolicy | null,
+            environmentPolicy: freshPolicy,
             organiserBookingId: null as string | null,
             organiserEmail: null as string | null,
           };
@@ -644,8 +596,7 @@ export async function createXeroInvoiceForGroupSettlement(
           cancelled: false,
           responseBody: emailResponse.body,
           withheld: false,
-          environmentWithheld: false,
-          environmentPolicy: null as XeroInvoiceEmailPolicy | null,
+          environmentPolicy: null,
           organiserBookingId: null as string | null,
           organiserEmail: null as string | null,
         };
@@ -654,7 +605,6 @@ export async function createXeroInvoiceForGroupSettlement(
       // Mutually exclusive by construction, and narrowed to the confirmed-copy
       // case exactly as the booking path is: an UNKNOWN role is an ERROR below.
       invoiceEmailWithheldForEnvironment =
-        emailGate.environmentWithheld &&
         emailGate.environmentPolicy?.kind === "withhold" &&
         emailGate.environmentPolicy.suppressedForNonProduction;
       if (
@@ -684,17 +634,14 @@ export async function createXeroInvoiceForGroupSettlement(
           'Skipped the Xero group settlement invoice email for an organiser booking with "No emails" turned on'
         );
       }
-      if (
-        emailGate.environmentWithheld &&
-        emailGate.environmentPolicy?.kind === "withhold"
-      ) {
-        const withholding = emailGate.environmentPolicy;
+      if (emailGate.environmentPolicy?.kind === "withhold") {
+        const withheld = emailGate.environmentPolicy;
         const context = { settlementId, invoiceId: createdInvoice.invoiceID };
-        if (withholding.error) {
-          invoiceEmailError = withholding.error;
-          logger.error(context, withholding.logMessage);
+        if (withheld.error) {
+          invoiceEmailError = withheld.error;
+          logger.error(context, withheld.logMessage);
         } else {
-          logger.info(context, withholding.logMessage);
+          logger.info(context, withheld.logMessage);
         }
       }
       if (emailGate.cancelled) {
