@@ -2,17 +2,16 @@ import { NextResponse } from "next/server";
 import { getWebsiteThemeRenderState } from "@/lib/club-theme";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
+import {
+  setupReadinessStatusesOf,
+  storedSetupStaleStepIds,
+} from "@/lib/setup-progress-staleness";
 import { getSetupDatabaseSnapshot } from "@/lib/setup-readiness-db";
 import {
   buildSetupReadiness,
   normalizeSetupProgress,
-  type SetupReadiness,
 } from "@/lib/setup-readiness";
-import type { SetupStepId } from "@/lib/setup-step-registry";
-import {
-  buildSetupWizardTraversal,
-  type SetupWizardTraversalInput,
-} from "@/lib/setup-wizard-traversal";
+import { buildSetupWizardTraversal } from "@/lib/setup-wizard-traversal";
 import type { SetupWizardPayload } from "@/lib/setup-wizard-view";
 
 /**
@@ -38,25 +37,6 @@ import type { SetupWizardPayload } from "@/lib/setup-wizard-view";
  * may EDIT which step is a per-area question the shell answers from the
  * permission matrix (D12); admission to the surface is not.
  */
-
-/**
- * Each step's readiness verdict, keyed by id — what
- * `buildSetupWizardTraversal` needs to know a step's check passes on its own
- * rather than only because the operator acknowledged it. Omitting it is
- * documented on the traversal input as visible-but-wrong (a wizard parked on
- * step one), which is why it is assembled here rather than left to a default.
- */
-function readinessStatusesOf(
-  readiness: SetupReadiness,
-): SetupWizardTraversalInput<SetupStepId>["readinessStatuses"] {
-  const statuses: Partial<Record<SetupStepId, SetupReadiness["categories"][number]["checks"][number]["status"]>> = {};
-  for (const category of readiness.categories) {
-    for (const check of category.checks) {
-      statuses[check.id] = check.status;
-    }
-  }
-  return statuses;
-}
 
 export async function GET() {
   const guard = await requireAdmin();
@@ -89,7 +69,19 @@ export async function GET() {
     // `undefined` (unknown) fails open, `null` means first-install defaults.
     // Collapsing either to `{}` here would silently hide a module's steps.
     moduleSettings: database.adminModuleSettings,
-    readinessStatuses: readinessStatusesOf(readiness),
+    readinessStatuses: setupReadinessStatusesOf(readiness),
+    // C2 (#217) closes C4's seam: the stale set is READ here, not derived. The
+    // progress route recomputes and stores the full transitive closure on every
+    // write, so this is the answer that write computed — which is also what
+    // gives staleness an audited transition instant instead of a per-page-load
+    // recomputation.
+    //
+    // `storedSetupStaleStepIds` returns `undefined`, never `[]`, when there is
+    // no row or the column cannot be trusted, so the traversal derives fresh
+    // rather than being handed an empty answer nobody computed. The traversal
+    // then intersects whatever it gets against "applicable and recorded
+    // complete", so a stored id whose step is no longer either simply drops.
+    staleStepIds: storedSetupStaleStepIds(progressRecord),
   });
 
   // EXACTLY `SetupWizardPayload`, and nothing besides. The `progress` this used

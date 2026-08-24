@@ -3,6 +3,7 @@ import { z } from "zod";
 import { logAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
+import { recomputeSetupStaleStepIds } from "@/lib/setup-progress-staleness";
 import {
   SETUP_STEP_IDS,
   normalizeSetupProgress,
@@ -41,12 +42,22 @@ type SetupProgressAction = z.infer<typeof progressSchema>["action"];
  * that is disclosed in the changelog and costs a filter choice, never a
  * permission.
  *
- * NO STALE TRANSITION IS RECORDED, AND THAT IS A LIMIT RATHER THAN AN OMISSION.
- * #219 asks for one, but under D11 staleness is DERIVED on read: there is no
- * moment at which a step becomes stale, only a request at which it is computed
- * to be, so a writer here would have nothing to fire on and one on the read
- * path would write a row per page load. It becomes a real transition when C2
- * (#217) persists the state, and belongs to that child.
+ * THE STALE TRANSITIONS ARE HERE TOO, as of C2 (#217), for the reason the
+ * earlier note in this place gave for their absence: under D11 staleness was
+ * DERIVED on read, so there was no moment at which a step BECAME stale — only a
+ * request at which it was computed to be — and an audit writer on the read path
+ * would have written a row per page load. Persisting the set gives the
+ * transition an instant, and this route is where it happens.
+ *
+ * They are two more entries in the same table and two more `logAudit` calls
+ * beside the one below, in the same `system` category, for the same reason the
+ * five above are five values rather than one: `AuditLog.action` is what the
+ * Event Type filter selects on, and "which steps went back into question, and
+ * when" is a question an operator will ask separately from "who marked what
+ * done". Marked-stale and stale-cleared are separate actions rather than one
+ * "stale set changed", because a single request CAN do both — the set is
+ * recomputed over the whole graph, so one transition can invalidate one branch
+ * while a readiness check that has started passing clears another.
  */
 const AUDIT_ACTION_BY_PROGRESS_ACTION: Record<SetupProgressAction, string> = {
   complete: "setup_progress.step_completed",
@@ -55,6 +66,14 @@ const AUDIT_ACTION_BY_PROGRESS_ACTION: Record<SetupProgressAction, string> = {
   finish: "setup_progress.finished",
   reset: "setup_progress.reset",
 };
+
+const AUDIT_ACTION_STEPS_MARKED_STALE = "setup_progress.steps_marked_stale";
+const AUDIT_ACTION_STEPS_STALE_CLEARED = "setup_progress.steps_stale_cleared";
+
+/** `"a", "b"` — the same quoting the per-step summaries above use. */
+function quoteStepIds(ids: readonly string[]): string {
+  return ids.map((id) => `"${id}"`).join(", ");
+}
 
 function auditSummaryFor(parsed: z.infer<typeof progressSchema>): string {
   switch (parsed.action) {
@@ -99,6 +118,7 @@ export async function PATCH(request: NextRequest) {
   });
   const currentCompleted = existing?.completedStepIds ?? [];
   const currentSkipped = existing?.skippedStepIds ?? [];
+  const currentStale = existing?.staleStepIds ?? [];
   let completedStepIds = currentCompleted;
   let skippedStepIds = currentSkipped;
   let completedAt = existing?.completedAt ?? null;
@@ -139,11 +159,49 @@ export async function PATCH(request: NextRequest) {
       break;
   }
 
+  // C2 (#217): recompute the WHOLE stale set from the prerequisite graph, over
+  // the arrays as they are about to be stored. Not patched incrementally — see
+  // `setup-progress-staleness.ts` for why re-deriving on every write is what
+  // keeps a corrupted or out-of-date row self-healing, and why the set has to be
+  // the full transitive closure rather than the direct dependents of whichever
+  // step this request touched.
+  //
+  // `reset` is settled here rather than by the recompute: nothing is recorded
+  // complete afterwards, so nothing CAN be stale, and that is a computed answer
+  // rather than a guess — it holds even when the recompute below cannot run.
+  let staleStepIds: readonly string[];
+  if (parsed.data.action === "reset") {
+    staleStepIds = [];
+  } else {
+    const recomputed = await recomputeSetupStaleStepIds({
+      progress: { completedStepIds, skippedStepIds },
+    });
+    // FAIL TOWARD STALE (#217 AC 6). A set that could not be computed is not an
+    // empty set: storing `[]` would assert "nothing is stale", which is the one
+    // claim this route does not have evidence for. Keeping what was already
+    // stored never clears staleness on the strength of a failed read, and the
+    // operator's transition still goes through.
+    staleStepIds = recomputed ?? currentStale;
+  }
+
+  // The record-level "Setup Complete" flag reverts while anything is stale
+  // (#217's inherited acceptance criterion). The readiness cards render
+  // "Setup Complete" from `completedAt`, and a club with outstanding stale work
+  // must not be told it has finished. It is applied AFTER the switch above so it
+  // covers `finish` as well: finishing while a step needs another look records
+  // the transition and leaves the record incomplete, rather than stamping a
+  // completion the wizard's own launch panel would refuse to offer.
+  if (staleStepIds.length > 0) {
+    completedAt = null;
+    completedByMemberId = null;
+  }
+
   const record = await prisma.setupProgress.upsert({
     where: { id: "default" },
     update: {
       completedStepIds,
       skippedStepIds,
+      staleStepIds: [...staleStepIds],
       completedAt,
       completedByMemberId,
     },
@@ -151,6 +209,7 @@ export async function PATCH(request: NextRequest) {
       id: "default",
       completedStepIds,
       skippedStepIds,
+      staleStepIds: [...staleStepIds],
       completedAt,
       completedByMemberId,
     },
@@ -166,6 +225,44 @@ export async function PATCH(request: NextRequest) {
     summary: auditSummaryFor(parsed.data),
     metadata: parsed.data,
   });
+
+  // The two stale transitions, recorded only when the set actually MOVED. A
+  // request that leaves it unchanged — which is every request on a registry
+  // whose steps declare no prerequisites, i.e. every request today — writes
+  // nothing here, so these rows appear when something really did go back into
+  // question and never as background noise beside the transition above.
+  const markedStale = record.staleStepIds.filter(
+    (id) => !currentStale.includes(id),
+  );
+  const clearedStale = currentStale.filter(
+    (id) => !record.staleStepIds.includes(id),
+  );
+
+  if (markedStale.length > 0) {
+    await logAudit({
+      action: AUDIT_ACTION_STEPS_MARKED_STALE,
+      memberId: session.user.id,
+      actorMemberId: session.user.id,
+      category: "system",
+      entityType: "SetupProgress",
+      entityId: record.id,
+      summary: `Setup steps ${quoteStepIds(markedStale)} now need another look`,
+      metadata: { ...parsed.data, stepIds: markedStale },
+    });
+  }
+
+  if (clearedStale.length > 0) {
+    await logAudit({
+      action: AUDIT_ACTION_STEPS_STALE_CLEARED,
+      memberId: session.user.id,
+      actorMemberId: session.user.id,
+      category: "system",
+      entityType: "SetupProgress",
+      entityId: record.id,
+      summary: `Setup steps ${quoteStepIds(clearedStale)} no longer need another look`,
+      metadata: { ...parsed.data, stepIds: clearedStale },
+    });
+  }
 
   return NextResponse.json({
     progress: normalizeSetupProgress({

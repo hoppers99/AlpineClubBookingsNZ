@@ -59,13 +59,16 @@ import {
  *    for ("IF the stale set cannot be computed, treat affected steps as stale
  *    rather than complete").
  *
- * ## Staleness is DERIVED here, and C2 swaps that for persistence invisibly
+ * ## Staleness is DERIVED here, and C2 swapped that for persistence invisibly
  *
- * Under epic decision **D11** this child takes no schema. `deriveStaleSetupStepIds`
- * is the ONE function that decides the stale set, and `buildSetupWizardTraversal`
- * is its only consumer. C2 replaces it — either by rewriting its body to read the
- * persisted column, or by leaving it alone and having its caller pass
- * `staleStepIds` — and no other line of this module, and nothing in C5, changes.
+ * Under epic decision **D11** child C4 took no schema, and `deriveStaleSetupStepIds`
+ * was the ONE function that decided the stale set. C2 (#217) replaced it the
+ * second of the two ways this note anticipated — by leaving the derivation alone
+ * and having the caller pass `staleStepIds` from `SetupProgress.staleStepIds`,
+ * recomputed and stored on every progress write. Not one line below changed, and
+ * nothing in C5 changed. The derivation is still live and still authoritative:
+ * it is what the write side calls to compute what to store, and what this module
+ * falls back to whenever a reader has no trustworthy stored set to hand it.
  *
  * Today every registered step declares an EMPTY prerequisite list (see
  * `setup-step-registry-definitions.ts`, which explains why: no current step's
@@ -463,8 +466,12 @@ export function buildSetupWizardTraversal<Id extends string = SetupStepId>(
   });
 
   // #219: "current" is the first applicable step that is not complete, with
-  // deferred and stale both counting as not complete, until C2 decides whether
-  // a stored cursor is worth its schema.
+  // deferred and stale both counting as not complete. C2 (#217) considered a
+  // stored `currentStepId` cursor riding its migration and DECLINED it: with C5
+  // shipped, the only thing that knows where the operator is browsing is the
+  // shell's own selection state, and persisting that is UI work #217 puts out of
+  // scope — so the column would have had no writer. This derivation is the
+  // definition, not a placeholder for one.
   const currentIndex = facts.findIndex((fact) => !fact.complete);
 
   // D2, reading 1: a deferred step is RESOLVED for navigation and outstanding
