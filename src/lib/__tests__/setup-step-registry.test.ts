@@ -1,0 +1,706 @@
+import { describe, expect, it } from "vitest";
+import { z } from "zod";
+import {
+  DEFAULT_MODULE_SETTINGS,
+  MODULE_KEYS,
+  type ModuleSettingsValues,
+} from "@/config/modules";
+import {
+  buildSetupReadiness,
+  normalizeSetupProgress,
+  type SetupDatabaseSnapshot,
+  type SetupProgressState,
+} from "@/lib/setup-readiness";
+import {
+  CORE_STEP_OWNER,
+  SETUP_STEP_IDS,
+  SETUP_STEP_REGISTRY,
+  findSetupStepRegistryViolations,
+  getApplicableSetupStepIds,
+  isSetupStepComplete,
+  type SetupStepDefinition,
+  type SetupStepId,
+  type SetupStepOwner,
+} from "@/lib/setup-step-registry";
+import { SETUP_STEP_DEFINITIONS } from "@/lib/setup-step-registry-definitions";
+
+/**
+ * The C1 contract tests (epic #213). "The build fails" in this repository means
+ * a test in the `verify` job fails, so the registry guards are asserted here
+ * rather than thrown at module load — a malformed declaration should redden CI,
+ * not crash a running club's admin pages.
+ */
+
+// The step set as it stood when the registry replaced the hand-maintained array
+// (17 ids, `club-time-zone` added upstream by #2989). Written out rather than
+// derived: a pin that recomputes itself from the thing it is pinning proves
+// nothing. C1 must not change what the readiness cards show, so a diff here is
+// either a deliberate journey change or the regression this test exists to
+// catch.
+const EXPECTED_STEP_IDS = [
+  "club-config",
+  "club-time-zone",
+  "runtime-env",
+  "auth-secret-strength",
+  "seed-admin",
+  "feature-flags",
+  "booking-policies",
+  "membership-cancellation",
+  "age-tiers",
+  "seasons-rates",
+  "stripe",
+  "email-ses",
+  "sentry",
+  "address-autocomplete",
+  "xero-operational",
+  "finance-dashboard",
+  "xero-mappings",
+];
+
+// The steps the registry considers applicable to a club on the FIRST-INSTALL
+// defaults — the state every new club is actually in, where xeroIntegration,
+// financeDashboard and addressAutocomplete are all off. Written out for the
+// same reason as the list above.
+const DEFAULT_INSTALL_APPLICABLE_STEP_IDS = [
+  "club-config",
+  "club-time-zone",
+  "runtime-env",
+  "auth-secret-strength",
+  "seed-admin",
+  "feature-flags",
+  "booking-policies",
+  "membership-cancellation",
+  "age-tiers",
+  "seasons-rates",
+  "stripe",
+  "email-ses",
+  "sentry",
+];
+
+// The four steps the cards show today but the registry would not call
+// applicable on a default install. C1 leaves this gap OPEN on purpose: nothing
+// consumes applicability yet, so the cards are unchanged. Closing it is C8's
+// deliberate decision, and `the readiness cards are unchanged` below is what
+// makes closing it early visible rather than silent.
+const STEPS_SHOWN_BUT_NOT_APPLICABLE_BY_DEFAULT = [
+  "address-autocomplete",
+  "xero-operational",
+  "finance-dashboard",
+  "xero-mappings",
+];
+
+function moduleFlags(
+  overrides: Partial<ModuleSettingsValues> = {},
+): ModuleSettingsValues {
+  const allEnabled = Object.fromEntries(
+    MODULE_KEYS.map((key) => [key, true]),
+  ) as ModuleSettingsValues;
+  return { ...allEnabled, ...overrides };
+}
+
+function databaseSnapshot(
+  adminModuleSettings: ModuleSettingsValues,
+): SetupDatabaseSnapshot {
+  return {
+    adminCount: 1,
+    adminModuleSettings,
+    ageTierSettingCount: 4,
+    seasonCount: 2,
+    cancellationPolicyCount: 1,
+    bookingDefaultsConfigured: true,
+    groupDiscountConfigured: true,
+    membershipCancellationSettingsConfigured: true,
+    membershipCancellationXeroGroupCount: 1,
+    membershipCancellationArchiveContacts: true,
+    operationalXeroConnected: true,
+    operationalXeroTokenExpiresAt: "2026-09-01T00:00:00.000Z",
+    xeroAccountMappingCount: 1,
+    xeroHutFeeItemMappingCount: 1,
+    xeroEntranceFeeMappingCount: 1,
+  };
+}
+
+function stepIdsOnTheCards(
+  database: SetupDatabaseSnapshot | undefined,
+  progress?: Partial<SetupProgressState> | null,
+) {
+  return buildSetupReadiness({
+    env: {},
+    // Deliberately absent: the club-config check reports on a missing config
+    // rather than throwing, and no step's PRESENCE depends on the file.
+    configDir: "/nonexistent-setup-step-registry-fixture",
+    database,
+    progress,
+  });
+}
+
+describe("setup step registry", () => {
+  it("derives SETUP_STEP_IDS as today's 17 ids in today's order", () => {
+    expect([...SETUP_STEP_IDS]).toEqual(EXPECTED_STEP_IDS);
+  });
+
+  it("derives every id positionally from its declaration", () => {
+    // Covers the one unchecked step in the derivation: `map` cannot return a
+    // tuple, so the arity is asserted in the registry.
+    expect([...SETUP_STEP_IDS]).toEqual(
+      SETUP_STEP_DEFINITIONS.map((definition) => definition.id),
+    );
+    expect(SETUP_STEP_IDS).toHaveLength(SETUP_STEP_DEFINITIONS.length);
+  });
+
+  it("declares no prerequisites today", () => {
+    // Epic #213 open question 1: the current 17 steps are independent, and the
+    // journey's ordering is editorial. If a future step needs a real
+    // prerequisite, change this expectation deliberately — do not let one
+    // arrive by accident, because D2 makes a prerequisite block navigation.
+    const withPrerequisites = SETUP_STEP_REGISTRY.filter(
+      (entry) => entry.prerequisites.length > 0,
+    ).map((entry) => entry.id);
+    expect(withPrerequisites).toEqual([]);
+  });
+
+  it("has no registry violations", () => {
+    // This assertion IS the build failure for a bad declaration. Checked
+    // against SETUP_STEP_REGISTRY (the shipped export), not the raw
+    // definitions array, so this test also covers C3's assembly seam — a
+    // module-contributed step spliced in after the definitions array is
+    // built stays under this guard.
+    expect(findSetupStepRegistryViolations(SETUP_STEP_REGISTRY)).toEqual([]);
+  });
+
+  it("pins the exact ownerModule for all 17 registered steps", () => {
+    // A single source of truth, deliberately NOT derived from the registry
+    // itself: re-owning a `core` step to a default-ON module would still
+    // typecheck and pass every other test here (`getApplicableSetupStepIds`
+    // just reads whatever `ownerModule` says), so only a hand-written map
+    // pins today's ownership and turns a silent re-owning into a visible
+    // diff.
+    const expectedOwnerModuleById: Record<SetupStepId, SetupStepOwner> = {
+      "club-config": CORE_STEP_OWNER,
+      "club-time-zone": CORE_STEP_OWNER,
+      "runtime-env": CORE_STEP_OWNER,
+      "auth-secret-strength": CORE_STEP_OWNER,
+      "seed-admin": CORE_STEP_OWNER,
+      "feature-flags": CORE_STEP_OWNER,
+      "booking-policies": CORE_STEP_OWNER,
+      "membership-cancellation": CORE_STEP_OWNER,
+      "age-tiers": CORE_STEP_OWNER,
+      "seasons-rates": CORE_STEP_OWNER,
+      stripe: CORE_STEP_OWNER,
+      "email-ses": CORE_STEP_OWNER,
+      sentry: CORE_STEP_OWNER,
+      "address-autocomplete": "addressAutocomplete",
+      "xero-operational": "xeroIntegration",
+      "finance-dashboard": "financeDashboard",
+      "xero-mappings": "xeroIntegration",
+    };
+
+    expect(Object.keys(expectedOwnerModuleById)).toHaveLength(17);
+
+    const actualOwnerModuleById = Object.fromEntries(
+      SETUP_STEP_REGISTRY.map((entry) => [entry.id, entry.ownerModule]),
+    );
+    expect(actualOwnerModuleById).toEqual(expectedOwnerModuleById);
+  });
+});
+
+/**
+ * The failure this section exists for is INVISIBLE at runtime. `z.enum` accepts
+ * a plain `readonly string[]` as happily as a literal tuple, so a widened
+ * `SETUP_STEP_IDS` would leave the setup-progress route accepting any string as
+ * a step id while every runtime assertion below still passed and the whole
+ * repository still typechecked. Only the type-level assertions catch it, and
+ * they are enforced by `tsc -p tsconfig.test.json` inside `npm run typecheck`.
+ */
+type SetupStepIdIsLiteralUnion = string extends SetupStepId ? false : true;
+type SetupStepIdsIsNonEmptyTuple = typeof SETUP_STEP_IDS extends readonly [
+  SetupStepId,
+  ...SetupStepId[],
+]
+  ? true
+  : false;
+
+const setupStepIdIsLiteralUnion: SetupStepIdIsLiteralUnion = true;
+const setupStepIdsIsNonEmptyTuple: SetupStepIdsIsNonEmptyTuple = true;
+
+describe("setup step registry — the derived export is a literal tuple", () => {
+  it("keeps SetupStepId a literal union rather than string", () => {
+    // Always passes under a bare `vitest run`: the const it checks is already
+    // typed `true` by the module-scope conditional type above, so the real
+    // enforcement is `tsc -p tsconfig.test.json` inside `npm run typecheck`
+    // failing to compile this file at all when the type narrows to `false`.
+    expect(setupStepIdIsLiteralUnion).toBe(true);
+  });
+
+  it("keeps SETUP_STEP_IDS a non-empty readonly tuple", () => {
+    // Same as above: this assertion cannot fail under `vitest run` alone — the
+    // guard is `npm run typecheck` refusing to compile the file.
+    expect(setupStepIdsIsNonEmptyTuple).toBe(true);
+  });
+
+  it("still validates step ids the way the setup-progress route does", () => {
+    // Mirrors src/app/api/admin/setup/progress/route.ts. Runtime cover for the
+    // consequence, not for the widening itself — z.enum reads the VALUES, so
+    // this passes either way; the type assertions above are the real guard.
+    const stepId = z.enum(SETUP_STEP_IDS);
+
+    expect(stepId.safeParse("club-config").success).toBe(true);
+    expect(stepId.safeParse("xero-mappings").success).toBe(true);
+    expect(stepId.safeParse("not-a-step").success).toBe(false);
+    expect(stepId.safeParse("").success).toBe(false);
+  });
+
+  it("keeps normalizeSetupProgress filtering unknown ids", () => {
+    // setup-readiness.ts's normalizeStepIds builds its allowlist from
+    // SETUP_STEP_IDS, so it is the other consumer that a widened export would
+    // quietly change the meaning of.
+    const normalised = normalizeSetupProgress({
+      completedStepIds: ["club-config", "not-a-step", "club-config"],
+      skippedStepIds: ["sentry", "also-not-a-step"],
+      completedAt: null,
+      completedByMemberId: null,
+    });
+
+    expect(normalised.completedStepIds).toEqual(["club-config"]);
+    expect(normalised.skippedStepIds).toEqual(["sentry"]);
+  });
+});
+
+describe("setup step registry — the readiness cards are unchanged", () => {
+  it("shows exactly the registry's steps, in registry order, with every module enabled", () => {
+    const readiness = stepIdsOnTheCards(databaseSnapshot(moduleFlags()));
+    const displayed = readiness.categories.flatMap((category) =>
+      category.checks.map((check) => check.id),
+    );
+
+    expect(displayed).toEqual(EXPECTED_STEP_IDS);
+    expect(readiness.summary.total).toBe(EXPECTED_STEP_IDS.length);
+  });
+
+  it("shows all 17 steps on a first-install club, which applicability would not", () => {
+    // The pin that matters for "no behaviour change": a default install has
+    // three modules off, and the cards still build every check unconditionally.
+    // The registry disagrees, deliberately and inertly — this test names the
+    // exact gap so C8 must change it on purpose.
+    const readiness = stepIdsOnTheCards(
+      databaseSnapshot(DEFAULT_MODULE_SETTINGS),
+    );
+    const displayed = readiness.categories.flatMap((category) =>
+      category.checks.map((check) => check.id),
+    );
+
+    expect(displayed).toEqual(EXPECTED_STEP_IDS);
+
+    const applicable = getApplicableSetupStepIds(DEFAULT_MODULE_SETTINGS);
+    expect(displayed.filter((id) => !applicable.includes(id))).toEqual(
+      STEPS_SHOWN_BUT_NOT_APPLICABLE_BY_DEFAULT,
+    );
+  });
+
+  it("still shows every step when a module is disabled, because nothing is wired yet", () => {
+    // C1 is the substrate: applicability is computed and tested, and NOTHING
+    // consumes it. The card behaviour change lands with C8. If this test starts
+    // failing, that wiring arrived early and D4's removal rules need reviewing
+    // with it rather than being discovered in production.
+    const readiness = stepIdsOnTheCards(
+      databaseSnapshot(
+        moduleFlags({
+          xeroIntegration: false,
+          financeDashboard: false,
+          addressAutocomplete: false,
+        }),
+      ),
+    );
+    const displayed = readiness.categories.flatMap((category) =>
+      category.checks.map((check) => check.id),
+    );
+
+    expect(displayed).toEqual(EXPECTED_STEP_IDS);
+  });
+});
+
+describe("setup step applicability", () => {
+  it("includes every step when every module is enabled", () => {
+    expect(getApplicableSetupStepIds(moduleFlags())).toEqual(EXPECTED_STEP_IDS);
+  });
+
+  it("excludes a step whose owning module is disabled", () => {
+    const applicable = getApplicableSetupStepIds(
+      moduleFlags({ xeroIntegration: false }),
+    );
+
+    expect(applicable).not.toContain("xero-operational");
+    expect(applicable).not.toContain("xero-mappings");
+    // The finance dashboard is its own module and is unaffected by Xero's flag.
+    expect(applicable).toContain("finance-dashboard");
+  });
+
+  it("keeps every core step when every module is disabled", () => {
+    const allOff = Object.fromEntries(
+      MODULE_KEYS.map((key) => [key, false]),
+    ) as ModuleSettingsValues;
+    const applicable = getApplicableSetupStepIds(allOff);
+    const coreIds = SETUP_STEP_REGISTRY.filter(
+      (entry) => entry.ownerModule === CORE_STEP_OWNER,
+    ).map((entry) => entry.id);
+
+    expect(applicable).toEqual(coreIds);
+    expect(applicable).toContain("feature-flags");
+  });
+
+  it("pins the applicable set under the first-install defaults", () => {
+    // The state a real club is actually in. `moduleFlags()` above is every
+    // module ON, which no club is by default: DEFAULT_MODULE_SETTINGS has
+    // xeroIntegration, financeDashboard and addressAutocomplete OFF. Pinning
+    // only the all-enabled set would let the default-install set change without
+    // a test noticing.
+    expect(getApplicableSetupStepIds(DEFAULT_MODULE_SETTINGS)).toEqual(
+      DEFAULT_INSTALL_APPLICABLE_STEP_IDS,
+    );
+  });
+
+  it("treats an unsaved Modules page as the first-install defaults", () => {
+    // `null` is a KNOWN answer — the ClubModuleSettings row does not exist —
+    // which is how buildModuleLayerState and formatModuleActivationDetail
+    // already read it ("first-install defaults until settings are saved").
+    expect(getApplicableSetupStepIds(null)).toEqual(
+      DEFAULT_INSTALL_APPLICABLE_STEP_IDS,
+    );
+  });
+
+  it("fails OPEN when module state is unknown", () => {
+    // `undefined` is NOT the same as `null`: no snapshot was taken at all (a
+    // DB-less `npm run setup:check` passes none). Hiding a step on the one run
+    // that could not read the club's configuration is the wrong direction to be
+    // wrong in, so every step comes back.
+    expect(getApplicableSetupStepIds(undefined)).toEqual(EXPECTED_STEP_IDS);
+    expect(getApplicableSetupStepIds()).toEqual(EXPECTED_STEP_IDS);
+    expect(getApplicableSetupStepIds(undefined)).not.toEqual(
+      getApplicableSetupStepIds(null),
+    );
+  });
+
+  it("returns applicable steps in presentation order", () => {
+    const applicable = getApplicableSetupStepIds(
+      moduleFlags({ addressAutocomplete: false }),
+    );
+    const expectedOrder = EXPECTED_STEP_IDS.filter(
+      (id) => id !== "address-autocomplete",
+    );
+
+    expect(applicable).toEqual(expectedOrder);
+  });
+});
+
+describe("setup step completion", () => {
+  it("agrees with the readiness summary's own complete count", () => {
+    // The behavioural pin between `isSetupStepComplete` and the rule
+    // buildSetupReadiness applies, which the registry cannot import without a
+    // cycle. A mixed scenario: some checks pass on their own, one is marked
+    // done by the operator, and one — "xero-mappings", which the
+    // `databaseSnapshot` fixture above already makes status "complete" — is
+    // ALSO deferred, so the fixture exercises status "complete" together with
+    // progress "skipped" and not only the warning-plus-skipped case.
+    const readiness = stepIdsOnTheCards(databaseSnapshot(moduleFlags()), {
+      completedStepIds: ["runtime-env"],
+      skippedStepIds: ["xero-mappings"],
+    });
+    const entriesById = new Map(
+      SETUP_STEP_REGISTRY.map((entry) => [entry.id, entry]),
+    );
+
+    const complete = readiness.categories
+      .flatMap((category) => category.checks)
+      .filter((check) => {
+        const entry = entriesById.get(check.id);
+        if (!entry) throw new Error(`No registry entry for check ${check.id}`);
+        return isSetupStepComplete(entry, {
+          status: check.status,
+          progress: check.progress,
+        });
+      }).length;
+
+    expect(complete).toBe(readiness.summary.complete);
+  });
+
+  it("does not treat a deferred step as complete", () => {
+    const entry = SETUP_STEP_REGISTRY[0];
+
+    expect(
+      isSetupStepComplete(entry, { status: "warning", progress: "skipped" }),
+    ).toBe(false);
+    expect(
+      isSetupStepComplete(entry, { status: "warning", progress: "completed" }),
+    ).toBe(true);
+    expect(
+      isSetupStepComplete(entry, { status: "complete", progress: "open" }),
+    ).toBe(true);
+  });
+});
+
+describe("setup step registry guards", () => {
+  const stepDefinition = (
+    id: string,
+    overrides: Partial<SetupStepDefinition> = {},
+  ): SetupStepDefinition => ({
+    id,
+    ownerModule: CORE_STEP_OWNER,
+    prerequisites: [],
+    order: 10,
+    completion: "readiness-check",
+    ...overrides,
+  });
+
+  it("names the step and the id when a prerequisite does not exist", () => {
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("club-config"),
+      stepDefinition("seed-admin", {
+        order: 20,
+        prerequisites: ["not-a-real-step"],
+      }),
+    ]);
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("seed-admin");
+    expect(violations[0]).toContain("not-a-real-step");
+  });
+
+  // A genuine cycle cannot avoid the forward-prerequisite guard below: `order`
+  // is a total order over the steps, and going around a cycle would require
+  // it to strictly decrease at every hop, which is impossible in a finite
+  // loop — so at least one edge in any cycle is ALSO a forward reference by
+  // construction. These fixtures therefore trip both guards at once; each
+  // test filters to the cycle-specific message(s) so it keeps verifying only
+  // what its name says, and the forward-reference co-violation itself is
+  // covered by the dedicated fixtures below.
+  const cycleViolations = (violations: string[]) =>
+    violations.filter((violation) => violation.includes("cycle"));
+
+  it("names every step in a prerequisite cycle", () => {
+    const violations = cycleViolations(
+      findSetupStepRegistryViolations([
+        stepDefinition("a", { prerequisites: ["c"] }),
+        stepDefinition("b", { order: 20, prerequisites: ["a"] }),
+        stepDefinition("c", { order: 30, prerequisites: ["b"] }),
+      ]),
+    );
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("a");
+    expect(violations[0]).toContain("b");
+    expect(violations[0]).toContain("c");
+  });
+
+  it("names a step that is its own prerequisite", () => {
+    const violations = cycleViolations(
+      findSetupStepRegistryViolations([
+        stepDefinition("club-config", { prerequisites: ["club-config"] }),
+      ]),
+    );
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("cycle");
+    expect(violations[0]).toContain("club-config");
+  });
+
+  it("reports one cycle once however many steps lead into it", () => {
+    const violations = cycleViolations(
+      findSetupStepRegistryViolations([
+        stepDefinition("entry-one", { prerequisites: ["a"] }),
+        stepDefinition("entry-two", { order: 20, prerequisites: ["b"] }),
+        stepDefinition("a", { order: 30, prerequisites: ["b"] }),
+        stepDefinition("b", { order: 40, prerequisites: ["a"] }),
+      ]),
+    );
+
+    expect(violations).toHaveLength(1);
+  });
+
+  it("names every step in a three-member cycle sharing an out-edge", () => {
+    // Reproducer 1 from the C1 review round: a -> [b, c], b -> [c], c -> [a].
+    // All three are mutually reachable (a -> c -> a directly, and a -> b -> c
+    // -> a through b), so they form one three-member SCC.
+    const violations = cycleViolations(
+      findSetupStepRegistryViolations([
+        stepDefinition("a", { prerequisites: ["b", "c"] }),
+        stepDefinition("b", { order: 20, prerequisites: ["c"] }),
+        stepDefinition("c", { order: 30, prerequisites: ["a"] }),
+      ]),
+    );
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("a");
+    expect(violations[0]).toContain("b");
+    expect(violations[0]).toContain("c");
+  });
+
+  it("names every step in a cycle a settled-early-return DFS would drop one from", () => {
+    // Reproducer 2 from the C1 review round: s0 -> [s1, s2], s1 -> [s0],
+    // s2 -> [s1]. This is the shape that broke the old settled/on-path DFS: it
+    // visits s0, then s1 (which closes a cycle back to s0 and is then marked
+    // SETTLED), then reaches s2 — whose only prerequisite is the now-settled
+    // s1 — and stops there without ever re-opening s1's cycle through s2. s0,
+    // s1 and s2 are mutually reachable (s0 -> s2 -> s1 -> s0), so this is one
+    // three-member SCC and s2 MUST appear in the reported message.
+    const violations = cycleViolations(
+      findSetupStepRegistryViolations([
+        stepDefinition("s0", { prerequisites: ["s1", "s2"] }),
+        stepDefinition("s1", { order: 20, prerequisites: ["s0"] }),
+        stepDefinition("s2", { order: 30, prerequisites: ["s1"] }),
+      ]),
+    );
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("s0");
+    expect(violations[0]).toContain("s1");
+    expect(violations[0]).toContain("s2");
+  });
+
+  it("flags a prerequisite presented after its dependent", () => {
+    // seed-admin (order 10) depends on club-config (order 20): under the
+    // wizard's no-jumping-forward navigation (D2), an operator reaches
+    // seed-admin before club-config is ever shown, so the prerequisite is
+    // unreachable from where it is declared to matter.
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("seed-admin", { prerequisites: ["club-config"] }),
+      stepDefinition("club-config", { order: 20 }),
+    ]);
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("seed-admin");
+    expect(violations[0]).toContain("club-config");
+    expect(violations[0]).toContain("order 10");
+    expect(violations[0]).toContain("order 20");
+  });
+
+  it("does not flag a prerequisite that is genuinely presented first", () => {
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("club-config"),
+      stepDefinition("seed-admin", {
+        order: 20,
+        prerequisites: ["club-config"],
+      }),
+    ]);
+
+    expect(violations).toEqual([]);
+  });
+
+  it("flags a prerequisite whose module is neither core nor the dependent's own", () => {
+    // finance-fixture (module financeDashboard) depends on
+    // xero-operational-fixture (module xeroIntegration): the dependent can be
+    // applicable while xeroIntegration is switched off, at which point its
+    // prerequisite can never be satisfied.
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("xero-operational-fixture", {
+        ownerModule: "xeroIntegration",
+      }),
+      stepDefinition("finance-fixture", {
+        ownerModule: "financeDashboard",
+        order: 20,
+        prerequisites: ["xero-operational-fixture"],
+      }),
+    ]);
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("finance-fixture");
+    expect(violations[0]).toContain("xero-operational-fixture");
+    expect(violations[0]).toContain("xeroIntegration");
+    expect(violations[0]).toContain("financeDashboard");
+  });
+
+  it("does not flag a core prerequisite or a same-module prerequisite", () => {
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("core-fixture"),
+      stepDefinition("same-module-fixture-one", {
+        order: 20,
+        ownerModule: "xeroIntegration",
+      }),
+      stepDefinition("same-module-fixture-two", {
+        order: 30,
+        ownerModule: "xeroIntegration",
+        prerequisites: ["core-fixture", "same-module-fixture-one"],
+      }),
+    ]);
+
+    expect(violations).toEqual([]);
+  });
+
+  it("flags an empty or whitespace-only step id", () => {
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition(""),
+      stepDefinition("   ", { order: 20 }),
+    ]);
+
+    expect(
+      violations.filter((violation) =>
+        violation.includes("empty or whitespace-only"),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("flags a non-finite order", () => {
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("club-config", { order: Number.NaN }),
+      stepDefinition("seed-admin", { order: Number.POSITIVE_INFINITY }),
+    ]);
+
+    expect(
+      violations.filter((violation) => violation.includes("non-finite order")),
+    ).toHaveLength(2);
+  });
+
+  it("names a duplicated step id", () => {
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("club-config"),
+      stepDefinition("club-config", { order: 20 }),
+    ]);
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("club-config");
+  });
+
+  it("names both steps when declaration order and `order` disagree", () => {
+    // Load-bearing because SETUP_STEP_IDS is derived positionally: a step moved
+    // by editing `order` alone would ship an order nothing actually applies.
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("club-config", { order: 20 }),
+      stepDefinition("seed-admin", { order: 10 }),
+    ]);
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("club-config");
+    expect(violations[0]).toContain("seed-admin");
+  });
+
+  it("is scoped to the registry it is given, and consults no other", () => {
+    // `config-self-heal-steps.ts` declares a self-heal step named
+    // `club-time-zone` — byte-identical to this registry's 17th id, in a
+    // different namespace, and entirely unrelated. Ids are namespaced by their
+    // registry, so a guard that reached across namespaces would fail the build
+    // over two files that never meet.
+    const selfHealStepNames = ["club-time-zone", "club-identity-settings"];
+
+    expect(
+      findSetupStepRegistryViolations(
+        selfHealStepNames.map((name, index) =>
+          stepDefinition(name, { order: (index + 1) * 10 }),
+        ),
+      ),
+    ).toEqual([]);
+    // And the real registry, which shares that id, is clean. Bound to
+    // SETUP_STEP_REGISTRY (the shipped export) for the same reason as above.
+    expect(findSetupStepRegistryViolations(SETUP_STEP_REGISTRY)).toEqual([]);
+  });
+
+  it("accepts a well-formed registry with real prerequisites", () => {
+    expect(
+      findSetupStepRegistryViolations([
+        stepDefinition("club-config"),
+        stepDefinition("seed-admin", {
+          order: 20,
+          prerequisites: ["club-config"],
+        }),
+      ]),
+    ).toEqual([]);
+  });
+});

@@ -5,8 +5,8 @@
  * The reusable wizard shell (src/components/admin/integration-wizard/) resumes a
  * reload mid-flow at the right step by persisting a small cursor here — ONE row
  * per wizard id ("xero" here; "stripe"/"google" later). This is deliberately NOT
- * the setup-readiness progress store (SETUP_STEP_IDS in setup-readiness.ts):
- * that tracks 15 fixed checklist steps with complete/skip flags and has no
+ * the setup-readiness progress store (SETUP_STEP_IDS in setup-step-registry.ts):
+ * that tracks 17 fixed checklist steps with complete/skip flags and has no
  * per-wizard cursor.
  *
  * IMPORTANT: the persisted `completedStepIds` are ADVISORY (an acknowledgement /

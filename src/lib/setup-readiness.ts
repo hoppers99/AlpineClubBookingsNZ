@@ -24,28 +24,17 @@ import {
   detectLegacyProviderEnv,
 } from "@/lib/xero-config";
 import { authSecretWeaknessReason } from "@/lib/integration-crypto";
+import {
+  SETUP_STEP_IDS,
+  type SetupStepId,
+} from "@/lib/setup-step-registry";
 
-export const SETUP_STEP_IDS = [
-  "club-config",
-  "club-time-zone",
-  "runtime-env",
-  "auth-secret-strength",
-  "seed-admin",
-  "feature-flags",
-  "booking-policies",
-  "membership-cancellation",
-  "age-tiers",
-  "seasons-rates",
-  "stripe",
-  "email-ses",
-  "sentry",
-  "address-autocomplete",
-  "xero-operational",
-  "finance-dashboard",
-  "xero-mappings",
-] as const;
-
-export type SetupStepId = (typeof SETUP_STEP_IDS)[number];
+// Re-exported, not re-declared (epic #213, C1). The hand-maintained array that
+// used to sit here is now derived from the step registry, which also carries
+// each step's owning module and prerequisites. Keeping both exports on this
+// module means no consumer moved.
+export { SETUP_STEP_IDS };
+export type { SetupStepId };
 type SetupStatus = "complete" | "warning" | "blocked" | "not_started";
 type SetupCategoryId =
   | "foundation"
