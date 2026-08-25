@@ -241,6 +241,69 @@ describe("POST /api/admin/lodges", () => {
     );
   });
 
+  /*
+    #221: A NEW LODGE IS CREATED INACTIVE.
+
+    The gap this closes is that a lodge with no rooms, no beds, no seasons and
+    no rates used to be offered for booking the instant it was named. The
+    not-bookable half is enforced at the booking surfaces themselves and is
+    covered by their own suites (`booking-create.ts`'s `active: true` filter,
+    the lodge-option reads, display/kiosk auth); duplicating those here would
+    pin the same rule twice and let the two copies drift. What is pinned HERE is
+    the one thing this route decides: the value it writes.
+
+    Mutation-verified: restoring `.default(true)` on the create schema fails
+    this test with `active: true`, then the mutation was reverted.
+  */
+  it("creates the lodge INACTIVE when the caller does not say otherwise (#221)", async () => {
+    mocks.lodgeFindFirst.mockResolvedValue(null);
+    mocks.lodgeCreate.mockResolvedValue(
+      lodgeRecord({ id: "lodge-2", name: "River Lodge", slug: "river-lodge", active: false }),
+    );
+    mocks.lodgeFindMany.mockResolvedValue([]);
+
+    const response = await POST(jsonRequest("POST", { name: "River Lodge" }));
+    expect(response.status).toBe(201);
+    expect(mocks.lodgeCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ active: false }),
+      }),
+    );
+    expect((await response.json()).lodge).toMatchObject({ active: false });
+  });
+
+  it("still honours an explicit active:true, which is what keeps the field optional (#221)", async () => {
+    // The admin create form never sends it. A caller that MEANS an immediately
+    // live lodge — a restore path, a future importer — may still say so, which
+    // is why the flip is a default rather than a removal.
+    mocks.lodgeFindFirst.mockResolvedValue(null);
+    mocks.lodgeCreate.mockResolvedValue(lodgeRecord({ id: "lodge-2", active: true }));
+    mocks.lodgeFindMany.mockResolvedValue([]);
+
+    const response = await POST(
+      jsonRequest("POST", { name: "River Lodge", active: true }),
+    );
+    expect(response.status).toBe(201);
+    expect(mocks.lodgeCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ active: true }),
+      }),
+    );
+  });
+
+  it("never flags a new lodge as the club default (#221)", async () => {
+    // The default-lodge rule holds by construction: this route writes no
+    // `isDefault`, so the column default (false) applies and an inactive new
+    // lodge cannot silently become the club default while it is closed.
+    mocks.lodgeFindFirst.mockResolvedValue(null);
+    mocks.lodgeCreate.mockResolvedValue(lodgeRecord({ id: "lodge-2", active: false }));
+    mocks.lodgeFindMany.mockResolvedValue([]);
+
+    await POST(jsonRequest("POST", { name: "River Lodge" }));
+    const written = mocks.lodgeCreate.mock.calls[0][0].data;
+    expect(written).not.toHaveProperty("isDefault");
+  });
+
   it("derives a suffixed slug when the base slug is taken", async () => {
     mocks.lodgeFindFirst
       .mockResolvedValueOnce({ id: "lodge-1" })

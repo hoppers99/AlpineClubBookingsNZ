@@ -146,6 +146,21 @@ const completeDatabase: SetupDatabaseSnapshot = {
     rawCss: "",
     completedAt: null,
   },
+  // The lodges step (epic #213 C6, #221). One lodge, active and flagged as the
+  // club default — the shape every single-lodge club is in. An OMITTED `lodges`
+  // reads as "database state was not checked" and warns, deliberately (an empty
+  // array is a real answer, so a missing field cannot be collapsed into one), so
+  // a "complete setup" fixture has to carry it.
+  lodges: [
+    {
+      id: "lodge-1",
+      name: "Example Lodge",
+      active: true,
+      isDefault: true,
+      activeRoomCount: 4,
+      activeBedCount: 20,
+    },
+  ],
 };
 
 const validClubConfig = {
@@ -2055,5 +2070,136 @@ describe("setup-readiness website styling (site-style step, epic #213 C7, #222)"
     });
     expect(viaJourney).toEqual(viaDirectPage);
     expect(viaJourney.status).toBe("complete");
+  });
+});
+
+/**
+ * The lodges step (epic #213, C6; issue #221).
+ *
+ * The derivation under test is deliberately narrow — a lodge is done when it is
+ * OPEN FOR BOOKING — and these pin both halves of why: what makes it move, and
+ * what deliberately does not.
+ */
+describe("setup-readiness — the lodges step (#221)", () => {
+  type SnapshotLodge = NonNullable<SetupDatabaseSnapshot["lodges"]>[number];
+
+  function lodge(overrides: Partial<SnapshotLodge> = {}): SnapshotLodge {
+    return {
+      id: "lodge-1",
+      name: "Example Lodge",
+      active: true,
+      isDefault: true,
+      activeRoomCount: 4,
+      activeBedCount: 20,
+      ...overrides,
+    };
+  }
+
+  function lodgesCheck(database?: SetupDatabaseSnapshot) {
+    const readiness = buildSetupReadiness({
+      env: baseEnv,
+      configDir: makeConfigDir(),
+      database,
+      now: new Date("2026-05-18T00:00:00.000Z"),
+    });
+    const category = readiness.categories.find((c) => c.id === "lodges");
+    const check = category?.checks.find((entry) => entry.id === "lodges");
+    if (!check) throw new Error("the lodges check is missing from the readiness result");
+    return { readiness, category, check };
+  }
+
+  it("carries its own category, between Foundation and Booking Rules", () => {
+    const { readiness, category } = lodgesCheck(completeDatabase);
+    expect(category?.title).toBe("Lodges");
+    // The order matters: the rail groups by category in THIS order, and the
+    // registry's `order: 65` has to keep agreeing with it.
+    const ids = readiness.categories.map((entry) => entry.id);
+    expect(ids.indexOf("lodges")).toBe(ids.indexOf("foundation") + 1);
+    expect(ids.indexOf("lodges")).toBe(ids.indexOf("booking") - 1);
+  });
+
+  it("is complete when every lodge is open for booking", () => {
+    const { check } = lodgesCheck({
+      ...completeDatabase,
+      lodges: [lodge(), lodge({ id: "lodge-2", name: "River Lodge", isDefault: false })],
+    });
+    expect(check.status).toBe("complete");
+    expect(check.message).toContain("All 2 lodges are open for booking");
+    expect(check.details).toContain(
+      "Example Lodge: open for booking (4 rooms, 20 beds), the club default.",
+    );
+  });
+
+  it("warns while any one lodge is still closed — the state #221 introduced", () => {
+    const { check, readiness } = lodgesCheck({
+      ...completeDatabase,
+      lodges: [
+        lodge(),
+        lodge({ id: "lodge-2", name: "River Lodge", isDefault: false, active: false, activeRoomCount: 0, activeBedCount: 0 }),
+      ],
+    });
+    expect(check.status).toBe("warning");
+    expect(check.message).toContain("1 of 2 lodges are not open for booking");
+    expect(check.details).toContain(
+      "River Lodge: NOT open for booking — finish its setup to activate it (0 rooms, 0 beds).",
+    );
+    // It holds the whole readiness result back, so a half-built lodge cannot be
+    // walked past silently.
+    expect(readiness.status).toBe("warning");
+  });
+
+  it("blocks when nothing at all is bookable", () => {
+    expect(
+      lodgesCheck({ ...completeDatabase, lodges: [lodge({ active: false })] }).check.status,
+    ).toBe("blocked");
+    expect(lodgesCheck({ ...completeDatabase, lodges: [] }).check.status).toBe("blocked");
+  });
+
+  it("links each lodge to ITS OWN setup flow, separately from the club's progress", () => {
+    const { check, readiness } = lodgesCheck({
+      ...completeDatabase,
+      lodges: [
+        lodge(),
+        lodge({ id: "lodge-2", name: "River Lodge", isDefault: false, active: false }),
+      ],
+    });
+    expect(check.links).toEqual([
+      { label: "Review Example Lodge's setup", href: "/admin/lodges/lodge-1/setup" },
+      { label: "Finish setting up River Lodge", href: "/admin/lodges/lodge-2/setup" },
+    ]);
+    // Per-lodge state is reported IN the step, never as extra steps: two lodges
+    // do not make the journey longer, so they cannot move the denominator.
+    expect(
+      readiness.categories.find((c) => c.id === "lodges")?.checks,
+    ).toHaveLength(1);
+  });
+
+  it("reports room and bed counts but never lets them decide the verdict", () => {
+    // An active lodge with no beds at all. LodgeSettings.capacity is a
+    // legitimate override, and club-config already owns the default lodge's
+    // capacity verdict (#1982) — a second check arguing about the same fact is
+    // how two plausible derivations drift apart.
+    const { check } = lodgesCheck({
+      ...completeDatabase,
+      lodges: [lodge({ activeRoomCount: 0, activeBedCount: 0 })],
+    });
+    expect(check.status).toBe("complete");
+    expect(check.details).toContain(
+      "Example Lodge: open for booking (0 rooms, 0 beds), the club default.",
+    );
+  });
+
+  it("says the database was not checked rather than inventing an empty club", () => {
+    // An omitted `lodges` must NOT collapse to `[]` the way `clubTheme`
+    // collapses to null: an empty array is a real and alarming answer, so a
+    // missing field has to read as unchecked instead.
+    const { lodges: _omitted, ...withoutLodges } = completeDatabase;
+    expect(lodgesCheck(withoutLodges).check.status).toBe("warning");
+    expect(lodgesCheck(withoutLodges).check.message).toBe(
+      "Database state was not checked.",
+    );
+    expect(lodgesCheck(undefined).check.message).toBe(
+      "Database state was not checked.",
+    );
   });
 });
