@@ -53,9 +53,16 @@ same **lodge edit** permission as the properties above.
    one lodge. That is deliberate — a lodge with no rooms, no beds and no rates
    used to be bookable the instant it was named.
 3. You can still build the lodge out in full while it is closed: rooms, beds,
-   lockers, seasons, rates and chores all work on an inactive lodge, and so
-   does copying seasons or chores from an existing one. Activation is the last
-   thing you do, not the first.
+   lockers, seasons, rates, chores and its capacity override all work on an
+   inactive lodge, and so does copying seasons or chores from an existing one.
+   Activation is the last thing you do, not the first.
+
+   The five full editors the setup flow links to — **Rooms & Beds**,
+   **Lockers**, **Seasons**, **Fees** and **Chores** — are the exception to the
+   picker rule in the next point. Follow one of those links and the page stays
+   on the lodge you came from, with its name shown in the lodge picker followed
+   by **(closed)**, so you can see which building you are filling in. Reaching
+   the same page from the menu instead still starts you on a lodge that is open.
 4. Leaving it closed is a legitimate answer. A lodge the club has bought but not
    opened stays Inactive for as long as you like; the setup checklist reports it
    as outstanding rather than nagging you to open it.
@@ -129,7 +136,7 @@ A lodge that a booking or a request already names cannot be deleted.
 | Everything is read-only ("… can view the lodge properties but cannot change them") | Your admin role has lodge view but not edit | Ask a full admin for **lodge edit** access |
 | Deactivate warns about dependencies | The lodge still has future bookings, waitlist, hut-leader, or kiosk ties | Review the list; confirm to deactivate anyway (they stay in place) or resolve them first |
 | "At least one lodge must stay active" | You tried to deactivate the only active lodge | Keep one active, or activate another first |
-| Member screens don't show a lodge picker | The club has only one active lodge | Expected — pickers appear once a second active lodge exists. A second lodge you have added but not yet activated does not count, which is why the pickers appear when you open it rather than when you name it |
+| Member screens don't show a lodge picker | The club has only one active lodge | Expected — pickers appear once a second active lodge exists. A second lodge you have added but not yet activated does not count, which is why the pickers appear when you open it rather than when you name it. Rooms & Beds, Lockers, Seasons, Fees and Chores are the deliberate exception: they show a closed lodge too, labelled **(closed)**, because they are where you configure one |
 | A new lodge is not offered for booking | It is inactive, which is how every new lodge starts | Open its guided setup (`/admin/lodges/[id]/setup`) and activate it on the last step, or use **Activate** on this page |
 | Door code/travel note isn't in an email | The lodge's field is blank, or the email template omits the token | Fill the field here; check the [Booking Messages](booking-messages.md)/email template |
 

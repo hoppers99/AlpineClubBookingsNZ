@@ -12,17 +12,23 @@
   admin *Add lodge* path is affected.
 
   You can build a closed lodge out in full while it is closed — rooms, beds,
-  lockers, seasons, rates and chores all work on it, and so does copying seasons
-  or chores across from an existing lodge. Activation is the last thing you do.
-  Leaving a lodge closed indefinitely is a legitimate answer too: a property the
-  club has bought but not opened stays Inactive for as long as you want, and is
-  reported as outstanding rather than nagged about.
+  lockers, seasons, rates, chores and its capacity override all work on it, and
+  so does copying seasons or chores across from an existing lodge. Activation is
+  the last thing you do. Leaving a lodge closed indefinitely is a legitimate
+  answer too: a property the club has bought but not opened stays Inactive for
+  as long as you want, and is reported as outstanding rather than nagged about.
 
-  Two consequences worth expecting. Lodge pickers across the member and admin
-  screens still appear only once a **second active lodge** exists, so they now
-  turn up when you open the new lodge rather than when you name it — which is
-  when the club genuinely has two. And a new lodge can never become the club's
-  default lodge while it is closed.
+  **The five full editors show the closed lodge, labelled.** Rooms & Beds,
+  Lockers, Seasons, Fees and Chores are where the setup flow sends you to finish
+  a job properly, so their lodge picker lists a closed lodge with **(closed)**
+  beside its name, and keeps whichever lodge the link named. Everywhere else —
+  member screens, booking, the roster, boards, reports and displays — the picker
+  still appears only once a **second active lodge** exists, so it turns up when
+  you open the new lodge rather than when you name it, which is when the club
+  genuinely has two. Reaching one of those five editors from the menu, rather
+  than by following a link, still starts you on a lodge that is open.
+
+  And a new lodge can never become the club's default lodge while it is closed.
 
 - **The setup wizard's guided journey now includes a Lodges step (#221).** A new
   **Lodges** section sits between Foundation and Booking Rules — the club's
