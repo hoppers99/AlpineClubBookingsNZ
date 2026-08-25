@@ -863,14 +863,23 @@ So there are two resolvers, and the distinction is the rule:
 `resolveOptionalConfigurableLodgeId` is the narrower change of the two: it
 validates the id names a real lodge and falls back to the club default when the
 id is omitted, exactly like its sibling, and differs only in not consulting
-`active`. Its call sites are the admin configuration surfaces the per-lodge
-setup flow drives, and they are the complete list — a new caller belongs on the
-booking-facing helper unless it is configuring a lodge:
+`active`. Its call sites are the admin surfaces that build a lodge's OWN
+inventory and per-lodge templates — the ones the per-lodge setup flow drives,
+plus the full editors that same flow tells the operator they can finish the job
+on. This is the complete list, and a new caller belongs on the booking-facing
+helper unless it is configuring a lodge:
 
 - `POST /api/admin/bed-allocation/rooms/bulk` (rooms and beds quick-seed)
+- `GET` and `POST /api/admin/bed-allocation/rooms` (the Rooms & Beds editor)
 - `POST /api/admin/lockers/bulk` (locker quick-seed)
+- `POST /api/admin/lockers` (the Lockers editor)
 - `POST /api/admin/seasons` (including copy-from-another-lodge)
 - `GET` and `POST /api/admin/chores` (including copy-from-another-lodge)
+
+Everything else keeps the active-only resolver, and the line is not arbitrary:
+bed allocation's board, approval and auto-allocator, the roster, hut-leader
+terms, work parties and the booking-policy editors all act on a lodge that is
+OPEN. You do not roster or allocate beds at a building nobody can book.
 
 Nothing about that widens what is bookable. `active: true` is enforced
 independently at the booking surfaces themselves (`booking-create.ts`, the

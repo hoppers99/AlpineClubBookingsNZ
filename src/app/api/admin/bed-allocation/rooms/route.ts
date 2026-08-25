@@ -12,7 +12,7 @@ import {
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { logAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
-import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
+import { resolveOptionalConfigurableLodgeId } from "@/lib/lodges";
 import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
 // requireAdmin() is enforced by the route-specific bed-inventory guard.
@@ -33,11 +33,19 @@ export async function GET(request: Request) {
   try {
     const lodgeId =
       new URL(request.url).searchParams.get("lodgeId") ?? undefined;
-    // Validate an explicit lodge scope the way the POST path does (400 on
-    // unknown/inactive); omitted stays club-wide.
-    if (lodgeId && !(await resolveOptionalActiveLodgeId(prisma, lodgeId))) {
+    // Validate an explicit lodge scope the way the POST path does (400 on an
+    // unknown lodge); omitted stays club-wide.
+    // #221: the CONFIGURATION resolver, not the active-only one — see the sibling
+    // in `@/lib/lodges` and docs/multi-lodge/lodge-scoping-contract.md. A lodge
+    // created through the admin route starts inactive and its inventory has to be
+    // buildable before it is activated. An unknown id is still refused, and
+    // nothing here becomes bookable: the booking surfaces enforce `Lodge.active`.
+    if (
+      lodgeId &&
+      !(await resolveOptionalConfigurableLodgeId(prisma, lodgeId))
+    ) {
       return NextResponse.json(
-        { error: "Lodge not found or not active" },
+        { error: "Lodge not found" },
         { status: 400 },
       );
     }
@@ -65,13 +73,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const lodgeId = await resolveOptionalActiveLodgeId(
+    // #221: the CONFIGURATION resolver, not the active-only one — see the sibling
+    // in `@/lib/lodges` and docs/multi-lodge/lodge-scoping-contract.md. A lodge
+    // created through the admin route starts inactive and its inventory has to be
+    // buildable before it is activated. An unknown id is still refused, and
+    // nothing here becomes bookable: the booking surfaces enforce `Lodge.active`.
+    const lodgeId = await resolveOptionalConfigurableLodgeId(
       prisma,
       body.data.lodgeId,
     );
     if (!lodgeId) {
       return NextResponse.json(
-        { error: "Lodge not found or not active" },
+        { error: "Lodge not found" },
         { status: 400 },
       );
     }

@@ -257,6 +257,17 @@ export async function getDefaultLodgeId(db: LodgeDb): Promise<string> {
 // active lodge (returns null when it does not, so callers can 400), and an
 // omitted id falls back to the club's default lodge. One helper so the
 // admin create/update routes cannot drift on how they validate lodge input.
+//
+// THIS ONE ANSWERS "MAY THIS LODGE BE OPERATED" — booked, priced, rostered,
+// staffed. Since #221 a lodge can legitimately exist while inactive: a lodge
+// created through `POST /api/admin/lodges` starts inactive and is activated at
+// the end of its per-lodge setup flow. A route that CONFIGURES a lodge's own
+// inventory therefore wants `resolveOptionalConfigurableLodgeId` below instead.
+// The two questions had one answer only because, until #221, no lodge could be
+// inactive and under configuration at the same time.
+// `docs/multi-lodge/lodge-scoping-contract.md` → "Lodge Creation Defaults, And
+// Configuring A Lodge That Is Not Yet Active" carries the rule and the exact
+// call-site list; keep the two in step.
 export async function resolveOptionalActiveLodgeId(
   db: LodgeDb,
   requestedLodgeId: string | null | undefined,
@@ -267,6 +278,43 @@ export async function resolveOptionalActiveLodgeId(
       select: { id: true, active: true },
     });
     return lodge?.active ? lodge.id : null;
+  }
+  return getDefaultLodgeId(db);
+}
+
+/**
+ * The CONFIGURATION sibling of `resolveOptionalActiveLodgeId` (#221).
+ *
+ * Same contract in every respect but one: it does not consult `active`. An
+ * unknown id is still refused (`null`, so the caller 400s) and an omitted id
+ * still falls back to the club's default lodge — so a route swapping to this
+ * helper loses no validation except the one that was wrong for it.
+ *
+ * It exists because a lodge created through the admin route now starts
+ * INACTIVE, and the per-lodge setup flow that activates it has to be able to
+ * create that lodge's rooms, beds, lockers, seasons and chores FIRST. Under the
+ * active-only resolver every one of those writes answered 400 for the very
+ * lodge the flow was there to configure.
+ *
+ * IT WIDENS NOTHING THAT IS BOOKABLE. `active` is enforced independently at the
+ * booking surfaces — `booking-create.ts`, the lodge-option reads in this
+ * module, and display/kiosk auth — so a fully configured but inactive lodge
+ * still takes no bookings. This helper only decides whose inventory an admin
+ * may edit, and an inactive lodge is precisely the one that needs editing.
+ *
+ * Use it ONLY for a route that reads or writes a lodge's own configuration.
+ * Anything booking-facing keeps the active-only resolver above.
+ */
+export async function resolveOptionalConfigurableLodgeId(
+  db: LodgeDb,
+  requestedLodgeId: string | null | undefined,
+): Promise<string | null> {
+  if (requestedLodgeId) {
+    const lodge = await db.lodge.findUnique({
+      where: { id: requestedLodgeId },
+      select: { id: true },
+    });
+    return lodge?.id ?? null;
   }
   return getDefaultLodgeId(db);
 }
