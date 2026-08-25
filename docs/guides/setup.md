@@ -111,12 +111,22 @@ finish); use the checklist when you know what you are looking for.
    - **Make the public site visible** — until you do this, visitors see the
      holding screen rather than the club's pages. This is the only place in the
      wizard that publishes the site.
-   - **Confirm what this instance is for** — whether this installation is the
-     club's real site or a test copy, which decides whether it may email the
-     real membership. That is declared in the environment rather than switched
-     on from a screen, so the panel tells you where it lives. It does not gate
-     the lever above: an internal test site that is deliberately visible and
-     deliberately not production is a perfectly normal, permanent state.
+   - **Confirm what this instance is for** — names the role (production,
+     non-production, or not configured), says which source decided it (the
+     deployment's own `APP_ENVIRONMENT_ROLE`, or an administrator's safer
+     override), and states plainly what a non-production installation
+     withholds: no email to members, and every Xero contact it touches has its
+     address replaced so Xero cannot reach a member from here either. Nothing
+     here is switched on from a screen — that is declared in the environment
+     (`.env`) and never from the wizard, so a copy of the live database can
+     never declare itself the live site — but the panel does say how much
+     application email is currently being held back for environment-safety
+     reasons and links through to **Admin → Environment** for the full
+     picture. If nothing has declared the role yet, a banner explains what is
+     paused (member email and Xero writes, both) and exactly what to set. This
+     lever does not gate the one above: an internal test site that is
+     deliberately visible and deliberately not production is a perfectly
+     normal, permanent state.
 
    Anything you skipped is listed on that panel in plain words rather than
    quietly dropped.

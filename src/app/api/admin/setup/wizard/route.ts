@@ -63,6 +63,27 @@ export async function GET() {
 
   const readiness = buildSetupReadiness({ database, progress });
 
+  /*
+    C9 (#224): the launch panel's role lever, carried through from the SAME
+    resolution the `environment-role` readiness step and `/admin/environment`
+    read — `database.environmentRole` and `database.withheldEmail` are already
+    `resolveEnvironmentRole()` and `readWithheldApplicationEmail()`'s own
+    answers (`setup-readiness-db.ts`), so this is a NARROWER READ of an existing
+    result, never a second derivation, and it costs no extra query.
+
+    Both fields are typed optional on `SetupDatabaseSnapshot` for callers that
+    inject a partial snapshot (a DB-less `setup:check`, or a test that does not
+    stub them — this route's own test doubles do not). Falling back to UNKNOWN /
+    unresolved / unavailable here is the same fail-closed answer the resolver
+    itself gives when it cannot read the database, not a guess invented at this
+    call site.
+  */
+  const environmentSafety: SetupWizardPayload["environmentSafety"] = {
+    role: database.environmentRole?.role ?? "UNKNOWN",
+    decidedBy: database.environmentRole?.decidedBy ?? "unresolved",
+    withheldEmail: database.withheldEmail ?? { available: false },
+  };
+
   const traversal = buildSetupWizardTraversal({
     progress,
     // The snapshot's own three-state contract, passed through untouched:
@@ -92,6 +113,7 @@ export async function GET() {
     readiness,
     traversal,
     isSiteVisible: themeState.isComplete,
+    environmentSafety,
   };
   return NextResponse.json(payload);
 }
