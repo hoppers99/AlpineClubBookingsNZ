@@ -55,3 +55,32 @@ reason: #222's, carried forward twice now. The growth is
   the epic base the entry reads as unused. One PR cannot satisfy both bases
   with an earlier child's file present AND absent, so the entry stays here
   until the epic itself merges.
+
+file: src/app/(admin)/admin/site-style/site-style-wizard.tsx
+lines: 1049
+reason: this page's "Finish setup" is the SECOND lever that publishes the public
+  site, and #223 was asked to retire it with the legacy setup surfaces. The
+  thirty-four lines are one prop, one four-line handler that saves without
+  publishing, a two-line branch at the existing button, and the docblock stating
+  why the button retires but the SAVE does not — which is the one thing a future
+  reader would otherwise "simplify" back into a regression, because hiding the
+  control outright looks tidier and silently removes the only way to persist the
+  final step. The change has to be here: it reads the same `save()`, `saving`,
+  `saveBlocked` and `setStep` state every other control in this component reads,
+  and lifting the footer out would mean threading five values through a prop
+  object for one branch. The real split available in this file is the same one
+  its siblings have — five steps, each its own component — and that is a refactor
+  of its own rather than a side effect of retiring a button.
+
+file: src/lib/member-merge.ts
+lines: 3769
+reason: eight lines, and seven of them are a comment. INV-LIFE-078 requires every
+  FK-less scalar member-id column in the schema to be enumerated here and
+  classified as a snapshot or a live move, so the new
+  `SetupSurfaceSettings.updatedByMemberId` has to be added to
+  MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS or `member-merge-dmmf.test.ts` fails —
+  that guard is exactly why this entry exists. The classification note sits
+  beside the entry the way `ServerNzSettings.updatedByMemberId`'s does, because a
+  list of bare strings with the reasoning somewhere else is how two of these
+  columns escaped both the relation walk and the documentation in the first place
+  (#2243). There is no split to make: the list must be one list.

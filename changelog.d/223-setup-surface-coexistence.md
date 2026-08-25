@@ -21,3 +21,23 @@
   a third setup surface: `/admin/alpine-server/setup` is a provider-connection
   page like Xero Setup. It reads none of the setup-progress machinery, and
   finishing it does not move your setup percentage.
+
+- **The setup checklist can now be retired once the wizard covers what you need
+  (#223).** A new **Setup surfaces** setting at the foot of Admin → Setup &
+  Configuration → Setup hides the readiness checklist and the four Initial
+  Setup / Finance / Booking Rules / Operational Integrations hubs, leaving the
+  setup wizard as the one way in. Site Style's own **Finish setup** button goes
+  with them — that button published the public site, and once the surfaces are
+  hidden the wizard's **Ready to open** screen is the single place that happens.
+  Site Style still saves your colours, fonts and logo exactly as before.
+
+  It ships **shown**, so nothing changes for any club until somebody switches
+  it, and it is a switch rather than a one-way door: untick it and everything
+  comes back exactly as it was. No setting, no step's progress and no theme
+  value changes in either position. Following an old bookmark to one of the four
+  hubs takes you back to the Setup page rather than to an error, and the Setup
+  page itself always stays — it is where the switch lives. Membership & Members,
+  Cancellation and Email Messages / Notifications keep their cards whatever you
+  choose, because the wizard offers no route to those and hiding them would take
+  a capability away rather than move it. The change is recorded in the audit log
+  with who made it and which way.
