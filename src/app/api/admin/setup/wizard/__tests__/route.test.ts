@@ -185,12 +185,17 @@ describe("GET /api/admin/setup/wizard", () => {
     const payload = await body();
     expect(payload.traversal.applicableStepIds).not.toContain("xero-operational");
     expect(payload.traversal.applicableStepIds).not.toContain("xero-mappings");
-    // The readiness half still lists them: wiring the CARDS to the registry is
-    // C8's job, and the wizard's rail is built from the traversal.
+    // C8 (#223) wired the CARDS to the same derivation, so the readiness half
+    // of this payload no longer disagrees with the traversal half. Before C8 it
+    // did — it listed every step regardless of module flags — and this
+    // assertion asserted exactly that gap. Pin the agreement itself, both ways,
+    // so neither half can drift from the other again.
     const readinessIds = payload.readiness.categories.flatMap((category) =>
       category.checks.map((check) => check.id),
     );
-    expect(readinessIds).toContain("xero-mappings");
+    expect(readinessIds).not.toContain("xero-mappings");
+    expect(readinessIds).not.toContain("xero-operational");
+    expect(readinessIds).toEqual([...payload.traversal.applicableStepIds]);
   });
 
   it("feeds the readiness verdicts in, so a passing check counts as done", async () => {

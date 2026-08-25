@@ -3,24 +3,16 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
-  BadgeCheck,
-  Bell,
-  BookOpenCheck,
   CheckCircle2,
   CircleAlert,
   CircleDashed,
   ExternalLink,
-  Landmark,
-  ListChecks,
   Loader2,
   PlayCircle,
-  Plug,
   RefreshCw,
   RotateCcw,
   SkipForward,
-  UserX,
   Wand2,
-  type LucideIcon,
 } from "lucide-react";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,12 +25,12 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { LodgeCapacityCard } from "@/components/admin/lodge-capacity-card";
-import { isFeatureHrefVisible } from "@/config/feature-routes";
 import type { FeatureFlags } from "@/config/schema";
-import type {
-  AdminPermissionArea,
-  AdminPermissionMatrix,
-} from "@/lib/admin-permissions";
+import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
+import {
+  SETUP_HUB_CARDS,
+  getVisibleSetupHubCards,
+} from "./setup-hub-cards";
 
 type SetupStatus = "complete" | "warning" | "blocked" | "not_started";
 type ProgressStatus = "open" | "completed" | "skipped";
@@ -102,73 +94,6 @@ interface ProviderTestResult {
   message: string;
 }
 
-interface SetupHubCard {
-  href: string;
-  title: string;
-  description: string;
-  icon: LucideIcon;
-  requiredAreas: AdminPermissionArea[];
-}
-
-const setupHubCards: SetupHubCard[] = [
-  {
-    href: "/admin/setup/foundations",
-    title: "Initial Setup",
-    description:
-      "Start with the installation checklist, club identity, modules, lodge records, and system health.",
-    icon: ListChecks,
-    requiredAreas: ["support"],
-  },
-  {
-    href: "/admin/setup/finance",
-    title: "Finance",
-    description:
-      "Open finance reporting, Xero setup, sync tools, and the collapsed report-mapping editor.",
-    icon: Landmark,
-    requiredAreas: ["finance"],
-  },
-  {
-    href: "/admin/setup/booking-rules",
-    title: "Booking Rules",
-    description:
-      "Review booking policy, seasons, age groups, promo codes, inventory, and booking copy.",
-    icon: BookOpenCheck,
-    requiredAreas: ["bookings", "lodge"],
-  },
-  {
-    href: "/admin/setup/integrations",
-    title: "Operational Integrations",
-    description:
-      "Check external-provider readiness, Xero connection, modules, and delivery health.",
-    icon: Plug,
-    requiredAreas: ["support", "finance"],
-  },
-  {
-    href: "/admin/membership-setup",
-    title: "Membership & Members",
-    description:
-      "Configure membership types, member fields, and subscription lockout policy.",
-    icon: BadgeCheck,
-    requiredAreas: ["membership"],
-  },
-  {
-    href: "/admin/setup/cancellation",
-    title: "Cancellation",
-    description:
-      "Review cancellation settings, cancellation request queues, and related message copy.",
-    icon: UserX,
-    requiredAreas: ["membership", "support"],
-  },
-  {
-    href: "/admin/notifications",
-    title: "Email Messages / Notifications",
-    description:
-      "Manage delivery rules, recipients, email templates, and member-facing message text.",
-    icon: Bell,
-    requiredAreas: ["support"],
-  },
-];
-
 function responseErrorMessage(body: unknown, fallback: string) {
   if (
     typeof body === "object" &&
@@ -207,36 +132,20 @@ function progressLabel(progress: ProgressStatus) {
   return null;
 }
 
-function canSeeAnyRequiredArea(
-  permissionMatrix: AdminPermissionMatrix,
-  areas: AdminPermissionArea[],
-) {
-  return areas.some((area) => permissionMatrix[area] !== "none");
-}
-
-function getVisibleSetupHubCards(
-  cards: SetupHubCard[],
-  features: FeatureFlags,
-  permissionMatrix: AdminPermissionMatrix,
-) {
-  return cards.filter(
-    (card) =>
-      isFeatureHrefVisible(card.href, features) &&
-      canSeeAnyRequiredArea(permissionMatrix, card.requiredAreas),
-  );
-}
-
 function SetupHubCards({
   features,
   permissionMatrix,
+  applicableStepIds,
 }: {
   features: FeatureFlags;
   permissionMatrix: AdminPermissionMatrix;
+  applicableStepIds: ReadonlySet<string>;
 }) {
   const visibleCards = getVisibleSetupHubCards(
-    setupHubCards,
+    SETUP_HUB_CARDS,
     features,
     permissionMatrix,
+    applicableStepIds,
   );
 
   if (visibleCards.length === 0) return null;
@@ -317,6 +226,17 @@ export function SetupPageClient({
   const allChecks = useMemo(
     () => readiness?.categories.flatMap((category) => category.checks) ?? [],
     [readiness],
+  );
+  /*
+    The registry's applicable set, as the server derived it (epic #213, C8
+    #223). `buildSetupReadiness` now filters its checks through
+    `getApplicableSetupStepIds`, so the ids of the checks that came back ARE the
+    applicable set — there is nothing to recompute here, and recomputing it
+    client-side is precisely the second derivation this issue exists to remove.
+  */
+  const applicableStepIds = useMemo(
+    () => new Set(allChecks.map((check) => check.id)),
+    [allChecks],
   );
   const requiredBlockers = allChecks.filter(
     (check) =>
@@ -529,6 +449,7 @@ export function SetupPageClient({
           <SetupHubCards
             features={features}
             permissionMatrix={permissionMatrix}
+            applicableStepIds={applicableStepIds}
           />
 
           {/* The lodge-capacity card remains on the setup page and keeps the

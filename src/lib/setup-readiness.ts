@@ -42,6 +42,7 @@ import {
 import { authSecretWeaknessReason } from "@/lib/integration-crypto";
 import {
   SETUP_STEP_IDS,
+  getApplicableSetupStepIds,
   type SetupStepId,
 } from "@/lib/setup-step-registry";
 // A VALUE import, not type-only, and that is safe: `club-theme-schema.ts` reads
@@ -2468,15 +2469,56 @@ export function buildSetupReadiness(
     ],
   };
 
+  /*
+    THE CARDS' STEP SET IS THE REGISTRY'S APPLICABLE SET (epic #213, C8 #223).
+
+    Every check above is still BUILT unconditionally — they are pure functions
+    over the snapshot, and building then filtering keeps each check's own
+    "module disabled" reasoning intact for the fail-open case below. What
+    changed in C8 is that the result is now filtered through
+    `getApplicableSetupStepIds`, the same derivation
+    `buildSetupWizardTraversal` applies. Before C8 the cards built all twenty
+    checks unconditionally while the wizard filtered, so the two surfaces could
+    report different totals for the same club — which is exactly what #223's
+    first acceptance criterion forbids.
+
+    D4, executed: a module toggled OFF contributes no steps, so its checks
+    disappear from the cards, from `summary.total`, and from
+    `renderSetupCheckReport` — nothing is persisted and flipping the module back
+    on restores them. The registry-definitions file flagged this consequence
+    ahead of time on `xero-mappings`: a Xero-disabled club stops being shown a
+    mapping card it can do nothing with.
+
+    THE THREE-STATE CONTRACT IS PASSED THROUGH UNTOUCHED, and collapsing it is
+    the one way to get this wrong. `input.database` absent (a DB-less
+    `npm run setup:check`) yields `undefined`, which FAILS OPEN and returns all
+    twenty steps; `null` means "no saved Modules row", which is a known answer
+    resolving to the first-install defaults, not a missing one. `?? null` or
+    `?? {}` here would silently hide four steps from the one run that could not
+    read the club's configuration.
+  */
+  const applicableStepIds = new Set<string>(
+    getApplicableSetupStepIds(input.database?.adminModuleSettings),
+  );
+
   const categories = CATEGORY_ORDER.map((id) => {
-    const checks = checksByCategory[id];
+    const checks = checksByCategory[id].filter((check) =>
+      applicableStepIds.has(check.id),
+    );
     return {
       id,
       ...CATEGORY_META[id],
       status: worstStatus(unresolvedStatuses(checks)),
       checks,
     };
-  });
+  })
+    // A category whose every step belongs to a disabled module is dropped
+    // rather than rendered empty: the `finance` category is exactly that on a
+    // first-install club (both its steps are module-owned), and an empty
+    // category would render a heading with nothing under it AND report status
+    // "complete" — `worstStatus([])` folds from "complete" — which reads as
+    // "this is done" rather than "this does not apply to you".
+    .filter((category) => category.checks.length > 0);
   const allChecks = categories.flatMap((category) => category.checks);
   const skipped = allChecks.filter(
     (check) => check.progress === "skipped",
