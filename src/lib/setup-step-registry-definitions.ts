@@ -1,7 +1,12 @@
+import {
+  ADDRESS_AUTOCOMPLETE_SETUP_STEPS,
+  FINANCE_DASHBOARD_SETUP_STEPS,
+  XERO_INTEGRATION_SETUP_STEPS,
+} from "@/config/modules";
 import type { SetupStepDefinition } from "@/lib/setup-step-registry";
 
 /**
- * The registered setup step DEFINITIONS (epic #213, child C1).
+ * The registered setup step DEFINITIONS (epic #213, children C1 and C3).
  *
  * Split out of `setup-step-registry.ts`, which holds the contract, the derived
  * id tuple, the applicability rule and the guards. The two files answer
@@ -14,8 +19,58 @@ import type { SetupStepDefinition } from "@/lib/setup-step-registry";
  * the array must stay sorted by `order` and a step may only be moved by moving
  * its entry, never by editing `order` alone.
  *
- * The only thing this file imports from the registry is a TYPE, which erases at
- * compile time, so the two modules have no runtime import cycle.
+ * ## This file now holds CORE steps only (C3, #218)
+ *
+ * C1 declared every step here, including the four module-owned ones
+ * (`address-autocomplete`, `xero-operational`, `finance-dashboard`,
+ * `xero-mappings`). C3 moved those four INTO their owning modules'
+ * `MODULE_DEFINITIONS` entries in `src/config/modules.ts` — a module now
+ * declares its own wizard steps where it declares itself, so a new module
+ * cannot gain a flag and forget to register with setup. This file assembles:
+ * the fourteen `core` definitions below, in their existing order, plus each
+ * module's exported step array APPENDED after them. "Spliced in at its
+ * correct `order` position" describes an append today, not an interleave:
+ * every module-owned `order` (140-170) sits above core's max (130), so no
+ * core entry has to move to make room. A module step whose `order` belonged
+ * BETWEEN two core entries would need the `CORE_SETUP_STEP_DEFINITIONS`
+ * spread below chunked around it by hand — nothing here does that
+ * automatically — and the order-vs-position guard in
+ * `findSetupStepRegistryViolations` fails loudly on the resulting
+ * order/position mismatch if someone tries to insert one without doing so.
+ *
+ * **The amended AC1 reading (owner decision, 25 Aug, on #218):** the original
+ * "no change to setup code" criterion is unreachable literally — a module's
+ * step has to reach this array somehow. Its enforceable spirit instead: a
+ * module's steps are DECLARED in the module's own definition
+ * (`src/config/modules.ts`), and the one remaining registry edit is this
+ * file's hand splice — a single, CI-guarded line per module, not a change to
+ * the registry's contract, its guards, or any other module's entry. A
+ * module's declared steps can never silently fail to appear: forgetting the
+ * splice line is a build failure (the parity scan below), not a runtime
+ * absence a wizard user would discover the hard way.
+ *
+ * The splice is written OUT BY HAND below rather than computed by iterating
+ * every module generically. That is a deliberate, documented trade against
+ * TypeScript's type system, not an oversight: `SETUP_STEP_IDS` must stay a
+ * literal tuple type (`setup-step-registry.test.ts`, "the derived export is a
+ * literal tuple" — a widened `string` would let the setup-progress route's
+ * `z.enum` accept any string as a step id while every runtime assertion still
+ * passed). A literal tuple can only be built from a static `as const` spread —
+ * `Array.prototype.flatMap`/`.sort()` over `MODULE_DEFINITIONS` would produce a
+ * type-widened `SetupStepDefinition[]`, silently degrading that guarantee. The
+ * safety net for a mis-spliced or forgotten module step is therefore a TEST,
+ * not the type system, and it is a WIRING net rather than a content net:
+ * `setup-step-registry.test.ts` ("matches a generic scan of MODULE_DEFINITIONS")
+ * independently walks `MODULE_KEYS`/`MODULE_DEFINITIONS` and asserts the FULL
+ * entry — id, order, ownerModule, prerequisites, completion — equals the
+ * shipped `SETUP_STEP_REGISTRY` exactly. That catches a module step missing
+ * from the splice, mis-owned, mis-ordered, or diverging in any field from the
+ * module's own declaration (a prerequisite or completion source injected only
+ * at the splice point). It does NOT independently verify that the ordering
+ * itself is editorially right, or that the order-vs-position guard still
+ * fires on a genuine collision — those remain the job of
+ * `findSetupStepRegistryViolations` and the pinned `EXPECTED_STEP_IDS`/
+ * applicability fixtures elsewhere in that file.
  *
  * `order` values are spaced by 10 so a later child (C3 onwards) can insert a
  * step without renumbering eighteen entries in a file several lanes are
@@ -37,7 +92,7 @@ import type { SetupStepDefinition } from "@/lib/setup-step-registry";
  * what `order` is for, and a false prerequisite would block navigation (D2) on
  * a step an operator has no reason to complete first.
  */
-export const SETUP_STEP_DEFINITIONS = [
+const CORE_SETUP_STEP_DEFINITIONS = [
   {
     id: "club-config",
     // The bare literal, not the exported `CORE_STEP_OWNER` constant, is
@@ -161,40 +216,38 @@ export const SETUP_STEP_DEFINITIONS = [
     order: 130,
     completion: "readiness-check",
   },
+] as const satisfies readonly SetupStepDefinition[];
+
+/**
+ * The assembled registry: `CORE_SETUP_STEP_DEFINITIONS` above, plus each
+ * module's own declared steps (`src/config/modules.ts`) spliced in at their
+ * `order` position, with `ownerModule` supplied here — the one piece a module
+ * declaration does not carry, because it is implied by which module is being
+ * spliced in. See this file's module doc for why the splice is written out
+ * rather than computed generically, and where the drift safety net lives.
+ *
+ * Every module-owned entry below is BYTE-IDENTICAL (id, order, ownerModule,
+ * prerequisites, completion) to the one C1 declared inline here — this is a
+ * pure relocation, not a behaviour change, and `setup-step-registry.test.ts`'s
+ * C1 pins (`EXPECTED_STEP_IDS`, the `ownerModule` map, the applicability sets)
+ * are unchanged and still green as the parity proof.
+ */
+export const SETUP_STEP_DEFINITIONS = [
+  ...CORE_SETUP_STEP_DEFINITIONS,
+  { ...ADDRESS_AUTOCOMPLETE_SETUP_STEPS[0], ownerModule: "addressAutocomplete" },
+  { ...XERO_INTEGRATION_SETUP_STEPS[0], ownerModule: "xeroIntegration" },
+  { ...FINANCE_DASHBOARD_SETUP_STEPS[0], ownerModule: "financeDashboard" },
   {
-    id: "address-autocomplete",
-    ownerModule: "addressAutocomplete",
-    prerequisites: [],
-    order: 140,
-    completion: "readiness-check",
-  },
-  {
-    id: "xero-operational",
+    // xero-mappings: owned by `xeroIntegration` even though
+    // `buildXeroMappingCheck` consults no module flag today — account and item
+    // mappings exist only to post to Xero, so with the module off there is
+    // nothing for an operator to map. Nothing reads applicability yet (C1
+    // wires none of it), so this declaration changes no card today; the
+    // visible consequence lands with the child that wires the cards to the
+    // registry (C8), where a Xero-disabled club stops being shown a mapping
+    // card it can do nothing with. Flag it there rather than treating it as a
+    // silent regression.
+    ...XERO_INTEGRATION_SETUP_STEPS[1],
     ownerModule: "xeroIntegration",
-    prerequisites: [],
-    order: 150,
-    completion: "readiness-check",
-  },
-  {
-    id: "finance-dashboard",
-    ownerModule: "financeDashboard",
-    prerequisites: [],
-    order: 160,
-    completion: "readiness-check",
-  },
-  {
-    // Owned by `xeroIntegration` even though `buildXeroMappingCheck` consults no
-    // module flag today — account and item mappings exist only to post to Xero,
-    // so with the module off there is nothing for an operator to map. Nothing
-    // reads applicability yet (C1 wires none of it), so this declaration changes
-    // no card today; the visible consequence lands with the child that wires the
-    // cards to the registry (C8), where a Xero-disabled club stops being shown a
-    // mapping card it can do nothing with. Flag it there rather than treating it
-    // as a silent regression.
-    id: "xero-mappings",
-    ownerModule: "xeroIntegration",
-    prerequisites: [],
-    order: 170,
-    completion: "readiness-check",
   },
 ] as const satisfies readonly SetupStepDefinition[];

@@ -1,4 +1,9 @@
 import { prisma } from "@/lib/prisma";
+import {
+  CLUB_MODULE_SETTINGS_COLUMN_SELECT,
+  MODULE_KEYS,
+  type ModuleSettingsValues,
+} from "@/config/modules";
 import { CLUB_TIME_SETTINGS_ID } from "@/lib/club-time-zone";
 import { resolveEnvironmentRole } from "@/lib/environment-role";
 import { readWithheldApplicationEmail } from "@/lib/environment-safety-withheld";
@@ -72,7 +77,7 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
   const withheldEmail = await readWithheldApplicationEmail();
   const [
     adminCount,
-    adminModuleSettings,
+    adminModuleSettingsRow,
     ageTierSettingCount,
     seasonCount,
     cancellationPolicyCount,
@@ -90,38 +95,18 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     publicContentSettings,
   ] = await Promise.all([
     prisma.member.count({ where: { role: "ADMIN", active: true } }),
+    // Use the canonical select (src/config/modules.ts) rather than a
+    // hand-listed column set: a hand list can silently keep naming a column a
+    // later contract migration DROPs (#139's blue/green hazard), because
+    // nothing forces it to track MODULE_KEYS. This select also carries the two
+    // audit columns (updatedAt, updatedByMemberId) — the price of having
+    // exactly one selected shape for every read of the singleton. This row is
+    // NOT what ends up in the snapshot: it is projected onto MODULE_KEYS below
+    // (`adminModuleSettings`), which is what strips those two audit columns
+    // back out before the result is typed as `ModuleSettingsValues`.
     prisma.clubModuleSettings.findUnique({
       where: { id: "default" },
-      select: {
-        kiosk: true,
-        chores: true,
-        financeDashboard: true,
-        waitlist: true,
-        xeroIntegration: true,
-        bedAllocation: true,
-        internetBankingPayments: true,
-        addressAutocomplete: true,
-        groupBookings: true,
-        lockers: true,
-        induction: true,
-        workParties: true,
-        promoCodes: true,
-        hutLeaders: true,
-        communications: true,
-        memberNotices: true,
-        eventsCalendar: true,
-        skifieldConditions: true,
-        twoFactor: true,
-        magicLink: true,
-        googleLogin: true,
-        analytics: true,
-        lobbyDisplay: true,
-        aiAssistant: true,
-        memberGuests: true,
-        aiDiagnostics: true,
-        maintenanceReports: true,
-        alpineCentralServer: true,
-      },
+      select: CLUB_MODULE_SETTINGS_COLUMN_SELECT,
     }),
     prisma.ageTierSetting.count(),
     prisma.season.count({ where: { active: true } }),
@@ -200,6 +185,23 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
       select: { hutFees: true },
     }),
   ]);
+
+  // The canonical select above (CLUB_MODULE_SETTINGS_COLUMN_SELECT) also
+  // carries the two audit columns (updatedAt, updatedByMemberId) that this
+  // snapshot's `adminModuleSettings` field is typed as NOT having
+  // (`ModuleSettingsValues` = `Record<ModuleKey, boolean>`). A bare structural
+  // assignment of the Prisma row into that field would let those two extra
+  // properties through silently — TypeScript only excess-property-checks a
+  // fresh object literal, not a variable — so runtime and declared type would
+  // quietly disagree, and a future `Object.entries(adminModuleSettings)` walk
+  // could meet `updatedAt`/`updatedByMemberId` as phantom module flags.
+  // Project onto MODULE_KEYS here, once, so the type this function returns is
+  // the type it actually returns.
+  const adminModuleSettings: ModuleSettingsValues | null = adminModuleSettingsRow
+    ? (Object.fromEntries(
+        MODULE_KEYS.map((key) => [key, adminModuleSettingsRow[key]]),
+      ) as ModuleSettingsValues)
+    : null;
 
   // Missing-rate readiness (#1930, E4): every ACTIVE MEMBER_RATE membership
   // type must carry tier-complete rate rows (every bookable age tier, or a
