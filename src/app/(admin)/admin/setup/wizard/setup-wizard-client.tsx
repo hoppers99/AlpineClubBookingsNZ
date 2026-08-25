@@ -301,6 +301,13 @@ export function SetupWizardClient({
             <SetupWizardLaunchPanel
               view={view}
               isSiteVisible={payload?.isSiteVisible ?? false}
+              environmentSafety={
+                payload?.environmentSafety ?? {
+                  role: "UNKNOWN",
+                  decidedBy: "unresolved",
+                  withheldEmail: { available: false },
+                }
+              }
               permissionMatrix={permissionMatrix}
               onPublishActivity={setLaunchPinned}
             />

@@ -153,6 +153,55 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
 };
 
 /**
+ * The three effective states `resolveEnvironmentRole()` can answer
+ * (`environment-role.ts`), copied here structurally rather than imported — same
+ * reason as {@link SetupReadinessCheck}: this is a pure view model and must not
+ * widen its import graph into a module a client bundle could pick up.
+ */
+export type SetupWizardEnvironmentRole = "PRODUCTION" | "NON_PRODUCTION" | "UNKNOWN";
+
+/** Which source decided the role (`EnvironmentRoleDecidedBy` in `environment-role.ts`). */
+export type SetupWizardEnvironmentDecidedBy =
+  | "deployment-declaration"
+  | "database-safer-override"
+  | "unresolved";
+
+/**
+ * How much application email this installation has held back for
+ * environment-safety reasons (`WithheldApplicationEmail` in
+ * `environment-safety-withheld.ts`), copied structurally for the same reason as
+ * the role above.
+ *
+ * `available: false` is deliberately its own case and not a zero — see that
+ * module for why no property of the count can stand in for "we could not ask".
+ */
+export type SetupWizardWithheldEmail =
+  | { readonly available: false }
+  | {
+      readonly available: true;
+      readonly count: number;
+      readonly mostRecentAt: string | null;
+      /** The subset that is the club's LIVE site declaring a capture mailbox. */
+      readonly captureInProduction: number;
+    };
+
+/**
+ * The environment-role facts C9 (#224) carries to the wizard — the launch
+ * panel's role lever, and nothing the step's own readiness check does not
+ * already say. Deliberately narrower than `/admin/environment`'s full payload
+ * (`EnvironmentSafetyState` in `environment-safety-admin-state.ts`): this view
+ * has no business carrying the override's raw declaration string, the Xero
+ * containment detail or the audit name of who last changed the override — the
+ * launch panel names role, source and the withheld count, and links to
+ * `/admin/environment` for the rest, rather than duplicating that screen.
+ */
+export interface SetupWizardEnvironmentSafety {
+  readonly role: SetupWizardEnvironmentRole;
+  readonly decidedBy: SetupWizardEnvironmentDecidedBy;
+  readonly withheldEmail: SetupWizardWithheldEmail;
+}
+
+/**
  * What `GET /api/admin/setup/wizard` answers with — declared HERE, in the pure
  * module both ends already import, so the route and the shell cannot drift into
  * two different readings of the same response. Neither could import the other's
@@ -176,6 +225,16 @@ export interface SetupWizardPayload {
    * happened to mount.
    */
   readonly isSiteVisible: boolean;
+  /**
+   * The SAME resolution `environment-role` readiness step and `/admin/environment`
+   * read — see `resolveEnvironmentRole()` and `readWithheldApplicationEmail()`
+   * in `setup-readiness-db.ts`, carried through rather than re-derived (C9,
+   * #224). It rides on this payload for the same reason `isSiteVisible` does:
+   * the shell's focus refetch keeps it current for whichever administrator has
+   * the launch panel open when another one declares the role or the safer
+   * override changes.
+   */
+  readonly environmentSafety: SetupWizardEnvironmentSafety;
 }
 
 export interface SetupWizardRailStep {

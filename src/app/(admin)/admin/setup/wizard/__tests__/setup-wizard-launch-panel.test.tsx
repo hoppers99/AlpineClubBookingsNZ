@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_VIEW_ONLY_SECTION_HEADING } from "@/components/admin/view-only-action";
 import { emptyAdminPermissionMatrix } from "@/lib/admin-permissions";
 import type { SetupStepId } from "@/lib/setup-step-registry";
-import type { SetupWizardView } from "@/lib/setup-wizard-view";
+import type {
+  SetupWizardEnvironmentSafety,
+  SetupWizardView,
+} from "@/lib/setup-wizard-view";
 import { SetupWizardLaunchPanel } from "@/app/(admin)/admin/setup/wizard/setup-wizard-launch-panel";
 
 /**
@@ -57,6 +60,14 @@ function viewWith(
 
 const contentEditor = { ...emptyAdminPermissionMatrix(), content: "edit" as const };
 
+/** UNKNOWN, nothing withheld — the fail-closed default the route itself falls
+ * back to when the snapshot carries no environment-role answer. */
+const unknownSafety: SetupWizardEnvironmentSafety = {
+  role: "UNKNOWN",
+  decidedBy: "unresolved",
+  withheldEmail: { available: false },
+};
+
 function renderPanel(
   overrides: Partial<Parameters<typeof SetupWizardLaunchPanel>[0]> = {},
 ) {
@@ -65,6 +76,7 @@ function renderPanel(
     <SetupWizardLaunchPanel
       view={viewWith()}
       isSiteVisible={false}
+      environmentSafety={unknownSafety}
       permissionMatrix={contentEditor}
       onPublishActivity={onPublishActivity}
       {...overrides}
@@ -175,5 +187,175 @@ describe("SetupWizardLaunchPanel", () => {
     expect(role.querySelectorAll("button").length).toBe(0);
     // …and it does not gate the other lever.
     expect(screen.getByTestId("setup-wizard-make-site-visible")).toBeTruthy();
+  });
+
+  // C9 (#224): no control on ANY role — not just the UNKNOWN default above.
+  // Mutation-verified: adding a Switch or Button anywhere in
+  // `EnvironmentRoleSection` fails one of these three.
+  it.each([
+    ["PRODUCTION", "deployment-declaration"],
+    ["NON_PRODUCTION", "database-safer-override"],
+    ["UNKNOWN", "unresolved"],
+  ] as const)(
+    "offers no control while role is %s",
+    (role, decidedBy) => {
+      stubPublishFetch();
+      renderPanel({
+        environmentSafety: {
+          role,
+          decidedBy,
+          withheldEmail: { available: false },
+        },
+      });
+      expect(
+        screen
+          .getByTestId("setup-wizard-environment-role")
+          .querySelectorAll("button").length,
+      ).toBe(0);
+    },
+  );
+
+  // AC: role + source + withheld count, from the SAME payload the wizard
+  // route reads — never re-derived in this component.
+  it("names the role and which source decided it", () => {
+    stubPublishFetch();
+    renderPanel({
+      environmentSafety: {
+        role: "NON_PRODUCTION",
+        decidedBy: "database-safer-override",
+        withheldEmail: { available: false },
+      },
+    });
+    const role = screen.getByTestId("setup-wizard-environment-role");
+    expect(role.textContent).toContain("Non-production");
+    expect(role.textContent).toContain("safer override");
+  });
+
+  // AC: WHERE role is UNKNOWN, the D9 guiding banner names what is paused and
+  // where to declare it, and invents no reading of its own.
+  it("shows the UNKNOWN guiding banner naming what is paused and the declare path", () => {
+    stubPublishFetch();
+    renderPanel({ environmentSafety: unknownSafety });
+    const banner = screen.getByTestId("setup-wizard-environment-role-unknown");
+    expect(banner.textContent).toContain("paused");
+    expect(banner.textContent).toContain("APP_ENVIRONMENT_ROLE");
+    expect(banner.textContent).toContain(".env");
+  });
+
+  // …and never once a role IS declared, whichever way.
+  it.each([
+    ["PRODUCTION", "deployment-declaration"],
+    ["NON_PRODUCTION", "deployment-declaration"],
+  ] as const)("shows no UNKNOWN banner while role is %s", (role, decidedBy) => {
+    stubPublishFetch();
+    renderPanel({
+      environmentSafety: { role, decidedBy, withheldEmail: { available: false } },
+    });
+    expect(
+      screen.queryByTestId("setup-wizard-environment-role-unknown"),
+    ).toBeNull();
+  });
+
+  // AC: WHERE non-production, the section names the containment (email + Xero)
+  // in plain language.
+  it("names what is contained on a non-production installation", () => {
+    stubPublishFetch();
+    renderPanel({
+      environmentSafety: {
+        role: "NON_PRODUCTION",
+        decidedBy: "deployment-declaration",
+        withheldEmail: { available: false },
+      },
+    });
+    const role = screen.getByTestId("setup-wizard-environment-role");
+    expect(role.textContent).toContain("no email to members");
+    expect(role.textContent).toContain("Xero");
+  });
+
+  // AC: the four upstream outcome kinds render distinguishably rather than
+  // collapsing to a binary (suppressed / blocked / failed / business-withheld —
+  // see `describeWithheldEmail` in the panel for the mapping).
+  it("renders SUPPRESSED for a confirmed copy's held-back count", () => {
+    stubPublishFetch();
+    renderPanel({
+      environmentSafety: {
+        role: "NON_PRODUCTION",
+        decidedBy: "deployment-declaration",
+        withheldEmail: {
+          available: true,
+          count: 5,
+          mostRecentAt: null,
+          captureInProduction: 0,
+        },
+      },
+    });
+    const role = screen.getByTestId("setup-wizard-environment-role");
+    expect(role.textContent).toContain("SUPPRESSED");
+    expect(role.textContent).not.toContain("BLOCKED");
+  });
+
+  it("renders BLOCKED for an undeclared installation's held-back count", () => {
+    stubPublishFetch();
+    renderPanel({
+      environmentSafety: {
+        role: "UNKNOWN",
+        decidedBy: "unresolved",
+        withheldEmail: {
+          available: true,
+          count: 5,
+          mostRecentAt: null,
+          captureInProduction: 0,
+        },
+      },
+    });
+    const role = screen.getByTestId("setup-wizard-environment-role");
+    expect(role.textContent).toContain("BLOCKED");
+    expect(role.textContent).not.toContain("SUPPRESSED");
+  });
+
+  it("renders FAILED for a live site that also declares a mail capture", () => {
+    stubPublishFetch();
+    renderPanel({
+      environmentSafety: {
+        role: "PRODUCTION",
+        decidedBy: "deployment-declaration",
+        withheldEmail: {
+          available: true,
+          count: 2,
+          mostRecentAt: null,
+          captureInProduction: 2,
+        },
+      },
+    });
+    const role = screen.getByTestId("setup-wizard-environment-role");
+    expect(role.textContent).toContain("FAILED");
+    expect(role.textContent).toContain("USE_LOCAL_CAPTURE");
+  });
+
+  it("names business-withheld as a separate, uncounted concept", () => {
+    stubPublishFetch();
+    renderPanel({
+      environmentSafety: {
+        role: "NON_PRODUCTION",
+        decidedBy: "deployment-declaration",
+        withheldEmail: {
+          available: true,
+          count: 5,
+          mostRecentAt: null,
+          captureInProduction: 0,
+        },
+      },
+    });
+    const role = screen.getByTestId("setup-wizard-environment-role");
+    expect(role.textContent).toContain("No emails");
+    expect(role.textContent).toContain("per-booking");
+  });
+
+  it("links to Admin › Environment", () => {
+    stubPublishFetch();
+    renderPanel();
+    const role = screen.getByTestId("setup-wizard-environment-role");
+    const link = role.querySelector("a[href='/admin/environment']");
+    expect(link).toBeTruthy();
   });
 });
