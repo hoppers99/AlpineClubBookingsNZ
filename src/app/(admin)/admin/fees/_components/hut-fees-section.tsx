@@ -178,10 +178,6 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
   const [forbidden, setForbidden] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  // #221 — the CONFIGURATION scope: this editor builds a lodge's own inventory,
-  // so it must be able to name a lodge that is not open yet. The list keeps
-  // inactive lodges (labelled) and the ADR-002 normaliser still never picks one
-  // by itself; see `useLodgeOptions` and the lodge-scoping contract.
   const {
     lodges,
     loading: lodgesLoading,

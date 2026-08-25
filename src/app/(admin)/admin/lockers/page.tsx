@@ -99,10 +99,6 @@ export default function LockersPage() {
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   // Lodge context for the page; LodgeSelect renders nothing (and reports the
   // sole lodge) while fewer than two lodges exist (ADR-002).
-  // #221 — the CONFIGURATION scope: this editor builds a lodge's own inventory,
-  // so it must be able to name a lodge that is not open yet. The list keeps
-  // inactive lodges (labelled) and the ADR-002 normaliser still never picks one
-  // by itself; see `useLodgeOptions` and the lodge-scoping contract.
   const {
     lodges,
     loading: lodgesLoading,

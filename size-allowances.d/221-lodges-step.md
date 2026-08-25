@@ -1,7 +1,7 @@
 # File-size allowances for #221
 
 file: src/lib/setup-readiness.ts
-lines: 2545
+lines: 2559
 reason: CARRIED FORWARD FROM size-allowances.d/222-website-styling-check.md,
   which this change deletes. That file was spent when #222 merged — its
   club-theme-schema.ts entry then read as "an allowance the check did not
@@ -25,10 +25,13 @@ reason: CARRIED FORWARD FROM size-allowances.d/222-website-styling-check.md,
   the growth is the builder's docblock, which carries the reasoning for the one
   editorial decision reviewers will want to check: why completeness here is
   activation rather than fullness. That reasoning belongs beside the derivation
-  it explains.
+  it explains. Review added the last fourteen lines: a CLOSED lodge that is also
+  the CLUB DEFAULT gets its own detail sentence rather than a ", the club
+  default" suffix, because anything created without naming a lodge lands there
+  and that is an action to take, not a footnote to skim.
 
 file: src/app/(admin)/admin/lodges/[id]/setup/page.tsx
-lines: 980
+lines: 981
 reason: the per-lodge setup flow gains its activation step — the affordance
   that makes #221's inactive-by-default creation usable at all. It is one
   handler plus its finish-step control, and it has to live inside this

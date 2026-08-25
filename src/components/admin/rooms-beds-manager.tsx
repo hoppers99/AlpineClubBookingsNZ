@@ -306,10 +306,6 @@ export function RoomsBedsManager({
   // resolved null to the club's DEFAULT lodge. Rooms were then renamed and
   // deleted in a lodge that was never named on screen. The settled-scope gate
   // stops loading, failure, 403, and successful-empty states alike.
-  // #221 — the CONFIGURATION scope: this editor builds a lodge's own inventory,
-  // so it must be able to name a lodge that is not open yet. The list keeps
-  // inactive lodges (labelled) and the ADR-002 normaliser still never picks one
-  // by itself; see `useLodgeOptions` and the lodge-scoping contract.
   const {
     lodges,
     loading: lodgesLoading,
