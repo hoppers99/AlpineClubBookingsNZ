@@ -33,6 +33,7 @@ vi.mock("@/lib/setup-progress-staleness", () => ({
     mockRecomputeSetupStaleStepIds(...args),
 }));
 
+import { prisma } from "@/lib/prisma";
 import { PATCH } from "@/app/api/admin/setup/progress/route";
 
 /**
@@ -169,5 +170,49 @@ describe("PATCH /api/admin/setup/progress audit trail (#219)", () => {
     expect(response.status).toBe(400);
     expect(mockLogAudit).not.toHaveBeenCalled();
     expect(mockUpsert).not.toHaveBeenCalled();
+  });
+
+  /*
+   * THE HARD CONSTRAINT, pinned by test (issue #222, D9): no save initiated
+   * from the styling step may ever set `ClubTheme.completedAt` — that field is
+   * the site-launch lever, owned exclusively by the wizard's launch panel.
+   *
+   * This route is the styling step's ENTIRE write surface in the journey — the
+   * step frame only offers "Mark this step done" / "Skip for now" / "Reopen",
+   * all three of which PATCH here, and the step itself embeds no editor (it
+   * links to /admin/site-style instead, per C5's composition pattern). So
+   * proving this route never touches `ClubTheme` proves the constraint for
+   * every affordance the journey step actually offers.
+   *
+   * The proof is structural, not an assertion read after the fact: the
+   * `@/lib/prisma` mock at the top of this file exposes ONLY `setupProgress`
+   * (asserted directly below, so a future edit widening the mock cannot
+   * silently disarm the rest of this test). If this route — or a REAL,
+   * unmocked module it calls before returning a response, i.e.
+   * `setup-progress-audit.ts`, the only other production module on this call
+   * graph that is not itself stubbed by a `vi.mock` above — ever reached
+   * `prisma.clubTheme.*`, that property is `undefined` on the mock and the
+   * call would throw synchronously — so a 200 response here is itself part of
+   * the proof. This does NOT prove anything about `recomputeSetupStaleStepIds`,
+   * `requireAdmin` or `logAudit`'s own production bodies: those are stubbed
+   * above and never run their real implementations in this test. Mutation-
+   * verified: temporarily adding a `prisma.clubTheme.update(...)` call to the
+   * route made this test fail with exactly that TypeError, then the mutation
+   * was reverted.
+   */
+  it("completing the site-style step never touches ClubTheme (#222 hard constraint)", async () => {
+    expect(prisma).not.toHaveProperty("clubTheme");
+    const response = await PATCH(
+      patch({ action: "complete", stepId: "site-style" }),
+    );
+    expect(response.status).toBe(200);
+    expect(auditCall()).toMatchObject({
+      action: "setup_progress.step_completed",
+      summary: 'Setup step "site-style" marked complete',
+      entityType: "SetupProgress",
+    });
+    // The write this route made was to SetupProgress only — never a second call
+    // reaching for a `clubTheme` property the mock does not define.
+    expect(mockUpsert).toHaveBeenCalledTimes(1);
   });
 });

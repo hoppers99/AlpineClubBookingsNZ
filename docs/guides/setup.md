@@ -79,7 +79,13 @@ finish); use the checklist when you know what you are looking for.
 3. The right-hand pane shows the step's live check — what is outstanding, in the
    same words the checklist uses — with a link through to the settings page
    where that work is actually done. The wizard never becomes a second place to
-   store a setting.
+   store a setting. **Website Styling** is a step of exactly this shape: it
+   links to [Site Style](site-style.md) rather than embedding a second colour
+   picker, and it reports done the moment any colour, font, logo or Raw CSS
+   differs from the shipped defaults — whether that was saved from Site Style
+   directly or by following this step's link. Finishing this step never makes
+   the public site visible; that only happens from **Ready to open** below, or
+   from Site Style's own Finish-setup control.
 4. **Mark this step done**, **Skip for now**, or **Reopen** it, then
    **Continue**. Skipping buys you passage past a step; it does not hide it. A
    skipped step stays on the rail and on the outstanding list until it is done
@@ -198,12 +204,15 @@ the areas it links to:
 Provider tests cover Stripe, SMTP (email), Sentry, and Xero. Each check is
 **complete**, **warning**, **blocked**, or **not started**.
 
-One checklist step does not sit behind a hub card, because it is a single
-setting: **Club Time Zone** links straight to [`/admin/club-time`](club-time.md).
-On a fresh install it reads **blocked** until a time zone is recorded, so setup
-cannot be finished without one. After an upgrade it usually reads *complete* and
-names the zone — the application records the zone it was already effectively
-using the first time it starts, so nothing needs choosing.
+Two checklist steps do not sit behind a hub card, because each is a single
+setting rather than a settings area: **Club Time Zone** links straight to
+[`/admin/club-time`](club-time.md), and **Website Styling** links straight to
+[`/admin/site-style`](site-style.md).
+
+Club Time Zone: on a fresh install it reads **blocked** until a time zone is
+recorded, so setup cannot be finished without one. After an upgrade it usually
+reads *complete* and names the zone — the application records the zone it was
+already effectively using the first time it starts, so nothing needs choosing.
 
 Two other answers are worth recognising. A **warning** means the zone could not be
 confirmed: the server's `TZ` named no actual place (`UTC`, `Etc/UTC`), so

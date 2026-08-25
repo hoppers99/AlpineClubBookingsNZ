@@ -27,7 +27,7 @@ import type { SetupStepDefinition } from "@/lib/setup-step-registry";
  * `MODULE_DEFINITIONS` entries in `src/config/modules.ts` — a module now
  * declares its own wizard steps where it declares itself, so a new module
  * cannot gain a flag and forget to register with setup. This file assembles:
- * the fourteen `core` definitions below, in their existing order, plus each
+ * the fifteen `core` definitions below, in their existing order, plus each
  * module's exported step array APPENDED after them. "Spliced in at its
  * correct `order` position" describes an append today, not an interleave:
  * every module-owned `order` (140-170) sits above core's max (130), so no
@@ -79,7 +79,9 @@ import type { SetupStepDefinition } from "@/lib/setup-step-registry";
  * arrived on `main` (ENV-SAFETY 1, #3034) as an eighteenth id in the flat array
  * this file replaced, positioned THIRD, and it takes `order: 25` here so it keeps
  * that position without a single other entry being renumbered — which is the
- * whole reason for the gaps.
+ * whole reason for the gaps. `site-style` (epic #213, C7, #222) is the second
+ * use of it: `order: 105` slots it between `seasons-rates` (100) and `stripe`
+ * (110) with nothing else renumbered.
  *
  * PREREQUISITES ARE EMPTY, DELIBERATELY. Epic #213's open question 1 asked
  * whether genuine prerequisites exist among the current steps. They do not: no
@@ -190,6 +192,26 @@ const CORE_SETUP_STEP_DEFINITIONS = [
     ownerModule: "core",
     prerequisites: [],
     order: 100,
+    completion: "readiness-check",
+  },
+  {
+    // The public website's colours, fonts and logo (epic #213, C7; issue #222).
+    // `core`: no module flag governs a club's own site branding — every club has
+    // a public site to style. Positioned between the booking-rules steps and the
+    // operational integrations, matching where the epic's mockups placed "Look &
+    // feel" in the journey (screen 4). `order: 105` sits it in the gap between
+    // `seasons-rates` (100) and `stripe` (110) without renumbering either.
+    //
+    // Deliberately does NOT depend on anything: `buildWebsiteStylingCheck` in
+    // `setup-readiness.ts` derives completion from the theme's own persisted
+    // values, never from `ClubTheme.completedAt` — that field is the site-launch
+    // lever, owned exclusively by the wizard's launch panel (D9), and a styling
+    // step that read it would make finishing this step depend on an action it is
+    // explicitly forbidden from taking.
+    id: "site-style",
+    ownerModule: "core",
+    prerequisites: [],
+    order: 105,
     completion: "readiness-check",
   },
   {

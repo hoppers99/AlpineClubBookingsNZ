@@ -5,6 +5,7 @@ import {
   type ModuleSettingsValues,
 } from "@/config/modules";
 import { CLUB_TIME_SETTINGS_ID } from "@/lib/club-time-zone";
+import { CLUB_THEME_ID } from "@/lib/club-theme-schema";
 import { resolveEnvironmentRole } from "@/lib/environment-role";
 import { readWithheldApplicationEmail } from "@/lib/environment-safety-withheld";
 import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
@@ -93,6 +94,7 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     lodgeSettings,
     clubTimeSettings,
     publicContentSettings,
+    clubTheme,
   ] = await Promise.all([
     prisma.member.count({ where: { role: "ADMIN", active: true } }),
     // Use the canonical select (src/config/modules.ts) rather than a
@@ -183,6 +185,26 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     prisma.publicContentSettings.findUnique({
       where: { id: "default" },
       select: { hutFees: true },
+    }),
+    // The website styling step's raw material (site-style step, epic #213 C7,
+    // #222). Read verbatim, unguarded, like `clubIdentity` and `emailSettings`
+    // above — `ClubTheme` is not a newly-migrated table (unlike
+    // `clubTimeSettings`), so it gets no defensive `.catch()` of its own. `null`
+    // means no row exists yet, which is a normal pre-first-view state the check
+    // reads the same as an all-defaults row.
+    prisma.clubTheme.findUnique({
+      where: { id: CLUB_THEME_ID },
+      select: {
+        brandGold: true,
+        brandDeep: true,
+        brandSafety: true,
+        headingFontKey: true,
+        bodyFontKey: true,
+        logoUrl: true,
+        logoDataUrl: true,
+        rawCss: true,
+        completedAt: true,
+      },
     }),
   ]);
 
@@ -447,5 +469,18 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     clubTimeZoneUnreadable: clubTimeSettings === CLUB_TIME_SETTINGS_UNREADABLE,
     environmentRole,
     withheldEmail,
+    clubTheme: clubTheme
+      ? {
+          brandGold: clubTheme.brandGold,
+          brandDeep: clubTheme.brandDeep,
+          brandSafety: clubTheme.brandSafety,
+          headingFontKey: clubTheme.headingFontKey,
+          bodyFontKey: clubTheme.bodyFontKey,
+          logoUrl: clubTheme.logoUrl,
+          logoDataUrl: clubTheme.logoDataUrl,
+          rawCss: clubTheme.rawCss,
+          completedAt: clubTheme.completedAt?.toISOString() ?? null,
+        }
+      : null,
   };
 }
