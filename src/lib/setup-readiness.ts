@@ -49,7 +49,10 @@ import {
 // style wizard's client bundle already imports. This module's synchronous-over-
 // injected-data contract (see the `environment-role.ts` note above) is about
 // `@/lib/prisma`, not about every import; nothing here touches it.
-import { DEFAULT_CLUB_THEME_VALUES } from "@/lib/club-theme-schema";
+import {
+  DEFAULT_CLUB_THEME_VALUES,
+  normaliseThemeValues,
+} from "@/lib/club-theme-schema";
 
 // Re-exported, not re-declared (epic #213, C1). The hand-maintained array that
 // used to sit here is now derived from the step registry, which also carries
@@ -185,8 +188,15 @@ export interface SetupDatabaseSnapshot {
   // matching every other DB-backed field here. `null` means no row exists yet
   // (a fresh install nobody has opened `/admin/site-style` on: its GET upserts a
   // defaults row on first view, so a null here can only happen before that FIRST
-  // view). Optional/undefined for older callers and a DB-less `setup:check`,
-  // which the check below reports as "not checked" like every sibling field.
+  // view). Optional so an older caller and a DB-less `setup:check` still
+  // compile — but UNLIKE every sibling field, an omitted `clubTheme` on a
+  // PRESENT snapshot does NOT read as "not checked": the check below collapses
+  // it straight to `null` and reports it exactly like a genuinely-absent row,
+  // "using the shipped defaults". Only the whole snapshot being `undefined` (no
+  // database reached at all) reaches "not checked". Caller contract:
+  // `getSetupDatabaseSnapshot` always populates this field with an object or
+  // `null`, never omits it, so the omitted case only arises for a hand-built
+  // fixture or an older caller.
   clubTheme?: {
     brandGold: string;
     brandDeep: string;
@@ -1702,13 +1712,16 @@ function buildSeasonRateCheck(
  * here would make finishing this step depend on an action this step is
  * forbidden from taking, and would also let an operator who launches with the
  * shipped defaults (never touching a colour) see this step marked done for
- * work never performed. So "configured" is derived from the persisted VALUES:
- * true the moment any of colours, fonts, logo or custom CSS differs from
- * `DEFAULT_CLUB_THEME_VALUES` — which is exactly what changes the moment
- * `saveClubTheme` is first called with real input, whether that call came from
- * this journey's linked page or from `/admin/site-style` directly (there is
- * only one persistence path, so there is nothing for the two surfaces to
- * disagree about).
+ * work never performed. So "configured" is derived from the persisted VALUES,
+ * run through `normaliseThemeValues` first (#222 review F3) so a value the
+ * site would refuse to render — a colour that is not `#rrggbb`, a logo URL
+ * that fails `LOGO_URL_PATTERN` — reads back as its sanitised default rather
+ * than as configured: true the moment any of colours, fonts, logo or custom
+ * CSS differs from `DEFAULT_CLUB_THEME_VALUES` — which is exactly what
+ * changes the moment `saveClubTheme` is first called with real input, whether
+ * that call came from this journey's linked page or from `/admin/site-style`
+ * directly (there is only one persistence path, so there is nothing for the
+ * two surfaces to disagree about).
  *
  * `db.clubTheme === null` (a row genuinely absent, only possible before the
  * FIRST view of `/admin/site-style` ever upserts one) reads identically to a
@@ -1748,7 +1761,14 @@ function buildWebsiteStylingCheck(
     );
   }
 
-  const theme = db.clubTheme ?? null;
+  // Raw for `launched` (`completedAt` is a straight pass-through, nothing to
+  // normalise); NORMALISED for every "configured" comparison below (#222
+  // review F3) — so a persisted-but-malformed value (a logo URL that no longer
+  // matches `LOGO_URL_PATTERN`, a colour that is not `#rrggbb`) reads back as
+  // its sanitised default and does not spuriously flip this step to complete
+  // for a value the site would not actually render.
+  const rawTheme = db.clubTheme ?? null;
+  const theme = rawTheme ? normaliseThemeValues(rawTheme) : null;
   const coloursConfigured = theme
     ? theme.brandGold !== DEFAULT_CLUB_THEME_VALUES.brandGold ||
       theme.brandDeep !== DEFAULT_CLUB_THEME_VALUES.brandDeep ||
@@ -1762,17 +1782,18 @@ function buildWebsiteStylingCheck(
   const rawCssConfigured = theme ? theme.rawCss.trim().length > 0 : false;
   const configured =
     coloursConfigured || fontsConfigured || logoConfigured || rawCssConfigured;
-  const launched = theme ? Boolean(theme.completedAt) : false;
+  const launched = rawTheme ? Boolean(rawTheme.completedAt) : false;
 
-  // Deliberately does not claim "saving here never launches the site" — the
-  // linked page (`/admin/site-style`) keeps its own pre-existing Finish-setup
-  // control, which DOES set `completedAt` (out of scope for #222: "the launch
-  // lever itself"). What this line promises is narrower and true regardless:
-  // THIS step's own controls (Mark done / Skip / Reopen) never do it, and the
-  // wizard's own dedicated place for launching is the final screen.
+  // The operator reading this pane must know the linked page CAN launch the
+  // site: `/admin/site-style` keeps its own pre-existing Finish-setup control,
+  // which DOES set `completedAt` (CHANGING that lever is out of scope for
+  // #222; DISCLOSING it is not). So the detail line names both places
+  // launching can actually happen, matching `docs/guides/setup.md`'s wording —
+  // while THIS step's own controls (Mark done / Skip / Reopen) still never do
+  // it, and neither does anything else on this page.
   const launchDetail = launched
     ? "The public website is already live."
-    : "The public website is not live yet. Launching from this journey happens on the wizard's final screen (Ready to open), once every step is done or skipped.";
+    : "The public website is not live yet. Launching happens from the wizard's Ready to open screen, or from Site Style's own Finish-setup control on the page this step links to.";
 
   return applyProgress(
     {

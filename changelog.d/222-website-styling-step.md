@@ -14,8 +14,12 @@
   **Skip for now** is the intended path for that club, and the step stays
   visibly outstanding rather than silently passed.
 
-  If you upgraded a club that finished setup a while ago, you will see this
-  step arrive as **Not started** the next time you open the wizard or the
-  readiness checklist — the same "a new release added a step you have never
-  seen" behaviour the wizard was already built to handle (epic #213), working
-  exactly as designed on its first real addition since launch.
+  If you upgraded a club that finished setup a while ago, what you see the next
+  time you open the wizard or the readiness checklist depends on whether you
+  ever customised your branding: a club still on the shipped look sees this
+  step arrive as **Not started**, while a club that already changed a colour,
+  font, logo or custom CSS sees it arrive already **Complete** — the derivation
+  reading the theme you already have rather than assuming nobody has styled
+  the site yet. Either way it is the same "a new release added a step you have
+  never seen" behaviour the wizard was already built to handle (epic #213),
+  working exactly as designed on its first real addition since launch.

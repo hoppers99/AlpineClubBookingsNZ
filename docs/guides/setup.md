@@ -204,12 +204,15 @@ the areas it links to:
 Provider tests cover Stripe, SMTP (email), Sentry, and Xero. Each check is
 **complete**, **warning**, **blocked**, or **not started**.
 
-One checklist step does not sit behind a hub card, because it is a single
-setting: **Club Time Zone** links straight to [`/admin/club-time`](club-time.md).
-On a fresh install it reads **blocked** until a time zone is recorded, so setup
-cannot be finished without one. After an upgrade it usually reads *complete* and
-names the zone — the application records the zone it was already effectively
-using the first time it starts, so nothing needs choosing.
+Two checklist steps do not sit behind a hub card, because each is a single
+setting rather than a settings area: **Club Time Zone** links straight to
+[`/admin/club-time`](club-time.md), and **Website Styling** links straight to
+[`/admin/site-style`](site-style.md).
+
+Club Time Zone: on a fresh install it reads **blocked** until a time zone is
+recorded, so setup cannot be finished without one. After an upgrade it usually
+reads *complete* and names the zone — the application records the zone it was
+already effectively using the first time it starts, so nothing needs choosing.
 
 Two other answers are worth recognising. A **warning** means the zone could not be
 confirmed: the server's `TZ` named no actual place (`UTC`, `Etc/UTC`), so

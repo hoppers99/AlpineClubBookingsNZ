@@ -359,6 +359,15 @@ export function sanitiseLogoUrl(value: unknown): string | null {
     : null;
 }
 
+/**
+ * Sanitise a persisted or in-flight theme back to values the site would
+ * actually render: an invalid entry (a colour that is not `#rrggbb`, a logo
+ * URL that fails `LOGO_URL_PATTERN`, an unrecognised font key) is replaced by
+ * its shipped default rather than passed through. Exported so callers outside
+ * this module can derive from the SAME rendered values rather than the raw
+ * columns — `setup-readiness.ts`'s website-styling check does exactly that
+ * (#222 review F3), so a malformed stored value cannot read as "configured".
+ */
 export function normaliseThemeValues(
   value: Partial<Record<keyof ClubThemeValues, unknown>> | null | undefined,
 ): ClubThemeValues {
