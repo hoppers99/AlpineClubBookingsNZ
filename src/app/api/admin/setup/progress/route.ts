@@ -1,13 +1,40 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { logAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
+import { recordSetupProgressTransition } from "@/lib/setup-progress-audit";
+import { recomputeSetupStaleStepIds } from "@/lib/setup-progress-staleness";
 import {
   SETUP_STEP_IDS,
   normalizeSetupProgress,
   type SetupStepId,
 } from "@/lib/setup-readiness";
+
+/**
+ * The setup wizard's one write (epic #213, C4/#219 and C2/#217).
+ *
+ * Five transitions the operator can ask for, and one derived answer they cannot:
+ * `staleStepIds`, which this route recomputes from the step registry's
+ * prerequisite graph on every write. What gets RECORDED about any of it lives in
+ * `setup-progress-audit.ts`; how the stale set is computed, and which way each
+ * failure falls, lives in `setup-progress-staleness.ts`.
+ *
+ * ## The read-modify-write window, and why it stays unguarded
+ *
+ * This handler reads the row, computes the next state in application code, and
+ * writes it back, with no lock and no transaction spanning the two. That is
+ * PRE-EXISTING and last-writer-wins was already the behaviour before #217; what
+ * #217 changes is the WIDTH of the window, because the stale recompute — a wide
+ * database snapshot plus a full readiness pass — now sits between the read and
+ * the write where previously there was only a handful of array operations.
+ *
+ * Left unguarded deliberately. Two administrators clicking different setup steps
+ * within the same window lose one of the two clicks: the loser's step keeps its
+ * previous state on a screen that re-reads it, and the operator clicks again.
+ * There is no money, no capacity, no allocation and no permission on this path,
+ * and the row is one deployment-local checklist. See the PR's concurrency
+ * declaration for the full argument against a `FOR UPDATE` here.
+ */
 
 const progressSchema = z.discriminatedUnion("action", [
   z.object({
@@ -18,58 +45,6 @@ const progressSchema = z.discriminatedUnion("action", [
     action: z.enum(["finish", "reset"]),
   }),
 ]);
-
-type SetupProgressAction = z.infer<typeof progressSchema>["action"];
-
-/**
- * One audit `action` per transition (epic #213, C4/#219).
- *
- * These used to be one row, `setup_progress.update`, distinguished only by a
- * summary reading "Setup progress skip". `AuditLog.action` is what the audit
- * log's **Event Type** filter selects on, so a single value meant an operator
- * could ask "what happened to setup progress" and never "who deferred a step",
- * and the wizard C5 builds drives far more of these than the readiness cards
- * ever did.
- *
- * CATEGORY IS UNCHANGED AND STAYS `system`. `docs/guides/audit-log.md` puts
- * "Setup, backups, platform-level events" there, and `INV-PRIV-012` files a row
- * by its affected domain — which is the club's setup, not an administrator's
- * settings — so this is deliberately NOT the `admin` an adjacent settings write
- * would take. Because the category does not move, no row changes audience and
- * `INV-OPS-012`'s backfill obligation does not arise. The rows already written
- * keep the old action value, so an Event Type filter splits at this release;
- * that is disclosed in the changelog and costs a filter choice, never a
- * permission.
- *
- * NO STALE TRANSITION IS RECORDED, AND THAT IS A LIMIT RATHER THAN AN OMISSION.
- * #219 asks for one, but under D11 staleness is DERIVED on read: there is no
- * moment at which a step becomes stale, only a request at which it is computed
- * to be, so a writer here would have nothing to fire on and one on the read
- * path would write a row per page load. It becomes a real transition when C2
- * (#217) persists the state, and belongs to that child.
- */
-const AUDIT_ACTION_BY_PROGRESS_ACTION: Record<SetupProgressAction, string> = {
-  complete: "setup_progress.step_completed",
-  skip: "setup_progress.step_deferred",
-  reopen: "setup_progress.step_reopened",
-  finish: "setup_progress.finished",
-  reset: "setup_progress.reset",
-};
-
-function auditSummaryFor(parsed: z.infer<typeof progressSchema>): string {
-  switch (parsed.action) {
-    case "complete":
-      return `Setup step "${parsed.stepId}" marked complete`;
-    case "skip":
-      return `Setup step "${parsed.stepId}" deferred for now`;
-    case "reopen":
-      return `Setup step "${parsed.stepId}" reopened`;
-    case "finish":
-      return "Setup marked finished";
-    case "reset":
-      return "Setup progress reset";
-  }
-}
 
 function withoutStep(ids: string[], stepId: SetupStepId) {
   return ids.filter((id) => id !== stepId);
@@ -99,6 +74,7 @@ export async function PATCH(request: NextRequest) {
   });
   const currentCompleted = existing?.completedStepIds ?? [];
   const currentSkipped = existing?.skippedStepIds ?? [];
+  const currentStale = existing?.staleStepIds ?? [];
   let completedStepIds = currentCompleted;
   let skippedStepIds = currentSkipped;
   let completedAt = existing?.completedAt ?? null;
@@ -139,11 +115,64 @@ export async function PATCH(request: NextRequest) {
       break;
   }
 
+  // C2 (#217): recompute the WHOLE stale set from the prerequisite graph, over
+  // the arrays as they are about to be stored. Not patched incrementally — see
+  // `setup-progress-staleness.ts` for why re-deriving on every write is what
+  // keeps a corrupted or out-of-date row self-healing, and why the set has to be
+  // the full transitive closure rather than the direct dependents of whichever
+  // step this request touched.
+  //
+  // `reset` is settled here rather than by the recompute: nothing is recorded
+  // complete afterwards, so nothing CAN be stale, and that is a computed answer
+  // rather than a guess — it holds even when the recompute below cannot run.
+  let staleStepIds: readonly string[];
+  if (parsed.data.action === "reset") {
+    staleStepIds = [];
+  } else {
+    const recomputed = await recomputeSetupStaleStepIds({
+      progress: { completedStepIds, skippedStepIds },
+    });
+    // FAIL TOWARD STALE (#217 AC 6), BY REFUSING THE WHOLE TRANSITION — the
+    // AC-6 resolution amendment on #217. `[]` on this column asserts "computed:
+    // nothing is stale", so a recompute that could not run has no value it may
+    // honestly write: `[]` inverts the acceptance criterion outright, and
+    // carrying the PREVIOUS set forward is no better, because it was computed
+    // against the arrays this request is replacing and would be stored beside
+    // arrays it does not describe. So nothing is written, nothing is audited,
+    // and the operator is told why. The failure is retryable by construction and
+    // the refusal is the consistent answer rather than a new one: the same
+    // snapshot read backs the wizard's own GET, which is already failing
+    // whenever this is.
+    if (recomputed === null) {
+      return NextResponse.json(
+        {
+          error:
+            "The setup snapshot could not be read; nothing was changed — try again",
+        },
+        { status: 503 },
+      );
+    }
+    staleStepIds = recomputed;
+  }
+
+  // The record-level "Setup Complete" flag reverts while anything is stale
+  // (#217's inherited acceptance criterion). The readiness cards render
+  // "Setup Complete" from `completedAt`, and a club with outstanding stale work
+  // must not be told it has finished. It is applied AFTER the switch above so it
+  // covers `finish` as well: finishing while a step needs another look records
+  // the transition and leaves the record incomplete, rather than stamping a
+  // completion the wizard's own launch panel would refuse to offer.
+  if (staleStepIds.length > 0) {
+    completedAt = null;
+    completedByMemberId = null;
+  }
+
   const record = await prisma.setupProgress.upsert({
     where: { id: "default" },
     update: {
       completedStepIds,
       skippedStepIds,
+      staleStepIds: [...staleStepIds],
       completedAt,
       completedByMemberId,
     },
@@ -151,20 +180,21 @@ export async function PATCH(request: NextRequest) {
       id: "default",
       completedStepIds,
       skippedStepIds,
+      staleStepIds: [...staleStepIds],
       completedAt,
       completedByMemberId,
     },
   });
 
-  await logAudit({
-    action: AUDIT_ACTION_BY_PROGRESS_ACTION[parsed.data.action],
-    memberId: session.user.id,
+  // Recorded only after the row is written, so a transition that never landed
+  // records nothing. The two stale rows come with it when the set actually
+  // moved — see `setup-progress-audit.ts`.
+  recordSetupProgressTransition({
+    payload: parsed.data,
     actorMemberId: session.user.id,
-    category: "system",
-    entityType: "SetupProgress",
     entityId: record.id,
-    summary: auditSummaryFor(parsed.data),
-    metadata: parsed.data,
+    previousStaleStepIds: currentStale,
+    nextStaleStepIds: record.staleStepIds,
   });
 
   return NextResponse.json({

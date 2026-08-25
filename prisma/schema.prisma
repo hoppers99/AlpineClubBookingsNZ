@@ -4176,6 +4176,21 @@ model SetupProgress {
   id                  String    @id @default("default")
   completedStepIds    String[]  @default([])
   skippedStepIds      String[]  @default([])
+  // Steps recorded complete that something upstream has since invalidated
+  // (epic #213, C2/#217). The THIRD state D3 asks for — distinct from done and
+  // from not-started — and it survives a page reload, which is also what gives
+  // staleness a transition instant to audit; a derived-on-read answer has none.
+  //
+  // ALWAYS THE FULL TRANSITIVE CLOSURE, never direct dependents only. The seam
+  // contract on `SetupWizardTraversalInput.staleStepIds` binds this column,
+  // because the traversal does NOT re-cascade a set it is handed. `[]` means
+  // "computed: nothing is stale" and there is no "unknown" value to store — a
+  // Prisma list column cannot be null — so a reader that cannot trust this
+  // column passes `undefined` (derive) instead of reading it.
+  //
+  // NEVER SUBTRACTS FROM `completedStepIds` (#217 AC 4): staleness says "look at
+  // this again", not "you never did it".
+  staleStepIds        String[]  @default([])
   completedAt         DateTime?
   completedByMemberId String?
   createdAt           DateTime  @default(now())

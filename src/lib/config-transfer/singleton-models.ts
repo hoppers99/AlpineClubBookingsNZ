@@ -79,8 +79,9 @@ export const MODEL_LEVEL_EXCLUSIONS: Record<string, string> = {
     "through the lodge-config category's Lodge rows, not this singleton — " +
     "instance-local",
   SetupProgress:
-    "deployment-local setup-wizard progress (which steps THIS install has " +
-    "completed/skipped, and by whom); operational install state, not portable " +
+    "deployment-local setup-wizard progress — all THREE arrays: which steps THIS " +
+    "install has completed, which it has skipped, which are recorded as needing " +
+    "another look (#217), and by whom; operational install state, not portable " +
     "club policy — instance-local",
   AiAssistantSettings:
     "deployment-specific AI monthly spend cap (NZD integer cents); an operational " +

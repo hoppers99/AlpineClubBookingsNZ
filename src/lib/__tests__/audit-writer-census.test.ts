@@ -1270,7 +1270,12 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // The merged tree therefore carries BOTH new sites, so the total is the one
     // the census actually measures — 456 sites minus 127 pinned — not either
     // side's 328. `pinned` is unchanged on both sides, so no classification moved.
-    ).toEqual({ pinned: 127, unpinned: 329 });
+    // 329 -> 331 (setup wizard C2, #217): the two stale-transition writers.
+    // Categorised `system` at the site and named in none of the four per-site
+    // maps, so they land unpinned like every other new feature's writers. 458
+    // sites measured minus 127 pinned; `pinned` is unchanged, so no existing
+    // classification moved here either.
+    ).toEqual({ pinned: 127, unpinned: 331 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

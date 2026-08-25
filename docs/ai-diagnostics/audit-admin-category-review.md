@@ -584,11 +584,11 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  456
+row-producing sites:  458
 uncategorised:        0
 category values: admin 105, booking 101, xero 34, family 35, payment 37,
                  lodge 65, account 19, security 22, privacy 19,
-                 communication 14, system 4
+                 communication 14, system 6
 ```
 
 `admin` was 96 when this page was written for #2730 (87 kept + 9 held) and is 98
@@ -622,11 +622,19 @@ off". #220 added `markClubThemeSetupComplete`'s `site_style.updated` write
 (`admin` 104 → 105, 455 → 456) — the launch panel's completeSetup call now
 flips only `completedAt` under the theme row's existing lock rather than
 replaying the whole PUT body, and that narrower path needed its own audit row,
-categorised the same way the sibling PUT route's write already is. That is the
-figure above, and it was taken from `npm run audit:census` on the merged tree
-rather than by adding one branch's delta to the other's total. The category
-values sum to 455 rather than 456 because one site forwards its category rather
-than naming one.
+categorised the same way the sibling PUT route's write already is. Since then
+the setup wizard's C2 (#217) added the two stale-transition records
+(`system` 4 → 6, 456 → 458) — which finished setup steps an upstream change put
+back in question, and which have stopped needing another look. They are the
+first additions to `system` since this page was written, and they are the only
+delta on this page that touches the WEAKEST gate: `system` is readable with
+`support:view` alone. It widens nobody's access all the same, because the five
+setup-progress transition rows beside them are already `system` and already
+readable by exactly that operator, and neither new row names a member, a
+booking or an amount. That is the figure above, and it was taken from
+`npm run audit:census` on the merged tree rather than by adding one branch's
+delta to the other's total. The category values sum to 457 rather than 458
+because one site forwards its category rather than naming one.
 
 The 22 moves are pinned **per site**, not only by that
 distribution: `REVIEWED_ADMIN_CATEGORIES_2730` in
