@@ -81,7 +81,8 @@ import type { SetupStepDefinition } from "@/lib/setup-step-registry";
  * that position without a single other entry being renumbered — which is the
  * whole reason for the gaps. `site-style` (epic #213, C7, #222) is the second
  * use of it: `order: 105` slots it between `seasons-rates` (100) and `stripe`
- * (110) with nothing else renumbered.
+ * (110) with nothing else renumbered. `lodges` (epic #213, C6, #221) is the
+ * third: `order: 65`, between `feature-flags` (60) and `booking-policies` (70).
  *
  * PREREQUISITES ARE EMPTY, DELIBERATELY. Epic #213's open question 1 asked
  * whether genuine prerequisites exist among the current steps. They do not: no
@@ -164,6 +165,28 @@ const CORE_SETUP_STEP_DEFINITIONS = [
     ownerModule: "core",
     prerequisites: [],
     order: 60,
+    completion: "readiness-check",
+  },
+  {
+    // The club's buildings (epic #213, C6; issue #221). `core`: no module flag
+    // governs lodges — ADR-005 made lodge management core and removed the old
+    // `multiLodge` switch, so every club has at least one and the step always
+    // applies.
+    //
+    // `order: 65` uses the gap between `feature-flags` (60) and
+    // `booking-policies` (70) so nothing is renumbered. It sits ahead of the
+    // booking rules on purpose: the rules are rules ABOUT the buildings, and
+    // `seasons-rates` two steps later is per-lodge.
+    //
+    // No prerequisites, for the reason the module doc gives: the readiness
+    // check reads the lodge rows off the snapshot directly, never another
+    // step's verdict. In particular it does NOT depend on `club-config`, whose
+    // capacity warning reads the same default lodge — that is a shared FIELD,
+    // not a shared verdict.
+    id: "lodges",
+    ownerModule: "core",
+    prerequisites: [],
+    order: 65,
     completion: "readiness-check",
   },
   {

@@ -152,6 +152,27 @@ export function SetupWizardStepFrame({
           </ul>
         ) : null}
 
+        {/* Per-lodge destinations (C6, #221): a list whose length is the
+            club's own, which the single `href` below cannot express. Empty for
+            every other step. */}
+        {step.links.length > 0 ? (
+          <ul
+            className="flex flex-wrap gap-2"
+            data-testid="setup-wizard-step-links"
+          >
+            {step.links.map((link) => (
+              <li key={link.href}>
+                <Button asChild variant="outline" size="sm">
+                  <a href={link.href}>
+                    <ExternalLink className="h-4 w-4" />
+                    {link.label}
+                  </a>
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
         {step.href ? (
           <div className="space-y-1">
             <Button asChild variant="outline" size="sm">

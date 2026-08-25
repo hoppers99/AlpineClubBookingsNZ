@@ -22,6 +22,7 @@ function detail(overrides: Partial<SetupWizardStepDetail> = {}): SetupWizardStep
     description: "Holds, lead times and cut-offs.",
     message: "Booking policy defaults are unset.",
     details: ["Hold window: not set"],
+    links: [],
     href: "/admin/booking-policies",
     required: true,
     progress: "open",

@@ -52,6 +52,8 @@ interface SetupStepCheck {
   message: string;
   details: string[];
   href?: string;
+  /** Per-lodge destinations (C6, #221); absent on every other check. */
+  links?: { label: string; href: string }[];
   progress: ProgressStatus;
   action?: {
     type: "provider-test";
@@ -597,6 +599,21 @@ export function SetupPageClient({
                             <ul className="space-y-1 text-sm text-muted-foreground">
                               {check.details.map((detail) => (
                                 <li key={detail}>{detail}</li>
+                              ))}
+                            </ul>
+                          ) : null}
+                          {/* C6, #221: one link per lodge. The cards render the
+                              same list the wizard's step frame does, so the two
+                              surfaces cannot disagree about where a lodge's
+                              setup lives. */}
+                          {check.links && check.links.length > 0 ? (
+                            <ul className="flex flex-wrap gap-2">
+                              {check.links.map((link) => (
+                                <li key={link.href}>
+                                  <Button asChild variant="outline" size="sm">
+                                    <a href={link.href}>{link.label}</a>
+                                  </Button>
+                                </li>
                               ))}
                             </ul>
                           ) : null}

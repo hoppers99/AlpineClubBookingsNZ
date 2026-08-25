@@ -68,6 +68,7 @@ export type { SetupStepId };
 type SetupStatus = "complete" | "warning" | "blocked" | "not_started";
 type SetupCategoryId =
   | "foundation"
+  | "lodges"
   | "booking"
   | "website"
   | "integrations"
@@ -212,6 +213,26 @@ export interface SetupDatabaseSnapshot {
     // whether the step itself is complete.
     completedAt: string | null;
   } | null;
+  // Every lodge the club has, in the canonical `lodgeOrderBy()` order (#221,
+  // epic #213 C6) — reported VERBATIM, judged in `buildLodgesCheck` below like
+  // every other DB-backed field here. Bed and room counts are ACTIVE rows only,
+  // matching what capacity actually draws on.
+  //
+  // Optional so an older caller and a DB-less `setup:check` still compile, and
+  // UNLIKE `clubTheme` an omitted value here does NOT collapse to a default:
+  // an empty array is a real and alarming answer ("this club has no lodge"),
+  // so a missing field has to read as "not checked" instead. Caller contract:
+  // `getSetupDatabaseSnapshot` always populates it, so the undefined case only
+  // arises for a hand-built fixture.
+  lodges?: {
+    id: string;
+    name: string;
+    active: boolean;
+    /** The `Lodge.isDefault` flag — the club default lodge (#1656). */
+    isDefault: boolean;
+    activeRoomCount: number;
+    activeBedCount: number;
+  }[];
 }
 
 // One membership type × season pair for the rate-gap check (#1930, E4).
@@ -287,6 +308,17 @@ interface SetupStepCheck {
   message: string;
   details: string[];
   href?: string;
+  /*
+    Extra destinations beside the single `href` (#221, epic #213 C6). Optional
+    and empty everywhere but the lodges step, which needs ONE LINK PER LODGE —
+    `href` is a single "the settings page for this step" and cannot express a
+    list whose length is the club's own.
+
+    Deliberately not a general slot for prose with a URL in it: a `details`
+    line that names a path is unclickable text, which is how a per-lodge list
+    would otherwise have had to be written.
+  */
+  links?: { label: string; href: string }[];
   action?: {
     type: "provider-test";
     provider: "stripe" | "smtp" | "sentry" | "xero";
@@ -336,8 +368,16 @@ interface ClubConfigReadResult {
 // registry's `order` values are kept in step by hand) — `site-style` (order
 // 105) sits between the last `booking` step (`seasons-rates`, 100) and the
 // first `integrations` step (`stripe`, 110).
+//
+// `lodges` (#221, epic #213 C6) sits between `foundation` and `booking` for the
+// same reason: its single step takes `order: 65`, in the gap between the last
+// `foundation` step (`feature-flags`, 60) and the first `booking` one
+// (`booking-policies`, 70). Editorially that is also where it belongs — a
+// club's buildings are the thing the booking rules are rules ABOUT, and the
+// seasons and rates two steps later are per-lodge.
 const CATEGORY_ORDER: SetupCategoryId[] = [
   "foundation",
+  "lodges",
   "booking",
   "website",
   "integrations",
@@ -352,6 +392,11 @@ const CATEGORY_META: Record<
     title: "Foundation",
     description:
       "Club identity, runtime env, administrator account, and feature switches.",
+  },
+  lodges: {
+    title: "Lodges",
+    description:
+      "The club's buildings, and whether each one is open for booking. A lodge's own rooms, beds, seasons and chores are set up per lodge.",
   },
   booking: {
     title: "Booking Rules",
@@ -1704,6 +1749,154 @@ function buildSeasonRateCheck(
 }
 
 /**
+ * Lodges readiness (lodges step, epic #213 C6, #221).
+ *
+ * ## What "complete" means here, and why it is activation rather than fullness
+ *
+ * A club's lodges are done when every one of them is OPEN FOR BOOKING and at
+ * least one exists. That reads thin until you know what the per-lodge setup
+ * flow (`/admin/lodges/[id]/setup`) actually considers finished: every step of
+ * it — rooms, lockers, seasons, chores — is skippable by design, and its own
+ * words are that anything skipped "can be finished later from the lodge
+ * configuration page". There is no configured-ness bar to read, so inventing
+ * one here would be this module deciding a completeness rule the flow itself
+ * does not have. Since #221 the flow DOES have one honest terminal fact —
+ * activation, which the operator performs on its finish step — so that is what
+ * this check reads.
+ *
+ * The verdicts, in order:
+ *
+ * - no lodges at all — `blocked`. Unreachable through the product (the
+ *   migration seeds one, and `getDefaultLodgeId` throws without one), so it is
+ *   reported as the broken installation it would be rather than smoothed over.
+ * - lodges exist but none is active — `blocked`. Nothing is bookable. Also
+ *   near-unreachable: `findLodgeDeactivationRefusal` keeps at least one lodge
+ *   active. Both cases are cheap to state and expensive to have missed.
+ * - some lodge is inactive — `warning`. That is a lodge mid-setup, which is
+ *   exactly the state #221 introduced, and it holds the step outstanding until
+ *   somebody either finishes it or decides not to.
+ * - otherwise `complete`.
+ *
+ * ## Room and bed counts are REPORTED, never judged
+ *
+ * Each lodge's active room and bed counts appear in its detail line, because
+ * "active with no beds" is worth an operator seeing. They deliberately do not
+ * move the status. Two reasons: `LodgeSettings.capacity` is a legitimate
+ * per-lodge override, so a bed-less lodge can be correctly configured; and the
+ * club-config check above already owns the capacity verdict for the DEFAULT
+ * lodge (#1982), so making a second check argue about the same fact is how two
+ * plausible derivations drift apart.
+ *
+ * ## Per-lodge completeness, reported separately from the club's
+ *
+ * `links` carries one entry per lodge, pointing at that lodge's own setup flow.
+ * The club-level percentage the wizard shows never absorbs a per-lodge state:
+ * this whole step is ONE step of the journey however many lodges the club has,
+ * and the per-lodge detail lives in the lines and links rather than in the
+ * denominator.
+ */
+function buildLodgesCheck(
+  db: SetupDatabaseSnapshot | undefined,
+  progress: SetupProgressState,
+): SetupStepCheck {
+  const base = {
+    id: "lodges" as const,
+    title: "Lodges",
+    description:
+      "The club's buildings. A new lodge is not open for booking until its setup is finished and it is activated.",
+    required: true,
+    href: "/admin/lodges",
+  };
+
+  const lodges = db?.lodges;
+  if (db === undefined || lodges === undefined) {
+    return applyProgress(
+      {
+        ...base,
+        status: "warning",
+        message: "Database state was not checked.",
+        details: [
+          "Run setup:check again inside an environment with database access, or review /admin/lodges after login.",
+        ],
+      },
+      progress,
+    );
+  }
+
+  const describe = (lodge: NonNullable<SetupDatabaseSnapshot["lodges"]>[number]) => {
+    const inventory = `${lodge.activeRoomCount} room${lodge.activeRoomCount === 1 ? "" : "s"}, ${lodge.activeBedCount} bed${lodge.activeBedCount === 1 ? "" : "s"}`;
+    const flag = lodge.isDefault ? ", the club default" : "";
+    return lodge.active
+      ? `${lodge.name}: open for booking (${inventory})${flag}.`
+      : `${lodge.name}: NOT open for booking — finish its setup to activate it (${inventory})${flag}.`;
+  };
+
+  const links = lodges.map((lodge) => ({
+    label: lodge.active
+      ? `Review ${lodge.name}'s setup`
+      : `Finish setting up ${lodge.name}`,
+    href: `/admin/lodges/${encodeURIComponent(lodge.id)}/setup`,
+  }));
+
+  if (lodges.length === 0) {
+    return applyProgress(
+      {
+        ...base,
+        status: "blocked",
+        message: "This club has no lodge at all, so nothing can be booked.",
+        details: [
+          "Every installation is seeded with one lodge. If there is none, the database has not been migrated or seeded — see docs/adopters.",
+        ],
+        links,
+      },
+      progress,
+    );
+  }
+
+  const inactive = lodges.filter((lodge) => !lodge.active);
+  if (inactive.length === lodges.length) {
+    return applyProgress(
+      {
+        ...base,
+        status: "blocked",
+        message:
+          "No lodge is open for booking, so members cannot book anything.",
+        details: [...lodges.map(describe)],
+        links,
+      },
+      progress,
+    );
+  }
+
+  if (inactive.length > 0) {
+    return applyProgress(
+      {
+        ...base,
+        status: "warning",
+        message: `${inactive.length} of ${lodges.length} lodges are not open for booking yet. Finish each one's setup and activate it, or leave it closed deliberately.`,
+        details: [...lodges.map(describe)],
+        links,
+      },
+      progress,
+    );
+  }
+
+  return applyProgress(
+    {
+      ...base,
+      status: "complete",
+      message:
+        lodges.length === 1
+          ? "The club's lodge is open for booking."
+          : `All ${lodges.length} lodges are open for booking.`,
+      details: [...lodges.map(describe)],
+      links,
+    },
+    progress,
+  );
+}
+
+/**
  * Website styling readiness (site-style step, epic #213 C7, #222).
  *
  * COMPLETION IS THE THEME'S OWN CONFIGURED-NESS, NEVER `completedAt`. That field
@@ -2240,6 +2433,7 @@ export function buildSetupReadiness(
       buildSeedAdminCheck(input.database, progress),
       buildFeatureFlagCheck(input.database, progress),
     ],
+    lodges: [buildLodgesCheck(input.database, progress)],
     booking: [
       buildBookingPolicyCheck(input.database, progress),
       buildMembershipCancellationCheck(input.database, progress),
