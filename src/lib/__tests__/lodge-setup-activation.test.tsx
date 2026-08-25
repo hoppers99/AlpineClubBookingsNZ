@@ -15,6 +15,19 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
+
+/*
+  The lodge area's level is mutable so the view-only case can be exercised
+  against the SAME finish step the edit case reaches. It has to be: a view-only
+  admin cannot walk the flow at all — the identity step's only forward control
+  is its gated "Save and continue" — so the honest way to stand a view-only
+  admin in front of the activation button is to arrive there and then narrow the
+  permission, which is also the real-world shape (a role edited under a tab that
+  is already open).
+*/
+const session = vi.hoisted(() => ({ lodgeLevel: "edit" as "edit" | "view" }));
+
 vi.mock("next-auth/react", () => ({
   useSession: () => ({
     data: {
@@ -26,7 +39,7 @@ vi.mock("next-auth/react", () => ({
           bookings: "edit",
           membership: "edit",
           finance: "edit",
-          lodge: "edit",
+          lodge: session.lodgeLevel,
           content: "edit",
           support: "edit",
         },
@@ -46,6 +59,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  session.lodgeLevel = "edit";
 });
 
 type FetchCall = { url: string; method: string; body: unknown };
@@ -100,13 +114,18 @@ function stubFetch(lodge: { active: boolean }, calls: FetchCall[]) {
   );
 }
 
+// Re-renders the page in place, so a permission change is picked up without
+// remounting (which would reset the wizard to step one).
+let rerenderPage: () => void = () => {};
+
 async function renderFinishStep(lodge: { active: boolean }) {
   const calls: FetchCall[] = [];
   stubFetch(lodge, calls);
   const LodgeSetupWizardPage = (
     await import("@/app/(admin)/admin/lodges/[id]/setup/page")
   ).default;
-  render(<LodgeSetupWizardPage />);
+  const { rerender } = render(<LodgeSetupWizardPage />);
+  rerenderPage = () => rerender(<LodgeSetupWizardPage />);
   // Walk to the last step. Every intermediate step is skippable by design, so
   // the forward control is the whole traversal — but the identity step SAVES
   // before it advances, so each click has to settle before the next is looked
@@ -181,6 +200,44 @@ describe("the per-lodge setup flow activates the lodge (#221)", () => {
       expect(screen.queryByTestId("lodge-setup-activate")).toBeNull();
     });
     expect(screen.queryByTestId("lodge-setup-inactive-notice")).toBeNull();
+  });
+
+  it("gates activation for a lodge:view admin, and leaves the reason to the banner", async () => {
+    /*
+      Activation is the one control in this flow that makes a lodge BOOKABLE, so
+      it must be gated exactly like its five siblings: disabled, silent about
+      itself, and explained once by the section banner the page hoists above its
+      early returns. `describeReason={false}` is what puts the explanation there
+      rather than on the button, and `view-only-banner-contract.test.ts` refuses
+      that opt-out in a file with no banner — this pins the other half, that the
+      button really does go dead and really does write nothing.
+    */
+    const calls = await renderFinishStep({ active: false });
+    const before = calls.length;
+
+    session.lodgeLevel = "view";
+    rerenderPage();
+
+    const activate = await screen.findByTestId("lodge-setup-activate");
+    expect(activate).toBeDisabled();
+
+    // No per-button reason: no title, no aria-describedby, no sr-only line.
+    expect(activate).not.toHaveAttribute("title");
+    expect(activate).not.toHaveAttribute("aria-describedby");
+    expect(
+      screen.queryByText(ADMIN_VIEW_ONLY_ACTION_REASON),
+    ).toBeNull();
+    // The banner is the one place it IS said.
+    expect(
+      screen.getByText(/cannot change anything/i, { selector: "*" }),
+    ).toBeTruthy();
+
+    fireEvent.click(activate);
+    await waitFor(() => {
+      expect(calls.slice(before)).toEqual([]);
+    });
+    // Still closed, and still offering to be opened by someone who may.
+    expect(screen.getByTestId("lodge-setup-inactive-notice")).toBeTruthy();
   });
 
   it("offers nothing to activate when the lodge is already open", async () => {

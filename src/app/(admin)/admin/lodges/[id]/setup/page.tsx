@@ -951,6 +951,7 @@ export default function LodgeSetupWizardPage() {
               <ViewOnlyActionButton
                 type="button"
                 canEdit={canEdit}
+                describeReason={false}
                 disabled={saving}
                 onClick={activateLodge}
                 data-testid="lodge-setup-activate"
