@@ -130,6 +130,22 @@ const completeDatabase: SetupDatabaseSnapshot = {
   // a "complete setup" fixture has to carry a resolved one. This is the shape
   // `resolveEnvironmentRole()` returns for a live club deployment.
   environmentRole: environmentRoleResolution("production"),
+  // The site-style step (epic #213 C7, #222) is `required: false`, but an
+  // unconfigured theme still reports "warning" — every OTHER optional check in
+  // this fixture (Sentry, address autocomplete) is also fully configured — so a
+  // "complete setup" fixture has to carry a theme that differs from the shipped
+  // defaults, same as it carries Sentry env vars it does not strictly require.
+  clubTheme: {
+    brandGold: "#123456",
+    brandDeep: "#17231c",
+    brandSafety: "#b04d28",
+    headingFontKey: "LEAGUE_SPARTAN",
+    bodyFontKey: "INTER",
+    logoUrl: "/api/images/logo123",
+    logoDataUrl: null,
+    rawCss: "",
+    completedAt: null,
+  },
 };
 
 const validClubConfig = {
@@ -1772,5 +1788,223 @@ describe("setup-readiness club timezone (CT-1, #2989)", () => {
         .find((candidate) => candidate.id === "club-time-zone");
 
     expect(pick(early)).toEqual(pick(late));
+  });
+});
+
+describe("setup-readiness website styling (site-style step, epic #213 C7, #222)", () => {
+  function websiteStylingCheck(database?: SetupDatabaseSnapshot) {
+    const readiness = buildSetupReadiness({
+      env: baseEnv,
+      configDir: makeConfigDir(),
+      database,
+    });
+    const website = readiness.categories.find(
+      (category) => category.id === "website",
+    );
+    expect(website?.title).toBe("Website");
+    const check = website?.checks.find(
+      (candidate) => candidate.id === "site-style",
+    );
+    if (!check) throw new Error("site-style check missing");
+    return check;
+  }
+
+  it("is optional, lives in the website category, and points at /admin/site-style", () => {
+    const check = websiteStylingCheck(completeDatabase);
+    expect(check.required).toBe(false);
+    expect(check.href).toBe("/admin/site-style");
+    expect(SETUP_STEP_IDS).toContain("site-style");
+  });
+
+  it("reports 'not checked' when no database snapshot is taken at all", () => {
+    // `setup:check` run with no DB access — the same branch every other check
+    // takes, and the same message.
+    const check = websiteStylingCheck(undefined);
+    expect(check.status).toBe("warning");
+    expect(check.message).toBe("Database state was not checked.");
+  });
+
+  it("is not started (warning) when no ClubTheme row exists yet", () => {
+    // `clubTheme: undefined` on the snapshot type is "field omitted by an older
+    // caller"; the row-does-not-exist case the DB reader actually returns is
+    // `null`. Both must read as "nothing configured" — tested separately below.
+    const check = websiteStylingCheck({ ...completeDatabase, clubTheme: null });
+    expect(check.status).toBe("warning");
+    expect(check.message).toContain("shipped defaults");
+    expect(check.details).toEqual([
+      "Colours: using the shipped default.",
+      "Fonts: using the shipped default.",
+      "Logo: using the club name as a text fallback.",
+      "Custom CSS: none.",
+      expect.stringContaining("not live yet"),
+    ]);
+  });
+
+  it("is not started (warning) when the row exists but every field still matches the shipped defaults", () => {
+    const check = websiteStylingCheck({
+      ...completeDatabase,
+      clubTheme: {
+        brandGold: "#57b3ab",
+        brandDeep: "#17231c",
+        brandSafety: "#b04d28",
+        headingFontKey: "LEAGUE_SPARTAN",
+        bodyFontKey: "INTER",
+        logoUrl: null,
+        logoDataUrl: null,
+        rawCss: "",
+        completedAt: null,
+      },
+    });
+    expect(check.status).toBe("warning");
+  });
+
+  it.each([
+    [
+      "colours",
+      { brandGold: "#123456" },
+      "Colours: customised.",
+    ],
+    [
+      "fonts",
+      { headingFontKey: "LORA" },
+      "Fonts: customised.",
+    ],
+    [
+      "a logo",
+      { logoUrl: "/api/images/abc123" },
+      "Logo: a custom logo is stored.",
+    ],
+    [
+      "custom CSS",
+      { rawCss: ".site { color: red; }" },
+      "Custom CSS: present.",
+    ],
+  ] as const)(
+    "is complete the moment only %s differs from the shipped defaults",
+    (_label, overrides, expectedDetail) => {
+      const check = websiteStylingCheck({
+        ...completeDatabase,
+        clubTheme: {
+          brandGold: "#57b3ab",
+          brandDeep: "#17231c",
+          brandSafety: "#b04d28",
+          headingFontKey: "LEAGUE_SPARTAN",
+          bodyFontKey: "INTER",
+          logoUrl: null,
+          logoDataUrl: null,
+          rawCss: "",
+          completedAt: null,
+          ...overrides,
+        },
+      });
+      expect(check.status).toBe("complete");
+      expect(check.details).toContain(expectedDetail);
+    },
+  );
+
+  it("a data-URL logo counts the same as a served-image logo", () => {
+    const check = websiteStylingCheck({
+      ...completeDatabase,
+      clubTheme: {
+        brandGold: "#57b3ab",
+        brandDeep: "#17231c",
+        brandSafety: "#b04d28",
+        headingFontKey: "LEAGUE_SPARTAN",
+        bodyFontKey: "INTER",
+        logoUrl: null,
+        logoDataUrl: "data:image/png;base64,abc",
+        rawCss: "",
+        completedAt: null,
+      },
+    });
+    expect(check.status).toBe("complete");
+    expect(check.details).toContain("Logo: a custom logo is stored.");
+  });
+
+  /*
+   * LAUNCH INDEPENDENCE, both directions (issue #222 AC2/AC3; D9). This is the
+   * hard constraint the issue pins by test: the step's completion must never
+   * read `ClubTheme.completedAt` — the site-launch lever, owned exclusively by
+   * the wizard's launch panel.
+   */
+  it("is complete even though the public site has not been launched", () => {
+    const check = websiteStylingCheck({
+      ...completeDatabase,
+      clubTheme: { ...completeDatabase.clubTheme!, completedAt: null },
+    });
+    expect(check.status).toBe("complete");
+    expect(
+      check.details.some((detail) => detail.includes("not live yet")),
+    ).toBe(true);
+    // States where launching happens, without inviting a save from this step to
+    // do it.
+    expect(check.details.join(" ")).toContain("Ready to open");
+  });
+
+  it("does NOT become complete merely because the site was launched with unmodified defaults", () => {
+    // The other direction of launch independence: `completedAt` set on a theme
+    // that was never actually styled must not make this step read as done — a
+    // launch panel click is not styling work, and a `configured` derivation
+    // that OR'd in `launched` would make this pass wrongly.
+    const check = websiteStylingCheck({
+      ...completeDatabase,
+      clubTheme: {
+        brandGold: "#57b3ab",
+        brandDeep: "#17231c",
+        brandSafety: "#b04d28",
+        headingFontKey: "LEAGUE_SPARTAN",
+        bodyFontKey: "INTER",
+        logoUrl: null,
+        logoDataUrl: null,
+        rawCss: "",
+        completedAt: "2026-06-20T00:00:00.000Z",
+      },
+    });
+    expect(check.status).toBe("warning");
+  });
+
+  it("says the site is already live once completedAt is set on a configured theme", () => {
+    const check = websiteStylingCheck({
+      ...completeDatabase,
+      clubTheme: {
+        ...completeDatabase.clubTheme!,
+        completedAt: "2026-06-20T00:00:00.000Z",
+      },
+    });
+    expect(check.status).toBe("complete");
+    expect(
+      check.details.some((detail) => detail.includes("already live")),
+    ).toBe(true);
+  });
+
+  it("reports identical completion regardless of which surface persisted the theme (AC4 parity)", () => {
+    // There is no "which surface" field anywhere on `SetupDatabaseSnapshot` —
+    // the journey step only LINKS to /admin/site-style rather than embedding a
+    // second editor (C5's composition pattern), so both surfaces write through
+    // the exact same `saveClubTheme` persistence path and this check reads the
+    // exact same row either way. Parity is therefore structural rather than
+    // something this test could fail to hold; what it pins is that the
+    // derivation depends on nothing BUT the persisted values.
+    const configuredTheme = {
+      brandGold: "#654321",
+      brandDeep: "#17231c",
+      brandSafety: "#b04d28",
+      headingFontKey: "LEAGUE_SPARTAN" as const,
+      bodyFontKey: "INTER" as const,
+      logoUrl: null,
+      logoDataUrl: null,
+      rawCss: "",
+      completedAt: null,
+    };
+    const viaJourney = websiteStylingCheck({
+      ...completeDatabase,
+      clubTheme: configuredTheme,
+    });
+    const viaDirectPage = websiteStylingCheck({
+      ...completeDatabase,
+      clubTheme: { ...configuredTheme },
+    });
+    expect(viaJourney).toEqual(viaDirectPage);
+    expect(viaJourney.status).toBe("complete");
   });
 });
