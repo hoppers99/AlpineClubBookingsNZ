@@ -28,7 +28,33 @@ const createSchema = z
     address: z.string().trim().max(300).nullable().optional(),
     doorCode: z.string().trim().max(80).nullable().optional(),
     travelNote: z.string().trim().max(2000).nullable().optional(),
-    active: z.boolean().optional().default(true),
+    /*
+      A NEW LODGE STARTS INACTIVE (#221, epic #213 C6).
+
+      This defaulted to `true` until #221, so a lodge with no rooms, no beds,
+      no seasons and no rates was offered for booking the instant it was named.
+      An operator now activates it deliberately, on the finish step of the
+      per-lodge setup flow the create form already redirects into
+      (`/admin/lodges/[id]/setup`), which sends the ordinary
+      `PATCH /api/admin/lodges/[id]` with `{ active: true }`.
+
+      IT IS A REQUEST-SCHEMA DEFAULT, NOT A COLUMN DEFAULT, and that is the
+      whole compatibility story. `Lodge.active` in `prisma/schema.prisma` still
+      reads `@default(true)` and is deliberately untouched, so no migration is
+      involved and no existing lodge's `active` value moves. Every writer that
+      does not come through this route is likewise untouched: `prisma/seed.ts`,
+      `prisma/demo-seed.ts` and `e2e/setup/seed-second-lodge.ts` all set
+      `active: true` explicitly, and the config-transfer importer writes
+      whatever the descriptor it is restoring says. Those are install and
+      restore paths — they reproduce a configured club rather than half-
+      configuring a new building, so they should keep producing active lodges,
+      and they do.
+
+      Still `optional()`: a caller that means it may say `active: true` and get
+      an immediately-live lodge. The admin create form does not, and no other
+      caller sends the field at all.
+    */
+    active: z.boolean().optional().default(false),
   })
   .strict();
 
