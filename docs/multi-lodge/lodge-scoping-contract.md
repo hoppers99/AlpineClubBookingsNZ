@@ -804,6 +804,88 @@ past its size ceiling, and made the wizard reject any incomplete test fixture �
 it broke a passing back-link test on a lodge row that simply had not bothered to
 include `doorCode`.
 
+## Lodge Creation Defaults, And Configuring A Lodge That Is Not Yet Active
+
+Recorded here rather than in a feature guide because both halves are lodge
+RESOLUTION rules — which lodge a request may name, and what a freshly created
+row means to every scoped reader — which is the same reason the admin lodge
+list's gate and payload are recorded above. Delivered by #221 (epic #213, C6).
+
+**A lodge created through `POST /api/admin/lodges` starts INACTIVE.** The
+route's Zod field `active` defaults to `false`; the caller may still send
+`true` explicitly. Until #221 it defaulted to `true`, so a lodge with no rooms,
+no beds, no seasons and no rates was offered for booking the instant it was
+named — the gap that issue exists to close. An operator activates it from the
+per-lodge setup flow's finish step
+(`/admin/lodges/[id]/setup`), which sends the ordinary
+`PATCH /api/admin/lodges/[id]` with `{ active: true }`.
+
+**This is a request-schema default, NOT a column default.** `Lodge.active` in
+`prisma/schema.prisma` still reads `@default(true)` and is deliberately
+unchanged, so:
+
+- no migration is involved and no existing lodge's `active` value moves;
+- every writer that does not go through that route is unaffected —
+  `prisma/seed.ts` and `e2e/setup/seed-second-lodge.ts` set `active: true`
+  explicitly, `prisma/demo-seed.ts` sets it explicitly on the optional second
+  demo lodge, and the config-transfer importer
+  (`src/lib/config-transfer/categories/lodge-config.ts`, `buildLodgeData`)
+  writes `active` from the descriptor it is restoring. Install and restore
+  paths therefore keep producing active lodges, which is right: they are
+  reproducing a configured club, not half-configuring a new building.
+
+**The default lodge is unaffected, and cannot be captured by a new lodge.**
+`Lodge.isDefault` defaults to `false` and the create route never sets it, so a
+wizard-created lodge is never flagged. `getDefaultLodgeId()`'s fallbacks cannot
+reach it either while any lodge is flagged, and its second fallback is *oldest
+ACTIVE*, which an inactive new lodge is not; only the pathological third
+fallback (no flagged row, no active row at all) could, and the deactivation
+guard keeps at least one lodge active. The existing rule above still stands
+unchanged: reassign the default before deactivating a lodge, because a
+flagged-but-inactive lodge deliberately stays the default.
+
+**Two different questions about `active`, which used to have one answer.**
+`resolveOptionalActiveLodgeId` (`src/lib/lodges.ts`) refuses a lodge that is not
+active, and that is correct for anything BOOKING-facing: a booking, a policy
+check, a roster print, a hut-leader term. It was also being used by the admin
+routes that build a lodge's own inventory, which was harmless only while no
+lodge could be inactive and under configuration at the same time. Once a new
+lodge starts inactive it is exactly wrong — an inactive lodge is the one that
+most needs its rooms, lockers, seasons and chores created.
+
+So there are two resolvers, and the distinction is the rule:
+
+| Helper | Question it answers | Refuses an inactive lodge? |
+| --- | --- | --- |
+| `resolveOptionalActiveLodgeId` | may this lodge be OPERATED — booked, priced, rostered, staffed? | yes |
+| `resolveOptionalConfigurableLodgeId` | may this lodge's own configuration be READ OR WRITTEN? | no — but an unknown id is still refused |
+
+`resolveOptionalConfigurableLodgeId` is the narrower change of the two: it
+validates the id names a real lodge and falls back to the club default when the
+id is omitted, exactly like its sibling, and differs only in not consulting
+`active`. Its call sites are the admin configuration surfaces the per-lodge
+setup flow drives, and they are the complete list — a new caller belongs on the
+booking-facing helper unless it is configuring a lodge:
+
+- `POST /api/admin/bed-allocation/rooms/bulk` (rooms and beds quick-seed)
+- `POST /api/admin/lockers/bulk` (locker quick-seed)
+- `POST /api/admin/seasons` (including copy-from-another-lodge)
+- `GET` and `POST /api/admin/chores` (including copy-from-another-lodge)
+
+Nothing about that widens what is bookable. `active: true` is enforced
+independently at the booking surfaces themselves (`booking-create.ts`, the
+lodge-option reads in `lodges.ts`, and display/kiosk auth), so a lodge with a
+full set of rooms and rates is still unbookable until somebody activates it.
+Copy-from-another-lodge keeps requiring the SOURCE lodge to be active — the
+per-lodge setup page only offers active lodges as sources — and only the
+destination may be inactive.
+
+**The ADR-002 presentation rule composes with this deliberately.** Adding a
+second lodge no longer makes lodge selectors appear across the product the
+moment it is named: the rule counts ACTIVE lodges, so the selectors stay hidden
+until the new lodge is activated, and the club sees them appear at the point the
+second lodge genuinely becomes bookable.
+
 ## Presentation Rule
 
 When exactly one active lodge exists, member and admin UI must not show
