@@ -892,6 +892,15 @@ helper unless it is configuring a lodge:
 - `POST /api/admin/lockers` (the Lockers editor)
 - `POST /api/admin/seasons` (including copy-from-another-lodge)
 - `GET` and `POST /api/admin/chores` (including copy-from-another-lodge)
+- `GET` and `PUT /api/admin/lodge-settings` (the per-lodge capacity override).
+  A capacity override is part of setting a lodge up and the setup flow reaches
+  it: the finish step's "Open lodge configuration" leads to `/admin/lodges/[id]`,
+  which reads this route on load and writes the override from its own editor.
+  Under the active-only check that GET failed silently — the page swallows a
+  non-ok response — and the PUT answered "Lodge not found or not active" for a
+  lodge the operator was plainly looking at. The route calls the helper only for
+  an EXPLICIT id: an omitted `lodgeId` still means the legacy club-wide settings
+  row, so it must not take the helper's default-lodge fallback.
 
 Everything else keeps the active-only resolver, and the line is not arbitrary:
 bed allocation's board, approval and auto-allocator, the roster, hut-leader

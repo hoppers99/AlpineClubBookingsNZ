@@ -109,8 +109,30 @@ const EXPECTED_CONFIGURABLE_RESOLVER_CALLERS = [
   "src/app/api/admin/chores/route.ts",
   "src/app/api/admin/lockers/bulk/route.ts",
   "src/app/api/admin/lockers/route.ts",
+  "src/app/api/admin/lodge-settings/route.ts",
   "src/app/api/admin/seasons/route.ts",
 ] as const;
+
+/*
+  How each caller is spelled in the contract's route list.
+
+  Substring containment alone is not enough for two of these:
+  `/api/admin/lockers` is a prefix of `/api/admin/lockers/bulk`, so the bulk
+  route's own line satisfied a naive check for the singular one and the contract
+  could have dropped it without the census noticing. The trailing token pins
+  each line to the endpoint it really documents.
+*/
+const CONTRACT_ROUTE_MENTION: Record<string, string> = {
+  "src/app/api/admin/bed-allocation/rooms/bulk/route.ts":
+    "/api/admin/bed-allocation/rooms/bulk`",
+  "src/app/api/admin/bed-allocation/rooms/route.ts":
+    "/api/admin/bed-allocation/rooms`",
+  "src/app/api/admin/chores/route.ts": "/api/admin/chores`",
+  "src/app/api/admin/lockers/bulk/route.ts": "/api/admin/lockers/bulk`",
+  "src/app/api/admin/lockers/route.ts": "/api/admin/lockers`",
+  "src/app/api/admin/lodge-settings/route.ts": "/api/admin/lodge-settings`",
+  "src/app/api/admin/seasons/route.ts": "/api/admin/seasons`",
+};
 
 function productionSources(root: string): string[] {
   const files: string[] = [];
@@ -181,12 +203,13 @@ describe("only lodge-CONFIGURATION routes use the permissive resolver (#221)", (
     );
     expect(section.length).toBeGreaterThan(0);
     for (const caller of EXPECTED_CONFIGURABLE_RESOLVER_CALLERS) {
-      // `src/app/api/admin/chores/route.ts` is documented as the ROUTE it
-      // serves, which is how the contract names every endpoint.
-      const endpoint = caller
-        .replace(/^src\/app/, "")
-        .replace(/\/route\.ts$/, "");
-      expect(section).toContain(endpoint);
+      // Each is documented as the ROUTE it serves, which is how the contract
+      // names every endpoint — and matched with its closing code fence, so a
+      // route whose path is a PREFIX of another's cannot be satisfied by the
+      // longer one's line.
+      const mention = CONTRACT_ROUTE_MENTION[caller];
+      expect(mention, `no contract spelling recorded for ${caller}`).toBeDefined();
+      expect(section).toContain(mention);
     }
   });
 });
