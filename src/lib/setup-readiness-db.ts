@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { CLUB_MODULE_SETTINGS_COLUMN_SELECT } from "@/config/modules";
 import { CLUB_TIME_SETTINGS_ID } from "@/lib/club-time-zone";
 import { resolveEnvironmentRole } from "@/lib/environment-role";
 import { readWithheldApplicationEmail } from "@/lib/environment-safety-withheld";
@@ -90,38 +91,16 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     publicContentSettings,
   ] = await Promise.all([
     prisma.member.count({ where: { role: "ADMIN", active: true } }),
+    // Use the canonical select (src/config/modules.ts) rather than a
+    // hand-listed column set: a hand list can silently keep naming a column a
+    // later contract migration DROPs (#139's blue/green hazard), because
+    // nothing forces it to track MODULE_KEYS. This select also carries the two
+    // audit columns (updatedAt, updatedByMemberId), which nothing here reads —
+    // harmless, and the price of having exactly one selected shape for every
+    // read of the singleton.
     prisma.clubModuleSettings.findUnique({
       where: { id: "default" },
-      select: {
-        kiosk: true,
-        chores: true,
-        financeDashboard: true,
-        waitlist: true,
-        xeroIntegration: true,
-        bedAllocation: true,
-        internetBankingPayments: true,
-        addressAutocomplete: true,
-        groupBookings: true,
-        lockers: true,
-        induction: true,
-        workParties: true,
-        promoCodes: true,
-        hutLeaders: true,
-        communications: true,
-        memberNotices: true,
-        eventsCalendar: true,
-        skifieldConditions: true,
-        twoFactor: true,
-        magicLink: true,
-        googleLogin: true,
-        analytics: true,
-        lobbyDisplay: true,
-        aiAssistant: true,
-        memberGuests: true,
-        aiDiagnostics: true,
-        maintenanceReports: true,
-        alpineCentralServer: true,
-      },
+      select: CLUB_MODULE_SETTINGS_COLUMN_SELECT,
     }),
     prisma.ageTierSetting.count(),
     prisma.season.count({ where: { active: true } }),
