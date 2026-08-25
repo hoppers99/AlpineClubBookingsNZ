@@ -3,7 +3,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { ALL_LODGES, LodgeSelect } from "../lodge-select";
+import { ALL_LODGES, CLOSED_SUFFIX, LodgeSelect } from "../lodge-select";
 
 const TWO_LODGES = [
   { id: "lodge-1", name: "Alpine Lodge" },
@@ -255,5 +255,170 @@ describe("LodgeSelect — change source (#2701)", () => {
     expect(
       screen.getAllByRole("option").map((option) => option.textContent),
     ).toEqual(["All lodges", "Alpine Lodge", "River Lodge"]);
+  });
+});
+
+/*
+ * #221 — configuring a lodge that is not open yet.
+ *
+ * A lodge created through the setup flow starts INACTIVE, and the whole period
+ * before it opens is when its rooms, beds, lockers, seasons, rates and chores
+ * get made. The five full editors therefore ask `useLodgeOptions` for the
+ * CONFIGURATION scope, whose list keeps closed lodges and carries `active`.
+ *
+ * That is only half the fix. The other half is here, and it is the half that
+ * was silently wrong: ADR-002's normaliser counted the whole list, so on a club
+ * with one open lodge plus the one being set up it saw a single-lodge club,
+ * rendered no selector, and reported the OPEN lodge through `onChange` — after
+ * which every write the operator made landed on the wrong lodge with nothing on
+ * screen saying so.
+ *
+ * Three rules, and they have to hold together: a closed lodge is honoured when
+ * NAMED, never chosen when not, and never invisible when it is the one in use.
+ */
+describe("LodgeSelect — a lodge that is not open for booking (#221)", () => {
+  const OPEN_AND_CLOSED = [
+    { id: "lodge-1", name: "Alpine Lodge", active: true },
+    { id: "lodge-2", name: "New Lodge", active: false },
+  ];
+
+  beforeAll(() => {
+    if (!Element.prototype.hasPointerCapture) {
+      Element.prototype.hasPointerCapture = () => false;
+    }
+    if (!Element.prototype.scrollIntoView) {
+      Element.prototype.scrollIntoView = () => {};
+    }
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("keeps a named closed lodge instead of substituting the open one", () => {
+    // The ?lodgeId= case: the operator followed a configuration link from the
+    // setup flow or the lodge hub. One open lodge is ONE open lodge, so the
+    // sole-lodge rule would otherwise fire and retarget the page.
+    const onChange = vi.fn();
+    render(
+      <LodgeSelect
+        lodges={OPEN_AND_CLOSED}
+        value="lodge-2"
+        onChange={onChange}
+      />,
+    );
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("shows which lodge that is, labelled, rather than staying silent", () => {
+    // Two configurable lodges is not a single-lodge club, so the selector
+    // renders — and the label is what tells the operator the building they are
+    // filling with rooms is the closed one.
+    render(
+      <LodgeSelect
+        lodges={OPEN_AND_CLOSED}
+        value="lodge-2"
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("combobox")).toBeInTheDocument();
+    expect(
+      screen.getByText(`New Lodge ${CLOSED_SUFFIX}`),
+    ).toBeInTheDocument();
+  });
+
+  it("labels the closed lodge in the open menu and leaves the open one plain", () => {
+    render(
+      <LodgeSelect
+        lodges={OPEN_AND_CLOSED}
+        value="lodge-1"
+        onChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "ArrowDown" });
+
+    expect(
+      screen.getAllByRole("option").map((option) => option.textContent),
+    ).toEqual(["Alpine Lodge", `New Lodge ${CLOSED_SUFFIX}`]);
+  });
+
+  it("auto-defaults to an OPEN lodge when nothing was named", () => {
+    // No ?lodgeId=. ADR-002's default is unchanged and still chooses among open
+    // lodges only, so arriving at /admin/chores from the nav cannot silently
+    // put an admin inside a lodge nobody can book.
+    const onChange = vi.fn();
+    render(
+      <LodgeSelect lodges={OPEN_AND_CLOSED} value={null} onChange={onChange} />,
+    );
+
+    expect(onChange).toHaveBeenCalledWith("lodge-1", "auto");
+  });
+
+  it("never auto-selects a closed lodge, even when it is first in the list", () => {
+    /*
+      MUTATION PROBE: make the normaliser choose from `lodges` rather than from
+      the open ones (either branch) and this fails — an admin who named nothing
+      is put inside a closed lodge, which is the defect in the other direction:
+      writes land somewhere the operator never asked for, and here they would
+      not even have followed a link to get there.
+    */
+    const onChange = vi.fn();
+    render(
+      <LodgeSelect
+        lodges={[
+          { id: "lodge-2", name: "New Lodge", active: false },
+          { id: "lodge-1", name: "Alpine Lodge", active: true },
+        ]}
+        value={null}
+        onChange={onChange}
+      />,
+    );
+
+    expect(onChange).toHaveBeenCalledWith("lodge-1", "auto");
+    expect(onChange).not.toHaveBeenCalledWith("lodge-2", expect.anything());
+  });
+
+  it("normalises a STALE closed id away, because nothing named it", () => {
+    // A closed lodge that is not in the list at all is not a deliberate
+    // selection — it is a link to a lodge that has since been deleted, and the
+    // ordinary stale-value rule still applies.
+    const onChange = vi.fn();
+    render(
+      <LodgeSelect lodges={OPEN_AND_CLOSED} value="gone" onChange={onChange} />,
+    );
+
+    expect(onChange).toHaveBeenCalledWith("lodge-1", "auto");
+  });
+
+  it("names the scope instead of falling silent when the only lodge is closed", () => {
+    // The suppression rule is only safe while it is REDUNDANT, and standing on
+    // a closed lodge it is not.
+    render(
+      <LodgeSelect
+        lodges={[{ id: "lodge-2", name: "New Lodge", active: false }]}
+        value="lodge-2"
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("lodge-scope-line").textContent).toBe(
+      `Lodge: New Lodge ${CLOSED_SUFFIX}`,
+    );
+  });
+
+  it("still renders nothing for an ordinary single OPEN lodge", () => {
+    // ADR-002, untouched: the scope line is for the closed case alone.
+    const { container } = render(
+      <LodgeSelect
+        lodges={[{ id: "lodge-1", name: "Alpine Lodge", active: true }]}
+        value="lodge-1"
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(container).toBeEmptyDOMElement();
   });
 });

@@ -136,14 +136,31 @@ describe("only lodge-CONFIGURATION routes use the permissive resolver (#221)", (
   const sources = productionSources(join(process.cwd(), "src"));
 
   it("counts every caller, so a booking route cannot quietly adopt it", () => {
+    /*
+      Matched at the IMPORT as well as at the call, because a census that only
+      recognises one spelling of "uses this helper" is a census with a documented
+      way round it. `import { resolveOptionalConfigurableLodgeId as resolveLodge }`
+      leaves no `resolveOptionalConfigurableLodgeId(` anywhere in the file, so
+      the call-shape pattern alone would report a route that permits inactive
+      lodges as not using the permissive resolver at all — the exact drift this
+      census exists to catch, arriving through the one edit nobody would think
+      to look at.
+
+      Both forms are counted, and either is enough to put the file on the list:
+      the alias case is caught at its import, and a file that re-exports without
+      calling is still declaring the capability.
+    */
+    const CALL = /\bresolveOptionalConfigurableLodgeId\s*\(/;
+    const IMPORT_SPECIFIER =
+      /\bresolveOptionalConfigurableLodgeId\b\s*(?:as\s+\w+)?\s*[,}]/;
+
     const actual = sources
       .filter((path) => {
         // The helper's own module declares it; every other file that names it
         // is calling it.
         if (repoPath(path) === "src/lib/lodges.ts") return false;
-        return /resolveOptionalConfigurableLodgeId\s*\(/.test(
-          readFileSync(path, "utf8"),
-        );
+        const source = readFileSync(path, "utf8");
+        return CALL.test(source) || IMPORT_SPECIFIER.test(source);
       })
       .map(repoPath)
       .sort();
@@ -233,10 +250,20 @@ describe("install and restore paths still create ACTIVE lodges (#221)", () => {
   }
 
   it("the config-transfer importer writes the active flag the descriptor carries", () => {
-    // Its create spreads `buildLodgeData(...)` rather than naming fields at the
-    // write, so the statement of intent lives one call earlier — and it is not
-    // "active", it is "whatever the club being restored had", which is the
-    // right answer for a restore and is unaffected by the #221 create default.
+    /*
+      Its create spreads `buildLodgeData(...)` rather than naming fields at the
+      write, so the statement of intent lives one call earlier — and it is not
+      "active", it is "whatever the club being restored had", which is the
+      right answer for a restore and is unaffected by the #221 create default.
+
+      SAY THE OMITTED CASE OUT LOUD, because it is the one that surprises:
+      `coerceBool(undefined)` is `false`, so a descriptor with NO `active` key
+      restores an INACTIVE lodge rather than an active one. That is left as it
+      is, deliberately. Every descriptor this codebase exports carries the
+      field, so an omitted one is hand-authored or foreign, and reading "open
+      for booking" out of silence is the unsafe direction — the same reasoning
+      that made the create route default to `false` in the first place.
+    */
     const source = readFileSync(
       join(process.cwd(), "src/lib/config-transfer/categories/lodge-config.ts"),
       "utf8",

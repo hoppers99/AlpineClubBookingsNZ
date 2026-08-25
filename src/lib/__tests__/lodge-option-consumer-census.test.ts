@@ -16,26 +16,59 @@ const EXPECTED_DIRECT_CONSUMERS = [
   "src/components/admin/notice-audience-picker.tsx",
 ] as const;
 
-const EXPECTED_HOOK_CONSUMERS = [
-  "src/app/(admin)/admin/bed-allocation/page.tsx",
-  "src/app/(admin)/admin/book/page.tsx",
-  "src/app/(admin)/admin/chores/page.tsx",
-  "src/app/(admin)/admin/fees/_components/hut-fees-section.tsx",
-  "src/app/(admin)/admin/hut-leaders/page.tsx",
-  "src/app/(admin)/admin/lockers/page.tsx",
-  "src/app/(admin)/admin/lodge/page.tsx",
-  "src/app/(admin)/admin/members/[id]/_components/member-lodge-access-card.tsx",
-  "src/app/(admin)/admin/promo-codes/promo-codes-page-client.tsx",
-  "src/app/(admin)/admin/promo-codes/promo-redemptions-panel.tsx",
-  "src/app/(admin)/admin/reports/page.tsx",
-  "src/app/(admin)/admin/roster/page.tsx",
-  "src/app/(admin)/admin/seasons/page.tsx",
-  "src/app/(admin)/admin/work-parties/page.tsx",
-  "src/app/(authenticated)/book/_hooks/use-booking-wizard.ts",
-  "src/components/admin/booking-policies/policy-scope-select.tsx",
-  "src/components/admin/lodge-capacity-card.tsx",
-  "src/components/admin/rooms-beds-manager.tsx",
-] as const;
+/*
+  Every `useLodgeOptions` consumer, AND the scope it asks for (#221).
+
+  The scope is the half that matters now. `"configuration"` is the only scope
+  whose list contains lodges that are not open for booking, and it exists for
+  exactly one job: the five full editors that build a lodge's own inventory
+  while it is still being set up. `"member"` and `"admin"` keep the filtered
+  list every member, booking, roster, board, display and report surface has
+  always had.
+
+  Pinning the MAP rather than the file list is what makes that split
+  mechanical. A page can only gain inactive lodges by changing its scope, which
+  changes this table, which is where a reviewer is asked whether that page is
+  really configuring a lodge or merely operating one — the same question the
+  `resolveOptionalActiveLodgeId` / `resolveOptionalConfigurableLodgeId` pair
+  asks on the server, and the two halves have to agree.
+*/
+const EXPECTED_HOOK_CONSUMERS: Record<string, string[]> = {
+  // The five configuration editors. Each is linked from the per-lodge setup
+  // flow or the lodge hub with `?lodgeId=<the-new-lodge>`, and each writes
+  // through a route on the CONFIGURABLE resolver.
+  "src/app/(admin)/admin/chores/page.tsx": ["configuration"],
+  "src/app/(admin)/admin/fees/_components/hut-fees-section.tsx": [
+    "configuration",
+  ],
+  "src/app/(admin)/admin/lockers/page.tsx": ["configuration"],
+  "src/app/(admin)/admin/seasons/page.tsx": ["configuration"],
+  "src/components/admin/rooms-beds-manager.tsx": ["configuration"],
+
+  // Everything else OPERATES a lodge rather than configuring one — you do not
+  // roster, allocate beds at, price a promotion for, or report on a building
+  // nobody can book.
+  "src/app/(admin)/admin/bed-allocation/page.tsx": ["admin"],
+  "src/app/(admin)/admin/book/page.tsx": ["admin"],
+  "src/app/(admin)/admin/hut-leaders/page.tsx": ["admin"],
+  "src/app/(admin)/admin/lodge/page.tsx": ["admin"],
+  "src/app/(admin)/admin/members/[id]/_components/member-lodge-access-card.tsx":
+    ["admin"],
+  "src/app/(admin)/admin/promo-codes/promo-codes-page-client.tsx": ["admin"],
+  "src/app/(admin)/admin/promo-codes/promo-redemptions-panel.tsx": ["admin"],
+  "src/app/(admin)/admin/reports/page.tsx": ["admin"],
+  "src/app/(admin)/admin/roster/page.tsx": ["admin"],
+  "src/app/(admin)/admin/work-parties/page.tsx": ["admin"],
+  "src/components/admin/booking-policies/policy-scope-select.tsx": ["admin"],
+  // The per-lodge capacity override card. It offers no `?lodgeId=` entry point
+  // — its selection is only ever made on screen — so it cannot be pointed at a
+  // closed lodge and stays on the operating list.
+  "src/components/admin/lodge-capacity-card.tsx": ["admin"],
+  "src/app/(authenticated)/book/_hooks/use-booking-wizard.ts": ["member"],
+};
+
+/** `useLodgeOptions("admin")`, `useLodgeOptions()`, `useLodgeOptions(\n"x")`. */
+const HOOK_CALL = /useLodgeOptions\(\s*(?:"([^"]*)"|'([^']*)')?\s*\)/g;
 
 /*
   #2887: this used to match three hardcoded literal spellings
@@ -87,15 +120,42 @@ describe("production lodge-option consumers stay in the fail-closed census (#288
     expect(actual).toEqual([...EXPECTED_DIRECT_CONSUMERS].sort());
   });
 
-  it("counts every useLodgeOptions consumer outside the hook implementation", () => {
-    const actual = sources
-      .filter((path) => {
-        const body = readFileSync(path, "utf8");
-        return body.includes("useLodgeOptions(") && !body.includes("function useLodgeOptions(");
-      })
-      .map(repoPath)
+  it("counts every useLodgeOptions consumer, and pins the SCOPE each one asks for", () => {
+    const actual: Record<string, string[]> = {};
+    for (const path of sources) {
+      const body = readFileSync(path, "utf8");
+      if (!body.includes("useLodgeOptions(")) continue;
+      if (body.includes("function useLodgeOptions(")) continue;
+      // `"member"` is the hook's default, so an omitted argument is that scope
+      // and is recorded as such rather than as a hole in the census.
+      const scopes = [...body.matchAll(HOOK_CALL)].map(
+        (match) => match[1] ?? match[2] ?? "member",
+      );
+      actual[repoPath(path)] = [...new Set(scopes)].sort();
+    }
+
+    expect(actual).toEqual(EXPECTED_HOOK_CONSUMERS);
+  });
+
+  it("keeps `configuration` — the only scope that sees a closed lodge — to the five editors", () => {
+    /*
+      Stated as its own assertion because it is the safety property, not a
+      bookkeeping one: a surface on this list can be pointed at a lodge that is
+      not open for booking, and a surface that OPERATES a lodge must never be.
+      Reading it out of the table above rather than re-deriving it means the two
+      cannot disagree.
+    */
+    const configuring = Object.entries(EXPECTED_HOOK_CONSUMERS)
+      .filter(([, scopes]) => scopes.includes("configuration"))
+      .map(([file]) => file)
       .sort();
 
-    expect(actual).toEqual([...EXPECTED_HOOK_CONSUMERS].sort());
+    expect(configuring).toEqual([
+      "src/app/(admin)/admin/chores/page.tsx",
+      "src/app/(admin)/admin/fees/_components/hut-fees-section.tsx",
+      "src/app/(admin)/admin/lockers/page.tsx",
+      "src/app/(admin)/admin/seasons/page.tsx",
+      "src/components/admin/rooms-beds-manager.tsx",
+    ]);
   });
 });

@@ -739,8 +739,18 @@ Delivered by #2925 (owner decision, 17 Aug 2026); the route's own docblock
 carries the implementation reasoning and is not repeated.
 
 **Access.** Any admitted administrator, expressed as the explicit requirement
-`permission: { area: "overview", level: "view" }` — the documented "any admitted
-admin" shape in this codebase. It must stay EXPLICIT. A bare `requireAdmin()`
+`permission: "any-admin"`, which resolves to `hasAdminPortalAccess`.
+
+An earlier cut of #2925 wrote `permission: { area: "overview", level: "view" }`
+instead, on the stated grounds that every admin grid carries `overview`. Review
+measured that against the shipped presets and it is **false** — `FINANCE_USER`
+("Finance Viewer", `access-role-definitions.ts`) ships `overviewLevel: "NONE"` —
+and it would additionally have been a fresh regression for a custom grid holding
+`lodge:view` without `overview:view`, which had the full list before. So the
+requirement in the route is `"any-admin"`, not an area/level pair, and this page
+said otherwise until #221 corrected it.
+
+It must stay EXPLICIT. A bare `requireAdmin()`
 does not mean "any admin": `inferAdminAccessRequirement` reads the `x-pathname`
 and `x-request-method` headers `proxy.ts` stamps on this route and resolves them
 through `getAdminRouteRequirement`, which maps `/api/admin/lodges` to
@@ -755,8 +765,9 @@ The presets this changed, all of which hold `overview: "view"` and no `lodge`
 entry: **`ADMIN_MEMBERSHIP`**, **`FINANCE_ADMIN`** and **`ADMIN_CONTENT`**. No
 preset was edited — adding `lodge:view` to them would have widened eighteen
 other read endpoints on upgrade. A 403 is still the answer for a caller who is
-not an admitted admin, and for a club-edited or custom role holding
-`overview: "none"`, which is why `useLodgeOptions` keeps its `forbidden` state.
+not admitted to the admin portal at all — `hasAdminPortalAccess` excludes
+`finance`, so the finance-only `FINANCE_USER` remains refused here — which is
+why `useLodgeOptions` keeps its `forbidden` state.
 
 **Payload, decided from nothing rather than trimmed from `lodgeSelect`.** A
 caller WITH `lodge:view` keeps the whole record. A caller without it receives
@@ -830,8 +841,14 @@ unchanged, so:
   explicitly, `prisma/demo-seed.ts` sets it explicitly on the optional second
   demo lodge, and the config-transfer importer
   (`src/lib/config-transfer/categories/lodge-config.ts`, `buildLodgeData`)
-  writes `active` from the descriptor it is restoring. Install and restore
-  paths therefore keep producing active lodges, which is right: they are
+  writes `active` from the descriptor it is restoring — and note the OMITTED
+  case explicitly, because it is the one that surprises: `coerceBool(undefined)`
+  is `false`, so a descriptor with no `active` key restores an **inactive**
+  lodge. That is deliberately left as it is. Every descriptor this codebase
+  exports carries the field, so the omitted case is a hand-authored or foreign
+  file, and refusing to read "open for booking" out of silence is the safe
+  answer for one — the same direction #221 moved the create route. Install and
+  restore paths therefore keep producing active lodges, which is right: they are
   reproducing a configured club, not half-configuring a new building.
 
 **The default lodge is unaffected, and cannot be captured by a new lodge.**
@@ -889,11 +906,51 @@ Copy-from-another-lodge keeps requiring the SOURCE lodge to be active — the
 per-lodge setup page only offers active lodges as sources — and only the
 destination may be inactive.
 
-**The ADR-002 presentation rule composes with this deliberately.** Adding a
-second lodge no longer makes lodge selectors appear across the product the
-moment it is named: the rule counts ACTIVE lodges, so the selectors stay hidden
-until the new lodge is activated, and the club sees them appear at the point the
-second lodge genuinely becomes bookable.
+**The ADR-002 presentation rule composes with this, and the composition has two
+halves that pull in opposite directions.**
+
+The first half is the one adopting clubs see. Adding a second lodge no longer
+makes lodge selectors appear across the product the moment it is named: the rule
+counts ACTIVE lodges, so on every member, booking, roster, board, report,
+display and ordinary admin surface the selectors stay hidden until the new lodge
+is activated, and the club meets them at the point the second lodge genuinely
+becomes bookable.
+
+The second half is the one that had to be built rather than inherited. On a
+**configuration** surface that rule is not merely unhelpful, it silently
+retargets the operator's writes. The five full editors the setup flow links to
+with `?lodgeId=<the-new-lodge>` — Rooms & Beds, Lockers, Seasons, Fees and
+Chores — drew their options from `useLodgeOptions("admin")`, which drops
+inactive lodges. So a club with one open lodge plus the one being set up looked
+like a single-lodge club: no selector rendered, ADR-002's normaliser reported
+the OPEN lodge through `onChange`, and every room, bed, locker, season, rate and
+chore created from there was written against the wrong lodge, unlabelled. The
+server had already answered this question the other way — those routes take
+`resolveOptionalConfigurableLodgeId` — so the two halves disagreed and only the
+client's answer was visible.
+
+The rule for a configuration surface, delivered by #221:
+
+- it asks `useLodgeOptions("configuration")`, whose list keeps inactive lodges
+  and carries `active` on each option. That scope is confined to those five
+  files, and `lodge-option-consumer-census.test.ts` pins which file may ask for
+  which scope, so a surface can only gain inactive lodges by changing a line a
+  reviewer is looking at;
+- **an inactive lodge is honoured when NAMED and never chosen when not.** The
+  normaliser's sole-lodge rule and first-lodge default both count OPEN lodges
+  only, so an admin arriving from the nav still lands on a bookable lodge; a
+  value that resolves to an inactive lodge is deliberate by construction — a
+  `?lodgeId=` link or a pick from the selector — and survives normalisation;
+- **it is never silent.** Two configurable lodges is not a single-lodge club, so
+  the selector renders, and the inactive one is labelled `(closed)` wherever it
+  appears. In the one club shape where the selector still would not render — the
+  club's only lodge being closed, which the deactivation guard makes
+  unreachable today — `LodgeSelect` renders a named scope line instead of
+  nothing.
+
+Member, booking, display and kiosk surfaces gain nothing from any of this: their
+lists are the same active-only lists they have always been, which is the third
+thing the census test pins.
 
 ## Presentation Rule
 
