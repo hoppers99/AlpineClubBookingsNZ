@@ -431,6 +431,49 @@ export default function LodgeSetupWizardPage() {
   }
 
   /*
+    THE ACTIVATION AFFORDANCE (#221, epic #213 C6).
+
+    A lodge created through `POST /api/admin/lodges` now starts INACTIVE, so
+    this flow's last step is where it becomes bookable. There is no new server
+    surface for it: this is the ordinary `PATCH /api/admin/lodges/[id]` the
+    Lodges list already uses for its active toggle, which audits
+    LODGE_ACTIVATED and takes the config-import and per-lodge capacity locks.
+    Activating needs no dependency guard of its own — `findLodgeDeactivationRefusal`
+    returns null for anything that is not a deactivation, and the hazards it
+    exists to prevent (stranding future bookings, leaving no active lodge) are
+    all deactivation hazards.
+  */
+  async function activateLodge() {
+    setSaving(true);
+    setError("");
+    try {
+      const res = await fetch(
+        `/api/admin/lodges/${encodeURIComponent(lodgeId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ active: true }),
+        },
+      );
+      if (res.status === 403) {
+        setError(ADMIN_FORBIDDEN_SAVE_REASON);
+        return;
+      }
+      if (!res.ok) {
+        throw new Error(await readError(res, "Failed to activate lodge"));
+      }
+      const data = await res.json();
+      setLodge(data.lodge);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to activate lodge",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /*
     #2160: the view-only explanation lives here, once, at the top of the section —
     announced on arrival and ahead of the controls it explains — instead of on
     each disabled button below. The `role="status"` wrapper is permanently
@@ -502,9 +545,19 @@ export default function LodgeSetupWizardPage() {
         <h1 className="text-3xl font-bold mt-2">Set up {lodge.name}</h1>
         <p className="text-muted-foreground mt-1">
           A guided setup for the new lodge. Every step can be skipped and
-          finished later from the lodge configuration page — an unconfigured
-          lodge simply has no bookable capacity yet.
+          finished later from the lodge configuration page — a new lodge is not
+          open for booking until you activate it on the last step, so nothing
+          left half-done here can reach a member.
         </p>
+        {!lodge.active && (
+          <p
+            className="mt-3 rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11"
+            data-testid="lodge-setup-inactive-notice"
+          >
+            {lodge.name} is not open for booking yet. Work through as much of
+            this as you want to — the last step is where you activate it.
+          </p>
+        )}
       </div>
 
       {/* Step indicator */}
@@ -860,11 +913,13 @@ export default function LodgeSetupWizardPage() {
       {step === "finish" && (
         <Card>
           <CardHeader>
-            <CardTitle>All set</CardTitle>
+            <CardTitle>
+              {lodge.active ? "All set" : `Open ${lodge.name} for booking`}
+            </CardTitle>
             <CardDescription>
-              {lodge.name} is ready. The configuration page shows what exists
-              at this lodge and links into every editor — anything skipped
-              here can be finished there.
+              {lodge.active
+                ? `${lodge.name} is ready. The configuration page shows what exists at this lodge and links into every editor — anything skipped here can be finished there.`
+                : `${lodge.name} exists but is not open for booking. Activating it is what makes it available to members; anything you skipped here can still be finished afterwards from the configuration page.`}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -892,8 +947,20 @@ export default function LodgeSetupWizardPage() {
                 </li>
               )}
             </ul>
+            {!lodge.active && (
+              <ViewOnlyActionButton
+                type="button"
+                canEdit={canEdit}
+                disabled={saving}
+                onClick={activateLodge}
+                data-testid="lodge-setup-activate"
+              >
+                {saving ? "Activating..." : `Activate ${lodge.name}`}
+              </ViewOnlyActionButton>
+            )}
             <div className="flex gap-3">
               <Button
+                variant={lodge.active ? "default" : "outline"}
                 onClick={() =>
                   router.push(`/admin/lodges/${encodeURIComponent(lodgeId)}`)
                 }
