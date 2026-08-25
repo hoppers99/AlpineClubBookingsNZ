@@ -2148,6 +2148,35 @@ describe("setup-readiness — the lodges step (#221)", () => {
     expect(readiness.status).toBe("warning");
   });
 
+  it("gives a CLOSED lodge that is also the club default its own sentence", () => {
+    /*
+      AC5's hazard, and it is not the same fact as "this lodge is closed".
+      `getDefaultLodgeId` returns the flagged row whether or not it is open, so
+      every lodge-scoped write that omits a `lodgeId` lands on a lodge nobody
+      can book. The scoping contract's rule is to REASSIGN the default before
+      closing a lodge — an action, not a footnote — and a ", the club default"
+      suffix on a line ending like every other line is how it gets skimmed past.
+    */
+    const { check } = lodgesCheck({
+      ...completeDatabase,
+      lodges: [
+        lodge({ active: false, activeRoomCount: 0, activeBedCount: 0 }),
+        lodge({ id: "lodge-2", name: "River Lodge", isDefault: false }),
+      ],
+    });
+
+    const line = check.details?.find((detail) =>
+      detail.startsWith("Example Lodge:"),
+    );
+    expect(line).toContain("AND it is the club default");
+    expect(line).toContain("make an open lodge the default");
+    // MUTATION PROBE: fall back to the shared closed line and this fails — the
+    // detail reverts to the suffix form the finding is about.
+    expect(line).not.toContain("finish its setup to activate it");
+    // Still a warning, not a new verdict tier: the club can still be booked.
+    expect(check.status).toBe("warning");
+  });
+
   it("blocks when nothing at all is bookable", () => {
     expect(
       lodgesCheck({ ...completeDatabase, lodges: [lodge({ active: false })] }).check.status,
@@ -2201,5 +2230,44 @@ describe("setup-readiness — the lodges step (#221)", () => {
     expect(lodgesCheck(undefined).check.message).toBe(
       "Database state was not checked.",
     );
+  });
+});
+
+/**
+ * The shape `SetupStepLinks` exists for (#221 review).
+ *
+ * That component's own doc block explains itself in three figures — how many
+ * steps there are, how many are served by their single `href`, and how many
+ * need a LIST instead. Those figures were counted by hand and were wrong ("that
+ * is enough for eighteen of the twenty steps"), which nothing disagreed with,
+ * because a count written in prose is not a count anything measures.
+ *
+ * So they are measured here. If a new step arrives, or a second step grows a
+ * per-item link list, this fails and the sentence has to move with the tree.
+ */
+describe("setup-readiness — the link shape SetupStepLinks is for (#221)", () => {
+  it("has exactly one step needing a LIST, and two with no destination at all", () => {
+    const readiness = buildSetupReadiness({
+      env: baseEnv,
+      configDir: makeConfigDir(),
+      database: completeDatabase,
+      now: new Date("2026-05-18T00:00:00.000Z"),
+    });
+    const checks = readiness.categories.flatMap((category) => category.checks);
+
+    expect({
+      steps: checks.length,
+      withoutHref: checks.filter((check) => !check.href).map((check) => check.id),
+      withLinks: checks
+        .filter((check) => (check.links?.length ?? 0) > 0)
+        .map((check) => check.id),
+    }).toEqual({
+      steps: 20,
+      // No screen exists on which to fix a runtime environment variable, so
+      // these two name nothing rather than naming somewhere unhelpful.
+      withoutHref: ["runtime-env", "feature-flags"],
+      // One link per lodge. Every other step supplies an empty array.
+      withLinks: ["lodges"],
+    });
   });
 });

@@ -249,6 +249,13 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
   const activeBedCountByLodgeId = new Map<string, number>();
   for (const bed of activeBedRows) {
     const lodgeId = lodgeIdByRoomId.get(bed.roomId);
+    // NOT an impossible branch, and not defensive padding. The lodge, room and
+    // bed rows come from three SEPARATE queries with no snapshot isolation
+    // between them, so a room deactivated in the gap after the room read leaves
+    // its beds in `activeBedRows` with no entry in `lodgeIdByRoomId`. Dropping
+    // such a bed is the right answer: the later read is the fresher one, and it
+    // says the room is closed. This is a readiness report, not a capacity
+    // decision — nothing here is locked and nothing needs to be.
     if (!lodgeId) continue;
     activeBedCountByLodgeId.set(
       lodgeId,

@@ -154,8 +154,8 @@ describe("SetupWizardStepFrame", () => {
     is the club's own — one link per lodge — which the single `href` cannot
     express, so the frame renders `links` as well. Every other step supplies an
     empty array and gets nothing, which is the part worth pinning: a new field
-    on a shared view model must not put a stray empty list on eighteen steps
-    that never asked for one.
+    on a shared view model must not put a stray empty list on the other
+    nineteen steps, none of which asked for one.
   */
   it("renders one link per entry in `links`, beside the settings link", () => {
     renderFrame({

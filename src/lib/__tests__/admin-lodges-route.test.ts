@@ -469,4 +469,55 @@ describe("PATCH /api/admin/lodges/[id]", () => {
     );
     expect(mocks.auditLogCreate).toHaveBeenCalledTimes(1);
   });
+
+  /*
+    #221 review — the audit ACTION comes from the transition, not from the ask.
+
+    The setup flow's Activate button sends `{ active: true }`, so a stale tab
+    left open on a lodge somebody else has already opened sends it again. Read
+    off the request, that wrote a second `LODGE_ACTIVATED` whose own metadata
+    said `previousLodge.active: true` and `newLodge.active: true` — an audit row
+    contradicting itself, in the history an operator reaches for to work out who
+    opened a lodge and when.
+  */
+  it("does not audit an ACTIVATION when the lodge was already open", async () => {
+    const open = lodgeRecord({ active: true });
+    mocks.lodgeFindUnique.mockResolvedValue(open);
+    mocks.lodgeUpdate.mockResolvedValue(open);
+    mocks.lodgeFindMany.mockResolvedValue([]);
+
+    const response = await PATCH(
+      jsonRequest("PATCH", { active: true }),
+      params("lodge-1"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.auditLogCreate).toHaveBeenCalledTimes(1);
+    const written = mocks.auditLogCreate.mock.calls[0][0].data as {
+      action: string;
+      metadata: { forcedDeactivation: boolean };
+    };
+    expect(written.action).toBe("LODGE_UPDATED");
+    expect(written.metadata.forcedDeactivation).toBe(false);
+  });
+
+  it("still audits a real ACTIVATION of a closed lodge", async () => {
+    // The other half: without it the fix above could be "never audit an
+    // activation at all", which would pass the test above while losing the
+    // record of the one event #221 exists to create.
+    mocks.lodgeFindUnique.mockResolvedValue(lodgeRecord({ active: false }));
+    mocks.lodgeUpdate.mockResolvedValue(lodgeRecord({ active: true }));
+    mocks.lodgeFindMany.mockResolvedValue([]);
+
+    const response = await PATCH(
+      jsonRequest("PATCH", { active: true }),
+      params("lodge-1"),
+    );
+
+    expect(response.status).toBe(200);
+    const written = mocks.auditLogCreate.mock.calls[0][0].data as {
+      action: string;
+    };
+    expect(written.action).toBe("LODGE_ACTIVATED");
+  });
 });

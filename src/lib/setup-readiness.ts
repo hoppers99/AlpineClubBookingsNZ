@@ -1826,9 +1826,23 @@ function buildLodgesCheck(
   const describe = (lodge: NonNullable<SetupDatabaseSnapshot["lodges"]>[number]) => {
     const inventory = `${lodge.activeRoomCount} room${lodge.activeRoomCount === 1 ? "" : "s"}, ${lodge.activeBedCount} bed${lodge.activeBedCount === 1 ? "" : "s"}`;
     const flag = lodge.isDefault ? ", the club default" : "";
-    return lodge.active
-      ? `${lodge.name}: open for booking (${inventory})${flag}.`
-      : `${lodge.name}: NOT open for booking — finish its setup to activate it (${inventory})${flag}.`;
+    if (lodge.active) {
+      return `${lodge.name}: open for booking (${inventory})${flag}.`;
+    }
+    /*
+      A CLOSED lodge that is also the CLUB DEFAULT gets its own sentence rather
+      than a ", the club default" suffix on the ordinary closed line, because it
+      is a different fact and a worse one. `getDefaultLodgeId` returns the
+      flagged row whether or not it is open, so every lodge-scoped write that
+      omits a `lodgeId` resolves to a lodge nobody can book — and the scoping
+      contract's rule is to REASSIGN the default before closing a lodge, which
+      is an action, not a footnote. Reading it as a suffix is how it gets
+      skimmed past in a list where every other line ends the same way.
+    */
+    if (lodge.isDefault) {
+      return `${lodge.name}: NOT open for booking, AND it is the club default — anything created without naming a lodge lands here, where nobody can book it. Activate it, or make an open lodge the default (${inventory}).`;
+    }
+    return `${lodge.name}: NOT open for booking — finish its setup to activate it (${inventory})${flag}.`;
   };
 
   const links = lodges.map((lodge) => ({
