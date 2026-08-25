@@ -5,6 +5,8 @@ import {
   type ModuleSettingsValues,
 } from "@/config/modules";
 import type { FeatureFlags } from "@/config/schema";
+import { DEFAULT_SETUP_SURFACE_SETTINGS } from "@/config/club-settings-defaults";
+import { normalizeSetupSurfaceSettings } from "@/lib/setup-surface-settings";
 import {
   SETUP_HUB_CARDS,
   getVisibleSetupHubCards,
@@ -287,6 +289,7 @@ describe("setup hub cards — registry parity (#223 AC1)", () => {
       everyModuleOnFeatureFlags(),
       fullAccessMatrix(),
       applicable,
+      false,
     ).map((card) => card.href);
 
     // Finance covers exactly the three steps a first-install club does not get.
@@ -305,6 +308,7 @@ describe("setup hub cards — registry parity (#223 AC1)", () => {
       everyModuleOnFeatureFlags(),
       fullAccessMatrix(),
       noneApplicable,
+      false,
     ).map((card) => card.href);
 
     expect(visible).toEqual([
@@ -323,7 +327,133 @@ describe("setup hub cards — registry parity (#223 AC1)", () => {
         everyModuleOnFeatureFlags(),
         noAccess,
         everyStepApplicable,
+        false,
       ),
     ).toEqual([]);
+  });
+});
+
+/*
+  The legacy-surfaces switch (epic #213 D8; #223 acceptance criteria 3 and 4).
+
+  Two properties, and they pull in opposite directions, which is why both are
+  pinned. WHAT IT HIDES: the four hubs the wizard replaces really do go. WHAT IT
+  MUST NEVER HIDE: anything the wizard does not offer a route to — hiding a
+  surface whose capability has nowhere else to live is removing a capability
+  rather than relocating one, and D8's parity rule forbids it.
+*/
+const HUBS_RETIRED_BY_THE_WIZARD = [
+  "/admin/setup/foundations",
+  "/admin/setup/finance",
+  "/admin/setup/booking-rules",
+  "/admin/setup/integrations",
+];
+
+describe("legacy setup surfaces — the visibility switch (#223 AC3, AC4)", () => {
+  it("defaults to SHOWN, and every absence resolves there", () => {
+    // AC4's first half, and the property the whole flag's safety rests on: a
+    // missing row, a caller with no record at all, and an empty object are the
+    // same answer, and that answer never takes a surface away.
+    expect(DEFAULT_SETUP_SURFACE_SETTINGS.legacySurfacesHidden).toBe(false);
+    expect(normalizeSetupSurfaceSettings(null).legacySurfacesHidden).toBe(false);
+    expect(normalizeSetupSurfaceSettings(undefined).legacySurfacesHidden).toBe(
+      false,
+    );
+    expect(normalizeSetupSurfaceSettings({}).legacySurfacesHidden).toBe(false);
+  });
+
+  it("reads a stored answer as given, in both positions", () => {
+    expect(
+      normalizeSetupSurfaceSettings({ legacySurfacesHidden: true })
+        .legacySurfacesHidden,
+    ).toBe(true);
+    expect(
+      normalizeSetupSurfaceSettings({ legacySurfacesHidden: false })
+        .legacySurfacesHidden,
+    ).toBe(false);
+  });
+
+  it("retires exactly the four hubs the wizard replaces", () => {
+    const retired = SETUP_HUB_CARDS.filter((card) => card.retiredByWizard).map(
+      (card) => card.href,
+    );
+
+    expect(retired).toEqual(HUBS_RETIRED_BY_THE_WIZARD);
+  });
+
+  it("COVERAGE PARITY: never retires a card the wizard does not cover", () => {
+    // The load-bearing direction. A card with no covered step has no wizard
+    // route to send an operator to, so hiding it would delete the only entry
+    // point to whatever it opened. Membership & Members and Email Messages /
+    // Notifications are exactly that shape, which is why they stay.
+    for (const card of SETUP_HUB_CARDS) {
+      if (!card.retiredByWizard) continue;
+      expect(
+        card.coversStepIds.length,
+        `${card.href} is retired by the wizard but covers no registry step, so hiding it would remove a capability rather than relocate one (epic #213 D8)`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it("hides the four, and keeps every other card, when the switch is on", () => {
+    const everyStepApplicable = new Set<string>(SETUP_STEP_IDS);
+    const visible = getVisibleSetupHubCards(
+      SETUP_HUB_CARDS,
+      everyModuleOnFeatureFlags(),
+      fullAccessMatrix(),
+      everyStepApplicable,
+      true,
+    ).map((card) => card.href);
+
+    for (const href of HUBS_RETIRED_BY_THE_WIZARD) {
+      expect(visible).not.toContain(href);
+    }
+    expect(visible).toEqual([
+      "/admin/membership-setup",
+      "/admin/setup/cancellation",
+      "/admin/notifications",
+    ]);
+  });
+
+  it("is REVERSIBLE: flipping back restores exactly the previous set", () => {
+    // AC4's second half. The switch is a render-time filter over a list that
+    // does not itself move, so "reversible" is provable rather than asserted:
+    // the shown set with the switch off is identical before and after a flip.
+    const everyStepApplicable = new Set<string>(SETUP_STEP_IDS);
+    const shown = () =>
+      getVisibleSetupHubCards(
+        SETUP_HUB_CARDS,
+        everyModuleOnFeatureFlags(),
+        fullAccessMatrix(),
+        everyStepApplicable,
+        false,
+      ).map((card) => card.href);
+
+    const before = shown();
+    // …hide…
+    getVisibleSetupHubCards(
+      SETUP_HUB_CARDS,
+      everyModuleOnFeatureFlags(),
+      fullAccessMatrix(),
+      everyStepApplicable,
+      true,
+    );
+    // …and show again.
+    expect(shown()).toEqual(before);
+  });
+
+  it("CHANGES NO DATA: the readiness derivation is identical in both positions", () => {
+    // The other half of "reversible with no data change" (AC4). The flag is
+    // read at RENDER time and nothing derived from it is persisted, so the step
+    // set, the totals and every check's verdict are byte-identical whichever
+    // way the switch is set — which is what makes hiding recoverable rather
+    // than destructive. If this ever fails, the flag has grown a write path.
+    const readiness = cardStepIds(databaseSnapshot(moduleFlags()));
+    const again = cardStepIds(databaseSnapshot(moduleFlags()));
+
+    expect(JSON.stringify({ ...readiness, generatedAt: null })).toEqual(
+      JSON.stringify({ ...again, generatedAt: null }),
+    );
+    expect(readiness.summary.total).toBe(SETUP_STEP_IDS.length);
   });
 });

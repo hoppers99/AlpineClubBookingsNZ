@@ -502,7 +502,7 @@ describe("SiteStyleWizard view-only gating (#1927)", () => {
 
   it("disables Save and next and Reset neutral for a content:view admin", async () => {
     sessionMatrix = matrix("view");
-    render(<SiteStyleWizard initialTheme={wizardTheme()} />);
+    render(<SiteStyleWizard legacySurfacesHidden={false} initialTheme={wizardTheme()} />);
 
     await waitFor(() => {
       expect(
@@ -520,7 +520,7 @@ describe("SiteStyleWizard view-only gating (#1927)", () => {
 
   it("enables Save and next and Reset neutral for a content:edit admin", async () => {
     sessionMatrix = matrix("edit");
-    render(<SiteStyleWizard initialTheme={wizardTheme()} />);
+    render(<SiteStyleWizard legacySurfacesHidden={false} initialTheme={wizardTheme()} />);
 
     await waitFor(() => {
       expect(

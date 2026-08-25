@@ -46,8 +46,7 @@ describe("site style wizard — logo upload (#2322)", () => {
   /** Renders the wizard and navigates straight to the Logo step. */
   function renderOnLogoStep(initial: Partial<ClubThemeValues> = {}) {
     render(
-      <SiteStyleWizard
-        initialTheme={{
+      <SiteStyleWizard legacySurfacesHidden={false} initialTheme={{
           ...DEFAULT_CLUB_THEME_VALUES,
           ...initial,
           completedAt: null,

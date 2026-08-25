@@ -27,10 +27,12 @@ import {
 import { LodgeCapacityCard } from "@/components/admin/lodge-capacity-card";
 import type { FeatureFlags } from "@/config/schema";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
+import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   SETUP_HUB_CARDS,
   getVisibleSetupHubCards,
 } from "./setup-hub-cards";
+import { SetupSurfacesSection } from "./setup-surfaces-section";
 
 type SetupStatus = "complete" | "warning" | "blocked" | "not_started";
 type ProgressStatus = "open" | "completed" | "skipped";
@@ -136,16 +138,19 @@ function SetupHubCards({
   features,
   permissionMatrix,
   applicableStepIds,
+  legacySurfacesHidden,
 }: {
   features: FeatureFlags;
   permissionMatrix: AdminPermissionMatrix;
   applicableStepIds: ReadonlySet<string>;
+  legacySurfacesHidden: boolean;
 }) {
   const visibleCards = getVisibleSetupHubCards(
     SETUP_HUB_CARDS,
     features,
     permissionMatrix,
     applicableStepIds,
+    legacySurfacesHidden,
   );
 
   if (visibleCards.length === 0) return null;
@@ -181,10 +186,24 @@ function SetupHubCards({
 export function SetupPageClient({
   permissionMatrix,
   features,
+  legacySurfacesHidden: initialLegacySurfacesHidden,
 }: {
   permissionMatrix: AdminPermissionMatrix;
   features: FeatureFlags;
+  /**
+   * Epic #213, C8 (#223). The SERVER's answer, so nothing renders for a frame
+   * and then vanishes. Held in state below only so the settings section can
+   * update it in place after a save.
+   */
+  legacySurfacesHidden: boolean;
 }) {
+  const [legacySurfacesHidden, setLegacySurfacesHidden] = useState(
+    initialLegacySurfacesHidden,
+  );
+  // Tri-state, so the resolving `undefined` window renders neither an enabled
+  // control nor a view-only banner (#2065). `support` is the area this page and
+  // the surfaces route both enforce.
+  const canEditSupport = useAdminAreaEditAccess("support");
   const [readiness, setReadiness] = useState<SetupReadiness | null>(null);
   const [progress, setProgress] = useState<SetupProgressState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -446,17 +465,47 @@ export function SetupPageClient({
             </div>
           ) : null}
 
+          {/*
+            Not hidden wholesale: `getVisibleSetupHubCards` retires the FOUR
+            hubs the wizard replaces and leaves Membership & Members,
+            Cancellation and Email Messages / Notifications in place, because
+            the wizard offers no route to those and dropping them would remove a
+            capability rather than relocate one (D8 cuts both ways).
+          */}
           <SetupHubCards
             features={features}
             permissionMatrix={permissionMatrix}
             applicableStepIds={applicableStepIds}
+            legacySurfacesHidden={legacySurfacesHidden}
           />
 
           {/* The lodge-capacity card remains on the setup page and keeps the
               #1548 matrix gate because its backing API is lodge-area while
-              /admin/setup itself is support-area. */}
+              /admin/setup itself is support-area. It is NOT a legacy setup
+              surface — it reports live lodge capacity rather than setup
+              readiness, the wizard never offered it, and hiding it with the
+              cards would remove a capability instead of relocating one (D8's
+              coverage-parity rule cuts both ways). */}
           {permissionMatrix.lodge !== "none" ? <LodgeCapacityCard /> : null}
 
+          {legacySurfacesHidden ? (
+            /*
+              Epic #213 D8, executed. The readiness cards and the hub links are
+              absent — not deleted, and not made unreachable. Every destination
+              they opened is a step of the wizard, so this says where they went
+              rather than leaving a page that looks broken. `role="status"` is
+              deliberately NOT used: this is ordinary standing page content, not
+              an announcement.
+            */
+            <div className="rounded-md border bg-card px-4 py-3 text-sm text-muted-foreground">
+              The readiness checklist and the Initial Setup, Finance, Booking
+              Rules and Operational Integrations hubs are hidden for this club.
+              Everything they opened is a step of the setup wizard — open it
+              above to work through what is outstanding. You can bring them back
+              under <span className="font-medium">Setup surfaces</span> at the
+              foot of this page.
+            </div>
+          ) : (
           <section id="setup-checks" className="space-y-6">
             <div>
               <h2 className="text-xl font-semibold text-foreground">
@@ -611,8 +660,24 @@ export function SetupPageClient({
               </section>
             ))}
           </section>
+          )}
         </>
       ) : null}
+
+      {/*
+        Rendered in EVERY state — outside the `readiness ? … : null` branch
+        above, and outside the hidden/shown branch inside it. That is the whole
+        placement argument (epic #213, C8 #223): the switch that hides the
+        surfaces has to stay where the surfaces were, or hiding them makes it
+        unreachable. It therefore survives a failed readiness load too, which is
+        exactly the state somebody might be trying to escape.
+      */}
+      <SetupSurfacesSection
+        canEdit={canEditSupport}
+        onSaved={(settings) =>
+          setLegacySurfacesHidden(settings.legacySurfacesHidden)
+        }
+      />
     </div>
   );
 }

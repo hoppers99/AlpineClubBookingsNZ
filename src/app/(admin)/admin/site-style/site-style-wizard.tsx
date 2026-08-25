@@ -72,6 +72,26 @@ type SiteStyleThemeResponse = ClubThemeValues & {
 
 type SiteStyleWizardProps = {
   initialTheme: SiteStyleThemeResponse;
+  /**
+   * Whether this club has retired the legacy setup surfaces (epic #213, C8
+   * #223, executing the binding 25 Aug addition to that issue).
+   *
+   * THIS PAGE'S "Finish setup" IS A SECOND LAUNCH LEVER. It calls
+   * `save(completeSetup: true)`, which is the same audited write the wizard's
+   * Ready-to-open panel makes — so while both exist there are two independent
+   * places that make the public site visible. That is not an integrity problem
+   * (same flag, same path) but it is exactly the duplication the
+   * legacy-surfaces switch exists to retire, so this lever goes with the
+   * surfaces it belongs to and D9's launch panel is left as the one deliberate
+   * act.
+   *
+   * WHAT IS HIDDEN IS THE FINISHING, NOT THE SAVING. The last step still saves —
+   * it just saves without publishing. Hiding the button outright would take away
+   * the only way to persist the final step's changes, which would be removing a
+   * capability rather than relocating one, and D8's coverage-parity rule forbids
+   * that in both directions.
+   */
+  legacySurfacesHidden: boolean;
 };
 
 /**
@@ -180,7 +200,10 @@ function seedAdjustments(values: ClubThemeValues): SeedAdjustment[] {
   }));
 }
 
-export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
+export function SiteStyleWizard({
+  initialTheme,
+  legacySurfacesHidden,
+}: SiteStyleWizardProps) {
   const router = useRouter();
   const canEdit = useAdminAreaEditAccess("content");
   const [forbidden, setForbidden] = useState(false);
@@ -397,6 +420,18 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
 
   async function finish() {
     const saved = await save(true);
+    if (saved) {
+      setStep("review");
+    }
+  }
+
+  /**
+   * The last step's action once the legacy setup surfaces are hidden: persist
+   * the styling and move to Review, without touching `completedAt`. Publishing
+   * is then the wizard launch panel's alone.
+   */
+  async function saveWithoutFinishing() {
+    const saved = await save(false);
     if (saved) {
       setStep("review");
     }
@@ -996,14 +1031,24 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                   {saving ? "Saving..." : "Save and next"}
                 </ViewOnlyActionButton>
               ) : (
+                /*
+                  ONE call site, branching on the flag rather than two rendered
+                  alternately. Two would add a `ViewOnlyActionButton` site to the
+                  view-only census for a control that can never both exist, which
+                  is churn in a number several documents publish.
+                */
                 <ViewOnlyActionButton
                   canEdit={canEdit}
                   describeReason={false}
                   type="button"
-                  onClick={finish}
+                  onClick={legacySurfacesHidden ? saveWithoutFinishing : finish}
                   disabled={saving || saveBlocked || uploadingLogo}
                 >
-                  {saving ? "Saving..." : "Finish setup"}
+                  {saving
+                    ? "Saving..."
+                    : legacySurfacesHidden
+                      ? "Save"
+                      : "Finish setup"}
                 </ViewOnlyActionButton>
               )}
             </div>

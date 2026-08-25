@@ -70,6 +70,24 @@ export interface SetupHubCard {
    * applicability — see the module doc.
    */
   readonly coversStepIds: readonly SetupStepId[];
+  /**
+   * Whether the legacy-surfaces switch retires this card with the readiness
+   * cards (epic #213 D8, C8 #223).
+   *
+   * TRUE for exactly the four `/admin/setup/{foundations,finance,booking-rules,
+   * integrations}` drill-down hubs #223 names — the ones whose destinations the
+   * wizard's steps compose, and whose routes redirect to `/admin/setup` in that
+   * position.
+   *
+   * FALSE for the other three, and that is COVERAGE PARITY rather than
+   * timidity. Membership & Members and Email Messages / Notifications cover no
+   * registry step at all, and Cancellation's single step is not one of the four
+   * hubs' — hiding them would take away the entry point to a capability the
+   * wizard does not offer, which is removing a capability instead of relocating
+   * one. `setup-surface-registry-parity.test.ts` enforces the rule this field
+   * encodes: nothing is retired that the wizard does not cover.
+   */
+  readonly retiredByWizard: boolean;
 }
 
 export const SETUP_HUB_CARDS: readonly SetupHubCard[] = [
@@ -95,6 +113,7 @@ export const SETUP_HUB_CARDS: readonly SetupHubCard[] = [
       "feature-flags",
       "lodges",
     ],
+    retiredByWizard: true,
   },
   {
     href: "/admin/setup/finance",
@@ -107,6 +126,7 @@ export const SETUP_HUB_CARDS: readonly SetupHubCard[] = [
     // xeroIntegration and financeDashboard both off — the first-install default
     // — none is applicable and the card is gone.
     coversStepIds: ["xero-operational", "finance-dashboard", "xero-mappings"],
+    retiredByWizard: true,
   },
   {
     href: "/admin/setup/booking-rules",
@@ -116,6 +136,7 @@ export const SETUP_HUB_CARDS: readonly SetupHubCard[] = [
     icon: BookOpenCheck,
     requiredAreas: ["bookings", "lodge"],
     coversStepIds: ["booking-policies", "age-tiers", "seasons-rates"],
+    retiredByWizard: true,
   },
   {
     href: "/admin/setup/integrations",
@@ -136,6 +157,7 @@ export const SETUP_HUB_CARDS: readonly SetupHubCard[] = [
       "address-autocomplete",
       "xero-operational",
     ],
+    retiredByWizard: true,
   },
   {
     href: "/admin/membership-setup",
@@ -146,8 +168,10 @@ export const SETUP_HUB_CARDS: readonly SetupHubCard[] = [
     requiredAreas: ["membership"],
     // No registry step: membership types, member fields and lockout policy are
     // ongoing club configuration rather than first-install readiness, and the
-    // wizard does not walk them. Always shown.
+    // wizard does not walk them. Always shown, and never retired: there is
+    // nowhere else to reach this from within setup.
     coversStepIds: [],
+    retiredByWizard: false,
   },
   {
     href: "/admin/setup/cancellation",
@@ -157,6 +181,9 @@ export const SETUP_HUB_CARDS: readonly SetupHubCard[] = [
     icon: UserX,
     requiredAreas: ["membership", "support"],
     coversStepIds: ["membership-cancellation"],
+    // Not one of the four hubs #223 names. `/admin/setup/cancellation` keeps its
+    // own route and its own card in both positions.
+    retiredByWizard: false,
   },
   {
     href: "/admin/notifications",
@@ -168,8 +195,9 @@ export const SETUP_HUB_CARDS: readonly SetupHubCard[] = [
     // No registry step. `email-ses` is the DELIVERY TRANSPORT check and its
     // work is done in the environment, not here; this destination is the
     // message copy and the recipient rules, which have no readiness check and
-    // no wizard step. Always shown.
+    // no wizard step. Always shown, and never retired.
     coversStepIds: [],
+    retiredByWizard: false,
   },
 ];
 
@@ -183,8 +211,10 @@ function canSeeAnyRequiredArea(
 /**
  * Which hub cards this club is offered (epic #213, C8 #223).
  *
- * THREE INDEPENDENT GATES, and the third is the new one. Modules
- * (`isFeatureHrefVisible`) and permissions are unchanged.
+ * FOUR INDEPENDENT GATES. Modules (`isFeatureHrefVisible`) and permissions are
+ * the two this file inherited. The third is applicability; the fourth is the
+ * legacy-surfaces switch, which retires exactly the four hubs the wizard
+ * replaces and leaves the other three alone (see `retiredByWizard`).
  * `applicableStepIds` is the registry's applicable set, handed in as the ids of
  * the readiness checks the SERVER built — the same derivation the wizard rail
  * is drawn from, never a second one computed at the call site — so a hub whose
@@ -202,9 +232,11 @@ export function getVisibleSetupHubCards(
   features: FeatureFlags,
   permissionMatrix: AdminPermissionMatrix,
   applicableStepIds: ReadonlySet<string>,
+  legacySurfacesHidden: boolean,
 ): readonly SetupHubCard[] {
   return cards.filter(
     (card) =>
+      !(legacySurfacesHidden && card.retiredByWizard) &&
       isFeatureHrefVisible(card.href, features) &&
       canSeeAnyRequiredArea(permissionMatrix, card.requiredAreas) &&
       (card.coversStepIds.length === 0 ||

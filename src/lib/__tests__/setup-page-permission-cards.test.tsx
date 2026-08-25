@@ -9,6 +9,22 @@ import {
   type AdminPermissionMatrix,
 } from "@/lib/admin-permissions";
 
+/*
+  The page now calls `useAdminAreaEditAccess("support")` for the setup-surfaces
+  section (epic #213, C8 #223), which reads the session. Mocked here rather than
+  wrapped in a real `SessionProvider` because this file is about the page's
+  matrix-driven conditionals, not about auth: the matrix arrives as a prop, and
+  the session only has to resolve. `support: "edit"` keeps the section in its
+  ordinary editable state so a view-only banner never changes what the
+  assertions below can see.
+*/
+vi.mock("next-auth/react", () => ({
+  useSession: () => ({
+    data: { user: { id: "u1", adminPermissionMatrix: { support: "edit" } } },
+    status: "authenticated",
+  }),
+}));
+
 // The two cross-area cards are mocked to cheap markers: this test exercises the
 // client's matrix-driven conditional (#1548), not the cards' own fetches.
 vi.mock("@/components/admin/lodge-capacity-card", () => ({
@@ -68,6 +84,32 @@ const financeCategory = {
   ],
 };
 
+/*
+  Carries `membership-cancellation` so the Cancellation hub card is not hidden
+  by the APPLICABILITY gate in a test whose subject is the RETIREMENT gate. The
+  two gates are independent and a test that let one stand in for the other would
+  pass for the wrong reason.
+*/
+const bookingCategory = {
+  id: "booking",
+  title: "Booking Rules",
+  description: "Booking policy and membership cancellation.",
+  status: "warning",
+  checks: [
+    {
+      id: "membership-cancellation",
+      title: "Membership Cancellation",
+      description: "Cancellation policy and its message copy.",
+      status: "warning",
+      required: false,
+      message: "Review the cancellation settings.",
+      details: [],
+      href: "/admin/setup/cancellation",
+      progress: "open",
+    },
+  ],
+};
+
 function setupBodyWith(categories: unknown[]) {
   return {
     readiness: {
@@ -85,14 +127,29 @@ function setupBodyWith(categories: unknown[]) {
   };
 }
 
+/*
+  URL-AWARE, and it has to be. The page makes TWO reads now (epic #213, C8
+  #223): the readiness payload, and the setup-surfaces setting the new section
+  loads. A stub that answered both with the readiness body handed the section an
+  `undefined` settings object, which threw inside its loader and took the whole
+  page down — so every assertion below failed for a reason that had nothing to
+  do with what it was testing.
+*/
 function stubSetupFetch(
   body: unknown = setupBodyWith([foundationCategory, financeCategory]),
+  surfaces: { legacySurfacesHidden: boolean } = { legacySurfacesHidden: false },
 ) {
-  const fetchMock = vi.fn(async () => ({
-    ok: true,
-    status: 200,
-    json: async () => body,
-  })) as unknown as typeof fetch;
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : String(input);
+    return {
+      ok: true,
+      status: 200,
+      json: async () =>
+        url.includes("/api/admin/setup/surfaces")
+          ? { settings: surfaces }
+          : body,
+    };
+  }) as unknown as typeof fetch;
   vi.stubGlobal("fetch", fetchMock);
 }
 
@@ -106,11 +163,15 @@ function matrix(
   return { ...emptyAdminPermissionMatrix(), ...overrides };
 }
 
-function renderSetup(overrides: Partial<AdminPermissionMatrix>) {
+function renderSetup(
+  overrides: Partial<AdminPermissionMatrix>,
+  legacySurfacesHidden = false,
+) {
   return render(
     <SetupPageClient
       permissionMatrix={matrix(overrides)}
       features={allOn}
+      legacySurfacesHidden={legacySurfacesHidden}
     />,
   );
 }
@@ -206,6 +267,106 @@ describe("SetupPageClient — permission-aware cross-area cards (#1548)", () => 
     expect(
       container.querySelector('a[href="/admin/setup/foundations"]'),
     ).toBeTruthy();
+  });
+
+  /*
+    Epic #213 D8, C8 (#223) acceptance criterion 3: WHERE the legacy-surfaces
+    setting is hidden, the cards and hub pages are absent — and every capability
+    they exposed stays reachable. The four hub ROUTES are covered by their own
+    server-side redirect (`setup-hub-page-redirect.test.ts`); this is the page
+    half.
+  */
+  describe("with the legacy setup surfaces hidden", () => {
+    beforeEach(() => {
+      vi.unstubAllGlobals();
+      stubSetupFetch(setupBodyWith([foundationCategory, financeCategory]), {
+        legacySurfacesHidden: true,
+      });
+    });
+
+    it("renders no readiness cards and none of the four retired hubs", async () => {
+      const { container } = renderSetup(
+        {
+          support: "edit",
+          finance: "edit",
+          bookings: "edit",
+          lodge: "edit",
+          membership: "edit",
+        },
+        true,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText(/readiness checklist/i)).toBeTruthy();
+      });
+      // The readiness cards' own section heading and one of its cards.
+      expect(screen.queryByText("Readiness checks")).toBeNull();
+      expect(screen.queryByText("Runtime Environment")).toBeNull();
+      for (const href of [
+        "/admin/setup/foundations",
+        "/admin/setup/finance",
+        "/admin/setup/booking-rules",
+        "/admin/setup/integrations",
+      ]) {
+        expect(container.querySelector(`a[href="${href}"]`)).toBeNull();
+      }
+    });
+
+    it("keeps the wizard, and the three hubs the wizard does not replace", async () => {
+      // COVERAGE PARITY, at the render layer. The wizard is the destination, so
+      // its launcher must survive; and the destinations the wizard offers no
+      // route to must keep their entry point rather than disappear with the
+      // four it does replace.
+      vi.unstubAllGlobals();
+      stubSetupFetch(
+        setupBodyWith([foundationCategory, bookingCategory, financeCategory]),
+        { legacySurfacesHidden: true },
+      );
+      const { container } = renderSetup(
+        { support: "edit", membership: "edit" },
+        true,
+      );
+
+      const launcher = await screen.findByRole("link", {
+        name: /Open the setup wizard/,
+      });
+      expect(launcher.getAttribute("href")).toBe("/admin/setup/wizard");
+      expect(
+        container.querySelector('a[href="/admin/membership-setup"]'),
+      ).toBeTruthy();
+      expect(
+        container.querySelector('a[href="/admin/notifications"]'),
+      ).toBeTruthy();
+      expect(
+        container.querySelector('a[href="/admin/setup/cancellation"]'),
+      ).toBeTruthy();
+    });
+
+    it("still offers the switch that put them away", async () => {
+      // The placement argument, asserted rather than assumed: hiding the
+      // surfaces must not hide the control that un-hides them. `getAllByText`
+      // because the hidden-state notice names the section too, which is the
+      // point of the notice.
+      renderSetup({ support: "edit" }, true);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Setup surfaces").length).toBeGreaterThan(0);
+      });
+      expect(
+        await screen.findByLabelText(
+          "Hide the readiness checklist and the setup hubs",
+        ),
+      ).toBeTruthy();
+    });
+  });
+
+  it("shows the setup-surfaces switch when the surfaces are shown too", async () => {
+    renderSetup({ support: "edit" });
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Setup surfaces").length).toBeGreaterThan(0);
+    });
+    expect(screen.getByText("Readiness checks")).toBeTruthy();
   });
 
   it("places KPIs, blockers, hubs, and checks in the expected order", async () => {
