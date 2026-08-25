@@ -79,7 +79,13 @@ finish); use the checklist when you know what you are looking for.
 3. The right-hand pane shows the step's live check — what is outstanding, in the
    same words the checklist uses — with a link through to the settings page
    where that work is actually done. The wizard never becomes a second place to
-   store a setting.
+   store a setting. **Website Styling** is a step of exactly this shape: it
+   links to [Site Style](site-style.md) rather than embedding a second colour
+   picker, and it reports done the moment any colour, font, logo or Raw CSS
+   differs from the shipped defaults — whether that was saved from Site Style
+   directly or by following this step's link. Finishing this step never makes
+   the public site visible; that only happens from **Ready to open** below, or
+   from Site Style's own Finish-setup control.
 4. **Mark this step done**, **Skip for now**, or **Reopen** it, then
    **Continue**. Skipping buys you passage past a step; it does not hide it. A
    skipped step stays on the rail and on the outstanding list until it is done

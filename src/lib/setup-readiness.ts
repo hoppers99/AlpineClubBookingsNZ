@@ -1764,9 +1764,15 @@ function buildWebsiteStylingCheck(
     coloursConfigured || fontsConfigured || logoConfigured || rawCssConfigured;
   const launched = theme ? Boolean(theme.completedAt) : false;
 
+  // Deliberately does not claim "saving here never launches the site" — the
+  // linked page (`/admin/site-style`) keeps its own pre-existing Finish-setup
+  // control, which DOES set `completedAt` (out of scope for #222: "the launch
+  // lever itself"). What this line promises is narrower and true regardless:
+  // THIS step's own controls (Mark done / Skip / Reopen) never do it, and the
+  // wizard's own dedicated place for launching is the final screen.
   const launchDetail = launched
     ? "The public website is already live."
-    : "The public website is not live yet. Launching is a separate step on the wizard's final screen (Ready to open) — saving colours, fonts or a logo here never makes the site visible on its own.";
+    : "The public website is not live yet. Launching from this journey happens on the wizard's final screen (Ready to open), once every step is done or skipped.";
 
   return applyProgress(
     {

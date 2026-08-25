@@ -8,7 +8,9 @@ A wizard that sets the brand colours and fonts used by the public website,
 member area, and admin area, plus the public logo. Find it at **Admin →
 Setup & Configuration → Site Appearance & Content → Site Style**
 (`/admin/site-style`). It has no direct sidebar entry — open it from the
-**Site Style** card on the Site Appearance & Content hub.
+**Site Style** card on the Site Appearance & Content hub, or from the
+**Website Styling** step of the [setup wizard](setup.md)'s guided journey,
+which links here rather than duplicating the wizard.
 
 Site Style is a first-run gate: **the public site — including the membership
 application form — stays hidden until this style is saved once.** Until then
