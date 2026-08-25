@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   DEFAULT_MODULE_SETTINGS,
+  MODULE_DEFINITIONS,
   MODULE_KEYS,
   type ModuleSettingsValues,
 } from "@/config/modules";
@@ -709,5 +710,124 @@ describe("setup step registry guards", () => {
         }),
       ]),
     ).toEqual([]);
+  });
+});
+
+/**
+ * C3 (#218): module-contributed steps now live on `MODULE_DEFINITIONS`
+ * (`src/config/modules.ts`) rather than being declared inline in
+ * `setup-step-registry-definitions.ts`. This section proves the assembly is
+ * behaviour-free (a generic scan of every module's declared steps agrees with
+ * the shipped, hand-spliced registry — see that file's module doc for why the
+ * splice itself is hand-written rather than computed) and exercises the C3
+ * acceptance criteria: a cross-module id collision fails the build naming both
+ * declarers, a colliding `order` is still caught by the existing
+ * position-vs-order guard, unknown module state still fails open over the
+ * assembled registry, and a disabled module's assembled steps still leave the
+ * applicable set (D4).
+ */
+describe("setup step registry — module-contributed assembly (C3, #218)", () => {
+  const localStepDefinition = (
+    id: string,
+    overrides: Partial<SetupStepDefinition> = {},
+  ): SetupStepDefinition => ({
+    id,
+    ownerModule: CORE_STEP_OWNER,
+    prerequisites: [],
+    order: 10,
+    completion: "readiness-check",
+    ...overrides,
+  });
+
+  it("matches a generic scan of MODULE_DEFINITIONS: core steps plus every module's declared steps, sorted by order", () => {
+    // Independent of the hand-written splice in
+    // setup-step-registry-definitions.ts: this walks MODULE_KEYS/
+    // MODULE_DEFINITIONS generically, the way a truly dynamic assembly would,
+    // and asserts the result — ids, orders, owners — is exactly what the
+    // shipped registry contains. A module that gains a `setupSteps` entry
+    // without a matching splice in the definitions file fails HERE, which is
+    // the safety net that file's module doc promises in place of a
+    // type-system guarantee.
+    const coreEntries = SETUP_STEP_REGISTRY.filter(
+      (entry) => entry.ownerModule === CORE_STEP_OWNER,
+    );
+    const moduleEntries = MODULE_KEYS.flatMap((key) =>
+      (MODULE_DEFINITIONS[key].setupSteps ?? []).map((step) => ({
+        id: step.id,
+        order: step.order,
+        ownerModule: key as SetupStepOwner,
+      })),
+    );
+    const scanned = [...coreEntries, ...moduleEntries]
+      .map((entry) => ({
+        id: entry.id,
+        order: entry.order,
+        ownerModule: entry.ownerModule,
+      }))
+      .sort((a, b) => a.order - b.order);
+
+    const shipped = SETUP_STEP_REGISTRY.map((entry) => ({
+      id: entry.id,
+      order: entry.order,
+      ownerModule: entry.ownerModule,
+    }));
+
+    expect(scanned).toEqual(shipped);
+  });
+
+  it("fails the build when two modules declare the same step id, naming both", () => {
+    const violations = findSetupStepRegistryViolations([
+      localStepDefinition("shared-step", { ownerModule: "xeroIntegration" }),
+      localStepDefinition("shared-step", {
+        ownerModule: "financeDashboard",
+        order: 20,
+      }),
+    ]);
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("shared-step");
+    expect(violations[0]).toContain("xeroIntegration");
+    expect(violations[0]).toContain("financeDashboard");
+  });
+
+  it("still catches a module-owned step whose order collides with another step's declared position", () => {
+    // The existing order-vs-position guard is generic over ownerModule — it
+    // never needed a C3-specific extension — but the acceptance criterion asks
+    // for a fixture proving it still fires once the colliding steps are
+    // module-owned rather than both `core`.
+    const violations = findSetupStepRegistryViolations([
+      localStepDefinition("address-autocomplete-fixture", {
+        ownerModule: "addressAutocomplete",
+        order: 140,
+      }),
+      localStepDefinition("xero-operational-fixture", {
+        ownerModule: "xeroIntegration",
+        order: 140,
+      }),
+    ]);
+
+    expect(
+      violations.some((violation) => violation.includes("does not sort after it")),
+    ).toBe(true);
+  });
+
+  it("fails open over the assembled registry when module state is unknown, module-owned steps included", () => {
+    const applicable = getApplicableSetupStepIds(undefined);
+    for (const id of STEPS_SHOWN_BUT_NOT_APPLICABLE_BY_DEFAULT) {
+      expect(applicable).toContain(id);
+    }
+    expect(applicable).toEqual(EXPECTED_STEP_IDS);
+  });
+
+  it("D4: disabling one module excludes exactly its assembled steps, and no others, from the applicable set", () => {
+    const applicable = getApplicableSetupStepIds(
+      moduleFlags({ financeDashboard: false }),
+    );
+
+    expect(applicable).not.toContain("finance-dashboard");
+    // xeroIntegration is still on: both of ITS assembled steps stay applicable.
+    expect(applicable).toContain("xero-operational");
+    expect(applicable).toContain("xero-mappings");
+    expect(applicable).toContain("address-autocomplete");
   });
 });

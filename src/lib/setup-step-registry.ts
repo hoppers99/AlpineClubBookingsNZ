@@ -3,7 +3,8 @@ import { normalizeClubModuleSettings } from "@/lib/module-settings";
 import { SETUP_STEP_DEFINITIONS } from "@/lib/setup-step-registry-definitions";
 
 /**
- * The setup step registry (epic #213, child C1).
+ * The setup step registry (epic #213, child C1; assembly extended by C3
+ * #218).
  *
  * Replaces the hand-maintained `SETUP_STEP_IDS` array that used to live in
  * `setup-readiness.ts`. A step now DECLARES the module that owns it, the steps
@@ -11,11 +12,17 @@ import { SETUP_STEP_DEFINITIONS } from "@/lib/setup-step-registry-definitions";
  * determined; `SETUP_STEP_IDS` is derived from those declarations, so every
  * existing consumer keeps the same export, the same type and the same order.
  *
- * The definitions live in `setup-step-registry-definitions.ts`; this module
- * holds the contract, the derivation, the applicability rule and the guards.
- * Prior art for the split is `config-self-heal.ts` / `config-self-heal-steps.ts`,
- * which solves a different problem (silent repair of missing rows, not an
- * operator journey) with the same shape.
+ * The definitions live in `setup-step-registry-definitions.ts`, which now
+ * assembles them from two sources: the `core` steps declared inline there, and
+ * each module's own steps declared on its `MODULE_DEFINITIONS` entry
+ * (`src/config/modules.ts`, `setupSteps`) — a module declares its wizard steps
+ * where it declares itself, so enabling/disabling code review of a module's
+ * flag surfaces its setup steps in the same diff. This module (this file)
+ * holds the contract, the derivation, the applicability rule and the guards,
+ * all unchanged in shape by that assembly split. Prior art for the split is
+ * `config-self-heal.ts` / `config-self-heal-steps.ts`, which solves a
+ * different problem (silent repair of missing rows, not an operator journey)
+ * with the same shape.
  *
  * Guarantees:
  * - **Derived, not parallel.** `SETUP_STEP_IDS` is computed from the definition
@@ -58,9 +65,9 @@ export type SetupStepOwner = ModuleKey | typeof CORE_STEP_OWNER;
 /**
  * How a step's completion is determined. One member today: every existing step
  * is decided by its own readiness check in `setup-readiness.ts`, keyed by the
- * same id. It is a union rather than a fixed rule so C3 can add a
- * module-contributed step whose completion comes from somewhere else without
- * touching the other declarations.
+ * same id. It is a union rather than a fixed rule so a module-contributed step
+ * (epic #213, child C3) could have its completion come from somewhere else
+ * without touching the other declarations.
  */
 export type SetupStepCompletionSource = "readiness-check";
 
@@ -221,20 +228,33 @@ export function getApplicableSetupStepIds(
  * `config-self-heal-steps.ts` declares a self-heal step named `club-time-zone`,
  * byte-identical to this registry's 17th id and entirely unrelated to it.
  * Treating that as a collision would fail the build over two files that never
- * meet. Cross-registry collision within ONE namespace is C3's guard, when
- * modules start contributing their own steps, and it is namespace-scoped too.
+ * meet. Cross-registry collision WITHIN this one namespace is exactly what the
+ * duplicate-id check below catches now that modules contribute their own steps
+ * (epic #213, C3 #218) — it names both declaring `ownerModule`s so a
+ * cross-module clash reads as "module A and module B both claimed this id",
+ * not merely "this id is duplicated somewhere".
  */
 export function findSetupStepRegistryViolations(
   definitions: readonly SetupStepDefinition[],
 ): string[] {
   const violations: string[] = [];
 
-  const seen = new Set<string>();
+  // Tracks the FIRST definition seen for each id (not just whether the id has
+  // been seen) so a collision message can name both declarers — the module
+  // that owns the id already, and the module that just tried to reuse it
+  // (epic #213, C3 #218). Two core steps colliding both read "core", which is
+  // still useful: it says the id clash is inside the core set, not across a
+  // module boundary.
+  const seen = new Map<string, SetupStepDefinition>();
   for (const definition of definitions) {
-    if (seen.has(definition.id)) {
-      violations.push(`Duplicate setup step id: "${definition.id}"`);
+    const first = seen.get(definition.id);
+    if (first) {
+      violations.push(
+        `Duplicate setup step id: "${definition.id}" declared by module "${first.ownerModule}" and module "${definition.ownerModule}"`,
+      );
+    } else {
+      seen.set(definition.id, definition);
     }
-    seen.add(definition.id);
   }
 
   // Degenerate ids and orders would otherwise pass every check below
