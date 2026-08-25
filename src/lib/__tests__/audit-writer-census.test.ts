@@ -1275,7 +1275,12 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // maps, so they land unpinned like every other new feature's writers. 458
     // sites measured minus 127 pinned; `pinned` is unchanged, so no existing
     // classification moved here either.
-    ).toEqual({ pinned: 127, unpinned: 331 });
+    // 331 -> 332 (setup wizard C8, #223): the setup-surfaces visibility writer.
+    // Categorised `system` at the site and named in none of the four per-site
+    // maps, so it lands unpinned like every other new feature's writer. 459
+    // sites measured minus 127 pinned; `pinned` is unchanged, so no existing
+    // classification moved here either.
+    ).toEqual({ pinned: 127, unpinned: 332 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

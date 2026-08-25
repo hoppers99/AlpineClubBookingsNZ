@@ -584,11 +584,11 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  458
+row-producing sites:  459
 uncategorised:        0
 category values: admin 105, booking 101, xero 34, family 35, payment 37,
                  lodge 65, account 19, security 22, privacy 19,
-                 communication 14, system 6
+                 communication 14, system 7
 ```
 
 `admin` was 96 when this page was written for #2730 (87 kept + 9 held) and is 98
@@ -631,9 +631,17 @@ delta on this page that touches the WEAKEST gate: `system` is readable with
 `support:view` alone. It widens nobody's access all the same, because the five
 setup-progress transition rows beside them are already `system` and already
 readable by exactly that operator, and neither new row names a member, a
-booking or an amount. That is the figure above, and it was taken from
+booking or an amount. Since then the same epic's C8 (#223) added the
+setup-surfaces visibility record (`system` 6 → 7, 458 → 459) — which setup
+SURFACES a club has chosen to show, the readiness cards and the four
+`/admin/setup` drill-down hubs the wizard replaces. It is `system` for the same
+reason as the pair before it (the affected domain is the club's setup journey,
+not an administrator's own settings), it touches the same weakest gate, and it
+widens nobody's access for the same reason: the seven setup rows beside it are
+already `system` and already readable by exactly that operator, and it names no
+member, booking or amount. That is the figure above, and it was taken from
 `npm run audit:census` on the merged tree rather than by adding one branch's
-delta to the other's total. The category values sum to 457 rather than 458
+delta to the other's total. The category values sum to 458 rather than 459
 because one site forwards its category rather than naming one.
 
 The 22 moves are pinned **per site**, not only by that
