@@ -15,6 +15,7 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
+import { SetupStepLinks } from "@/components/admin/setup-step-links";
 import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
 import type { SetupWizardStepDetail } from "@/lib/setup-wizard-view";
 import { setupWizardStepLabel } from "./setup-wizard-rail";
@@ -151,6 +152,11 @@ export function SetupWizardStepFrame({
             ))}
           </ul>
         ) : null}
+
+        {/* Per-lodge destinations (C6, #221): a list whose length is the
+            club's own, which the single `href` below cannot express. The
+            readiness cards render the same component. */}
+        <SetupStepLinks links={step.links} testId="setup-wizard-step-links" />
 
         {step.href ? (
           <div className="space-y-1">

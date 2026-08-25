@@ -156,6 +156,36 @@ export interface RecomputeSetupStaleStepIdsInput {
  * make consistent with the progress row anyway, and holding a connection open
  * across it would put a two-dozen-query read inside a write transaction for no
  * isolation gained.
+ *
+ * IT IS THE WHOLE SNAPSHOT, INCLUDING READS THIS FUNCTION CANNOT USE (#221
+ * review). The lodges step added two more table reads to it — active rooms and
+ * active beds, tallied per lodge — and staleness derives only from the
+ * prerequisite graph, on which the lodges step has none. So those two reads
+ * cannot move this function's answer, and every read here can only make the
+ * refusal above more likely.
+ *
+ * Taking a narrowed snapshot was considered and DECLINED, on three grounds
+ * rather than one:
+ *
+ *  - the two reads join a read that was already two dozen queries wide, on the
+ *    same pool, outside any transaction. That is a marginally higher chance of
+ *    an outcome whose handling is already correct — refuse the transition and
+ *    keep the stored set — not a new failure mode;
+ *  - a narrowed snapshot would report `activeRoomCount: 0` where the truth is
+ *    "not read". `SetupDatabaseSnapshot` is shared with both report routes, and
+ *    `buildLodgesCheck` renders those counts into operator-facing detail lines,
+ *    so a second silently-degraded variant of the same type is a thing waiting
+ *    to be rendered somewhere it should not be. Making it honest instead —
+ *    counts that are absent rather than zero — ripples through the readiness
+ *    type and every consumer of it, which is no longer a small change;
+ *  - "cannot influence the answer" is true because no step declares `lodges` as
+ *    a prerequisite. A narrowed snapshot would turn that into a silent
+ *    correctness coupling: the first step to declare one would be judged
+ *    against a degraded lodges status here, and mark the wrong steps stale. The
+ *    full snapshot has no such edge.
+ *
+ * Revisit if the snapshot grows expensive enough to matter, and narrow it by
+ * making the missing fields UNREADABLE rather than zero if you do.
  */
 export async function recomputeSetupStaleStepIds(
   input: RecomputeSetupStaleStepIdsInput,

@@ -304,6 +304,23 @@ export default function AdminLodgesPage() {
               The door code and travel note appear in booking and pre-arrival
               emails for this lodge.
             </CardDescription>
+            {creating ? (
+              /*
+                #221: a new lodge is created INACTIVE, so say so before the
+                operator presses the button rather than leaving them to notice
+                the badge afterwards. Saving drops straight into the guided
+                setup, whose last step is where activation happens.
+              */
+              <p
+                className="mt-2 text-sm text-muted-foreground"
+                data-testid="lodge-create-inactive-hint"
+              >
+                A new lodge is not open for booking until you activate it.
+                Saving takes you into its guided setup, and the last step is
+                where you turn it on — so nothing half-configured can reach a
+                member in the meantime.
+              </p>
+            ) : null}
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">

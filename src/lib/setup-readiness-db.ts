@@ -9,6 +9,7 @@ import { CLUB_THEME_ID } from "@/lib/club-theme-schema";
 import { resolveEnvironmentRole } from "@/lib/environment-role";
 import { readWithheldApplicationEmail } from "@/lib/environment-safety-withheld";
 import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
+import { lodgeOrderBy } from "@/lib/lodges";
 import {
   computeMembershipTypeRateGaps,
   type SetupDatabaseSnapshot,
@@ -95,6 +96,9 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     clubTimeSettings,
     publicContentSettings,
     clubTheme,
+    lodgeRows,
+    activeRoomRows,
+    activeBedRows,
   ] = await Promise.all([
     prisma.member.count({ where: { role: "ADMIN", active: true } }),
     // Use the canonical select (src/config/modules.ts) rather than a
@@ -206,7 +210,66 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
         completedAt: true,
       },
     }),
+    // The lodges step's raw material (epic #213 C6, #221). Three plain reads
+    // rather than one filtered relation count: the room and bed counts this
+    // check reports are ACTIVE rows only, and tallying two small id lists says
+    // that in a way nobody has to check the Prisma version for. At club scale
+    // these are tens of rows.
+    //
+    // `lodgeOrderBy()` is the canonical order (createdAt, then id) that
+    // `getDefaultLodgeId`'s fallback and every lodge list already use, so the
+    // detail lines read in the same order as the Lodges page.
+    prisma.lodge.findMany({
+      orderBy: lodgeOrderBy(),
+      select: { id: true, name: true, active: true, isDefault: true },
+    }),
+    prisma.lodgeRoom.findMany({
+      where: { active: true },
+      select: { id: true, lodgeId: true },
+    }),
+    prisma.lodgeBed.findMany({
+      where: { active: true, room: { active: true } },
+      select: { roomId: true },
+    }),
   ]);
+
+  // Tally the active beds onto their lodge through their room. A bed in a
+  // DEACTIVATED room is already excluded by the query above, so a lodge's bed
+  // count never counts a bed no booking could use.
+  const lodgeIdByRoomId = new Map(
+    activeRoomRows.map((room) => [room.id, room.lodgeId]),
+  );
+  const activeRoomCountByLodgeId = new Map<string, number>();
+  for (const room of activeRoomRows) {
+    activeRoomCountByLodgeId.set(
+      room.lodgeId,
+      (activeRoomCountByLodgeId.get(room.lodgeId) ?? 0) + 1,
+    );
+  }
+  const activeBedCountByLodgeId = new Map<string, number>();
+  for (const bed of activeBedRows) {
+    const lodgeId = lodgeIdByRoomId.get(bed.roomId);
+    // NOT an impossible branch, and not defensive padding. The lodge, room and
+    // bed rows come from three SEPARATE queries with no snapshot isolation
+    // between them, so a room deactivated in the gap after the room read leaves
+    // its beds in `activeBedRows` with no entry in `lodgeIdByRoomId`. Dropping
+    // such a bed is the right answer: the later read is the fresher one, and it
+    // says the room is closed. This is a readiness report, not a capacity
+    // decision — nothing here is locked and nothing needs to be.
+    if (!lodgeId) continue;
+    activeBedCountByLodgeId.set(
+      lodgeId,
+      (activeBedCountByLodgeId.get(lodgeId) ?? 0) + 1,
+    );
+  }
+  const lodges = lodgeRows.map((lodge) => ({
+    id: lodge.id,
+    name: lodge.name,
+    active: lodge.active,
+    isDefault: lodge.isDefault,
+    activeRoomCount: activeRoomCountByLodgeId.get(lodge.id) ?? 0,
+    activeBedCount: activeBedCountByLodgeId.get(lodge.id) ?? 0,
+  }));
 
   // The canonical select above (CLUB_MODULE_SETTINGS_COLUMN_SELECT) also
   // carries the two audit columns (updatedAt, updatedByMemberId) that this
@@ -482,5 +545,6 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
           completedAt: clubTheme.completedAt?.toISOString() ?? null,
         }
       : null,
+    lodges,
   };
 }

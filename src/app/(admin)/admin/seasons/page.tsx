@@ -49,7 +49,7 @@ export default function SeasonsPage() {
     failed: lodgeOptionsFailed,
     forbidden: lodgeOptionsForbidden,
     reload: reloadLodgeOptions,
-  } = useLodgeOptions("admin")
+  } = useLodgeOptions("configuration")
   const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation)
   /*
     #2701: a FAILED lodge list is not "a club with no lodges", but until now the

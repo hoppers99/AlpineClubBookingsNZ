@@ -130,6 +130,12 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
   "auth-secret-strength": "support",
   "seed-admin": "membership",
   "feature-flags": "support",
+  // The club's buildings (C6, #221). `/admin/lodges` — and the per-lodge setup
+  // flow the step's per-lodge links point at — are registered under `lodge` in
+  // `ROUTE_AREA_PREFIXES`, and `lodge` is also the area whose officers own the
+  // buildings. Admission answer and editorial answer agree, so this is one of
+  // the mechanical entries rather than one of the four judged edges above.
+  lodges: "lodge",
   // Booking rules.
   "booking-policies": "bookings",
   "membership-cancellation": "support",
@@ -270,6 +276,12 @@ export interface SetupWizardStepDetail extends SetupWizardRailStep {
   readonly message: string;
   readonly details: readonly string[];
   readonly href?: string;
+  /**
+   * Extra destinations beside `href` (C6, #221) — the lodges step's one link
+   * per lodge. Always an array, empty for every other step, so the frame can
+   * render it without a null check.
+   */
+  readonly links: readonly { label: string; href: string }[];
   readonly required: boolean;
   readonly progress: SetupReadinessCheck["progress"];
   readonly status: SetupReadinessCheck["status"];
@@ -325,6 +337,7 @@ export function buildSetupWizardView(
       message: check?.message ?? "",
       details: check?.details ?? [],
       href: check?.href,
+      links: check?.links ?? [],
       required: check?.required ?? false,
       progress: check?.progress ?? "open",
       status: check?.status ?? "not_started",

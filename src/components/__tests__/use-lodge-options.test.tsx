@@ -80,6 +80,78 @@ describe("useLodgeOptions", () => {
     expect(result.current.failed).toBe(false);
   });
 
+  it("drops inactive lodges for the MEMBER scope too", async () => {
+    // #221 widened one scope and one scope only. Nothing a member, a booking
+    // flow, a board or a screen draws its vocabulary from may gain a lodge that
+    // is not open — those lists are the same filtered list they always were.
+    stubFetch(() =>
+      OK([
+        { id: "lodge-1", name: "Alpine Lodge", active: true },
+        { id: "lodge-2", name: "Closed Lodge", active: false },
+      ]),
+    );
+
+    const { result } = renderHook(() => useLodgeOptions("member"));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.lodges.map((lodge) => lodge.id)).toEqual(["lodge-1"]);
+  });
+
+  it("KEEPS inactive lodges for the configuration scope, carrying `active`", async () => {
+    /*
+      #221 — the five full editors (Rooms & Beds, Lockers, Seasons, Fees,
+      Chores) are where a lodge created inactive gets its inventory built, and
+      their routes already accept it via `resolveOptionalConfigurableLodgeId`.
+      Filtering it out here was the client half of the same question answered
+      the other way, and it did not fail loudly: `LodgeSelect` substituted an
+      open lodge and every write went there instead.
+
+      `active` has to travel with the row, because the selector needs it both to
+      label the option and to refuse to auto-select it.
+    */
+    stubFetch(() =>
+      OK([
+        { id: "lodge-1", name: "Alpine Lodge", active: true },
+        { id: "lodge-2", name: "New Lodge", active: false },
+      ]),
+    );
+
+    const { result } = renderHook(() => useLodgeOptions("configuration"));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.lodges).toEqual([
+      {
+        id: "lodge-1",
+        name: "Alpine Lodge",
+        travelNote: undefined,
+        active: true,
+      },
+      { id: "lodge-2", name: "New Lodge", travelNote: undefined, active: false },
+    ]);
+  });
+
+  it("reads an omitted `active` as open in the configuration scope", async () => {
+    // A row with no `active` field is an open lodge everywhere else in this
+    // file; the configuration scope must not turn the absence into `false` and
+    // label a perfectly open lodge closed.
+    stubFetch(() => OK([{ id: "lodge-1", name: "Alpine Lodge" }]));
+
+    const { result } = renderHook(() => useLodgeOptions("configuration"));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.lodges[0]?.active).toBe(true);
+  });
+
+  it("asks the ADMIN endpoint for the configuration scope", async () => {
+    // It is a wider view of the same admin list, not a third endpoint.
+    const fetchMock = stubFetch(() => OK([]));
+
+    const { result } = renderHook(() => useLodgeOptions("configuration"));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/admin/lodges");
+  });
+
   it("reports a server error as FAILED", async () => {
     stubFetch(() => ({ ok: false, status: 500, json: async () => ({}) }));
 

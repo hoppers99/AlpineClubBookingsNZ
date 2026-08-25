@@ -22,6 +22,7 @@ function detail(overrides: Partial<SetupWizardStepDetail> = {}): SetupWizardStep
     description: "Holds, lead times and cut-offs.",
     message: "Booking policy defaults are unset.",
     details: ["Hold window: not set"],
+    links: [],
     href: "/admin/booking-policies",
     required: true,
     progress: "open",
@@ -146,6 +147,43 @@ describe("SetupWizardStepFrame", () => {
     const open = renderFrame({ launchUnlocked: true });
     fireEvent.click(screen.getByTestId("setup-wizard-continue"));
     expect(open.onOpenLaunch).toHaveBeenCalled();
+  });
+
+  /*
+    Per-lodge destinations (C6, #221). The lodges step needs a list whose length
+    is the club's own — one link per lodge — which the single `href` cannot
+    express, so the frame renders `links` as well. Every other step supplies an
+    empty array and gets nothing, which is the part worth pinning: a new field
+    on a shared view model must not put a stray empty list on the other
+    nineteen steps, none of which asked for one.
+  */
+  it("renders one link per entry in `links`, beside the settings link", () => {
+    renderFrame({
+      step: detail({
+        id: "lodges" as SetupStepId,
+        title: "Lodges",
+        href: "/admin/lodges",
+        links: [
+          { label: "Review Example Lodge's setup", href: "/admin/lodges/a/setup" },
+          { label: "Finish setting up River Lodge", href: "/admin/lodges/b/setup" },
+        ],
+      }),
+    });
+    const list = screen.getByTestId("setup-wizard-step-links");
+    const anchors = list.querySelectorAll("a");
+    expect([...anchors].map((a) => a.getAttribute("href"))).toEqual([
+      "/admin/lodges/a/setup",
+      "/admin/lodges/b/setup",
+    ]);
+    expect(list.textContent).toContain("Finish setting up River Lodge");
+    // The step's own settings link is still there and is still the single
+    // "open the settings for this step" affordance.
+    expect(screen.getByText("Open the settings for this step")).toBeTruthy();
+  });
+
+  it("renders nothing at all for a step with no links", () => {
+    renderFrame();
+    expect(screen.queryByTestId("setup-wizard-step-links")).toBeNull();
   });
 
   it("says plainly what a skipped step and a stale step mean", () => {

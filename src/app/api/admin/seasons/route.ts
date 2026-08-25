@@ -6,7 +6,7 @@ import { logAudit } from "@/lib/audit"
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only"
 import {
   lodgeNullTolerantScope,
-  resolveOptionalActiveLodgeId,
+  resolveOptionalConfigurableLodgeId,
 } from "@/lib/lodges"
 import { revalidatePublicPageContent } from "@/lib/public-content-revalidation"
 import {
@@ -92,10 +92,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: rateError }, { status: 400 })
   }
 
-  const lodgeId = await resolveOptionalActiveLodgeId(prisma, parsed.data.lodgeId)
+  // #221: the CONFIGURATION resolver, not the active-only one. A lodge created
+  // through the admin route starts inactive and is activated at the end of its
+  // per-lodge setup flow, so this write has to reach a lodge that is not active
+  // yet — that is the whole point of it. Nothing here becomes bookable: the
+  // booking surfaces enforce `Lodge.active` themselves. An unknown id is still
+  // refused. See docs/multi-lodge/lodge-scoping-contract.md.
+  const lodgeId = await resolveOptionalConfigurableLodgeId(prisma, parsed.data.lodgeId)
   if (!lodgeId) {
     return NextResponse.json(
-      { error: "Lodge not found or not active" },
+      { error: "Lodge not found" },
       { status: 400 }
     )
   }

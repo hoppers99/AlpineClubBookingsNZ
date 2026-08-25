@@ -7,10 +7,16 @@ export type SettledLodgeOptionScope =
   | { kind: "failed" }
   | { kind: "forbidden" }
   | { kind: "empty" }
+  | { kind: "closed" }
   | { kind: "all" }
   | { kind: "lodge"; lodgeId: string; lodgeName: string }
 
-type LodgeOption = { id: string; name: string }
+/**
+ * `active` is absent on every list except the CONFIGURATION scope of the
+ * lodge-options hook (see `lodge-select.tsx`'s `LodgeOption` doc); an absent
+ * value reads as open, matching that hook's own contract.
+ */
+type LodgeOption = { id: string; name: string; active?: boolean }
 
 export function deriveSettledLodgeOptionScope(input: {
   lodges: readonly LodgeOption[]
@@ -77,9 +83,25 @@ export function deriveSettledLodgeOptionScope(input: {
   const lodge = input.lodges.find(
     (option) => option.id === input.selectedLodgeId,
   )
-  return lodge
-    ? { kind: "lodge", lodgeId: lodge.id, lodgeName: lodge.name }
-    : { kind: "loading" }
+  if (lodge) {
+    return { kind: "lodge", lodgeId: lodge.id, lodgeName: lodge.name }
+  }
+  /*
+    No value matches a row. If at least one lodge in the list is OPEN, this is
+    transient: `LodgeSelect`'s own effect (ADR-002) is about to auto-select
+    the first open lodge and drive a fresh render with `selectedLodgeId` set,
+    so "loading" here means "about to settle", not "stuck".
+
+    But when every lodge in the list is closed — reachable only on a
+    CONFIGURATION list (#221), and only when nothing has named one of them —
+    `LodgeSelect` renders nothing and calls no `onChange`: the sole-lodge rule
+    counts OPEN lodges only, so `open[0]` is `undefined` and there is nothing
+    left to auto-select. Reporting "loading" forever there hides a state the
+    operator can act on (open a lodge) behind a state that promises to
+    resolve itself and never does.
+  */
+  const anyOpen = input.lodges.some((option) => option.active !== false)
+  return anyOpen ? { kind: "loading" } : { kind: "closed" }
 }
 
 export function settledLodgeId(

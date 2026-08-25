@@ -176,12 +176,37 @@ export async function PATCH(
       select: lodgeSelect,
     });
 
+    /*
+      THE ACTION IS A FACT ABOUT THE TRANSITION, so it is read from the row this
+      transaction locked and re-read — never from the request (#221 review).
+
+      Taking it from `data.active` alone meant a request that merely RESTATED
+      the lodge's current state wrote a transition that did not happen. That is
+      not hypothetical here: the setup flow's Activate button sends
+      `{ active: true }`, and a stale tab left open on a lodge somebody else has
+      already opened sends it again — producing a second `LODGE_ACTIVATED` whose
+      own metadata says `previousLodge.active: true` and `newLodge.active: true`.
+      An audit row that contradicts itself is worse than no row: it is the
+      history an operator reaches for when working out who opened a lodge and
+      when.
+
+      `null` means no transition, which is an ordinary `LODGE_UPDATED` — the
+      write still happened and the request still named `active`, so it is
+      recorded, just not as something it was not. `forcedDeactivation` reads off
+      the same value for the same reason: a `force` that closed nothing did not
+      force anything.
+    */
+    const activation =
+      data.active === undefined || data.active === lockedExisting.active
+        ? null
+        : data.active;
+
     await tx.auditLog.create(
       buildStructuredAuditLogCreateArgs({
         action:
-          data.active === undefined
+          activation === null
             ? "LODGE_UPDATED"
-            : data.active
+            : activation
               ? "LODGE_ACTIVATED"
               : "LODGE_DEACTIVATED",
         actor: { memberId: session.user.id },
@@ -190,17 +215,16 @@ export async function PATCH(
         severity: "important",
         outcome: "success",
         summary:
-          data.active === undefined
+          activation === null
             ? "Lodge updated"
-            : data.active
+            : activation
               ? "Lodge activated"
               : "Lodge deactivated",
         metadata: {
           changedFields: Object.keys(data),
           previousLodge: redactLodgeForAudit(serializeLodge(lockedExisting)),
           newLodge: redactLodgeForAudit(serializeLodge(lodge)),
-          forcedDeactivation:
-            data.active === false && parsed.data.force === true,
+          forcedDeactivation: activation === false && parsed.data.force === true,
         },
         request: getAuditRequestContext(request),
       }),

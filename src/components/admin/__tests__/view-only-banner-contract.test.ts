@@ -339,12 +339,20 @@ const FIGURES = {
    * makes the public site visible. All four are STATIC opt-outs — each of the
    * two files renders its own banner — so `optOuts` and `staticOptOuts` move by
    * the same four and the vouched split is untouched.
+   *
+   * 342 -> 343 (#221, the lodges setup step): the per-lodge setup flow's finish
+   * step gates the control that ACTIVATES the new lodge — a new lodge is now
+   * created inactive, so that button is the one place a lodge becomes bookable.
+   * A STATIC opt-out: `lodges/[id]/setup/page.tsx` already heads the whole flow
+   * with one banner, hoisted above its early returns and rendered in every
+   * branch, and its five sibling controls opt out the same way. So `optOuts`
+   * and `staticOptOuts` move by the same one and the vouched split is untouched.
    */
-  callSites: 342,
+  callSites: 343,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 289,
+  optOuts: 290,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 255,
+  staticOptOuts: 256,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *

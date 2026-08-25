@@ -84,6 +84,7 @@ function stubView(
     description: "",
     message: "",
     details: [] as string[],
+    links: [] as { label: string; href: string }[],
     required: false,
     progress: "open" as const,
     status: "not_started" as const,

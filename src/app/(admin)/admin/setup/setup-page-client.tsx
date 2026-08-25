@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SetupStepLinks } from "@/components/admin/setup-step-links";
 import {
   Card,
   CardContent,
@@ -52,6 +53,7 @@ interface SetupStepCheck {
   message: string;
   details: string[];
   href?: string;
+  links?: { label: string; href: string }[];
   progress: ProgressStatus;
   action?: {
     type: "provider-test";
@@ -600,6 +602,7 @@ export function SetupPageClient({
                               ))}
                             </ul>
                           ) : null}
+                          <SetupStepLinks links={check.links} />
 
                           {result ? (
                             <div

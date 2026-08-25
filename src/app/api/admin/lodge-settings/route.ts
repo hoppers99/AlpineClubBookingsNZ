@@ -7,25 +7,40 @@ import {
   loadLodgeSettings,
   updateLodgeSettings,
 } from "@/lib/lodge-settings";
+import { resolveOptionalConfigurableLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
 import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
-// Per-lodge scope (lodge-scoping contract): an explicit lodgeId must name
-// an active lodge; omitted keeps the legacy single-row behaviour.
+/*
+  Per-lodge scope (lodge-scoping contract): an explicit lodgeId must name a real
+  lodge; omitted keeps the legacy single-row behaviour.
+
+  #221 — this is a CONFIGURATION surface, so `active` is not consulted. A
+  per-lodge capacity override is part of setting a lodge up, and the flow that
+  sets one up reaches this route: the setup flow's finish step offers "Open
+  lodge configuration", whose page reads this route on load and writes the
+  capacity override from its own editor. While the check was active-only, that
+  GET failed silently (`/admin/lodges/[id]` swallows a non-ok response) and the
+  PUT answered "Lodge not found or not active" for a lodge the operator was
+  plainly looking at.
+
+  An unknown id is still refused, which is the half that matters: this is the
+  `resolveOptionalConfigurableLodgeId` contract, and calling the helper rather
+  than re-deriving it is what puts this route on the census in
+  `lodge-configurable-resolution.test.ts`. The OMITTED case deliberately does
+  NOT take the helper's default-lodge fallback — `null` here means the legacy
+  club-wide single row, which `loadLodgeSettings` and `updateLodgeSettings` both
+  key on, and resolving it to a lodge id would silently move which row this
+  route reads and writes.
+*/
 async function validateLodgeScope(lodgeId: string | null | undefined) {
   if (!lodgeId) return { ok: true as const };
-  const lodge = await prisma.lodge.findUnique({
-    where: { id: lodgeId },
-    select: { active: true },
-  });
-  if (!lodge?.active) {
+  const resolved = await resolveOptionalConfigurableLodgeId(prisma, lodgeId);
+  if (!resolved) {
     return {
       ok: false as const,
-      response: NextResponse.json(
-        { error: "Lodge not found or not active" },
-        { status: 400 },
-      ),
+      response: NextResponse.json({ error: "Lodge not found" }, { status: 400 }),
     };
   }
   return { ok: true as const };
