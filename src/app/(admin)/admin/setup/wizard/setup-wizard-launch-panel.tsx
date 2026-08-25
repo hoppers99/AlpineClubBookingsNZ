@@ -90,6 +90,19 @@ const ENVIRONMENT_DECIDED_BY_LABEL: Record<SetupWizardEnvironmentDecidedBy, stri
 };
 
 /**
+ * Copied — not imported — from `DECLARE_IT_NOTE` (`environment-role.ts:301-305`)
+ * and `ENVIRONMENT_ROLE_VERSUS_RUNTIME_ROLE_DETAIL`
+ * (`setup-readiness.ts:1076-1077`), which both attach this same warning to
+ * every repair instruction they give. This component may not runtime-import
+ * either source: `environment-role` sits in the client-server boundary
+ * census's `FORBIDDEN_MODULES`, and `setup-readiness` would widen the client
+ * bundle for no reason a type-only reference needs. A drift pass should diff
+ * this sentence against both source constants when either changes.
+ */
+const APP_RUNTIME_ROLE_WARNING =
+  'APP_RUNTIME_ROLE is a different variable — on the staging stack it holds the literal word "staging" — and changing it does not declare the environment role.';
+
+/**
  * The withheld-email line, distinguishing upstream's four outcome kinds rather
  * than collapsing "mail might not be arriving" to a binary (#224 AC):
  *
@@ -98,8 +111,8 @@ const ENVIRONMENT_DECIDED_BY_LABEL: Record<SetupWizardEnvironmentDecidedBy, stri
  * - **blocked** — nothing has declared which installation this is, so
  *   delivery fails closed. A fault with a one-line fix (the UNKNOWN banner).
  * - **failed** — the live site ALSO declares a mail capture, so every message
- *   is refused outright. A fault, and the one state a PRODUCTION installation
- *   can be in.
+ *   is refused outright. A fault, and it can ONLY be read while role is
+ *   PRODUCTION — see below.
  * - **business-withheld** — a club's own per-booking "No emails" switch.
  *   Entirely unrelated to environment safety and deliberately not counted in
  *   the number below (`environment-safety-withheld.ts` names why); named in
@@ -109,13 +122,36 @@ const ENVIRONMENT_DECIDED_BY_LABEL: Record<SetupWizardEnvironmentDecidedBy, stri
  * `suppressed` and `blocked` share one counted total on the payload (upstream's
  * own design — see `environment-safety-admin-state.ts`), disambiguated by the
  * ROLE beside it: a NON_PRODUCTION count is suppressed, an UNKNOWN count is
- * blocked. `failed` is `captureInProduction`, a subset of that same total
- * broken out because it is the one PRODUCTION-compatible fault.
+ * blocked.
+ *
+ * `captureInProduction` IS READ ONLY UNDER role === "PRODUCTION" (#224 fix
+ * round, F1/F2). `setup-readiness.ts`'s `buildEnvironmentRoleCheck` only ever
+ * inspects this counter inside its own PRODUCTION branch, and its NON_PRODUCTION
+ * and UNKNOWN branches call a `describeWithheldEmail` that has never heard of
+ * it. This matters because the counter is a PERMANENT historical total —
+ * `SKIPPED_NON_PRODUCTION` rows never expire — and a staging copy restored from
+ * a live production dump (the whole premise of this epic) inherits whatever
+ * `captureInProduction` count the production instance had accrued before the
+ * restore. Reading that counter under a CURRENT role of NON_PRODUCTION or
+ * UNKNOWN would print "this installation says it is BOTH the live site and a
+ * mail capture" about a confirmed, correctly-declared copy — which is false and
+ * sends an operator hunting for a fault that is not theirs.
+ *
+ * The earlier version of this function read `captureInProduction` before role
+ * at all, which is exactly that bug (#224 review F1/F2).
+ *
+ * A PRODUCTION installation with `captureInProduction === 0` gets no line here
+ * at all — the caller renders nothing — matching `setup-readiness.ts`'s own
+ * comment on its role-gated withheld line: "Not rendered for PRODUCTION, where
+ * nothing is held back for this reason and the line would be noise." That holds
+ * whatever the (irrelevant, historical) total `count` says, because
+ * `SKIPPED_NON_PRODUCTION` rows from a former life as a copy persist forever and
+ * are not this installation's business now that it is confirmed live.
  */
 function describeWithheldEmail(
   role: SetupWizardEnvironmentRole,
   withheld: SetupWizardWithheldEmail,
-): { headline: string; detail: string } {
+): { headline: string; detail: string } | null {
   if (!withheld.available) {
     return {
       headline: "Could not be counted",
@@ -123,7 +159,10 @@ function describeWithheldEmail(
         "That is not the same as none: one says nothing has been held back, the other says nobody knows. Apply any pending database migrations, then check again.",
     };
   }
-  if (withheld.captureInProduction > 0) {
+  if (role === "PRODUCTION") {
+    if (withheld.captureInProduction === 0) {
+      return null;
+    }
     const count = withheld.captureInProduction;
     return {
       headline: `${count} message${count === 1 ? "" : "s"} FAILED — this installation says it is BOTH the live site and a mail capture`,
@@ -164,6 +203,9 @@ function EnvironmentRoleSection({
   safety: SetupWizardEnvironmentSafety;
 }) {
   const withheld = describeWithheldEmail(safety.role, safety.withheldEmail);
+  // `null` is PRODUCTION with nothing held back for this reason — the row
+  // would be noise on a healthy live site, so it is not rendered at all (see
+  // `describeWithheldEmail`'s docblock).
   return (
     <div
       className="space-y-3 rounded-md border p-4"
@@ -196,13 +238,32 @@ function EnvironmentRoleSection({
           <p className="font-medium text-danger-11">
             Nothing has declared what this installation is, so it is paused.
           </p>
+          {/*
+            Two different causes land here, and the old wording only fit one of
+            them (#224 fix round, F3). `environment-role.ts`'s own precedence
+            rule (branch 2 vs branch 4b) sends {role: "UNKNOWN", decidedBy:
+            "unresolved"} for BOTH "nothing declared" and "declared, but the
+            safer-override record could not be read" — an unreadable override
+            fails closed to UNKNOWN even under a declared production. Telling
+            the second operator to set a variable that is already set sends
+            them looking in the wrong place, so this now names both repairs and
+            leaves which one applies to the readiness step / Admin ›
+            Environment, which can actually tell them apart.
+          */}
           <p className="text-danger-11">
             Email to members and writes to the club&apos;s Xero organisation do
             not run until it is declared — guessing wrong would mean emailing
             real members from a test copy. Set{" "}
             <code>APP_ENVIRONMENT_ROLE</code> to <code>production</code> or{" "}
             <code>non-production</code> in this deployment&apos;s{" "}
-            <code>.env</code>, then restart.
+            <code>.env</code>, then restart. {APP_RUNTIME_ROLE_WARNING}
+          </p>
+          <p className="text-danger-11">
+            If it is already set, the safer override&apos;s own record may
+            instead be unreadable — repair with{" "}
+            <code>prisma migrate deploy</code> or restored database access. See
+            the Production Or Non-Production step earlier in this wizard, or
+            Admin &rsaquo; Environment, for which cause applies here.
           </p>
         </div>
       ) : null}
@@ -223,18 +284,20 @@ function EnvironmentRoleSection({
         </p>
       ) : null}
 
-      <div className="space-y-1 rounded-md border bg-muted p-3">
-        <p className="text-sm font-medium text-foreground">
-          Application email held back for environment safety
-        </p>
-        <p className="text-sm text-foreground">{withheld.headline}</p>
-        <p className="text-xs text-muted-foreground">{withheld.detail}</p>
-        <p className="text-xs text-muted-foreground">
-          This is separate from a club turning email off for one booking
-          (its own &quot;No emails&quot; switch) — that is a deliberate,
-          per-booking choice and is never part of this count.
-        </p>
-      </div>
+      {withheld ? (
+        <div className="space-y-1 rounded-md border bg-muted p-3">
+          <p className="text-sm font-medium text-foreground">
+            Application email held back for environment safety
+          </p>
+          <p className="text-sm text-foreground">{withheld.headline}</p>
+          <p className="text-xs text-muted-foreground">{withheld.detail}</p>
+          <p className="text-xs text-muted-foreground">
+            This is separate from a club turning email off for one booking
+            (its own &quot;No emails&quot; switch) — that is a deliberate,
+            per-booking choice and is never part of this count.
+          </p>
+        </div>
+      ) : null}
 
       <Link
         href="/admin/environment"

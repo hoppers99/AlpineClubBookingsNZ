@@ -1,4 +1,6 @@
 import type { AdminPermissionArea, AdminPermissionMatrix } from "@/lib/admin-permissions";
+import type { EnvironmentRole, EnvironmentRoleDecidedBy } from "@/lib/environment-role";
+import type { WithheldApplicationEmail } from "@/lib/environment-safety-withheld";
 import type { SetupReadiness } from "@/lib/setup-readiness";
 import type { SetupStepId } from "@/lib/setup-step-registry";
 import type {
@@ -153,37 +155,44 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
 };
 
 /**
- * The three effective states `resolveEnvironmentRole()` can answer
- * (`environment-role.ts`), copied here structurally rather than imported — same
- * reason as {@link SetupReadinessCheck}: this is a pure view model and must not
- * widen its import graph into a module a client bundle could pick up.
+ * The three effective states `resolveEnvironmentRole()` can answer, aliased
+ * from `environment-role.ts` rather than copied structurally.
+ *
+ * THIS IS `import type`, NOT a runtime import, and that distinction is exactly
+ * what makes it safe here. `import type` is erased before a bundle exists —
+ * `client-server-boundary-census.test.ts` treats it as a non-edge for that
+ * reason (its `RUNTIME_IMPORT` regex explicitly excludes `type[\s{]`) — even
+ * though `environment-role` sits in that same census's `FORBIDDEN_MODULES` set
+ * for RUNTIME imports. `environment-role.ts` is itself deliberately not
+ * `server-only` (see its own docblock: `setup-readiness-db.ts` needs it from
+ * the `tsx` entrypoint `npm run setup`), so there is no boundary here for a
+ * type-only reference to cross.
+ *
+ * A structural copy was tried first and its rationale was wrong: it claimed
+ * `SetupReadinessCheck` above as precedent, but that one is genuinely derived
+ * (`SetupReadiness["categories"][number]["checks"][number]`) from a module this
+ * file may not import even for types, because `setup-readiness.ts` does not
+ * export the type. `environment-role.ts` and `environment-safety-withheld.ts`
+ * both export the real types and carry no such restriction, so aliasing them
+ * buys compile-time drift protection for free: a renamed member or a widened
+ * union in either source file fails this file's typecheck immediately, where a
+ * hand-copied literal union would just quietly stop matching.
  */
-export type SetupWizardEnvironmentRole = "PRODUCTION" | "NON_PRODUCTION" | "UNKNOWN";
+export type SetupWizardEnvironmentRole = EnvironmentRole;
 
-/** Which source decided the role (`EnvironmentRoleDecidedBy` in `environment-role.ts`). */
-export type SetupWizardEnvironmentDecidedBy =
-  | "deployment-declaration"
-  | "database-safer-override"
-  | "unresolved";
+/** Aliased from `EnvironmentRoleDecidedBy` in `environment-role.ts` — see above. */
+export type SetupWizardEnvironmentDecidedBy = EnvironmentRoleDecidedBy;
 
 /**
  * How much application email this installation has held back for
- * environment-safety reasons (`WithheldApplicationEmail` in
- * `environment-safety-withheld.ts`), copied structurally for the same reason as
- * the role above.
+ * environment-safety reasons, aliased from `WithheldApplicationEmail` in
+ * `environment-safety-withheld.ts` — see {@link SetupWizardEnvironmentRole} for
+ * why a type-only alias is safe and preferred over a structural copy here.
  *
  * `available: false` is deliberately its own case and not a zero — see that
  * module for why no property of the count can stand in for "we could not ask".
  */
-export type SetupWizardWithheldEmail =
-  | { readonly available: false }
-  | {
-      readonly available: true;
-      readonly count: number;
-      readonly mostRecentAt: string | null;
-      /** The subset that is the club's LIVE site declaring a capture mailbox. */
-      readonly captureInProduction: number;
-    };
+export type SetupWizardWithheldEmail = WithheldApplicationEmail;
 
 /**
  * The environment-role facts C9 (#224) carries to the wizard — the launch

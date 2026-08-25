@@ -177,6 +177,23 @@ describe("SetupWizardLaunchPanel", () => {
     expect(onPublishActivity).not.toHaveBeenCalledWith(false);
   });
 
+  /**
+   * What "no control" actually has to mean (D2, #224 fix round). Counting only
+   * `<button>` missed the codebase's real acknowledge-control precedent: a
+   * `Checkbox` (`src/components/ui/checkbox.tsx`) renders a native
+   * `<input type="checkbox">`, not a button, and there is no `Switch`
+   * component in this repository to worry about instead. So the guard queries
+   * every element shape that can mutate or acknowledge something —
+   * `button`, `input`, `select`, `textarea`, and the ARIA roles a
+   * non-native control could carry (`[role="button"]`, `[role="switch"]`,
+   * `[role="checkbox"]`) — and separately pins the section to exactly one
+   * anchor, pointed at `/admin/environment`: a link navigates rather than
+   * mutating, so an `<a>` is not a control, but a SECOND one smuggled in would
+   * still be worth catching.
+   */
+  const NO_CONTROL_SELECTOR =
+    'button, input, select, textarea, [role="button"], [role="switch"], [role="checkbox"]';
+
   it("keeps the environment-role lever consume-only and independent", () => {
     stubPublishFetch();
     renderPanel();
@@ -184,14 +201,17 @@ describe("SetupWizardLaunchPanel", () => {
     // It instructs (D9: production is declared in `.env` by upstream design)
     // and offers no control at all.
     expect(role.textContent).toContain(".env");
-    expect(role.querySelectorAll("button").length).toBe(0);
+    expect(role.querySelectorAll(NO_CONTROL_SELECTOR).length).toBe(0);
+    const anchors = role.querySelectorAll("a");
+    expect(anchors.length).toBe(1);
+    expect(anchors[0].getAttribute("href")).toBe("/admin/environment");
     // …and it does not gate the other lever.
     expect(screen.getByTestId("setup-wizard-make-site-visible")).toBeTruthy();
   });
 
   // C9 (#224): no control on ANY role — not just the UNKNOWN default above.
-  // Mutation-verified: adding a Switch or Button anywhere in
-  // `EnvironmentRoleSection` fails one of these three.
+  // Mutation-verified: adding a `Checkbox` (or any bare `<input>`) anywhere in
+  // `EnvironmentRoleSection` fails one of these three (D2, #224 fix round).
   it.each([
     ["PRODUCTION", "deployment-declaration"],
     ["NON_PRODUCTION", "database-safer-override"],
@@ -207,11 +227,11 @@ describe("SetupWizardLaunchPanel", () => {
           withheldEmail: { available: false },
         },
       });
-      expect(
-        screen
-          .getByTestId("setup-wizard-environment-role")
-          .querySelectorAll("button").length,
-      ).toBe(0);
+      const section = screen.getByTestId("setup-wizard-environment-role");
+      expect(section.querySelectorAll(NO_CONTROL_SELECTOR).length).toBe(0);
+      const anchors = section.querySelectorAll("a");
+      expect(anchors.length).toBe(1);
+      expect(anchors[0].getAttribute("href")).toBe("/admin/environment");
     },
   );
 
@@ -330,6 +350,61 @@ describe("SetupWizardLaunchPanel", () => {
     const role = screen.getByTestId("setup-wizard-environment-role");
     expect(role.textContent).toContain("FAILED");
     expect(role.textContent).toContain("USE_LOCAL_CAPTURE");
+  });
+
+  // F1 (#224 fix round): a confirmed live site with a historical total but NO
+  // current capture-in-production fault renders no withheld-email row at all —
+  // matching `setup-readiness.ts`'s own rule, "Not rendered for PRODUCTION,
+  // where nothing is held back for this reason and the line would be noise."
+  // `count` here is deliberately non-zero (terminal `SKIPPED_NON_PRODUCTION`
+  // rows from a former life as a copy persist forever) to prove the row is
+  // gone because of `captureInProduction`, not because the total happens to be
+  // zero.
+  it("renders no withheld-email row for PRODUCTION with a clean current count", () => {
+    stubPublishFetch();
+    renderPanel({
+      environmentSafety: {
+        role: "PRODUCTION",
+        decidedBy: "deployment-declaration",
+        withheldEmail: {
+          available: true,
+          count: 40,
+          mostRecentAt: null,
+          captureInProduction: 0,
+        },
+      },
+    });
+    const role = screen.getByTestId("setup-wizard-environment-role");
+    expect(
+      screen.queryByText("Application email held back for environment safety"),
+    ).toBeNull();
+    expect(role.textContent).not.toContain("FAILED");
+    expect(role.textContent).not.toContain("BOTH the live site and a mail capture");
+  });
+
+  // F2 (#224 fix round): a CONFIRMED, correctly-declared copy carrying a
+  // historical `captureInProduction` count from its life as production before
+  // being restored — the epic's core premise — reads SUPPRESSED, never the
+  // "BOTH the live site and a mail capture" wording, because that count is not
+  // this installation's current fault under a non-production role.
+  it("reads SUPPRESSED, not FAILED, for a confirmed copy carrying a historical capture-in-production count", () => {
+    stubPublishFetch();
+    renderPanel({
+      environmentSafety: {
+        role: "NON_PRODUCTION",
+        decidedBy: "deployment-declaration",
+        withheldEmail: {
+          available: true,
+          count: 12,
+          mostRecentAt: null,
+          captureInProduction: 12,
+        },
+      },
+    });
+    const role = screen.getByTestId("setup-wizard-environment-role");
+    expect(role.textContent).toContain("SUPPRESSED");
+    expect(role.textContent).not.toContain("FAILED");
+    expect(role.textContent).not.toContain("BOTH the live site and a mail capture");
   });
 
   it("names business-withheld as a separate, uncounted concept", () => {
