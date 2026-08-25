@@ -34,10 +34,13 @@ import { SETUP_STEP_DEFINITIONS } from "@/lib/setup-step-registry-definitions";
 // The step set as it stood when the registry replaced the hand-maintained array
 // (17 ids, `club-time-zone` added upstream by #2989), plus `environment-role`,
 // which upstream added as an eighteenth id — positioned THIRD — while this epic
-// was in flight (ENV-SAFETY 1, #3034). Written out rather than derived: a pin
-// that recomputes itself from the thing it is pinning proves nothing. C1 must
-// not change what the readiness cards show, so a diff here is either a
-// deliberate journey change or the regression this test exists to catch.
+// was in flight (ENV-SAFETY 1, #3034), plus `site-style`, this epic's own
+// nineteenth id (C7, #222) — positioned between `seasons-rates` and `stripe`,
+// matching where the epic's mockups placed the styling step in the journey.
+// Written out rather than derived: a pin that recomputes itself from the thing
+// it is pinning proves nothing. C1 must not change what the readiness cards
+// show, so a diff here is either a deliberate journey change or the regression
+// this test exists to catch.
 const EXPECTED_STEP_IDS = [
   "club-config",
   "club-time-zone",
@@ -50,6 +53,7 @@ const EXPECTED_STEP_IDS = [
   "membership-cancellation",
   "age-tiers",
   "seasons-rates",
+  "site-style",
   "stripe",
   "email-ses",
   "sentry",
@@ -62,10 +66,10 @@ const EXPECTED_STEP_IDS = [
 // The steps the registry considers applicable to a club on the FIRST-INSTALL
 // defaults — the state every new club is actually in, where xeroIntegration,
 // financeDashboard and addressAutocomplete are all off. Written out for the
-// same reason as the list above. `environment-role` is `core` — no module flag
-// governs whether an installation has to know if it is the live site — so it is
-// applicable under the defaults like every other `core` step, and the divergence
-// list below is unchanged at four module-owned ids.
+// same reason as the list above. `environment-role` and `site-style` are both
+// `core` — no module flag governs either — so both are applicable under the
+// defaults like every other `core` step, and the divergence list below is
+// unchanged at four module-owned ids.
 const DEFAULT_INSTALL_APPLICABLE_STEP_IDS = [
   "club-config",
   "club-time-zone",
@@ -78,6 +82,7 @@ const DEFAULT_INSTALL_APPLICABLE_STEP_IDS = [
   "membership-cancellation",
   "age-tiers",
   "seasons-rates",
+  "site-style",
   "stripe",
   "email-ses",
   "sentry",
@@ -141,7 +146,7 @@ function stepIdsOnTheCards(
 }
 
 describe("setup step registry", () => {
-  it("derives SETUP_STEP_IDS as today's 18 ids in today's order", () => {
+  it("derives SETUP_STEP_IDS as today's 19 ids in today's order", () => {
     expect([...SETUP_STEP_IDS]).toEqual(EXPECTED_STEP_IDS);
   });
 
@@ -155,7 +160,7 @@ describe("setup step registry", () => {
   });
 
   it("declares no prerequisites today", () => {
-    // Epic #213 open question 1: the current 18 steps are independent, and the
+    // Epic #213 open question 1: the current 19 steps are independent, and the
     // journey's ordering is editorial. If a future step needs a real
     // prerequisite, change this expectation deliberately — do not let one
     // arrive by accident, because D2 makes a prerequisite block navigation.
@@ -174,7 +179,7 @@ describe("setup step registry", () => {
     expect(findSetupStepRegistryViolations(SETUP_STEP_REGISTRY)).toEqual([]);
   });
 
-  it("pins the exact ownerModule for all 18 registered steps", () => {
+  it("pins the exact ownerModule for all 19 registered steps", () => {
     // A single source of truth, deliberately NOT derived from the registry
     // itself: re-owning a `core` step to a default-ON module would still
     // typecheck and pass every other test here (`getApplicableSetupStepIds`
@@ -193,6 +198,7 @@ describe("setup step registry", () => {
       "membership-cancellation": CORE_STEP_OWNER,
       "age-tiers": CORE_STEP_OWNER,
       "seasons-rates": CORE_STEP_OWNER,
+      "site-style": CORE_STEP_OWNER,
       stripe: CORE_STEP_OWNER,
       "email-ses": CORE_STEP_OWNER,
       sentry: CORE_STEP_OWNER,
@@ -202,7 +208,7 @@ describe("setup step registry", () => {
       "xero-mappings": "xeroIntegration",
     };
 
-    expect(Object.keys(expectedOwnerModuleById)).toHaveLength(18);
+    expect(Object.keys(expectedOwnerModuleById)).toHaveLength(19);
 
     const actualOwnerModuleById = Object.fromEntries(
       SETUP_STEP_REGISTRY.map((entry) => [entry.id, entry.ownerModule]),
@@ -284,7 +290,7 @@ describe("setup step registry — the readiness cards are unchanged", () => {
     expect(readiness.summary.total).toBe(EXPECTED_STEP_IDS.length);
   });
 
-  it("shows all 18 steps on a first-install club, which applicability would not", () => {
+  it("shows all 19 steps on a first-install club, which applicability would not", () => {
     // The pin that matters for "no behaviour change": a default install has
     // three modules off, and the cards still build every check unconditionally.
     // The registry disagrees, deliberately and inertly — this test names the

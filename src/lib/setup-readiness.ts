@@ -44,6 +44,12 @@ import {
   SETUP_STEP_IDS,
   type SetupStepId,
 } from "@/lib/setup-step-registry";
+// A VALUE import, not type-only, and that is safe: `club-theme-schema.ts` reads
+// no database and no request — it is the same pure computation module the site-
+// style wizard's client bundle already imports. This module's synchronous-over-
+// injected-data contract (see the `environment-role.ts` note above) is about
+// `@/lib/prisma`, not about every import; nothing here touches it.
+import { DEFAULT_CLUB_THEME_VALUES } from "@/lib/club-theme-schema";
 
 // Re-exported, not re-declared (epic #213, C1). The hand-maintained array that
 // used to sit here is now derived from the step registry, which also carries
@@ -60,6 +66,7 @@ type SetupStatus = "complete" | "warning" | "blocked" | "not_started";
 type SetupCategoryId =
   | "foundation"
   | "booking"
+  | "website"
   | "integrations"
   | "finance";
 
@@ -173,6 +180,28 @@ export interface SetupDatabaseSnapshot {
   // skipped. Undefined when the snapshot omits it (older callers / no DB) → no
   // capacity warning is raised.
   defaultLodgeCapacity?: number | null;
+  // The persisted `ClubTheme` row (site-style step, epic #213 C7, #222), read
+  // VERBATIM — this module judges it, `setup-readiness-db.ts` only reports it,
+  // matching every other DB-backed field here. `null` means no row exists yet
+  // (a fresh install nobody has opened `/admin/site-style` on: its GET upserts a
+  // defaults row on first view, so a null here can only happen before that FIRST
+  // view). Optional/undefined for older callers and a DB-less `setup:check`,
+  // which the check below reports as "not checked" like every sibling field.
+  clubTheme?: {
+    brandGold: string;
+    brandDeep: string;
+    brandSafety: string;
+    headingFontKey: string;
+    bodyFontKey: string;
+    logoUrl: string | null;
+    logoDataUrl: string | null;
+    rawCss: string;
+    // ISO string, or null — the site-LAUNCH lever (D9), owned by the wizard's
+    // launch panel and never by this step. Carried through so the check can
+    // report whether the public site is live WITHOUT that fact ever deciding
+    // whether the step itself is complete.
+    completedAt: string | null;
+  } | null;
 }
 
 // One membership type × season pair for the rate-gap check (#1930, E4).
@@ -290,9 +319,17 @@ interface ClubConfigReadResult {
   issues: string[];
 }
 
+// `website` sits between `booking` and `integrations` so this list keeps
+// agreeing with the step registry's declaration order (`buildSetupWizardView`'s
+// module doc: the rail groups by category and orders within a category by
+// registry order, and the two "happen to agree" only because this walk and the
+// registry's `order` values are kept in step by hand) — `site-style` (order
+// 105) sits between the last `booking` step (`seasons-rates`, 100) and the
+// first `integrations` step (`stripe`, 110).
 const CATEGORY_ORDER: SetupCategoryId[] = [
   "foundation",
   "booking",
+  "website",
   "integrations",
   "finance",
 ];
@@ -310,6 +347,11 @@ const CATEGORY_META: Record<
     title: "Booking Rules",
     description:
       "Capacity, age tiers, rates, seasons, cancellation, and hold settings.",
+  },
+  website: {
+    title: "Website",
+    description:
+      "Public site colours, fonts, and logo. Page content and launching the site happen elsewhere.",
   },
   integrations: {
     title: "Operational Integrations",
@@ -1652,6 +1694,100 @@ function buildSeasonRateCheck(
 }
 
 /**
+ * Website styling readiness (site-style step, epic #213 C7, #222).
+ *
+ * COMPLETION IS THE THEME'S OWN CONFIGURED-NESS, NEVER `completedAt`. That field
+ * is the site-LAUNCH lever, and D9 gives it to exactly one owner — the wizard's
+ * launch panel (`markClubThemeSetupComplete`), never a styling save. Reading it
+ * here would make finishing this step depend on an action this step is
+ * forbidden from taking, and would also let an operator who launches with the
+ * shipped defaults (never touching a colour) see this step marked done for
+ * work never performed. So "configured" is derived from the persisted VALUES:
+ * true the moment any of colours, fonts, logo or custom CSS differs from
+ * `DEFAULT_CLUB_THEME_VALUES` — which is exactly what changes the moment
+ * `saveClubTheme` is first called with real input, whether that call came from
+ * this journey's linked page or from `/admin/site-style` directly (there is
+ * only one persistence path, so there is nothing for the two surfaces to
+ * disagree about).
+ *
+ * `db.clubTheme === null` (a row genuinely absent, only possible before the
+ * FIRST view of `/admin/site-style` ever upserts one) reads identically to a
+ * row sitting at every default: nothing configured, `not started`.
+ *
+ * `required: false` — an unstyled public site is not broken, and this step
+ * legitimately never turns green for a club happy with the shipped defaults;
+ * "Skip for now" is the intended path for that club, not a change to this rule.
+ *
+ * No `action` (unlike Stripe/SES/Sentry): saving colours has no external
+ * provider to test against.
+ */
+function buildWebsiteStylingCheck(
+  db: SetupDatabaseSnapshot | undefined,
+  progress: SetupProgressState,
+): SetupStepCheck {
+  const base = {
+    id: "site-style" as const,
+    title: "Website Styling",
+    description:
+      "Public website colours, fonts, and logo. Page content and launching the site happen on their own screens.",
+    required: false,
+    href: "/admin/site-style",
+  };
+
+  if (db === undefined) {
+    return applyProgress(
+      {
+        ...base,
+        status: "warning",
+        message: "Database state was not checked.",
+        details: [
+          "Run setup:check again inside an environment with database access, or review /admin/site-style after login.",
+        ],
+      },
+      progress,
+    );
+  }
+
+  const theme = db.clubTheme ?? null;
+  const coloursConfigured = theme
+    ? theme.brandGold !== DEFAULT_CLUB_THEME_VALUES.brandGold ||
+      theme.brandDeep !== DEFAULT_CLUB_THEME_VALUES.brandDeep ||
+      theme.brandSafety !== DEFAULT_CLUB_THEME_VALUES.brandSafety
+    : false;
+  const fontsConfigured = theme
+    ? theme.headingFontKey !== DEFAULT_CLUB_THEME_VALUES.headingFontKey ||
+      theme.bodyFontKey !== DEFAULT_CLUB_THEME_VALUES.bodyFontKey
+    : false;
+  const logoConfigured = theme ? Boolean(theme.logoUrl || theme.logoDataUrl) : false;
+  const rawCssConfigured = theme ? theme.rawCss.trim().length > 0 : false;
+  const configured =
+    coloursConfigured || fontsConfigured || logoConfigured || rawCssConfigured;
+  const launched = theme ? Boolean(theme.completedAt) : false;
+
+  const launchDetail = launched
+    ? "The public website is already live."
+    : "The public website is not live yet. Launching is a separate step on the wizard's final screen (Ready to open) — saving colours, fonts or a logo here never makes the site visible on its own.";
+
+  return applyProgress(
+    {
+      ...base,
+      status: configured ? "complete" : "warning",
+      message: configured
+        ? "Site styling has been customised."
+        : "Site styling is using the shipped defaults — customise it, or skip this step if the defaults suit the club.",
+      details: [
+        `Colours: ${coloursConfigured ? "customised" : "using the shipped default"}.`,
+        `Fonts: ${fontsConfigured ? "customised" : "using the shipped default"}.`,
+        `Logo: ${logoConfigured ? "a custom logo is stored" : "using the club name as a text fallback"}.`,
+        `Custom CSS: ${rawCssConfigured ? "present" : "none"}.`,
+        launchDetail,
+      ],
+    },
+    progress,
+  );
+}
+
+/**
  * Stripe readiness, DB-only (#2082). Credentials are captured in-app (encrypted
  * store) — no STRIPE_* env vars are read for operation. Any legacy Stripe env
  * vars still present are detected and warned about. Precedence of the resulting
@@ -2083,6 +2219,7 @@ export function buildSetupReadiness(
       buildAgeTierCheck(club, input.database, progress),
       buildSeasonRateCheck(input.database, progress),
     ],
+    website: [buildWebsiteStylingCheck(input.database, progress)],
     integrations: [
       buildStripeCheck(env, input.database, progress),
       buildEmailCheck(env, progress),

@@ -133,6 +133,12 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
   "membership-cancellation": "support",
   "age-tiers": "bookings",
   "seasons-rates": "bookings",
+  // Website styling (C7, #222). Its settings page, `/admin/site-style`, is
+  // registered under `content` in `ROUTE_AREA_PREFIXES` — the same area that
+  // governs page content and site chrome — so `content` is both the admission
+  // answer and a genuine match for "the area that governs the page the work is
+  // done on".
+  "site-style": "content",
   // Operational integrations. Stripe and Xero setup live on the finance-area
   // Integrations hub (`/admin/stripe/setup`, `/admin/xero/setup`); email,
   // Sentry and the address-autocomplete module switch do not.
