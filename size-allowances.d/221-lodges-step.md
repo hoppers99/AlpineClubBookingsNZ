@@ -43,3 +43,19 @@ reason: the per-lodge setup flow gains its activation step — the affordance
   declined once here for a good reason (#2925's note on why the door-code
   belt-and-braces was NOT replicated into this file), and which is a refactor
   of its own rather than a side effect of adding the step the issue asks for.
+
+file: src/lib/club-theme-schema.ts
+lines: 956
+reason: CARRIED FORWARD FROM size-allowances.d/222-website-styling-check.md,
+  the second of that deleted file's two entries (the setup-readiness.ts entry
+  above is the first). The growth itself is #222's, already merged to the epic
+  branch: normaliseThemeValues and its docblock, needed so the site-style step
+  can compare a club's theme against the defaults without false positives.
+  Epic children stack, so this branch still carries that growth relative to
+  origin/main — which is the base the verify job's ratchet judges — while
+  against the epic base the entry reads as unused and the gate refuses it.
+  One PR cannot satisfy both bases with #222's file present AND absent, and
+  the gate's own instruction when a spent file trips it is to delete the file;
+  restating the entry here keeps the CI base honest until the epic itself
+  merges, at which point the new length becomes the base ref and this entry
+  goes inert with the rest of the file.
