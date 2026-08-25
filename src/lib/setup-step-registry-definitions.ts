@@ -27,7 +27,7 @@ import type { SetupStepDefinition } from "@/lib/setup-step-registry";
  * `MODULE_DEFINITIONS` entries in `src/config/modules.ts` — a module now
  * declares its own wizard steps where it declares itself, so a new module
  * cannot gain a flag and forget to register with setup. This file assembles:
- * the fourteen `core` definitions below, in their existing order, plus each
+ * the fifteen `core` definitions below, in their existing order, plus each
  * module's exported step array APPENDED after them. "Spliced in at its
  * correct `order` position" describes an append today, not an interleave:
  * every module-owned `order` (140-170) sits above core's max (130), so no
