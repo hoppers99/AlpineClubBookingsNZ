@@ -166,9 +166,12 @@ export function LodgeSelect({
       The single-lodge suppression is only safe while it is REDUNDANT. Standing
       on a closed lodge it is not: the operator is editing a building nobody can
       book, and silence there is indistinguishable from editing the open one.
-      (Reachable only in a club whose one and only lodge is closed — the
-      deactivation guard keeps at least one lodge active, so today this is
-      insurance rather than a live path.)
+      (Reachable in a club whose one and only lodge is closed: `POST
+      /api/admin/lodges` now defaults `active` to `false` with no first-lodge
+      exception (#221), and the config-transfer importer's `buildLodgeData`
+      treats an omitted `active` field in a restored `lodge.json` descriptor
+      the same way. Both are real entry paths, not insurance against an
+      unreachable state.)
     */
     if (namedIsClosed) {
       return (

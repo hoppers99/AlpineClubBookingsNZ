@@ -118,6 +118,14 @@ export function LodgeScopeStatusNotice({
       </Alert>
     );
   }
+  if (scope.kind === "closed") {
+    return (
+      <Alert variant="info" title="No lodge is open" className={className}>
+        {what} cannot be shown or changed until a lodge is open for booking.
+        Open one from its configuration page.
+      </Alert>
+    );
+  }
   if (scope.kind === "loading") {
     return (
       <p className={className ?? "text-sm text-muted-foreground"}>

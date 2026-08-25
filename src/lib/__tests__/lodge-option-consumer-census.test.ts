@@ -67,6 +67,36 @@ const EXPECTED_HOOK_CONSUMERS: Record<string, string[]> = {
   "src/app/(authenticated)/book/_hooks/use-booking-wizard.ts": ["member"],
 };
 
+/*
+  Finding 2 (#221 review, latent): `LodgeOption.active` is a public field on
+  the wire, and the two censuses above only pin HOW a file gets its lodge data
+  (`useLodgeOptions` scope, or a direct fetch). Neither looks at what a file
+  then does with it, so a hypothetical consumer that fetched
+  `/api/admin/lodges` directly and handed the raw, inactive-bearing rows
+  straight to `<LodgeSelect>` — never calling `useLodgeOptions` at all — would
+  trip neither census while still reaching a member/booking/roster surface
+  with lodges the scope split exists to keep off it.
+
+  This pins the seam shut at the component boundary: every production file
+  that renders `<LodgeSelect` must either call `useLodgeOptions` itself (and
+  so already appear in `EXPECTED_HOOK_CONSUMERS` above) or be a presentational
+  component whose `lodges` prop is threaded from a file that does — named
+  below, with the hook consumer that feeds it, so the thread can be checked by
+  hand. A file that renders `<LodgeSelect` and is in neither list fails
+  closed: it is unaccounted, whether it turns out to be a new hook consumer
+  missing from the table or a direct-fetch consumer of exactly the shape this
+  guard exists to catch.
+*/
+const PRESENTATIONAL_LODGE_SELECT_CONSUMERS: Record<string, string> = {
+  // Purely presentational: receives `lodges`, `lodgeScope` etc. as props from
+  // `useBookingWizard`, which owns the `useLodgeOptions("member")` call (see
+  // EXPECTED_HOOK_CONSUMERS above).
+  "src/app/(authenticated)/book/_components/dates-step.tsx":
+    "src/app/(authenticated)/book/_hooks/use-booking-wizard.ts",
+};
+
+const LODGE_SELECT_JSX = /<LodgeSelect\b/;
+
 /** `useLodgeOptions("admin")`, `useLodgeOptions()`, `useLodgeOptions(\n"x")`. */
 const HOOK_CALL = /useLodgeOptions\(\s*(?:"([^"]*)"|'([^']*)')?\s*\)/g;
 
@@ -135,6 +165,41 @@ describe("production lodge-option consumers stay in the fail-closed census (#288
     }
 
     expect(actual).toEqual(EXPECTED_HOOK_CONSUMERS);
+  });
+
+  it("renders <LodgeSelect> only from a hook consumer or a named presentational passthrough (finding 2, #221 review)", () => {
+    const renderers = sources
+      .filter((path) => LODGE_SELECT_JSX.test(readFileSync(path, "utf8")))
+      .map(repoPath)
+      .sort();
+
+    // Forward, and the actual safety property: every renderer must be a known
+    // hook consumer or a named presentational passthrough. A hook consumer is
+    // NOT required to render `<LodgeSelect>` itself — several legitimately
+    // use the list for something else (a filter, a check, a differently-built
+    // control) — so the check only runs this direction, on `renderers`, not
+    // as a full-table equality.
+    const allowed = new Set([
+      ...Object.keys(EXPECTED_HOOK_CONSUMERS),
+      ...Object.keys(PRESENTATIONAL_LODGE_SELECT_CONSUMERS),
+    ]);
+    const unaccounted = renderers.filter((path) => !allowed.has(path));
+    expect(unaccounted).toEqual([]);
+
+    // Reverse, scoped to the presentational table only (not every hook
+    // consumer, per the above): each entry there is named specifically
+    // because it renders `<LodgeSelect>` via a passthrough, so if that stops
+    // being true the doc claim has gone stale and this catches it.
+    for (const path of Object.keys(PRESENTATIONAL_LODGE_SELECT_CONSUMERS)) {
+      expect(renderers).toContain(path);
+    }
+
+    // The passthrough claim's other half: the hook consumer named as each
+    // presentational file's source must actually be one, so that pointer
+    // cannot go stale into naming a file that no longer calls the hook.
+    for (const hookFile of Object.values(PRESENTATIONAL_LODGE_SELECT_CONSUMERS)) {
+      expect(Object.keys(EXPECTED_HOOK_CONSUMERS)).toContain(hookFile);
+    }
   });
 
   it("keeps `configuration` — the only scope that sees a closed lodge — to the five editors", () => {

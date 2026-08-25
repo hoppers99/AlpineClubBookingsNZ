@@ -953,9 +953,11 @@ The rule for a configuration surface, delivered by #221:
 - **it is never silent.** Two configurable lodges is not a single-lodge club, so
   the selector renders, and the inactive one is labelled `(closed)` wherever it
   appears. In the one club shape where the selector still would not render — the
-  club's only lodge being closed, which the deactivation guard makes
-  unreachable today — `LodgeSelect` renders a named scope line instead of
-  nothing.
+  club's only lodge being closed — `LodgeSelect` renders a named scope line
+  instead of nothing. That shape is reachable, not merely theoretical: `POST
+  /api/admin/lodges` now defaults `active` to `false` with no first-lodge
+  exception (#221), and the config-transfer importer's `buildLodgeData`
+  restores a lodge inactive whenever its descriptor omits `active`.
 
 Member, booking, display and kiosk surfaces gain nothing from any of this: their
 lists are the same active-only lists they have always been, which is the third

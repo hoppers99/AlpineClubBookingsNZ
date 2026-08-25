@@ -65,7 +65,7 @@ import ChoresPage from "@/app/(admin)/admin/chores/page";
 const OPEN_LODGE = { id: "lodge-1", name: "Alpine Lodge", active: true };
 const CLOSED_LODGE = { id: "lodge-2", name: "New Lodge", active: false };
 
-function stubFetch() {
+function stubFetch(lodges: Array<typeof OPEN_LODGE | typeof CLOSED_LODGE>) {
   const urls: string[] = [];
   vi.stubGlobal(
     "fetch",
@@ -76,7 +76,7 @@ function stubFetch() {
         return {
           ok: true,
           status: 200,
-          json: async () => ({ lodges: [OPEN_LODGE, CLOSED_LODGE] }),
+          json: async () => ({ lodges }),
         };
       }
       return { ok: true, status: 200, json: async () => [] };
@@ -115,7 +115,7 @@ describe("a configuration editor follows a ?lodgeId= to a closed lodge (#221)", 
 
   it("scopes its reads to the lodge the link named, not to the open one", async () => {
     visit("?lodgeId=lodge-2");
-    const urls = stubFetch();
+    const urls = stubFetch([OPEN_LODGE, CLOSED_LODGE]);
 
     render(<ChoresPage />);
 
@@ -129,7 +129,7 @@ describe("a configuration editor follows a ?lodgeId= to a closed lodge (#221)", 
 
   it("says on screen which lodge that is, and that it is closed", async () => {
     visit("?lodgeId=lodge-2");
-    stubFetch();
+    stubFetch([OPEN_LODGE, CLOSED_LODGE]);
 
     render(<ChoresPage />);
 
@@ -147,7 +147,7 @@ describe("a configuration editor follows a ?lodgeId= to a closed lodge (#221)", 
     // Arriving from the nav rather than from a setup link. The widened list must
     // not change where an unnamed page lands.
     visit("");
-    const urls = stubFetch();
+    const urls = stubFetch([OPEN_LODGE, CLOSED_LODGE]);
 
     render(<ChoresPage />);
 
@@ -155,5 +155,72 @@ describe("a configuration editor follows a ?lodgeId= to a closed lodge (#221)", 
     expect(
       urls.filter((url) => url.includes("lodgeId=lodge-2")),
     ).toEqual([]);
+  });
+});
+
+/*
+  #221 review, finding 1 (MED-LOW) — the club shape one lodge narrower than
+  the suite above: the ONLY lodge is closed, rather than one open plus one
+  being set up. `lodge-option-scope.test.ts` pins the mechanism directly;
+  these pin it on the real page, because until this fix the two states —
+  "still loading" and "the only lodge is closed" — were the same value and the
+  page could not tell an operator apart from a network request that had not
+  come back yet.
+*/
+describe("a configuration editor whose only lodge is closed (#221 review, finding 1)", () => {
+  beforeEach(() => {
+    if (!Element.prototype.hasPointerCapture) {
+      Element.prototype.hasPointerCapture = () => false;
+    }
+    if (!Element.prototype.scrollIntoView) {
+      Element.prototype.scrollIntoView = () => {};
+    }
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+    visit("");
+  });
+
+  it("settles to a terminal, honest notice rather than loading forever, with no ?lodgeId=", async () => {
+    visit("");
+    stubFetch([CLOSED_LODGE]);
+
+    render(<ChoresPage />);
+
+    await waitFor(() =>
+      expect(screen.getByText("No lodge is open")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText(
+        /chore templates cannot be shown or changed until a lodge is open for booking/i,
+      ),
+    ).toBeInTheDocument();
+    // Never the stuck state this replaces.
+    expect(
+      screen.queryByText("Loading lodge options..."),
+    ).not.toBeInTheDocument();
+    // ADR-002 suppression still applies below two lodges: no selector either.
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
+  it("keeps the named-closed-lodge scope line unchanged when ?lodgeId= names it", async () => {
+    visit("?lodgeId=lodge-2");
+    const urls = stubFetch([CLOSED_LODGE]);
+
+    render(<ChoresPage />);
+
+    await waitFor(() => expect(choreScope(urls)).toBe("lodge-2"));
+    expect(screen.getByTestId("lodge-scope-line").textContent).toBe(
+      `Lodge: New Lodge ${CLOSED_SUFFIX}`,
+    );
+    // The new terminal notice is for the UNNAMED case only; a deliberately
+    // named closed lodge is a settled `"lodge"` scope, not `"closed"`.
+    expect(screen.queryByText("No lodge is open")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Loading lodge options..."),
+    ).not.toBeInTheDocument();
   });
 });
