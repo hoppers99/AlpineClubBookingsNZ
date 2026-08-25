@@ -1,4 +1,6 @@
 import type { AdminPermissionArea, AdminPermissionMatrix } from "@/lib/admin-permissions";
+import type { EnvironmentRole, EnvironmentRoleDecidedBy } from "@/lib/environment-role";
+import type { WithheldApplicationEmail } from "@/lib/environment-safety-withheld";
 import type { SetupReadiness } from "@/lib/setup-readiness";
 import type { SetupStepId } from "@/lib/setup-step-registry";
 import type {
@@ -153,6 +155,62 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
 };
 
 /**
+ * The three effective states `resolveEnvironmentRole()` can answer, aliased
+ * from `environment-role.ts` rather than copied structurally.
+ *
+ * THIS IS `import type`, NOT a runtime import, and that distinction is exactly
+ * what makes it safe here. `import type` is erased before a bundle exists —
+ * `client-server-boundary-census.test.ts` treats it as a non-edge for that
+ * reason (its `RUNTIME_IMPORT` regex explicitly excludes `type[\s{]`) — even
+ * though `environment-role` sits in that same census's `FORBIDDEN_MODULES` set
+ * for RUNTIME imports. `environment-role.ts` is itself deliberately not
+ * `server-only` (see its own docblock: `setup-readiness-db.ts` needs it from
+ * the `tsx` entrypoint `npm run setup`), so there is no boundary here for a
+ * type-only reference to cross.
+ *
+ * A structural copy was tried first and its rationale was wrong: it claimed
+ * `SetupReadinessCheck` above as precedent, but that one is genuinely derived
+ * (`SetupReadiness["categories"][number]["checks"][number]`) from a module this
+ * file may not import even for types, because `setup-readiness.ts` does not
+ * export the type. `environment-role.ts` and `environment-safety-withheld.ts`
+ * both export the real types and carry no such restriction, so aliasing them
+ * buys compile-time drift protection for free: a renamed member or a widened
+ * union in either source file fails this file's typecheck immediately, where a
+ * hand-copied literal union would just quietly stop matching.
+ */
+export type SetupWizardEnvironmentRole = EnvironmentRole;
+
+/** Aliased from `EnvironmentRoleDecidedBy` in `environment-role.ts` — see above. */
+export type SetupWizardEnvironmentDecidedBy = EnvironmentRoleDecidedBy;
+
+/**
+ * How much application email this installation has held back for
+ * environment-safety reasons, aliased from `WithheldApplicationEmail` in
+ * `environment-safety-withheld.ts` — see {@link SetupWizardEnvironmentRole} for
+ * why a type-only alias is safe and preferred over a structural copy here.
+ *
+ * `available: false` is deliberately its own case and not a zero — see that
+ * module for why no property of the count can stand in for "we could not ask".
+ */
+export type SetupWizardWithheldEmail = WithheldApplicationEmail;
+
+/**
+ * The environment-role facts C9 (#224) carries to the wizard — the launch
+ * panel's role lever, and nothing the step's own readiness check does not
+ * already say. Deliberately narrower than `/admin/environment`'s full payload
+ * (`EnvironmentSafetyState` in `environment-safety-admin-state.ts`): this view
+ * has no business carrying the override's raw declaration string, the Xero
+ * containment detail or the audit name of who last changed the override — the
+ * launch panel names role, source and the withheld count, and links to
+ * `/admin/environment` for the rest, rather than duplicating that screen.
+ */
+export interface SetupWizardEnvironmentSafety {
+  readonly role: SetupWizardEnvironmentRole;
+  readonly decidedBy: SetupWizardEnvironmentDecidedBy;
+  readonly withheldEmail: SetupWizardWithheldEmail;
+}
+
+/**
  * What `GET /api/admin/setup/wizard` answers with — declared HERE, in the pure
  * module both ends already import, so the route and the shell cannot drift into
  * two different readings of the same response. Neither could import the other's
@@ -176,6 +234,16 @@ export interface SetupWizardPayload {
    * happened to mount.
    */
   readonly isSiteVisible: boolean;
+  /**
+   * The SAME resolution `environment-role` readiness step and `/admin/environment`
+   * read — see `resolveEnvironmentRole()` and `readWithheldApplicationEmail()`
+   * in `setup-readiness-db.ts`, carried through rather than re-derived (C9,
+   * #224). It rides on this payload for the same reason `isSiteVisible` does:
+   * the shell's focus refetch keeps it current for whichever administrator has
+   * the launch panel open when another one declares the role or the safer
+   * override changes.
+   */
+  readonly environmentSafety: SetupWizardEnvironmentSafety;
 }
 
 export interface SetupWizardRailStep {

@@ -99,6 +99,7 @@ describe("GET /api/admin/setup/wizard", () => {
   it("answers with the declared payload and nothing besides", async () => {
     const payload = await raw();
     expect(Object.keys(payload).sort()).toEqual([
+      "environmentSafety",
       "isSiteVisible",
       "readiness",
       "traversal",
@@ -114,6 +115,67 @@ describe("GET /api/admin/setup/wizard", () => {
     expect((await body()).isSiteVisible).toBe(false);
     mockThemeState.mockResolvedValue({ isComplete: true, readFailed: false });
     expect((await body()).isSiteVisible).toBe(true);
+  });
+
+  // C9 (#224): the launch panel's role lever reads the SAME resolution the
+  // `environment-role` readiness step does — `database.environmentRole` /
+  // `database.withheldEmail` on the injected snapshot — never a second
+  // derivation. Both fields are optional on `SetupDatabaseSnapshot` (a DB-less
+  // `setup:check` compiles without them), and this suite's default snapshot
+  // double never stubs them, so the fail-closed fallback below is exercised by
+  // every other test in this file too, not just this one.
+  it("carries the environment role through from the snapshot, failing closed when it is absent", async () => {
+    const typed = (await body()) as unknown as {
+      environmentSafety: {
+        role: string;
+        decidedBy: string;
+        withheldEmail: { available: boolean };
+      };
+    };
+    expect(typed.environmentSafety).toEqual({
+      role: "UNKNOWN",
+      decidedBy: "unresolved",
+      withheldEmail: { available: false },
+    });
+
+    mockSnapshot.mockResolvedValue({
+      adminModuleSettings: allModulesOn,
+      environmentRole: {
+        role: "NON_PRODUCTION",
+        decidedBy: "database-safer-override",
+        declaration: { kind: "absent" },
+        databaseOverride: { kind: "force-non-production" },
+        notes: [],
+      },
+      withheldEmail: {
+        available: true,
+        count: 3,
+        mostRecentAt: "2026-08-01T00:00:00.000Z",
+        captureInProduction: 0,
+      },
+    });
+    const withRole = (await body()) as unknown as {
+      environmentSafety: {
+        role: string;
+        decidedBy: string;
+        withheldEmail: {
+          available: boolean;
+          count?: number;
+          mostRecentAt?: string | null;
+          captureInProduction?: number;
+        };
+      };
+    };
+    expect(withRole.environmentSafety).toEqual({
+      role: "NON_PRODUCTION",
+      decidedBy: "database-safer-override",
+      withheldEmail: {
+        available: true,
+        count: 3,
+        mostRecentAt: "2026-08-01T00:00:00.000Z",
+        captureInProduction: 0,
+      },
+    });
   });
 
   it("applies the club's module flags to the applicable set (D4)", async () => {
