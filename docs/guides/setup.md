@@ -27,6 +27,42 @@ install and the map to everything else in Setup & Configuration.
 
 ## Step-by-step
 
+### Which setup surface to use, and when
+
+There are two ways into the same work, and one page that looks like a third but
+is not.
+
+| Surface | Use it when | Where |
+| --- | --- | --- |
+| **The setup wizard** | You are setting a club up, coming back to finish, or have just upgraded and want to be told what is new | `/admin/setup/wizard` |
+| **The readiness checklist and hub cards** | You already know what you are looking for and want to go straight to it, or you want to run a provider test | `/admin/setup` |
+| **Alpine Central Server setup** | *Not a setup surface at all* — see below | `/admin/alpine-server/setup` |
+
+The wizard is the destination: it is where a club's setup is meant to be done,
+and the checklist is the map you keep for later. Neither can tell you something
+the other would contradict. **Both derive the list of steps from the same
+place**, so the number of outstanding items, and which items they are, are the
+same answer shown two ways — the wizard as a percentage down its rail, the
+checklist as cards grouped by category.
+
+That shared derivation has one consequence worth knowing: **switching a module
+off removes its setup steps from both surfaces.** Turn Xero off in
+[Modules](modules.md) and the Operational Xero and Xero Mappings steps stop
+appearing, the Finance hub card goes with them, and the progress percentage
+recalculates around what is left. Nothing is deleted and nothing is
+remembered — the module toggle is the only record that the club said no, so
+turning it back on brings the steps straight back with whatever progress had
+already been recorded against them. This is also why progress reads as a
+percentage rather than "x of y": the total moves as modules do.
+
+**Alpine Central Server setup is not a competitor to either.** Despite living at
+a `/setup` path, `/admin/alpine-server/setup` is a **provider-connection page** —
+the sibling of Xero Setup and Stripe's credential capture, not of this checklist.
+It reads none of the setup-progress machinery, contributes no readiness check
+and no wizard step, and finishing it does not move your setup percentage. If you
+are looking for the club's setup progress, it is not there. See
+[Integrations](integrations.md) for what that page does.
+
 ### Work the checklist and jump to a sub-area
 
 Each hub card opens an aggregator surface that regroups settings owned and
@@ -55,9 +91,9 @@ through it, one step at a time, and remembers where you got to — so it can be
 left and picked up again, and a club that set up a year ago and then upgraded is
 told what is new rather than left to find it.
 
-Both surfaces are live and they read the same configuration, so nothing is lost
-either way. Use the wizard when you are setting a club up (or coming back to
-finish); use the checklist when you know what you are looking for.
+Both surfaces are live and derive the same step list, so nothing is lost either
+way — see [Which setup surface to use, and when](#which-setup-surface-to-use-and-when)
+above for how to choose.
 
 1. On **Admin → Setup & Configuration → Setup**, choose **Open the setup
    wizard** — or go straight to `/admin/setup/wizard`. It opens at the step you
@@ -223,6 +259,13 @@ the areas it links to:
 | Cancellation | Cancellation settings, request queues, message copy (`/admin/setup/cancellation`) | membership, support |
 | Email Messages / Notifications | Delivery rules, recipients, templates, member copy ([notifications](notifications.md)) | support |
 
+A hub card appears only while there is still something behind it: your role can
+open it, its area's module is on, **and** at least one of the checklist steps it
+covers still applies to this club. Membership & Members and Email Messages /
+Notifications cover no checklist step at all — they are ongoing club
+configuration rather than first-install readiness — so those two are governed by
+permissions and modules only, and never disappear because of a module toggle.
+
 Provider tests cover Stripe, SMTP (email), Sentry, and Xero. Each check is
 **complete**, **warning**, **blocked**, or **not started**.
 
@@ -252,6 +295,8 @@ or run `npm run config:self-heal`.
 | --- | --- | --- |
 | A provider test fails | The credentials/config for that provider are missing or wrong | Fix them per [`CONFIGURATION.md`](../../CONFIGURATION.md); re-run the test |
 | A hub card is missing or greyed | Your role lacks the card's permission area | Ask a full admin, or an admin with that area, to complete it |
+| The **Finance** hub card has disappeared | Every step behind it belongs to a module that is switched off — with both Xero and the finance dashboard off there is no finance setup left to do, so the card goes rather than opening a page with nothing in it | Switch the module back on in [Modules](modules.md); the card and its steps return together |
+| A readiness card you remember is no longer listed | Its module was switched off. A module contributes no steps while it is off, on either surface | Check [Modules](modules.md). Nothing was lost — turning it back on restores the step and any progress recorded against it |
 | A check stays "blocked" | A required dependency isn't in place | Open the linked area and resolve the named requirement |
 | **Club Time Zone** stays blocked right after an upgrade | The application has not restarted since the migration, so the zone has not been recorded yet. The zone in use is still the right one | Restart the application, or run `npm run config:self-heal`. See the [Club Time Zone guide](club-time.md) |
 | **Club Time Zone** shows a warning about confirming the zone | The server's `TZ` named no actual place, so `Pacific/Auckland` was recorded rather than guessed at from a value that names no location | If the club is in New Zealand, acknowledge the step. If not, set the real zone at [`/admin/club-time`](club-time.md) — this is the case that would otherwise put a non-NZ club's times out by hours |
