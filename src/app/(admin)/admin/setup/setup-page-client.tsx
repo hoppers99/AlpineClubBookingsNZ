@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SetupStepLinks } from "@/components/admin/setup-step-links";
 import {
   Card,
   CardContent,
@@ -52,7 +53,6 @@ interface SetupStepCheck {
   message: string;
   details: string[];
   href?: string;
-  /** Per-lodge destinations (C6, #221); absent on every other check. */
   links?: { label: string; href: string }[];
   progress: ProgressStatus;
   action?: {
@@ -602,21 +602,7 @@ export function SetupPageClient({
                               ))}
                             </ul>
                           ) : null}
-                          {/* C6, #221: one link per lodge. The cards render the
-                              same list the wizard's step frame does, so the two
-                              surfaces cannot disagree about where a lodge's
-                              setup lives. */}
-                          {check.links && check.links.length > 0 ? (
-                            <ul className="flex flex-wrap gap-2">
-                              {check.links.map((link) => (
-                                <li key={link.href}>
-                                  <Button asChild variant="outline" size="sm">
-                                    <a href={link.href}>{link.label}</a>
-                                  </Button>
-                                </li>
-                              ))}
-                            </ul>
-                          ) : null}
+                          <SetupStepLinks links={check.links} />
 
                           {result ? (
                             <div

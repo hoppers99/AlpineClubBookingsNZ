@@ -46,6 +46,19 @@ same **lodge edit** permission as the properties above.
 1. Click **Add lodge**, enter a name, and save. A new lodge lands straight in a
    guided **setup wizard** (`/admin/lodges/[id]/setup`) with identity pre-filled;
    every remaining step can be skipped and completed later.
+2. **A new lodge is not open for booking.** It is created **Inactive**, and the
+   last step of that guided setup is where you activate it. Until you do,
+   nothing about it reaches a member: it is offered on no booking screen, in no
+   lodge picker, and the member-facing screens carry on as though the club had
+   one lodge. That is deliberate — a lodge with no rooms, no beds and no rates
+   used to be bookable the instant it was named.
+3. You can still build the lodge out in full while it is closed: rooms, beds,
+   lockers, seasons, rates and chores all work on an inactive lodge, and so
+   does copying seasons or chores from an existing one. Activation is the last
+   thing you do, not the first.
+4. Leaving it closed is a legitimate answer. A lodge the club has bought but not
+   opened stays Inactive for as long as you like; the setup checklist reports it
+   as outstanding rather than nagging you to open it.
 
 ### Edit a lodge's identity
 
@@ -89,7 +102,7 @@ same **lodge edit** permission as the properties above.
 | Address | The property address | — | Optional; feeds the public `{{lodge-address}}` token (up to 300 chars) |
 | Door code | The lodge access code | — | Optional; appears in that lodge's booking/pre-arrival emails (up to 80 chars) |
 | Travel note | Directions / arrival notes | — | Optional; appears in booking/pre-arrival emails (up to 2000 chars) |
-| Active | Whether the lodge takes new bookings | on | At least one lodge must stay active; inactive lodges are kept for history |
+| Active | Whether the lodge takes new bookings | **off for a new lodge** | A lodge you add is created inactive and is activated on the last step of its guided setup. At least one lodge must stay active; inactive lodges are kept for history |
 | Configure | Opens the per-lodge configuration hub | — | Hub cards: rooms/beds, lockers, seasons & rates, chores. Per-lodge display is a separate section, shown only when the `lobbyDisplay` module is on (off by default) |
 
 ### Other lodges
@@ -116,7 +129,8 @@ A lodge that a booking or a request already names cannot be deleted.
 | Everything is read-only ("… can view the lodge properties but cannot change them") | Your admin role has lodge view but not edit | Ask a full admin for **lodge edit** access |
 | Deactivate warns about dependencies | The lodge still has future bookings, waitlist, hut-leader, or kiosk ties | Review the list; confirm to deactivate anyway (they stay in place) or resolve them first |
 | "At least one lodge must stay active" | You tried to deactivate the only active lodge | Keep one active, or activate another first |
-| Member screens don't show a lodge picker | The club has only one active lodge | Expected — pickers appear once a second active lodge exists |
+| Member screens don't show a lodge picker | The club has only one active lodge | Expected — pickers appear once a second active lodge exists. A second lodge you have added but not yet activated does not count, which is why the pickers appear when you open it rather than when you name it |
+| A new lodge is not offered for booking | It is inactive, which is how every new lodge starts | Open its guided setup (`/admin/lodges/[id]/setup`) and activate it on the last step, or use **Activate** on this page |
 | Door code/travel note isn't in an email | The lodge's field is blank, or the email template omits the token | Fill the field here; check the [Booking Messages](booking-messages.md)/email template |
 
 ## Related links

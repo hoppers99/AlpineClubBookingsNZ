@@ -86,6 +86,18 @@ finish); use the checklist when you know what you are looking for.
    directly or by following this step's link. Finishing this step never makes
    the public site visible; that only happens from **Ready to open** below, or
    from Site Style's own Finish-setup control.
+
+   **Lodges** is the other step of that shape, and the one that reports on more
+   than one thing at once. It does not embed a lodge editor: it lists every
+   lodge the club has with its own state — open for booking, or still to be
+   activated — with its active room and bed counts, and a link straight into
+   that lodge's own guided setup. It reads done when every lodge is open for
+   booking, and warns while any one of them is still closed. Room and bed
+   counts are shown but never decide the verdict: a lodge can legitimately run
+   on a capacity override with no beds recorded. **A lodge's own completeness
+   is reported separately from the club's** — however many lodges you have,
+   this is one step of the journey, so adding a second lodge does not make the
+   percentage go backwards.
 4. **Mark this step done**, **Skip for now**, or **Reopen** it, then
    **Continue**. Skipping buys you passage past a step; it does not hide it. A
    skipped step stays on the rail and on the outstanding list until it is done
@@ -204,10 +216,13 @@ the areas it links to:
 Provider tests cover Stripe, SMTP (email), Sentry, and Xero. Each check is
 **complete**, **warning**, **blocked**, or **not started**.
 
-Two checklist steps do not sit behind a hub card, because each is a single
-setting rather than a settings area: **Club Time Zone** links straight to
+Three checklist steps do not sit behind a hub card. Two are a single setting
+rather than a settings area: **Club Time Zone** links straight to
 [`/admin/club-time`](club-time.md), and **Website Styling** links straight to
-[`/admin/site-style`](site-style.md).
+[`/admin/site-style`](site-style.md). The third, **Lodges**, links to
+[`/admin/lodges`](lodges.md) and additionally offers one link per lodge into
+that lodge's own guided setup, because a club's lodges are a list rather than a
+setting.
 
 Club Time Zone: on a fresh install it reads **blocked** until a time zone is
 recorded, so setup cannot be finished without one. After an upgrade it usually
