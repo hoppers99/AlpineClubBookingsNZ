@@ -28,7 +28,26 @@ import type { SetupStepDefinition } from "@/lib/setup-step-registry";
  * declares its own wizard steps where it declares itself, so a new module
  * cannot gain a flag and forget to register with setup. This file assembles:
  * the fourteen `core` definitions below, in their existing order, plus each
- * module's exported step array spliced in at its correct `order` position.
+ * module's exported step array APPENDED after them. "Spliced in at its
+ * correct `order` position" describes an append today, not an interleave:
+ * every module-owned `order` (140-170) sits above core's max (130), so no
+ * core entry has to move to make room. A module step whose `order` belonged
+ * BETWEEN two core entries would need the `CORE_SETUP_STEP_DEFINITIONS`
+ * spread below chunked around it by hand — nothing here does that
+ * automatically — and the order-vs-position guard in
+ * `findSetupStepRegistryViolations` fails loudly on the resulting
+ * order/position mismatch if someone tries to insert one without doing so.
+ *
+ * **The amended AC1 reading (owner decision, 25 Aug, on #218):** the original
+ * "no change to setup code" criterion is unreachable literally — a module's
+ * step has to reach this array somehow. Its enforceable spirit instead: a
+ * module's steps are DECLARED in the module's own definition
+ * (`src/config/modules.ts`), and the one remaining registry edit is this
+ * file's hand splice — a single, CI-guarded line per module, not a change to
+ * the registry's contract, its guards, or any other module's entry. A
+ * module's declared steps can never silently fail to appear: forgetting the
+ * splice line is a build failure (the parity scan below), not a runtime
+ * absence a wizard user would discover the hard way.
  *
  * The splice is written OUT BY HAND below rather than computed by iterating
  * every module generically. That is a deliberate, documented trade against
@@ -40,11 +59,18 @@ import type { SetupStepDefinition } from "@/lib/setup-step-registry";
  * `Array.prototype.flatMap`/`.sort()` over `MODULE_DEFINITIONS` would produce a
  * type-widened `SetupStepDefinition[]`, silently degrading that guarantee. The
  * safety net for a mis-spliced or forgotten module step is therefore a TEST,
- * not the type system: `setup-step-registry.test.ts` ("the assembled registry
- * matches a generic module scan") independently walks
- * `MODULE_KEYS`/`MODULE_DEFINITIONS` and asserts the result — ids, orders,
- * owners — equals `SETUP_STEP_REGISTRY` exactly, so a module gaining a step
- * that is not spliced in here fails CI rather than shipping silently unwired.
+ * not the type system, and it is a WIRING net rather than a content net:
+ * `setup-step-registry.test.ts` ("matches a generic scan of MODULE_DEFINITIONS")
+ * independently walks `MODULE_KEYS`/`MODULE_DEFINITIONS` and asserts the FULL
+ * entry — id, order, ownerModule, prerequisites, completion — equals the
+ * shipped `SETUP_STEP_REGISTRY` exactly. That catches a module step missing
+ * from the splice, mis-owned, mis-ordered, or diverging in any field from the
+ * module's own declaration (a prerequisite or completion source injected only
+ * at the splice point). It does NOT independently verify that the ordering
+ * itself is editorially right, or that the order-vs-position guard still
+ * fires on a genuine collision — those remain the job of
+ * `findSetupStepRegistryViolations` and the pinned `EXPECTED_STEP_IDS`/
+ * applicability fixtures elsewhere in that file.
  *
  * `order` values are spaced by 10 so a later child (C3 onwards) can insert a
  * step without renumbering eighteen entries in a file several lanes are

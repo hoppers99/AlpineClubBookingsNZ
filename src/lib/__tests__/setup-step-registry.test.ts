@@ -657,7 +657,7 @@ describe("setup step registry guards", () => {
     ).toHaveLength(2);
   });
 
-  it("names a duplicated step id", () => {
+  it("names a duplicated step id, describing a core/core collision as the core registry rather than a module", () => {
     const violations = findSetupStepRegistryViolations([
       stepDefinition("club-config"),
       stepDefinition("club-config", { order: 20 }),
@@ -665,6 +665,25 @@ describe("setup step registry guards", () => {
 
     expect(violations).toHaveLength(1);
     expect(violations[0]).toContain("club-config");
+    expect(violations[0]).toContain("the core registry");
+    // `core` is this file's own definitions, not an entry in
+    // MODULE_DEFINITIONS — the message must not call it a module.
+    expect(violations[0]).not.toContain('module "core"');
+  });
+
+  it("names a duplicated step id declared by core and a module, naming both correctly", () => {
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("club-config"),
+      stepDefinition("club-config", {
+        ownerModule: "xeroIntegration",
+        order: 20,
+      }),
+    ]);
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("club-config");
+    expect(violations[0]).toContain("the core registry");
+    expect(violations[0]).toContain('module "xeroIntegration"');
   });
 
   it("names both steps when declaration order and `order` disagree", () => {
@@ -682,7 +701,7 @@ describe("setup step registry guards", () => {
 
   it("is scoped to the registry it is given, and consults no other", () => {
     // `config-self-heal-steps.ts` declares a self-heal step named
-    // `club-time-zone` — byte-identical to this registry's 17th id, in a
+    // `club-time-zone` — byte-identical to this registry's 2nd id, in a
     // different namespace, and entirely unrelated. Ids are namespaced by their
     // registry, so a guard that reached across namespaces would fail the build
     // over two files that never meet.
@@ -722,9 +741,13 @@ describe("setup step registry guards", () => {
  * splice itself is hand-written rather than computed) and exercises the C3
  * acceptance criteria: a cross-module id collision fails the build naming both
  * declarers, a colliding `order` is still caught by the existing
- * position-vs-order guard, unknown module state still fails open over the
- * assembled registry, and a disabled module's assembled steps still leave the
- * applicable set (D4).
+ * position-vs-order guard, and a disabled module's assembled steps — and no
+ * others — leave the applicable set (D4). "Unknown module state fails open"
+ * is not re-proven here: `getApplicableSetupStepIds` reads the WHOLE
+ * assembled `SETUP_STEP_REGISTRY` regardless of which describe block asks, so
+ * the "fails OPEN when module state is unknown" test above already covers
+ * the module-owned ids in `EXPECTED_STEP_IDS` — re-asserting it here would
+ * test the same code path a second time.
  */
 describe("setup step registry — module-contributed assembly (C3, #218)", () => {
   const localStepDefinition = (
@@ -743,18 +766,21 @@ describe("setup step registry — module-contributed assembly (C3, #218)", () =>
     // Independent of the hand-written splice in
     // setup-step-registry-definitions.ts: this walks MODULE_KEYS/
     // MODULE_DEFINITIONS generically, the way a truly dynamic assembly would,
-    // and asserts the result — ids, orders, owners — is exactly what the
-    // shipped registry contains. A module that gains a `setupSteps` entry
-    // without a matching splice in the definitions file fails HERE, which is
-    // the safety net that file's module doc promises in place of a
-    // type-system guarantee.
+    // and asserts the result — the FULL entry (id, order, ownerModule,
+    // prerequisites, completion) — is exactly what the shipped registry
+    // contains. A module that gains a `setupSteps` entry without a matching
+    // splice in the definitions file fails HERE, and so does a splice that
+    // silently diverges from the module's own declaration (an extra
+    // prerequisite, a changed completion source) — comparing only
+    // {id, order, ownerModule} would miss that second class, since a field
+    // injected at the splice point never appears on either side of a
+    // narrower comparison.
     const coreEntries = SETUP_STEP_REGISTRY.filter(
       (entry) => entry.ownerModule === CORE_STEP_OWNER,
     );
     const moduleEntries = MODULE_KEYS.flatMap((key) =>
       (MODULE_DEFINITIONS[key].setupSteps ?? []).map((step) => ({
-        id: step.id,
-        order: step.order,
+        ...step,
         ownerModule: key as SetupStepOwner,
       })),
     );
@@ -763,6 +789,8 @@ describe("setup step registry — module-contributed assembly (C3, #218)", () =>
         id: entry.id,
         order: entry.order,
         ownerModule: entry.ownerModule,
+        prerequisites: entry.prerequisites,
+        completion: entry.completion,
       }))
       .sort((a, b) => a.order - b.order);
 
@@ -770,9 +798,14 @@ describe("setup step registry — module-contributed assembly (C3, #218)", () =>
       id: entry.id,
       order: entry.order,
       ownerModule: entry.ownerModule,
+      prerequisites: entry.prerequisites,
+      completion: entry.completion,
     }));
 
-    expect(scanned).toEqual(shipped);
+    expect(
+      scanned,
+      "a module declared setupSteps that are not spliced into SETUP_STEP_DEFINITIONS — add the splice line in setup-step-registry-definitions.ts",
+    ).toEqual(shipped);
   });
 
   it("fails the build when two modules declare the same step id, naming both", () => {
@@ -811,23 +844,18 @@ describe("setup step registry — module-contributed assembly (C3, #218)", () =>
     ).toBe(true);
   });
 
-  it("fails open over the assembled registry when module state is unknown, module-owned steps included", () => {
-    const applicable = getApplicableSetupStepIds(undefined);
-    for (const id of STEPS_SHOWN_BUT_NOT_APPLICABLE_BY_DEFAULT) {
-      expect(applicable).toContain(id);
-    }
-    expect(applicable).toEqual(EXPECTED_STEP_IDS);
-  });
-
   it("D4: disabling one module excludes exactly its assembled steps, and no others, from the applicable set", () => {
     const applicable = getApplicableSetupStepIds(
       moduleFlags({ financeDashboard: false }),
     );
 
-    expect(applicable).not.toContain("finance-dashboard");
-    // xeroIntegration is still on: both of ITS assembled steps stay applicable.
-    expect(applicable).toContain("xero-operational");
-    expect(applicable).toContain("xero-mappings");
-    expect(applicable).toContain("address-autocomplete");
+    // Set equality against every id EXCEPT the disabled module's own —
+    // "and no others" is only true if nothing besides `finance-dashboard`
+    // dropped out. xeroIntegration and addressAutocomplete are still on, so
+    // both of xeroIntegration's assembled steps and addressAutocomplete's
+    // stay in the expected set below.
+    expect(applicable).toEqual(
+      EXPECTED_STEP_IDS.filter((id) => id !== "finance-dashboard"),
+    );
   });
 });

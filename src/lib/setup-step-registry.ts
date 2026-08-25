@@ -213,6 +213,19 @@ export function getApplicableSetupStepIds(
 }
 
 /**
+ * How a collision message refers to one declarer. `core` is not a module —
+ * it is this registry's own definitions file, not an entry in
+ * `MODULE_DEFINITIONS` — so it is named "the core registry" rather than
+ * `module "core"`, which would misdescribe it as one of the modules it is
+ * being distinguished from.
+ */
+function describeStepOwner(owner: SetupStepOwner): string {
+  return owner === CORE_STEP_OWNER
+    ? "the core registry"
+    : `module "${owner}"`;
+}
+
+/**
  * Every way a registry can be malformed, as messages NAMING the offending step
  * ids. Exported over an assertion so a test can feed it a synthetic bad registry
  * and read what it says; the real registry is checked by the contract test.
@@ -226,7 +239,7 @@ export function getApplicableSetupStepIds(
  * it was handed; no other registry is consulted. Step ids are namespaced by
  * their registry, and ids DO repeat across namespaces already —
  * `config-self-heal-steps.ts` declares a self-heal step named `club-time-zone`,
- * byte-identical to this registry's 17th id and entirely unrelated to it.
+ * byte-identical to this registry's 2nd id and entirely unrelated to it.
  * Treating that as a collision would fail the build over two files that never
  * meet. Cross-registry collision WITHIN this one namespace is exactly what the
  * duplicate-id check below catches now that modules contribute their own steps
@@ -242,15 +255,16 @@ export function findSetupStepRegistryViolations(
   // Tracks the FIRST definition seen for each id (not just whether the id has
   // been seen) so a collision message can name both declarers — the module
   // that owns the id already, and the module that just tried to reuse it
-  // (epic #213, C3 #218). Two core steps colliding both read "core", which is
-  // still useful: it says the id clash is inside the core set, not across a
-  // module boundary.
+  // (epic #213, C3 #218). `core` is not a module — it is the registry's own
+  // definitions file — so `describeStepOwner` below names it as "the core
+  // registry" rather than `module "core"`, which would misdescribe a
+  // core/core or core/module collision as a clash between two modules.
   const seen = new Map<string, SetupStepDefinition>();
   for (const definition of definitions) {
     const first = seen.get(definition.id);
     if (first) {
       violations.push(
-        `Duplicate setup step id: "${definition.id}" declared by module "${first.ownerModule}" and module "${definition.ownerModule}"`,
+        `Duplicate setup step id: "${definition.id}" declared by ${describeStepOwner(first.ownerModule)} and ${describeStepOwner(definition.ownerModule)}`,
       );
     } else {
       seen.set(definition.id, definition);
