@@ -622,7 +622,18 @@ function buildClubConfigCheck(
     description:
       "Club identity, contact details, bed capacity, age tiers, and default rates.",
     required: true,
-    href: "/admin/setup",
+    /*
+      THE PAGE THE WORK IS ACTUALLY DONE ON (#223 fix round). This used to link
+      to `/admin/setup`, which has never held a club-identity editor: from
+      there an operator had to find the Initial Setup hub and its Club Identity
+      cross-link. That was indirect while the hubs were shown and DEAD once they
+      are hidden — `/admin/setup` in that position offers the wizard, three
+      unrelated hubs and a settings section, and no route to the club's name at
+      all. So the step points at the editor itself, and
+      `SETUP_STEP_PERMISSION_AREA` names `content` to match, which is the area
+      `/admin/appearance` and `/api/admin/club-identity` both really enforce.
+    */
+    href: "/admin/appearance/identity",
   };
 
   // 1. A malformed primary always blocks loudly (C1/D3), whatever the DB holds.
@@ -660,7 +671,7 @@ function buildClubConfigCheck(
           ? `${dbClubName} is configured, but its default lodge has no bookable capacity yet.`
           : capacity != null
             ? `${dbClubName} is configured with ${capacity} total beds.`
-            : `${dbClubName} is configured. Set the default-lodge capacity in /admin/setup if it is not yet defined.`,
+            : `${dbClubName} is configured. Set the default-lodge capacity in Admin > Lodges if it is not yet defined.`,
         details: [
           "Source: database (ClubIdentitySettings / EmailMessageSetting)",
           `Club: ${dbClubName}`,
@@ -691,7 +702,7 @@ function buildClubConfigCheck(
           `Source: ${club.sourcePath}`,
           `Club: ${club.config.name}`,
           `Configured capacity: ${capacity} beds`,
-          "Admin edits in /admin/setup override these seed values in the database.",
+          "Admin edits in Admin > Appearance > Club Identity override these seed values in the database.",
           ...(capacityUnconfigured ? [capacityWarningDetail] : []),
         ],
       },
@@ -706,7 +717,7 @@ function buildClubConfigCheck(
         ...base,
         status: "blocked",
         message:
-          "Club identity is not configured yet. Run npm run setup:wizard or open /admin/setup to enter the club name, capacity, and age tiers.",
+          "Club identity is not configured yet. Run npm run setup:wizard, or enter the club name in Admin > Appearance > Club Identity (capacity lives in Admin > Lodges and age tiers have their own step).",
         details: [
           "Source: database (ClubIdentitySettings / EmailMessageSetting)",
           "No persisted club identity found, and no primary config/club.json is committed.",

@@ -38,7 +38,23 @@ import { prisma } from "@/lib/prisma";
  * take away a page an operator is relying on to configure the club: a missing
  * row, a table that does not exist yet during a blue/green window, a
  * rolled-back release, and a database error all resolve to `legacySurfacesHidden
- * = false`. The worst a fault can do is show a surface somebody asked to hide.
+ * = false`.
+ *
+ * BUT "SHOWS A SURFACE" UNDERSTATES WHAT THAT COSTS, and the honest version is
+ * this: because the same flag governs Site Style's own **Finish setup** control,
+ * a read fault also RE-ARMS A PUBLISH LEVER. A club that retired the surfaces
+ * deliberately, so the wizard's Ready-to-open panel would be the single
+ * considered act that makes the public site live, gets the second lever back on
+ * the styling page for as long as the read keeps failing — and a content admin
+ * saving their colours can publish the site from there without meaning to.
+ *
+ * That is still the right direction, and the choice is deliberate rather than
+ * unexamined. Failing CLOSED would hide `/admin/setup`'s own surfaces from an
+ * operator mid-configuration whenever the database hiccuped, which is a page
+ * they are relying on; and the publish lever it would be protecting is one an
+ * administrator has to find, read and press. But it is a real consequence, not
+ * merely a cosmetic one, so it is written here rather than left as "the worst a
+ * fault can do is show a surface somebody asked to hide".
  */
 
 export const SETUP_SURFACE_SETTINGS_ID = "default";

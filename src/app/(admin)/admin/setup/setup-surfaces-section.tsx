@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Spinner } from "@/components/ui/spinner";
+import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   ForbiddenSaveError,
   useSectionEditState,
@@ -53,16 +54,20 @@ interface SetupSurfacesDraft {
  * Cancel is a plain `Button`, like every sibling section's: it discards rather
  * than writes, so a view-only admin who somehow reached edit mode is not being
  * stopped from anything. Edit and Save are the two gated controls, both
- * `describeReason={false}` under the banner this file renders itself.
+ * `describeReason={false}` under the banner this file renders itself, and Save
+ * comes first in the row as it does in every sibling.
  */
 export function SetupSurfacesSection({
-  canEdit,
   onSaved,
 }: {
-  canEdit: boolean | undefined;
   /** Lets the page hide or restore its own cards without a round trip. */
   onSaved: (settings: SetupSurfacesDraft) => void;
 }) {
+  // The area this section's own route enforces (support:view / support:edit),
+  // asked HERE rather than taken as a prop — the shape every sibling settings
+  // section uses. Tri-state (#2065): `undefined` while the session resolves
+  // renders neither an enabled control nor a view-only banner.
+  const canEdit = useAdminAreaEditAccess("support");
   const section = useSectionEditState<SetupSurfacesDraft>({
     load: async (signal) => {
       const response = await fetch("/api/admin/setup/surfaces", {
@@ -195,22 +200,23 @@ export function SetupSurfacesSection({
                 </div>
               </div>
               {section.editing ? (
-                <div className="flex justify-end gap-2">
-                  <Button
-                    variant="outline"
-                    disabled={section.saving}
-                    onClick={section.cancelEditing}
-                  >
-                    Cancel
-                  </Button>
+                <div className="flex gap-3">
                   <ViewOnlyActionButton
                     canEdit={canEdit}
                     describeReason={false}
                     disabled={!section.dirty || section.saving}
                     onClick={() => void section.save()}
                   >
-                    Save
+                    {section.saving ? "Saving..." : "Save"}
                   </ViewOnlyActionButton>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={section.saving}
+                    onClick={section.cancelEditing}
+                  >
+                    Cancel
+                  </Button>
                 </div>
               ) : null}
             </>

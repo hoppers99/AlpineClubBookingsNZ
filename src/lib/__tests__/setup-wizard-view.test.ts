@@ -215,6 +215,38 @@ describe("buildSetupWizardView", () => {
   });
 });
 
+/*
+  Wayfinding (#223 fix round). A step's "Open the settings for this step" link
+  has to reach an editor that EXISTS in both positions of the legacy-surfaces
+  switch. `club-config` pointed at `/admin/setup`, which never held a
+  club-identity editor and holds no route to one at all once the surfaces are
+  hidden — so an operator on the wizard's first step was sent to a page that
+  could not do the thing the step is about.
+*/
+describe("a step's settings link reaches a real editor (#223)", () => {
+  it("sends club-config to the club identity editor, under its real area", () => {
+    const view = viewFor();
+    const step = view.steps.find((entry) => entry.id === "club-config");
+
+    expect(step?.href).toBe("/admin/appearance/identity");
+    // The area is the one that governs THAT page — `content`, which
+    // `/api/admin/club-identity` enforces — not the area of `/admin/setup`.
+    expect(step?.permissionArea).toBe("content");
+  });
+
+  it("sends no step to /admin/setup, which carries no editor of its own", () => {
+    // `/admin/setup` is the switch's home and a list of links; it edits
+    // nothing. A step whose settings link lands there is a step with no
+    // destination in the hidden position.
+    const view = viewFor();
+    const stranded = view.steps
+      .filter((step) => step.href === "/admin/setup")
+      .map((step) => step.id);
+
+    expect(stranded).toEqual([]);
+  });
+});
+
 describe("navigation helpers", () => {
   it("walks the flat journey order, not the grouped one", () => {
     const view = viewFor();

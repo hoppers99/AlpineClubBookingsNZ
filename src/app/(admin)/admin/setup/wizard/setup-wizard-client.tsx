@@ -260,12 +260,13 @@ export function SetupWizardClient({
       const body = (await response.json().catch(() => null)) as
         | { ok?: boolean; message?: string; error?: string }
         | null;
-      if (!response.ok || typeof body?.ok !== "boolean") {
+      const ok = body?.ok;
+      if (!response.ok || typeof ok !== "boolean") {
         throw new Error(errorMessageFrom(body, "Provider test failed"));
       }
       setProviderResults((current) => ({
         ...current,
-        [provider]: { ok: body.ok, message: body.message ?? "" },
+        [provider]: { ok, message: body?.message ?? "" },
       }));
       await load();
     } catch (testError) {

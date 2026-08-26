@@ -122,8 +122,17 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
   AdminPermissionArea
 > = {
   // Foundation — the install checklist, modules and system health are all
-  // support surfaces.
-  "club-config": "support",
+  // support surfaces…
+  //
+  // …with `club-config` the exception, and it is one of the mechanical entries
+  // rather than a judged edge once its `href` is read (#223 fix round). The
+  // club's name, short name and hut-leader label are edited on
+  // `/admin/appearance/identity`, which `ROUTE_AREA_PREFIXES` registers under
+  // `content` and `/api/admin/club-identity` enforces at `content:view/edit`.
+  // It read `support` while the check linked to `/admin/setup` — a page that
+  // never held the editor, and holds no route to it at all once the legacy
+  // surfaces are hidden.
+  "club-config": "content",
   "club-time-zone": "support",
   "environment-role": "support",
   "runtime-env": "support",
@@ -317,12 +326,19 @@ export interface SetupWizardView {
 /**
  * Marry one readiness result to one traversal.
  *
- * The traversal's step set is a SUBSET of the readiness result's checks (it
- * excludes a disabled module's steps and readiness does not — until C8 wires the
- * cards to the registry too), so every traversal step normally finds its check.
- * A step with no matching check still renders, titled by its id: an operator
- * seeing a bare id is a bug report, whereas dropping the row silently would
- * shorten the journey and move the percentage's denominator without saying why.
+ * The two step sets are now IDENTICAL, not merely overlapping: C8 (#223) wired
+ * `buildSetupReadiness` to the same registry filter the traversal uses, and
+ * `setup-surface-registry-parity.test.ts` pins that they agree across eight
+ * named module states. So through the real routes every traversal step finds
+ * its check, and the fallback below is unreachable.
+ *
+ * IT STAYS ANYWAY, and is not dead code in the sense that matters: this is a
+ * pure function taking two arguments, and nothing in its signature makes a
+ * caller hand it a matched pair. `setup-wizard-view.test.ts` calls it with
+ * mismatched fixtures on purpose. A step with no matching check still renders,
+ * titled by its id: an operator seeing a bare id is a bug report, whereas
+ * dropping the row silently would shorten the journey and move the percentage's
+ * denominator without saying why.
  */
 export function buildSetupWizardView(
   readiness: SetupReadiness,

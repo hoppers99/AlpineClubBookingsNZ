@@ -27,7 +27,6 @@ import {
 import { LodgeCapacityCard } from "@/components/admin/lodge-capacity-card";
 import type { FeatureFlags } from "@/config/schema";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
-import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   SETUP_HUB_CARDS,
   getVisibleSetupHubCards,
@@ -200,10 +199,6 @@ export function SetupPageClient({
   const [legacySurfacesHidden, setLegacySurfacesHidden] = useState(
     initialLegacySurfacesHidden,
   );
-  // Tri-state, so the resolving `undefined` window renders neither an enabled
-  // control nor a view-only banner (#2065). `support` is the area this page and
-  // the surfaces route both enforce.
-  const canEditSupport = useAdminAreaEditAccess("support");
   const [readiness, setReadiness] = useState<SetupReadiness | null>(null);
   const [progress, setProgress] = useState<SetupProgressState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -726,7 +721,6 @@ export function SetupPageClient({
         exactly the state somebody might be trying to escape.
       */}
       <SetupSurfacesSection
-        canEdit={canEditSupport}
         onSaved={(settings) =>
           setLegacySurfacesHidden(settings.legacySurfacesHidden)
         }
