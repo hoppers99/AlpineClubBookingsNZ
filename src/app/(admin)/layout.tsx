@@ -13,9 +13,15 @@ import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { clubThemeFontVariableClassName } from "@/lib/club-theme-fonts";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { getAiAssistantAvailability } from "@/lib/ai-assistant-config";
-import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import { getWebsiteThemeRenderState } from "@/lib/club-theme";
 import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
+import {
+  canSetupNudgeAppear,
+  readSetupJourneyComplete,
+  shouldShowSetupNudge,
+  SETUP_WIZARD_HREF,
+  type SetupJourneyReadResult,
+} from "@/lib/setup-nudge";
 
 export default async function AdminLayout({
   children,
@@ -35,20 +41,45 @@ export default async function AdminLayout({
   const guard = await guardAdminLayout();
   if (guard.outcome === "redirect") redirect(guard.destination);
 
-  const { member, user, permissionMatrix, isFullAdmin: actorIsFullAdmin, nonce } =
-    guard;
-  const canManageContent = hasAdminAreaAccess(member, {
-    area: "content",
-    level: "edit",
-  });
+  const {
+    user,
+    permissionMatrix,
+    isFullAdmin: actorIsFullAdmin,
+    nonce,
+    requestedPath,
+  } = guard;
   const showOnboardingWizard = guard.showOnboardingWizard;
-  const [effectiveModules, theme, lodgeCapacity, clubIdentity] =
+
+  // Both discriminators the nudge's path/permission gate needs are already in
+  // hand here — neither depends on the journey or launch reads below — so the
+  // `SetupProgress` read can be skipped entirely when this is false (#236 fix
+  // round F5: it would be provably wasted).
+  const setupNudgeEligible = canSetupNudgeAppear({
+    requestedPath,
+    permissionMatrix,
+  });
+  const NO_SETUP_NUDGE_READ: SetupJourneyReadResult = {
+    complete: false,
+    readFailed: false,
+  };
+
+  const [effectiveModules, theme, lodgeCapacity, clubIdentity, journey] =
     await Promise.all([
       loadEffectiveModuleFlags(),
       getWebsiteThemeRenderState(),
       getDefaultLodgeCapacity(),
       getCachedClubIdentity(),
+      setupNudgeEligible
+        ? readSetupJourneyComplete()
+        : Promise.resolve(NO_SETUP_NUDGE_READ),
     ]);
+  const setupNudgeVariant = shouldShowSetupNudge({
+    journeyComplete: journey.complete,
+    journeyReadFailed: journey.readFailed,
+    themeComplete: theme.isComplete,
+    requestedPath,
+    permissionMatrix,
+  });
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
 
   // Paid AI free-text path: module on AND a usable Anthropic key stored. Budget
@@ -93,17 +124,28 @@ export default async function AdminLayout({
               tabIndex={-1}
               className="flex-1 overflow-y-auto p-6 pb-24 print:overflow-visible print:p-0 md:p-8 md:pb-28"
             >
-              {!theme.isComplete && canManageContent && (
+              {setupNudgeVariant && (
                 <div className="mb-6 rounded-md border border-warning-6 bg-warning-3 p-4 text-sm text-warning-11 print:hidden">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <p className="font-medium">
-                      Complete your site style before opening the public website.
+                      {setupNudgeVariant === "journey-incomplete" ? (
+                        <>
+                          This club&apos;s setup isn&apos;t finished — pick up
+                          where you left off in the setup wizard.
+                        </>
+                      ) : (
+                        <>
+                          This club&apos;s setup is marked finished, but the
+                          public website hasn&apos;t been opened yet — finish
+                          up in the setup wizard.
+                        </>
+                      )}
                     </p>
                     <Link
-                      href="/admin/site-style"
+                      href={SETUP_WIZARD_HREF}
                       className="rounded-md bg-brand-gold px-3 py-2 text-sm font-semibold text-brand-charcoal shadow-sm transition-shadow hover:shadow-md"
                     >
-                      Open Site Style
+                      Open Setup Wizard
                     </Link>
                   </div>
                 </div>

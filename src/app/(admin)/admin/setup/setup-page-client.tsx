@@ -13,6 +13,7 @@ import {
 import { LodgeCapacityCard } from "@/components/admin/lodge-capacity-card";
 import type { FeatureFlags } from "@/config/schema";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
+import { SETUP_WIZARD_HREF } from "@/lib/setup-wizard-route";
 import {
   SETUP_HUB_CARDS,
   getVisibleSetupHubCards,
@@ -307,7 +308,7 @@ export function SetupPageClient({
             where they were rather than at the top.
           */}
           <Button asChild>
-            <Link href="/admin/setup/wizard">
+            <Link href={SETUP_WIZARD_HREF}>
               <Wand2 className="h-4 w-4" />
               Open the setup wizard
             </Link>

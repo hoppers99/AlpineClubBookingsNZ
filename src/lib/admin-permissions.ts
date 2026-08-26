@@ -651,7 +651,7 @@ export function getFirstAccessibleAdminHref(input: AdminPermissionInput) {
   return null;
 }
 
-function normalizePathname(pathname: string) {
+export function normalizePathname(pathname: string) { // reused by setup-nudge.ts (#236 F5)
   const candidate = pathname.split(/[?#]/)[0] || "/";
   return candidate.endsWith("/") && candidate !== "/"
     ? candidate.replace(/\/+$/, "")
