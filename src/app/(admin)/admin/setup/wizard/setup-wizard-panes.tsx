@@ -156,7 +156,11 @@ function ClubTimeZoneWizardPane() {
  * reason there is none.
  *
  * EXHAUSTIVE BY TYPE. A step added to `SETUP_STEP_DEFINITIONS` fails the
- * typecheck here until somebody writes one of the two answers down.
+ * typecheck here until somebody writes one of the two answers down — TS2741
+ * ("Property '<id>' is missing in type ... but required in type
+ * 'Record<SetupStepId, ...>'") when exactly one step is missing an entry, or
+ * TS2739 ("Type ... is missing the following properties from type ...: <id>,
+ * <id>, ...") when a later change adds several steps at once.
  */
 export const SETUP_STEP_PANES: Record<SetupStepId, ComponentType | null> = {
   // --- Foundation ---

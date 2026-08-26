@@ -278,8 +278,8 @@ above for how to choose.
    two permissions on the screen stay separate — recording progress needs
    **Support** edit, while the editor is governed by its own area — so being
    able to do one and not the other is normal. Where the editor is the one you
-   cannot use, it says so in its own words directly above itself, and the
-   progress buttons below are unaffected. **Club Time Zone** is stricter than
+   cannot use, its own banner says so above its fields; the progress buttons
+   sit in the frame above the editor and are unaffected. **Club Time Zone** is stricter than
    most: it is a full-administrator setting, and anybody else is told so in
    place of the form.
 

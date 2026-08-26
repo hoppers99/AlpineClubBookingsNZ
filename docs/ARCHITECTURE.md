@@ -1541,17 +1541,26 @@ banner per screen.
 about different things** (epic #213, C12). Its step frame heads its progress
 controls with one banner, and the inline editor mounted beside the frame —
 `setup-wizard-panes.tsx`, an exhaustive `Record<SetupStepId, ComponentType |
-null>` whose `club-config` entry is `ClubIdentityPanel` — heads its own with
-another. That is not the stacked-sibling question above waiting on a decision:
-changing a step's PROGRESS is one API for the whole journey, enforced at
-`support: edit`, while doing the step's WORK is governed by that step's own area,
-and a Content Officer without Support genuinely sees an editable form above dead
-progress buttons. Each route enforces its own answer by path and method, so a
-wrong client-side gate produces an honest 403 rather than a confused deputy.
+null>` whose `club-config` entry is `ClubIdentityWizardPane` (the thin wrapper
+that mounts the real `ClubIdentityPanel`) — heads its own with another. That is
+not the stacked-sibling question above waiting on a decision: changing a step's
+PROGRESS is one API for the whole journey, enforced at `support: edit`, while
+doing the step's WORK is governed by that step's own area, and a club-defined
+role holding `support: view` plus `content: edit` — combining both is how a club
+would build this, since a Content Officer alone never reaches
+`/admin/setup/wizard` at all — genuinely sees a dead frame above an editable
+pane. Each route enforces its own answer by path and method, so a wrong
+client-side gate produces an honest 403 rather than a confused deputy.
 **Which is exactly why the pane is rendered as a SIBLING of
 `SetupWizardStepFrame` and never as a child of it:** inside the frame it would be
 the nesting defect above — one card, two live regions, the same class of sentence
-twice — and the contract test fails it. The render site is in
+twice. The static contract test (`view-only-banner-contract.test.ts`) is a scan
+over imports, so it catches a DIRECT import of a banner-bearing pane into the
+frame but cannot see where a rendered pane ends up in the tree; the realistic
+refactor — moving the render CALL into the frame while the pane keeps importing
+through `setup-wizard-panes.tsx` — is caught instead by the jsdom containment
+assertion in `setup-wizard-panes.test.tsx` ("keeps the pane OUTSIDE the step
+frame"), which asserts `frame.contains(pane)` directly. The render site is in
 `setup-wizard-client.tsx`, which renders no banner of its own. A pane whose
 section is Full-Admin-only rather than area-gated (`club-time-zone`, whose panel
 deliberately renders no banner at all) replicates its page shell's `isFullAdmin`
