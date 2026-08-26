@@ -429,6 +429,10 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/setup/finance-report-mappings/backfill": "finance",
   "/api/admin/setup/progress": "support",
   "/api/admin/setup/provider-test": "support",
+  // The legacy-surfaces switch (epic #213, C8, #223). `support`, resolved
+  // through the `/api/admin/setup` prefix like the readiness read beside it:
+  // it decides what `/admin/setup` shows and nothing wider.
+  "/api/admin/setup/surfaces": "support",
   // The setup wizard's single read (epic #213, C5). `support`, exactly like
   // `/api/admin/setup` beside it and for the same reason: it answers the same
   // question about the same club configuration. WHICH STEPS an officer may act
