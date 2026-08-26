@@ -3,7 +3,7 @@
 // duplicate data. Clubs customise the placeholders through the admin screens.
 import { type AgeTier, PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
-import { clubConfig } from "../src/config/club";
+import { clubConfig, clubConfigSource } from "../src/config/club";
 import {
   CLUB_CONTACT_EMAIL,
   clubDomainEmail,
@@ -327,21 +327,53 @@ async function main() {
   // runtime fallback chain; this just makes the admin card show the config
   // values as the current values. No lodge name/address is stored here (lodge
   // identity is the Lodge table's; address is migration-only).
-  await prisma.clubIdentitySettings.upsert({
-    where: { id: "default" },
-    update: {},
-    create: {
-      id: "default",
-      name: clubConfig.name,
-      shortName: clubConfig.shortName ?? null,
-      hutLeaderLabel: clubConfig.hutLeaderLabel ?? null,
-      // Normalise identically to the self-heal step (currentFacebookUrl in
-      // config-self-heal.ts): trim and collapse blank → null, so a seed-created
-      // row and a boot-healed row hold byte-identical values (#1984).
-      facebookUrl: clubConfig.socialLinks?.facebook?.trim() || null,
-    },
-  });
-  console.log("Club identity settings seeded (create-only)");
+  //
+  // GUARDED ON PROVENANCE (#237, epic #213 D16). Every other create-if-absent
+  // write in this file mirrors a boot self-heal step exactly — that is the
+  // #1984 parity standard those comments keep invoking — and this one did not:
+  // `runConfigSelfHeal` REFUSES to persist a club.json-derived value unless the
+  // config resolved to a real primary `config/club.json`
+  // (config-self-heal.ts, the fallback guard, and `stepRequiresPrimaryClubConfig`).
+  // The seed wrote it unconditionally, so an install with no committed
+  // club.json got "Example Mountain Club" frozen into the database as a
+  // DB-first authoritative identity — precisely the outcome that guard exists
+  // to prevent, and it is unrecoverable without an admin edit because both
+  // writers are create-only.
+  //
+  // It is also what the UAT walkthrough saw: the club-config readiness check is
+  // DB-first, so a placeholder name nobody chose made the first step of the
+  // setup wizard report itself complete. D14's defaulted state fixes the
+  // REPORTING of a default; this stops a fallback placeholder being written as
+  // though somebody had configured it in the first place.
+  //
+  // With the guard, seed and self-heal now agree in both directions: primary
+  // config → both write the same row, and parity holds; anything else → neither
+  // writes, and `/admin/setup` says the club identity is not configured yet,
+  // which is true.
+  if (clubConfigSource === "primary") {
+    await prisma.clubIdentitySettings.upsert({
+      where: { id: "default" },
+      update: {},
+      create: {
+        id: "default",
+        name: clubConfig.name,
+        shortName: clubConfig.shortName ?? null,
+        hutLeaderLabel: clubConfig.hutLeaderLabel ?? null,
+        // Normalise identically to the self-heal step (currentFacebookUrl in
+        // config-self-heal.ts): trim and collapse blank → null, so a seed-created
+        // row and a boot-healed row hold byte-identical values (#1984).
+        facebookUrl: clubConfig.socialLinks?.facebook?.trim() || null,
+      },
+    });
+    console.log("Club identity settings seeded (create-only)");
+  } else {
+    console.log(
+      `Club identity settings NOT seeded: config provenance is "${clubConfigSource}", ` +
+        "not a valid primary config/club.json. Set the club's name in " +
+        "Admin > Appearance > Club Identity (the boot self-heal refuses this " +
+        "write for the same reason).",
+    );
+  }
 
   // DB-first club timezone singleton (CT-1 #2989): store the zone this
   // installation is EFFECTIVELY using so a freshly seeded database matches a
