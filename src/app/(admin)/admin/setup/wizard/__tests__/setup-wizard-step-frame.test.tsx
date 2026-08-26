@@ -3,6 +3,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_VIEW_ONLY_SECTION_HEADING } from "@/components/admin/view-only-action";
+import { buildSetupReadiness } from "@/lib/setup-readiness";
 import { SETUP_STEP_IDS, type SetupStepId } from "@/lib/setup-step-registry";
 import type { SetupWizardStepDetail } from "@/lib/setup-wizard-view";
 import { SetupWizardStepFrame } from "@/app/(admin)/admin/setup/wizard/setup-wizard-step-frame";
@@ -63,6 +64,19 @@ function renderFrame(
   );
   return { onProgress, onNavigate, onOpenLaunch, onProviderTest };
 }
+
+/**
+ * Step ids whose REAL readiness check carries neither an `href` nor any
+ * `links` — derived from the production check builder rather than
+ * hardcoded, so a check that later loses (or gains) its destination is
+ * picked up here automatically instead of a fixed id list silently going
+ * stale. Computed once: `buildSetupReadiness` is a pure read over the real
+ * config/env, so every render in the test below can share it.
+ */
+const STEP_IDS_WITH_NO_CONTROL: SetupStepId[] = buildSetupReadiness()
+  .categories.flatMap((category) => category.checks)
+  .filter((check) => !check.href && (check.links?.length ?? 0) === 0)
+  .map((check) => check.id as SetupStepId);
 
 /** A step whose readiness check declares a provider test — Stripe's. */
 function providerStep(overrides: Partial<SetupWizardStepDetail> = {}) {
@@ -349,6 +363,36 @@ describe("SetupWizardStepFrame", () => {
   });
 
   /*
+    THE FALLBACK BRANCH, exercised directly (#237 fix round). The lookup is
+    keyed `SETUP_STEP_DEFAULTED_EVIDENCE[step.id]`, and `step.id` is typed as
+    the closed union — but the PAYLOAD this component actually renders crosses
+    a network boundary, where an old client bundle or a rolling deploy can hand
+    it an id this build's table does not carry an entry for. `undefined` is
+    neither `"installed-default"` nor `"read-from-deployment"`, so the branch
+    that answers has to be the non-committal one: claiming "set when the site
+    was installed" about a step this build cannot even classify would be a
+    stronger, less deniable claim than the truth supports.
+  */
+  it("renders the non-committal register for an id the evidence table does not recognise", () => {
+    renderFrame({
+      step: detail({
+        id: "an-unrecognised-step-id" as SetupStepId,
+        title: "Unrecognised Step",
+        href: "/admin/somewhere",
+        permissionArea: "support",
+        isDefaulted: true,
+        state: "defaulted",
+      }),
+    });
+    const notice = screen.getByTestId("setup-wizard-step-defaulted");
+    expect(notice.textContent).toMatch(
+      /read from this deployment's own configuration and environment/i,
+    );
+    expect(notice.textContent).toMatch(/check that it is right for your club/i);
+    expect(notice.textContent).not.toMatch(/set when the site was installed/i);
+  });
+
+  /*
     THE SENTENCE THAT MUST NEVER APPEAR ON THIS STEP, named rather than implied.
     A declared production role is the club's live site, said so in the panel
     beneath this notice; "not chosen for your club" contradicts that message on
@@ -371,28 +415,40 @@ describe("SetupWizardStepFrame", () => {
   });
 
   /*
-    `runtime-env` links NOWHERE — its readiness check carries no `href`, because
-    the work is editing `.env` and restarting. "Change it below" therefore
-    pointed at a list of variable names and nothing else, which is the second
-    half of the same finding.
+    A step whose real readiness check carries no `href` and no `links` — the
+    work has no destination this screen can name — links NOWHERE. "Change it
+    below" would point at nothing on such a step, which is the second half of
+    the finding this generalises: not just `runtime-env` (editing `.env` and
+    restarting), but EVERY step in that shape, present or future, derived from
+    the real check builder above rather than named one at a time. Fails if a
+    future href-less, link-less step is ever classified `installed-default` in
+    `SETUP_STEP_DEFAULTED_EVIDENCE` — that copy is the one that says "below".
   */
-  it("does not offer to change something below on a step with no control", () => {
-    renderFrame({
-      step: detail({
-        id: "runtime-env" as SetupStepId,
-        title: "Runtime Environment",
-        href: undefined,
-        permissionArea: "support",
-        isDefaulted: true,
-        state: "defaulted",
-      }),
-    });
-    const notice = screen.getByTestId("setup-wizard-step-defaulted");
-    expect(notice.textContent).not.toMatch(/below/i);
-    // …and still names both ways past the step, which D15 requires of every
-    // variant of this notice.
-    expect(notice.textContent).toMatch(/mark this step done/i);
-    expect(notice.textContent).toMatch(/skip it for now/i);
+  it("does not offer to change something below on any step with no control", () => {
+    // Guards the guard: if this list ever went empty (every check grew an
+    // `href`, say), the loop below would pass on zero iterations and this test
+    // would stop meaning anything without failing.
+    expect(STEP_IDS_WITH_NO_CONTROL.length).toBeGreaterThan(0);
+    for (const id of STEP_IDS_WITH_NO_CONTROL) {
+      renderFrame({
+        step: detail({
+          id,
+          title: id,
+          href: undefined,
+          links: [],
+          permissionArea: "support",
+          isDefaulted: true,
+          state: "defaulted",
+        }),
+      });
+      const notice = screen.getByTestId("setup-wizard-step-defaulted");
+      expect(notice.textContent).not.toMatch(/below/i);
+      // …and still names both ways past the step, which D15 requires of every
+      // variant of this notice.
+      expect(notice.textContent).toMatch(/mark this step done/i);
+      expect(notice.textContent).toMatch(/skip it for now/i);
+      cleanup();
+    }
   });
 
   /*

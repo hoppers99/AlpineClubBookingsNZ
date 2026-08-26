@@ -106,23 +106,28 @@ function areaLabel(area: SetupWizardStepDetail["permissionArea"]): string {
  * Neither says "change it below" where the step links to nothing.
  */
 function defaultedBannerCopy(step: SetupWizardStepDetail): string {
-  if (SETUP_STEP_DEFAULTED_EVIDENCE[step.id] === "read-from-deployment") {
-    // The register is the environment-role check's: these facts may have been
-    // declared on purpose by whoever installed the site, so this asks for a
-    // review and never calls them unchosen. Saying otherwise put "not chosen for
-    // your club" directly above "declared PRODUCTION — the club's live site".
+  // Checked FOR "installed-default", not for "read-from-deployment", so an id
+  // this table does not (yet) recognise — a payload from a rolling deploy or
+  // an old client bundle sitting on a step a newer server has reclassified —
+  // lands on the non-committal register below rather than on the more
+  // specific claim that the site's own installer set this value.
+  if (SETUP_STEP_DEFAULTED_EVIDENCE[step.id] === "installed-default") {
     return (
-      "Nothing has confirmed this step yet. What it reports was read from this " +
-      "deployment's own configuration and environment rather than chosen in the " +
-      "wizard — check that it is right for your club, then mark this step done. " +
-      "If you would rather decide later, skip it for now."
+      "A default is in place here and nothing has confirmed it — it was set when " +
+      "the site was installed, not chosen for your club. Check it below, change " +
+      "it if it is wrong, then mark this step done. If you would rather decide " +
+      "later, skip it for now."
     );
   }
+  // The register is the environment-role check's: these facts may have been
+  // declared on purpose by whoever installed the site, so this asks for a
+  // review and never calls them unchosen. Saying otherwise put "not chosen for
+  // your club" directly above "declared PRODUCTION — the club's live site".
   return (
-    "A default is in place here and nothing has confirmed it — it was set when " +
-    "the site was installed, not chosen for your club. Check it below, change " +
-    "it if it is wrong, then mark this step done. If you would rather decide " +
-    "later, skip it for now."
+    "Nothing has confirmed this step yet. What it reports was read from this " +
+    "deployment's own configuration and environment rather than chosen in the " +
+    "wizard — check that it is right for your club, then mark this step done. " +
+    "If you would rather decide later, skip it for now."
   );
 }
 

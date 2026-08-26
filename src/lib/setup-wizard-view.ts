@@ -226,6 +226,20 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
  *   switch alone: one also needs Addy credentials from the environment, the
  *   other a live operational Xero connection. The evidence that satisfies the
  *   check is the deployment's, so the copy is the deployment's.
+ * - **`feature-flags` is `read-from-deployment`.** Its check carries no `href`
+ *   and no `links` at all — module activation is edited on `/admin/modules`,
+ *   which the check does not link to — so "check it below" would point at
+ *   nothing. Its only reachable defaulted path is an administrator who has
+ *   already saved Admin > Modules and never confirmed this step: the seed
+ *   writes no `AdminModuleSettings` row at all, so a fresh install without one
+ *   reads `warning`, not `defaulted`. The value was therefore chosen by a
+ *   person, just not in the wizard — `environment-role`'s shape, not an
+ *   installer placeholder.
+ * - **`seed-admin` is `installed-default`.** Its check is satisfied by a row
+ *   the installer's own seed created in THIS CLUB'S database
+ *   (`SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD`), editable on the page it links
+ *   to (`/admin/members`) — class A's own written rule, applied literally
+ *   rather than by a heuristic about what "installed" tends to look like.
  */
 export type SetupStepDefaultedEvidence =
   | "installed-default"
@@ -240,8 +254,8 @@ export const SETUP_STEP_DEFAULTED_EVIDENCE: Record<
   "environment-role": "read-from-deployment",
   "runtime-env": "read-from-deployment",
   "auth-secret-strength": "read-from-deployment",
-  "seed-admin": "read-from-deployment",
-  "feature-flags": "installed-default",
+  "seed-admin": "installed-default",
+  "feature-flags": "read-from-deployment",
   lodges: "installed-default",
   "booking-policies": "installed-default",
   "membership-cancellation": "installed-default",
