@@ -438,7 +438,10 @@ export function SetupWizardClient({
                 }
                 onProviderTest={(provider) => void runProviderTest(provider)}
               />
-              <SetupWizardStepPane stepId={activeStep.id} />
+              <SetupWizardStepPane
+                stepId={activeStep.id}
+                permissionMatrix={permissionMatrix}
+              />
             </div>
           ) : (
             <section className="rounded-md border bg-card p-5 text-sm text-muted-foreground">

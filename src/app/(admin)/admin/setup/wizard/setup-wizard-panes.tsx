@@ -5,6 +5,8 @@ import { useSession } from "next-auth/react";
 import { ClubIdentityPanel } from "@/components/admin/club-identity-panel";
 import { ClubTimeZonePanel } from "@/components/admin/club-time-zone-panel";
 import { isFullAdmin } from "@/lib/access-roles";
+import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
+import { canViewSetupStepPane } from "@/lib/setup-wizard-view";
 import type { SetupStepId } from "@/lib/setup-step-registry";
 
 /**
@@ -56,11 +58,15 @@ import type { SetupStepId } from "@/lib/setup-step-registry";
  * about changing a STEP'S PROGRESS, which is one API for the whole journey and
  * is enforced at `support: edit`. The pane's banner is about doing the step's
  * actual WORK, which is governed by that step's own area — `content` for the
- * club identity. A Content Officer without Support sees an editable form above
- * dead progress buttons; a Support Officer without Content sees the reverse.
- * Both are true, and both routes enforce their own answer by path and method,
- * so there is no confused deputy here — only two honest 403s if a client-side
- * gate is ever wrong.
+ * club identity. A club-defined role holding `support: view` plus
+ * `content: edit` — combining both is how a club would build this, since a
+ * Content Officer alone never reaches `/admin/setup/wizard` at all
+ * (`support: view` gates admission, and `ADMIN_CONTENT` carries none of it) —
+ * sees a dead frame above an editable pane; a Support Officer who also holds
+ * `content: view` but not `edit` sees the reverse: a live frame above a pane
+ * whose fields render but whose Save stays disabled. Both are true, and both
+ * routes enforce their own answer by path and method, so there is no confused
+ * deputy here — only two honest 403s if a client-side gate is ever wrong.
  *
  * ## What a pane does NOT do
  *
@@ -225,10 +231,28 @@ export const SETUP_STEP_PANES: Record<SetupStepId, ComponentType | null> = {
  *
  * Rendered by `SetupWizardClient` as a SIBLING of the step frame — see this
  * module's docblock for why it can never be a child of it.
+ *
+ * **Gated on VIEW access to the step's own area before it mounts at all**
+ * (#238 fix round F1). A viewer who lacks even view on
+ * `SETUP_STEP_PERMISSION_AREA[stepId]` — the shipped shape for
+ * `ADMIN_BOOKINGS`, `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN` on `club-config`,
+ * none of which carry `content` — was never offered a route to the real
+ * settings page either, so mounting the pane here would only hand them a
+ * panel whose own fetch 403s. See `canViewSetupStepPane` in
+ * `setup-wizard-view.ts` for the full reasoning. The step frame's existing
+ * link-out and copy are unaffected — this only withholds the embedded copy of
+ * the editor, exactly as no pane at all behaved before C12.
  */
-export function SetupWizardStepPane({ stepId }: { stepId: SetupStepId }) {
+export function SetupWizardStepPane({
+  stepId,
+  permissionMatrix,
+}: {
+  stepId: SetupStepId;
+  permissionMatrix: AdminPermissionMatrix;
+}) {
   const Pane = SETUP_STEP_PANES[stepId];
   if (!Pane) return null;
+  if (!canViewSetupStepPane(permissionMatrix, stepId)) return null;
   return (
     // Keyed by STEP, not by component, so that walking between two steps that
     // share one pane starts the pane over rather than reconciling it as the

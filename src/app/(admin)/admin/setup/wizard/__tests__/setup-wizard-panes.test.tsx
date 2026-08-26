@@ -59,17 +59,49 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
-import { emptyAdminPermissionMatrix } from "@/lib/admin-permissions";
+import { toast } from "sonner";
+import {
+  emptyAdminPermissionMatrix,
+  getAdminPermissionMatrix,
+} from "@/lib/admin-permissions";
 import type { SetupReadiness } from "@/lib/setup-readiness";
 import { SETUP_STEP_IDS, type SetupStepId } from "@/lib/setup-step-registry";
+import { canViewSetupStepPane } from "@/lib/setup-wizard-view";
 import type { SetupWizardTraversal } from "@/lib/setup-wizard-traversal";
 import { SetupWizardClient } from "@/app/(admin)/admin/setup/wizard/setup-wizard-client";
 import { SETUP_STEP_PANES } from "@/app/(admin)/admin/setup/wizard/setup-wizard-panes";
 
+/**
+ * `support: edit`, and `content: edit` too — a full editor of both areas, so
+ * the pane mounts (F1, #238 fix round) AND its own Save is live. Most of this
+ * file's tests want exactly that: they are pinning the PANE's behaviour, not
+ * the area gate in front of it, and a matrix that left `content: none` (as
+ * this used to, silently) would 403 the pane's own fetch on a real server —
+ * F1 is precisely the wizard client failing to look before it mounts.
+ */
 const supportEditor = {
   ...emptyAdminPermissionMatrix(),
   support: "edit" as const,
+  content: "edit" as const,
 };
+
+/**
+ * `support: edit` (can change progress), `content: view` but not `edit` — the
+ * one shape that should mount the pane with a live banner and a dead Save.
+ */
+const supportEditorContentViewer = {
+  ...emptyAdminPermissionMatrix(),
+  support: "edit" as const,
+  content: "view" as const,
+};
+
+/**
+ * The three shipped role bundles F1 names, resolved through the real bundle
+ * table rather than hand-copied — each carries `support: view` and no
+ * `content` entry at all (`content: none`), the shape that reached
+ * `club-config` and 403'd on the pane's own fetch before this fix.
+ */
+const NO_CONTENT_BUNDLES = ["ADMIN_BOOKINGS", "ADMIN_MEMBERSHIP", "FINANCE_ADMIN"] as const;
 
 const CLUB_IDENTITY = {
   name: "Alpine Sports Club",
@@ -284,13 +316,15 @@ describe("club-config renders the real club identity editor inline", () => {
   it("shows the pane's own view-only banner and a dead save, leaving the frame's progress controls alone", async () => {
     /*
       The two permissions on this screen have different answers, and this is the
-      case that proves it rather than asserting it: a Support editor with no
-      `content` edit can still record progress, and cannot change the club's
-      name. Both controls are on screen at once, in opposite states.
+      case that proves it rather than asserting it: a Support editor with
+      `content: view` but not `edit` can still record progress, and cannot
+      change the club's name. Both controls are on screen at once, in opposite
+      states. `content: view` is what mounts the pane at all post-F1 — this is
+      the one shape that both clears the mount gate and leaves Save disabled.
     */
     mocks.canEdit.mockReturnValue(false);
     stubFetch([["club-config", "Club Configuration"]]);
-    render(<SetupWizardClient permissionMatrix={supportEditor} />);
+    render(<SetupWizardClient permissionMatrix={supportEditorContentViewer} />);
 
     const save = (await screen.findByRole("button", {
       name: /Save club identity/,
@@ -325,6 +359,76 @@ describe("club-config renders the real club identity editor inline", () => {
     const frame = screen.getByTestId("setup-wizard-step-frame");
     expect(pane.getAttribute("data-step-id")).toBe("club-config");
     expect(frame.contains(pane)).toBe(false);
+  });
+});
+
+describe("a viewer with no VIEW access to the pane's own area (#238 fix round F1)", () => {
+  /*
+    Before this fix, `SetupWizardStepPane` mounted `ClubIdentityPanel`
+    unconditionally the moment a pane existed for the step, so a viewer whose
+    matrix carried `content: none` still got the panel — and its own
+    `GET /api/admin/club-identity` 403'd, landing on an error toast, a red
+    paragraph and a Retry that can never succeed (the fetch always answers the
+    same 403 for the same viewer), under a frame banner naming an unrelated
+    permission (`support`). Each of these three is a real shipped bundle
+    (`admin-permissions.ts` `ADMIN_ROLE_BUNDLES`) that reaches `club-config`
+    with exactly that shape: `support: view` (enough to be admitted to
+    `/admin/setup/wizard`, which gates on the `support` route prefix) and no
+    `content` key at all.
+  */
+  it.each(NO_CONTENT_BUNDLES)(
+    "mounts no pane, makes no pane fetch, and shows no error toast for %s",
+    async (bundle) => {
+      const matrix = getAdminPermissionMatrix({ accessRoles: [bundle] });
+      expect(matrix.content).toBe("none");
+      expect(matrix.support).toBe("view");
+
+      const fetchMock = stubFetch([["club-config", "Club Configuration"]]);
+      render(<SetupWizardClient permissionMatrix={matrix} />);
+
+      // Wait for the journey read to resolve — the frame is what proves the
+      // wizard finished loading and chose not to render a pane, rather than
+      // racing the pane's own (absent) fetch.
+      expect(
+        (await screen.findByTestId("setup-wizard-step-frame")).getAttribute(
+          "data-step-id",
+        ),
+      ).toBe("club-config");
+
+      expect(screen.queryByTestId("setup-wizard-step-pane")).toBeNull();
+      expect(callsTo(fetchMock, "/api/admin/club-identity")).toHaveLength(0);
+      expect(toast.error).not.toHaveBeenCalled();
+    },
+  );
+
+  it("mounts the pane, and its editable field, for a full administrator", async () => {
+    // The positive control for the three above: `content: edit` (the ADMIN
+    // bundle) clears the gate and the field is genuinely editable, not merely
+    // present.
+    const matrix = getAdminPermissionMatrix({ accessRoles: ["ADMIN"] });
+    expect(matrix.content).toBe("edit");
+
+    stubFetch([["club-config", "Club Configuration"]]);
+    render(<SetupWizardClient permissionMatrix={matrix} />);
+
+    const clubName = (await screen.findByLabelText(
+      "Club name",
+    )) as HTMLInputElement;
+    expect(clubName.disabled).toBe(false);
+  });
+
+  it("pins the gate function itself, so a swapped comparison fails here first", () => {
+    // The rendered tests above prove the wired-up behaviour; this pins the
+    // production gate function directly, so a change to `canViewSetupStepPane`
+    // (e.g. `!==` flipped to `===`, or `content` hardcoded instead of read off
+    // `SETUP_STEP_PERMISSION_AREA`) fails a fast unit test rather than only a
+    // slower render one.
+    for (const bundle of NO_CONTENT_BUNDLES) {
+      const matrix = getAdminPermissionMatrix({ accessRoles: [bundle] });
+      expect(canViewSetupStepPane(matrix, "club-config")).toBe(false);
+    }
+    const admin = getAdminPermissionMatrix({ accessRoles: ["ADMIN"] });
+    expect(canViewSetupStepPane(admin, "club-config")).toBe(true);
   });
 });
 
