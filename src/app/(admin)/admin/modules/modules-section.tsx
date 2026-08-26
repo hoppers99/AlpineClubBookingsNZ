@@ -198,7 +198,9 @@ export function ModulesSection() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [savedMessage, setSavedMessage] = useState("");
-  const pageRef = useRef<HTMLDivElement>(null);
+  // Named for what it now is: the top of the SECTION, which on `/admin/modules`
+  // is a little below the page heading and in the wizard is inside the pane.
+  const sectionRef = useRef<HTMLDivElement>(null);
   const feedbackRef = useRef<HTMLDivElement>(null);
   const { scrollToError, scrollToTop } = useScrollToFeedback();
 
@@ -235,7 +237,7 @@ export function ModulesSection() {
   }, [error, scrollToError]);
 
   useEffect(() => {
-    if (savedMessage) scrollToTop(pageRef);
+    if (savedMessage) scrollToTop(sectionRef);
   }, [savedMessage, scrollToTop]);
 
   const modules = useMemo(() => {
@@ -334,7 +336,7 @@ export function ModulesSection() {
   return (
     <div>
       {viewOnlyBanner}
-      <div ref={pageRef} className="space-y-8">
+      <div ref={sectionRef} className="space-y-8">
       <div className="flex flex-wrap justify-end gap-2">
         <Button
           type="button"

@@ -191,9 +191,11 @@ function ModulesWizardPane() {
         <h3 className="text-lg font-semibold text-foreground">Modules</h3>
         <p className="text-sm text-muted-foreground">
           The same editor as Admin &rarr; Modules. Switching a module on or off
-          and saving adds or removes its setup steps here in the rail. Saving
-          does not tick this step off — use &ldquo;Mark this step done&rdquo;
-          above when you are happy with it.
+          and saving adds or removes its setup steps here in the rail. Address
+          autocomplete is one of the checkboxes below; it has a step of its own
+          because it needs credentials as well as the switch. Saving does not
+          tick this step off — use &ldquo;Mark this step done&rdquo; above when
+          you are happy with it.
         </p>
       </div>
       <ModulesSection />
@@ -277,9 +279,10 @@ export const SETUP_STEP_PANES: Record<SetupStepId, ComponentType | null> = {
   // same editor differing only in a heading — and the wizard would then hold
   // two components that fetch and save the same `/api/admin/modules`. The one
   // asymmetry is deliberate and stated rather than hidden: switching THIS
-  // module off from THIS step removes the step the operator is standing on, and
-  // the shell's existing fallback moves them with the "changed elsewhere"
-  // notice (`setup-wizard-client.tsx`). No other module owns a step at or
+  // module off from THIS step removes the step the operator is standing on, so
+  // the shell's fallback moves them on and its notice says so
+  // (`setup-wizard-client.tsx`, which C13 also taught to speak when the
+  // operator had made no explicit selection). No other module owns a step at or
   // before `address-autocomplete`'s order, so that is the only self-removal
   // either pane can produce.
   "address-autocomplete": ModulesWizardPane,
