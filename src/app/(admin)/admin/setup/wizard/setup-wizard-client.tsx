@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
@@ -113,7 +113,28 @@ export function SetupWizardClient({
     Record<string, SetupWizardProviderTestResult>
   >({});
 
+  /**
+   * F6 (#238 fix round): three independent triggers can call `load()` —
+   * mount, the focus/visibility listener, and C12's readiness-input-changed
+   * event — and nothing serialised them. Two overlapping requests used to
+   * resolve in NETWORK order rather than CALL order: a pane's save-triggered
+   * refetch racing a focus-triggered refetch could have the focus request
+   * (started first, no new facts to report) resolve LAST and silently
+   * overwrite the pane's own fresher read with stale, pre-save state — the
+   * operator would see the exact repaint their save was supposed to produce
+   * flicker back to what it replaced.
+   *
+   * `loadSeqRef` is incremented on every CALL, not every resolution, so
+   * "latest wins" means latest STARTED, matching what the operator actually
+   * did last. A response applies its result only if no newer call has started
+   * since — stale calls still run to completion (nothing to cancel — the
+   * request itself keeps executing on the network), they just no longer write
+   * `payload`, `error` or `loading`.
+   */
+  const loadSeqRef = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = (loadSeqRef.current += 1);
     setLoading(true);
     setError("");
     try {
@@ -124,15 +145,17 @@ export function SetupWizardClient({
       if (!response.ok || !("traversal" in body)) {
         throw new Error(errorMessageFrom(body, "Failed to load the setup wizard"));
       }
+      if (seq !== loadSeqRef.current) return; // a newer load has since started; drop this stale result
       setPayload(body);
     } catch (loadError) {
+      if (seq !== loadSeqRef.current) return;
       setError(
         loadError instanceof Error
           ? loadError.message
           : "Failed to load the setup wizard",
       );
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, []);
 

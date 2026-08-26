@@ -28,6 +28,7 @@ vi.mock("next-auth/react", () => ({
 }));
 
 import { emptyAdminPermissionMatrix } from "@/lib/admin-permissions";
+import { SETUP_READINESS_INPUT_CHANGED_EVENT } from "@/lib/setup-readiness-events";
 import type { SetupReadiness } from "@/lib/setup-readiness";
 import type { SetupStepId } from "@/lib/setup-step-registry";
 import type { SetupWizardTraversal } from "@/lib/setup-wizard-traversal";
@@ -328,6 +329,85 @@ describe("SetupWizardClient", () => {
         ([url]) => String(url) === "/api/admin/setup/wizard",
       ),
     ).toHaveLength(2);
+  });
+
+  /*
+    F6 (#238 fix round). `load()` has THREE independent triggers — mount,
+    focus/visibility, and C12's readiness-input-changed event — and nothing
+    serialised them before this fix: two overlapping reads resolved in
+    NETWORK order, so a slower OLDER call settling after a faster NEWER one
+    could silently overwrite the newer result with stale state. Concretely: a
+    pane save fires the readiness-input-changed refetch, and if a focus
+    refetch from moments before is still in flight and happens to resolve
+    later, the operator would watch the exact repaint their save just
+    produced flicker back to what it replaced.
+  */
+  it("applies only the most recently STARTED load, dropping an older one that resolves later", async () => {
+    type WizardResponse = { ok: boolean; status: number; json: () => Promise<unknown> };
+    const wizardResolvers: Array<(value: WizardResponse) => void> = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url) !== "/api/admin/setup/wizard") {
+        throw new Error(`unexpected fetch in this test: ${String(url)}`);
+      }
+      return new Promise<WizardResponse>((resolve) => {
+        wizardResolvers.push(resolve);
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    // `runtime-env`/`seed-admin` carry no C12 pane, so the only fetches in
+    // this test are the wizard reads under test — nothing else to route.
+    render(<SetupWizardClient permissionMatrix={admin} />);
+
+    // Mount's load() is call #1, left in flight. Trigger a second, overlapping
+    // load before it resolves — the readiness-input-changed event, unconditional
+    // and exactly what a pane save dispatches.
+    await waitFor(() => expect(wizardResolvers).toHaveLength(1));
+    window.dispatchEvent(new Event(SETUP_READINESS_INPUT_CHANGED_EVENT));
+    await waitFor(() => expect(wizardResolvers).toHaveLength(2));
+
+    // Call #2 — the LATEST — resolves FIRST, reporting the operator on
+    // `seed-admin`.
+    await act(async () => {
+      wizardResolvers[1]({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          isSiteVisible: false,
+          readiness: readinessWith([["seed-admin", "Administrator Account"]]),
+          traversal: traversalWith(["seed-admin"], { currentIndex: 0 }),
+        }),
+      });
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
+      ).toBe("seed-admin"),
+    );
+
+    // Call #1 — the OLDER call, started first — now resolves LAST, reporting
+    // the mount-time state. Before F6 this overwrote the screen purely
+    // because it settled later on the network.
+    await act(async () => {
+      wizardResolvers[0]({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          isSiteVisible: false,
+          readiness: readinessWith([["runtime-env", "Runtime Environment"]]),
+          traversal: traversalWith(["runtime-env"], { currentIndex: 0 }),
+        }),
+      });
+      // Flush the awaited `response.json()` inside the stale call's `load()`
+      // before asserting — this is exactly the window in which the pre-F6
+      // code applied the stale result.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
+    ).toBe("seed-admin");
   });
 
   // The permission AXIS, at the only place the matrix meets a step: the three
