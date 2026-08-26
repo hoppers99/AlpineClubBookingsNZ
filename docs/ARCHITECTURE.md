@@ -1537,6 +1537,26 @@ its own scope, rather than one page's worth of per-record cards). Until that is
 decided, do not dedupe siblings ad hoc, and do not write docs that promise one
 banner per screen.
 
+**The setup wizard is the sibling case where the two banners are demonstrably
+about different things** (epic #213, C12). Its step frame heads its progress
+controls with one banner, and the inline editor mounted beside the frame —
+`setup-wizard-panes.tsx`, an exhaustive `Record<SetupStepId, ComponentType |
+null>` whose `club-config` entry is `ClubIdentityPanel` — heads its own with
+another. That is not the stacked-sibling question above waiting on a decision:
+changing a step's PROGRESS is one API for the whole journey, enforced at
+`support: edit`, while doing the step's WORK is governed by that step's own area,
+and a Content Officer without Support genuinely sees an editable form above dead
+progress buttons. Each route enforces its own answer by path and method, so a
+wrong client-side gate produces an honest 403 rather than a confused deputy.
+**Which is exactly why the pane is rendered as a SIBLING of
+`SetupWizardStepFrame` and never as a child of it:** inside the frame it would be
+the nesting defect above — one card, two live regions, the same class of sentence
+twice — and the contract test fails it. The render site is in
+`setup-wizard-client.tsx`, which renders no banner of its own. A pane whose
+section is Full-Admin-only rather than area-gated (`club-time-zone`, whose panel
+deliberately renders no banner at all) replicates its page shell's `isFullAdmin`
+swap instead of growing one.
+
 **Known limitation, accepted by the owner as Decision 1 on #2160.** Gated
 controls keep the `disabled` attribute rather than moving to
 `aria-disabled="true"`, so they remain **out of the keyboard tab order**. The
