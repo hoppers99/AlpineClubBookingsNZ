@@ -16,9 +16,11 @@ import { getAiAssistantAvailability } from "@/lib/ai-assistant-config";
 import { getWebsiteThemeRenderState } from "@/lib/club-theme";
 import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
 import {
+  canSetupNudgeAppear,
   readSetupJourneyComplete,
   shouldShowSetupNudge,
   SETUP_WIZARD_HREF,
+  type SetupJourneyReadResult,
 } from "@/lib/setup-nudge";
 
 export default async function AdminLayout({
@@ -47,16 +49,34 @@ export default async function AdminLayout({
     requestedPath,
   } = guard;
   const showOnboardingWizard = guard.showOnboardingWizard;
-  const [effectiveModules, theme, lodgeCapacity, clubIdentity, journeyComplete] =
+
+  // Both discriminators the nudge's path/permission gate needs are already in
+  // hand here — neither depends on the journey or launch reads below — so the
+  // `SetupProgress` read can be skipped entirely when this is false (#236 fix
+  // round F5: it would be provably wasted).
+  const setupNudgeEligible = canSetupNudgeAppear({
+    requestedPath,
+    permissionMatrix,
+  });
+  const NO_SETUP_NUDGE_READ: SetupJourneyReadResult = {
+    complete: false,
+    readFailed: false,
+  };
+
+  const [effectiveModules, theme, lodgeCapacity, clubIdentity, journey] =
     await Promise.all([
       loadEffectiveModuleFlags(),
       getWebsiteThemeRenderState(),
       getDefaultLodgeCapacity(),
       getCachedClubIdentity(),
-      readSetupJourneyComplete(),
+      setupNudgeEligible
+        ? readSetupJourneyComplete()
+        : Promise.resolve(NO_SETUP_NUDGE_READ),
     ]);
-  const showSetupNudge = shouldShowSetupNudge({
-    journeyComplete,
+  const setupNudgeVariant = shouldShowSetupNudge({
+    journeyComplete: journey.complete,
+    journeyReadFailed: journey.readFailed,
+    themeComplete: theme.isComplete,
     requestedPath,
     permissionMatrix,
   });
@@ -104,12 +124,22 @@ export default async function AdminLayout({
               tabIndex={-1}
               className="flex-1 overflow-y-auto p-6 pb-24 print:overflow-visible print:p-0 md:p-8 md:pb-28"
             >
-              {showSetupNudge && (
+              {setupNudgeVariant && (
                 <div className="mb-6 rounded-md border border-warning-6 bg-warning-3 p-4 text-sm text-warning-11 print:hidden">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <p className="font-medium">
-                      This club&apos;s setup isn&apos;t finished — pick up where
-                      you left off in the setup wizard.
+                      {setupNudgeVariant === "journey-incomplete" ? (
+                        <>
+                          This club&apos;s setup isn&apos;t finished — pick up
+                          where you left off in the setup wizard.
+                        </>
+                      ) : (
+                        <>
+                          This club&apos;s setup is marked finished, but the
+                          public website hasn&apos;t been opened yet — finish
+                          up in the setup wizard.
+                        </>
+                      )}
                     </p>
                     <Link
                       href={SETUP_WIZARD_HREF}
