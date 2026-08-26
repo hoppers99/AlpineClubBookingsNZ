@@ -374,6 +374,39 @@ describe("setup wizard traversal: the step state matrix (#219)", () => {
     });
   });
 
+  /*
+    `SetupWizardTraversalStep.isDefaulted` says "never true at the same time as
+    `isStale`", and this is what holds it to that.
+
+    The trap: `defaulted` is computed off `!stepConfirmed`, NOT off
+    `!stepComplete`, and the two differ on exactly one step — a stale one, which
+    the operator DID confirm but whose staleness clears `isComplete`. Off
+    `!stepComplete`, a stale step whose own check still passes would report as
+    stale AND defaulted at once, and the rail would tell an operator both that
+    they had finished this and that nobody ever had.
+
+    Mutation-verified: swapping `!stepConfirmed` for `!stepComplete` fails this
+    test and, before it existed, failed nothing at all.
+  */
+  it("never reports a stale step as defaulted, however well its own check passes", () => {
+    const withPrerequisite = syntheticRegistry([
+      { id: "s1" },
+      { id: "s2", prerequisites: ["s1"] },
+    ]);
+    const traversal = traverse({
+      registry: withPrerequisite,
+      progress: progressOf(["s2"]),
+      readinessStatuses: { s2: "complete" },
+    });
+
+    expect(stateOf(traversal, "s2")).toBe("stale");
+    expect(traversal.steps[1]).toMatchObject({
+      isStale: true,
+      isDefaulted: false,
+      isComplete: false,
+    });
+  });
+
   it("reports deferred, not defaulted, when a passing step is skipped (D15's escape)", () => {
     // Skipping is how an operator gets past a defaulted step without confirming
     // it. The two states must not both be true, or the rail would tell somebody
