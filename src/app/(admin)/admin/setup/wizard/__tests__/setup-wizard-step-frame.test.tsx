@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_VIEW_ONLY_SECTION_HEADING } from "@/components/admin/view-only-action";
-import type { SetupStepId } from "@/lib/setup-step-registry";
+import { SETUP_STEP_IDS, type SetupStepId } from "@/lib/setup-step-registry";
 import type { SetupWizardStepDetail } from "@/lib/setup-wizard-view";
 import { SetupWizardStepFrame } from "@/app/(admin)/admin/setup/wizard/setup-wizard-step-frame";
 
@@ -297,6 +297,121 @@ describe("SetupWizardStepFrame", () => {
     expect(notice.textContent).toMatch(/nothing has confirmed it/i);
     expect(notice.textContent).toMatch(/mark this step done/i);
     expect(notice.textContent).toMatch(/skip it for now/i);
+  });
+
+  /*
+    THE DEFAULTED NOTICE HAS TWO CLASSES OF COPY (#237 fix round), because the
+    state has two causes and one sentence was false for half of them. A seeded
+    timezone really was "set when the site was installed, not chosen for your
+    club"; `APP_ENVIRONMENT_ROLE=production` is a deliberate declaration, and
+    calling it an unchosen installer default sat directly above the panel's own
+    "declared PRODUCTION — the club's live site".
+
+    These drive the mapping through the STEP ID, not through a fixture field, so
+    swapping either entry in `SETUP_STEP_DEFAULTED_EVIDENCE` fails them.
+    Mutation-verified both ways round.
+  */
+  it("tells a seeded default from a fact read off the deployment", () => {
+    // `club-time-zone`: a row the seed wrote with a shipped value, editable on
+    // the page this step links to.
+    renderFrame({
+      step: detail({
+        id: "club-time-zone" as SetupStepId,
+        title: "Club Time Zone",
+        href: "/admin/club-time",
+        permissionArea: "support",
+        isDefaulted: true,
+        state: "defaulted",
+      }),
+    });
+    const seeded = screen.getByTestId("setup-wizard-step-defaulted");
+    expect(seeded.textContent).toMatch(/set when the site was installed/i);
+    expect(seeded.textContent).toMatch(/not chosen for your club/i);
+    cleanup();
+
+    // `environment-role`: read from this deployment's environment, and possibly
+    // declared on purpose by whoever installed the site.
+    renderFrame({
+      step: detail({
+        id: "environment-role" as SetupStepId,
+        title: "Environment Role",
+        href: "/admin/environment",
+        permissionArea: "support",
+        isDefaulted: true,
+        state: "defaulted",
+      }),
+    });
+    const deployment = screen.getByTestId("setup-wizard-step-defaulted");
+    expect(deployment.textContent).toMatch(
+      /read from this deployment's own configuration and environment/i,
+    );
+    expect(deployment.textContent).toMatch(/check that it is right for your club/i);
+  });
+
+  /*
+    THE SENTENCE THAT MUST NEVER APPEAR ON THIS STEP, named rather than implied.
+    A declared production role is the club's live site, said so in the panel
+    beneath this notice; "not chosen for your club" contradicts that message on
+    the same screen, which is what the review found.
+  */
+  it("never calls the environment role an unchosen installer default", () => {
+    renderFrame({
+      step: detail({
+        id: "environment-role" as SetupStepId,
+        title: "Environment Role",
+        href: "/admin/environment",
+        permissionArea: "support",
+        isDefaulted: true,
+        state: "defaulted",
+      }),
+    });
+    const notice = screen.getByTestId("setup-wizard-step-defaulted");
+    expect(notice.textContent).not.toMatch(/not chosen for your club/i);
+    expect(notice.textContent).not.toMatch(/set when the site was installed/i);
+  });
+
+  /*
+    `runtime-env` links NOWHERE — its readiness check carries no `href`, because
+    the work is editing `.env` and restarting. "Change it below" therefore
+    pointed at a list of variable names and nothing else, which is the second
+    half of the same finding.
+  */
+  it("does not offer to change something below on a step with no control", () => {
+    renderFrame({
+      step: detail({
+        id: "runtime-env" as SetupStepId,
+        title: "Runtime Environment",
+        href: undefined,
+        permissionArea: "support",
+        isDefaulted: true,
+        state: "defaulted",
+      }),
+    });
+    const notice = screen.getByTestId("setup-wizard-step-defaulted");
+    expect(notice.textContent).not.toMatch(/below/i);
+    // …and still names both ways past the step, which D15 requires of every
+    // variant of this notice.
+    expect(notice.textContent).toMatch(/mark this step done/i);
+    expect(notice.textContent).toMatch(/skip it for now/i);
+  });
+
+  /*
+    EVERY step id has a sentence, and the table is exhaustive by TYPE — a step
+    added by a later child fails the typecheck rather than falling back to the
+    wrong class silently. This is the runtime half of that: no id may render an
+    empty or undefined notice.
+  */
+  it("has copy for every step in the registry", () => {
+    for (const id of SETUP_STEP_IDS) {
+      renderFrame({
+        step: detail({ id, isDefaulted: true, state: "defaulted" }),
+      });
+      const text =
+        screen.getByTestId("setup-wizard-step-defaulted").textContent ?? "";
+      expect(text.length).toBeGreaterThan(80);
+      expect(text).toMatch(/mark this step done/i);
+      cleanup();
+    }
   });
 
   it("reads the defaulted notice off the FLAG, not off the state", () => {

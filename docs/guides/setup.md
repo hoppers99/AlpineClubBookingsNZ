@@ -184,19 +184,30 @@ above for how to choose.
    | Not started | Nothing has happened here yet |
 
    **Default in place** is the one worth understanding, because a fresh install
-   starts with several of them. Installing the site fills a number of settings
-   in for you — a timezone, a set of age tiers, a cancellation policy, a bed
-   count — and those settings then satisfy their own checks. That is genuinely
-   useful, but nobody has agreed to any of it: they are the shipped defaults
-   rather than your club's decisions, and some of them will be wrong for you.
+   starts with several of them. It means the step's check passes and nobody has
+   said so — and there are two quite different reasons a step can be in that
+   position, so the wizard says which one you are looking at:
 
-   So the wizard shows them as what they are. It walks you to each one, says
-   what the default is, and asks you to look. **Marking the step done is how you
-   confirm it** — that is the record that a person checked this, and it is the
-   only thing that moves the progress bar. If you would rather decide later,
-   **Skip for now** takes you past it and leaves it on the outstanding list.
-   A default on its own does not let you walk past: the wizard stops there the
-   same way it stops at a step nothing has happened on.
+   - **A setting the installer filled in.** A time zone, a set of age tiers, a
+     cancellation policy, a bed count. Genuinely useful, but nobody has agreed
+     to any of it: these are the shipped defaults rather than your club's
+     decisions, and some of them will be wrong for you. The step tells you the
+     value is there, and points at the page where you change it.
+   - **A fact read off this deployment.** The environment role, the runtime
+     variables, the auth secret, the administrator account the install created,
+     a payment or email provider whoever set the site up connected. These may
+     well have been chosen deliberately — the wizard has no way to know, and for
+     several of them there is nothing on the page to change, because the value
+     lives in the server's configuration. So the step asks you to review what it
+     reports rather than telling you nobody chose it.
+
+   Either way the wizard walks you to the step, says what it found, and asks you
+   to look. **Marking the step done is how you confirm it** — that is the record
+   that a person checked this, and it is the only thing that moves the progress
+   bar. If you would rather decide later, **Skip for now** takes you past it and
+   leaves it on the outstanding list. A default on its own does not let you walk
+   past: the wizard stops there the same way it stops at a step nothing has
+   happened on.
 
    Progress reads as a **percentage** rather than "x of y" on purpose: the
    number of steps changes as you switch modules on and off, and a count would

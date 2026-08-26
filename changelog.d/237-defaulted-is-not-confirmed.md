@@ -1,6 +1,6 @@
 - **The setup wizard no longer counts an installed default as something you
   agreed to (#237).** Installing the site fills a number of settings in for you —
-  a timezone, age tiers, a cancellation policy, a bed count — and those settings
+  a time zone, age tiers, a cancellation policy, a bed count — and those settings
   satisfy their own setup checks. The wizard used to read that as progress, so a
   club that had made no decisions at all opened the wizard more than halfway
   through a journey nobody had walked, resuming several steps in, with the club
@@ -12,6 +12,17 @@
   the record that a person checked this — and if you would rather decide later,
   **Skip for now** takes you past it and leaves it on the outstanding list, as it
   always did.
+
+  **Two kinds of step reach that state, and the wizard says which one you are
+  looking at.** Some are settings the installer filled in — a time zone, age
+  tiers, a bed count — which nobody chose for your club and which you change on
+  the page the step links to. Others are facts read off the deployment itself:
+  the environment role, the runtime variables, the administrator account the
+  install created, a payment or email provider whoever set the site up
+  connected. Those may well have been chosen deliberately, and for several of
+  them there is no control on the page at all because the value lives in the
+  server's configuration — so the wizard asks you to review what it found rather
+  than telling you it was an unchosen default.
 
   **The progress percentage now counts the steps you have confirmed.** A
   brand-new club starts at 0%, which is the honest number for a club that has
