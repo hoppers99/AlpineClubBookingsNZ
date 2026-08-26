@@ -121,7 +121,8 @@ function stubFetch(
   } = {},
 ) {
   let call = 0;
-  const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    void init;
     if (String(url).startsWith("/api/admin/site-style")) {
       if (options.publish) return options.publish();
       return { ok: true, status: 200, json: async () => ({ isComplete: true }) };
@@ -534,9 +535,9 @@ describe("SetupWizardClient", () => {
       ([url]) => String(url) === "/api/admin/setup/provider-test",
     );
     expect(call).toBeTruthy();
-    const init = call?.[1] as RequestInit;
-    expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual({ provider: "stripe" });
+    const init = call?.[1];
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({ provider: "stripe" });
     // Two wizard reads: the mount, and the one the test's write-back forces.
     expect(
       fetchMock.mock.calls.filter(

@@ -11,8 +11,19 @@ carries its siblings' growth, and deleting their reasoning would make the CI
 base fail with no explanation on record. All of it goes inert the moment the
 epic merges and the new lengths become the base ref.
 
+NO ENTRY FOR `setup-page-client.tsx`, and that is deliberate rather than an
+omission. C8's review round grew it past the 700-line ceiling for the FIRST
+time, which no allowance may carry — correctly, since crossing a budget is the
+moment to split rather than to declare. So it was split: the readiness cards
+moved to `setup-readiness-checks.tsx` and the shared payload shape to
+`setup-readiness-types.tsx`, both well inside the budget, and the page itself
+came back to 491 LOC — below where it started. The split was available and
+genuine: those cards render in exactly one branch of the legacy-surfaces
+switch, so a hundred and fifty lines the hidden position never reaches were
+sitting inside the component that chooses between the two.
+
 file: src/lib/setup-readiness.ts
-lines: 2588
+lines: 2599
 reason: #223 adds the registry applicability filter to `buildSetupReadiness` —
   four lines of code, and the reasoning that keeps them safe. That reasoning is
   the three-state module contract (`undefined` fails open, `null` is the
