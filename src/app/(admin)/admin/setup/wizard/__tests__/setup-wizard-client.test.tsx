@@ -3,6 +3,30 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * C12 mounts REAL settings panels beside the frame, and two of them resolve
+ * their own permissions from the client session — `ClubIdentityPanel` through
+ * `useAdminAreaEditAccess("content")`, and the club-timezone pane through
+ * `isFullAdmin` directly. `useSession` throws outside a `<SessionProvider>`, so
+ * without this every step-frame test in the file dies on an uncaught exception
+ * rather than on an assertion. The admin tree really is inside one
+ * (`app-providers.tsx`); this stands in for it.
+ *
+ * A FULL ADMIN by default, which is the permissive end deliberately: these
+ * tests are about the shell, and a session that gated the panes would hide the
+ * very composition they now exercise. The gated directions are pinned in
+ * `setup-wizard-panes.test.tsx`, which drives this same handle.
+ */
+const sessionMock = vi.hoisted(() => ({
+  data: { user: { accessRoles: ["ADMIN"] } } as unknown,
+  status: "authenticated" as "authenticated" | "loading" | "unauthenticated",
+}));
+
+vi.mock("next-auth/react", () => ({
+  useSession: () => ({ data: sessionMock.data, status: sessionMock.status }),
+}));
+
 import { emptyAdminPermissionMatrix } from "@/lib/admin-permissions";
 import type { SetupReadiness } from "@/lib/setup-readiness";
 import type { SetupStepId } from "@/lib/setup-step-registry";
@@ -21,6 +45,8 @@ import { SetupWizardClient } from "@/app/(admin)/admin/setup/wizard/setup-wizard
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  sessionMock.data = { user: { accessRoles: ["ADMIN"] } };
+  sessionMock.status = "authenticated";
 });
 
 const admin = { ...emptyAdminPermissionMatrix(), support: "edit" as const };
@@ -134,6 +160,42 @@ function stubFetch(
 ) {
   let call = 0;
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    /*
+      C12's inline panes fetch for themselves, and they must be answered ABOVE
+      the payload branch below — that branch hands out one `payloads` entry per
+      call, so an unrouted pane read would silently consume the entry a
+      refetch test staged for the wizard and the test would fail describing the
+      wrong thing entirely.
+    */
+    if (String(url) === "/api/admin/club-identity") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          settings: {
+            name: "Alpine Sports Club",
+            shortName: "",
+            hutLeaderLabel: "",
+            facebookUrl: "",
+          },
+        }),
+      };
+    }
+    if (String(url) === "/api/admin/club-time-zone") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          state: {
+            timeZone: "Pacific/Auckland",
+            source: "persisted",
+            updatedAt: null,
+            updatedByName: null,
+            unusableStoredValue: null,
+          },
+        }),
+      };
+    }
     if (String(url).startsWith("/api/admin/site-style")) {
       if (options.publish) return options.publish();
       return { ok: true, status: 200, json: async () => ({ isComplete: true }) };
@@ -257,7 +319,15 @@ describe("SetupWizardClient", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("setup-wizard-rail-row-xero-operational")).toBeNull(),
     );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Counted by URL rather than as a bare call total, the same way the
+    // provider-test case below does it: the current step is `club-config`, so
+    // C12's inline pane makes a read of its own and a bare total would be
+    // measuring the pane as well as the journey.
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url]) => String(url) === "/api/admin/setup/wizard",
+      ),
+    ).toHaveLength(2);
   });
 
   // The permission AXIS, at the only place the matrix meets a step: the three
