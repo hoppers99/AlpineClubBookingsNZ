@@ -373,11 +373,20 @@ export function SetupPageClient({
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        {/*
+          THE PAGE SAYS WHAT IT IS IN THE POSITION IT IS IN (#223 fix round).
+          With the surfaces hidden there is no checklist on this page, so an h1
+          reading "Setup checklist" over a page holding a wizard link, three hub
+          cards and a settings section describes something that is not there.
+        */}
         <div>
-          <h1 className="text-3xl font-bold text-foreground">Setup checklist</h1>
+          <h1 className="text-3xl font-bold text-foreground">
+            {legacySurfacesHidden ? "Setup" : "Setup checklist"}
+          </h1>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-            Finish first-install readiness for club configuration, booking rules,
-            provider connections, and finance mappings.
+            {legacySurfacesHidden
+              ? "The setup wizard walks the club's configuration; what is outstanding, and how far through you are, live there. This page keeps the way in, the areas the wizard does not cover, and the switch that brings the older checklist back."
+              : "Finish first-install readiness for club configuration, booking rules, provider connections, and finance mappings."}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -399,6 +408,24 @@ export function SetupPageClient({
             <RefreshCw className="h-4 w-4" />
             Refresh
           </Button>
+          {/*
+            MARK SETUP COMPLETE STAYS IN BOTH POSITIONS, and that is D8's parity
+            rule applied honestly rather than timidity (#223 fix round).
+
+            It is easy to assume the wizard's launch panel replaced it. It did
+            not: the panel publishes the PUBLIC SITE — the club theme's
+            `completedAt`, through `POST /api/admin/site-style/complete-setup` —
+            while this button finishes the SETUP JOURNEY, `SetupProgress.
+            completedAt`, through `PATCH /api/admin/setup/progress`. Two
+            columns, two APIs, two meanings, and the journey one has a real
+            consumer: `config-transfer/bootstrap-import.ts` counts it to decide
+            whether this installation has ever been set up.
+
+            So the wizard offers no equivalent, and hiding this with the
+            checklist would REMOVE a capability rather than relocate one. If a
+            later child gives the wizard a "finish the journey" control, this is
+            the button that retires with the rest of the surfaces.
+          */}
           <Button
             onClick={finishSetup}
             disabled={
@@ -429,39 +456,60 @@ export function SetupPageClient({
 
       {readiness ? (
         <>
-          <div className="grid gap-3 md:grid-cols-4">
-            <div className="rounded-md border bg-card p-4">
-              <div className="flex items-center gap-2">
-                <StatusIcon status={overallStatus} />
-                <p className="text-sm font-medium text-muted-foreground">Overall</p>
+          {/*
+            THE KPI TILES ARE CHECKLIST CHROME AND GO WITH IT (#223 fix round).
+            Overall, Progress, Blocked and Skipped are four summaries of the
+            cards immediately below them; with the cards hidden they were a
+            standing report on a list that is not on the page, and a SECOND
+            progress display competing with the wizard's own rail — which D7
+            makes the single derivation. The wizard owns progress; this page
+            owns the way in.
+          */}
+          {legacySurfacesHidden ? null : (
+            <div className="grid gap-3 md:grid-cols-4" data-testid="setup-kpis">
+              <div className="rounded-md border bg-card p-4">
+                <div className="flex items-center gap-2">
+                  <StatusIcon status={overallStatus} />
+                  <p className="text-sm font-medium text-muted-foreground">Overall</p>
+                </div>
+                <p className="mt-2 text-2xl font-semibold capitalize text-foreground">
+                  {overallStatus.replace("_", " ")}
+                </p>
               </div>
-              <p className="mt-2 text-2xl font-semibold capitalize text-foreground">
-                {overallStatus.replace("_", " ")}
-              </p>
+              <div className="rounded-md border bg-card p-4">
+                <p className="text-sm font-medium text-muted-foreground">Progress</p>
+                <p className="mt-2 text-2xl font-semibold text-foreground">
+                  {completionPercent}%
+                </p>
+              </div>
+              <div className="rounded-md border bg-card p-4">
+                <p className="text-sm font-medium text-muted-foreground">Blocked</p>
+                <p className="mt-2 text-2xl font-semibold text-foreground">
+                  {readiness.summary.blocked}
+                </p>
+              </div>
+              <div className="rounded-md border bg-card p-4">
+                <p className="text-sm font-medium text-muted-foreground">Skipped</p>
+                <p className="mt-2 text-2xl font-semibold text-foreground">
+                  {readiness.summary.skipped}
+                </p>
+              </div>
             </div>
-            <div className="rounded-md border bg-card p-4">
-              <p className="text-sm font-medium text-muted-foreground">Progress</p>
-              <p className="mt-2 text-2xl font-semibold text-foreground">
-                {completionPercent}%
-              </p>
-            </div>
-            <div className="rounded-md border bg-card p-4">
-              <p className="text-sm font-medium text-muted-foreground">Blocked</p>
-              <p className="mt-2 text-2xl font-semibold text-foreground">
-                {readiness.summary.blocked}
-              </p>
-            </div>
-            <div className="rounded-md border bg-card p-4">
-              <p className="text-sm font-medium text-muted-foreground">Skipped</p>
-              <p className="mt-2 text-2xl font-semibold text-foreground">
-                {readiness.summary.skipped}
-              </p>
-            </div>
-          </div>
+          )}
 
+          {/*
+            THE BLOCKER NOTICE STAYS IN BOTH POSITIONS, and its wording moves
+            with them. It is not a summary of the cards — it is the disabled
+            REASON for Mark Setup Complete above, which stays (see the header),
+            so hiding it would leave a dead button explaining nothing. What
+            changes is where it sends you: with the checklist gone, the steps
+            are resolved or skipped in the wizard.
+          */}
           {requiredBlockers.length > 0 ? (
             <div className="rounded-md border border-warning-6 bg-warning-3 px-4 py-3 text-sm text-warning-11">
-              Resolve or explicitly skip required blocked steps before marking setup complete.
+              {legacySurfacesHidden
+                ? "Some required steps are still blocked. Resolve them in the setup wizard, or skip them there, before marking setup complete."
+                : "Resolve or explicitly skip required blocked steps before marking setup complete."}
             </div>
           ) : null}
 
@@ -497,13 +545,18 @@ export function SetupPageClient({
               deliberately NOT used: this is ordinary standing page content, not
               an announcement.
             */
-            <div className="rounded-md border bg-card px-4 py-3 text-sm text-muted-foreground">
+            <div
+              className="rounded-md border bg-card px-4 py-3 text-sm text-muted-foreground"
+              data-testid="setup-surfaces-hidden-notice"
+            >
               The readiness checklist and the Initial Setup, Finance, Booking
               Rules and Operational Integrations hubs are hidden for this club.
               Everything they opened is a step of the setup wizard — open it
-              above to work through what is outstanding. You can bring them back
-              under <span className="font-medium">Setup surfaces</span> at the
-              foot of this page.
+              above to work through what is outstanding, and to see how far
+              through the club is. Finance&apos;s report mappings live on the
+              finance dashboard. You can bring the older surfaces back under{" "}
+              <span className="font-medium">Setup surfaces</span> at the foot of
+              this page.
             </div>
           ) : (
           <section id="setup-checks" className="space-y-6">

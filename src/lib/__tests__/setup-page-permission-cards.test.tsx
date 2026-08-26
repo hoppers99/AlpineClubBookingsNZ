@@ -342,6 +342,68 @@ describe("SetupPageClient — permission-aware cross-area cards (#1548)", () => 
       ).toBeTruthy();
     });
 
+    /*
+      THE PAGE MUST NOT KEEP THE CHECKLIST'S CHROME WITHOUT THE CHECKLIST
+      (#223 fix round). The first build of the hidden position kept the "Setup
+      checklist" heading, the four KPI tiles and the readiness sub-heading over
+      a page that no longer held a checklist — a standing report on a list that
+      was not there, and a second progress display competing with the wizard's
+      own rail.
+    */
+    it("describes what the page now is, and drops the checklist's KPI tiles", async () => {
+      renderSetup({ support: "edit" }, true);
+
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("setup-surfaces-hidden-notice"),
+        ).toBeTruthy();
+      });
+      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
+        "Setup",
+      );
+      expect(screen.queryByTestId("setup-kpis")).toBeNull();
+      // The four tiles' own labels, so a tile moved rather than removed still
+      // fails this.
+      for (const label of ["Overall", "Progress", "Blocked", "Skipped"]) {
+        expect(screen.queryByText(label)).toBeNull();
+      }
+      expect(
+        screen.queryByText(/Finish first-install readiness/),
+      ).toBeNull();
+    });
+
+    /*
+      …and the other direction, which is the one D8's parity rule is about.
+      Mark Setup Complete finishes the SETUP JOURNEY (`SetupProgress.
+      completedAt`, `PATCH /api/admin/setup/progress`). The wizard's launch
+      panel publishes the PUBLIC SITE (the theme's `completedAt`,
+      `POST /api/admin/site-style/complete-setup`) — a different column through
+      a different API — so it is not an equivalent, and hiding this button would
+      remove a capability rather than relocate one.
+    */
+    it("keeps Mark Setup Complete, which the wizard has no equivalent for", async () => {
+      renderSetup({ support: "edit" }, true);
+
+      const button = await screen.findByRole("button", {
+        name: /Mark Setup Complete/,
+      });
+      expect(button).toBeTruthy();
+    });
+
+    it("keeps the blocker notice — it is that button's disabled reason", async () => {
+      // Hiding the explanation while keeping the control it explains would
+      // leave a dead button saying nothing. The wording moves instead: with the
+      // checklist gone, the steps are resolved or skipped in the wizard.
+      renderSetup({ support: "edit" }, true);
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/Resolve them in the setup wizard/),
+        ).toBeTruthy();
+      });
+      expect(screen.queryByText(/Resolve or explicitly skip/)).toBeNull();
+    });
+
     it("still offers the switch that put them away", async () => {
       // The placement argument, asserted rather than assumed: hiding the
       // surfaces must not hide the control that un-hides them. `getAllByText`
