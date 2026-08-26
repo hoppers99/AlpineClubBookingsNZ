@@ -74,6 +74,18 @@ export interface SetupProgressState {
 export interface SetupResponse {
   readiness: SetupReadiness;
   progress: SetupProgressState;
+  /**
+   * The WIZARD's percentage (D7/D14, #237 fix round) — `percentComplete` off
+   * `buildSetupWizardTraversal`, computed by the route rather than derived here.
+   *
+   * It rides on this payload so the Progress tile can render the same number the
+   * wizard's rail shows instead of deriving a second one. The tile's old
+   * derivation was exactly the union D14 split apart — a passing check counted
+   * as progress — so a fresh install read 56% on this page and 0% one click
+   * away. See `src/app/api/admin/setup/route.ts` for why the number is computed
+   * there and not in the browser.
+   */
+  wizardPercentComplete: number;
 }
 
 export interface ProviderTestResult {

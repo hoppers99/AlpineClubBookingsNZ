@@ -124,6 +124,11 @@ function setupBodyWith(categories: unknown[]) {
       completedAt: null,
       completedByMemberId: null,
     },
+    // The wizard's own percentage, which the Progress tile renders rather than
+    // deriving one (#237 fix round). Nothing in this file asserts on it; it is
+    // here so the stub stays a faithful payload. The tile's behaviour is pinned
+    // in `setup-page-progress-tile.test.tsx`.
+    wizardPercentComplete: 0,
   };
 }
 

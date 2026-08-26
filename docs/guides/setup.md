@@ -43,7 +43,18 @@ and the checklist is the map you keep for later. Neither can tell you something
 the other would contradict. **Both derive the list of steps from the same
 place**, so the number of outstanding items, and which items they are, are the
 same answer shown two ways — the wizard as a percentage down its rail, the
-checklist as cards grouped by category.
+checklist as cards grouped by category. **The percentage itself is one number
+shown twice**: the checklist's Progress tile displays the wizard's own figure
+rather than working out a second one.
+
+The two surfaces do answer two *different* questions, though, and each says
+which. The percentage answers **how far through this has somebody been** — it
+counts the steps a person has confirmed. A checklist card answers **is this part
+of the installation configured**, which a setting the installer filled in
+genuinely is. So a brand-new club can show cards reading complete beside a
+progress figure of 0%, and neither is wrong: several things are configured, and
+nobody has confirmed any of them. What cannot happen is one question getting two
+answers.
 
 Once you are satisfied the wizard covers what your club needs, you can **retire
 the checklist** so there is one way in — see

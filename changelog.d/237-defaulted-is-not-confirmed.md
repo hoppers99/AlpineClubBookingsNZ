@@ -22,6 +22,15 @@
   default. There is no way to tell those two apart in what was recorded before
   now, so nothing has been guessed at on your behalf.
 
+  **The Progress tile on Admin → Setup shows that same number.** It used to work
+  out its own, counting a passing check as progress, so the checklist claimed a
+  brand-new club was more than halfway through while the wizard one click away
+  correctly said 0%. The tile now displays the wizard's figure. The readiness
+  cards beneath it are unchanged and are not in disagreement with it: a card
+  answers "is this part of the installation configured", which a setting the
+  installer filled in genuinely is, while the percentage answers "how far through
+  this has somebody been".
+
   **A default does not let you walk past it.** The wizard stops at a defaulted
   step exactly as it stops at one nothing has happened on, so **Ready to open**
   now waits until every step has been confirmed or skipped. That is deliberate: a
