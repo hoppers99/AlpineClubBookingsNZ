@@ -55,25 +55,10 @@ const sections: AdminHubSection[] = [
 ];
 
 export default async function FoundationsSetupHubPage() {
-  /*
-    Epic #213 D8, C8 (#223). HIDDEN MEANS ABSENT, NOT DELETED — this issue's
-    "hide, don't remove" is explicit — so the route still exists and answers,
-    and it answers by sending the operator to the surface that replaced it. A
-    404 was the other candidate and is the wrong shape here: 404 is what a
-    DISABLED MODULE's route returns (`getFeatureFlagBlockResponse` in
-    `src/proxy.ts`), because that surface has no successor and the module state
-    is something the answer must not leak. This surface has a successor — every
-    destination on this hub is a step of the wizard — and its state is a club
-    preference an admin can read on the page they land on.
-
-    The redirect target is `/admin/setup`, which stays reachable in BOTH
-    positions and carries the switch: an operator who followed a stale bookmark
-    lands where they can see why, and where they can put it back.
-
-    Checked here rather than in the proxy on purpose. A proxy gate would put a
-    settings read on the hot path for every request that matches the prefix,
-    including the wizard's own; this is one query on four rarely-visited pages.
-  */
+  // Epic #213 D8, C8 (#223): retired, so absent rather than deleted. The
+  // redirect, the reason a 404 would be the wrong answer, and why this is
+  // checked per page rather than in the proxy are all stated once, on
+  // `areLegacySetupSurfacesHidden`.
   if (areLegacySetupSurfacesHidden(await loadSetupSurfaceSettings())) {
     redirect("/admin/setup");
   }

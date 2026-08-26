@@ -2,13 +2,6 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { Landmark, Plug, RefreshCw } from "lucide-react";
 import { BackLink } from "@/components/admin/back-link";
-import { FinanceReportMappingsPanel } from "@/components/admin/finance-report-mappings-panel";
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
 import {
   Card,
   CardDescription,
@@ -28,7 +21,7 @@ const financeLinks = [
     href: "/finance",
     title: "Finance Dashboard",
     description:
-      "Open revenue, cost, sync health, and finance reporting views.",
+      "Open revenue, cost, sync health, finance reporting views, and the report-mapping editor.",
     icon: Landmark,
   },
   {
@@ -49,36 +42,36 @@ const financeLinks = [
 
 export default async function FinanceSetupPage() {
   /*
-    Epic #213 D8, C8 (#223). HIDDEN MEANS ABSENT, NOT DELETED — this issue's
-    "hide, don't remove" is explicit — so the route still exists and answers,
-    and it answers by sending the operator to the surface that replaced it. A
-    404 was the other candidate and is the wrong shape here: 404 is what a
-    DISABLED MODULE's route returns (`getFeatureFlagBlockResponse` in
-    `src/proxy.ts`), because that surface has no successor and the module state
-    is something the answer must not leak. This surface has a successor — every
-    destination on this hub is a step of the wizard — and its state is a club
-    preference an admin can read on the page they land on.
+    Epic #213 D8, C8 (#223): retired, so absent rather than deleted. The
+    redirect, the reason a 404 would be the wrong answer, and why this is
+    checked per page rather than in the proxy are all stated once, on
+    `areLegacySetupSurfacesHidden`.
 
-    The redirect target is `/admin/setup`, which stays reachable in BOTH
-    positions and carries the switch: an operator who followed a stale bookmark
-    lands where they can see why, and where they can put it back.
+    THIS ONE REDIRECTS TO `/finance`, NOT `/admin/setup` (D-C8-1), and it is the
+    only place the four hubs differ. Its report-mapping editor moved to the
+    finance dashboard, so `/finance` is where the thing an operator came here
+    for now is — and `/admin/setup` is a `support`-area page, so sending a
+    finance-only officer there would answer a stale bookmark with a 403.
 
-    Checked here rather than in the proxy on purpose. A proxy gate would put a
-    settings read on the hot path for every request that matches the prefix,
-    including the wizard's own; this is one query on four rarely-visited pages.
+    …UNLESS THE FINANCE DASHBOARD MODULE IS OFF, in which case `/finance` is
+    module-gated and the proxy answers it with a frozen 404. Redirecting a
+    bookmark into a 404 is strictly worse than the 403 this decision exists to
+    fix, and with the module off there is no dashboard and no report-mapping
+    editor to send anybody to — so the answer falls back to the switch's own
+    home. That is why the module flags are read BEFORE the redirect here and
+    after it on the other three: those three's target does not depend on them.
   */
-  if (areLegacySetupSurfacesHidden(await loadSetupSurfaceSettings())) {
-    redirect("/admin/setup");
-  }
   const [features, permissionMatrix] = await Promise.all([
     loadEffectiveModuleFlags(),
     loadAdminSetupPermissionMatrix(),
   ]);
+  if (areLegacySetupSurfacesHidden(await loadSetupSurfaceSettings())) {
+    redirect(features.financeDashboard ? "/finance" : "/admin/setup");
+  }
   const hasFinanceAccess = permissionMatrix.finance !== "none";
   const visibleLinks = hasFinanceAccess
     ? financeLinks.filter((link) => isFeatureHrefVisible(link.href, features))
     : [];
-  const showReportMappings = hasFinanceAccess && features.financeDashboard;
 
   return (
     <div className="space-y-8">
@@ -88,8 +81,8 @@ export default async function FinanceSetupPage() {
         </div>
         <h1 className="text-2xl font-bold text-foreground">Finance</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Open finance reporting, Xero setup, sync mappings, and the finance
-          report mapping editor.
+          Open finance reporting, Xero setup, and sync mappings. The finance
+          report mapping editor lives on the finance dashboard itself.
         </p>
       </div>
 
@@ -115,28 +108,6 @@ export default async function FinanceSetupPage() {
           and enabled modules.
         </div>
       )}
-
-      {showReportMappings ? (
-        <section className="space-y-3">
-          <div>
-            <h2 className="text-xl font-semibold text-foreground">
-              Report mappings
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              Expand only when editing the report groups used by the finance
-              dashboard.
-            </p>
-          </div>
-          <Accordion type="single" collapsible>
-            <AccordionItem value="finance-report-mappings">
-              <AccordionTrigger>Finance Report Mappings</AccordionTrigger>
-              <AccordionContent>
-                <FinanceReportMappingsPanel />
-              </AccordionContent>
-            </AccordionItem>
-          </Accordion>
-        </section>
-      ) : null}
     </div>
   );
 }

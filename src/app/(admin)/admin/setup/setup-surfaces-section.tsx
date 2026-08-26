@@ -189,7 +189,7 @@ export function SetupSurfacesSection({
                   </label>
                   <p className="text-sm text-muted-foreground">
                     {draft.legacySurfacesHidden
-                      ? "Hidden. This page offers the wizard, and Initial Setup, Finance, Booking Rules and Operational Integrations send you there. Every page they opened is still reachable — from the wizard's steps, or from the sidebar."
+                      ? "Hidden. This page offers the wizard, and Initial Setup, Booking Rules and Operational Integrations send you back here; Finance sends you to the finance dashboard, which is where its report mappings now live. Every page they opened is still reachable — from the wizard's steps, or from the sidebar."
                       : "Shown. The readiness cards and the four setup hubs appear on this page as they always have, alongside the wizard."}
                   </p>
                 </div>

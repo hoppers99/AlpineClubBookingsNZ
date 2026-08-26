@@ -178,9 +178,14 @@ describe("admin finance report mappings route", () => {
         outcome: "success",
       })
     );
-    expect(mockRevalidatePath).toHaveBeenCalledWith("/finance");
-    expect(mockRevalidatePath).toHaveBeenCalledWith("/admin/setup");
-    expect(mockRevalidatePath).toHaveBeenCalledWith("/admin/setup/finance");
+    // D-C8-1 (#223): the editor moved to `/finance`, so the drill-down hub is
+    // no longer revalidated — it no longer renders the mappings. `/admin/setup`
+    // stays, because it reports the `xero-mappings` readiness verdict a save
+    // can move.
+    expect(mockRevalidatePath.mock.calls.flat()).toEqual([
+      "/finance",
+      "/admin/setup",
+    ]);
     await expect(response.json()).resolves.toEqual(mappingState);
   });
 });

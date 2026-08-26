@@ -80,7 +80,15 @@ export interface FinanceSyncHealthSourceData {
 }
 
 const XERO_ADMIN_HREF = "/admin/xero";
-const MAPPINGS_HREF = "/admin/setup/finance";
+/*
+  The report-mapping editor's home (D-C8-1, epic #213 C8, #223). It used to be
+  the `/admin/setup/finance` drill-down hub — a surface the legacy-surfaces
+  switch hides — so this link would have led to a redirect back to the setup
+  page and the editor would have had no home at all. The panel now renders on
+  the finance dashboard itself, which is where this signal already sends
+  operators and what the wizard's finance-dashboard step points at.
+*/
+const MAPPINGS_HREF = "/finance#finance-report-mappings";
 
 const STATEMENT_KIND_LABELS: Record<FinanceMonthlyStatementKind, string> = {
   PROFIT_AND_LOSS: "Profit and loss",
@@ -189,7 +197,7 @@ function classifyReconciliation(
     id: "revenue-reconciliation",
     label: "Platform vs Xero revenue",
     href: MAPPINGS_HREF,
-    linkLabel: "Open setup mappings",
+    linkLabel: "Open report mappings",
   };
 
   if (!input.reconciliation) {

@@ -82,6 +82,32 @@ export async function loadSetupSurfaceSettings(): Promise<SetupSurfaceSettingsVa
  * a bare field read, so the four hub pages, the setup page and the site-style
  * page all phrase the condition identically and a reviewer can grep for every
  * surface the flag governs in one search.
+ *
+ * ## What the four hub pages do with a `true`, and why — stated ONCE, here
+ *
+ * They redirect. **HIDDEN MEANS ABSENT, NOT DELETED** — #223's "hide, don't
+ * remove" is explicit — so each route still exists and still answers, and it
+ * answers by sending the operator to the surface that replaced it.
+ *
+ * A 404 was the other candidate and is the wrong shape. 404 is what a DISABLED
+ * MODULE's route returns (`getFeatureFlagBlockResponse` in `src/proxy.ts`),
+ * because that surface has no successor and the module state is something the
+ * answer must not leak. These four have a successor — every destination on them
+ * is a step of the wizard — and their state is a club preference an admin can
+ * read on the page they land on.
+ *
+ * Three of them redirect to `/admin/setup`, which stays reachable in BOTH
+ * positions and carries the switch, so a stale bookmark lands where the change
+ * can be seen and undone. **The Finance hub is the exception and redirects to
+ * `/finance`** (D-C8-1): its report-mapping editor moved to the finance
+ * dashboard, `/admin/setup` is a `support`-area page, and a finance-only officer
+ * sent there gets a 403 instead of the surface they were looking for. That one
+ * falls back to `/admin/setup` when the `financeDashboard` module is off, since
+ * `/finance` is module-gated and would answer with a 404.
+ *
+ * Checked in each page rather than in the proxy on purpose. A proxy gate would
+ * put a settings read on the hot path for every request matching the prefix,
+ * including the wizard's own; this is one query on four rarely-visited pages.
  */
 export function areLegacySetupSurfacesHidden(
   settings: SetupSurfaceSettingsValues,

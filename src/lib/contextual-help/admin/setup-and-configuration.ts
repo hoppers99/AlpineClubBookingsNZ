@@ -40,6 +40,14 @@ export const adminSetupAndConfigurationHelpEntries: HelpEntry[] = [
       ],
     ),
   ),
+  /*
+    THE FOUR HUB ENTRIES BELOW ARE UNREACHABLE WHEN THE LEGACY SURFACES ARE
+    HIDDEN (epic #213 D8, C8 #223) — those routes redirect, so nobody arrives at
+    them to ask for help. Kept, not deleted: the switch defaults to SHOWN and is
+    reversible, so the shown position still reaches every one of them, and a
+    help entry deleted for a route that still exists is a page that answers
+    nothing the day a club switches back.
+  */
   entry(
     "/admin/setup/foundations",
     help(
@@ -69,15 +77,20 @@ export const adminSetupAndConfigurationHelpEntries: HelpEntry[] = [
       ],
     ),
   ),
+  /*
+    …and this one redirects to `/finance` rather than to `/admin/setup`, because
+    D-C8-1 moved its report-mapping editor onto the finance dashboard. The
+    editor is named below as a DESTINATION rather than as something on this
+    page, which is what it now is.
+  */
   entry(
     "/admin/setup/finance",
     help(
       "Finance setup",
-      "Finance setup groups finance reporting, Xero setup, sync mappings, and the finance report mapping editor.",
+      "Finance setup groups finance reporting, Xero setup, and sync mappings.",
       [
-        "Open Finance Dashboard for reporting views and sync-health context.",
+        "Open Finance Dashboard for reporting views, sync-health context, and the report mapping editor.",
         "Open Xero Setup or Xero Mappings before changing accounting sync behavior.",
-        "Expand Finance Report Mappings only when editing the report groups used by the finance dashboard.",
       ],
       [
         {
@@ -93,7 +106,7 @@ export const adminSetupAndConfigurationHelpEntries: HelpEntry[] = [
         {
           name: "Finance Report Mappings",
           description:
-            "Collapsed editor for grouping Xero profit-and-loss lines into dashboard report sections.",
+            "Collapsed editor for grouping Xero profit-and-loss lines into dashboard report sections, on the finance dashboard itself.",
         },
       ],
     ),
