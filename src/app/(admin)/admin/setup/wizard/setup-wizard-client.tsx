@@ -42,13 +42,18 @@ import {
  * 2. **Where the operator is.** The landing step is the traversal's
  *    `currentStepId`, so leaving and coming back resumes rather than restarts.
  * 3. **Refetching, so the rail follows the module flags (D4/D5).** Switching a
- *    module off must remove its steps from the rail without a page reload, and
- *    the modules editor is a DIFFERENT admin page — this child links out to it
- *    rather than embedding its toggles (a toggle in the rail is C3's). So the
- *    honest mechanism is a refetch when the operator comes back to this tab or
- *    window, which is exactly when the flags can have changed. It is not a
- *    subscription and does not claim to be: a flag changed in another tab shows
- *    up here the moment this tab is focused, and the Refresh button forces it.
+ *    module off must remove its steps from the rail without a page reload. When
+ *    C5 shipped, the modules editor was only ever a DIFFERENT admin page, so
+ *    the honest mechanism was a refetch when the operator comes back to this
+ *    tab or window — exactly when the flags can have changed. That is still not
+ *    a subscription and still does not claim to be: a flag changed in another
+ *    tab shows up here the moment this tab is focused, and the Refresh button
+ *    forces it.
+ *
+ *    **C13 (#239) put the toggles ON this screen**, as the `feature-flags` and
+ *    `address-autocomplete` panes, which is where D5's reflow-beside-the-rail
+ *    actually happens. That save never leaves the tab, so it reaches the shell
+ *    through the third trigger below rather than through either of these two.
  *
  *    **C12 adds the third trigger, and it had to be a new one.** Both events
  *    above are about coming BACK to this tab, and an inline pane
@@ -163,8 +168,10 @@ export function SetupWizardClient({
     void load();
   }, [load]);
 
-  // D4/D5: the modules editor is another page, so a module flag changes while
-  // this tab is in the background. Coming back to it is the moment to re-read.
+  // D4/D5: a module flag can still be changed on `/admin/modules` in another
+  // tab — C13 added the inline route, it did not remove the page. Coming back
+  // to this tab is the moment to re-read for that case; the in-tab case is the
+  // event listener below.
   useEffect(() => {
     function refresh() {
       if (document.visibilityState === "visible") void load();
@@ -217,9 +224,17 @@ export function SetupWizardClient({
   // …and when that fallback FIRES, say so. An operator who chose a step
   // explicitly and then finds the pane showing a different one has, from where
   // they are sitting, watched the screen change under them for no reason — the
-  // module owning it was switched off in another tab, or somebody else settled
-  // the step and moved the frontier. Landing them somewhere else without a word
-  // is the same defect as the Back button's teleport, one refetch later.
+  // module owning it was switched off, or somebody else settled the step and
+  // moved the frontier. Landing them somewhere else without a word is the same
+  // defect as the Back button's teleport, one refetch later.
+  //
+  // C13 (#239) is why the notice no longer says the step changed "elsewhere":
+  // an operator standing on `address-autocomplete` can now switch that very
+  // module off in the pane below, from this screen, and be moved by their own
+  // save. "Elsewhere" was true of every case C5 could produce and is false of
+  // that one, so the sentence states the OUTCOME rather than guessing where —
+  // "no longer available" also covers the second cause, a step that still
+  // exists but has been put back behind the frontier by a stale predecessor.
   //
   // The selection is cleared at the same moment, deliberately: left set, this
   // would re-fire on every subsequent refetch, and the operator has already been
@@ -390,8 +405,8 @@ export function SetupWizardClient({
           data-testid="setup-wizard-moved-notice"
         >
           <p>
-            This step changed elsewhere — you have been returned to the next
-            step.
+            That step is no longer available — you have been moved to the next
+            one.
           </p>
           <Button
             type="button"
@@ -432,14 +447,16 @@ export function SetupWizardClient({
           ) : activeStep ? (
             // The frame and the pane are SIBLINGS in one column, in this order.
             // The pane sits below because the frame carries the step's identity
-            // — its title, its state badge and C11's defaulted banner. Only
-            // ONE of the two panes proved here changes what that banner means:
-            // club-time-zone's is the installed-default copy, whose "check it
-            // below" sentence now points at something for the first time.
-            // club-config's is the read-from-deployment copy (see
-            // `defaultedBannerCopy` in `setup-wizard-step-frame.tsx`), which
-            // never said "below" in the first place. See `setup-wizard-panes.tsx`
-            // for why the pane can not be moved inside the frame instead.
+            // — its title, its state badge and C11's defaulted banner. Of the
+            // four steps with a pane, only `club-time-zone` changes what that
+            // banner MEANS: its is the installed-default copy, whose "check it
+            // below" sentence now points at something for the first time. The
+            // other three (`club-config`, and C13's `feature-flags` and
+            // `address-autocomplete`) all carry the read-from-deployment copy
+            // (see `defaultedBannerCopy` in `setup-wizard-step-frame.tsx`),
+            // which never said "below" in the first place. See
+            // `setup-wizard-panes.tsx` for why the pane can not be moved inside
+            // the frame instead.
             <div className="space-y-4">
               <SetupWizardStepFrame
                 step={activeStep}

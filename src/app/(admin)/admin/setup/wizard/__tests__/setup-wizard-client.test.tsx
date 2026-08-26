@@ -546,7 +546,12 @@ describe("SetupWizardClient", () => {
 
     fireEvent.focus(window);
     const notice = await screen.findByTestId("setup-wizard-moved-notice");
-    expect(notice.textContent).toContain("returned to the next step");
+    expect(notice.textContent).toContain("moved to the next one");
+    // C13 (#239) retired "changed elsewhere": the operator can now switch off
+    // the module owning the step they are standing on, from the pane on that
+    // very screen, and be moved by their own save. The notice states the
+    // outcome and claims nothing about where the change happened.
+    expect(notice.textContent).not.toContain("elsewhere");
 
     // Dismissible, and it does not come back on the next refetch — the
     // selection was cleared when it fired, so there is nothing left to

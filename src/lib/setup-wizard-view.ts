@@ -226,15 +226,18 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
  *   switch alone: one also needs Addy credentials from the environment, the
  *   other a live operational Xero connection. The evidence that satisfies the
  *   check is the deployment's, so the copy is the deployment's.
- * - **`feature-flags` is `read-from-deployment`.** Its check carries no `href`
- *   and no `links` at all — module activation is edited on `/admin/modules`,
- *   which the check does not link to — so "check it below" would point at
- *   nothing. Its only reachable defaulted path is an administrator who has
- *   already saved Admin > Modules and never confirmed this step: the seed
- *   writes no `AdminModuleSettings` row at all, so a fresh install without one
- *   reads `warning`, not `defaulted`. The value was therefore chosen by a
- *   person, just not in the wizard — `environment-role`'s shape, not an
- *   installer placeholder.
+ * - **`feature-flags` is `read-from-deployment`.** Its only reachable defaulted
+ *   path is an administrator who has already saved Admin > Modules and never
+ *   confirmed this step: the seed writes no `AdminModuleSettings` row at all,
+ *   so a fresh install without one reads `warning`, not `defaulted`. The value
+ *   was therefore chosen by a person, just not in the wizard —
+ *   `environment-role`'s shape, not an installer placeholder. **The second
+ *   half of this entry was retired by C13 (#239)**, and is recorded because it
+ *   would otherwise read as a reason to reclassify: the class used to be
+ *   argued partly from the step having no `href`, no `links` and therefore
+ *   nothing for "check it below" to point at. There IS something below now —
+ *   the module toggles themselves — and it changes nothing here, because the
+ *   class is decided by where the evidence came from and that is unchanged.
  * - **`seed-admin` is `installed-default`.** Its check is satisfied by a row
  *   the installer's own seed created in THIS CLUB'S database
  *   (`SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD`), editable on the page it links
