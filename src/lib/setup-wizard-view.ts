@@ -416,10 +416,18 @@ export interface SetupWizardView {
   readonly allResolved: boolean;
   /**
    * Titles of everything not CONFIRMED — mockup 6 states these plainly. Since
-   * D14 (#237) that includes defaulted steps, but the launch panel is the only
-   * reader and it renders only once `allResolved` is true, which no defaulted
-   * step permits. So in practice the panel still lists deferrals and nothing
-   * else, and its "by your own choice" heading stays true.
+   * D14 (#237) that includes defaulted steps.
+   *
+   * **`deferred` rides on each entry because the reader must partition on it,
+   * and an earlier version of this note said it need not.** That note argued the
+   * launch panel is the only reader and renders only once `allResolved` is true,
+   * which no defaulted step permits — so every entry would be a deferral and its
+   * "by your own choice" heading was safe. True of the UNPINNED panel only. The
+   * shell's `launchPinned` keeps the panel mounted across a refetch on purpose
+   * (unmounting mid-publish would discard the answer), and inside that window a
+   * step can go stale or a newly-enabled module can contribute one — neither
+   * chosen by anybody. The panel therefore partitions on this flag rather than
+   * relying on a guarantee it only has some of the time.
    */
   readonly outstanding: readonly { id: SetupStepId; title: string; deferred: boolean }[];
 }
