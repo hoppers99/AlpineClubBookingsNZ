@@ -123,11 +123,19 @@ function defaultedBannerCopy(step: SetupWizardStepDetail): string {
   // declared on purpose by whoever installed the site, so this asks for a
   // review and never calls them unchosen. Saying otherwise put "not chosen for
   // your club" directly above "declared PRODUCTION — the club's live site".
+  //
+  // The tail is "hasn't been confirmed", not "rather than chosen in the
+  // wizard" (#238 fix round F5b). club-config is this class too, and C12 gives
+  // it an inline pane — the moment an operator saves there, the value WAS
+  // chosen in the wizard, and the old tail would have started lying about a
+  // step that is still, correctly, sitting `defaulted` until "Mark this step
+  // done" is pressed. "Hasn't been confirmed" stays true regardless of how the
+  // value arrived: read from the deployment, or just edited in the pane above.
   return (
     "Nothing has confirmed this step yet. What it reports was read from this " +
-    "deployment's own configuration and environment rather than chosen in the " +
-    "wizard — check that it is right for your club, then mark this step done. " +
-    "If you would rather decide later, skip it for now."
+    "deployment's own configuration and environment, and hasn't been confirmed " +
+    "as this club's own answer yet — check that it is right for your club, " +
+    "then mark this step done. If you would rather decide later, skip it for now."
   );
 }
 

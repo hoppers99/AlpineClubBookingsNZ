@@ -162,9 +162,12 @@ export const SETUP_STEP_PANES: Record<SetupStepId, ComponentType | null> = {
   // --- Foundation ---
   "club-config": ClubIdentityWizardPane,
   "club-time-zone": ClubTimeZoneWizardPane,
-  // Declared by the deployment, not editable from any admin screen: the
-  // environment page reports what `APP_ENVIRONMENT_ROLE` says and offers no
-  // control that could change it.
+  // No pane YET, not "never": `/admin/environment` mounts a zero-prop
+  // `EnvironmentSafetyPanel` behind the same Full-Admin swap this file
+  // replicates for `club-time-zone` — the same embeddable shape, and its
+  // safer override genuinely changes the resolved role (the readiness
+  // check's own text already says half the answer is a database setting).
+  // Deferred to the D16 backlog rather than proved alongside the two here.
   "environment-role": null,
   // Reports the running process's own configuration. There is nothing on this
   // screen that could edit it — the fix is a deployment change and a restart.
