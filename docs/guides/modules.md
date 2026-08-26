@@ -40,6 +40,17 @@ environment side.
 3. Click **Save**. Changes take effect across the site immediately. **Refresh**
    reloads the saved state.
 
+### The same toggles inside the setup wizard
+
+The setup wizard shows this exact editor on its **Feature Flags** and **Address
+Autocomplete** steps, so a club being set up for the first time does not have to
+leave the journey to answer it. It is the same grid, the same Save and the same
+saved state — not a copy — and either place can be used at any time.
+
+The one thing that is different there is what you can watch happen: a module
+that is switched off contributes no setup steps, so saving a change redraws the
+wizard's rail beside you. See [Setup](setup.md) for the walkthrough.
+
 ## Settings reference
 
 Modules and their out-of-the-box default (capability modules that need
