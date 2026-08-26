@@ -268,6 +268,13 @@ export interface SetupWizardRailStep {
   readonly isReachable: boolean;
   readonly isStale: boolean;
   readonly isDeferred: boolean;
+  /**
+   * The step's check passes and nobody confirmed it (D14, #237). Carried
+   * alongside `state` for the same reason `isStale` and `isDeferred` are: the
+   * state machine's precedence is lossy, and the rail's label rebuilds the full
+   * picture from these flags.
+   */
+  readonly isDefaulted: boolean;
   readonly permissionArea: AdminPermissionArea;
 }
 
@@ -319,7 +326,13 @@ export interface SetupWizardView {
   readonly navigationFrontierStepId: SetupStepId | null;
   /** D9's launch-panel unlock. Straight from the traversal (#219 F9). */
   readonly allResolved: boolean;
-  /** Titles of everything not complete — mockup 6 states these plainly. */
+  /**
+   * Titles of everything not CONFIRMED — mockup 6 states these plainly. Since
+   * D14 (#237) that includes defaulted steps, but the launch panel is the only
+   * reader and it renders only once `allResolved` is true, which no defaulted
+   * step permits. So in practice the panel still lists deferrals and nothing
+   * else, and its "by your own choice" heading stays true.
+   */
   readonly outstanding: readonly { id: SetupStepId; title: string; deferred: boolean }[];
 }
 
@@ -374,6 +387,7 @@ export function buildSetupWizardView(
       isReachable: step.isReachable,
       isStale: step.isStale,
       isDeferred: step.isDeferred,
+      isDefaulted: step.isDefaulted,
       permissionArea: SETUP_STEP_PERMISSION_AREA[step.id],
     };
   });

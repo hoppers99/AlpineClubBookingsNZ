@@ -91,7 +91,14 @@ function areaLabel(area: SetupWizardStepDetail["permissionArea"]): string {
 
 function stateBadgeVariant(step: SetupWizardStepDetail) {
   if (step.state === "complete") return "success" as const;
-  if (step.state === "stale" || step.state === "deferred") return "warning" as const;
+  if (
+    step.state === "stale" ||
+    step.state === "deferred" ||
+    // D14 (#237): outstanding and populated, like the two above it.
+    step.state === "defaulted"
+  ) {
+    return "warning" as const;
+  }
   if (step.state === "current") return "outline" as const;
   return "secondary" as const;
 }
@@ -179,6 +186,23 @@ export function SetupWizardStepFrame({
           <p className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11">
             You skipped this for now. It stays on the list as outstanding until
             it is done or no longer applies.
+          </p>
+        ) : null}
+        {/* D14/D15 (#237). The register is the club-time-zone check's own — say
+            what is actually true (there IS a value, it may well be right) and
+            ask, rather than assert that anybody agreed to it. It names both
+            ways past the step, because D15 makes this state block the journey
+            and an operator who cannot decide today needs to be told the way
+            round. */}
+        {step.isDefaulted ? (
+          <p
+            data-testid="setup-wizard-step-defaulted"
+            className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11"
+          >
+            A default is in place here and nothing has confirmed it — it was set
+            when the site was installed, not chosen for your club. Check it
+            below, change it if it is wrong, then mark this step done. If you
+            would rather decide later, skip it for now.
           </p>
         ) : null}
 
