@@ -82,7 +82,19 @@ export function SetupSurfacesSection({
         body: JSON.stringify(draft),
       });
       if (response.status === 403) throw new ForbiddenSaveError();
-      if (!response.ok) throw new Error("Failed to save setup surface settings");
+      if (!response.ok) {
+        // The route answers a retryable 503 when two administrators save at
+        // once (its Serializable transaction aborts the loser). That is worth
+        // repeating verbatim — "try again shortly" is actionable and the
+        // generic fallback is not — so the server's own message wins whenever
+        // it sent one.
+        const failure = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(
+          failure?.error ?? "Failed to save setup surface settings",
+        );
+      }
       const body = (await response.json()) as { settings: SetupSurfacesDraft };
       onSaved(body.settings);
       return body.settings;
