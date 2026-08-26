@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   headers: vi.fn(),
   getWebsiteThemeRenderState: vi.fn(),
   memberFindUnique: vi.fn(),
+  setupProgressFindUnique: vi.fn(),
   loadEffectiveModuleFlags: vi.fn(),
   redirect: vi.fn(),
 }));
@@ -39,6 +40,9 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     member: {
       findUnique: mocks.memberFindUnique,
+    },
+    setupProgress: {
+      findUnique: mocks.setupProgressFindUnique,
     },
   },
 }));
@@ -195,6 +199,9 @@ describe("site style route-group gating", () => {
       accessRoles: [{ role: "ADMIN" }],
     });
     mocks.loadEffectiveModuleFlags.mockResolvedValue({});
+    // The setup-aware nudge (#236): SetupProgress's journey-finished flag,
+    // null by default so most cases below exercise the "unfinished" branch.
+    mocks.setupProgressFindUnique.mockResolvedValue({ completedAt: null });
   });
 
   it("holds the website route group until setup is complete", async () => {
@@ -267,14 +274,78 @@ describe("site style route-group gating", () => {
     render(await AdminLayout({ children: <p>Admin child</p> }));
 
     expect(screen.getByText("Admin child")).toBeTruthy();
-    expect(
-      screen.getByText("Complete your site style before opening the public website."),
-    ).toBeTruthy();
     const style = document.querySelector(
       'style[data-site-style="club-theme"]',
     );
     expect(style?.textContent).toContain("--brand-gold:#123456");
     expect(style?.textContent).not.toContain("--success:red");
     expect(mocks.getWebsiteThemeRenderState).toHaveBeenCalled();
+  });
+
+  /**
+   * The setup-aware nudge (epic #213, C10, #236). Replaces the old style-only
+   * banner: gated on `SetupProgress.completedAt` (the journey-finished flag)
+   * rather than `ClubTheme.completedAt` (the unrelated launch lever), visible
+   * to any admin the wizard itself admits rather than `content:edit` only, and
+   * never pointing at Site Style.
+   */
+  describe("the setup-aware admin nudge", () => {
+    const NUDGE_TEXT =
+      "This club's setup isn't finished — pick up where you left off in the setup wizard.";
+
+    it("shows the wizard nudge while SetupProgress.completedAt is null", async () => {
+      mocks.setupProgressFindUnique.mockResolvedValue({ completedAt: null });
+
+      render(await AdminLayout({ children: <p>Admin child</p> }));
+
+      const banner = screen.getByText(NUDGE_TEXT);
+      expect(banner).toBeTruthy();
+      const link = screen.getByRole("link", { name: "Open Setup Wizard" });
+      expect(link.getAttribute("href")).toBe("/admin/setup/wizard");
+    });
+
+    it("hides the nudge once SetupProgress.completedAt is set", async () => {
+      mocks.setupProgressFindUnique.mockResolvedValue({
+        completedAt: new Date("2026-01-01T00:00:00Z"),
+      });
+
+      render(await AdminLayout({ children: <p>Admin child</p> }));
+
+      expect(screen.queryByText(NUDGE_TEXT)).toBeNull();
+    });
+
+    it("suppresses the nudge under /admin/setup, even with setup unfinished", async () => {
+      mocks.setupProgressFindUnique.mockResolvedValue({ completedAt: null });
+      mocks.headers.mockResolvedValue(
+        new Headers({ "x-pathname": "/admin/setup/wizard" }),
+      );
+
+      render(await AdminLayout({ children: <p>Admin child</p> }));
+
+      expect(screen.queryByText(NUDGE_TEXT)).toBeNull();
+    });
+
+    it("hides the nudge from an admin the wizard itself would not admit", async () => {
+      // ADMIN_CONTENT: content:edit, but no support access — the area
+      // `/admin/setup/wizard` requires. This is the defect the issue names:
+      // the old banner gated on content:edit, so a support officer with none
+      // never saw it; the new banner must not show it to the mirror case
+      // either — an admin who can edit content but cannot reach the wizard.
+      mocks.auth.mockResolvedValue({
+        user: { id: "content-admin-1", role: "ADMIN_CONTENT", accessRoles: [{ role: "ADMIN_CONTENT" }] },
+      });
+      mocks.memberFindUnique.mockResolvedValue({
+        active: true,
+        forcePasswordChange: false,
+        role: "ADMIN_CONTENT",
+        financeAccessLevel: "NONE",
+        accessRoles: [{ role: "ADMIN_CONTENT" }],
+      });
+      mocks.setupProgressFindUnique.mockResolvedValue({ completedAt: null });
+
+      render(await AdminLayout({ children: <p>Admin child</p> }));
+
+      expect(screen.queryByText(NUDGE_TEXT)).toBeNull();
+    });
   });
 });

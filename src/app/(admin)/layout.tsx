@@ -13,9 +13,13 @@ import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { clubThemeFontVariableClassName } from "@/lib/club-theme-fonts";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { getAiAssistantAvailability } from "@/lib/ai-assistant-config";
-import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import { getWebsiteThemeRenderState } from "@/lib/club-theme";
 import { getDefaultLodgeCapacity } from "@/lib/lodge-capacity";
+import {
+  readSetupJourneyComplete,
+  shouldShowSetupNudge,
+  SETUP_WIZARD_HREF,
+} from "@/lib/setup-nudge";
 
 export default async function AdminLayout({
   children,
@@ -35,20 +39,27 @@ export default async function AdminLayout({
   const guard = await guardAdminLayout();
   if (guard.outcome === "redirect") redirect(guard.destination);
 
-  const { member, user, permissionMatrix, isFullAdmin: actorIsFullAdmin, nonce } =
-    guard;
-  const canManageContent = hasAdminAreaAccess(member, {
-    area: "content",
-    level: "edit",
-  });
+  const {
+    user,
+    permissionMatrix,
+    isFullAdmin: actorIsFullAdmin,
+    nonce,
+    requestedPath,
+  } = guard;
   const showOnboardingWizard = guard.showOnboardingWizard;
-  const [effectiveModules, theme, lodgeCapacity, clubIdentity] =
+  const [effectiveModules, theme, lodgeCapacity, clubIdentity, journeyComplete] =
     await Promise.all([
       loadEffectiveModuleFlags(),
       getWebsiteThemeRenderState(),
       getDefaultLodgeCapacity(),
       getCachedClubIdentity(),
+      readSetupJourneyComplete(),
     ]);
+  const showSetupNudge = shouldShowSetupNudge({
+    journeyComplete,
+    requestedPath,
+    permissionMatrix,
+  });
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
 
   // Paid AI free-text path: module on AND a usable Anthropic key stored. Budget
@@ -93,17 +104,18 @@ export default async function AdminLayout({
               tabIndex={-1}
               className="flex-1 overflow-y-auto p-6 pb-24 print:overflow-visible print:p-0 md:p-8 md:pb-28"
             >
-              {!theme.isComplete && canManageContent && (
+              {showSetupNudge && (
                 <div className="mb-6 rounded-md border border-warning-6 bg-warning-3 p-4 text-sm text-warning-11 print:hidden">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <p className="font-medium">
-                      Complete your site style before opening the public website.
+                      This club&apos;s setup isn&apos;t finished — pick up where
+                      you left off in the setup wizard.
                     </p>
                     <Link
-                      href="/admin/site-style"
+                      href={SETUP_WIZARD_HREF}
                       className="rounded-md bg-brand-gold px-3 py-2 text-sm font-semibold text-brand-charcoal shadow-sm transition-shadow hover:shadow-md"
                     >
-                      Open Site Style
+                      Open Setup Wizard
                     </Link>
                   </div>
                 </div>
