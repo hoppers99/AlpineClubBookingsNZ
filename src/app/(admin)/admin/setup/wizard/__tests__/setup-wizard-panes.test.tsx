@@ -761,9 +761,11 @@ describe("the rail redraws beside the toggles (D4/D5)", () => {
     stubModulesFetch({ xeroIntegration: true, financeDashboard: true }, "feature-flags");
     render(<SetupWizardClient permissionMatrix={supportEditor} />);
 
-    expect(
-      await screen.findByTestId("setup-wizard-rail-row-xero-operational"),
-    ).toBeTruthy();
+    // The section's own fetch resolves independently of the journey read, so
+    // wait for the CHECKBOX rather than for the rail row: the rail is painted
+    // first and the pane can still be showing its spinner.
+    await screen.findByRole("checkbox", { name: XERO_LABEL });
+    expect(screen.getByTestId("setup-wizard-rail-row-xero-operational")).toBeTruthy();
     const before = Number(
       screen.getByTestId("setup-wizard-percent").textContent?.replace("%", ""),
     );
@@ -808,6 +810,9 @@ describe("switching off the module that owns the step you are standing on", () =
         screen.getByTestId("setup-wizard-step-pane").getAttribute("data-step-id"),
       ).toBe("address-autocomplete"),
     );
+    // The pane container mounts before the section's own fetch resolves, so
+    // wait for a control rather than for the container.
+    await screen.findByRole("checkbox", { name: ADDRESS_LABEL });
     expect(screen.queryByTestId("setup-wizard-moved-notice")).toBeNull();
 
     fireEvent.click(moduleCheckbox(ADDRESS_LABEL));
@@ -833,11 +838,10 @@ describe("switching off the module that owns the step you are standing on", () =
     stubModulesFetch({ addressAutocomplete: true }, "address-autocomplete");
     render(<SetupWizardClient permissionMatrix={supportEditor} />);
 
-    await waitFor(() =>
-      expect(
-        screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
-      ).toBe("address-autocomplete"),
-    );
+    await screen.findByRole("checkbox", { name: ADDRESS_LABEL });
+    expect(
+      screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
+    ).toBe("address-autocomplete");
     expect(screen.queryByTestId("setup-wizard-moved-notice")).toBeNull();
 
     fireEvent.click(moduleCheckbox(ADDRESS_LABEL));
