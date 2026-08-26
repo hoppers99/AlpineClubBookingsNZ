@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
+import { SETUP_READINESS_INPUT_CHANGED_EVENT } from "@/lib/setup-readiness-events";
 import type { SetupStepId } from "@/lib/setup-step-registry";
 import {
   buildSetupWizardView,
@@ -19,6 +20,7 @@ import {
   type SetupWizardRailSelection,
 } from "./setup-wizard-rail";
 import { SetupWizardLaunchPanel } from "./setup-wizard-launch-panel";
+import { SetupWizardStepPane } from "./setup-wizard-panes";
 import {
   SetupWizardStepFrame,
   type SetupWizardProgressAction,
@@ -47,6 +49,19 @@ import {
  *    window, which is exactly when the flags can have changed. It is not a
  *    subscription and does not claim to be: a flag changed in another tab shows
  *    up here the moment this tab is focused, and the Refresh button forces it.
+ *
+ *    **C12 adds the third trigger, and it had to be a new one.** Both events
+ *    above are about coming BACK to this tab, and an inline pane
+ *    (`setup-wizard-panes.tsx`) is saved without ever leaving it — so neither
+ *    fires, and the readiness detail, the state badge and the percentage would
+ *    all still be answering the question the operator just watched being
+ *    answered. `SETUP_READINESS_INPUT_CHANGED_EVENT` is the panes' announcement
+ *    that they persisted something a check reads; the shell treats it as one
+ *    more reason to re-read, through the same `load()`.
+ *
+ * The pane is a SIBLING of the step frame below, never a child of it — the
+ * banner-nesting rule and the two genuinely different permissions involved are
+ * written out in `setup-wizard-panes.tsx`.
  */
 
 function errorMessageFrom(body: unknown, fallback: string) {
@@ -136,6 +151,20 @@ export function SetupWizardClient({
     return () => {
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [load]);
+
+  // C12: an inline pane saved without the operator leaving the tab, so neither
+  // listener above can have fired. Unconditional — unlike the two of them, this
+  // event is only dispatched after a write has already succeeded, so there is
+  // no visibility test worth making.
+  useEffect(() => {
+    function reread() {
+      void load();
+    }
+    window.addEventListener(SETUP_READINESS_INPUT_CHANGED_EVENT, reread);
+    return () => {
+      window.removeEventListener(SETUP_READINESS_INPUT_CHANGED_EVENT, reread);
     };
   }, [load]);
 
@@ -378,28 +407,39 @@ export function SetupWizardClient({
               onPublishActivity={setLaunchPinned}
             />
           ) : activeStep ? (
-            <SetupWizardStepFrame
-              step={activeStep}
-              canEdit={canChangeSetupProgress(permissionMatrix)}
-              saving={saving}
-              previousStep={neighbours.previous}
-              nextStep={neighbours.next}
-              launchUnlocked={view.allResolved}
-              providerTesting={
-                activeStep.action
-                  ? providerRunning === activeStep.action.provider
-                  : false
-              }
-              providerResult={
-                activeStep.action
-                  ? (providerResults[activeStep.action.provider] ?? null)
-                  : null
-              }
-              onNavigate={select}
-              onOpenLaunch={() => select(SETUP_WIZARD_LAUNCH_ID)}
-              onProgress={(action) => void updateProgress(action, activeStep.id)}
-              onProviderTest={(provider) => void runProviderTest(provider)}
-            />
+            // The frame and the pane are SIBLINGS in one column, in this order.
+            // The pane sits below because the frame carries the step's identity
+            // — its title, its state badge and C11's defaulted banner, whose
+            // copy says "check it below" and, for the first time, now points at
+            // something. See `setup-wizard-panes.tsx` for why the pane can not
+            // be moved inside the frame instead.
+            <div className="space-y-4">
+              <SetupWizardStepFrame
+                step={activeStep}
+                canEdit={canChangeSetupProgress(permissionMatrix)}
+                saving={saving}
+                previousStep={neighbours.previous}
+                nextStep={neighbours.next}
+                launchUnlocked={view.allResolved}
+                providerTesting={
+                  activeStep.action
+                    ? providerRunning === activeStep.action.provider
+                    : false
+                }
+                providerResult={
+                  activeStep.action
+                    ? (providerResults[activeStep.action.provider] ?? null)
+                    : null
+                }
+                onNavigate={select}
+                onOpenLaunch={() => select(SETUP_WIZARD_LAUNCH_ID)}
+                onProgress={(action) =>
+                  void updateProgress(action, activeStep.id)
+                }
+                onProviderTest={(provider) => void runProviderTest(provider)}
+              />
+              <SetupWizardStepPane stepId={activeStep.id} />
+            </div>
           ) : (
             <section className="rounded-md border bg-card p-5 text-sm text-muted-foreground">
               There is nothing to set up: every module that contributes a setup

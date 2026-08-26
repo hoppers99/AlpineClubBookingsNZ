@@ -11,6 +11,7 @@ import {
   listSelectableClubTimeZones,
 } from "@/lib/club-time-zone";
 import { formatNZDateTime } from "@/lib/nzst-date";
+import { emitSetupReadinessInputChanged } from "@/lib/setup-readiness-events";
 
 /**
  * The club-timezone maintenance panel (CT-1, #2989; epic #2988).
@@ -271,6 +272,12 @@ export function ClubTimeZonePanel() {
       }
       setState(payload.state);
       cancelEditing();
+      // The `club-time-zone` readiness check reads this row, and C12 mounts
+      // this panel inside the setup wizard, where the operator never leaves the
+      // tab for its focus refetch to fire. See
+      // `@/lib/setup-readiness-events` — the panel announces a fact about the
+      // database, not a call back into any particular screen.
+      emitSetupReadinessInputChanged();
     } catch {
       setError("Could not save the club time zone.");
     } finally {
