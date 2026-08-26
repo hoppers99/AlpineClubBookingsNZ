@@ -40,7 +40,20 @@ function viewFor(
     completedAt: null,
     completedByMemberId: null,
   });
-  const readiness = buildSetupReadiness({ progress: normalised });
+  // `env: {}`, not the ambient default — matching every other readiness call
+  // site in the test tree (`setup-readiness.test.ts`'s `baseEnv` fixture,
+  // `setup-step-registry.test.ts` and `setup-surface-registry-parity.test.ts`'s
+  // `env: {}`). Without it `buildSetupReadiness` falls through to the REAL
+  // `process.env`, and this suite's "however many checks pass" claim then rides
+  // whatever the runner happens to export. Measured divergence: an unset
+  // AUTH_SECRET/NEXTAUTH_SECRET reads `auth-secret-strength` as "complete" (the
+  // check's own no-duplicate-finding rule — see setup-readiness.ts), while CI's
+  // `verify` job sets `AUTH_SECRET: ci-auth-secret`, which is real but under the
+  // 32-character strength floor, reading "warning" instead. That was the ONLY
+  // check complete on a bare fixture, so the CI env collapsed the "opens a
+  // fresh install … however many checks pass" fixture's defaulted population to
+  // zero — passing locally, failing on every CI run (PR #241).
+  const readiness = buildSetupReadiness({ progress: normalised, env: {} });
   const readinessStatuses: Partial<
     Record<SetupStepId, (typeof readiness.categories)[number]["checks"][number]["status"]>
   > = {};
@@ -128,7 +141,7 @@ describe("SETUP_STEP_PERMISSION_AREA (D12)", () => {
 
 describe("buildSetupWizardView", () => {
   it("carries the traversal's percentage through untouched (D7)", () => {
-    const readiness = buildSetupReadiness({});
+    const readiness = buildSetupReadiness({ env: {} });
     const traversal = buildSetupWizardTraversal({
       progress: { completedStepIds: [], skippedStepIds: [] },
     });
