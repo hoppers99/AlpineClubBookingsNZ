@@ -20,6 +20,10 @@
     // Invoked from scripts/e2e-stack.sh (shell) to seed test-mode Stripe keys
     // into the encrypted credential store (#2082), never imported.
     "e2e/setup/seed-stripe-credentials.ts",
+    // Invoked from scripts/e2e-stack.sh (shell) to seed the club identity the
+    // product seed no longer writes without a primary config/club.json (#237),
+    // never imported.
+    "e2e/setup/seed-club-identity.ts",
     // Invoked from scripts/codex/run-next-issue.sh + docs, never imported.
     "scripts/codex/create-review-issues.mjs",
     "scripts/codex/issue-to-prompt.mjs",

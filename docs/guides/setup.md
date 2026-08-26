@@ -165,22 +165,43 @@ above for how to choose.
 
    | The row says | It means |
    | --- | --- |
-   | Done | The step's check passes, or you marked it done |
+   | Done | You marked this step done |
    | Up next | Where the wizard will resume you |
    | Needs another look | You finished it, but something it depends on has changed since |
    | Skipped for now | You chose to pass over it. It stays on the list as outstanding |
+   | Default in place | The step's check passes, but nobody has confirmed it — see below |
    | Not started | Nothing has happened here yet |
+
+   **Default in place** is the one worth understanding, because a fresh install
+   starts with several of them. Installing the site fills a number of settings
+   in for you — a timezone, a set of age tiers, a cancellation policy, a bed
+   count — and those settings then satisfy their own checks. That is genuinely
+   useful, but nobody has agreed to any of it: they are the shipped defaults
+   rather than your club's decisions, and some of them will be wrong for you.
+
+   So the wizard shows them as what they are. It walks you to each one, says
+   what the default is, and asks you to look. **Marking the step done is how you
+   confirm it** — that is the record that a person checked this, and it is the
+   only thing that moves the progress bar. If you would rather decide later,
+   **Skip for now** takes you past it and leaves it on the outstanding list.
+   A default on its own does not let you walk past: the wizard stops there the
+   same way it stops at a step nothing has happened on.
 
    Progress reads as a **percentage** rather than "x of y" on purpose: the
    number of steps changes as you switch modules on and off, and a count would
    look as though work had been lost. It stays visible while the rail scrolls.
+
+   **A brand-new club starts at 0%, and that is the honest number.** The
+   percentage counts the steps you have confirmed, never the ones the installer
+   happened to fill in — otherwise a club that had made no decisions at all
+   would be told it was halfway through, which is exactly what used to happen.
 3. The right-hand pane shows the step's live check — what is outstanding, in the
    same words the checklist uses — with a link through to the settings page
    where that work is actually done. The wizard never becomes a second place to
    store a setting. **Website Styling** is a step of exactly this shape: it
    links to [Site Style](site-style.md) rather than embedding a second colour
-   picker, and it reports done the moment any colour, font, logo or Raw CSS
-   differs from the shipped defaults — whether that was saved from Site Style
+   picker, and **its check passes** the moment any colour, font, logo or Raw
+   CSS differs from the shipped defaults — whether that was saved from Site Style
    directly or by following this step's link. Finishing this step never makes
    the public site visible; that only happens from **Ready to open** below, or
    from Site Style's own Finish-setup control.
@@ -189,8 +210,8 @@ above for how to choose.
    than one thing at once. It does not embed a lodge editor: it lists every
    lodge the club has with its own state — open for booking, or still to be
    activated — with its active room and bed counts, and a link straight into
-   that lodge's own guided setup. It reads done when every lodge is open for
-   booking, and warns while any one of them is still closed. Room and bed
+   that lodge's own guided setup. Its check passes when every lodge is open
+   for booking, and warns while any one of them is still closed. Room and bed
    counts are shown but never decide the verdict: a lodge can legitimately run
    on a capacity override with no beds recorded. **A lodge's own completeness
    is reported separately from the club's** — however many lodges you have,
@@ -212,8 +233,11 @@ above for how to choose.
 6. Switching a module off removes its steps entirely (a module you have declined
    has nothing to configure). Change one on the **Modules** page and the rail
    redraws when you come back to the wizard's tab.
-7. Once every step is done or skipped, **Ready to open** unlocks at the foot of
-   the rail. It carries two separate things:
+7. Once every step is **confirmed or skipped**, **Ready to open** unlocks at
+   the foot of the rail. A step still showing **Default in place** keeps it
+   locked, which is deliberate: a club should not arrive at "ready to open"
+   without a person having looked at each decision, even where the installed
+   default turns out to be the right one. It carries two separate things:
    - **Make the public site visible** — until you do this, visitors see the
      holding screen rather than the club's pages. This is the only place in the
      wizard that publishes the site.
@@ -386,7 +410,7 @@ or run `npm run config:self-heal`.
 | **Club Time Zone** shows a warning about confirming the zone | The server's `TZ` named no actual place, so `Pacific/Auckland` was recorded rather than guessed at from a value that names no location | If the club is in New Zealand, acknowledge the step. If not, set the real zone at [`/admin/club-time`](club-time.md) — this is the case that would otherwise put a non-NZ club's times out by hours |
 | Setup shows incomplete after go-live | Optional checks were left unskipped | Mark genuinely-skipped checks as skipped so the summary reflects reality |
 | A wizard step will not open | It is further ahead than you have reached | Settle the steps before it — finish them, or skip the ones that do not apply |
-| **Ready to open** stays locked in the wizard | Something is still outstanding and has not been skipped | Work down the rail; anything you genuinely do not need can be skipped, which counts as settled |
+| **Ready to open** stays locked in the wizard | Something is still outstanding and has not been skipped — including any step showing **Default in place**, which needs confirming or skipping like any other | Work down the rail; anything you genuinely do not need can be skipped, which counts as settled |
 | A wizard step's Done / Skip / Reopen buttons are all disabled | Your role has view-only access to **Support**, which is what recording progress needs — on every step, not just this one | Ask an admin with Support edit access to record it. Note this is separate from being able to make the change itself, which needs the settings page's own area |
 | The rail still shows a module's steps after switching it off | The wizard has not re-read the journey yet | Return to the wizard's tab, or press **Refresh** |
 
