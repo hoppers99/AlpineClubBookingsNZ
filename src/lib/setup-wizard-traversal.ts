@@ -3,7 +3,8 @@ import { normalizeClubModuleSettings } from "@/lib/module-settings";
 import {
   CORE_STEP_OWNER,
   SETUP_STEP_REGISTRY,
-  isSetupStepComplete,
+  resolveSetupStepCompletion,
+  type SetupStepCompletionAnswer,
   type SetupStepCompletionInput,
   type SetupStepDefinition,
   type SetupStepId,
@@ -45,6 +46,8 @@ import {
  *    deferring is precisely how an operator buys passage. It buys passage and
  *    nothing else: a deferred step stays in the applicable set, stays
  *    outstanding, and never counts toward the percentage (D4, #219 AC 4).
+ *    **A DEFAULTED step is the opposite case and blocks exactly like an
+ *    untouched one** — see D14/D15 below.
  * 2. **A completed step stays reachable even when an earlier step goes stale.**
  *    AC 1 ("any completed step, in either direction") and AC 3 ("limit forward
  *    navigation") collide when step 5 is stale and step 10 is complete. AC 1 is
@@ -58,6 +61,38 @@ import {
  *    That is also the fail-toward-stale direction C2's acceptance criteria ask
  *    for ("IF the stale set cannot be computed, treat affected steps as stale
  *    rather than complete").
+ *
+ * ## D14 and D15: a default is not a confirmation (#237)
+ *
+ * The UAT walkthrough opened a freshly seeded install and found the wizard 56%
+ * through a journey nobody had walked, resuming at step 3, with the club still
+ * called "Example Mountain Club". The cause was one `||`: the old
+ * `isSetupStepComplete` counted a passing readiness check and an operator's own
+ * record as the same evidence, and a seed writes enough defaults to satisfy nine
+ * of sixteen checks.
+ *
+ * **D14 — the honest drop.** `SetupStepCompletionAnswer` now keeps the two
+ * apart, and everything that reads as PROGRESS here counts `operatorConfirmed`
+ * only: `percentComplete`, `isComplete`, `currentStepId`, and the `complete`
+ * state. There is no backfill — every existing install's number falls, which
+ * costs nobody because the wizard is deployed nowhere yet, and the percentage
+ * keeps ONE meaning: how much of this journey a person has actually confirmed.
+ *
+ * **D15 — defaulted blocks the frontier, and skip is the escape.** A step whose
+ * check passes with no operator record is `defaulted`, and it caps the frontier
+ * exactly as `not-started` does. It needs no special case to do so: `isBlocking`
+ * is `!complete && (stale || !deferred)`, and a defaulted step is none of those
+ * three. The operator passes it by confirming it ("Mark this step done" — the
+ * existing transition, no new verb) or by skipping it. So a fresh install can no
+ * longer reach the launch panel having confirmed nothing, and `allResolved`
+ * unlocks D9's launch panel only once every applicable step is confirmed or
+ * skipped. That is a deliberate consequence of D15, not an oversight.
+ *
+ * **A defaulted step cannot be stale, structurally rather than by a check.**
+ * Staleness means "was done and now needs another look", so the stale set is
+ * intersected against CONFIRMED steps, while `defaulted` requires `!confirmed`.
+ * The two are disjoint by construction, which is why nothing below tests for it.
+ * D3's machinery is otherwise untouched.
  *
  * ## Staleness is DERIVED here, and C2 swapped that for persistence invisibly
  *
@@ -181,16 +216,24 @@ export interface SetupWizardTraversalInput<Id extends string = SetupStepId> {
  * One state per applicable step, for C5's rail.
  *
  * `current` is a state rather than a separate flag because #219 asks for it as
- * one, and exactly one step can hold it. Where it collides with `stale` or
- * `deferred` it wins — the rail has to be able to say where you are — and the
- * `isStale` / `isDeferred` flags on the step carry the rest, so a rail can
- * render "current, and needs another look" without recomputing anything.
+ * one, and exactly one step can hold it. Where it collides with `stale`,
+ * `deferred` or `defaulted` it wins — the rail has to be able to say where you
+ * are — and the `isStale` / `isDeferred` / `isDefaulted` flags on the step carry
+ * the rest, so a rail can render "current, and a default is in place" without
+ * recomputing anything.
+ *
+ * `defaulted` (D14, #237) sits LAST in that precedence for a reason: it is the
+ * weakest claim of the four. `complete`, `stale` and `deferred` all rest on
+ * something a person did, and `defaulted` rests only on a check the system ran.
+ * Where a step is both skipped and defaulted, `deferred` wins — the operator
+ * acted, and that action is the one that bought passage.
  */
 export type SetupWizardStepState =
   | "complete"
   | "current"
   | "stale"
   | "deferred"
+  | "defaulted"
   | "not-started";
 
 export interface SetupWizardTraversalStep<Id extends string = SetupStepId> {
@@ -198,12 +241,24 @@ export interface SetupWizardTraversalStep<Id extends string = SetupStepId> {
   readonly ownerModule: SetupStepOwner;
   readonly order: number;
   readonly state: SetupWizardStepState;
-  /** Complete AND not stale. This is the one that counts toward the percentage. */
+  /**
+   * CONFIRMED by the operator and not stale. This is the one that counts toward
+   * the percentage — a passing readiness check alone is `isDefaulted` (D14).
+   */
   readonly isComplete: boolean;
-  /** Recorded complete, but something it depends on is outstanding. */
+  /** Confirmed, but something it depends on is outstanding. */
   readonly isStale: boolean;
   /** Deferred ("skip for now") and not complete. Outstanding, but passable. */
   readonly isDeferred: boolean;
+  /**
+   * The step's readiness check passes and NOBODY confirmed it (D14, #237) — a
+   * default is in place and wants reviewing. Outstanding, and NOT passable: it
+   * caps the frontier exactly as an untouched step does (D15).
+   *
+   * Never true at the same time as `isStale`: staleness is intersected against
+   * confirmed steps and this requires the absence of a confirmation.
+   */
+  readonly isDefaulted: boolean;
   /** May the operator open this step? D2, as read above. */
   readonly isReachable: boolean;
 }
@@ -213,33 +268,49 @@ export interface SetupWizardTraversal<Id extends string = SetupStepId> {
   readonly steps: readonly SetupWizardTraversalStep<Id>[];
   readonly applicableStepIds: readonly Id[];
   readonly staleStepIds: readonly Id[];
-  /** Everything not complete — deferred and stale included (#219 AC 4). */
+  /**
+   * Everything not complete — deferred, stale and DEFAULTED included (#219 AC
+   * 4, D14).
+   */
   readonly outstandingStepIds: readonly Id[];
   /**
    * Not complete AND not deferred: a step that is genuinely blocking, i.e. it
    * caps the navigation frontier (stale steps are included — F2's decision
-   * means a stale-and-deferred step still blocks). `isDeferred`-only steps are
-   * already visible per-step and are deliberately excluded here, so a
+   * means a stale-and-deferred step still blocks; defaulted steps are included
+   * because D15 says a default is not a confirmation). `isDeferred`-only steps
+   * are already visible per-step and are deliberately excluded here, so a
    * consumer summing this list gets the same set the frontier walk stops on.
    */
   readonly blockingStepIds: readonly Id[];
-  /** Where the operator resumes: the first applicable step that is not complete. */
+  /**
+   * Where the operator resumes: the first applicable step the operator has not
+   * CONFIRMED (D14). A step sitting on its own defaults is a resume point.
+   */
   readonly currentStepId: Id | null;
   /** The furthest step reachable by walking forward from the start. */
   readonly navigationFrontierStepId: Id | null;
   /**
    * D9's launch-panel signal (#219 review round): every applicable step is
-   * complete or deferred, i.e. `blockingStepIds` is empty. Exported explicitly
+   * confirmed or deferred, i.e. `blockingStepIds` is empty. Exported explicitly
    * so C5 never re-derives it from the step list — a step that is BOTH stale
    * and deferred (F2) must read as unresolved here exactly as it does for the
    * frontier, and computing that inline at each call site is how the two would
    * eventually drift.
+   *
+   * D15 tightened what this asks for and the tightening is deliberate: a
+   * DEFAULTED step is unresolved, so the launch panel now unlocks only once a
+   * person has confirmed or skipped every applicable step. A club can still
+   * reach it in one pass by skipping — what it can no longer do is arrive there
+   * without anybody having looked.
    */
   readonly allResolved: boolean;
   /**
    * D7: progress is a PERCENTAGE, because the denominator moves as modules are
    * switched on and off and a changing count reads as though work was lost. Do
    * not render this back as "x of y".
+   *
+   * D14: the numerator is CONFIRMED steps. A fresh install reads 0% however many
+   * of its checks the seed's defaults happen to satisfy.
    */
   readonly percentComplete: number;
 }
@@ -286,31 +357,65 @@ function progressStateOf(
   return "open";
 }
 
-function recordedCompleteIds<Id extends string>(
+/**
+ * Both completion answers for every applicable step, resolved once.
+ *
+ * Keyed by id rather than returned as two sets so a caller cannot read one half
+ * for a step and the other half for a different one.
+ */
+function completionAnswers<Id extends string>(
+  entries: readonly SetupStepDefinitionOf<Id>[],
+  input: SetupWizardTraversalInput<Id>,
+): Map<Id, SetupStepCompletionAnswer> {
+  const answers = new Map<Id, SetupStepCompletionAnswer>();
+  for (const entry of entries) {
+    const status = input.readinessStatuses?.[entry.id] ?? "not_started";
+    answers.set(
+      entry.id,
+      resolveSetupStepCompletion(entry, {
+        status,
+        progress: progressStateOf(entry.id, input.progress),
+      }),
+    );
+  }
+  return answers;
+}
+
+/**
+ * The steps the OPERATOR has confirmed (D14, #237) — the set that used to be
+ * called `recordedCompleteIds` while also holding steps nobody had recorded
+ * anything about. It finally earns the name.
+ *
+ * This is the set staleness is intersected against, the set `percentComplete`
+ * counts, and the set `currentStepId` walks past.
+ */
+function operatorConfirmedIds<Id extends string>(
   entries: readonly SetupStepDefinitionOf<Id>[],
   input: SetupWizardTraversalInput<Id>,
 ): Set<Id> {
-  const complete = new Set<Id>();
-  for (const entry of entries) {
-    const status = input.readinessStatuses?.[entry.id] ?? "not_started";
-    if (
-      isSetupStepComplete(entry, {
-        status,
-        progress: progressStateOf(entry.id, input.progress),
-      })
-    ) {
-      complete.add(entry.id);
-    }
+  const confirmed = new Set<Id>();
+  for (const [id, answer] of completionAnswers(entries, input)) {
+    if (answer.operatorConfirmed) confirmed.add(id);
   }
-  return complete;
+  return confirmed;
 }
 
 /**
  * THE stale set — the single function C2 replaces (see the module doc).
  *
- * A step is stale when it is recorded complete and any prerequisite of it is
+ * A step is stale when the operator CONFIRMED it and any prerequisite of it is
  * outstanding, where "outstanding" itself includes being stale. Returned in
  * registry declaration order.
+ *
+ * D14 (#237) narrowed both ends of that sentence and both narrowings are
+ * intended. A step nobody confirmed can never be stale — it is `defaulted` or
+ * not started, and "was done and now needs another look" is not true of it. And
+ * a prerequisite sitting on its own defaults is now OUTSTANDING, so a confirmed
+ * dependent of it is stale: the thing it was checked against was never confirmed
+ * by anybody, which is exactly the case D3 asks for another look at. Every step
+ * in the real registry declares an empty prerequisite list, so neither
+ * narrowing is reachable there today; both are pinned against synthetic
+ * registries.
  *
  * Four rules that only a malformed or exotic registry can reach, stated so the
  * behaviour is a decision rather than a discovery:
@@ -392,7 +497,7 @@ function computeStaleSetupStepIds<Id extends string = SetupStepId>(
   // this is what tells a genuinely unknown prerequisite apart from one that is
   // merely excluded by a disabled module.
   const known = new Set<string>(registry.map((entry) => entry.id));
-  const complete = recordedCompleteIds(entries, input);
+  const complete = operatorConfirmedIds(entries, input);
 
   // Fixpoint rather than a topological walk: declaration order is guaranteed to
   // put a prerequisite before its dependent in the REAL registry (C1 fails the
@@ -443,41 +548,67 @@ export function buildSetupWizardTraversal<Id extends string = SetupStepId>(
   const registry = (input.registry ??
     SETUP_STEP_REGISTRY) as readonly SetupStepDefinitionOf<Id>[];
   const entries = applicableEntries(registry, input.moduleSettings);
-  const complete = recordedCompleteIds(entries, input);
+  const answers = completionAnswers(entries, input);
+  const confirmed = new Set<Id>(
+    [...answers]
+      .filter(([, answer]) => answer.operatorConfirmed)
+      .map(([id]) => id),
+  );
 
   const suppliedStale = input.staleStepIds;
   const stale = new Set<Id>(
     suppliedStale === undefined
       ? computeStaleSetupStepIds(input)
-      : // Intersect rather than trust: a stored id for a step that is not
-        // recorded complete, or no longer applicable, describes a step that is
-        // simply not started.
+      : // Intersect rather than trust: a stored id for a step the operator has
+        // not confirmed, or one no longer applicable, describes a step that is
+        // simply not started (or defaulted).
         entries
           .filter(
             (entry) =>
-              complete.has(entry.id) && suppliedStale.includes(entry.id),
+              confirmed.has(entry.id) && suppliedStale.includes(entry.id),
           )
           .map((entry) => entry.id),
   );
 
   const facts = entries.map((entry) => {
+    const stepConfirmed = confirmed.has(entry.id);
     const stepStale = stale.has(entry.id);
-    const stepComplete = complete.has(entry.id) && !stepStale;
+    const stepComplete = stepConfirmed && !stepStale;
+    // A step is deferred when the operator skipped it and it is not complete.
+    // Completing clears the skip in the progress route, so in practice the
+    // two never coexist; `progressStateOf` settles it either way.
+    const stepDeferred =
+      !stepComplete && progressStateOf(entry.id, input.progress) === "skipped";
     return {
       entry,
       stale: stepStale,
       complete: stepComplete,
-      // A step is deferred when the operator skipped it and it is not complete.
-      // Completing clears the skip in the progress route, so in practice the
-      // two never coexist; `progressStateOf` settles it either way.
-      deferred:
-        !stepComplete &&
-        progressStateOf(entry.id, input.progress) === "skipped",
+      deferred: stepDeferred,
+      /*
+        D14/D15 (#237): the check passes and nobody confirmed it.
+
+        Written against `!stepConfirmed` rather than against `!stepComplete`, and
+        that is the load-bearing choice. `stepComplete` is false for a STALE step
+        too — which the operator did confirm — so testing it here would let a
+        stale step read as defaulted the moment its own check still passed, and
+        two states that must stay disjoint would overlap. Off `!stepConfirmed`,
+        `defaulted` and `stale` are disjoint by construction, because staleness
+        is intersected against exactly the set this excludes.
+
+        Deferral wins over it: a skipped step is one the operator ACTED on, and
+        that action is what bought passage past it. Reporting it as defaulted
+        would take the passage back.
+      */
+      defaulted:
+        !stepConfirmed &&
+        !stepDeferred &&
+        (answers.get(entry.id)?.derivedSatisfied ?? false),
     };
   });
 
   // #219: "current" is the first applicable step that is not complete, with
-  // deferred and stale both counting as not complete. C2 (#217) considered a
+  // deferred, stale and — since D14 — defaulted all counting as not complete.
+  // C2 (#217) considered a
   // stored `currentStepId` cursor riding its migration and DECLINED it: with C5
   // shipped, the only thing that knows where the operator is browsing is the
   // shell's own selection state, and persisting that is UI work #217 puts out of
@@ -499,6 +630,12 @@ export function buildSetupWizardTraversal<Id extends string = SetupStepId>(
   // a stale-and-deferred step read as resolved purely because `deferred` is
   // computed off `!stepComplete`, which staleness itself flips — the frontier
   // would then walk straight past a step that still needs another look.
+  //
+  // D15 (#237) needs NO CLAUSE HERE and that is the point: a defaulted step is
+  // not complete, not stale and not deferred, so this predicate already blocks
+  // on it, exactly as it blocks on an untouched one. Adding a `|| fact.defaulted`
+  // would be a second way to say the same thing and a second thing to keep in
+  // step with `allResolved`.
   const isBlocking = (fact: (typeof facts)[number]) =>
     !fact.complete && (fact.stale || !fact.deferred);
   const firstUnresolvedIndex = facts.findIndex(isBlocking);
@@ -519,10 +656,13 @@ export function buildSetupWizardTraversal<Id extends string = SetupStepId>(
             ? "stale"
             : fact.deferred
               ? "deferred"
-              : "not-started",
+              : fact.defaulted
+                ? "defaulted"
+                : "not-started",
       isComplete: fact.complete,
       isStale: fact.stale,
       isDeferred: fact.deferred,
+      isDefaulted: fact.defaulted,
       isReachable: fact.complete || index <= frontierIndex,
     };
   });
