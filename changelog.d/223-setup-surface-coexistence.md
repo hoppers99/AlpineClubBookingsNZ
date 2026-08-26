@@ -28,9 +28,10 @@
   service and reports what it said. It used to live only on the readiness
   checklist, so retiring the checklist would have taken it away; the wizard's
   step for each of those four now carries the same button, calling the same
-  check, and the step's verdict and the progress figure move with the result.
-  Support edit access is required, which is what the server has always asked
-  for.
+  check. The test itself is read-only; the step's verdict and the progress
+  figure are always derived from the stored credential state, so they move
+  only once that underlying state changes. Support edit access is required,
+  which is what the server has always asked for.
 
 - **The setup checklist can now be retired once the wizard covers what you need
   (#223).** A new **Setup surfaces** setting at the foot of Admin → Setup &

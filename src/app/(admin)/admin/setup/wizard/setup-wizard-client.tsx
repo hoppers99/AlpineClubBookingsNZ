@@ -244,9 +244,11 @@ export function SetupWizardClient({
    * error banner: the question asked was "does this provider work", and "the
    * request did not get through" is an answer to it.
    *
-   * `await load()` afterwards because a test WRITES BACK — a successful Stripe
-   * ping records the check's new state — so the step's own verdict, the rail
-   * and D7's percentage all move with it.
+   * A test itself is read-only — it writes only an AuditLog row, and the
+   * step's readiness is always derived fresh from the stored credential
+   * snapshot, never from a test's outcome. `await load()` afterwards is for
+   * PARITY with the readiness cards, and because the credential state it
+   * reads can have changed in another tab since this tab last loaded.
    */
   async function runProviderTest(provider: string) {
     setProviderRunning(provider);
@@ -281,7 +283,12 @@ export function SetupWizardClient({
         },
       }));
     } finally {
-      setProviderRunning(null);
+      // Compare-and-clear: a slower test left running on a step the operator
+      // has since navigated away from must not clear the CURRENT step's
+      // running flag when it settles — providerRunning is a single
+      // string|null, not one flag per provider, so an unconditional clear
+      // here would re-enable whichever step's button happens to be showing.
+      setProviderRunning((current) => (current === provider ? null : current));
     }
   }
 

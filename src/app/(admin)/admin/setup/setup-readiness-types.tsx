@@ -1,3 +1,5 @@
+"use client";
+
 import { CheckCircle2, CircleAlert, CircleDashed } from "lucide-react";
 import { type BadgeProps } from "@/components/ui/badge";
 

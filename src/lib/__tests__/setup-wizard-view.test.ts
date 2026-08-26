@@ -234,13 +234,23 @@ describe("a step's settings link reaches a real editor (#223)", () => {
     expect(step?.permissionArea).toBe("content");
   });
 
-  it("sends no step to /admin/setup, which carries no editor of its own", () => {
-    // `/admin/setup` is the switch's home and a list of links; it edits
-    // nothing. A step whose settings link lands there is a step with no
-    // destination in the hidden position.
+  it("sends no step to /admin/setup or a retired hub, which carry no editor of their own", () => {
+    // `/admin/setup` and its foundations/finance/booking-rules/integrations
+    // sub-hubs are the switch's home and a list of links; none of them edit
+    // anything themselves once the legacy surfaces are hidden. A step whose
+    // settings link — via `href` OR one of `links[]` — lands on one of these
+    // is a step with no destination in the hidden position.
+    // `/admin/setup/cancellation` is deliberately excluded: it was never
+    // retired and still carries its own editor.
+    const RETIRED_HUB =
+      /^\/admin\/setup(\/(foundations|finance|booking-rules|integrations))?$/;
     const view = viewFor();
     const stranded = view.steps
-      .filter((step) => step.href === "/admin/setup")
+      .filter(
+        (step) =>
+          (step.href !== undefined && RETIRED_HUB.test(step.href)) ||
+          step.links.some((link) => RETIRED_HUB.test(link.href)),
+      )
       .map((step) => step.id);
 
     expect(stranded).toEqual([]);

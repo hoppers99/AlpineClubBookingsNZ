@@ -197,11 +197,13 @@ above for how to choose.
    this is one step of the journey, so adding a second lodge does not make the
    percentage go backwards.
 4. Stripe, Email, Sentry and Operational Xero each add a **Test** button here —
-   the same provider test the checklist offers, calling the same check. Run it
-   and the step's verdict, the rail and the percentage all move with the
-   result. Changing a step's progress, and running a test, both need **Support**
-   edit access; the settings page each step links to is governed by its own
-   area, which the wizard names underneath the link.
+   the same provider test the checklist offers, calling the same check. The
+   result panel shows the outcome, but the step's verdict, the rail and the
+   percentage only move once the underlying credential state itself changes —
+   a passing test on credentials that are already correctly configured does
+   not "unlock" anything by itself. Changing a step's progress, and running a
+   test, both need **Support** edit access; the settings page each step links
+   to is governed by its own area, which the wizard names underneath the link.
 5. **Mark this step done**, **Skip for now**, or **Reopen** it, then
    **Continue**. Skipping buys you passage past a step; it does not hide it. A
    skipped step stays on the rail and on the outstanding list until it is done

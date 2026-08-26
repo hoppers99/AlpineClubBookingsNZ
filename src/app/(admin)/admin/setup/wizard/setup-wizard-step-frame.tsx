@@ -219,8 +219,11 @@ export function SetupWizardStepFrame({
         ) : null}
 
         {/* The same result idiom the readiness cards use: the provider's own
-            sentence, tinted by whether it worked, kept until the next run. */}
-        {providerTest && providerResult ? (
+            sentence, tinted by whether it worked, kept until the next run.
+            Branches on the MESSAGE, not just object truthiness — `ok` can be
+            true or false with an empty `message`, and that must render
+            nothing rather than an empty tinted box. */}
+        {providerTest && providerResult?.message ? (
           <div
             data-testid="setup-wizard-provider-test-result"
             className={`rounded-md border px-3 py-2 text-sm ${
