@@ -550,7 +550,8 @@ describe("SetupWizardClient", () => {
     const init = call?.[1];
     expect(init?.method).toBe("POST");
     expect(JSON.parse(String(init?.body))).toEqual({ provider: "stripe" });
-    // Two wizard reads: the mount, and the one the test's write-back forces.
+    // Two wizard reads: the mount, and the parity refetch after the test
+    // settles (the test itself writes nothing — see the run handler's comment).
     expect(
       fetchMock.mock.calls.filter(
         ([url]) => String(url) === "/api/admin/setup/wizard",
