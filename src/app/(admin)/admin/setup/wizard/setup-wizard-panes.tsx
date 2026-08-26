@@ -230,7 +230,21 @@ export function SetupWizardStepPane({ stepId }: { stepId: SetupStepId }) {
   const Pane = SETUP_STEP_PANES[stepId];
   if (!Pane) return null;
   return (
-    <div data-testid="setup-wizard-step-pane" data-step-id={stepId}>
+    // Keyed by STEP, not by component, so that walking between two steps that
+    // share one pane starts the pane over rather than reconciling it as the
+    // same element and carrying the previous step's half-typed form across —
+    // a staged edit surviving a navigation the operator believes discarded it.
+    // NOT EXERCISED TODAY, and said plainly rather than left to read as tested:
+    // the registry currently maps no two steps to the same component, so every
+    // move changes the component type and remounts on its own. C13 (#239) is
+    // the first that can, with `feature-flags` and `address-autocomplete` both
+    // able to point at the modules section — the case to write a test for is
+    // its, because it is the first branch on which one can exist.
+    <div
+      key={stepId}
+      data-testid="setup-wizard-step-pane"
+      data-step-id={stepId}
+    >
       <Pane />
     </div>
   );

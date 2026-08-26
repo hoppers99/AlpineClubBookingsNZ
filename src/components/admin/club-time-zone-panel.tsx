@@ -28,6 +28,14 @@ import { emitSetupReadinessInputChanged } from "@/lib/setup-readiness-events";
  * `/admin/config-transfer` does: it tests `isFullAdmin` and shows a short
  * "available to full administrators only" panel instead of this one.
  *
+ * **THAT GATE TRAVELS WITH THE PANEL, and carrying it is the container's job.**
+ * Because this component holds no permission furniture of its own, mounting it
+ * anywhere new means replicating the shell test there — otherwise a Support
+ * Officer is offered a "Change time zone" button whose PUT answers 403. Two
+ * containers today: `/admin/club-time`'s page, and the setup wizard's
+ * `club-time-zone` pane (epic #213, C12), which replicates it in
+ * `setup-wizard-panes.tsx` for exactly this reason.
+ *
  * IT STILL FOLLOWS THE STAGED-EDIT MODEL (`docs/ARCHITECTURE.md` -> "Admin/member
  * layer"). The panel mounts READ-ONLY showing the configured zone; changing it is
  * Edit -> choose -> acknowledge -> Save. Nothing persists on selection, and the
