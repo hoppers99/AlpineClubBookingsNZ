@@ -204,25 +204,34 @@ describe("Admin modules schema contract", () => {
   who has not read the release note. `docs/UPGRADING.md` states the badge "points
   at Integrations", so the docs asserted it too.
 
-  A source-text parse rather than a render: the page is a `"use client"` component
-  whose data comes from `fetch`, and what is under test is a registration, not
-  behaviour. Deliberately NOT phrased as "every module that can report
-  credentials_missing has an href" — `addressAutocomplete` can, and correctly has
-  none, because its credentials are deploy-time environment variables with no
-  in-app screen to link to.
+  A source-text parse rather than a render: the section is a `"use client"`
+  component whose data comes from `fetch`, and what is under test is a
+  registration, not behaviour. Deliberately NOT phrased as "every module that can
+  report credentials_missing has an href" — `addressAutocomplete` can, and
+  correctly has none, because its credentials are deploy-time environment
+  variables with no in-app screen to link to.
+
+  C13 (#239) moved the map out of `modules/page.tsx`, which is now a shell, and
+  into the zero-prop `modules-section.tsx` the setup wizard also embeds. The map
+  is read from the section; the banned route is checked in BOTH files, so it
+  cannot reappear in whichever half a later change happens to edit.
 */
-describe("Modules page setup affordance", () => {
+describe("Modules section setup affordance", () => {
   it("deep-links the analytics module at the Integrations hub", () => {
-    const page = readRepoFile("src/app/(admin)/admin/modules/page.tsx");
-    const map = sliceFrom(page, "const MODULE_SETUP_HREFS", "};");
+    const section = readRepoFile(
+      "src/app/(admin)/admin/modules/modules-section.tsx",
+    );
+    const shell = readRepoFile("src/app/(admin)/admin/modules/page.tsx");
+    const map = sliceFrom(section, "const MODULE_SETUP_HREFS", "};");
 
     expect(map).toContain('analytics: "/admin/integrations"');
     // The two that were already there, so a careless rewrite of the map is caught
     // rather than silently dropping them.
     expect(map).toContain('xeroIntegration: "/admin/xero/setup"');
     expect(map).toContain('googleLogin: "/admin/google/setup"');
-    // The route the owner ruled out must not reappear anywhere on the page.
-    expect(page).not.toContain("/admin/analytics/setup");
+    // The route the owner ruled out must not reappear on either half.
+    expect(section).not.toContain("/admin/analytics/setup");
+    expect(shell).not.toContain("/admin/analytics/setup");
   });
 });
 

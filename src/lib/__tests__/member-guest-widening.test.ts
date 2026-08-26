@@ -1143,6 +1143,12 @@ describe("the module flag now gates the widening, and says so", () => {
     // state was retired is allowed to name it.
     for (const file of [
       "src/lib/module-settings.ts",
+      // C13 (#239) lifted the editor out of `modules/page.tsx` into a zero-prop
+      // section the setup wizard can embed. BOTH files are read: the producer
+      // could only be in the section today, and keeping the shell in the list
+      // means a future re-inlining cannot smuggle one back into the page
+      // without this failing.
+      "src/app/(admin)/admin/modules/modules-section.tsx",
       "src/app/(admin)/admin/modules/page.tsx",
     ]) {
       expect(readRepoFile(file), file).not.toMatch(
@@ -1165,8 +1171,8 @@ describe("the admin Modules card renders memberGuests as an ordinary module (D-1
   // than a deletion — and it keeps the insight that made MG1 write them, which is
   // the part worth carrying forward.
   //
-  // THAT INSIGHT: the three helpers are module-private to a `"use client"` page
-  // whose only export is the default component, so no behavioural test can reach
+  // THAT INSIGHT: the three helpers are module-private to a `"use client"`
+  // module whose only export is the component, so no behavioural test can reach
   // them. MG1 found that a refactor dropping the `not_available_yet` case from any
   // of the three would leave the server payload correct, every test green, and the
   // badge green over a feature that could not run. The mirror-image hazard now
@@ -1174,13 +1180,20 @@ describe("the admin Modules card renders memberGuests as an ordinary module (D-1
   // badge a working feature amber and label it unavailable, and no behavioural
   // test would notice that either. So the same three helpers are pinned
   // structurally, in the opposite direction.
-  const PAGE = "src/app/(admin)/admin/modules/page.tsx";
+  //
+  // The three helpers moved file in C13 (#239) — `modules/page.tsx` is now a
+  // shell and the editor is `modules-section.tsx` — so this points at the
+  // section. The hazard is unchanged: still module-private, still unreachable
+  // behaviourally, still pinned here.
+  const SECTION = "src/app/(admin)/admin/modules/modules-section.tsx";
 
   /** The text of a top-level `function name(...) {...}` declaration. */
   function functionBody(name: string): string {
-    const source = readRepoFile(PAGE);
+    const source = readRepoFile(SECTION);
     const at = source.indexOf(`function ${name}(`);
-    expect(at, `${name} is not declared in the Modules page`).toBeGreaterThan(-1);
+    expect(at, `${name} is not declared in the Modules section`).toBeGreaterThan(
+      -1,
+    );
     // Top-level declarations close on a brace in column one.
     const end = source.indexOf("\n}", at);
     expect(end, `${name} has no closing brace`).toBeGreaterThan(at);
