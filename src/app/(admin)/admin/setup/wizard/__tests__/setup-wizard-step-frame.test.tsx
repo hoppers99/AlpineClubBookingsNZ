@@ -31,6 +31,7 @@ function detail(overrides: Partial<SetupWizardStepDetail> = {}): SetupWizardStep
     isReachable: true,
     isStale: false,
     isDeferred: false,
+    isDefaulted: false,
     permissionArea: "bookings",
     ...overrides,
   };
@@ -280,5 +281,33 @@ describe("SetupWizardStepFrame", () => {
     cleanup();
     renderFrame({ step: detail({ isStale: true, state: "stale" }) });
     expect(screen.getByText(/give it another look/)).toBeTruthy();
+  });
+
+  /*
+    D14/D15 (#237). The defaulted notice is the frame's whole job on this state:
+    the rail can only carry three words, and what an operator needs here is that
+    a value IS set, that nobody chose it, and what to do about it. D15 makes the
+    state stop the journey, so the notice has to name BOTH ways past it — an
+    operator blocked by a default they cannot decide today would otherwise be
+    left with no stated way forward.
+  */
+  it("says a default is in place, and names both ways past it", () => {
+    renderFrame({ step: detail({ isDefaulted: true, state: "defaulted" }) });
+    const notice = screen.getByTestId("setup-wizard-step-defaulted");
+    expect(notice.textContent).toMatch(/nothing has confirmed it/i);
+    expect(notice.textContent).toMatch(/mark this step done/i);
+    expect(notice.textContent).toMatch(/skip it for now/i);
+  });
+
+  it("reads the defaulted notice off the FLAG, not off the state", () => {
+    // The state machine's precedence is lossy — `current` hides `defaulted` —
+    // and the resume point on a fresh install is exactly that combination. A
+    // notice branched on `state === "defaulted"` would therefore be invisible on
+    // the one step every operator meets first.
+    renderFrame({ step: detail({ state: "current" }) });
+    expect(screen.queryByTestId("setup-wizard-step-defaulted")).toBeNull();
+    cleanup();
+    renderFrame({ step: detail({ isDefaulted: true, state: "current" }) });
+    expect(screen.queryByTestId("setup-wizard-step-defaulted")).not.toBeNull();
   });
 });

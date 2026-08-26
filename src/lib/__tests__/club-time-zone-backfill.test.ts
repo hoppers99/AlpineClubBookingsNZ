@@ -301,7 +301,17 @@ describe("prisma/seed.ts club-timezone block", () => {
     expect(block).toContain("/admin/club-time");
     // The refuted shape: nothing may gate the write itself any more.
     expect(block).not.toContain("if (clubTimeZoneBackfill.record)");
-    expect(seedSource).not.toContain("NOT seeded");
+    // The message that branch used to print, NAMED (#237). The reach over the
+    // whole file is deliberate — a gate wrapping the timezone section would
+    // start before `blockStart` and so sit outside `block` — but it searched for
+    // the bare phrase "NOT seeded", which is a property of this FILE rather than
+    // of the timezone write. #237 gave the club-IDENTITY write a legitimate
+    // not-seeded branch (skipped unless the config provenance is a real primary
+    // club.json, exactly as the boot self-heal skips it), and the unqualified
+    // search then failed on a message with nothing to do with the zone. Both
+    // halves stay guarded: this names the timezone's own message, and `block`
+    // above is scanned for the gate itself.
+    expect(seedSource).not.toContain("Club time settings NOT seeded");
   });
 
   it("uses the shared singleton id rather than its own literal", () => {

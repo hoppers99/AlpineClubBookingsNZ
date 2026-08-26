@@ -78,6 +78,7 @@ function stubView(
     isReachable: step.isReachable,
     isStale: false,
     isDeferred: false,
+    isDefaulted: false,
     permissionArea: "support" as const,
     categoryId: "foundation",
     categoryTitle: "Foundation",
@@ -165,6 +166,44 @@ describe("buildSetupWizardView", () => {
     expect(ids).not.toContain("xero-operational");
     expect(ids).not.toContain("xero-mappings");
     expect(off.outstanding.map((item) => item.id)).not.toContain("xero-mappings");
+  });
+
+  /*
+    D14/D15 (#237), over the REAL readiness builder and the REAL traversal — the
+    end-to-end form of the claim rather than a synthetic registry's version of
+    it. This is the state the UAT walkthrough found and reported: an install
+    where several checks pass on their own and nobody has confirmed anything.
+  */
+  it("opens a fresh install at the first step, at 0%, however many checks pass", () => {
+    const view = viewFor();
+
+    // The fixture must actually hold defaulted steps, or the assertions below
+    // would pass vacuously on a readiness result where nothing passed at all.
+    expect(view.steps.filter((step) => step.isDefaulted).length).toBeGreaterThan(
+      0,
+    );
+
+    expect(view.percentComplete).toBe(0);
+    expect(view.currentStepId).toBe(view.steps[0].id);
+    // …and the launch panel stays locked, which is D15's deliberate cost: a club
+    // cannot arrive at "ready to open" having agreed to nothing.
+    expect(view.allResolved).toBe(false);
+  });
+
+  it("carries the defaulted flag through to the rail row", () => {
+    const view = viewFor();
+    const defaulted = view.steps.find((step) => step.isDefaulted);
+    expect(defaulted).toBeDefined();
+    // Never both — staleness is intersected against confirmed steps, and this is
+    // precisely the absence of a confirmation.
+    expect(defaulted?.isStale).toBe(false);
+    // The detail carries no `isComplete` — the view model reads completeness off
+    // `state`, deliberately, so there is one verdict rather than two.
+    expect(defaulted?.state).not.toBe("complete");
+    // The check really did pass, which is what makes this defaulted rather than
+    // not-started, and nobody recorded anything against it.
+    expect(defaulted?.status).toBe("complete");
+    expect(defaulted?.progress).toBe("open");
   });
 
   it("states a deferred step as outstanding, and says it was skipped", () => {

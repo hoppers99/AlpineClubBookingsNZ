@@ -98,6 +98,7 @@ function traversalWith(
       isComplete: index < currentIndex,
       isStale: false,
       isDeferred: false,
+      isDefaulted: false,
       isReachable: index < currentIndex || index <= frontierIndex,
     })),
     applicableStepIds: ids as SetupStepId[],
@@ -439,6 +440,7 @@ describe("SetupWizardClient", () => {
               isComplete: true,
               isStale: false,
               isDeferred: false,
+              isDefaulted: false,
               isReachable: true,
             },
             {
@@ -449,6 +451,7 @@ describe("SetupWizardClient", () => {
               isComplete: false,
               isStale: false,
               isDeferred: false,
+              isDefaulted: false,
               isReachable: false,
             },
             {
@@ -459,6 +462,7 @@ describe("SetupWizardClient", () => {
               isComplete: true,
               isStale: false,
               isDeferred: false,
+              isDefaulted: false,
               isReachable: true,
             },
           ],

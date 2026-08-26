@@ -152,12 +152,18 @@ describe("setup wizard traversal: applicability agrees with C1 (#219)", () => {
     // A club that once skipped a Xero step and has since turned Xero off must
     // see no trace of it: declined is not deferred, and nothing is persisted to
     // say the club declined.
+    //
+    // Everything else is CONFIRMED rather than merely passing its own check
+    // (D14, #237). The assertions below are about a finished journey, and since
+    // the split only an operator's record gets a club to one; passing checks
+    // would leave every step defaulted at 0%, which would still prove the
+    // applicability point but is no longer the scenario this test is named for.
     const traversal = buildSetupWizardTraversal({
-      progress: progressOf([], ["xero-operational", "xero-mappings"]),
-      moduleSettings: xeroOff,
-      readinessStatuses: Object.fromEntries(
-        SETUP_STEP_IDS.map((id) => [id, "complete" as const]),
+      progress: progressOf(
+        [...SETUP_STEP_IDS],
+        ["xero-operational", "xero-mappings"],
       ),
+      moduleSettings: xeroOff,
     });
 
     expect(traversal.applicableStepIds).not.toContain("xero-operational");
@@ -316,12 +322,72 @@ describe("setup wizard traversal: the step state matrix (#219)", () => {
     });
   });
 
-  it("reports complete for a step whose readiness check passes on its own", () => {
+  /*
+    D14 (#237). This test used to be called "reports complete for a step whose
+    readiness check passes on its own" and asserted exactly that, which is the
+    behaviour the UAT walkthrough reported as a bug: a seed writes defaults, the
+    defaults satisfy the checks, and the wizard called that progress.
+
+    s1 is also the CURRENT step here (nothing before it is confirmed), and
+    `current` wins the state precedence — so the state reads "current" and the
+    `isDefaulted` flag is what carries the fact, exactly as `isStale` and
+    `isDeferred` do under the same precedence. s2 is the one that can show the
+    bare `defaulted` state.
+  */
+  it("reports defaulted, not complete, for a step whose check passes with nobody confirming it", () => {
     const traversal = traverse({
       registry,
+      readinessStatuses: { s1: "complete", s2: "complete" },
+    });
+
+    expect(stateOf(traversal, "s1")).toBe("current");
+    expect(traversal.steps[0]).toMatchObject({
+      isComplete: false,
+      isDefaulted: true,
+      isStale: false,
+      isDeferred: false,
+    });
+
+    expect(stateOf(traversal, "s2")).toBe("defaulted");
+    expect(traversal.steps[1]).toMatchObject({
+      isComplete: false,
+      isDefaulted: true,
+    });
+
+    // D14: nothing here counts toward the percentage, and the resume point is
+    // still the very first step.
+    expect(traversal.percentComplete).toBe(0);
+    expect(traversal.currentStepId).toBe("s1");
+    expect(traversal.outstandingStepIds).toEqual(["s1", "s2", "s3"]);
+  });
+
+  it("reports complete once the operator confirms a step that was defaulted", () => {
+    const traversal = traverse({
+      registry,
+      progress: progressOf(["s1"]),
       readinessStatuses: { s1: "complete" },
     });
     expect(stateOf(traversal, "s1")).toBe("complete");
+    expect(traversal.steps[0]).toMatchObject({
+      isComplete: true,
+      isDefaulted: false,
+    });
+  });
+
+  it("reports deferred, not defaulted, when a passing step is skipped (D15's escape)", () => {
+    // Skipping is how an operator gets past a defaulted step without confirming
+    // it. The two states must not both be true, or the rail would tell somebody
+    // a step they had explicitly dealt with still wanted a decision.
+    const traversal = traverse({
+      registry,
+      progress: progressOf([], ["s2"]),
+      readinessStatuses: { s2: "complete" },
+    });
+    expect(stateOf(traversal, "s2")).toBe("deferred");
+    expect(traversal.steps[1]).toMatchObject({
+      isDeferred: true,
+      isDefaulted: false,
+    });
   });
 
   it("treats a warning or blocked readiness check as outstanding", () => {
@@ -526,15 +592,49 @@ describe("setup wizard traversal: D2 navigation (#219)", () => {
     expect(canNavigateToSetupStep(traversal, "s4")).toBe(false);
   });
 
-  it("caps the frontier at a step that is stale even though it is also deferred (F2)", () => {
-    // The reviewer's reproducer, verbatim (#219 review round, binding decision):
-    // s1, s2 (prereq s1), s3, s4; s1 and s2 both skipped; s2's own readiness
-    // check reports complete. That makes s2 recorded complete (via its
-    // readiness check) AND stale (s1, its prerequisite, is outstanding) AND
-    // deferred (it was skipped and, once staleness clears `isComplete`, is not
-    // complete). Deferred does not cap the frontier on its own (the previous
-    // test), but staleness always does, even on a step that is also deferred —
-    // the frontier must stop at s2, and s3 must stay unreachable.
+  it("caps the frontier at a stale step (F2's surviving half)", () => {
+    // F2 (#219 review round, binding decision): staleness ALWAYS caps the
+    // frontier. s1, s2 (prereq s1), s3, s4; s2 confirmed by the operator, s1
+    // outstanding — so s2 is stale, and the frontier must stop at it rather
+    // than walk past on the strength of a confirmation that no longer holds.
+    const registry = syntheticRegistry([
+      { id: "s1" },
+      { id: "s2", prerequisites: ["s1"] },
+      { id: "s3" },
+      { id: "s4" },
+    ]);
+    const traversal = traverse({
+      registry,
+      progress: progressOf(["s2"]),
+    });
+    expect(traversal.steps.find((step) => step.id === "s2")).toMatchObject({
+      isStale: true,
+      isComplete: false,
+      isDefaulted: false,
+    });
+    // s1 is unconfirmed and unskipped, so it is where the walk actually stops.
+    expect(traversal.navigationFrontierStepId).toBe("s1");
+    expect(canNavigateToSetupStep(traversal, "s3")).toBe(false);
+  });
+
+  it("no longer admits F2's stale-AND-deferred step at all, since D14", () => {
+    /*
+      F2's reproducer, verbatim, run against the split predicate (#237).
+
+      It USED to produce a step that was stale and deferred at once: s2 was
+      "recorded complete" purely because its own readiness check passed, which
+      made it eligible for staleness, while its progress record said skipped.
+      D14 removes the first half — the stale set is intersected against steps the
+      OPERATOR confirmed, and `progressStateOf` returns exactly one answer per
+      step, so "confirmed" and "skipped" are now mutually exclusive. The
+      combination is unreachable.
+
+      `isBlocking`'s `fact.stale ||` clause is therefore redundant today and is
+      KEPT anyway. It costs nothing, F2 is a recorded decision rather than an
+      implementation detail, and what makes the combination impossible is one
+      line of precedence in `progressStateOf` — the cheap guard is the right
+      side to be wrong on if that line ever moves.
+    */
     const registry = syntheticRegistry([
       { id: "s1" },
       { id: "s2", prerequisites: ["s1"] },
@@ -546,15 +646,21 @@ describe("setup wizard traversal: D2 navigation (#219)", () => {
       progress: progressOf([], ["s1", "s2"]),
       readinessStatuses: { s2: "complete" },
     });
-    expect(traversal.steps.find((step) => step.id === "s2")).toMatchObject({
-      isStale: true,
+
+    const s2 = traversal.steps.find((step) => step.id === "s2");
+    expect(s2).toMatchObject({
+      isStale: false,
       isDeferred: true,
       isComplete: false,
+      // Deferral beats a passing check: the operator dealt with this one.
+      isDefaulted: false,
     });
-    expect(traversal.navigationFrontierStepId).toBe("s2");
-    expect(canNavigateToSetupStep(traversal, "s2")).toBe(true);
-    expect(canNavigateToSetupStep(traversal, "s3")).toBe(false);
-    expect(reachableIds(traversal)).toEqual(["s1", "s2"]);
+    expect(traversal.staleStepIds).toEqual([]);
+
+    // Both skips buy passage, so the walk runs on to the first step that is
+    // neither confirmed nor skipped.
+    expect(traversal.navigationFrontierStepId).toBe("s3");
+    expect(reachableIds(traversal)).toEqual(["s1", "s2", "s3"]);
   });
 
   it("keeps a deferred step outstanding and out of the percentage", () => {
@@ -685,7 +791,18 @@ describe("setup wizard traversal: staleness derivation (#219, D11)", () => {
     ).toEqual(["s2"]);
   });
 
-  it("honours a prerequisite satisfied by its readiness check alone", () => {
+  /*
+    D14 (#237) reversed this one, and the reversal is intended rather than a
+    casualty. It used to be called "honours a prerequisite satisfied by its
+    readiness check alone" and asserted that s2 stayed fresh.
+
+    A prerequisite sitting on nothing but its own passing check is DEFAULTED,
+    which is outstanding — nobody has agreed that the thing s2 was checked
+    against is right. That is exactly the situation D3 asks for another look at,
+    so s2 is stale. Confirming s1 clears it, which the second half asserts so
+    this cannot be read as staleness that never lifts.
+  */
+  it("treats a merely-defaulted prerequisite as outstanding, and clears once it is confirmed", () => {
     const registry = syntheticRegistry([
       { id: "s1" },
       { id: "s2", prerequisites: ["s1"] },
@@ -694,6 +811,14 @@ describe("setup wizard traversal: staleness derivation (#219, D11)", () => {
       deriveStaleSetupStepIds({
         registry,
         progress: progressOf(["s2"]),
+        readinessStatuses: { s1: "complete" },
+      }),
+    ).toEqual(["s2"]);
+
+    expect(
+      deriveStaleSetupStepIds({
+        registry,
+        progress: progressOf(["s1", "s2"]),
         readinessStatuses: { s1: "complete" },
       }),
     ).toEqual([]);
@@ -993,22 +1118,49 @@ describe("setup wizard traversal: allResolved and blockingStepIds (#219 F9, D9's
     expect(traversal.allResolved).toBe(false);
   });
 
-  it("is not resolved when a step is both stale and deferred (consistent with F2)", () => {
-    const registry = syntheticRegistry([
-      { id: "s1" },
-      { id: "s2", prerequisites: ["s1"] },
-    ]);
+  it("is not resolved while a DEFAULTED step is outstanding (D15)", () => {
+    /*
+      The launch-panel half of D15, and the one that costs something: a club
+      whose every check passes but whose operator has confirmed nothing does NOT
+      reach D9's launch panel. That is the deliberate consequence — a fresh
+      install used to arrive there having agreed to nothing.
+
+      This replaces an F2 test (a step both stale and deferred), a combination
+      D14 has made unreachable; the frontier suite pins that separately.
+    */
+    const registry = syntheticRegistry([{ id: "s1" }, { id: "s2" }]);
     const traversal = traverse({
       registry,
-      progress: progressOf([], ["s1", "s2"]),
-      readinessStatuses: { s2: "complete" },
+      readinessStatuses: { s1: "complete", s2: "complete" },
     });
-    expect(traversal.steps.find((step) => step.id === "s2")).toMatchObject({
-      isStale: true,
-      isDeferred: true,
-    });
-    expect(traversal.blockingStepIds).toContain("s2");
+    expect(traversal.steps.map((step) => step.isDefaulted)).toEqual([true, true]);
+    expect(traversal.blockingStepIds).toEqual(["s1", "s2"]);
     expect(traversal.allResolved).toBe(false);
+    expect(traversal.percentComplete).toBe(0);
+  });
+
+  it("is resolved once every defaulted step is confirmed or skipped (D15's escape)", () => {
+    const registry = syntheticRegistry([{ id: "s1" }, { id: "s2" }]);
+    const readinessStatuses = { s1: "complete", s2: "complete" } as const;
+
+    // Confirming both.
+    expect(
+      traverse({ registry, progress: progressOf(["s1", "s2"]), readinessStatuses })
+        .allResolved,
+    ).toBe(true);
+
+    // Skipping both — D4's deferral still buys passage, and the launch panel
+    // states what was skipped rather than hiding it.
+    expect(
+      traverse({ registry, progress: progressOf([], ["s1", "s2"]), readinessStatuses })
+        .allResolved,
+    ).toBe(true);
+
+    // One of each.
+    expect(
+      traverse({ registry, progress: progressOf(["s1"], ["s2"]), readinessStatuses })
+        .allResolved,
+    ).toBe(true);
   });
 
   it("is resolved for an empty applicable set", () => {

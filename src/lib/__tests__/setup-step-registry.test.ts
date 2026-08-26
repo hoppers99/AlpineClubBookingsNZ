@@ -18,7 +18,7 @@ import {
   SETUP_STEP_REGISTRY,
   findSetupStepRegistryViolations,
   getApplicableSetupStepIds,
-  isSetupStepComplete,
+  resolveSetupStepCompletion,
   type SetupStepDefinition,
   type SetupStepId,
   type SetupStepOwner,
@@ -447,14 +447,39 @@ describe("setup step applicability", () => {
 });
 
 describe("setup step completion", () => {
-  it("agrees with the readiness summary's own complete count", () => {
-    // The behavioural pin between `isSetupStepComplete` and the rule
-    // buildSetupReadiness applies, which the registry cannot import without a
-    // cycle. A mixed scenario: some checks pass on their own, one is marked
-    // done by the operator, and one — "xero-mappings", which the
-    // `databaseSnapshot` fixture above already makes status "complete" — is
-    // ALSO deferred, so the fixture exercises status "complete" together with
-    // progress "skipped" and not only the warning-plus-skipped case.
+  /*
+    THE COMPLETENESS PIN, RE-DRAWN (#237) — read this before changing either
+    side of it.
+
+    It used to marry the single predicate `isSetupStepComplete` to the rule
+    `buildSetupReadiness` applies for its `complete` summary figure, which the
+    registry cannot import without a cycle. D14 split that predicate in two, and
+    the question this file had to answer first was whether the readiness summary
+    moves with it.
+
+    IT DOES NOT, deliberately. `summary.complete` feeds `/admin/setup`'s cards
+    and `npm run setup:check`, which answer "is this installation configured?" —
+    and a defaulted timezone genuinely IS configured. The wizard's percentage
+    answers "has the operator been through this?". D14 exists precisely to stop
+    one number carrying both questions, so making the readiness figure follow the
+    wizard's answer would have re-merged them one layer down.
+
+    So the marriage survives, expressed over the new vocabulary: the readiness
+    summary's `complete` count is the UNION of the two answers — the steps a
+    person confirmed, PLUS the steps sitting on a passing check nobody confirmed.
+    That union is exactly `status === "complete" || progress === "completed"`,
+    which is the summary's own filter, so this is a real behavioural pin and not
+    a restatement of the implementation.
+
+    A consequence worth naming: `/admin/setup` and `setup:check` produce
+    byte-identical output before and after #237.
+  */
+  it("agrees with the readiness summary's own complete count, over the UNION of both answers", () => {
+    // A mixed scenario: some checks pass on their own, one is marked done by the
+    // operator, and one — "xero-mappings", which the `databaseSnapshot` fixture
+    // above already makes status "complete" — is ALSO deferred, so the fixture
+    // exercises status "complete" together with progress "skipped" and not only
+    // the warning-plus-skipped case.
     const readiness = stepIdsOnTheCards(databaseSnapshot(moduleFlags()), {
       completedStepIds: ["runtime-env"],
       skippedStepIds: ["xero-mappings"],
@@ -463,32 +488,73 @@ describe("setup step completion", () => {
       SETUP_STEP_REGISTRY.map((entry) => [entry.id, entry]),
     );
 
-    const complete = readiness.categories
+    const answers = readiness.categories
       .flatMap((category) => category.checks)
-      .filter((check) => {
+      .map((check) => {
         const entry = entriesById.get(check.id);
         if (!entry) throw new Error(`No registry entry for check ${check.id}`);
-        return isSetupStepComplete(entry, {
+        return resolveSetupStepCompletion(entry, {
           status: check.status,
           progress: check.progress,
         });
-      }).length;
+      });
 
-    expect(complete).toBe(readiness.summary.complete);
+    const union = answers.filter(
+      (answer) => answer.derivedSatisfied || answer.operatorConfirmed,
+    ).length;
+    expect(union).toBe(readiness.summary.complete);
+
+    // …and the fixture really does exercise BOTH halves, so the assertion above
+    // cannot pass by one of them being empty. Without this, a bug that collapsed
+    // both answers onto `status` would still satisfy the union.
+    expect(answers.some((answer) => answer.operatorConfirmed)).toBe(true);
+    expect(answers.some((answer) => answer.derivedSatisfied)).toBe(true);
+    expect(
+      answers.some(
+        (answer) => answer.derivedSatisfied && !answer.operatorConfirmed,
+      ),
+      "the fixture holds a DEFAULTED step — derived but unconfirmed",
+    ).toBe(true);
   });
 
-  it("does not treat a deferred step as complete", () => {
+  it("keeps a passing check and an operator's record as separate answers (D14)", () => {
     const entry = SETUP_STEP_REGISTRY[0];
+    const answer = (
+      status: "complete" | "warning",
+      progress: "open" | "completed" | "skipped",
+    ) => resolveSetupStepCompletion(entry, { status, progress });
 
-    expect(
-      isSetupStepComplete(entry, { status: "warning", progress: "skipped" }),
-    ).toBe(false);
-    expect(
-      isSetupStepComplete(entry, { status: "warning", progress: "completed" }),
-    ).toBe(true);
-    expect(
-      isSetupStepComplete(entry, { status: "complete", progress: "open" }),
-    ).toBe(true);
+    // The check passes and nobody said so: DEFAULTED. This is the case the old
+    // single predicate answered `true` to, and answering it `true` is what made
+    // a fresh seed open the wizard 56% of the way through.
+    expect(answer("complete", "open")).toEqual({
+      derivedSatisfied: true,
+      operatorConfirmed: false,
+    });
+
+    // The operator marked it done while the check still fails: CONFIRMED, and
+    // that is the one the percentage counts.
+    expect(answer("warning", "completed")).toEqual({
+      derivedSatisfied: false,
+      operatorConfirmed: true,
+    });
+
+    // Both, which is the ordinary end state of a step somebody worked through.
+    expect(answer("complete", "completed")).toEqual({
+      derivedSatisfied: true,
+      operatorConfirmed: true,
+    });
+
+    // Skipping is NEITHER answer. It buys passage (D4) and confirms nothing.
+    expect(answer("warning", "skipped")).toEqual({
+      derivedSatisfied: false,
+      operatorConfirmed: false,
+    });
+    // …and it does not un-say a passing check either.
+    expect(answer("complete", "skipped")).toEqual({
+      derivedSatisfied: true,
+      operatorConfirmed: false,
+    });
   });
 });
 
