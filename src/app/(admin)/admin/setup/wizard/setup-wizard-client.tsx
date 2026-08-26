@@ -252,6 +252,39 @@ export function SetupWizardClient({
     setMoved(true);
   }, [view, selectedId, launchPinned]);
 
+  /**
+   * The same courtesy when there was NO explicit selection to invalidate.
+   *
+   * The effect above can only speak for an operator who clicked a rail row:
+   * with `selectedId === null` they are simply riding the traversal's own
+   * `currentStepId`, which moves silently by design. That was harmless until
+   * C13 (#239), because nothing an operator did ON this screen could delete the
+   * step under them — the modules editor was another page, and coming back to
+   * this tab is a navigation they performed themselves.
+   *
+   * It is not harmless now. An operator whose resume point IS
+   * `address-autocomplete` can clear that module's checkbox in the pane below,
+   * press Save, and watch the whole frame become a different step — their own
+   * action, but not an action that named this step, and nothing on screen
+   * connecting the two.
+   *
+   * The test is deliberately narrow: the step that was on screen has left the
+   * JOURNEY, not merely been overtaken. A frontier that moves under a completed
+   * step is the wizard doing exactly what the operator asked and needs no
+   * notice, and firing there would put a warning on every ordinary "mark done
+   * and move on".
+   */
+  const shownStepRef = useRef<SetupWizardRailSelection | null>(null);
+  useEffect(() => {
+    const previous = shownStepRef.current;
+    shownStepRef.current = activeStepId;
+    if (!view || selectedId !== null) return;
+    if (previous === null || previous === SETUP_WIZARD_LAUNCH_ID) return;
+    if (previous === activeStepId) return;
+    if (view.steps.some((step) => step.id === previous)) return;
+    setMoved(true);
+  }, [view, selectedId, activeStepId]);
+
   /** Any deliberate move retires the notice — they can see where they are now. */
   const select = useCallback((id: SetupWizardRailSelection) => {
     setMoved(false);

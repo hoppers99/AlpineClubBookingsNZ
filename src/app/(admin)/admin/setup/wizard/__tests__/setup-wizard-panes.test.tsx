@@ -5,7 +5,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /**
- * The wizard's inline panes (epic #213, child C12; owner decision D16).
+ * The wizard's inline panes (epic #213, children C12 and C13; owner decision
+ * D16).
  *
  * Four things are pinned here, and only the first is ordinary UI behaviour.
  *
@@ -31,6 +32,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  *    green badge means a person confirmed, and a form submission is not that
  *    statement. What it DOES do is make the wizard re-read, because the facts
  *    the readiness check reports on have just changed under it.
+ *
+ * C13 (#239) adds three more, in the blocks at the foot of the file, because
+ * the modules pane is the one that edits WHICH STEPS EXIST rather than facts a
+ * check reads: the rail redrawing beside the toggles (D4/D5), what happens when
+ * an operator removes the step they are standing on, and the first two registry
+ * entries that share one component — the case C12's `key={stepId}` was written
+ * for and could not exercise.
  *
  * The permission gate is driven through `use-admin-area-edit-access`, the same
  * handle `club-identity-panel.test.tsx` uses, rather than by assembling a
@@ -65,7 +73,18 @@ import {
   getAdminPermissionMatrix,
 } from "@/lib/admin-permissions";
 import type { SetupReadiness } from "@/lib/setup-readiness";
-import { SETUP_STEP_IDS, type SetupStepId } from "@/lib/setup-step-registry";
+import {
+  MODULE_DEFINITIONS,
+  MODULE_KEYS,
+  type ModuleSettingsValues,
+} from "@/config/modules";
+import {
+  CORE_STEP_OWNER,
+  SETUP_STEP_IDS,
+  SETUP_STEP_REGISTRY,
+  getApplicableSetupStepIds,
+  type SetupStepId,
+} from "@/lib/setup-step-registry";
 import { canViewSetupStepPane } from "@/lib/setup-wizard-view";
 import type { SetupWizardTraversal } from "@/lib/setup-wizard-traversal";
 import { SetupWizardClient } from "@/app/(admin)/admin/setup/wizard/setup-wizard-client";
@@ -215,7 +234,15 @@ function stubFetch(ids: [SetupStepId, string][]) {
   return fetchMock;
 }
 
-function callsTo(fetchMock: ReturnType<typeof stubFetch>, url: string) {
+/**
+ * Structurally typed rather than `ReturnType<typeof stubFetch>`: C13 adds a
+ * second, stateful stub whose payload types differ, and both are read by this
+ * helper. What it needs is the call list, not either stub's response shape.
+ */
+function callsTo(
+  fetchMock: { mock: { calls: readonly (readonly unknown[])[] } },
+  url: string,
+) {
   return fetchMock.mock.calls.filter(([called]) => String(called) === url);
 }
 
@@ -488,5 +515,475 @@ describe("a step with no pane", () => {
       ),
     ).toBe("runtime-env");
     expect(screen.queryByTestId("setup-wizard-step-pane")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C13 (#239) — the module toggles, and the rail that redraws beside them
+// ---------------------------------------------------------------------------
+/*
+  Everything above pins a pane that edits facts a readiness check READS. This
+  block pins the one that edits WHICH STEPS EXIST, which is a different thing
+  and the reason D5 called it the most wizard-like moment in the design:
+  `setup-step-registry.ts` derives applicability from the module flags, so a
+  module save moves the rail's rows, the percentage's denominator and — for one
+  step — the ground the operator is standing on.
+
+  The fixtures below drive the REAL applicability function
+  (`getApplicableSetupStepIds`) rather than a hand-written map of flags to step
+  ids. A hand-written one would keep passing after somebody re-declared a
+  module's `setupSteps`, which is exactly the change these tests exist to catch.
+*/
+
+const ALL_MODULES_OFF = Object.fromEntries(
+  MODULE_KEYS.map((key) => [key, false]),
+) as ModuleSettingsValues;
+
+/** What `GET`/`PUT /api/admin/modules` answers, in the route's own shape. */
+function modulesPayload(settings: ModuleSettingsValues) {
+  return {
+    settings,
+    modules: MODULE_KEYS.map((key) => ({
+      key,
+      label: MODULE_DEFINITIONS[key].label,
+      description: MODULE_DEFINITIONS[key].description,
+      adminEnabled: settings[key],
+      effectiveEnabled: settings[key],
+      readiness: {
+        status: settings[key] ? "ready" : "admin_disabled",
+        message: settings[key] ? "on" : "off",
+        dependencies: [],
+      },
+    })),
+    updatedAt: null,
+    updatedByMemberId: null,
+  };
+}
+
+/**
+ * A traversal over exactly the steps these flags make applicable.
+ *
+ * `club-config` is confirmed in every fixture here so the percentage has a
+ * numerator: one complete step over however many the flags leave applicable.
+ * That is what makes a DENOMINATOR change visible — a journey with nothing
+ * complete reads 0% at every length.
+ */
+function traversalFor(
+  ids: SetupStepId[],
+  currentId: SetupStepId,
+): SetupWizardTraversal<SetupStepId> {
+  const complete = ids.filter((id) => id === "club-config");
+  return {
+    steps: ids.map((id, index) => ({
+      id,
+      ownerModule: "core",
+      order: (index + 1) * 10,
+      state:
+        id === "club-config"
+          ? ("complete" as const)
+          : id === currentId
+            ? ("current" as const)
+            : ("not-started" as const),
+      isComplete: id === "club-config",
+      isStale: false,
+      isDeferred: false,
+      isDefaulted: false,
+      // Everything walkable, so a rail click resolves and the fallback under
+      // test is a step DISAPPEARING rather than a step being locked.
+      isReachable: true,
+    })),
+    applicableStepIds: ids,
+    staleStepIds: [],
+    outstandingStepIds: ids.filter((id) => id !== "club-config"),
+    blockingStepIds: ids.filter((id) => id !== "club-config"),
+    currentStepId: currentId,
+    navigationFrontierStepId: currentId,
+    allResolved: false,
+    percentComplete: Math.round((complete.length / ids.length) * 100),
+  };
+}
+
+/**
+ * One stateful stub for the journey read AND the modules route, so a save
+ * really does change what the next journey read reports — which is the whole
+ * behaviour under test. A stub that answered a fixed payload would let a wizard
+ * that never re-read at all pass every assertion below.
+ */
+function stubModulesFetch(
+  initial: Partial<ModuleSettingsValues>,
+  landOn: SetupStepId,
+) {
+  let settings = { ...ALL_MODULES_OFF, ...initial } as ModuleSettingsValues;
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    const target = String(url);
+    if (target === "/api/admin/modules") {
+      if (init?.method === "PUT") {
+        settings = (
+          JSON.parse(String(init.body)) as { settings: ModuleSettingsValues }
+        ).settings;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => modulesPayload(settings),
+      };
+    }
+    const ids = getApplicableSetupStepIds(settings);
+    // The real traversal resumes on the first outstanding step; when the step
+    // we landed on has just been switched out of existence, that is what it
+    // would answer, so the fixture answers it too rather than naming a step
+    // its own `applicableStepIds` no longer contains.
+    const current = ids.includes(landOn)
+      ? landOn
+      : (ids.find((id) => id !== "club-config") ?? ids[0]);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        isSiteVisible: false,
+        readiness: readinessWith(ids.map((id) => [id, id] as [SetupStepId, string])),
+        traversal: traversalFor(ids, current),
+      }),
+    };
+  });
+  vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+  return fetchMock;
+}
+
+const XERO_LABEL = MODULE_DEFINITIONS.xeroIntegration.label;
+const ADDRESS_LABEL = MODULE_DEFINITIONS.addressAutocomplete.label;
+
+function moduleCheckbox(label: string) {
+  return screen.getByRole("checkbox", { name: label }) as HTMLInputElement;
+}
+
+function saveModules() {
+  fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+}
+
+describe("feature-flags mounts the real module editor", () => {
+  it("renders the section's own toggles, and saves through the modules route", async () => {
+    const fetchMock = stubModulesFetch({}, "feature-flags");
+    render(<SetupWizardClient permissionMatrix={supportEditor} />);
+
+    const xero = await screen.findByRole("checkbox", { name: XERO_LABEL });
+    expect(xero).not.toBeChecked();
+    expect(
+      screen.getByTestId("setup-wizard-step-pane").getAttribute("data-step-id"),
+    ).toBe("feature-flags");
+
+    // STAGED: ticking the box writes nothing.
+    fireEvent.click(xero);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          String(url) === "/api/admin/modules" &&
+          (init as RequestInit | undefined)?.method === "PUT",
+      ),
+    ).toHaveLength(0);
+
+    saveModules();
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url, init]) =>
+            String(url) === "/api/admin/modules" &&
+            (init as RequestInit | undefined)?.method === "PUT",
+        ),
+      ).toHaveLength(1),
+    );
+  });
+
+  it("does not tick the step off — no setup-progress write, one extra journey read", async () => {
+    const fetchMock = stubModulesFetch({}, "feature-flags");
+    render(<SetupWizardClient permissionMatrix={supportEditor} />);
+
+    await screen.findByRole("checkbox", { name: XERO_LABEL });
+    expect(callsTo(fetchMock, "/api/admin/setup/wizard")).toHaveLength(1);
+
+    fireEvent.click(moduleCheckbox(XERO_LABEL));
+    saveModules();
+
+    await waitFor(() =>
+      expect(callsTo(fetchMock, "/api/admin/setup/wizard")).toHaveLength(2),
+    );
+    expect(callsTo(fetchMock, "/api/admin/setup/progress")).toHaveLength(0);
+  });
+});
+
+describe("the rail redraws beside the toggles (D4/D5)", () => {
+  it("gains the module's steps, and its denominator, when it is switched on", async () => {
+    // `financeDashboard` starts ON, for two reasons: its own step must survive
+    // untouched while a DIFFERENT module's flag moves, and its extra step makes
+    // the journey 17 long, which is where one confirmed step rounds to 6% and
+    // 19 rounds to 5%. At 16 -> 18 the true denominator change is invisible in
+    // the rounded percentage, so the assertion below would have been vacuous.
+    stubModulesFetch({ financeDashboard: true }, "feature-flags");
+    render(<SetupWizardClient permissionMatrix={supportEditor} />);
+
+    await screen.findByRole("checkbox", { name: XERO_LABEL });
+    expect(screen.queryByTestId("setup-wizard-rail-row-xero-operational")).toBeNull();
+    expect(screen.queryByTestId("setup-wizard-rail-row-xero-mappings")).toBeNull();
+    const before = Number(
+      screen.getByTestId("setup-wizard-percent").textContent?.replace("%", ""),
+    );
+
+    fireEvent.click(moduleCheckbox(XERO_LABEL));
+    saveModules();
+
+    // The two steps `xeroIntegration` declares, in the rail, without the
+    // operator ever leaving the wizard.
+    await waitFor(() =>
+      expect(screen.getByTestId("setup-wizard-rail-row-xero-operational")).toBeTruthy(),
+    );
+    expect(screen.getByTestId("setup-wizard-rail-row-xero-mappings")).toBeTruthy();
+
+    // …and the percentage fell, because the same one confirmed step is now
+    // divided by two more. This is the assertion that would still pass on a
+    // rail rebuilt from a cached view, so it is deliberately about the NUMBER
+    // and not only about the rows.
+    const after = Number(
+      screen.getByTestId("setup-wizard-percent").textContent?.replace("%", ""),
+    );
+    expect(after).toBeLessThan(before);
+
+    expect(screen.getByTestId("setup-wizard-rail-row-finance-dashboard")).toBeTruthy();
+
+    // The operator has not moved: `feature-flags` is core-owned and nothing
+    // removed it.
+    expect(
+      screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
+    ).toBe("feature-flags");
+    expect(screen.queryByTestId("setup-wizard-moved-notice")).toBeNull();
+  });
+
+  it("loses them again when it is switched off", async () => {
+    stubModulesFetch({ xeroIntegration: true, financeDashboard: true }, "feature-flags");
+    render(<SetupWizardClient permissionMatrix={supportEditor} />);
+
+    expect(
+      await screen.findByTestId("setup-wizard-rail-row-xero-operational"),
+    ).toBeTruthy();
+    const before = Number(
+      screen.getByTestId("setup-wizard-percent").textContent?.replace("%", ""),
+    );
+
+    fireEvent.click(moduleCheckbox(XERO_LABEL));
+    saveModules();
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("setup-wizard-rail-row-xero-operational")).toBeNull(),
+    );
+    expect(screen.queryByTestId("setup-wizard-rail-row-xero-mappings")).toBeNull();
+    // The finance dashboard's step is untouched — one module's flag moves one
+    // module's steps.
+    expect(screen.getByTestId("setup-wizard-rail-row-finance-dashboard")).toBeTruthy();
+    expect(
+      Number(screen.getByTestId("setup-wizard-percent").textContent?.replace("%", "")),
+    ).toBeGreaterThan(before);
+    expect(
+      screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
+    ).toBe("feature-flags");
+  });
+});
+
+describe("switching off the module that owns the step you are standing on", () => {
+  /*
+    The one asymmetric case, and the only self-removal either pane can produce.
+    `address-autocomplete` is the ONLY step whose own module's checkbox sits on
+    the section embedded beneath it, and every module-owned step orders at or
+    after it — so "a module step BEFORE the current one disappears" is not a
+    case that can arise from either of C13's two panes. The registry assertion
+    at the foot of this block is what keeps that true.
+  */
+  it("moves the operator on, and says so, when they chose the step themselves", async () => {
+    stubModulesFetch({ addressAutocomplete: true }, "feature-flags");
+    render(<SetupWizardClient permissionMatrix={supportEditor} />);
+
+    fireEvent.click(
+      await screen.findByTestId("setup-wizard-rail-row-address-autocomplete"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("setup-wizard-step-pane").getAttribute("data-step-id"),
+      ).toBe("address-autocomplete"),
+    );
+    expect(screen.queryByTestId("setup-wizard-moved-notice")).toBeNull();
+
+    fireEvent.click(moduleCheckbox(ADDRESS_LABEL));
+    saveModules();
+
+    const notice = await screen.findByTestId("setup-wizard-moved-notice");
+    expect(notice.textContent).toContain("no longer available");
+    expect(screen.queryByTestId("setup-wizard-rail-row-address-autocomplete")).toBeNull();
+    expect(
+      screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
+    ).not.toBe("address-autocomplete");
+  });
+
+  it("says so even when they never chose it — it was simply their resume point", async () => {
+    /*
+      Before C13 the shell only announced a move it could blame on an
+      invalidated SELECTION, because nothing an operator did on this screen
+      could delete the step under them. Riding `currentStepId` with no selection
+      is the ordinary state of a fresh arrival, and it is now the state in which
+      an operator can remove their own step and watch the frame become a
+      different one with nothing connecting the two.
+    */
+    stubModulesFetch({ addressAutocomplete: true }, "address-autocomplete");
+    render(<SetupWizardClient permissionMatrix={supportEditor} />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
+      ).toBe("address-autocomplete"),
+    );
+    expect(screen.queryByTestId("setup-wizard-moved-notice")).toBeNull();
+
+    fireEvent.click(moduleCheckbox(ADDRESS_LABEL));
+    saveModules();
+
+    const notice = await screen.findByTestId("setup-wizard-moved-notice");
+    expect(notice.textContent).toContain("no longer available");
+    expect(
+      screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
+    ).not.toBe("address-autocomplete");
+  });
+
+  it("stays quiet when the step is still there — an ordinary refetch is not a move", async () => {
+    // The narrowing that stops the notice above from firing on every save: a
+    // module going on or off while the operator stands on `feature-flags`
+    // changes the rail, not their position.
+    stubModulesFetch({}, "feature-flags");
+    render(<SetupWizardClient permissionMatrix={supportEditor} />);
+
+    await screen.findByRole("checkbox", { name: XERO_LABEL });
+    fireEvent.click(moduleCheckbox(XERO_LABEL));
+    saveModules();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("setup-wizard-rail-row-xero-operational")).toBeTruthy(),
+    );
+    expect(screen.queryByTestId("setup-wizard-moved-notice")).toBeNull();
+  });
+
+  it("has no module-owned step ordered before the panes' own steps", () => {
+    /*
+      The structural half of the reasoning above, so it stops being true LOUDLY
+      rather than quietly. Both of C13's panes sit on steps at or before every
+      module-owned step, which is why the only removal they can cause is the
+      self-removal covered above. A later child declaring a module step earlier
+      in the journey — an `order` below `address-autocomplete`'s — creates a
+      case nobody has thought about: an operator watching a rail row vanish from
+      BEHIND them. This fails at that moment.
+    */
+    const orderOf = (id: SetupStepId) =>
+      SETUP_STEP_REGISTRY.find((entry) => entry.id === id)!.order;
+    const paneSteps: SetupStepId[] = ["feature-flags", "address-autocomplete"];
+    const earliestPaneStep = Math.min(...paneSteps.map(orderOf));
+
+    const moduleOwned = SETUP_STEP_REGISTRY.filter(
+      (entry) => entry.ownerModule !== CORE_STEP_OWNER,
+    );
+    expect(moduleOwned.length).toBeGreaterThan(0);
+    for (const entry of moduleOwned) {
+      expect(
+        entry.order,
+        `${entry.id} (module "${entry.ownerModule}") is ordered before the ` +
+          `modules pane's own steps — read the reasoning in this block`,
+      ).toBeGreaterThanOrEqual(earliestPaneStep);
+    }
+  });
+});
+
+describe("two steps sharing one pane", () => {
+  it("registers the same component for both, rather than a second copy of the editor", () => {
+    // The registration C12's `key={stepId}` was written for and could not be
+    // exercised: until now no two entries named the same component.
+    expect(SETUP_STEP_PANES["feature-flags"]).not.toBeNull();
+    expect(SETUP_STEP_PANES["address-autocomplete"]).toBe(
+      SETUP_STEP_PANES["feature-flags"],
+    );
+  });
+
+  it("starts the section over when the operator walks between them, discarding the draft", async () => {
+    /*
+      THE HAZARD THE KEY EXISTS FOR. React reconciles two renders of the same
+      component type at the same position as ONE element, so without
+      `key={stepId}` the section would keep its state across a step change —
+      and the state here is an unsaved checkbox draft. The operator would walk
+      to another step, walk back, and find a module ticked that they believed
+      they had navigated away from, with Save live.
+    */
+    stubModulesFetch({ addressAutocomplete: true }, "feature-flags");
+    render(<SetupWizardClient permissionMatrix={supportEditor} />);
+
+    await screen.findByRole("checkbox", { name: XERO_LABEL });
+    fireEvent.click(moduleCheckbox(XERO_LABEL));
+    expect(moduleCheckbox(XERO_LABEL)).toBeChecked();
+    // Dirty, so Save is live: this is what must NOT survive the walk.
+    expect(
+      (screen.getByRole("button", { name: /^Save$/ }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+
+    fireEvent.click(screen.getByTestId("setup-wizard-rail-row-address-autocomplete"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("setup-wizard-step-pane").getAttribute("data-step-id"),
+      ).toBe("address-autocomplete"),
+    );
+    // A fresh mount: the section fetched again, the draft is the saved state,
+    // and Save is dead because nothing is dirty.
+    await waitFor(() => expect(moduleCheckbox(XERO_LABEL)).not.toBeChecked());
+    expect(
+      (screen.getByRole("button", { name: /^Save$/ }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+});
+
+describe("the C12 area gate composes for the modules panes", () => {
+  it("admits support:view — the same access that admits anybody to the wizard", () => {
+    // Both steps are registered `support` in `SETUP_STEP_PERMISSION_AREA`, and
+    // `support: view` is what gates admission to `/admin/setup/wizard` itself.
+    // So the pane gate can never be the thing that hides these two from
+    // somebody already standing on the step, which is the answer the wizard
+    // wants and is worth pinning rather than assuming.
+    const viewer = { ...emptyAdminPermissionMatrix(), support: "view" as const };
+    expect(canViewSetupStepPane(viewer, "feature-flags")).toBe(true);
+    expect(canViewSetupStepPane(viewer, "address-autocomplete")).toBe(true);
+
+    const outsider = emptyAdminPermissionMatrix();
+    expect(outsider.support).toBe("none");
+    expect(canViewSetupStepPane(outsider, "feature-flags")).toBe(false);
+    expect(canViewSetupStepPane(outsider, "address-autocomplete")).toBe(false);
+  });
+
+  it("mounts the section read-only for a support:view admin", async () => {
+    // The section's OWN gate, unchanged by the embed: `useAdminAreaEditAccess`
+    // says no, so every checkbox is disabled and Save is dead — under the
+    // section's own banner, which is a different sentence from the frame's.
+    mocks.canEdit.mockReturnValue(false);
+    stubModulesFetch({}, "feature-flags");
+    render(
+      <SetupWizardClient
+        permissionMatrix={{ ...emptyAdminPermissionMatrix(), support: "view" }}
+      />,
+    );
+
+    const xero = await screen.findByRole("checkbox", { name: XERO_LABEL });
+    expect(xero).toBeDisabled();
+    expect(
+      (screen.getByRole("button", { name: /^Save$/ }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      screen
+        .getAllByTestId("admin-view-only-banner")
+        .some((banner) =>
+          banner.textContent?.includes(
+            "can view the module settings but cannot change them",
+          ),
+        ),
+    ).toBe(true);
   });
 });
