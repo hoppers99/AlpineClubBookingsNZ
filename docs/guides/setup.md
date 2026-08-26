@@ -16,15 +16,33 @@ whose backing pages enforce their own permission areas — so which cards you ca
 open depends on your role. It is the natural starting point after a fresh
 install and the map to everything else in Setup & Configuration.
 
-**A banner elsewhere in admin points you here while setup is unfinished.**
-Everywhere in the admin area *except* the Setup pages themselves, an admin who
-can open the setup wizard sees a small banner saying the club's setup isn't
-finished, with a link straight to `/admin/setup/wizard`. It shows for anyone
-the wizard itself would admit — a support officer working their own steps
-included, not full administrators only — and it clears once the club marks
-setup finished. It never singles out one configuration area (earlier it wrongly
-named Site Style specifically, regardless of what was actually still
-outstanding).
+**A banner elsewhere in admin points you here while setup isn't finished, or
+the public site isn't open yet.** Everywhere in the admin area *except* the
+Setup pages themselves, an admin who can open the setup wizard sees a small
+banner with a link straight to `/admin/setup/wizard`. It shows for anyone the
+wizard itself would admit — a support officer working their own steps
+included, not full administrators only. It never singles out one
+configuration area (earlier it wrongly named Site Style specifically,
+regardless of what was actually still outstanding), and it never points
+anywhere but the wizard, because the wizard's own **Ready to open** screen is
+what actually launches the public site.
+
+The banner reads one of two ways, depending on what's still outstanding:
+
+- While the setup journey itself is unfinished, it says so and invites you to
+  pick up where you left off.
+- Once the journey is marked finished but the public website hasn't been
+  opened yet — finishing the journey and opening the site are two separate,
+  deliberate steps — it says setup is marked finished and the public website
+  still needs opening, with the same link to the wizard.
+
+It clears only once both are true: the journey is finished **and** the site is
+open. It can also **reappear** after that: marking setup complete is not a
+one-way door. Completing, skipping, or reopening any step — including well
+after launch, on a club that has been live for months — un-sets the journey's
+finished flag (the same rule that withdraws **Setup complete** while a step
+needs another look; see "When a finished step needs another look" below), so
+the banner can come back until the journey is marked finished again.
 
 ## When you'd use it
 

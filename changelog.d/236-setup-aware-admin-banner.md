@@ -10,5 +10,12 @@
   The banner now shows whenever the club's setup journey isn't finished, says
   so in general terms, and links straight to the setup wizard — visible to any
   admin who can open the wizard itself, not content editors specifically. It
-  never appears on the Setup pages, since you are already there, and it
-  disappears once setup is marked finished.
+  never appears on the Setup pages, since you are already there.
+
+  It now also covers the club that finishes the setup journey without ever
+  opening the public site: once the journey is marked finished but the site
+  hasn't launched, the banner switches to saying so, still linking to the
+  wizard rather than to Site Style directly — the wizard's own Ready to open
+  screen is what actually launches the site. The banner disappears only once
+  both are true, and a database fault reading the journey's completion now
+  hides the banner rather than 500ing the admin area or showing a false nag.
