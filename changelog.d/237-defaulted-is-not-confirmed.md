@@ -67,3 +67,10 @@
   untouched — nothing is deleted or overwritten, and a club that has already set
   its name keeps it. Set or change it any time at **Admin → Appearance → Club
   Identity**.
+
+  **A database that already holds a placeholder name keeps it**, which is worth
+  knowing if you go looking for this change. Both writers — the installer and the
+  start-up repair — only ever create a missing row, in both directions, so
+  re-seeding an existing database changes nothing and the old placeholder is
+  still there. Rename it at **Admin → Appearance → Club Identity**; seeing the
+  new behaviour for itself takes a genuinely empty database.

@@ -586,14 +586,14 @@ export function buildSetupWizardTraversal<Id extends string = SetupStepId>(
   // it stays reachable on its own account.
   //
   // #219 review finding F2 (recorded decision, binding): STALENESS ALWAYS CAPS
-  // THE FRONTIER, deferred or not. A step can be both — recorded complete via
-  // its own readiness check while also sitting in `skippedStepIds` from an
-  // earlier pass — and when it is, the stale half wins: `isDeferred` stays
-  // true (both facts are visible on the step; see `SetupWizardTraversalStep`),
-  // but it is excluded from "resolved" here. Without the `fact.stale ||` half
-  // a stale-and-deferred step read as resolved purely because `deferred` is
-  // computed off `!stepComplete`, which staleness itself flips — the frontier
-  // would then walk straight past a step that still needs another look.
+  // THE FRONTIER, deferred or not. D14 (#237) did not overturn that — it made
+  // the combination UNREACHABLE. Staleness is intersected against CONFIRMED
+  // steps, and `progressStateOf` answers "completed" or "skipped" but never
+  // both, so nothing can be stale and deferred at once any more. The
+  // `fact.stale ||` clause is kept as a guard on that one line of precedence,
+  // which is the cheap side to be wrong on if it ever moves; the reasoning and
+  // F2's own reproducer are in "no longer admits F2's stale-AND-deferred step
+  // at all, since D14".
   //
   // D15 (#237) needs NO CLAUSE HERE, which is the point: a defaulted step is not
   // complete, not stale and not deferred, so this already blocks on it, and a

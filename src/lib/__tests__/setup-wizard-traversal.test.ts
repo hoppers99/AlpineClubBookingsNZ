@@ -733,7 +733,12 @@ describe("setup wizard traversal: D2 navigation (#219)", () => {
     to the end. Contrast the deferred case two tests above: skipping buys
     passage, defaulting does not.
 
-    Mutation-verified: excluding `fact.defaulted` from `isBlocking` fails this.
+    Mutation-verified — and NOT by "excluding `fact.defaulted` from
+    `isBlocking`", which named a term that predicate does not have. That absence
+    is D15 working: a defaulted step is not complete, not stale and not deferred,
+    so `!fact.complete && (fact.stale || !fact.deferred)` already blocks on it
+    with no clause of its own. The probe is the opposite edit — adding
+    `&& !fact.defaulted` to `isBlocking` — and this test fails on it.
   */
   it("caps the frontier at a defaulted step, exactly as at an untouched one (D15)", () => {
     const registry = linear("s1", "s2", "s3");

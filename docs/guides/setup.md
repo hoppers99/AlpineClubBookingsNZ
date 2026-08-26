@@ -217,6 +217,18 @@ above for how to choose.
    percentage counts the steps you have confirmed, never the ones the installer
    happened to fill in — otherwise a club that had made no decisions at all
    would be told it was halfway through, which is exactly what used to happen.
+   The same is true of a **restored or cloned installation**: importing a
+   configuration bundle writes settings, but it is not a person walking the
+   journey, so the wizard opens at 0% with those settings shown as defaults
+   until somebody here confirms them. See
+   [Configuration transfer](../config-transfer/README.md) for that case.
+
+   One thing worth knowing if you go looking for this behaviour on a database
+   you already have: **a club name that was recorded before this release stays
+   recorded.** The installer and the application's start-up repair both only
+   ever fill in a missing value, so re-running either changes nothing that is
+   already there. Change it at **Admin → Appearance → Club Identity**; seeing a
+   genuinely fresh install takes a genuinely empty database.
 3. The right-hand pane shows the step's live check — what is outstanding, in the
    same words the checklist uses — with a link through to the settings page
    where that work is actually done. The wizard never becomes a second place to

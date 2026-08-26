@@ -312,6 +312,14 @@ describe("prisma/seed.ts club-timezone block", () => {
     // halves stay guarded: this names the timezone's own message, and `block`
     // above is scanned for the gate itself.
     expect(seedSource).not.toContain("Club time settings NOT seeded");
+    // …AND the original BARE phrase, restored at block scope (#237 fix round).
+    // Narrowing the file-wide search to one exact message was necessary, but it
+    // also narrowed what is caught to a single spelling: a future gate printing
+    // "Club time zone NOT seeded" would slip past the line above. Scoped to
+    // `block` the general phrase is safe again — nothing inside the timezone
+    // section may say it, whatever words it chooses — while the club-identity
+    // write, which legitimately prints its own not-seeded line, is outside.
+    expect(block).not.toContain("NOT seeded");
   });
 
   it("uses the shared singleton id rather than its own literal", () => {

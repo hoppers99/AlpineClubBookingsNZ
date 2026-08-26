@@ -152,6 +152,13 @@ npm run db:seed
 npm run dev
 ```
 
+A fresh clone has no `config/club.json` (it is gitignored), and since #237 the
+seed writes a club identity only when there is a real committed one to write —
+matching what the boot self-heal has always done. So a freshly seeded database
+has no club name, and **Admin → Setup** reads *blocked* on Club Config until one
+is set. Set it at **Admin → Appearance → Club Identity**, or commit a real
+`config/club.json` before seeding.
+
 For a disposable local showcase database, run `ALLOW_DEMO_SEED=1 npm run
 db:seed:demo` only against a development database whose `Member` table is empty
 or contains only `demo.alpineclub.test` emails. The demo seed refuses
