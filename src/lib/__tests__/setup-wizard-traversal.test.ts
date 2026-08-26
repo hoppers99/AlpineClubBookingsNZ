@@ -693,6 +693,51 @@ describe("setup wizard traversal: D2 navigation (#219)", () => {
     expect(traversal.steps.every((step) => step.isReachable)).toBe(true);
   });
 
+  /*
+    D15 (#237), the frontier half — the rule the decision is actually named for.
+    A step sitting on a passing check nobody confirmed stops the walk exactly
+    where an untouched step would, so a fresh install cannot be clicked through
+    to the end. Contrast the deferred case two tests above: skipping buys
+    passage, defaulting does not.
+
+    Mutation-verified: excluding `fact.defaulted` from `isBlocking` fails this.
+  */
+  it("caps the frontier at a defaulted step, exactly as at an untouched one (D15)", () => {
+    const registry = linear("s1", "s2", "s3");
+    const defaultedFirst = traverse({
+      registry,
+      readinessStatuses: { s1: "complete", s2: "complete", s3: "complete" },
+    });
+    expect(defaultedFirst.navigationFrontierStepId).toBe("s1");
+    expect(reachableIds(defaultedFirst)).toEqual(["s1"]);
+    expect(canNavigateToSetupStep(defaultedFirst, "s2")).toBe(false);
+
+    // An untouched first step produces the identical frontier — which is the
+    // claim "exactly as at an untouched one" in as many words.
+    const untouchedFirst = traverse({ registry });
+    expect(untouchedFirst.navigationFrontierStepId).toBe(
+      defaultedFirst.navigationFrontierStepId,
+    );
+    expect(reachableIds(untouchedFirst)).toEqual(reachableIds(defaultedFirst));
+
+    // And confirming it passes the step, which is the operator's way through.
+    const confirmed = traverse({
+      registry,
+      progress: progressOf(["s1"]),
+      readinessStatuses: { s1: "complete", s2: "complete", s3: "complete" },
+    });
+    expect(confirmed.navigationFrontierStepId).toBe("s2");
+    expect(canNavigateToSetupStep(confirmed, "s2")).toBe(true);
+
+    // …as does skipping it (D15's stated escape).
+    const skipped = traverse({
+      registry,
+      progress: progressOf([], ["s1"]),
+      readinessStatuses: { s1: "complete", s2: "complete", s3: "complete" },
+    });
+    expect(skipped.navigationFrontierStepId).toBe("s2");
+  });
+
   it("resumes at the first step that is not complete, deferred and stale included", () => {
     expect(
       traverse({
