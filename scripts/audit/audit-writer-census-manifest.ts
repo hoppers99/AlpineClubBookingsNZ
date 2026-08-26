@@ -381,9 +381,26 @@ export const AUDIT_CENSUS_TOTALS = {
   // neither joins any of the four per-site-pinned maps. NO EXISTING ROW CHANGES
   // AUDIENCE and `INV-OPS-012`'s backfill obligation does not arise — these are
   // new rows in a category that already existed, not old rows moved into one.
+  // 458 -> 459 (setup wizard C8, #223): `setup_surfaces.legacy_visibility_changed`
+  // in `src/app/api/admin/setup/surfaces/route.ts`, the writer for the setting
+  // that hides the legacy readiness cards and the four /admin/setup drill-down
+  // hubs (epic #213 D8). ONE SITE, not two: unlike the stale pair above there is
+  // one boolean and one transition, and the row carries `from`/`to` so a
+  // hide and a re-show are the same action read in opposite directions rather
+  // than two action strings to keep in step. `logAudit`, categorised `system` at
+  // the site, matching the seven setup writers beside it — `INV-PRIV-012` files a
+  // row by its affected domain and `docs/guides/audit-log.md` files "Setup,
+  // backups, platform-level events" there, and the affected domain is the club's
+  // setup journey rather than an administrator's own settings or the
+  // installation's identity (which is why it is NOT the `admin` that
+  // `CLUB_TIME_ZONE_UPDATED` and the environment-safety override take). So it
+  // joins neither `UNCATEGORISED_AUDIT_WRITERS` below nor any of the four
+  // per-site-pinned maps, and NO EXISTING ROW CHANGES AUDIENCE — this is a new
+  // row in a category that already existed, so `INV-OPS-012`'s backfill
+  // obligation does not arise.
   // Measured by RUNNING `npx tsx scripts/audit/audit-writer-census.ts` on this
-  // tree (458 sites), not by adding two to the literal below.
-  writeSites: 458,
+  // tree (459 sites), not by adding one to the literal below.
+  writeSites: 459,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -433,7 +450,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // the same route, and fire-and-forget for the same reason: they are written
     // AFTER the upsert commits, so a failed write never fails the operator's
     // transition and a rolled-back transition records nothing.
-    logAudit: { total: 258, uncategorised: 0 },
+    // 258 -> 259 (setup wizard C8, #223): the setup-surfaces visibility writer,
+    // above. `logAudit`, and fire-and-forget for the same reason as its
+    // neighbours: it runs AFTER the upsert commits, so a failed audit write
+    // never fails the operator's save and a rolled-back save records nothing.
+    logAudit: { total: 259, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     // 104 -> 105 (#2649): the return-to-waitlist repair, above.
@@ -778,7 +799,14 @@ export const AUDIT_CENSUS_TOTALS = {
     // need another look and the five setup-progress rows beside them, in the
     // same category and about the same journey, are already readable by exactly
     // the same operator. Nothing here names a member, a booking or an amount.
-    system: 6,
+    // 6 -> 7 (setup wizard C8, #223): `setup_surfaces.legacy_visibility_changed`.
+    // `system` is readable with `support:view` alone, so this DOES move the
+    // weakest-gate count one site — and it widens nobody's access, because the
+    // row says which setup SURFACES a club has chosen to show and the seven
+    // setup rows beside it, in the same category and about the same journey, are
+    // already readable by exactly the same operator. Nothing here names a
+    // member, a booking or an amount.
+    system: 7,
   },
 } as const;
 

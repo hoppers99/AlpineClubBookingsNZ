@@ -85,8 +85,7 @@ describe("site style wizard", () => {
 
   it("saves each step and finishes setup", async () => {
     render(
-      <SiteStyleWizard
-        initialTheme={{
+      <SiteStyleWizard legacySurfacesHidden={false} initialTheme={{
           ...DEFAULT_CLUB_THEME_VALUES,
           completedAt: null,
           contrastWarnings: [],
@@ -119,10 +118,56 @@ describe("site style wizard", () => {
     expect(refreshMock).toHaveBeenCalledTimes(5);
   }, 45_000);
 
+  /*
+    Epic #213, C8 (#223), executing the binding 25 Aug addition to that issue.
+    This page's "Finish setup" is the SECOND lever that makes the public site
+    visible — the same audited `completeSetup` write the wizard's Ready-to-open
+    panel makes — so it retires with the legacy setup surfaces, leaving D9's
+    launch panel as the one deliberate act.
+
+    WHAT RETIRES IS THE FINISHING, NOT THE SAVING. The assertion that matters is
+    the payload: the last step still writes the styling, and it writes it with
+    `completeSetup: false`. Hiding the button outright would have taken away the
+    only way to persist the final step's changes, which is removing a capability
+    rather than relocating one.
+  */
+  it("saves without finishing when the legacy setup surfaces are hidden (#223)", async () => {
+    render(
+      <SiteStyleWizard legacySurfacesHidden={true} initialTheme={{
+          ...DEFAULT_CLUB_THEME_VALUES,
+          completedAt: null,
+          contrastWarnings: [],
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Save and next" }));
+    await screen.findByRole("heading", { name: "Fonts" });
+    fireEvent.click(screen.getByRole("button", { name: "Save and next" }));
+    await screen.findByRole("heading", { name: "Raw CSS" });
+    fireEvent.click(screen.getByRole("button", { name: "Save and next" }));
+    await screen.findByRole("heading", { name: "Logo" });
+    fireEvent.click(screen.getByRole("button", { name: "Save and next" }));
+    await screen.findByRole("heading", { name: "Review" });
+
+    // The finish affordance is gone by NAME, which is what an operator sees…
+    expect(screen.queryByRole("button", { name: "Finish setup" })).toBeNull();
+    // …and the save that replaced it is there.
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Site style saved.")).toBeTruthy();
+    });
+    const lastCallBody = JSON.parse(
+      String(fetchMock.mock.calls.at(-1)?.[1]?.body ?? "{}"),
+    );
+    // The assertion this test exists for: nothing published the site.
+    expect(lastCallBody.completeSetup).toBe(false);
+  }, 45_000);
+
   it("explains and previews the editable brand and fixed semantic layers", () => {
     render(
-      <SiteStyleWizard
-        initialTheme={{
+      <SiteStyleWizard legacySurfacesHidden={false} initialTheme={{
           ...DEFAULT_CLUB_THEME_VALUES,
           completedAt: "2026-07-12T00:00:00.000Z",
           contrastWarnings: [],
@@ -142,8 +187,7 @@ describe("site style wizard", () => {
 
   it("keeps Save enabled and discloses generator adjustments instead of blocking on contrast (#2187)", async () => {
     render(
-      <SiteStyleWizard
-        initialTheme={{
+      <SiteStyleWizard legacySurfacesHidden={false} initialTheme={{
           ...DEFAULT_CLUB_THEME_VALUES,
           completedAt: null,
           contrastWarnings: [],

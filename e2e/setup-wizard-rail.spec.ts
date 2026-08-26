@@ -74,7 +74,10 @@ test.afterAll(async () => {
 test("the rail carries the journey, and the frontier stops a jump ahead", async () => {
   const page = await adminContext.newPage();
 
-  // The launcher on the readiness page is the entry point (D6: the cards stay).
+  // The launcher on `/admin/setup` is the entry point, and it is there in BOTH
+  // positions of the legacy-surfaces switch (#223): with the surfaces shown it
+  // sits above the readiness cards, with them hidden it is most of what the
+  // page offers. This suite runs against a default club, so: shown.
   await page.goto("/admin/setup");
   await page.getByRole("link", { name: /Open the setup wizard/i }).click();
   await expect(page).toHaveURL(/\/admin\/setup\/wizard$/);

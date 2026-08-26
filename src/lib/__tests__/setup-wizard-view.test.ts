@@ -215,6 +215,48 @@ describe("buildSetupWizardView", () => {
   });
 });
 
+/*
+  Wayfinding (#223 fix round). A step's "Open the settings for this step" link
+  has to reach an editor that EXISTS in both positions of the legacy-surfaces
+  switch. `club-config` pointed at `/admin/setup`, which never held a
+  club-identity editor and holds no route to one at all once the surfaces are
+  hidden — so an operator on the wizard's first step was sent to a page that
+  could not do the thing the step is about.
+*/
+describe("a step's settings link reaches a real editor (#223)", () => {
+  it("sends club-config to the club identity editor, under its real area", () => {
+    const view = viewFor();
+    const step = view.steps.find((entry) => entry.id === "club-config");
+
+    expect(step?.href).toBe("/admin/appearance/identity");
+    // The area is the one that governs THAT page — `content`, which
+    // `/api/admin/club-identity` enforces — not the area of `/admin/setup`.
+    expect(step?.permissionArea).toBe("content");
+  });
+
+  it("sends no step to /admin/setup or a retired hub, which carry no editor of their own", () => {
+    // `/admin/setup` and its foundations/finance/booking-rules/integrations
+    // sub-hubs are the switch's home and a list of links; none of them edit
+    // anything themselves once the legacy surfaces are hidden. A step whose
+    // settings link — via `href` OR one of `links[]` — lands on one of these
+    // is a step with no destination in the hidden position.
+    // `/admin/setup/cancellation` is deliberately excluded: it was never
+    // retired and still carries its own editor.
+    const RETIRED_HUB =
+      /^\/admin\/setup(\/(foundations|finance|booking-rules|integrations))?$/;
+    const view = viewFor();
+    const stranded = view.steps
+      .filter(
+        (step) =>
+          (step.href !== undefined && RETIRED_HUB.test(step.href)) ||
+          step.links.some((link) => RETIRED_HUB.test(link.href)),
+      )
+      .map((step) => step.id);
+
+    expect(stranded).toEqual([]);
+  });
+});
+
 describe("navigation helpers", () => {
   it("walks the flat journey order, not the grouped one", () => {
     const view = viewFor();

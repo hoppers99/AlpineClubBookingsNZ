@@ -2,172 +2,31 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import {
-  BadgeCheck,
-  Bell,
-  BookOpenCheck,
-  CheckCircle2,
-  CircleAlert,
-  CircleDashed,
-  ExternalLink,
-  Landmark,
-  ListChecks,
-  Loader2,
-  PlayCircle,
-  Plug,
-  RefreshCw,
-  RotateCcw,
-  SkipForward,
-  UserX,
-  Wand2,
-  type LucideIcon,
-} from "lucide-react";
-import { Badge, type BadgeProps } from "@/components/ui/badge";
+import { CheckCircle2, Loader2, RefreshCw, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { SetupStepLinks } from "@/components/admin/setup-step-links";
 import {
   Card,
-  CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import { LodgeCapacityCard } from "@/components/admin/lodge-capacity-card";
-import { isFeatureHrefVisible } from "@/config/feature-routes";
 import type { FeatureFlags } from "@/config/schema";
-import type {
-  AdminPermissionArea,
-  AdminPermissionMatrix,
-} from "@/lib/admin-permissions";
-
-type SetupStatus = "complete" | "warning" | "blocked" | "not_started";
-type ProgressStatus = "open" | "completed" | "skipped";
-type Provider = "stripe" | "smtp" | "sentry" | "xero";
-
-interface SetupStepCheck {
-  id: string;
-  title: string;
-  description: string;
-  status: SetupStatus;
-  required: boolean;
-  message: string;
-  details: string[];
-  href?: string;
-  links?: { label: string; href: string }[];
-  progress: ProgressStatus;
-  action?: {
-    type: "provider-test";
-    provider: Provider;
-    label: string;
-  };
-}
-
-interface SetupCategory {
-  id: string;
-  title: string;
-  description: string;
-  status: SetupStatus;
-  checks: SetupStepCheck[];
-}
-
-interface SetupReadiness {
-  status: SetupStatus;
-  summary: {
-    total: number;
-    complete: number;
-    warning: number;
-    blocked: number;
-    skipped: number;
-  };
-  categories: SetupCategory[];
-  generatedAt: string;
-}
-
-interface SetupProgressState {
-  completedStepIds: string[];
-  skippedStepIds: string[];
-  completedAt: string | null;
-  completedByMemberId: string | null;
-}
-
-interface SetupResponse {
-  readiness: SetupReadiness;
-  progress: SetupProgressState;
-}
-
-interface ProviderTestResult {
-  ok: boolean;
-  provider: Provider;
-  checkedAt: string;
-  message: string;
-}
-
-interface SetupHubCard {
-  href: string;
-  title: string;
-  description: string;
-  icon: LucideIcon;
-  requiredAreas: AdminPermissionArea[];
-}
-
-const setupHubCards: SetupHubCard[] = [
-  {
-    href: "/admin/setup/foundations",
-    title: "Initial Setup",
-    description:
-      "Start with the installation checklist, club identity, modules, lodge records, and system health.",
-    icon: ListChecks,
-    requiredAreas: ["support"],
-  },
-  {
-    href: "/admin/setup/finance",
-    title: "Finance",
-    description:
-      "Open finance reporting, Xero setup, sync tools, and the collapsed report-mapping editor.",
-    icon: Landmark,
-    requiredAreas: ["finance"],
-  },
-  {
-    href: "/admin/setup/booking-rules",
-    title: "Booking Rules",
-    description:
-      "Review booking policy, seasons, age groups, promo codes, inventory, and booking copy.",
-    icon: BookOpenCheck,
-    requiredAreas: ["bookings", "lodge"],
-  },
-  {
-    href: "/admin/setup/integrations",
-    title: "Operational Integrations",
-    description:
-      "Check external-provider readiness, Xero connection, modules, and delivery health.",
-    icon: Plug,
-    requiredAreas: ["support", "finance"],
-  },
-  {
-    href: "/admin/membership-setup",
-    title: "Membership & Members",
-    description:
-      "Configure membership types, member fields, and subscription lockout policy.",
-    icon: BadgeCheck,
-    requiredAreas: ["membership"],
-  },
-  {
-    href: "/admin/setup/cancellation",
-    title: "Cancellation",
-    description:
-      "Review cancellation settings, cancellation request queues, and related message copy.",
-    icon: UserX,
-    requiredAreas: ["membership", "support"],
-  },
-  {
-    href: "/admin/notifications",
-    title: "Email Messages / Notifications",
-    description:
-      "Manage delivery rules, recipients, email templates, and member-facing message text.",
-    icon: Bell,
-    requiredAreas: ["support"],
-  },
-];
+import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
+import {
+  SETUP_HUB_CARDS,
+  getVisibleSetupHubCards,
+} from "./setup-hub-cards";
+import { SetupReadinessChecks } from "./setup-readiness-checks";
+import {
+  StatusIcon,
+  type Provider,
+  type ProviderTestResult,
+  type SetupReadiness,
+  type SetupProgressState,
+  type SetupResponse,
+} from "./setup-readiness-types";
+import { SetupSurfacesSection } from "./setup-surfaces-section";
 
 function responseErrorMessage(body: unknown, fallback: string) {
   if (
@@ -181,62 +40,23 @@ function responseErrorMessage(body: unknown, fallback: string) {
   return fallback;
 }
 
-function statusVariant(status: SetupStatus): BadgeProps["variant"] {
-  if (status === "complete") return "success";
-  if (status === "blocked") return "destructive";
-  if (status === "warning") return "warning";
-  return "secondary";
-}
-
-function StatusIcon({ status }: { status: SetupStatus }) {
-  if (status === "complete") {
-    return <CheckCircle2 className="h-4 w-4 text-success-11" />;
-  }
-  if (status === "blocked") {
-    return <CircleAlert className="h-4 w-4 text-danger-11" />;
-  }
-  if (status === "warning") {
-    return <CircleAlert className="h-4 w-4 text-warning-11" />;
-  }
-  return <CircleDashed className="h-4 w-4 text-muted-foreground" />;
-}
-
-function progressLabel(progress: ProgressStatus) {
-  if (progress === "completed") return "Acknowledged";
-  if (progress === "skipped") return "Skipped";
-  return null;
-}
-
-function canSeeAnyRequiredArea(
-  permissionMatrix: AdminPermissionMatrix,
-  areas: AdminPermissionArea[],
-) {
-  return areas.some((area) => permissionMatrix[area] !== "none");
-}
-
-function getVisibleSetupHubCards(
-  cards: SetupHubCard[],
-  features: FeatureFlags,
-  permissionMatrix: AdminPermissionMatrix,
-) {
-  return cards.filter(
-    (card) =>
-      isFeatureHrefVisible(card.href, features) &&
-      canSeeAnyRequiredArea(permissionMatrix, card.requiredAreas),
-  );
-}
-
 function SetupHubCards({
   features,
   permissionMatrix,
+  applicableStepIds,
+  legacySurfacesHidden,
 }: {
   features: FeatureFlags;
   permissionMatrix: AdminPermissionMatrix;
+  applicableStepIds: ReadonlySet<string>;
+  legacySurfacesHidden: boolean;
 }) {
   const visibleCards = getVisibleSetupHubCards(
-    setupHubCards,
+    SETUP_HUB_CARDS,
     features,
     permissionMatrix,
+    applicableStepIds,
+    legacySurfacesHidden,
   );
 
   if (visibleCards.length === 0) return null;
@@ -272,10 +92,20 @@ function SetupHubCards({
 export function SetupPageClient({
   permissionMatrix,
   features,
+  legacySurfacesHidden: initialLegacySurfacesHidden,
 }: {
   permissionMatrix: AdminPermissionMatrix;
   features: FeatureFlags;
+  /**
+   * Epic #213, C8 (#223). The SERVER's answer, so nothing renders for a frame
+   * and then vanishes. Held in state below only so the settings section can
+   * update it in place after a save.
+   */
+  legacySurfacesHidden: boolean;
 }) {
+  const [legacySurfacesHidden, setLegacySurfacesHidden] = useState(
+    initialLegacySurfacesHidden,
+  );
   const [readiness, setReadiness] = useState<SetupReadiness | null>(null);
   const [progress, setProgress] = useState<SetupProgressState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -317,6 +147,17 @@ export function SetupPageClient({
   const allChecks = useMemo(
     () => readiness?.categories.flatMap((category) => category.checks) ?? [],
     [readiness],
+  );
+  /*
+    The registry's applicable set, as the server derived it (epic #213, C8
+    #223). `buildSetupReadiness` now filters its checks through
+    `getApplicableSetupStepIds`, so the ids of the checks that came back ARE the
+    applicable set — there is nothing to recompute here, and recomputing it
+    client-side is precisely the second derivation this issue exists to remove.
+  */
+  const applicableStepIds = useMemo(
+    () => new Set(allChecks.map((check) => check.id)),
+    [allChecks],
   );
   const requiredBlockers = allChecks.filter(
     (check) =>
@@ -434,11 +275,20 @@ export function SetupPageClient({
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        {/*
+          THE PAGE SAYS WHAT IT IS IN THE POSITION IT IS IN (#223 fix round).
+          With the surfaces hidden there is no checklist on this page, so an h1
+          reading "Setup checklist" over a page holding a wizard link, three hub
+          cards and a settings section describes something that is not there.
+        */}
         <div>
-          <h1 className="text-3xl font-bold text-foreground">Setup checklist</h1>
+          <h1 className="text-3xl font-bold text-foreground">
+            {legacySurfacesHidden ? "Setup" : "Setup checklist"}
+          </h1>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-            Finish first-install readiness for club configuration, booking rules,
-            provider connections, and finance mappings.
+            {legacySurfacesHidden
+              ? "The setup wizard walks the club's configuration; what is outstanding, and how far through you are, live there. This page keeps the way in, the areas the wizard does not cover, and the switch that brings the older checklist back."
+              : "Finish first-install readiness for club configuration, booking rules, provider connections, and finance mappings."}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -460,6 +310,24 @@ export function SetupPageClient({
             <RefreshCw className="h-4 w-4" />
             Refresh
           </Button>
+          {/*
+            MARK SETUP COMPLETE STAYS IN BOTH POSITIONS, and that is D8's parity
+            rule applied honestly rather than timidity (#223 fix round).
+
+            It is easy to assume the wizard's launch panel replaced it. It did
+            not: the panel publishes the PUBLIC SITE — the club theme's
+            `completedAt`, through `POST /api/admin/site-style/complete-setup` —
+            while this button finishes the SETUP JOURNEY, `SetupProgress.
+            completedAt`, through `PATCH /api/admin/setup/progress`. Two
+            columns, two APIs, two meanings, and the journey one has a real
+            consumer: `config-transfer/bootstrap-import.ts` counts it to decide
+            whether this installation has ever been set up.
+
+            So the wizard offers no equivalent, and hiding this with the
+            checklist would REMOVE a capability rather than relocate one. If a
+            later child gives the wizard a "finish the journey" control, this is
+            the button that retires with the rest of the surfaces.
+          */}
           <Button
             onClick={finishSetup}
             disabled={
@@ -490,208 +358,134 @@ export function SetupPageClient({
 
       {readiness ? (
         <>
-          <div className="grid gap-3 md:grid-cols-4">
-            <div className="rounded-md border bg-card p-4">
-              <div className="flex items-center gap-2">
-                <StatusIcon status={overallStatus} />
-                <p className="text-sm font-medium text-muted-foreground">Overall</p>
+          {/*
+            THE KPI TILES ARE CHECKLIST CHROME AND GO WITH IT (#223 fix round).
+            Overall, Progress, Blocked and Skipped are four summaries of the
+            cards immediately below them; with the cards hidden they were a
+            standing report on a list that is not on the page, and a SECOND
+            progress display competing with the wizard's own rail — which D7
+            makes the single derivation. The wizard owns progress; this page
+            owns the way in.
+          */}
+          {legacySurfacesHidden ? null : (
+            <div className="grid gap-3 md:grid-cols-4" data-testid="setup-kpis">
+              <div className="rounded-md border bg-card p-4">
+                <div className="flex items-center gap-2">
+                  <StatusIcon status={overallStatus} />
+                  <p className="text-sm font-medium text-muted-foreground">Overall</p>
+                </div>
+                <p className="mt-2 text-2xl font-semibold capitalize text-foreground">
+                  {overallStatus.replace("_", " ")}
+                </p>
               </div>
-              <p className="mt-2 text-2xl font-semibold capitalize text-foreground">
-                {overallStatus.replace("_", " ")}
-              </p>
+              <div className="rounded-md border bg-card p-4">
+                <p className="text-sm font-medium text-muted-foreground">Progress</p>
+                <p className="mt-2 text-2xl font-semibold text-foreground">
+                  {completionPercent}%
+                </p>
+              </div>
+              <div className="rounded-md border bg-card p-4">
+                <p className="text-sm font-medium text-muted-foreground">Blocked</p>
+                <p className="mt-2 text-2xl font-semibold text-foreground">
+                  {readiness.summary.blocked}
+                </p>
+              </div>
+              <div className="rounded-md border bg-card p-4">
+                <p className="text-sm font-medium text-muted-foreground">Skipped</p>
+                <p className="mt-2 text-2xl font-semibold text-foreground">
+                  {readiness.summary.skipped}
+                </p>
+              </div>
             </div>
-            <div className="rounded-md border bg-card p-4">
-              <p className="text-sm font-medium text-muted-foreground">Progress</p>
-              <p className="mt-2 text-2xl font-semibold text-foreground">
-                {completionPercent}%
-              </p>
-            </div>
-            <div className="rounded-md border bg-card p-4">
-              <p className="text-sm font-medium text-muted-foreground">Blocked</p>
-              <p className="mt-2 text-2xl font-semibold text-foreground">
-                {readiness.summary.blocked}
-              </p>
-            </div>
-            <div className="rounded-md border bg-card p-4">
-              <p className="text-sm font-medium text-muted-foreground">Skipped</p>
-              <p className="mt-2 text-2xl font-semibold text-foreground">
-                {readiness.summary.skipped}
-              </p>
-            </div>
-          </div>
+          )}
 
+          {/*
+            THE BLOCKER NOTICE STAYS IN BOTH POSITIONS, and its wording moves
+            with them. It is not a summary of the cards — it is the disabled
+            REASON for Mark Setup Complete above, which stays (see the header),
+            so hiding it would leave a dead button explaining nothing. What
+            changes is where it sends you: with the checklist gone, the steps
+            are resolved or skipped in the wizard.
+          */}
           {requiredBlockers.length > 0 ? (
             <div className="rounded-md border border-warning-6 bg-warning-3 px-4 py-3 text-sm text-warning-11">
-              Resolve or explicitly skip required blocked steps before marking setup complete.
+              {legacySurfacesHidden
+                ? "Some required steps are still blocked. Resolve them in the setup wizard, or skip them there, before marking setup complete."
+                : "Resolve or explicitly skip required blocked steps before marking setup complete."}
             </div>
           ) : null}
 
+          {/*
+            Not hidden wholesale: `getVisibleSetupHubCards` retires the FOUR
+            hubs the wizard replaces and leaves Membership & Members,
+            Cancellation and Email Messages / Notifications in place, because
+            the wizard offers no route to those and dropping them would remove a
+            capability rather than relocate one (D8 cuts both ways).
+          */}
           <SetupHubCards
             features={features}
             permissionMatrix={permissionMatrix}
+            applicableStepIds={applicableStepIds}
+            legacySurfacesHidden={legacySurfacesHidden}
           />
 
           {/* The lodge-capacity card remains on the setup page and keeps the
               #1548 matrix gate because its backing API is lodge-area while
-              /admin/setup itself is support-area. */}
+              /admin/setup itself is support-area. It is NOT a legacy setup
+              surface — it reports live lodge capacity rather than setup
+              readiness, the wizard never offered it, and hiding it with the
+              cards would remove a capability instead of relocating one (D8's
+              coverage-parity rule cuts both ways). */}
           {permissionMatrix.lodge !== "none" ? <LodgeCapacityCard /> : null}
 
-          <section id="setup-checks" className="space-y-6">
-            <div>
-              <h2 className="text-xl font-semibold text-foreground">
-                Readiness checks
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                Work through the live checks after choosing the matching setup
-                hub.
-              </p>
+          {legacySurfacesHidden ? (
+            /*
+              Epic #213 D8, executed. The readiness cards and the hub links are
+              absent — not deleted, and not made unreachable. Every destination
+              they opened is a step of the wizard, so this says where they went
+              rather than leaving a page that looks broken. `role="status"` is
+              deliberately NOT used: this is ordinary standing page content, not
+              an announcement.
+            */
+            <div
+              className="rounded-md border bg-card px-4 py-3 text-sm text-muted-foreground"
+              data-testid="setup-surfaces-hidden-notice"
+            >
+              The readiness checklist and the Initial Setup, Finance, Booking
+              Rules and Operational Integrations hubs are hidden for this club.
+              Everything they opened is a step of the setup wizard — open it
+              above to work through what is outstanding, and to see how far
+              through the club is. Finance&apos;s report mappings live on the
+              finance dashboard. You can bring the older surfaces back under{" "}
+              <span className="font-medium">Setup surfaces</span> at the foot of
+              this page.
             </div>
-            {readiness.categories.map((category) => (
-              <section key={category.id} className="space-y-3">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <h2 className="text-xl font-semibold text-foreground">
-                      {category.title}
-                    </h2>
-                    <p className="text-sm text-muted-foreground">{category.description}</p>
-                  </div>
-                  <Badge variant={statusVariant(category.status)} className="w-fit capitalize">
-                    {category.status.replace("_", " ")}
-                  </Badge>
-                </div>
-
-                <div className="grid gap-3 xl:grid-cols-2">
-                  {category.checks.map((check) => {
-                    const result = check.action
-                      ? providerResults[check.action.provider]
-                      : null;
-                    const progress = progressLabel(check.progress);
-                    const isSaving = savingStep === check.id;
-                    return (
-                      <Card key={check.id}>
-                        <CardHeader className="space-y-3">
-                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                            <div className="flex gap-3">
-                              <StatusIcon status={check.status} />
-                              <div>
-                                <CardTitle className="text-base">
-                                  {check.title}
-                                </CardTitle>
-                                <CardDescription>{check.description}</CardDescription>
-                              </div>
-                            </div>
-                            <div className="flex flex-wrap gap-2">
-                              <Badge variant={statusVariant(check.status)} className="capitalize">
-                                {check.status.replace("_", " ")}
-                              </Badge>
-                              {check.required ? (
-                                <Badge variant="outline">Required</Badge>
-                              ) : null}
-                              {progress ? (
-                                <Badge variant="secondary">{progress}</Badge>
-                              ) : null}
-                            </div>
-                          </div>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                          <p className="text-sm text-muted-foreground">{check.message}</p>
-                          {check.details.length > 0 ? (
-                            <ul className="space-y-1 text-sm text-muted-foreground">
-                              {check.details.map((detail) => (
-                                <li key={detail}>{detail}</li>
-                              ))}
-                            </ul>
-                          ) : null}
-                          <SetupStepLinks links={check.links} />
-
-                          {result ? (
-                            <div
-                              className={`rounded-md border px-3 py-2 text-sm ${
-                                result.ok
-                                  ? "border-success-6 bg-success-3 text-success-11"
-                                  : "border-danger-6 bg-danger-3 text-danger-11"
-                              }`}
-                            >
-                              {result.message}
-                            </div>
-                          ) : null}
-
-                          <div className="flex flex-wrap gap-2">
-                            {check.href ? (
-                              <Button asChild variant="outline" size="sm">
-                                <a href={check.href}>
-                                  <ExternalLink className="h-4 w-4" />
-                                  Open
-                                </a>
-                              </Button>
-                            ) : null}
-                            {check.action ? (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => runProviderTest(check.action!.provider)}
-                                disabled={runningProvider === check.action.provider}
-                              >
-                                {runningProvider === check.action.provider ? (
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                ) : (
-                                  <PlayCircle className="h-4 w-4" />
-                                )}
-                                {check.action.label}
-                              </Button>
-                            ) : null}
-                            {check.progress !== "completed" ? (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => updateProgress("complete", check.id)}
-                                disabled={isSaving}
-                              >
-                                {isSaving ? (
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                ) : (
-                                  <CheckCircle2 className="h-4 w-4" />
-                                )}
-                                Acknowledge
-                              </Button>
-                            ) : null}
-                            {check.progress !== "skipped" ? (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => updateProgress("skip", check.id)}
-                                disabled={isSaving}
-                              >
-                                <SkipForward className="h-4 w-4" />
-                                Skip
-                              </Button>
-                            ) : null}
-                            {check.progress !== "open" ? (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => updateProgress("reopen", check.id)}
-                                disabled={isSaving}
-                              >
-                                <RotateCcw className="h-4 w-4" />
-                                Reopen
-                              </Button>
-                            ) : null}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
-                </div>
-              </section>
-            ))}
-          </section>
+          ) : (
+          <SetupReadinessChecks
+            categories={readiness.categories}
+            providerResults={providerResults}
+            savingStep={savingStep}
+            runningProvider={runningProvider}
+            onProviderTest={(provider) => void runProviderTest(provider)}
+            onProgress={(action, stepId) => void updateProgress(action, stepId)}
+          />
+          )}
         </>
       ) : null}
+
+      {/*
+        Rendered in EVERY state — outside the `readiness ? … : null` branch
+        above, and outside the hidden/shown branch inside it. That is the whole
+        placement argument (epic #213, C8 #223): the switch that hides the
+        surfaces has to stay where the surfaces were, or hiding them makes it
+        unreachable. It therefore survives a failed readiness load too, which is
+        exactly the state somebody might be trying to escape.
+      */}
+      <SetupSurfacesSection
+        onSaved={(settings) =>
+          setLegacySurfacesHidden(settings.legacySurfacesHidden)
+        }
+      />
     </div>
   );
 }

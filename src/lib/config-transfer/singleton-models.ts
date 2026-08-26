@@ -83,6 +83,18 @@ export const MODEL_LEVEL_EXCLUSIONS: Record<string, string> = {
     "install has completed, which it has skipped, which are recorded as needing " +
     "another look (#217), and by whom; operational install state, not portable " +
     "club policy — instance-local",
+  SetupSurfaceSettings:
+    "deployment-local choice of which setup SURFACES this install renders — the " +
+    "readiness cards and the four /admin/setup drill-down hubs (setup wizard C8, " +
+    "#223; epic #213 D8). It is the sibling of SetupProgress above and travels for " +
+    "the same reason it does not: how far a particular install has moved off the " +
+    "legacy surfaces onto the wizard is operational install state, not portable " +
+    "club policy. Importing it would also be a one-way removal — a source club " +
+    "that has finished its own transition would silently take four configuration " +
+    "hubs away from a target that has not, and the target's operators would go " +
+    "looking for pages that were there yesterday. A fresh import keeps the " +
+    "target's own answer, and a target with no row stays SHOWN (fail-open, which " +
+    "is this flag's safe direction throughout) — instance-local",
   AiAssistantSettings:
     "deployment-specific AI monthly spend cap (NZD integer cents); an operational " +
     "spend control a source club must never silently reset on a target — a fresh " +

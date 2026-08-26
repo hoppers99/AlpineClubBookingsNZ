@@ -225,3 +225,20 @@ export const DEFAULT_MAINTENANCE_REPORT_SETTINGS = {
  */
 export const MAINTENANCE_REPORT_PHOTO_RETENTION_DAYS_MIN = 1;
 export const MAINTENANCE_REPORT_PHOTO_RETENTION_DAYS_MAX = 365;
+
+/**
+ * `SetupSurfaceSettings` — the effective answer a missing `id = "default"` row
+ * synthesises (setup wizard C8, #223; epic #213 D8). Read by
+ * `normalizeSetupSurfaceSettings`.
+ *
+ * `legacySurfacesHidden` ships FALSE — the legacy readiness cards and the four
+ * `/admin/setup` drill-down hubs are SHOWN — and that default is the safety
+ * property rather than a taste (#223 AC4). Every absence resolves here: no row,
+ * a client that predates the table, a database the reader could not reach. So
+ * the worst a fault can do is leave a surface visible that somebody asked to
+ * hide; it can never take away a surface an operator is relying on. An upgrade
+ * therefore changes nothing until a club deliberately switches it.
+ */
+export const DEFAULT_SETUP_SURFACE_SETTINGS = {
+  legacySurfacesHidden: false,
+} as const;

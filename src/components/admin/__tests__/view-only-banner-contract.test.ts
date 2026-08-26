@@ -347,12 +347,33 @@ const FIGURES = {
    * with one banner, hoisted above its early returns and rendered in every
    * branch, and its five sibling controls opt out the same way. So `optOuts`
    * and `staticOptOuts` move by the same one and the vouched split is untouched.
+   *
+   * 343 -> 345 (#223, the setup-surfaces section): the switch that hides the
+   * legacy readiness cards and the four /admin/setup drill-down hubs gates its
+   * Edit and its Save. TWO controls, not three — Cancel is a plain `Button`,
+   * as it is in every sibling staged section, because discarding a draft takes
+   * nothing away from a view-only admin. Both are STATIC opt-outs: the new
+   * `setup-surfaces-section.tsx` renders its own banner, above its loading
+   * branch, in every state. So `optOuts` and `staticOptOuts` move by the same
+   * two and the vouched split is untouched. Site Style's "Finish setup" control
+   * changed BEHAVIOUR in the same issue but is deliberately still ONE call site
+   * branching on the flag, so it contributes nothing here.
+   *
+   * 345 -> 346 (#223 fix round, the wizard's provider test): the same issue's
+   * coverage-parity rule cuts the other way too. The four provider tests
+   * (Stripe, Email, Sentry, Operational Xero) rendered only in the readiness-card
+   * branch the switch hides, so the wizard's step frame now composes the one its
+   * step declares. ONE call site, because it is one control rendered
+   * conditionally on `step.action` rather than four. A STATIC opt-out under the
+   * banner that file already renders — and gated, unlike the readiness cards'
+   * plain `Button`, because `POST /api/admin/setup/provider-test` infers
+   * `support: edit`, which is exactly what `canEdit` already answers there.
    */
-  callSites: 343,
+  callSites: 346,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 290,
+  optOuts: 293,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 256,
+  staticOptOuts: 259,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *
@@ -383,8 +404,12 @@ const FIGURES = {
    *
    * 89 -> 91 (#220): the setup wizard's step frame and its launch panel each
    * head their own section with one.
+   *
+   * 91 -> 92 (#223): the setup-surfaces section heads its own with one, rendered
+   * above its loading branch so a failed first load never mounts the section
+   * together with an already-populated alert.
    */
-  bannerComponents: 91,
+  bannerComponents: 92,
   /**
    * Admin files that render an `AdminViewOnlyNotice` and NO
    * `ViewOnlyActionButton` — the first of the three cases in which the older

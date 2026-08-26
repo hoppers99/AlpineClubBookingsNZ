@@ -72,6 +72,18 @@ type SiteStyleThemeResponse = ClubThemeValues & {
 
 type SiteStyleWizardProps = {
   initialTheme: SiteStyleThemeResponse;
+  /**
+   * Whether this club has retired the legacy setup surfaces (epic #213 D8, C8
+   * #223). This page's "Finish setup" calls `save(completeSetup: true)` — the
+   * same audited write the wizard's Ready-to-open panel makes — so it is the
+   * SECOND lever that publishes the public site, and it retires with the
+   * surfaces it belongs to, leaving D9's panel as the one deliberate act.
+   *
+   * WHAT RETIRES IS THE FINISHING, NOT THE SAVING: the last step still saves,
+   * without publishing. Hiding the control outright would remove the only way
+   * to persist that step, which D8 forbids in both directions.
+   */
+  legacySurfacesHidden: boolean;
 };
 
 /**
@@ -180,7 +192,10 @@ function seedAdjustments(values: ClubThemeValues): SeedAdjustment[] {
   }));
 }
 
-export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
+export function SiteStyleWizard({
+  initialTheme,
+  legacySurfacesHidden,
+}: SiteStyleWizardProps) {
   const router = useRouter();
   const canEdit = useAdminAreaEditAccess("content");
   const [forbidden, setForbidden] = useState(false);
@@ -397,6 +412,18 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
 
   async function finish() {
     const saved = await save(true);
+    if (saved) {
+      setStep("review");
+    }
+  }
+
+  /**
+   * The last step's action once the legacy setup surfaces are hidden: persist
+   * the styling and move to Review, without touching `completedAt`. Publishing
+   * is then the wizard launch panel's alone.
+   */
+  async function saveWithoutFinishing() {
+    const saved = await save(false);
     if (saved) {
       setStep("review");
     }
@@ -996,14 +1023,21 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                   {saving ? "Saving..." : "Save and next"}
                 </ViewOnlyActionButton>
               ) : (
+                // ONE call site branching on the flag, not two rendered
+                // alternately: two would add a `ViewOnlyActionButton` site to
+                // the view-only census for a control that can never both exist.
                 <ViewOnlyActionButton
                   canEdit={canEdit}
                   describeReason={false}
                   type="button"
-                  onClick={finish}
+                  onClick={legacySurfacesHidden ? saveWithoutFinishing : finish}
                   disabled={saving || saveBlocked || uploadingLogo}
                 >
-                  {saving ? "Saving..." : "Finish setup"}
+                  {saving
+                    ? "Saving..."
+                    : legacySurfacesHidden
+                      ? "Save"
+                      : "Finish setup"}
                 </ViewOnlyActionButton>
               )}
             </div>

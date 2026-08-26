@@ -1319,6 +1319,8 @@ After signing in as an administrator, open `/admin/setup` to review:
 - booking policies, membership cancellation settings, age tiers, seasons, and rates
 - Stripe, SES/email, Sentry, operational Xero, and finance-dashboard readiness
 - Xero account and item-code mappings from the `/admin/setup/finance` drill-down
+  (the finance REPORT mappings editor moved to the finance dashboard, `/finance`,
+  in #223)
 
 Provider tests on `/admin/setup` run only when an admin clicks the relevant test
 button. They should use test/demo provider credentials until the environment is

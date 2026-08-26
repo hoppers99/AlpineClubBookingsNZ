@@ -509,7 +509,15 @@ describe("setup-readiness", () => {
     expect(report).toContain("Run the seed command");
   });
 
-  it("reports module state from Admin Modules activation only", () => {
+  it("omits a disabled module's steps entirely, and keeps an enabled one's (D4; C8, #223)", () => {
+    // BEHAVIOUR CHANGE, deliberate. Before C8 this test asserted the opposite:
+    // a Xero-disabled club still got an "Operational Xero" step whose detail
+    // line read "Admin Modules activation: disabled" — a card it could do
+    // nothing with, and a step the wizard rail had already stopped showing. The
+    // cards now derive their set from the registry, so a module toggled off
+    // contributes no step at all (epic #213 D4). The module-activation DETAIL
+    // lines still exist and are still reached on the fail-open path (module
+    // state unknown), which the registry contract test covers.
     const readiness = buildSetupReadiness({
       env: baseEnv,
       configDir: makeConfigDir(),
@@ -525,11 +533,27 @@ describe("setup-readiness", () => {
     });
 
     const report = renderSetupCheckReport(readiness);
+    const stepIds = readiness.categories.flatMap((category) =>
+      category.checks.map((check) => check.id),
+    );
 
-    expect(report).toContain("Operational Xero Admin Modules activation: disabled");
-    expect(report).toContain("Operational Xero is disabled in Admin Modules.");
-    expect(report).toContain("Finance dashboard Admin Modules activation: disabled");
-    expect(report).toContain("Finance dashboard is disabled in Admin Modules.");
+    // xeroIntegration owns two steps; financeDashboard owns one.
+    expect(stepIds).not.toContain("xero-operational");
+    expect(stepIds).not.toContain("xero-mappings");
+    expect(stepIds).not.toContain("finance-dashboard");
+    // `- <title>:` is `renderSetupCheckReport`'s own step-line prefix. A bare
+    // substring match would be wrong rather than merely loose: the `core`
+    // Modules step (`feature-flags`) legitimately LISTS every module's
+    // activation, including "Operational Xero: disabled", and that listing is
+    // the one place a disabled module is still named — which is exactly how an
+    // operator finds the toggle that brings its steps back.
+    expect(report).not.toContain("- Operational Xero:");
+    expect(report).not.toContain("- Finance dashboard:");
+    expect(report).not.toContain("- Xero Mappings:");
+
+    // addressAutocomplete is still ON in this fixture, so its step stays and
+    // still reports its activation the way it always did.
+    expect(stepIds).toContain("address-autocomplete");
     expect(report).toContain("Address autocomplete Admin Modules activation: enabled");
     expect(report).not.toContain("env capability");
   });
@@ -569,12 +593,17 @@ describe("setup-readiness", () => {
       },
     });
     const disabledReport = renderSetupCheckReport(disabled);
-    expect(disabledReport).toContain(
-      "Address Autocomplete: warning - Address autocomplete is disabled in Admin Modules; manual address entry remains available.",
-    );
-    expect(disabledReport).toContain(
-      "ADDY_API_KEY and ADDY_API_SECRET are not required while the module is disabled.",
-    );
+    // C8 (#223): with the module off the step is GONE from the cards and the
+    // report, rather than present-and-explaining-itself. The "disabled in Admin
+    // Modules" wording the check still carries is now only reachable on the
+    // fail-open path (module state unknown) — asserted in the registry contract
+    // test rather than here, because this fixture has a known answer.
+    expect(disabledReport).not.toContain("- Address Autocomplete:");
+    expect(
+      disabled.categories.flatMap((category) =>
+        category.checks.map((check) => check.id),
+      ),
+    ).not.toContain("address-autocomplete");
 
     const missingCredentials = buildSetupReadiness({
       env: {

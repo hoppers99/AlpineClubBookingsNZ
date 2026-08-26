@@ -44,7 +44,7 @@ export const financeHelpEntries: HelpEntry[] = [
         },
       ],
       [
-        "Finance dashboard output depends on the latest successful finance sync and Admin > Setup finance mappings.",
+        "Finance dashboard output depends on the latest successful finance sync and the Report mappings section at the foot of this page.",
         "Exports reflect the currently applied filters.",
       ],
       [

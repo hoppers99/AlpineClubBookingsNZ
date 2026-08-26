@@ -20,11 +20,17 @@ import type { SetupWizardPayload } from "@/lib/setup-wizard-view";
  * `/api/admin/setup` already returns readiness + progress for the readiness
  * cards. The wizard needs one more thing the cards never did — C4's TRAVERSAL,
  * which is the only source of per-step state, reachability and the D7
- * percentage — and it needs the module flags applied, which the cards do not do
- * until C8. So this is a second, additive route rather than a widened payload:
- * the cards' response shape stays exactly as it is (C8 owns their transition,
- * and `setup-readiness.ts` is an epic watchpoint), and the wizard's shape can
- * move with the wizard.
+ * percentage. So this is a second, additive route rather than a widened
+ * payload: the cards' response shape stays exactly as it is, and the wizard's
+ * shape can move with the wizard.
+ *
+ * MODULE FLAGS ARE NOW APPLIED ON BOTH SIDES (C8, #223). This route filters
+ * twice, harmlessly and by design: `buildSetupReadiness` below drops a disabled
+ * module's checks, and `buildSetupWizardTraversal` filters the registry by the
+ * same `getApplicableSetupStepIds` rule. The two agree by construction — the
+ * traversal's applicable set IS the registry's, and the readiness result it is
+ * handed carries exactly that set's checks — so `readinessStatuses` can never
+ * be missing a status for a step the traversal still walks.
  *
  * THE TRAVERSAL IS COMPUTED SERVER-SIDE, DELIBERATELY. The alternative — ship
  * readiness and module flags and let the shell call `buildSetupWizardTraversal`

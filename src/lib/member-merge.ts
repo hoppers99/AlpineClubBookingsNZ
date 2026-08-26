@@ -606,6 +606,14 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   // column name elsewhere in the schema.)
   "ServerNzSettings.updatedByMemberId",
   "SetupProgress.completedByMemberId",
+  // Which setup SURFACES this install renders (setup wizard C8, #223): records
+  // WHO last chose to show or hide the legacy readiness cards and drill-down
+  // hubs. A bare FK-less String exactly like every other `*.updatedByMemberId`
+  // audit column here, and a SNAPSHOT rather than a live move — it says who took
+  // a decision on a date, not who owns anything, so a merge leaves the loser's
+  // id in place as immutable history. (Detectable: `updatedByMemberId` is a
+  // Member FK column name elsewhere in the schema.)
+  "SetupSurfaceSettings.updatedByMemberId",
   "SiteBanner.createdByMemberId",
   "SiteBanner.updatedByMemberId",
   "SiteContent.updatedByMemberId",

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import "@testing-library/jest-dom/vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyAdminPermissionMatrix } from "@/lib/admin-permissions";
 import type { SetupReadiness } from "@/lib/setup-readiness";
@@ -26,7 +27,16 @@ const admin = { ...emptyAdminPermissionMatrix(), support: "edit" as const };
 /** Support edit records progress; CONTENT edit publishes the site (D9). */
 const publisher = { ...admin, content: "edit" as const };
 
+// The four provider steps carry a test on their readiness check (C8, #223).
+// Only "stripe" and "smtp" are given one here — enough to exercise a SECOND
+// provider for the cross-step race test below, without every id needing one.
+const PROVIDER_BY_ID: Partial<Record<string, "stripe" | "smtp" | "sentry" | "xero">> = {
+  stripe: "stripe",
+  smtp: "smtp",
+};
+
 function check(id: string, title: string) {
+  const provider = PROVIDER_BY_ID[id];
   return {
     id: id as SetupStepId,
     title,
@@ -37,6 +47,17 @@ function check(id: string, title: string) {
     details: [],
     href: "/admin/health",
     progress: "open" as const,
+    // Attached here by id so the shell wiring is exercised through the same
+    // route a real payload takes, rather than through a hand-built detail.
+    ...(provider
+      ? {
+          action: {
+            type: "provider-test" as const,
+            provider,
+            label: `Test ${title}`,
+          },
+        }
+      : {}),
   };
 }
 
@@ -103,13 +124,31 @@ function stubFetch(
     traversal: unknown;
     isSiteVisible?: boolean;
   }[],
-  options: { publish?: () => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }> } = {},
+  options: {
+    publish?: () => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
+    providerTest?: (
+      init?: RequestInit,
+    ) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
+  } = {},
 ) {
   let call = 0;
-  const fetchMock = vi.fn(async (url: string) => {
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     if (String(url).startsWith("/api/admin/site-style")) {
       if (options.publish) return options.publish();
       return { ok: true, status: 200, json: async () => ({ isComplete: true }) };
+    }
+    if (String(url) === "/api/admin/setup/provider-test") {
+      if (options.providerTest) return options.providerTest(init);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          provider: "stripe",
+          checkedAt: "2026-07-01T00:00:00.000Z",
+          message: "Stripe reachable.",
+        }),
+      };
     }
     const payload = payloads[Math.min(call, payloads.length - 1)];
     call += 1;
@@ -476,5 +515,181 @@ describe("SetupWizardClient", () => {
         screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
       ).toBe("club-config"),
     );
+  });
+
+  /*
+    The provider test's other half (C8, #223). The frame's own suite pins that
+    the button appears and calls back; this pins the wiring the operator
+    actually depends on — that it reaches the SAME endpoint the readiness cards
+    call, with the provider the check named, and that the wizard re-reads
+    afterwards. The test itself is read-only (only an AuditLog row), and the
+    step's verdict is always derived fresh from the stored credential
+    snapshot — the re-read is for parity with the cards, and because the
+    credential state can have changed in another tab.
+  */
+  it("runs a step's provider test against the shared endpoint, then re-reads", async () => {
+    const fetchMock = stubFetch([
+      {
+        readiness: readinessWith([["stripe", "Stripe"]]),
+        traversal: traversalWith(["stripe"], { currentIndex: 0 }),
+      },
+    ]);
+    render(<SetupWizardClient permissionMatrix={admin} />);
+    fireEvent.click(await screen.findByTestId("setup-wizard-provider-test"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("setup-wizard-provider-test-result").textContent,
+      ).toContain("Stripe reachable."),
+    );
+
+    const call = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/admin/setup/provider-test",
+    );
+    expect(call).toBeTruthy();
+    const init = call?.[1];
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({ provider: "stripe" });
+    // Two wizard reads: the mount, and the parity refetch after the test
+    // settles (the test itself writes nothing — see the run handler's comment).
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url]) => String(url) === "/api/admin/setup/wizard",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("reports a failed provider test in the step, not as a page error", async () => {
+    stubFetch(
+      [
+        {
+          readiness: readinessWith([["stripe", "Stripe"]]),
+          traversal: traversalWith(["stripe"], { currentIndex: 0 }),
+        },
+      ],
+      {
+        providerTest: async () => ({
+          ok: false,
+          status: 502,
+          json: async () => ({ error: "Stripe key rejected." }),
+        }),
+      },
+    );
+    render(<SetupWizardClient permissionMatrix={admin} />);
+    fireEvent.click(await screen.findByTestId("setup-wizard-provider-test"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("setup-wizard-provider-test-result").textContent,
+      ).toContain("Stripe key rejected."),
+    );
+    // The question was "does this provider work"; "the request did not get
+    // through" answers it, so it belongs in the panel rather than in the
+    // page-level banner that reports a failure to LOAD the wizard.
+    expect(screen.getByTestId("setup-wizard-step-frame")).toBeTruthy();
+  });
+
+  /*
+    F5 (#223 delta review): `providerRunning` holds ONE provider name, not one
+    flag per provider. A test left running on a step the operator has since
+    navigated away from must not clear a NEWER test's running flag when it
+    finally settles — an unconditional `setProviderRunning(null)` in the
+    `finally` clause does exactly that, wrongly re-enabling a button whose own
+    fetch is still in flight.
+  */
+  it("a slower test settling on an abandoned step does not clear a newer test's running flag", async () => {
+    type ProviderTestResponse = { ok: boolean; status: number; json: () => Promise<unknown> };
+    let resolveStripe!: (value: ProviderTestResponse) => void;
+    const stripeTest = new Promise<ProviderTestResponse>((resolve) => {
+      resolveStripe = resolve;
+    });
+    let resolveSmtp!: (value: ProviderTestResponse) => void;
+    const smtpTest = new Promise<ProviderTestResponse>((resolve) => {
+      resolveSmtp = resolve;
+    });
+
+    stubFetch(
+      [
+        {
+          readiness: readinessWith([
+            ["stripe", "Stripe"],
+            ["smtp", "Email"],
+          ]),
+          traversal: traversalWith(["stripe", "smtp"], {
+            currentIndex: 0,
+            frontierIndex: 1,
+          }),
+        },
+      ],
+      {
+        providerTest: (init) => {
+          const { provider } = JSON.parse(String(init?.body)) as { provider: string };
+          return provider === "stripe" ? stripeTest : smtpTest;
+        },
+      },
+    );
+
+    render(<SetupWizardClient permissionMatrix={admin} />);
+
+    // Start Stripe's test and leave it in flight — nothing here resolves it.
+    fireEvent.click(await screen.findByTestId("setup-wizard-provider-test"));
+
+    // Navigate away to the Email step. `providerRunning` is still "stripe",
+    // so Email's own button is NOT disabled by Stripe's in-flight test, and
+    // starting Email's test overwrites providerRunning to "smtp".
+    fireEvent.click(screen.getByTestId("setup-wizard-rail-row-smtp"));
+    fireEvent.click(await screen.findByTestId("setup-wizard-provider-test"));
+    await waitFor(() =>
+      expect(screen.getByTestId("setup-wizard-provider-test")).toBeDisabled(),
+    );
+
+    // Stripe's slower test settles now. Before the F5 fix this unconditionally
+    // cleared providerRunning to null, which would re-enable Email's button
+    // here — even though Email's own fetch has NOT resolved yet.
+    await act(async () => {
+      resolveStripe({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          provider: "stripe",
+          checkedAt: "2026-07-01T00:00:00.000Z",
+          message: "Stripe reachable.",
+        }),
+      });
+      await stripeTest;
+      // Flush the awaited `response.json()` and `load()` inside
+      // `runProviderTest`'s try block before its `finally` clause runs.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Email's button is STILL disabled: its own fetch has not resolved yet,
+    // and Stripe settling must not have cleared providerRunning out from
+    // under it.
+    expect(screen.getByTestId("setup-wizard-provider-test")).toBeDisabled();
+
+    // Email's OWN test settling is what re-enables its button — not Stripe's.
+    await act(async () => {
+      resolveSmtp({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          provider: "smtp",
+          checkedAt: "2026-07-01T00:00:00.000Z",
+          message: "Email reachable.",
+        }),
+      });
+      await smtpTest;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("setup-wizard-provider-test-result").textContent,
+      ).toContain("Email reachable."),
+    );
+    expect(screen.getByTestId("setup-wizard-provider-test")).not.toBeDisabled();
   });
 });

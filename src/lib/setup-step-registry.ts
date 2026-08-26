@@ -51,10 +51,16 @@ import { SETUP_STEP_DEFINITIONS } from "@/lib/setup-step-registry-definitions";
  *   registry deliberately does NOT throw at module load: a bad declaration
  *   should redden CI, not crash a running club's admin pages.
  *
- * NOTHING IS WIRED TO APPLICABILITY YET. C1 is the substrate only, and its
- * acceptance criterion is that the readiness cards' step set is unchanged.
- * `getApplicableSetupStepIds` and `isSetupStepComplete` exist, are tested, and
- * have no production caller until C4/C8 introduce one.
+ * APPLICABILITY IS NOW WIRED ON BOTH SURFACES (epic #213, C8 #223). C1 shipped
+ * `getApplicableSetupStepIds` as an inert substrate — computed, tested, and
+ * consumed by nothing, so the readiness cards' step set was unchanged. C4 wired
+ * it into `buildSetupWizardTraversal`, and C8 wired it into
+ * `buildSetupReadiness`, which is what makes it the SINGLE derivation both the
+ * cards and the wizard read: a step whose owning module is off is absent from
+ * the cards, from the wizard rail, from `summary.total` and from the
+ * `setup:check` report, and neither surface can report a total the other
+ * disagrees with. `setup-surface-registry-parity.test.ts` is the
+ * fail-closed contract that keeps them married.
  */
 
 /** Owner value for a step that belongs to no module and can never be switched off. */

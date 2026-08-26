@@ -95,11 +95,12 @@ const DEFAULT_INSTALL_APPLICABLE_STEP_IDS = [
   "sentry",
 ];
 
-// The four steps the cards show today but the registry would not call
-// applicable on a default install. C1 leaves this gap OPEN on purpose: nothing
-// consumes applicability yet, so the cards are unchanged. Closing it is C8's
-// deliberate decision, and `the readiness cards are unchanged` below is what
-// makes closing it early visible rather than silent.
+// The four module-owned steps a default install does not get. C1 left this gap
+// OPEN on purpose — nothing consumed applicability, so the cards showed all
+// twenty — and C8 (#223) CLOSED it: the cards now derive their set from
+// `getApplicableSetupStepIds`, so these four are absent from a default
+// install's cards exactly as they are absent from its wizard rail. The name is
+// kept as the historical record of what the gap was.
 const STEPS_SHOWN_BUT_NOT_APPLICABLE_BY_DEFAULT = [
   "address-autocomplete",
   "xero-operational",
@@ -287,7 +288,7 @@ describe("setup step registry — the derived export is a literal tuple", () => 
   });
 });
 
-describe("setup step registry — the readiness cards are unchanged", () => {
+describe("setup step registry — the readiness cards ARE the applicable set (C8, #223)", () => {
   it("shows exactly the registry's steps, in registry order, with every module enabled", () => {
     const readiness = stepIdsOnTheCards(databaseSnapshot(moduleFlags()));
     const displayed = readiness.categories.flatMap((category) =>
@@ -298,11 +299,12 @@ describe("setup step registry — the readiness cards are unchanged", () => {
     expect(readiness.summary.total).toBe(EXPECTED_STEP_IDS.length);
   });
 
-  it("shows all 20 steps on a first-install club, which applicability would not", () => {
-    // The pin that matters for "no behaviour change": a default install has
-    // three modules off, and the cards still build every check unconditionally.
-    // The registry disagrees, deliberately and inertly — this test names the
-    // exact gap so C8 must change it on purpose.
+  it("shows a first-install club only its applicable steps, not all 20", () => {
+    // The C1→C8 hand-over, closed. C1's version of this test asserted the
+    // OPPOSITE — all twenty ids, with the four module-owned ones named as a
+    // deliberate, inert gap "so C8 must change it on purpose". This is that
+    // change: a default install has xeroIntegration, financeDashboard and
+    // addressAutocomplete off, and the cards now derive from the registry.
     const readiness = stepIdsOnTheCards(
       databaseSnapshot(DEFAULT_MODULE_SETTINGS),
     );
@@ -310,19 +312,19 @@ describe("setup step registry — the readiness cards are unchanged", () => {
       category.checks.map((check) => check.id),
     );
 
-    expect(displayed).toEqual(EXPECTED_STEP_IDS);
-
-    const applicable = getApplicableSetupStepIds(DEFAULT_MODULE_SETTINGS);
-    expect(displayed.filter((id) => !applicable.includes(id))).toEqual(
-      STEPS_SHOWN_BUT_NOT_APPLICABLE_BY_DEFAULT,
+    expect(displayed).toEqual(DEFAULT_INSTALL_APPLICABLE_STEP_IDS);
+    expect(readiness.summary.total).toBe(
+      DEFAULT_INSTALL_APPLICABLE_STEP_IDS.length,
     );
+    const displayedIds = new Set<string>(displayed);
+    expect(
+      STEPS_SHOWN_BUT_NOT_APPLICABLE_BY_DEFAULT.filter((id) =>
+        displayedIds.has(id),
+      ),
+    ).toEqual([]);
   });
 
-  it("still shows every step when a module is disabled, because nothing is wired yet", () => {
-    // C1 is the substrate: applicability is computed and tested, and NOTHING
-    // consumes it. The card behaviour change lands with C8. If this test starts
-    // failing, that wiring arrived early and D4's removal rules need reviewing
-    // with it rather than being discovered in production.
+  it("drops exactly the disabled module's steps, and no others (D4)", () => {
     const readiness = stepIdsOnTheCards(
       databaseSnapshot(
         moduleFlags({
@@ -336,7 +338,38 @@ describe("setup step registry — the readiness cards are unchanged", () => {
       category.checks.map((check) => check.id),
     );
 
+    expect(displayed).toEqual(DEFAULT_INSTALL_APPLICABLE_STEP_IDS);
+  });
+
+  it("FAILS OPEN and shows all 20 when module state is unknown", () => {
+    // The three-state contract's most important case, and the one a `?? null`
+    // in `buildSetupReadiness` would silently break: a DB-less
+    // `npm run setup:check` takes no snapshot at all, and hiding setup work on
+    // the one run that could not read the club's configuration is the wrong
+    // direction to be wrong in.
+    const readiness = stepIdsOnTheCards(undefined);
+    const displayed = readiness.categories.flatMap((category) =>
+      category.checks.map((check) => check.id),
+    );
+
     expect(displayed).toEqual(EXPECTED_STEP_IDS);
+  });
+
+  it("drops a category whose every step belongs to a disabled module", () => {
+    // `finance` holds `finance-dashboard` and `xero-mappings`, both
+    // module-owned, so a first-install club has no finance category at all —
+    // rather than an empty one, which `worstStatus([])` would report as
+    // "complete" and read as "this is done" instead of "this does not apply".
+    const readiness = stepIdsOnTheCards(
+      databaseSnapshot(DEFAULT_MODULE_SETTINGS),
+    );
+
+    expect(readiness.categories.map((category) => category.id)).not.toContain(
+      "finance",
+    );
+    expect(
+      readiness.categories.every((category) => category.checks.length > 0),
+    ).toBe(true);
   });
 });
 

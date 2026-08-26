@@ -42,6 +42,7 @@ import {
 import { authSecretWeaknessReason } from "@/lib/integration-crypto";
 import {
   SETUP_STEP_IDS,
+  getApplicableSetupStepIds,
   type SetupStepId,
 } from "@/lib/setup-step-registry";
 // A VALUE import, not type-only, and that is safe: `club-theme-schema.ts` reads
@@ -621,7 +622,18 @@ function buildClubConfigCheck(
     description:
       "Club identity, contact details, bed capacity, age tiers, and default rates.",
     required: true,
-    href: "/admin/setup",
+    /*
+      THE PAGE THE WORK IS ACTUALLY DONE ON (#223 fix round). This used to link
+      to `/admin/setup`, which has never held a club-identity editor: from
+      there an operator had to find the Initial Setup hub and its Club Identity
+      cross-link. That was indirect while the hubs were shown and DEAD once they
+      are hidden — `/admin/setup` in that position offers the wizard, three
+      unrelated hubs and a settings section, and no route to the club's name at
+      all. So the step points at the editor itself, and
+      `SETUP_STEP_PERMISSION_AREA` names `content` to match, which is the area
+      `/admin/appearance` and `/api/admin/club-identity` both really enforce.
+    */
+    href: "/admin/appearance/identity",
   };
 
   // 1. A malformed primary always blocks loudly (C1/D3), whatever the DB holds.
@@ -659,7 +671,7 @@ function buildClubConfigCheck(
           ? `${dbClubName} is configured, but its default lodge has no bookable capacity yet.`
           : capacity != null
             ? `${dbClubName} is configured with ${capacity} total beds.`
-            : `${dbClubName} is configured. Set the default-lodge capacity in /admin/setup if it is not yet defined.`,
+            : `${dbClubName} is configured. Set the default-lodge capacity in Admin > Lodges if it is not yet defined.`,
         details: [
           "Source: database (ClubIdentitySettings / EmailMessageSetting)",
           `Club: ${dbClubName}`,
@@ -690,7 +702,7 @@ function buildClubConfigCheck(
           `Source: ${club.sourcePath}`,
           `Club: ${club.config.name}`,
           `Configured capacity: ${capacity} beds`,
-          "Admin edits in /admin/setup override these seed values in the database.",
+          "Admin edits in Admin > Appearance > Club Identity override these seed values in the database.",
           ...(capacityUnconfigured ? [capacityWarningDetail] : []),
         ],
       },
@@ -705,7 +717,7 @@ function buildClubConfigCheck(
         ...base,
         status: "blocked",
         message:
-          "Club identity is not configured yet. Run npm run setup:wizard or open /admin/setup to enter the club name, capacity, and age tiers.",
+          "Club identity is not configured yet. Run npm run setup:wizard, or enter the club name in Admin > Appearance > Club Identity (capacity lives in Admin > Lodges and age tiers have their own step).",
         details: [
           "Source: database (ClubIdentitySettings / EmailMessageSetting)",
           "No persisted club identity found, and no primary config/club.json is committed.",
@@ -2468,15 +2480,43 @@ export function buildSetupReadiness(
     ],
   };
 
+  /*
+    THE CARDS' STEP SET IS THE REGISTRY'S APPLICABLE SET (epic #213, C8 #223).
+
+    `getApplicableSetupStepIds` is the same derivation
+    `buildSetupWizardTraversal` applies, so the cards and the wizard cannot
+    report different totals (#223 AC1). D4: a module toggled OFF contributes no
+    steps, and nothing is persisted — flipping it back on restores them.
+
+    Checks are still BUILT unconditionally and filtered after, which keeps each
+    one's own "module disabled" wording reachable on the fail-open path.
+
+    THE THREE-STATE CONTRACT IS PASSED THROUGH UNTOUCHED; collapsing it with a
+    `?? null` or `?? {}` here is the one way to get this wrong. `undefined` (no
+    snapshot — a DB-less `npm run setup:check`) FAILS OPEN and returns every
+    step; `null` is a known answer that resolves to the first-install defaults.
+  */
+  const applicableStepIds = new Set<string>(
+    getApplicableSetupStepIds(input.database?.adminModuleSettings),
+  );
+
   const categories = CATEGORY_ORDER.map((id) => {
-    const checks = checksByCategory[id];
+    const checks = checksByCategory[id].filter((check) =>
+      applicableStepIds.has(check.id),
+    );
     return {
       id,
       ...CATEGORY_META[id],
       status: worstStatus(unresolvedStatuses(checks)),
       checks,
     };
-  });
+  })
+    // A category left with no applicable step is dropped rather than rendered
+    // empty — `finance` is exactly that on a first-install club. An empty one
+    // would show a heading with nothing under it and report "complete", since
+    // `worstStatus([])` folds from "complete": "this is done" rather than
+    // "this does not apply to you".
+    .filter((category) => category.checks.length > 0);
   const allChecks = categories.flatMap((category) => category.checks);
   const skipped = allChecks.filter(
     (check) => check.progress === "skipped",

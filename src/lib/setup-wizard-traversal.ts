@@ -244,6 +244,17 @@ export interface SetupWizardTraversal<Id extends string = SetupStepId> {
   readonly percentComplete: number;
 }
 
+/**
+ * DELIBERATELY THE SAME PREDICATE AS `getApplicableSetupStepIds` in
+ * `setup-step-registry.ts`, and deliberately not a call to it: that one answers
+ * over the real registry and returns ids, this one filters an arbitrary
+ * `registry` argument and returns entries, which is what lets this module be
+ * tested against a fixture registry. Two copies of a rule normally drift; this
+ * pair cannot go unnoticed, because `setup-surface-registry-parity.test.ts`
+ * asserts the readiness cards, the hub cards and this traversal all report the
+ * same step set for eight named module states (#223 AC1). Change one and that
+ * suite fails.
+ */
 function applicableEntries<Id extends string>(
   registry: readonly SetupStepDefinitionOf<Id>[],
   moduleSettings: ModuleSettingsValues | null | undefined,
