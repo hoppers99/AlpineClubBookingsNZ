@@ -22,6 +22,7 @@ import { SetupWizardLaunchPanel } from "./setup-wizard-launch-panel";
 import {
   SetupWizardStepFrame,
   type SetupWizardProgressAction,
+  type SetupWizardProviderTestResult,
 } from "./setup-wizard-step-frame";
 
 /**
@@ -85,6 +86,17 @@ export function SetupWizardClient({
    * navigate away from it themselves.
    */
   const [launchPinned, setLaunchPinned] = useState(false);
+  /**
+   * The provider tests (C8, #223), keyed by provider rather than by step so an
+   * operator who runs Stripe, walks on and comes back still sees the answer —
+   * exactly as the readiness cards behave. Deliberately NOT held in the payload:
+   * a test result is a fact about this session, not about the club's stored
+   * setup, and the wizard's focus refetch would otherwise wipe it.
+   */
+  const [providerRunning, setProviderRunning] = useState<string | null>(null);
+  const [providerResults, setProviderResults] = useState<
+    Record<string, SetupWizardProviderTestResult>
+  >({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -226,6 +238,52 @@ export function SetupWizardClient({
     }
   }
 
+  /**
+   * The SAME endpoint the readiness cards call, with the same shape of answer.
+   * A failed request is reported in the result panel rather than in the page's
+   * error banner: the question asked was "does this provider work", and "the
+   * request did not get through" is an answer to it.
+   *
+   * `await load()` afterwards because a test WRITES BACK — a successful Stripe
+   * ping records the check's new state — so the step's own verdict, the rail
+   * and D7's percentage all move with it.
+   */
+  async function runProviderTest(provider: string) {
+    setProviderRunning(provider);
+    try {
+      const response = await fetch("/api/admin/setup/provider-test", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider }),
+      });
+      const body = (await response.json().catch(() => null)) as
+        | { ok?: boolean; message?: string; error?: string }
+        | null;
+      if (!response.ok || typeof body?.ok !== "boolean") {
+        throw new Error(errorMessageFrom(body, "Provider test failed"));
+      }
+      setProviderResults((current) => ({
+        ...current,
+        [provider]: { ok: body.ok, message: body.message ?? "" },
+      }));
+      await load();
+    } catch (testError) {
+      setProviderResults((current) => ({
+        ...current,
+        [provider]: {
+          ok: false,
+          message:
+            testError instanceof Error
+              ? testError.message
+              : "Provider test failed",
+        },
+      }));
+    } finally {
+      setProviderRunning(null);
+    }
+  }
+
   if (loading && !view) {
     return (
       <div className="flex min-h-[320px] items-center justify-center gap-2 text-sm text-muted-foreground">
@@ -319,9 +377,20 @@ export function SetupWizardClient({
               previousStep={neighbours.previous}
               nextStep={neighbours.next}
               launchUnlocked={view.allResolved}
+              providerTesting={
+                activeStep.action
+                  ? providerRunning === activeStep.action.provider
+                  : false
+              }
+              providerResult={
+                activeStep.action
+                  ? (providerResults[activeStep.action.provider] ?? null)
+                  : null
+              }
               onNavigate={select}
               onOpenLaunch={() => select(SETUP_WIZARD_LAUNCH_ID)}
               onProgress={(action) => void updateProgress(action, activeStep.id)}
+              onProviderTest={(provider) => void runProviderTest(provider)}
             />
           ) : (
             <section className="rounded-md border bg-card p-5 text-sm text-muted-foreground">

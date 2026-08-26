@@ -282,6 +282,18 @@ export interface SetupWizardStepDetail extends SetupWizardRailStep {
    * render it without a null check.
    */
   readonly links: readonly { label: string; href: string }[];
+  /**
+   * The step's provider test, when its readiness check declares one (C8, #223).
+   *
+   * Four checks carry one — Stripe, Email, Sentry and Operational Xero — and it
+   * is a real CAPABILITY rather than decoration: it pings the live service and
+   * writes the answer back into the check. It reached the readiness cards and
+   * nowhere else, so hiding the cards (D8) would have taken it away instead of
+   * relocating it. Carried through structurally, from the same check every
+   * other field on this detail comes from, so a fifth provider test needs no
+   * change here.
+   */
+  readonly action?: SetupReadinessCheck["action"];
   readonly required: boolean;
   readonly progress: SetupReadinessCheck["progress"];
   readonly status: SetupReadinessCheck["status"];
@@ -338,6 +350,7 @@ export function buildSetupWizardView(
       details: check?.details ?? [],
       href: check?.href,
       links: check?.links ?? [],
+      action: check?.action,
       required: check?.required ?? false,
       progress: check?.progress ?? "open",
       status: check?.status ?? "not_started",

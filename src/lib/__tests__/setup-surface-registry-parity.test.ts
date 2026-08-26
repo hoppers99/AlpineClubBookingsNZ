@@ -25,6 +25,7 @@ import {
   getApplicableSetupStepIds,
 } from "@/lib/setup-step-registry";
 import { buildSetupWizardTraversal } from "@/lib/setup-wizard-traversal";
+import { buildSetupWizardView } from "@/lib/setup-wizard-view";
 
 /**
  * THE SHARED-DERIVATION CONTRACT (epic #213, child C8, #223).
@@ -440,6 +441,77 @@ describe("legacy setup surfaces — the visibility switch (#223 AC3, AC4)", () =
     );
     // …and show again.
     expect(shown()).toEqual(before);
+  });
+
+  /*
+    THE GRANULARITY HOLE THIS CLOSES. Everything above compares STEP SETS: the
+    cards, the hubs and the rail must walk the same ids. That is necessary and
+    it is not sufficient, because a step can be present on both surfaces while
+    one of them renders a CONTROL the other does not — and hiding the surface
+    that has it removes a capability just as surely as hiding the step would.
+
+    That is not hypothetical: it is what shipped. The four provider tests
+    (Stripe, Email, Sentry, Operational Xero) are declared on the readiness
+    checks, and until #223's fix round they rendered only in the readiness-card
+    branch that the legacy-surfaces switch hides. The steps were all on the rail;
+    the buttons were not.
+
+    So this pair asserts the ACTION level, both ways round: every check that
+    declares an action has a wizard step carrying it, and no step claims an
+    action its check never declared.
+  */
+  it("carries every check's ACTION onto its wizard step — no control loses its home", () => {
+    const readiness = cardStepIds(databaseSnapshot(moduleFlags()));
+    const view = buildSetupWizardView(
+      readiness,
+      buildSetupWizardTraversal({
+        progress: { completedStepIds: [], skippedStepIds: [] },
+        moduleSettings: moduleFlags(),
+      }),
+    );
+    const stepsById = new Map(view.steps.map((step) => [step.id, step]));
+
+    const withActions = readiness.categories
+      .flatMap((category) => category.checks)
+      .filter((check) => check.action);
+
+    // A guard that asserts nothing when the list empties is not a guard: the
+    // four provider tests are the reason this exists, so their absence is a
+    // failure rather than a vacuous pass.
+    expect(withActions.map((check) => check.id).sort()).toEqual([
+      "email-ses",
+      "sentry",
+      "stripe",
+      "xero-operational",
+    ]);
+
+    for (const check of withActions) {
+      const step = stepsById.get(check.id);
+      expect(
+        step?.action,
+        `the ${check.id} check declares a ${check.action?.type} action, but its wizard step carries none — hiding the readiness cards would delete that control rather than relocate it (epic #213 D8)`,
+      ).toEqual(check.action);
+    }
+  });
+
+  it("claims no ACTION the readiness check does not declare", () => {
+    const readiness = cardStepIds(databaseSnapshot(moduleFlags()));
+    const view = buildSetupWizardView(
+      readiness,
+      buildSetupWizardTraversal({
+        progress: { completedStepIds: [], skippedStepIds: [] },
+        moduleSettings: moduleFlags(),
+      }),
+    );
+    const actionsById = new Map(
+      readiness.categories
+        .flatMap((category) => category.checks)
+        .map((check) => [check.id, check.action]),
+    );
+
+    for (const step of view.steps) {
+      expect(step.action).toEqual(actionsById.get(step.id));
+    }
   });
 
   it("CHANGES NO DATA: the readiness derivation is identical in both positions", () => {

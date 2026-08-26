@@ -37,6 +37,18 @@ function check(id: string, title: string) {
     details: [],
     href: "/admin/health",
     progress: "open" as const,
+    // The four provider steps carry a test on their readiness check (C8, #223).
+    // Attached here by id so the shell wiring is exercised through the same
+    // route a real payload takes, rather than through a hand-built detail.
+    ...(id === "stripe"
+      ? {
+          action: {
+            type: "provider-test" as const,
+            provider: "stripe" as const,
+            label: "Test Stripe",
+          },
+        }
+      : {}),
   };
 }
 
@@ -103,13 +115,29 @@ function stubFetch(
     traversal: unknown;
     isSiteVisible?: boolean;
   }[],
-  options: { publish?: () => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }> } = {},
+  options: {
+    publish?: () => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
+    providerTest?: () => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
+  } = {},
 ) {
   let call = 0;
-  const fetchMock = vi.fn(async (url: string) => {
+  const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
     if (String(url).startsWith("/api/admin/site-style")) {
       if (options.publish) return options.publish();
       return { ok: true, status: 200, json: async () => ({ isComplete: true }) };
+    }
+    if (String(url) === "/api/admin/setup/provider-test") {
+      if (options.providerTest) return options.providerTest();
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          provider: "stripe",
+          checkedAt: "2026-07-01T00:00:00.000Z",
+          message: "Stripe reachable.",
+        }),
+      };
     }
     const payload = payloads[Math.min(call, payloads.length - 1)];
     call += 1;
@@ -476,5 +504,74 @@ describe("SetupWizardClient", () => {
         screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
       ).toBe("club-config"),
     );
+  });
+
+  /*
+    The provider test's other half (C8, #223). The frame's own suite pins that
+    the button appears and calls back; this pins the wiring the operator
+    actually depends on — that it reaches the SAME endpoint the readiness cards
+    call, with the provider the check named, and that the wizard re-reads
+    afterwards, because a test WRITES BACK and moves the step's verdict, the
+    rail and D7's percentage with it.
+  */
+  it("runs a step's provider test against the shared endpoint, then re-reads", async () => {
+    const fetchMock = stubFetch([
+      {
+        readiness: readinessWith([["stripe", "Stripe"]]),
+        traversal: traversalWith(["stripe"], { currentIndex: 0 }),
+      },
+    ]);
+    render(<SetupWizardClient permissionMatrix={admin} />);
+    fireEvent.click(await screen.findByTestId("setup-wizard-provider-test"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("setup-wizard-provider-test-result").textContent,
+      ).toContain("Stripe reachable."),
+    );
+
+    const call = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/admin/setup/provider-test",
+    );
+    expect(call).toBeTruthy();
+    const init = call?.[1] as RequestInit;
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ provider: "stripe" });
+    // Two wizard reads: the mount, and the one the test's write-back forces.
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url]) => String(url) === "/api/admin/setup/wizard",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("reports a failed provider test in the step, not as a page error", async () => {
+    stubFetch(
+      [
+        {
+          readiness: readinessWith([["stripe", "Stripe"]]),
+          traversal: traversalWith(["stripe"], { currentIndex: 0 }),
+        },
+      ],
+      {
+        providerTest: async () => ({
+          ok: false,
+          status: 502,
+          json: async () => ({ error: "Stripe key rejected." }),
+        }),
+      },
+    );
+    render(<SetupWizardClient permissionMatrix={admin} />);
+    fireEvent.click(await screen.findByTestId("setup-wizard-provider-test"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("setup-wizard-provider-test-result").textContent,
+      ).toContain("Stripe key rejected."),
+    );
+    // The question was "does this provider work"; "the request did not get
+    // through" answers it, so it belongs in the panel rather than in the
+    // page-level banner that reports a failure to LOAD the wizard.
+    expect(screen.getByTestId("setup-wizard-step-frame")).toBeTruthy();
   });
 });

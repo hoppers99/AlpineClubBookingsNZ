@@ -42,6 +42,7 @@ function renderFrame(
   const onProgress = vi.fn();
   const onNavigate = vi.fn();
   const onOpenLaunch = vi.fn();
+  const onProviderTest = vi.fn();
   render(
     <SetupWizardStepFrame
       step={detail()}
@@ -50,13 +51,28 @@ function renderFrame(
       previousStep={null}
       nextStep={null}
       launchUnlocked={false}
+      providerTesting={false}
+      providerResult={null}
       onNavigate={onNavigate}
       onOpenLaunch={onOpenLaunch}
       onProgress={onProgress}
+      onProviderTest={onProviderTest}
       {...overrides}
     />,
   );
-  return { onProgress, onNavigate, onOpenLaunch };
+  return { onProgress, onNavigate, onOpenLaunch, onProviderTest };
+}
+
+/** A step whose readiness check declares a provider test — Stripe's. */
+function providerStep(overrides: Partial<SetupWizardStepDetail> = {}) {
+  return detail({
+    id: "stripe" as SetupStepId,
+    title: "Stripe",
+    href: "/admin/stripe/setup",
+    permissionArea: "finance",
+    action: { type: "provider-test", provider: "stripe", label: "Test Stripe" },
+    ...overrides,
+  });
 }
 
 describe("SetupWizardStepFrame", () => {
@@ -184,6 +200,78 @@ describe("SetupWizardStepFrame", () => {
   it("renders nothing at all for a step with no links", () => {
     renderFrame();
     expect(screen.queryByTestId("setup-wizard-step-links")).toBeNull();
+  });
+
+  /*
+    The provider test (C8, #223). Until the fix round this control existed only
+    on the readiness cards, which the legacy-surfaces switch hides — so hiding
+    them deleted a capability rather than relocating it. These five assertions
+    are the parity claim at the render level: the button is here for the steps
+    that declare one, absent for those that do not, fires the provider the check
+    named, and is gated on the same answer the server gives.
+  */
+  it("offers the provider test for a step whose check declares one", () => {
+    const { onProviderTest } = renderFrame({ step: providerStep() });
+    const button = screen.getByTestId("setup-wizard-provider-test");
+    expect(button.textContent).toContain("Test Stripe");
+    fireEvent.click(button);
+    expect(onProviderTest).toHaveBeenCalledWith("stripe");
+  });
+
+  it("offers no provider test for a step whose check declares none", () => {
+    renderFrame();
+    expect(screen.queryByTestId("setup-wizard-provider-test")).toBeNull();
+    expect(screen.queryByTestId("setup-wizard-provider-test-result")).toBeNull();
+  });
+
+  it("shows the provider's own answer, tinted by whether it worked", () => {
+    renderFrame({
+      step: providerStep(),
+      providerResult: { ok: false, message: "Stripe key rejected." },
+    });
+    const panel = screen.getByTestId("setup-wizard-provider-test-result");
+    expect(panel.textContent).toContain("Stripe key rejected.");
+    expect(panel.className).toContain("danger");
+
+    cleanup();
+    renderFrame({
+      step: providerStep(),
+      providerResult: { ok: true, message: "Stripe reachable." },
+    });
+    expect(
+      screen.getByTestId("setup-wizard-provider-test-result").className,
+    ).toContain("success");
+  });
+
+  it("disables the provider test while one is in flight", () => {
+    const { onProviderTest } = renderFrame({
+      step: providerStep(),
+      providerTesting: true,
+    });
+    const button = screen.getByTestId(
+      "setup-wizard-provider-test",
+    ) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(onProviderTest).not.toHaveBeenCalled();
+  });
+
+  // The POST infers `support: edit` from its path and method, which is the same
+  // question `canEdit` answers for the three progress controls — so a view-only
+  // officer must not be handed a button whose request 403s.
+  it("gates the provider test on the same answer the server gives", () => {
+    const { onProviderTest } = renderFrame({
+      step: providerStep(),
+      canEdit: false,
+    });
+    const button = screen.getByTestId(
+      "setup-wizard-provider-test",
+    ) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(onProviderTest).not.toHaveBeenCalled();
+    // One banner already explains all of it; this control adds no second copy.
+    expect(screen.getAllByTestId("admin-view-only-banner")).toHaveLength(1);
   });
 
   it("says plainly what a skipped step and a stale step mean", () => {

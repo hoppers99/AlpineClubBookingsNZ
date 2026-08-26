@@ -6,9 +6,10 @@
 
   What you will notice is that **switching a module off now removes its setup
   steps from the checklist too**, as it already did from the wizard. Turn Xero
-  off and the Operational Xero and Xero Mappings cards stop appearing, the
-  Finance hub card goes with them, and the progress figure recalculates around
-  what is left. Nothing is deleted and nothing is remembered: the module toggle
+  off and the Operational Xero and Xero Mappings cards stop appearing, and the
+  progress figure recalculates around what is left; with **both** Xero and the
+  finance dashboard off there is no finance setup left at all, so the Finance
+  hub card goes too. Nothing is deleted and nothing is remembered: the module toggle
   is the only record that the club said no, so turning it back on brings the
   steps back with whatever progress had already been recorded against them. A
   hub card is likewise offered only while at least one of the steps behind it
@@ -21,6 +22,15 @@
   a third setup surface: `/admin/alpine-server/setup` is a provider-connection
   page like Xero Setup. It reads none of the setup-progress machinery, and
   finishing it does not move your setup percentage.
+
+- **The setup wizard now offers the provider tests (#223).** Stripe, Email,
+  Sentry and Operational Xero each have a **Test** button that pings the live
+  service and reports what it said. It used to live only on the readiness
+  checklist, so retiring the checklist would have taken it away; the wizard's
+  step for each of those four now carries the same button, calling the same
+  check, and the step's verdict and the progress figure move with the result.
+  Support edit access is required, which is what the server has always asked
+  for.
 
 - **The setup checklist can now be retired once the wizard covers what you need
   (#223).** A new **Setup surfaces** setting at the foot of Admin → Setup &

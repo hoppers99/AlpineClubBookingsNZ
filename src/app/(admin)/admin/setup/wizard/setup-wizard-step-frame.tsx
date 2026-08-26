@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ExternalLink,
   Loader2,
+  PlayCircle,
   RotateCcw,
   SkipForward,
 } from "lucide-react";
@@ -52,9 +53,35 @@ import { setupWizardStepLabel } from "./setup-wizard-rail";
  * same file, so no vouch is involved). Back and Continue are NOT gated — moving
  * around the journey is not an edit, and a view-only officer reviewing another
  * area's steps must still be able to walk it.
+ *
+ * ## The provider test (C8, #223)
+ *
+ * Four steps — Stripe, Email, Sentry, Operational Xero — carry a `provider-test`
+ * action on their readiness check. It pings the live service and writes the
+ * answer back into the check, and until C8 it rendered ONLY on the readiness
+ * cards, which the legacy-surfaces switch hides. A capability with one home,
+ * behind a flag that removes that home, is a capability being deleted rather
+ * than relocated, which is exactly what D8's parity rule forbids — so the frame
+ * composes it here, through the SAME `POST /api/admin/setup/provider-test` the
+ * cards call.
+ *
+ * IT IS GATED ON `canEdit`, and the cards' plain ungated `Button` is NOT the
+ * precedent to copy. `POST /api/admin/setup/provider-test` calls a bare
+ * `requireAdmin()`, which infers `support: edit` from the path and the method —
+ * the same answer `canEdit` already carries for the three progress controls
+ * beside it. So an ungated button here would be the first of the two symmetric
+ * failures this file's permission note names: an enabled control whose POST
+ * 403s. The readiness cards gate none of their controls, which is a looseness
+ * of the surface being retired rather than a rule.
  */
 
 export type SetupWizardProgressAction = "complete" | "skip" | "reopen";
+
+/** What a finished provider test said, for the step that asked for it. */
+export interface SetupWizardProviderTestResult {
+  readonly ok: boolean;
+  readonly message: string;
+}
 
 function areaLabel(area: SetupWizardStepDetail["permissionArea"]): string {
   return (
@@ -76,9 +103,12 @@ export function SetupWizardStepFrame({
   previousStep,
   nextStep,
   launchUnlocked,
+  providerTesting,
+  providerResult,
   onNavigate,
   onOpenLaunch,
   onProgress,
+  onProviderTest,
 }: {
   step: SetupWizardStepDetail;
   canEdit: boolean;
@@ -86,10 +116,20 @@ export function SetupWizardStepFrame({
   previousStep: SetupWizardStepDetail | null;
   nextStep: SetupWizardStepDetail | null;
   launchUnlocked: boolean;
+  /** A test for THIS step's provider is in flight. */
+  providerTesting: boolean;
+  /** The last answer for this step's provider, or null if none yet. */
+  providerResult: SetupWizardProviderTestResult | null;
   onNavigate: (stepId: SetupWizardStepDetail["id"]) => void;
   onOpenLaunch: () => void;
   onProgress: (action: SetupWizardProgressAction) => void;
+  onProviderTest: (
+    provider: NonNullable<SetupWizardStepDetail["action"]>["provider"],
+  ) => void;
 }) {
+  // Read once, so the button and the result panel below cannot disagree about
+  // whether this step has a test at all.
+  const providerTest = step.action;
   // D2 at the control: Continue is dead unless the next step is reachable. At
   // the END of the list there is no next step, and Continue instead opens the
   // launch panel — but only once the traversal says everything is resolved, so
@@ -177,6 +217,21 @@ export function SetupWizardStepFrame({
             </p>
           </div>
         ) : null}
+
+        {/* The same result idiom the readiness cards use: the provider's own
+            sentence, tinted by whether it worked, kept until the next run. */}
+        {providerTest && providerResult ? (
+          <div
+            data-testid="setup-wizard-provider-test-result"
+            className={`rounded-md border px-3 py-2 text-sm ${
+              providerResult.ok
+                ? "border-success-6 bg-success-3 text-success-11"
+                : "border-danger-6 bg-danger-3 text-danger-11"
+            }`}
+          >
+            {providerResult.message}
+          </div>
+        ) : null}
       </div>
 
       {/* Mounted OUTSIDE the stack above so the empty live-region wrapper adds
@@ -190,6 +245,25 @@ export function SetupWizardStepFrame({
       </div>
 
       <div className="flex flex-wrap items-center gap-2 border-t px-5 py-4">
+        {providerTest ? (
+          <ViewOnlyActionButton
+            type="button"
+            variant="outline"
+            size="sm"
+            canEdit={canEdit}
+            describeReason={false}
+            data-testid="setup-wizard-provider-test"
+            disabled={providerTesting}
+            onClick={() => onProviderTest(providerTest.provider)}
+          >
+            {providerTesting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <PlayCircle className="h-4 w-4" />
+            )}
+            {providerTest.label}
+          </ViewOnlyActionButton>
+        ) : null}
         {step.progress !== "completed" ? (
           <ViewOnlyActionButton
             type="button"
