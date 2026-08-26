@@ -292,6 +292,8 @@ describe("site style route-group gating", () => {
   describe("the setup-aware admin nudge", () => {
     const NUDGE_TEXT =
       "This club's setup isn't finished — pick up where you left off in the setup wizard.";
+    const LAUNCH_PENDING_TEXT =
+      "This club's setup is marked finished, but the public website hasn't been opened yet — finish up in the setup wizard.";
 
     it("shows the wizard nudge while SetupProgress.completedAt is null", async () => {
       mocks.setupProgressFindUnique.mockResolvedValue({ completedAt: null });
@@ -302,22 +304,129 @@ describe("site style route-group gating", () => {
       expect(banner).toBeTruthy();
       const link = screen.getByRole("link", { name: "Open Setup Wizard" });
       expect(link.getAttribute("href")).toBe("/admin/setup/wizard");
+      // Hidden means ABSENT, not that the page failed to render underneath it
+      // (F4 item 5) — the two are easy to conflate when a test only checks
+      // for the banner's own text.
+      expect(screen.getByText("Admin child")).toBeTruthy();
     });
 
-    it("hides the nudge once SetupProgress.completedAt is set", async () => {
+    it("hides the nudge once SetupProgress.completedAt is set and the site is launched", async () => {
       mocks.setupProgressFindUnique.mockResolvedValue({
         completedAt: new Date("2026-01-01T00:00:00Z"),
       });
+      mocks.getWebsiteThemeRenderState.mockResolvedValue({
+        css: ":root{}",
+        appCss: ".app-theme-scope{}",
+        logoUrl: null,
+        logoDataUrl: null,
+        isComplete: true,
+        values: {},
+      });
+
+      render(await AdminLayout({ children: <p>Admin child</p> }));
+
+      expect(screen.queryByText(NUDGE_TEXT)).toBeNull();
+      expect(screen.queryByText(LAUNCH_PENDING_TEXT)).toBeNull();
+      expect(screen.getByText("Admin child")).toBeTruthy();
+    });
+
+    /**
+     * F1: a club can finish the setup JOURNEY (`SetupProgress.completedAt`)
+     * without ever having LAUNCHED the public site
+     * (`ClubTheme.completedAt`/`getWebsiteThemeRenderState().isComplete`).
+     * The first shipped version of this banner had nothing to say in that
+     * state — the public site keeps 503ing and admin shows no hint why.
+     */
+    it("shows the launch-pending nudge once the journey is finished but the site is not launched", async () => {
+      mocks.setupProgressFindUnique.mockResolvedValue({
+        completedAt: new Date("2026-01-01T00:00:00Z"),
+      });
+      mocks.getWebsiteThemeRenderState.mockResolvedValue({
+        css: ":root{}",
+        appCss: ".app-theme-scope{}",
+        logoUrl: null,
+        logoDataUrl: null,
+        isComplete: false,
+        values: {},
+      });
+
+      render(await AdminLayout({ children: <p>Admin child</p> }));
+
+      expect(screen.queryByText(NUDGE_TEXT)).toBeNull();
+      const banner = screen.getByText(LAUNCH_PENDING_TEXT);
+      expect(banner).toBeTruthy();
+      const link = screen.getByRole("link", { name: "Open Setup Wizard" });
+      // Never Site Style, even for the launch-pending copy — the wizard's own
+      // Ready-to-open screen is what owns launching (D9).
+      expect(link.getAttribute("href")).toBe("/admin/setup/wizard");
+    });
+
+    /**
+     * F2: `readSetupJourneyComplete` now catches and fails toward HIDDEN
+     * rather than 500ing the admin area or (worse) showing a banner anyway.
+     * A plain `journeyComplete: false` on error would otherwise take the
+     * `"journey-incomplete"` branch and show a false nag on a possibly
+     * healthy, already-finished club — checked here on a club that in fact
+     * finished its journey but the read failed regardless.
+     */
+    it("hides the nudge entirely when the SetupProgress read fails, even on a finished journey", async () => {
+      mocks.setupProgressFindUnique.mockRejectedValue(
+        new Error("connection reset"),
+      );
+      mocks.getWebsiteThemeRenderState.mockResolvedValue({
+        css: ":root{}",
+        appCss: ".app-theme-scope{}",
+        logoUrl: null,
+        logoDataUrl: null,
+        isComplete: false,
+        values: {},
+      });
+
+      render(await AdminLayout({ children: <p>Admin child</p> }));
+
+      expect(screen.queryByText(NUDGE_TEXT)).toBeNull();
+      expect(screen.queryByText(LAUNCH_PENDING_TEXT)).toBeNull();
+      // The admin area itself must not 500 — the rest of the page renders.
+      expect(screen.getByText("Admin child")).toBeTruthy();
+    });
+
+    it("suppresses the nudge under bare /admin/setup, even with setup unfinished", async () => {
+      mocks.setupProgressFindUnique.mockResolvedValue({ completedAt: null });
+      mocks.headers.mockResolvedValue(
+        new Headers({ "x-pathname": "/admin/setup" }),
+      );
 
       render(await AdminLayout({ children: <p>Admin child</p> }));
 
       expect(screen.queryByText(NUDGE_TEXT)).toBeNull();
     });
 
-    it("suppresses the nudge under /admin/setup, even with setup unfinished", async () => {
+    it("suppresses the nudge under a nested /admin/setup/* route, even with setup unfinished", async () => {
       mocks.setupProgressFindUnique.mockResolvedValue({ completedAt: null });
       mocks.headers.mockResolvedValue(
         new Headers({ "x-pathname": "/admin/setup/wizard" }),
+      );
+
+      render(await AdminLayout({ children: <p>Admin child</p> }));
+
+      expect(screen.queryByText(NUDGE_TEXT)).toBeNull();
+    });
+
+    it("does NOT suppress the nudge on a near-miss admin route like /admin/settings", async () => {
+      mocks.setupProgressFindUnique.mockResolvedValue({ completedAt: null });
+      mocks.headers.mockResolvedValue(
+        new Headers({ "x-pathname": "/admin/settings" }),
+      );
+
+      render(await AdminLayout({ children: <p>Admin child</p> }));
+
+      expect(screen.getByText(NUDGE_TEXT)).toBeTruthy();
+    });
+
+    it("strips the query string before matching /admin/setup (REQUEST_PATH_HEADER carries pathname+search)", async () => {
+      mocks.setupProgressFindUnique.mockResolvedValue({ completedAt: null });
+      mocks.headers.mockResolvedValue(
+        new Headers({ "x-pathname": "/admin/setup?x=1" }),
       );
 
       render(await AdminLayout({ children: <p>Admin child</p> }));
@@ -346,6 +455,73 @@ describe("site style route-group gating", () => {
       render(await AdminLayout({ children: <p>Admin child</p> }));
 
       expect(screen.queryByText(NUDGE_TEXT)).toBeNull();
+    });
+
+    /**
+     * F4 item 1 — the issue's motivating actor, checked as a POSITIVE case
+     * rather than only ever as the thing another role's test happens not to
+     * be. A support-view-only officer has no `content`, `bookings`,
+     * `membership`, `finance` or `lodge` access at all, and the wizard's own
+     * route (`/admin/setup/wizard`, a `support` GET/view route) is exactly
+     * what admits them — so the banner must too.
+     */
+    it("shows the nudge to a support-view-only officer with no other admin access", async () => {
+      mocks.auth.mockResolvedValue({
+        user: {
+          id: "support-officer-1",
+          role: "ADMIN_READONLY",
+          accessRoles: [
+            {
+              role: "ADMIN_READONLY",
+              roleDefinition: {
+                overviewLevel: "NONE",
+                bookingsLevel: "NONE",
+                membershipLevel: "NONE",
+                financeLevel: "NONE",
+                lodgeLevel: "NONE",
+                contentLevel: "NONE",
+                supportLevel: "VIEW",
+              },
+            },
+          ],
+        },
+      });
+      mocks.memberFindUnique.mockResolvedValue({
+        active: true,
+        forcePasswordChange: false,
+        role: "ADMIN_READONLY",
+        financeAccessLevel: "NONE",
+        accessRoles: [
+          {
+            role: "ADMIN_READONLY",
+            roleDefinition: {
+              overviewLevel: "NONE",
+              bookingsLevel: "NONE",
+              membershipLevel: "NONE",
+              financeLevel: "NONE",
+              lodgeLevel: "NONE",
+              contentLevel: "NONE",
+              supportLevel: "VIEW",
+            },
+          },
+        ],
+      });
+      mocks.setupProgressFindUnique.mockResolvedValue({ completedAt: null });
+      // The admin layout's OWN admission gate (`guardAdminLayout`, step 6)
+      // checks area access for the REQUESTED path, defaulting to
+      // `/admin/dashboard` (the `overview` area) when none is supplied — this
+      // support-only matrix has no `overview` access, so the guard would
+      // bounce it before the nudge is ever reached. Request an actual
+      // `support`-area page instead, which is the realistic path for this
+      // actor (e.g. Admin Health) and lets the guard admit them on their own
+      // access.
+      mocks.headers.mockResolvedValue(
+        new Headers({ "x-pathname": "/admin/health" }),
+      );
+
+      render(await AdminLayout({ children: <p>Admin child</p> }));
+
+      expect(screen.getByText(NUDGE_TEXT)).toBeTruthy();
     });
   });
 });
