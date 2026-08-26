@@ -16,6 +16,16 @@ whose backing pages enforce their own permission areas — so which cards you ca
 open depends on your role. It is the natural starting point after a fresh
 install and the map to everything else in Setup & Configuration.
 
+**A banner elsewhere in admin points you here while setup is unfinished.**
+Everywhere in the admin area *except* the Setup pages themselves, an admin who
+can open the setup wizard sees a small banner saying the club's setup isn't
+finished, with a link straight to `/admin/setup/wizard`. It shows for anyone
+the wizard itself would admit — a support officer working their own steps
+included, not full administrators only — and it clears once the club marks
+setup finished. It never singles out one configuration area (earlier it wrongly
+named Site Style specifically, regardless of what was actually still
+outstanding).
+
 ## When you'd use it
 
 - You've just stood up a fork and want a guided checklist of what still needs
