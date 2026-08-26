@@ -35,7 +35,7 @@ is not.
 | Surface | Use it when | Where |
 | --- | --- | --- |
 | **The setup wizard** | You are setting a club up, coming back to finish, or have just upgraded and want to be told what is new | `/admin/setup/wizard` |
-| **The readiness checklist and hub cards** | You already know what you are looking for and want to go straight to it, or you want to run a provider test | `/admin/setup` |
+| **The readiness checklist and hub cards** | You already know what you are looking for and want to go straight to it | `/admin/setup` |
 | **Alpine Central Server setup** | *Not a setup surface at all* — see below | `/admin/alpine-server/setup` |
 
 The wizard is the destination: it is where a club's setup is meant to be done,
@@ -53,8 +53,9 @@ below.
 That shared derivation has one consequence worth knowing: **switching a module
 off removes its setup steps from both surfaces.** Turn Xero off in
 [Modules](modules.md) and the Operational Xero and Xero Mappings steps stop
-appearing, the Finance hub card goes with them, and the progress percentage
-recalculates around what is left. Nothing is deleted and nothing is
+appearing, and the progress percentage recalculates around what is left; with
+**both** Xero and the finance dashboard off there is no finance setup left at
+all, so the Finance hub card goes too. Nothing is deleted and nothing is
 remembered — the module toggle is the only record that the club said no, so
 turning it back on brings the steps straight back with whatever progress had
 already been recorded against them. This is also why progress reads as a
@@ -71,20 +72,41 @@ setting puts the older surfaces away.
    then **Save**. Support edit access is required; an officer without it sees
    the setting but cannot change it.
 
-**What goes:** the readiness cards on that page, and the four hub cards for
-Initial Setup, Finance, Booking Rules and Operational Integrations. Those four
-hub pages themselves send you back to the Setup page if you follow an old
-bookmark. **Site Style's own "Finish setup" button goes too** — that button
-published the public site, and once the surfaces are hidden the wizard's **Ready
-to open** screen is the single place that happens. Site Style still saves your
-colours, fonts and logo exactly as before; saving simply no longer makes the
-site live.
+**What goes:** the readiness cards on that page, the four hub cards for Initial
+Setup, Finance, Booking Rules and Operational Integrations, and the checklist's
+own summary tiles (Overall, Progress, Blocked, Skipped) — the wizard's rail is
+where progress is reported once the checklist has gone, and the page's heading
+changes from "Setup checklist" to "Setup" to say so. Three of those four hub
+pages send you back to the Setup page if you follow an old bookmark; **Finance
+sends you to the finance dashboard** at `/finance`, which is where its report
+mappings live (and back to the Setup page instead if the Finance Dashboard
+module is switched off, since there is then no dashboard to send you to).
+
+**Site Style's own "Finish setup" button goes too** — that button published the
+public site, and once the surfaces are hidden the wizard's **Ready to open**
+screen is the single place that happens. Site Style still saves your colours,
+fonts and logo exactly as before; saving simply no longer makes the site live.
+
+**One consequence of that is worth knowing before you switch it.** The wizard's
+Ready-to-open screen sits inside `/admin/setup/wizard`, which needs **Support**
+access; the Site Style page needs **Content**. So after retirement, an admin
+whose role is content-only can still edit and **Save** the site's styling, but
+can no longer make the public site live — that now needs somebody with Support
+access, working through the wizard. Before retirement both levers exist and
+either will do it. This is deliberate (owner decision, 26 Aug 2026): the point of
+retiring the surfaces is that publishing becomes one considered act in one
+place, and a second lever kept for convenience would undo that.
 
 **What stays, and why:** the setup wizard, the Setup page itself (which is where
-the switch lives, so you can always undo this), the lodge capacity card, and the
-three hub cards the wizard does not replace — **Membership & Members**,
-**Cancellation** and **Email Messages / Notifications**. The wizard offers no
-route to those, so hiding them would take a capability away rather than move it.
+the switch lives, so you can always undo this), the lodge capacity card,
+**Mark Setup Complete**, and the three hub cards the wizard does not replace —
+**Membership & Members**, **Cancellation** and **Email Messages /
+Notifications**. The wizard offers no route to those, so hiding them would take a
+capability away rather than move it. Mark Setup Complete stays for the same
+reason and is worth spelling out, because it looks like something the wizard
+replaced: it finishes the **setup journey**, whereas the wizard's Ready-to-open
+screen publishes the **public site**. Those are two different things, and only
+the second has a home in the wizard.
 
 **Nothing is deleted and nothing is lost.** No setting changes, no step's
 progress changes, and everything the hidden pages opened is still reachable —
@@ -114,7 +136,9 @@ enough — every sub-page is captured and detailed where it lives.
 
 2. Work through the **checklist categories**. A check can be marked done or
    skipped, and provider checks offer a **test** button (Stripe, SMTP, Sentry,
-   Xero) that pings the live service and reports the result. Marking a check
+   Xero) that pings the live service and reports the result — the wizard's step
+   for each of those four offers the same button, so retiring the checklist does
+   not take it away. Marking a check
    done, skipping it, reopening it, finishing setup and resetting progress are
    each recorded in the [Audit Log](audit-log.md) under their own event type
    and in the **system** category, so you can see who changed what and when.
@@ -172,15 +196,21 @@ above for how to choose.
    is reported separately from the club's** — however many lodges you have,
    this is one step of the journey, so adding a second lodge does not make the
    percentage go backwards.
-4. **Mark this step done**, **Skip for now**, or **Reopen** it, then
+4. Stripe, Email, Sentry and Operational Xero each add a **Test** button here —
+   the same provider test the checklist offers, calling the same check. Run it
+   and the step's verdict, the rail and the percentage all move with the
+   result. Changing a step's progress, and running a test, both need **Support**
+   edit access; the settings page each step links to is governed by its own
+   area, which the wizard names underneath the link.
+5. **Mark this step done**, **Skip for now**, or **Reopen** it, then
    **Continue**. Skipping buys you passage past a step; it does not hide it. A
    skipped step stays on the rail and on the outstanding list until it is done
    or no longer applies. You cannot skip *ahead* of a step you have not settled
    one way or the other — those rows are greyed and will not open.
-5. Switching a module off removes its steps entirely (a module you have declined
+6. Switching a module off removes its steps entirely (a module you have declined
    has nothing to configure). Change one on the **Modules** page and the rail
    redraws when you come back to the wizard's tab.
-6. Once every step is done or skipped, **Ready to open** unlocks at the foot of
+7. Once every step is done or skipped, **Ready to open** unlocks at the foot of
    the rail. It carries two separate things:
    - **Make the public site visible** — until you do this, visitors see the
      holding screen rather than the club's pages. This is the only place in the
@@ -290,12 +320,14 @@ the areas it links to:
 | Hub card | Opens | Its permission area |
 | --- | --- | --- |
 | Initial Setup | Install checklist, club identity, modules, lodge records, health (`/admin/setup/foundations`) | support |
-| Finance | Finance reporting, Xero setup, sync tools, report mappings — collapsed by default (`/admin/setup/finance`) | finance |
+| Finance | Finance reporting, Xero setup, sync tools (`/admin/setup/finance`). Report mappings are **not** here — they live on the finance dashboard, `/finance` | finance |
 | Booking Rules | Booking policy, seasons, age groups, promos, inventory, copy (`/admin/setup/booking-rules`) | bookings, lodge |
 | Operational Integrations | Provider readiness, Xero connection, modules, delivery health (`/admin/setup/integrations`) | support, finance |
 | Membership & Members | Membership types, member fields, subscription lockout ([membership-setup](membership-setup.md)) | membership |
 | Cancellation | Cancellation settings, request queues, message copy (`/admin/setup/cancellation`) | membership, support |
 | Email Messages / Notifications | Delivery rules, recipients, templates, member copy ([notifications](notifications.md)) | support |
+
+One setting lives on the Setup page itself rather than behind a hub card:
 
 | Setting | What it controls | Default | Where |
 | --- | --- | --- | --- |
@@ -342,7 +374,10 @@ or run `npm run config:self-heal`.
 | The **Finance** hub card has disappeared | Every step behind it belongs to a module that is switched off — with both Xero and the finance dashboard off there is no finance setup left to do, so the card goes rather than opening a page with nothing in it | Switch the module back on in [Modules](modules.md); the card and its steps return together |
 | A readiness card you remember is no longer listed | Its module was switched off. A module contributes no steps while it is off, on either surface | Check [Modules](modules.md). Nothing was lost — turning it back on restores the step and any progress recorded against it |
 | The whole checklist and all four hubs have gone at once | Somebody retired them — this is the **Setup surfaces** setting, not a fault | Setup → **Setup surfaces** at the foot of the page → Edit → untick → Save. The [Audit Log](audit-log.md) shows who changed it and when |
-| A bookmark to Initial Setup / Finance / Booking Rules / Operational Integrations lands on the Setup page | Those four hubs are retired for this club, and the route redirects rather than erroring | Use the wizard, which covers all four; or bring the hubs back under **Setup surfaces** |
+| A bookmark to Initial Setup / Booking Rules / Operational Integrations lands on the Setup page | Those hubs are retired for this club, and the route redirects rather than erroring | Use the wizard, which covers them; or bring the hubs back under **Setup surfaces** |
+| A bookmark to Finance lands on the finance dashboard | Same reason, different destination: the Finance hub's report mappings moved to `/finance`, so that is where the redirect goes | Use the dashboard's **Report mappings** section; or bring the hub back under **Setup surfaces** |
+| **Finance Report Mappings** is not in the Finance hub any more | It moved to the finance dashboard, so it is reachable without Support access and survives retiring the hubs | Open `/finance` and expand **Report mappings** at the foot of the page |
+| The **Save** button on Site Style no longer makes the site live | The surfaces have been retired, so publishing is the wizard's **Ready to open** screen — which needs Support access | Ask an admin with Support access to open the wizard and publish; or bring the surfaces back under **Setup surfaces** |
 | Site Style's **Finish setup** button is now just **Save** | The setup surfaces are retired, so publishing the public site happens only from the wizard's **Ready to open** screen | Style the site here as usual, then open the site from the wizard |
 | A check stays "blocked" | A required dependency isn't in place | Open the linked area and resolve the named requirement |
 | **Club Time Zone** stays blocked right after an upgrade | The application has not restarted since the migration, so the zone has not been recorded yet. The zone in use is still the right one | Restart the application, or run `npm run config:self-heal`. See the [Club Time Zone guide](club-time.md) |

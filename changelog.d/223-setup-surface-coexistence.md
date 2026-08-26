@@ -45,9 +45,30 @@
   it, and it is a switch rather than a one-way door: untick it and everything
   comes back exactly as it was. No setting, no step's progress and no theme
   value changes in either position. Following an old bookmark to one of the four
-  hubs takes you back to the Setup page rather than to an error, and the Setup
-  page itself always stays — it is where the switch lives. Membership & Members,
-  Cancellation and Email Messages / Notifications keep their cards whatever you
-  choose, because the wizard offers no route to those and hiding them would take
-  a capability away rather than move it. The change is recorded in the audit log
+  hubs takes you somewhere useful rather than to an error — the Setup page for
+  three of them, and the finance dashboard for Finance — and the Setup page
+  itself always stays, because it is where the switch lives. With the checklist
+  gone that page renames itself **Setup** and drops the checklist's summary
+  tiles, since the wizard's rail is where progress is reported; **Mark Setup
+  Complete** stays, because it finishes the setup journey rather than publishing
+  the site, and the wizard has no equivalent. Membership & Members, Cancellation
+  and Email Messages / Notifications keep their cards whatever you choose,
+  because the wizard offers no route to those and hiding them would take a
+  capability away rather than move it. The change is recorded in the audit log
   with who made it and which way.
+
+  **One consequence to know before you switch it.** Publishing the public site
+  becomes the wizard's **Ready to open** screen, which lives under Setup and
+  needs **Support** access; Site Style needs **Content**. So after retirement an
+  admin whose role is content-only can still edit and save the site's styling
+  but can no longer make the site live — that becomes a Support job. This is
+  deliberate: the point of retiring the surfaces is that publishing is one
+  considered act in one place.
+
+- **Finance Report Mappings moved to the finance dashboard (#223).** The editor
+  for the report groups the dashboard's revenue and expense views are drawn from
+  used to live inside the `/admin/setup/finance` drill-down. It is now a
+  collapsed **Report mappings** section at the foot of `/finance` itself —
+  beside the sync-health panel that has always linked to it, and reachable by a
+  finance officer who has no Support access at all. Nothing about who may read
+  or change the mappings has changed.
