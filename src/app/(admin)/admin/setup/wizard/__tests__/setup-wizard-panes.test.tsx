@@ -871,20 +871,25 @@ describe("switching off the module that owns the step you are standing on", () =
     expect(screen.queryByTestId("setup-wizard-moved-notice")).toBeNull();
   });
 
-  it("has no module-owned step ordered before the panes' own steps", () => {
+  it("has no module-owned step ordered before address-autocomplete", () => {
     /*
       The structural half of the reasoning above, so it stops being true LOUDLY
-      rather than quietly. Both of C13's panes sit on steps at or before every
-      module-owned step, which is why the only removal they can cause is the
-      self-removal covered above. A later child declaring a module step earlier
-      in the journey — an `order` below `address-autocomplete`'s — creates a
-      case nobody has thought about: an operator watching a rail row vanish from
-      BEHIND them. This fails at that moment.
+      rather than quietly. The invariant this guards — stated identically in
+      this block's own reasoning, in setup-wizard-panes.tsx's docstring,
+      guides/setup.md and UX_FLOW_MAP — is that every module-owned step orders
+      AT OR AFTER address-autocomplete specifically, not merely at or after
+      the EARLIER of the two panes (feature-flags is the earlier one, so a
+      Math.min over both pane steps would silently let a module step land in
+      the 61-139 gap between them: past feature-flags, still ahead of
+      address-autocomplete, and nobody would have noticed). Anchoring on
+      address-autocomplete alone is what closes that gap: a later child
+      declaring a module step earlier in the journey creates a case nobody has
+      thought about — an operator watching a rail row vanish from BEHIND them
+      — and this fails at that moment.
     */
     const orderOf = (id: SetupStepId) =>
       SETUP_STEP_REGISTRY.find((entry) => entry.id === id)!.order;
-    const paneSteps: SetupStepId[] = ["feature-flags", "address-autocomplete"];
-    const earliestPaneStep = Math.min(...paneSteps.map(orderOf));
+    const addressAutocompleteOrder = orderOf("address-autocomplete");
 
     const moduleOwned = SETUP_STEP_REGISTRY.filter(
       (entry) => entry.ownerModule !== CORE_STEP_OWNER,
@@ -893,9 +898,11 @@ describe("switching off the module that owns the step you are standing on", () =
     for (const entry of moduleOwned) {
       expect(
         entry.order,
-        `${entry.id} (module "${entry.ownerModule}") is ordered before the ` +
-          `modules pane's own steps — read the reasoning in this block`,
-      ).toBeGreaterThanOrEqual(earliestPaneStep);
+        `${entry.id} (module "${entry.ownerModule}", order ${entry.order}) must ` +
+          `order >= address-autocomplete's ${addressAutocompleteOrder} — every ` +
+          `module step must sit at or after the modules panes so no rail row ` +
+          `can vanish from behind the operator`,
+      ).toBeGreaterThanOrEqual(addressAutocompleteOrder);
     }
   });
 });
