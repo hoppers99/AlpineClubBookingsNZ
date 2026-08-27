@@ -42,13 +42,18 @@ import {
  * 2. **Where the operator is.** The landing step is the traversal's
  *    `currentStepId`, so leaving and coming back resumes rather than restarts.
  * 3. **Refetching, so the rail follows the module flags (D4/D5).** Switching a
- *    module off must remove its steps from the rail without a page reload, and
- *    the modules editor is a DIFFERENT admin page — this child links out to it
- *    rather than embedding its toggles (a toggle in the rail is C3's). So the
- *    honest mechanism is a refetch when the operator comes back to this tab or
- *    window, which is exactly when the flags can have changed. It is not a
- *    subscription and does not claim to be: a flag changed in another tab shows
- *    up here the moment this tab is focused, and the Refresh button forces it.
+ *    module off must remove its steps from the rail without a page reload. When
+ *    C5 shipped, the modules editor was only ever a DIFFERENT admin page, so
+ *    the honest mechanism was a refetch when the operator comes back to this
+ *    tab or window — exactly when the flags can have changed. That is still not
+ *    a subscription and still does not claim to be: a flag changed in another
+ *    tab shows up here the moment this tab is focused, and the Refresh button
+ *    forces it.
+ *
+ *    **C13 (#239) put the toggles ON this screen**, as the `feature-flags` and
+ *    `address-autocomplete` panes, which is where D5's reflow-beside-the-rail
+ *    actually happens. That save never leaves the tab, so it reaches the shell
+ *    through the third trigger below rather than through either of these two.
  *
  *    **C12 adds the third trigger, and it had to be a new one.** Both events
  *    above are about coming BACK to this tab, and an inline pane
@@ -63,6 +68,16 @@ import {
  * banner-nesting rule and the two genuinely different permissions involved are
  * written out in `setup-wizard-panes.tsx`.
  */
+
+/**
+ * How long after a readiness-input-changed event a subsequent "moved" is still
+ * attributed to it (F4, #239 fix round). Generous rather than tight: the whole
+ * sequence — the pane's PUT resolving, `emitSetupReadinessInputChanged`, this
+ * client's own refetch, the re-render that discovers the step is gone — is a
+ * handful of network round trips on the same tab, not a window an operator
+ * could plausibly fill with an unrelated cause in the meantime.
+ */
+const LOCAL_SAVE_ATTRIBUTION_WINDOW_MS = 5000;
 
 function errorMessageFrom(body: unknown, fallback: string) {
   if (
@@ -90,6 +105,23 @@ export function SetupWizardClient({
   );
   /** The step the operator chose stopped being available, and they were moved. */
   const [moved, setMoved] = useState(false);
+  /**
+   * F4 (#239 fix round): whether THIS move was caused by a save this client
+   * just watched happen, so the notice can say so instead of leaving the
+   * operator's own success message to die with the remount that caused it.
+   *
+   * `SetupWizardStepPane` keys its wrapper by `stepId` (`setup-wizard-panes.tsx`),
+   * so the self-removal case — unchecking `address-autocomplete` in the modules
+   * pane and saving — unmounts `ModulesSection` in the very same commit that
+   * moves the operator elsewhere. `ModulesSection`'s own "Module settings
+   * saved." message is local state, and it goes with it: the operator watches
+   * Save turn into a notice that talks only about navigation, with no word that
+   * the write it replaced actually succeeded. `lastLocalSaveAtRef` below is
+   * stamped by the readiness-input-changed listener — the only signal this
+   * client has that a pane just wrote something — and read once, here, when a
+   * move is about to be reported.
+   */
+  const [movedByLocalSave, setMovedByLocalSave] = useState(false);
   /**
    * A publish is in flight on the launch panel, or has just finished.
    *
@@ -133,6 +165,16 @@ export function SetupWizardClient({
    */
   const loadSeqRef = useRef(0);
 
+  /**
+   * The stamp `movedByLocalSave` above reads. `0` means "no local save is
+   * outstanding"; any other value is the `Date.now()` the readiness-input-
+   * changed listener last fired at. Consumed (reset to `0`) the moment a move
+   * is reported, so a LATER, unrelated move — the flags changed in another
+   * tab, say, read on the next focus refetch — cannot reuse a stale save's
+   * attribution.
+   */
+  const lastLocalSaveAtRef = useRef(0);
+
   const load = useCallback(async () => {
     const seq = (loadSeqRef.current += 1);
     setLoading(true);
@@ -163,8 +205,10 @@ export function SetupWizardClient({
     void load();
   }, [load]);
 
-  // D4/D5: the modules editor is another page, so a module flag changes while
-  // this tab is in the background. Coming back to it is the moment to re-read.
+  // D4/D5: a module flag can still be changed on `/admin/modules` in another
+  // tab — C13 added the inline route, it did not remove the page. Coming back
+  // to this tab is the moment to re-read for that case; the in-tab case is the
+  // event listener below.
   useEffect(() => {
     function refresh() {
       if (document.visibilityState === "visible") void load();
@@ -183,6 +227,13 @@ export function SetupWizardClient({
   // no visibility test worth making.
   useEffect(() => {
     function reread() {
+      // F4 (#239 fix round): stamped BEFORE the refetch, not after — the
+      // move this save can cause is discovered by the effects below reacting
+      // to the refetch's OWN result, and that result can land before this
+      // function returns if `load()` ever settles synchronously (it never
+      // does today, but stamping first costs nothing and removes the
+      // ordering assumption).
+      lastLocalSaveAtRef.current = Date.now();
       void load();
     }
     window.addEventListener(SETUP_READINESS_INPUT_CHANGED_EVENT, reread);
@@ -198,6 +249,28 @@ export function SetupWizardClient({
         : null,
     [payload],
   );
+
+  /**
+   * Report a move, attributing it to a local save when `lastLocalSaveAtRef`
+   * was stamped recently enough (F4, #239 fix round). Shared by both
+   * `setMoved(true)` call sites below — the explicit-selection case and the
+   * no-selection case are the same defect from the operator's point of view,
+   * and `ModulesSection`'s remount destroys its own "saved" message the same
+   * way regardless of which one fired.
+   *
+   * Consumes the stamp: once read here, it is reset to `0` so a later,
+   * unrelated move (the flags changed in another tab, discovered on the next
+   * focus refetch) cannot reuse this save's attribution.
+   */
+  const reportMoved = useCallback(() => {
+    const stampedAt = lastLocalSaveAtRef.current;
+    const causedByLocalSave =
+      stampedAt > 0 &&
+      Date.now() - stampedAt <= LOCAL_SAVE_ATTRIBUTION_WINDOW_MS;
+    lastLocalSaveAtRef.current = 0;
+    setMovedByLocalSave(causedByLocalSave);
+    setMoved(true);
+  }, []);
 
   // The selection has to survive a refetch, but not survive a step DISAPPEARING
   // — which is precisely what happens when the module owning it is switched off
@@ -217,13 +290,28 @@ export function SetupWizardClient({
   // …and when that fallback FIRES, say so. An operator who chose a step
   // explicitly and then finds the pane showing a different one has, from where
   // they are sitting, watched the screen change under them for no reason — the
-  // module owning it was switched off in another tab, or somebody else settled
-  // the step and moved the frontier. Landing them somewhere else without a word
-  // is the same defect as the Back button's teleport, one refetch later.
+  // module owning it was switched off, or somebody else settled the step and
+  // moved the frontier. Landing them somewhere else without a word is the same
+  // defect as the Back button's teleport, one refetch later.
+  //
+  // C13 (#239) is why the notice no longer says the step changed "elsewhere":
+  // an operator standing on `address-autocomplete` can now switch that very
+  // module off in the pane below, from this screen, and be moved by their own
+  // save. "Elsewhere" was true of every case C5 could produce and is false of
+  // that one, so the sentence states the OUTCOME rather than guessing where —
+  // "no longer available" also covers the second cause, a step that still
+  // exists but has been put back behind the frontier by a stale predecessor.
   //
   // The selection is cleared at the same moment, deliberately: left set, this
   // would re-fire on every subsequent refetch, and the operator has already been
   // moved once.
+  //
+  // `reportMoved()` (F4, #239 fix round), not a bare `setMoved(true)`: the
+  // save that removed this step also destroyed `ModulesSection`'s own
+  // "Module settings saved." message when the pane remounted under a new
+  // `stepId` key, so the notice prefixes itself with a word about the write
+  // whenever a readiness-input-changed event fired recently enough to be
+  // this save. See `reportMoved` above and `lastLocalSaveAtRef`'s docblock.
   useEffect(() => {
     if (!view || selectedId === null) return;
     const resolved =
@@ -234,12 +322,56 @@ export function SetupWizardClient({
         : resolveInitialStepId(view, selectedId);
     if (resolved === selectedId) return;
     setSelectedId(null);
-    setMoved(true);
-  }, [view, selectedId, launchPinned]);
+    reportMoved();
+  }, [view, selectedId, launchPinned, reportMoved]);
+
+  /**
+   * The same courtesy when there was NO explicit selection to invalidate.
+   *
+   * The effect above can only speak for an operator who clicked a rail row:
+   * with `selectedId === null` they are simply riding the traversal's own
+   * `currentStepId`, which moves silently by design. That was harmless until
+   * C13 (#239), because nothing an operator did ON this screen could delete the
+   * step under them — the modules editor was another page, and coming back to
+   * this tab is a navigation they performed themselves.
+   *
+   * It is not harmless now. An operator whose resume point IS
+   * `address-autocomplete` can clear that module's checkbox in the pane below,
+   * press Save, and watch the whole frame become a different step — their own
+   * action, but not an action that named this step, and nothing on screen
+   * connecting the two.
+   *
+   * The test is deliberately narrow: the step that was on screen has left the
+   * JOURNEY, not merely been overtaken. A frontier that moves under a completed
+   * step is the wizard doing exactly what the operator asked and needs no
+   * notice, and firing there would put a warning on every ordinary "mark done
+   * and move on".
+   */
+  const shownStepRef = useRef<SetupWizardRailSelection | null>(null);
+  useEffect(() => {
+    const previous = shownStepRef.current;
+    shownStepRef.current = activeStepId;
+    if (!view || selectedId !== null) return;
+    // No `previous === SETUP_WIZARD_LAUNCH_ID` arm here (F5, #239 fix round):
+    // it cannot occur. `activeStepId`'s own `useMemo` above resolves the
+    // launch id back to `view.currentStepId` the instant `allResolved` goes
+    // false, in the SAME render that would otherwise start invalidating a
+    // `selectedId === LAUNCH_ID` selection — so by the time that
+    // invalidation's `setSelectedId(null)` has actually committed and this
+    // effect runs with `selectedId === null`, `shownStepRef.current` was
+    // already overwritten with the real step one render earlier. `previous`
+    // can therefore never be observed holding `SETUP_WIZARD_LAUNCH_ID` at the
+    // point where the guard above has already required `selectedId === null`.
+    if (previous === null) return;
+    if (previous === activeStepId) return;
+    if (view.steps.some((step) => step.id === previous)) return;
+    reportMoved();
+  }, [view, selectedId, activeStepId, reportMoved]);
 
   /** Any deliberate move retires the notice — they can see where they are now. */
   const select = useCallback((id: SetupWizardRailSelection) => {
     setMoved(false);
+    setMovedByLocalSave(false);
     // Leaving the launch panel releases its pin: the operator has read whatever
     // the publish had to say and chosen to go elsewhere.
     if (id !== SETUP_WIZARD_LAUNCH_ID) setLaunchPinned(false);
@@ -390,14 +522,20 @@ export function SetupWizardClient({
           data-testid="setup-wizard-moved-notice"
         >
           <p>
-            This step changed elsewhere — you have been returned to the next
-            step.
+            {movedByLocalSave
+              ? "Your module settings were saved. That step is no longer " +
+                "available — you have been moved to the next one."
+              : "That step is no longer available — you have been moved to " +
+                "the next one."}
           </p>
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            onClick={() => setMoved(false)}
+            onClick={() => {
+              setMoved(false);
+              setMovedByLocalSave(false);
+            }}
           >
             Dismiss
           </Button>
@@ -432,14 +570,16 @@ export function SetupWizardClient({
           ) : activeStep ? (
             // The frame and the pane are SIBLINGS in one column, in this order.
             // The pane sits below because the frame carries the step's identity
-            // — its title, its state badge and C11's defaulted banner. Only
-            // ONE of the two panes proved here changes what that banner means:
-            // club-time-zone's is the installed-default copy, whose "check it
-            // below" sentence now points at something for the first time.
-            // club-config's is the read-from-deployment copy (see
-            // `defaultedBannerCopy` in `setup-wizard-step-frame.tsx`), which
-            // never said "below" in the first place. See `setup-wizard-panes.tsx`
-            // for why the pane can not be moved inside the frame instead.
+            // — its title, its state badge and C11's defaulted banner. Of the
+            // four steps with a pane, only `club-time-zone` changes what that
+            // banner MEANS: its is the installed-default copy, whose "check it
+            // below" sentence now points at something for the first time. The
+            // other three (`club-config`, and C13's `feature-flags` and
+            // `address-autocomplete`) all carry the read-from-deployment copy
+            // (see `defaultedBannerCopy` in `setup-wizard-step-frame.tsx`),
+            // which never said "below" in the first place. See
+            // `setup-wizard-panes.tsx` for why the pane can not be moved inside
+            // the frame instead.
             <div className="space-y-4">
               <SetupWizardStepFrame
                 step={activeStep}

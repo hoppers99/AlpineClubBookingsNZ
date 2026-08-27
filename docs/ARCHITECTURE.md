@@ -1542,7 +1542,12 @@ about different things** (epic #213, C12). Its step frame heads its progress
 controls with one banner, and the inline editor mounted beside the frame —
 `setup-wizard-panes.tsx`, an exhaustive `Record<SetupStepId, ComponentType |
 null>` whose `club-config` entry is `ClubIdentityWizardPane` (the thin wrapper
-that mounts the real `ClubIdentityPanel`) — heads its own with another. That is
+that mounts the real `ClubIdentityPanel`) — heads its own with another. C13
+(#239) added `ModulesWizardPane`, wrapping the zero-prop `ModulesSection` that
+`/admin/modules` now mounts as a shell, and it is registered against TWO step
+ids (`feature-flags` and `address-autocomplete`) — the first entry in the table
+where two steps share one component, which is what the render site's
+`key={stepId}` exists for. That is
 not the stacked-sibling question above waiting on a decision: changing a step's
 PROGRESS is one API for the whole journey, enforced at `support: edit`, while
 doing the step's WORK is governed by that step's own area, and a club-defined

@@ -17,7 +17,7 @@
  * back into the wizard would be a panel that knows the wizard exists, and these
  * panels are shared: `ClubIdentityPanel` renders on
  * `/admin/appearance/identity`, `ClubTimeZonePanel` on `/admin/club-time`, and
- * C13's modules section will render on `/admin/modules`. So the panel announces
+ * C13's `ModulesSection` on `/admin/modules`. So the panel announces
  * a FACT about the database — "I persisted something a setup check may read" —
  * which is true on every one of those pages, and anything deriving setup
  * readiness re-reads. Nothing here names the wizard, and a panel emitting into
@@ -27,7 +27,9 @@
  * the whole journey (`GET /api/admin/setup/wizard`) — there is no per-step
  * refetch to target — and a panel does not know which step ids its settings
  * feed. `club-config`'s editor is the club-identity panel, but the club name is
- * also read by checks the panel has never heard of.
+ * also read by checks the panel has never heard of. C13 makes the point
+ * bluntly: a module save can change WHICH STEPS EXIST, so there is no single
+ * step id the announcement could honestly carry.
  *
  * Same shape and same reasoning as `public-content-settings-events.ts` and
  * `member-onboarding-events.ts`: a window event, because the two sides are

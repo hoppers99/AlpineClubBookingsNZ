@@ -4,6 +4,7 @@ import type { ComponentType } from "react";
 import { useSession } from "next-auth/react";
 import { ClubIdentityPanel } from "@/components/admin/club-identity-panel";
 import { ClubTimeZonePanel } from "@/components/admin/club-time-zone-panel";
+import { ModulesSection } from "@/app/(admin)/admin/modules/modules-section";
 import { isFullAdmin } from "@/lib/access-roles";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
 import { canViewSetupStepPane } from "@/lib/setup-wizard-view";
@@ -152,6 +153,57 @@ function ClubTimeZoneWizardPane() {
 }
 
 /**
+ * The module toggles, in the wizard (`feature-flags` AND `address-autocomplete`).
+ *
+ * **This is the moment mockup 2 was drawn for** (D5, C13 #239). Every other pane
+ * edits facts a readiness check READS; this one edits which steps the journey
+ * HAS. `setup-step-registry.ts` derives applicability from the module flags, so
+ * ticking Xero integration adds `xero-operational` and `xero-mappings` to the
+ * rail, and the denominator D7's percentage divides by, without the operator
+ * leaving the screen. `ModulesSection` emits
+ * `emitSetupReadinessInputChanged()` after a successful save and the shell
+ * re-reads the whole journey; nothing here has to know that.
+ *
+ * **ONE component for TWO steps, deliberately.** `address-autocomplete` is not a
+ * pane of its own — it is one checkbox on this very section, so pointing its
+ * entry at a second component would be two copies of the same editor differing
+ * only in a heading. It also makes this the first registry entry where two steps
+ * share a component, which is the case `SetupWizardStepPane`'s `key={stepId}`
+ * was written for and could not be tested against until now: walking between the
+ * two steps must START THE SECTION OVER rather than reconcile it as the same
+ * element and carry an unsaved draft across a navigation the operator believes
+ * discarded it.
+ *
+ * The heading sits OUTSIDE the section and renders unconditionally, for the
+ * mount-order reason spelled out on `ClubIdentityWizardPane` — and the section
+ * carries no heading of its own precisely so each host can supply the right
+ * one. `/admin/modules` gives it the screen's `h1`; here it is an `h3` under the
+ * wizard's own.
+ *
+ * A `<section>` wrapper with a border, like the club-identity pane and unlike
+ * the time-zone one: `ModulesSection` renders a banner, a toolbar and a grid of
+ * bordered cards, but no frame around the lot.
+ */
+function ModulesWizardPane() {
+  return (
+    <section className="space-y-3 rounded-md border bg-card p-5">
+      <div className="space-y-1">
+        <h3 className="text-lg font-semibold text-foreground">Modules</h3>
+        <p className="text-sm text-muted-foreground">
+          The same editor as Admin &rarr; Modules. Switching a module on or off
+          and saving adds or removes its setup steps here in the rail. Address
+          autocomplete is both a checkbox here and its own step in the journey,
+          because it needs credentials as well as the switch. Saving does not
+          tick this step off — use &ldquo;Mark this step done&rdquo; above when
+          you are happy with it.
+        </p>
+      </div>
+      <ModulesSection />
+    </section>
+  );
+}
+
+/**
  * Step id -> the editor the wizard mounts beneath its frame, or `null` with the
  * reason there is none.
  *
@@ -183,11 +235,11 @@ export const SETUP_STEP_PANES: Record<SetupStepId, ComponentType | null> = {
   // it needs a chosen member before it can render anything, so there is no
   // zero-prop section to embed. `/admin/members` stays the link out.
   "seed-admin": null,
-  // C13 (#239) embeds the module toggles here — the moment mockup 2 promised,
-  // where switching a module on redraws the rail beside it. Until then the
-  // check carries no `href` and no `links` either, so this step is the one
-  // that most needs a pane.
-  "feature-flags": null,
+  // C13 (#239): the module toggles, and the moment mockup 2 promised — switching
+  // a module on redraws the rail beside it. This step had no pane AND no link
+  // (its check carries neither `href` nor `links`), so it was the one step the
+  // wizard offered no route out of at all.
+  "feature-flags": ModulesWizardPane,
   // The club's buildings are a LIST, and each one is set up through its own
   // multi-page per-lodge flow (C6, #221). The step already renders one link
   // per lodge; embedding would mean embedding a whole flow, not a section.
@@ -222,9 +274,18 @@ export const SETUP_STEP_PANES: Record<SetupStepId, ComponentType | null> = {
   "email-ses": null,
   sentry: null,
   "xero-operational": null,
-  // One toggle on the modules section — so C13 decides it, alongside
-  // `feature-flags`, rather than growing a second pane for the same section.
-  "address-autocomplete": null,
+  // C13 (#239) decided it: RIDES ALONG on the same section. The step is one
+  // checkbox on that grid, so a pane of its own would be a second copy of the
+  // same editor differing only in a heading — and the wizard would then hold
+  // two components that fetch and save the same `/api/admin/modules`. The one
+  // asymmetry is deliberate and stated rather than hidden: switching THIS
+  // module off from THIS step removes the step the operator is standing on, so
+  // the shell's fallback moves them on and its notice says so
+  // (`setup-wizard-client.tsx`, which C13 also taught to speak when the
+  // operator had made no explicit selection). No other module owns a step at or
+  // before `address-autocomplete`'s order, so that is the only self-removal
+  // either pane can produce.
+  "address-autocomplete": ModulesWizardPane,
   // Not a setting: the check asks whether a live operational Xero connection
   // exists, and the link goes to `/finance` to look at the result.
   "finance-dashboard": null,
@@ -265,12 +326,12 @@ export function SetupWizardStepPane({
     // share one pane starts the pane over rather than reconciling it as the
     // same element and carrying the previous step's half-typed form across —
     // a staged edit surviving a navigation the operator believes discarded it.
-    // NOT EXERCISED TODAY, and said plainly rather than left to read as tested:
-    // the registry currently maps no two steps to the same component, so every
-    // move changes the component type and remounts on its own. C13 (#239) is
-    // the first that can, with `feature-flags` and `address-autocomplete` both
-    // able to point at the modules section — the case to write a test for is
-    // its, because it is the first branch on which one can exist.
+    // EXERCISED SINCE C13 (#239): `feature-flags` and `address-autocomplete`
+    // both mount `ModulesWizardPane`, so React would otherwise reconcile the
+    // two as one element and keep the unsaved checkbox draft. Pinned in
+    // `setup-wizard-panes.test.tsx` -> "two steps sharing one pane" — a test
+    // C12 could not write, because until now no two entries named the same
+    // component and every move remounted on its own.
     <div
       key={stepId}
       data-testid="setup-wizard-step-pane"

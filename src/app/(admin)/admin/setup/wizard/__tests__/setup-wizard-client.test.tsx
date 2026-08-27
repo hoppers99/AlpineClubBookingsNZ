@@ -546,7 +546,18 @@ describe("SetupWizardClient", () => {
 
     fireEvent.focus(window);
     const notice = await screen.findByTestId("setup-wizard-moved-notice");
-    expect(notice.textContent).toContain("returned to the next step");
+    expect(notice.textContent).toContain("moved to the next one");
+    // C13 (#239) retired "changed elsewhere": the operator can now switch off
+    // the module owning the step they are standing on, from the pane on that
+    // very screen, and be moved by their own save. The notice states the
+    // outcome and claims nothing about where the change happened.
+    expect(notice.textContent).not.toContain("elsewhere");
+    // F4 (#239 fix round): this move came from a plain focus refetch, not a
+    // readiness-input-changed event — no local save happened on this screen
+    // at all — so the notice must NOT claim one did. See
+    // setup-wizard-panes.test.tsx's "switching off the module that owns the
+    // step you are standing on" block for the positive case.
+    expect(notice.textContent).not.toContain("Your module settings were saved.");
 
     // Dismissible, and it does not come back on the next refetch — the
     // selection was cleared when it fired, so there is nothing left to

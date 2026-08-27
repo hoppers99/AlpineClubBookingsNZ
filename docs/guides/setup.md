@@ -262,7 +262,8 @@ above for how to choose.
    where that work is actually done.
 
    **Some steps also carry the real editor, right there beneath the check.**
-   **Club Configuration** and **Club Time Zone** are the first two. The form you
+   **Club Configuration**, **Club Time Zone**, **Feature Flags** and **Address
+   Autocomplete** have one today. The form you
    get is the same one that step's own settings page shows, saving to the same
    place, so nothing is stored twice and nothing behaves differently for having
    been reached from here. Editing is still staged: you change the fields, then
@@ -282,6 +283,31 @@ above for how to choose.
    sit in the frame above the editor and are unaffected. **Club Time Zone** is stricter than
    most: it is a full-administrator setting, and anybody else is told so in
    place of the form.
+
+   **The module toggles are the one editor that changes the journey itself.**
+   **Feature Flags** and **Address Autocomplete** share ONE editor — the module
+   grid from **Admin → Modules** — because Address Autocomplete is a single
+   checkbox on that grid rather than a screen of its own. Whichever of the two
+   steps you are on, you get the whole grid.
+
+   A module that is switched off contributes no
+   setup steps, so ticking **Xero integration** and saving makes its two steps
+   appear in the rail beside you, and clearing it makes them go away again.
+   The percentage moves at the same time, because the number of steps it is
+   dividing by has just changed — which is the reason progress here is a
+   percentage and never "3 of 12" (see below).
+
+   One case is worth knowing about before it surprises you. **Address
+   Autocomplete is the only step whose own module's checkbox is on the grid
+   underneath it**, so clearing that checkbox while you are standing on that
+   step deletes the step you are on. The wizard moves you to the next
+   outstanding one and tells you it has, rather than silently changing the
+   screen. Nothing can disappear from BEHIND you: every module-owned step sits
+   later in the journey than the two steps this editor appears on.
+
+   Switching a module off on `/admin/modules` in another tab still works
+   exactly as it did — the rail catches up when you come back to the wizard's
+   tab, with no page reload.
 
    The wizard never becomes a second place to store a setting. **Website
    Styling** is a step of exactly this shape: it
@@ -317,8 +343,10 @@ above for how to choose.
    or no longer applies. You cannot skip *ahead* of a step you have not settled
    one way or the other — those rows are greyed and will not open.
 6. Switching a module off removes its steps entirely (a module you have declined
-   has nothing to configure). Change one on the **Modules** page and the rail
-   redraws when you come back to the wizard's tab.
+   has nothing to configure). Change one in the wizard's own module toggles —
+   the **Feature Flags** or **Address Autocomplete** step — and the rail redraws
+   as you save it. Change one on the **Modules** page in another tab and the
+   rail redraws when you come back to the wizard's tab.
 7. Once every step is **confirmed or skipped**, **Ready to open** unlocks at
    the foot of the rail. A step still showing **Default in place** keeps it
    locked, which is deliberate: a club should not arrive at "ready to open"
