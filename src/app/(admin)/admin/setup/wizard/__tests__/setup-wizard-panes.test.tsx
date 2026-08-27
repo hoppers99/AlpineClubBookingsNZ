@@ -820,6 +820,12 @@ describe("switching off the module that owns the step you are standing on", () =
 
     const notice = await screen.findByTestId("setup-wizard-moved-notice");
     expect(notice.textContent).toContain("no longer available");
+    // F4 (#239 fix round): the section's own "Module settings saved." message
+    // dies with the remount its own save causes (a new `stepId` key on
+    // `SetupWizardStepPane`), so the notice that survives it must say the
+    // write succeeded — otherwise the operator's screen goes straight from
+    // "Save" to a sentence about navigation with no word the write landed.
+    expect(notice.textContent).toContain("Your module settings were saved.");
     expect(screen.queryByTestId("setup-wizard-rail-row-address-autocomplete")).toBeNull();
     expect(
       screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
@@ -849,6 +855,11 @@ describe("switching off the module that owns the step you are standing on", () =
 
     const notice = await screen.findByTestId("setup-wizard-moved-notice");
     expect(notice.textContent).toContain("no longer available");
+    // F4 (#239 fix round): this path — no explicit selection — goes through
+    // the SAME `reportMoved()` as the explicit-selection test above, so it
+    // must carry the same acknowledgement that the write behind the move
+    // actually succeeded.
+    expect(notice.textContent).toContain("Your module settings were saved.");
     expect(
       screen.getByTestId("setup-wizard-step-frame").getAttribute("data-step-id"),
     ).not.toBe("address-autocomplete");

@@ -29,11 +29,23 @@
 
   **Admin → Modules itself is unchanged in what it does.** The editor moved into
   a component the wizard can also mount, which leaves the page a thin shell
-  around it; the only visible difference is that Refresh and Save now sit on
-  their own row beneath the page's heading rather than beside it.
+  around it; the only visible difference is that **Reload settings** (renamed
+  from **Refresh** — the wizard shell has its own, differently-scoped Refresh
+  button beside this section, and the two need different names) and Save now
+  sit on their own row beneath the page's heading rather than beside it. This
+  button now also fires itself when you come back to a tab left open on this
+  screen, the same way the wizard's own Refresh already did, so a second
+  admin's change in another tab or window shows up here without a manual
+  click — unless you have an unsaved tick pending, which it never overwrites.
 
 - **The wizard says so whenever it moves you off a step, not only when you
   picked that step yourself (#239).** It used to announce the move only if you
   had clicked the step in the rail; if you were simply resuming where you left
   off, the screen could change under you without a word. That was harmless while
   nothing on the wizard could delete a step, and it is not any more.
+
+  When that move was caused by your own save on the modules grid — clearing
+  the checkbox for the step you were standing on — the notice now says so:
+  "Your module settings were saved." leads it, because the save's own success
+  message would otherwise have vanished with the screen it was written on
+  before you could read it.

@@ -230,14 +230,20 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
  *   path is an administrator who has already saved Admin > Modules and never
  *   confirmed this step: the seed writes no `AdminModuleSettings` row at all,
  *   so a fresh install without one reads `warning`, not `defaulted`. The value
- *   was therefore chosen by a person, just not in the wizard —
- *   `environment-role`'s shape, not an installer placeholder. **The second
- *   half of this entry was retired by C13 (#239)**, and is recorded because it
- *   would otherwise read as a reason to reclassify: the class used to be
- *   argued partly from the step having no `href`, no `links` and therefore
- *   nothing for "check it below" to point at. There IS something below now —
- *   the module toggles themselves — and it changes nothing here, because the
- *   class is decided by where the evidence came from and that is unchanged.
+ *   was therefore chosen by a person — `environment-role`'s shape, not an
+ *   installer placeholder. (The tail used to add "just not in the wizard",
+ *   which C13 (#239) itself falsifies: its inline modules pane lets an
+ *   operator save those same toggles from inside the wizard and never press
+ *   "Mark this step done", reaching this exact `defaulted` state with the
+ *   choice made IN the wizard. The clause is retired rather than amended,
+ *   because the class was never decided by which screen wrote the value.)
+ *   **The second half of this entry was retired by C13 (#239)**, and is
+ *   recorded because it would otherwise read as a reason to reclassify: the
+ *   class used to be argued partly from the step having no `href`, no `links`
+ *   and therefore nothing for "check it below" to point at. There IS
+ *   something below now — the module toggles themselves — and it changes
+ *   nothing here, because the class is decided by where the evidence came
+ *   from and that is unchanged.
  * - **`seed-admin` is `installed-default`.** Its check is satisfied by a row
  *   the installer's own seed created in THIS CLUB'S database
  *   (`SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD`), editable on the page it links

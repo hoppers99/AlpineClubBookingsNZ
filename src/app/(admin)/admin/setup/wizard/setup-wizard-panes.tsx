@@ -192,7 +192,7 @@ function ModulesWizardPane() {
         <p className="text-sm text-muted-foreground">
           The same editor as Admin &rarr; Modules. Switching a module on or off
           and saving adds or removes its setup steps here in the rail. Address
-          autocomplete is one of the checkboxes below; it has a step of its own
+          autocomplete is both a checkbox here and its own step in the journey,
           because it needs credentials as well as the switch. Saving does not
           tick this step off — use &ldquo;Mark this step done&rdquo; above when
           you are happy with it.

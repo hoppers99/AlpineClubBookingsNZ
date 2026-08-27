@@ -69,6 +69,16 @@ import {
  * written out in `setup-wizard-panes.tsx`.
  */
 
+/**
+ * How long after a readiness-input-changed event a subsequent "moved" is still
+ * attributed to it (F4, #239 fix round). Generous rather than tight: the whole
+ * sequence — the pane's PUT resolving, `emitSetupReadinessInputChanged`, this
+ * client's own refetch, the re-render that discovers the step is gone — is a
+ * handful of network round trips on the same tab, not a window an operator
+ * could plausibly fill with an unrelated cause in the meantime.
+ */
+const LOCAL_SAVE_ATTRIBUTION_WINDOW_MS = 5000;
+
 function errorMessageFrom(body: unknown, fallback: string) {
   if (
     typeof body === "object" &&
@@ -95,6 +105,23 @@ export function SetupWizardClient({
   );
   /** The step the operator chose stopped being available, and they were moved. */
   const [moved, setMoved] = useState(false);
+  /**
+   * F4 (#239 fix round): whether THIS move was caused by a save this client
+   * just watched happen, so the notice can say so instead of leaving the
+   * operator's own success message to die with the remount that caused it.
+   *
+   * `SetupWizardStepPane` keys its wrapper by `stepId` (`setup-wizard-panes.tsx`),
+   * so the self-removal case — unchecking `address-autocomplete` in the modules
+   * pane and saving — unmounts `ModulesSection` in the very same commit that
+   * moves the operator elsewhere. `ModulesSection`'s own "Module settings
+   * saved." message is local state, and it goes with it: the operator watches
+   * Save turn into a notice that talks only about navigation, with no word that
+   * the write it replaced actually succeeded. `lastLocalSaveAtRef` below is
+   * stamped by the readiness-input-changed listener — the only signal this
+   * client has that a pane just wrote something — and read once, here, when a
+   * move is about to be reported.
+   */
+  const [movedByLocalSave, setMovedByLocalSave] = useState(false);
   /**
    * A publish is in flight on the launch panel, or has just finished.
    *
@@ -137,6 +164,16 @@ export function SetupWizardClient({
    * `payload`, `error` or `loading`.
    */
   const loadSeqRef = useRef(0);
+
+  /**
+   * The stamp `movedByLocalSave` above reads. `0` means "no local save is
+   * outstanding"; any other value is the `Date.now()` the readiness-input-
+   * changed listener last fired at. Consumed (reset to `0`) the moment a move
+   * is reported, so a LATER, unrelated move — the flags changed in another
+   * tab, say, read on the next focus refetch — cannot reuse a stale save's
+   * attribution.
+   */
+  const lastLocalSaveAtRef = useRef(0);
 
   const load = useCallback(async () => {
     const seq = (loadSeqRef.current += 1);
@@ -190,6 +227,13 @@ export function SetupWizardClient({
   // no visibility test worth making.
   useEffect(() => {
     function reread() {
+      // F4 (#239 fix round): stamped BEFORE the refetch, not after — the
+      // move this save can cause is discovered by the effects below reacting
+      // to the refetch's OWN result, and that result can land before this
+      // function returns if `load()` ever settles synchronously (it never
+      // does today, but stamping first costs nothing and removes the
+      // ordering assumption).
+      lastLocalSaveAtRef.current = Date.now();
       void load();
     }
     window.addEventListener(SETUP_READINESS_INPUT_CHANGED_EVENT, reread);
@@ -205,6 +249,28 @@ export function SetupWizardClient({
         : null,
     [payload],
   );
+
+  /**
+   * Report a move, attributing it to a local save when `lastLocalSaveAtRef`
+   * was stamped recently enough (F4, #239 fix round). Shared by both
+   * `setMoved(true)` call sites below — the explicit-selection case and the
+   * no-selection case are the same defect from the operator's point of view,
+   * and `ModulesSection`'s remount destroys its own "saved" message the same
+   * way regardless of which one fired.
+   *
+   * Consumes the stamp: once read here, it is reset to `0` so a later,
+   * unrelated move (the flags changed in another tab, discovered on the next
+   * focus refetch) cannot reuse this save's attribution.
+   */
+  const reportMoved = useCallback(() => {
+    const stampedAt = lastLocalSaveAtRef.current;
+    const causedByLocalSave =
+      stampedAt > 0 &&
+      Date.now() - stampedAt <= LOCAL_SAVE_ATTRIBUTION_WINDOW_MS;
+    lastLocalSaveAtRef.current = 0;
+    setMovedByLocalSave(causedByLocalSave);
+    setMoved(true);
+  }, []);
 
   // The selection has to survive a refetch, but not survive a step DISAPPEARING
   // — which is precisely what happens when the module owning it is switched off
@@ -239,6 +305,13 @@ export function SetupWizardClient({
   // The selection is cleared at the same moment, deliberately: left set, this
   // would re-fire on every subsequent refetch, and the operator has already been
   // moved once.
+  //
+  // `reportMoved()` (F4, #239 fix round), not a bare `setMoved(true)`: the
+  // save that removed this step also destroyed `ModulesSection`'s own
+  // "Module settings saved." message when the pane remounted under a new
+  // `stepId` key, so the notice prefixes itself with a word about the write
+  // whenever a readiness-input-changed event fired recently enough to be
+  // this save. See `reportMoved` above and `lastLocalSaveAtRef`'s docblock.
   useEffect(() => {
     if (!view || selectedId === null) return;
     const resolved =
@@ -249,8 +322,8 @@ export function SetupWizardClient({
         : resolveInitialStepId(view, selectedId);
     if (resolved === selectedId) return;
     setSelectedId(null);
-    setMoved(true);
-  }, [view, selectedId, launchPinned]);
+    reportMoved();
+  }, [view, selectedId, launchPinned, reportMoved]);
 
   /**
    * The same courtesy when there was NO explicit selection to invalidate.
@@ -279,15 +352,26 @@ export function SetupWizardClient({
     const previous = shownStepRef.current;
     shownStepRef.current = activeStepId;
     if (!view || selectedId !== null) return;
-    if (previous === null || previous === SETUP_WIZARD_LAUNCH_ID) return;
+    // No `previous === SETUP_WIZARD_LAUNCH_ID` arm here (F5, #239 fix round):
+    // it cannot occur. `activeStepId`'s own `useMemo` above resolves the
+    // launch id back to `view.currentStepId` the instant `allResolved` goes
+    // false, in the SAME render that would otherwise start invalidating a
+    // `selectedId === LAUNCH_ID` selection — so by the time that
+    // invalidation's `setSelectedId(null)` has actually committed and this
+    // effect runs with `selectedId === null`, `shownStepRef.current` was
+    // already overwritten with the real step one render earlier. `previous`
+    // can therefore never be observed holding `SETUP_WIZARD_LAUNCH_ID` at the
+    // point where the guard above has already required `selectedId === null`.
+    if (previous === null) return;
     if (previous === activeStepId) return;
     if (view.steps.some((step) => step.id === previous)) return;
-    setMoved(true);
-  }, [view, selectedId, activeStepId]);
+    reportMoved();
+  }, [view, selectedId, activeStepId, reportMoved]);
 
   /** Any deliberate move retires the notice — they can see where they are now. */
   const select = useCallback((id: SetupWizardRailSelection) => {
     setMoved(false);
+    setMovedByLocalSave(false);
     // Leaving the launch panel releases its pin: the operator has read whatever
     // the publish had to say and chosen to go elsewhere.
     if (id !== SETUP_WIZARD_LAUNCH_ID) setLaunchPinned(false);
@@ -438,14 +522,20 @@ export function SetupWizardClient({
           data-testid="setup-wizard-moved-notice"
         >
           <p>
-            That step is no longer available — you have been moved to the next
-            one.
+            {movedByLocalSave
+              ? "Your module settings were saved. That step is no longer " +
+                "available — you have been moved to the next one."
+              : "That step is no longer available — you have been moved to " +
+                "the next one."}
           </p>
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            onClick={() => setMoved(false)}
+            onClick={() => {
+              setMoved(false);
+              setMovedByLocalSave(false);
+            }}
           >
             Dismiss
           </Button>

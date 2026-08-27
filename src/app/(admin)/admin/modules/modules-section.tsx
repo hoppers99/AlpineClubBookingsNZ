@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   AlertCircle,
@@ -54,10 +54,10 @@ import {
  * "Setup wizard" — needs a subordinate one inside its pane. That is
  * `ClubIdentityPanel`'s arrangement exactly: `/admin/appearance/identity` heads
  * it with a `CardTitle`, `setup-wizard-panes.tsx` heads it with an `h3`, and the
- * panel itself carries neither. The Refresh/Save toolbar therefore comes with
- * the section rather than sitting beside a heading it no longer owns, so on
- * `/admin/modules` the two buttons now open the section instead of sharing the
- * title's row. Same controls, same states, one row lower.
+ * panel itself carries neither. The "Reload settings"/Save toolbar therefore
+ * comes with the section rather than sitting beside a heading it no longer
+ * owns, so on `/admin/modules` the two buttons now open the section instead of
+ * sharing the title's row. Same controls, same states, one row lower.
  *
  * ## The view-only banner stays HERE
  *
@@ -204,7 +204,7 @@ export function ModulesSection() {
   const feedbackRef = useRef<HTMLDivElement>(null);
   const { scrollToError, scrollToTop } = useScrollToFeedback();
 
-  async function loadModules() {
+  const loadModules = useCallback(async () => {
     setLoading(true);
     setError("");
     setSavedMessage("");
@@ -226,11 +226,11 @@ export function ModulesSection() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     void loadModules();
-  }, []);
+  }, [loadModules]);
 
   useEffect(() => {
     if (error) scrollToError(feedbackRef);
@@ -255,6 +255,37 @@ export function ModulesSection() {
     draft !== null &&
     MODULE_KEYS.some((key) => payload.settings[key] !== draft[key]);
 
+  /**
+   * F3 (#239 fix round): this section fetched once and never re-read, while
+   * the rail beside it (the wizard shell, and — via the same registry — any
+   * other admin reading applicability) live-updates on focus/visibility.
+   * `setup-wizard-client.tsx` names this shell's own trigger shape, and this
+   * mirrors it: refetch when the tab regains focus or becomes visible again,
+   * which is the moment a SECOND admin's save in another tab (or another
+   * window entirely) could have changed these flags underneath this one.
+   *
+   * Held while `dirty`: an operator with an unsaved checkbox draft must never
+   * have it silently overwritten by a background refetch — that would both
+   * discard their edit and, because `saveModules` below PUTs the whole
+   * record, make the eventual Save re-assert whatever this section last
+   * fetched rather than what a second admin most recently wrote. The
+   * remaining last-write-wins race on that full-record PUT is a pre-existing
+   * class on `/admin/modules`, not one this refetch adds or removes — see
+   * `saveModules`'s own docblock.
+   */
+  useEffect(() => {
+    function refresh() {
+      if (dirty) return;
+      if (document.visibilityState === "visible") void loadModules();
+    }
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [dirty, loadModules]);
+
   function setModuleEnabled(key: ModuleKey, enabled: boolean) {
     setDraft((current) =>
       current
@@ -267,6 +298,21 @@ export function ModulesSection() {
     setSavedMessage("");
   }
 
+  /**
+   * PUTs the WHOLE record — every module key, not a diff — which is a
+   * pre-existing limit on `/admin/modules` and not one C13 introduced: two
+   * admins editing concurrently can still last-write-wins each other's
+   * unrelated toggles, the same way any full-record settings PUT in this
+   * codebase can. What C13 changes is how long this section can sit open
+   * NEXT TO a live view of the same facts (the wizard rail, or another admin
+   * open on this same section elsewhere) before that race becomes likely — a
+   * page visited, edited and closed in one sitting rarely overlaps another
+   * admin's save, but an inline pane left open in a wizard tab for a whole
+   * setup session is a much longer window. The focus/visibility refetch above
+   * (F3, #239 fix round) narrows that window for a diligent operator who
+   * returns to a stale tab; it does not close it for two admins saving within
+   * the same window, which stays this route's own problem to solve.
+   */
   async function saveModules() {
     if (!draft) return;
 
@@ -337,142 +383,150 @@ export function ModulesSection() {
     <div>
       {viewOnlyBanner}
       <div ref={sectionRef} className="space-y-8">
-      <div className="flex flex-wrap justify-end gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => void loadModules()}
-          disabled={loading || saving}
-        >
-          <RefreshCw className="mr-2 h-4 w-4" />
-          Refresh
-        </Button>
-        <ViewOnlyActionButton
-          canEdit={canEdit}
-          describeReason={false}
-          type="button"
-          onClick={() => void saveModules()}
-          disabled={!dirty || saving || draft === null}
-        >
-          {saving ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          ) : (
-            <Save className="mr-2 h-4 w-4" />
-          )}
-          Save
-        </ViewOnlyActionButton>
-      </div>
-
-      {(error || savedMessage) && (
-        <div
-          ref={feedbackRef}
-          role={error ? "alert" : "status"}
-          tabIndex={error ? -1 : undefined}
-          className={
-            error
-              ? "scroll-mt-20 rounded-md border border-danger-6 bg-danger-3 px-4 py-3 text-sm text-danger-11 focus:outline-none"
-              : "rounded-md border border-success-6 bg-success-3 px-4 py-3 text-sm text-success-11"
-          }
-        >
-          {error || savedMessage}
+        <div className="flex flex-wrap justify-end gap-2">
+          {/*
+            "Reload settings" (F6, #239 fix round), not "Refresh": on
+            `/admin/setup/wizard` this section sits beside the shell's OWN
+            "Refresh" button (`setup-wizard-client.tsx`), which re-reads the
+            whole journey — readiness, the rail, the frontier. Two buttons
+            named identically with different scopes on one screen is a trap,
+            not a convenience; this one's name says what it actually reloads.
+          */}
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void loadModules()}
+            disabled={loading || saving}
+          >
+            <RefreshCw className="mr-2 h-4 w-4" />
+            Reload settings
+          </Button>
+          <ViewOnlyActionButton
+            canEdit={canEdit}
+            describeReason={false}
+            type="button"
+            onClick={() => void saveModules()}
+            disabled={!dirty || saving || draft === null}
+          >
+            {saving ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="mr-2 h-4 w-4" />
+            )}
+            Save
+          </ViewOnlyActionButton>
         </div>
-      )}
 
-      <div className="rounded-md border border-border bg-card px-4 py-3">
-        <div className="flex items-start gap-3">
-          <ServerCog className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
-          <div className="space-y-1 text-sm text-muted-foreground">
-            <p>
-              Module activation is stored in the database and does not store
-              secrets, tokens, tenant ids, or provider credentials.
-            </p>
-            <p>
-              A module is available across the site whenever it is enabled here.
-              Some modules still need their own setup (for example Xero
-              credentials) before they can do useful work.
-            </p>
+        {(error || savedMessage) && (
+          <div
+            ref={feedbackRef}
+            role={error ? "alert" : "status"}
+            tabIndex={error ? -1 : undefined}
+            className={
+              error
+                ? "scroll-mt-20 rounded-md border border-danger-6 bg-danger-3 px-4 py-3 text-sm text-danger-11 focus:outline-none"
+                : "rounded-md border border-success-6 bg-success-3 px-4 py-3 text-sm text-success-11"
+            }
+          >
+            {error || savedMessage}
+          </div>
+        )}
+
+        <div className="rounded-md border border-border bg-card px-4 py-3">
+          <div className="flex items-start gap-3">
+            <ServerCog className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+            <div className="space-y-1 text-sm text-muted-foreground">
+              <p>
+                Module activation is stored in the database and does not store
+                secrets, tokens, tenant ids, or provider credentials.
+              </p>
+              <p>
+                A module is available across the site whenever it is enabled here.
+                Some modules still need their own setup (for example Xero
+                credentials) before they can do useful work.
+              </p>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        {modules.map((module) => {
-          const checkboxId = `module-${module.key}`;
-          const statusIcon = module.effectiveEnabled ? (
-            <CheckCircle2 className="h-4 w-4 text-success-11" />
-          ) : (
-            <AlertCircle className="h-4 w-4 text-warning-11" />
-          );
+        <div className="grid gap-4 xl:grid-cols-2">
+          {modules.map((module) => {
+            const checkboxId = `module-${module.key}`;
+            const statusIcon = module.effectiveEnabled ? (
+              <CheckCircle2 className="h-4 w-4 text-success-11" />
+            ) : (
+              <AlertCircle className="h-4 w-4 text-warning-11" />
+            );
 
-          return (
-            <Card key={module.key}>
-              <CardHeader className="space-y-3">
-                <div className="flex items-start gap-3">
-                  <Checkbox
-                    id={checkboxId}
-                    checked={module.adminEnabled}
-                    onCheckedChange={(checked) =>
-                      setModuleEnabled(module.key, checked === true)
-                    }
-                    disabled={saving || !canEdit}
-                    className="mt-1"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <CardTitle className="text-base">
-                        <label htmlFor={checkboxId}>{module.label}</label>
-                      </CardTitle>
-                      <Badge variant={module.adminEnabled ? "success" : "secondary"}>
-                        {module.adminEnabled ? "Enabled" : "Disabled"}
-                      </Badge>
+            return (
+              <Card key={module.key}>
+                <CardHeader className="space-y-3">
+                  <div className="flex items-start gap-3">
+                    <Checkbox
+                      id={checkboxId}
+                      checked={module.adminEnabled}
+                      onCheckedChange={(checked) =>
+                        setModuleEnabled(module.key, checked === true)
+                      }
+                      disabled={saving || !canEdit}
+                      className="mt-1"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <CardTitle className="text-base">
+                          <label htmlFor={checkboxId}>{module.label}</label>
+                        </CardTitle>
+                        <Badge variant={module.adminEnabled ? "success" : "secondary"}>
+                          {module.adminEnabled ? "Enabled" : "Disabled"}
+                        </Badge>
+                      </div>
+                      <CardDescription className="mt-1">
+                        {module.description}
+                      </CardDescription>
                     </div>
-                    <CardDescription className="mt-1">
-                      {module.description}
-                    </CardDescription>
                   </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-start gap-2 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
-                  {statusIcon}
-                  <div>
-                    <Badge
-                      variant={readinessVariant(module.readiness.status)}
-                      className="mb-2"
-                    >
-                      {readinessLabel(module.readiness.status)}
-                    </Badge>
-                    <p>{module.readiness.message}</p>
-                    {module.readiness.status === "credentials_missing" &&
-                    MODULE_SETUP_HREFS[module.key] ? (
-                      <Link
-                        href={MODULE_SETUP_HREFS[module.key] as string}
-                        className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-foreground underline decoration-brand-gold/70 decoration-2 underline-offset-4"
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex items-start gap-2 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
+                    {statusIcon}
+                    <div>
+                      <Badge
+                        variant={readinessVariant(module.readiness.status)}
+                        className="mb-2"
                       >
-                        Set up
-                        <ArrowRight className="h-3.5 w-3.5" aria-hidden />
-                      </Link>
-                    ) : null}
+                        {readinessLabel(module.readiness.status)}
+                      </Badge>
+                      <p>{module.readiness.message}</p>
+                      {module.readiness.status === "credentials_missing" &&
+                      MODULE_SETUP_HREFS[module.key] ? (
+                        <Link
+                          href={MODULE_SETUP_HREFS[module.key] as string}
+                          className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-foreground underline decoration-brand-gold/70 decoration-2 underline-offset-4"
+                        >
+                          Set up
+                          <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+                        </Link>
+                      ) : null}
+                    </div>
                   </div>
-                </div>
 
-                {module.readiness.dependencies.length > 0 && (
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                      Dependencies
-                    </p>
-                    <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
-                      {module.readiness.dependencies.map((dependency) => (
-                        <li key={dependency}>{dependency}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
+                  {module.readiness.dependencies.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                        Dependencies
+                      </p>
+                      <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+                        {module.readiness.dependencies.map((dependency) => (
+                          <li key={dependency}>{dependency}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

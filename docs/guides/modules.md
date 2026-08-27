@@ -37,8 +37,11 @@ environment side.
 2. Tick or untick the modules you want to change. A module that needs extra
    setup shows **Needs setup** with its dependencies listed (e.g. Xero
    credentials, an API key).
-3. Click **Save**. Changes take effect across the site immediately. **Refresh**
-   reloads the saved state.
+3. Click **Save**. Changes take effect across the site immediately.
+   **Reload settings** reloads the saved state — the page also does this on
+   its own whenever you come back to a tab left open here, so a change made
+   by another admin elsewhere shows up without a click; the one exception is
+   while you have an unsaved tick pending, which it never overwrites.
 
 ### The same toggles inside the setup wizard
 
