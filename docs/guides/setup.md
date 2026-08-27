@@ -259,8 +259,32 @@ above for how to choose.
    genuinely fresh install takes a genuinely empty database.
 3. The right-hand pane shows the step's live check — what is outstanding, in the
    same words the checklist uses — with a link through to the settings page
-   where that work is actually done. The wizard never becomes a second place to
-   store a setting. **Website Styling** is a step of exactly this shape: it
+   where that work is actually done.
+
+   **Some steps also carry the real editor, right there beneath the check.**
+   **Club Configuration** and **Club Time Zone** are the first two. The form you
+   get is the same one that step's own settings page shows, saving to the same
+   place, so nothing is stored twice and nothing behaves differently for having
+   been reached from here. Editing is still staged: you change the fields, then
+   press the section's own Save, and nothing is written as you go. The link to
+   the full settings page stays, because that page usually holds more than this
+   one section — Club Identity sits beside the lodge's public details and the
+   club contact. The step's check re-reads itself the moment a save succeeds, so
+   what it reports catches up with what you just changed without a reload.
+
+   Two things this does **not** change. Saving the form does not tick the step
+   off: **Mark this step done** is still the one action that says a person
+   agreed, because that is what the green badge and the percentage mean. And the
+   two permissions on the screen stay separate — recording progress needs
+   **Support** edit, while the editor is governed by its own area — so being
+   able to do one and not the other is normal. Where the editor is the one you
+   cannot use, its own banner says so above its fields; the progress buttons
+   sit in the frame above the editor and are unaffected. **Club Time Zone** is stricter than
+   most: it is a full-administrator setting, and anybody else is told so in
+   place of the form.
+
+   The wizard never becomes a second place to store a setting. **Website
+   Styling** is a step of exactly this shape: it
    links to [Site Style](site-style.md) rather than embedding a second colour
    picker, and **its check passes** the moment any colour, font, logo or Raw
    CSS differs from the shipped defaults — whether that was saved from Site Style

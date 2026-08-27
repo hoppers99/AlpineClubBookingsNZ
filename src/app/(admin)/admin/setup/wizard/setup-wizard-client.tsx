@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
+import { SETUP_READINESS_INPUT_CHANGED_EVENT } from "@/lib/setup-readiness-events";
 import type { SetupStepId } from "@/lib/setup-step-registry";
 import {
   buildSetupWizardView,
@@ -19,6 +20,7 @@ import {
   type SetupWizardRailSelection,
 } from "./setup-wizard-rail";
 import { SetupWizardLaunchPanel } from "./setup-wizard-launch-panel";
+import { SetupWizardStepPane } from "./setup-wizard-panes";
 import {
   SetupWizardStepFrame,
   type SetupWizardProgressAction,
@@ -47,6 +49,19 @@ import {
  *    window, which is exactly when the flags can have changed. It is not a
  *    subscription and does not claim to be: a flag changed in another tab shows
  *    up here the moment this tab is focused, and the Refresh button forces it.
+ *
+ *    **C12 adds the third trigger, and it had to be a new one.** Both events
+ *    above are about coming BACK to this tab, and an inline pane
+ *    (`setup-wizard-panes.tsx`) is saved without ever leaving it — so neither
+ *    fires, and the readiness detail, the state badge and the percentage would
+ *    all still be answering the question the operator just watched being
+ *    answered. `SETUP_READINESS_INPUT_CHANGED_EVENT` is the panes' announcement
+ *    that they persisted something a check reads; the shell treats it as one
+ *    more reason to re-read, through the same `load()`.
+ *
+ * The pane is a SIBLING of the step frame below, never a child of it — the
+ * banner-nesting rule and the two genuinely different permissions involved are
+ * written out in `setup-wizard-panes.tsx`.
  */
 
 function errorMessageFrom(body: unknown, fallback: string) {
@@ -98,7 +113,28 @@ export function SetupWizardClient({
     Record<string, SetupWizardProviderTestResult>
   >({});
 
+  /**
+   * F6 (#238 fix round): three independent triggers can call `load()` —
+   * mount, the focus/visibility listener, and C12's readiness-input-changed
+   * event — and nothing serialised them. Two overlapping requests used to
+   * resolve in NETWORK order rather than CALL order: a pane's save-triggered
+   * refetch racing a focus-triggered refetch could have the focus request
+   * (started first, no new facts to report) resolve LAST and silently
+   * overwrite the pane's own fresher read with stale, pre-save state — the
+   * operator would see the exact repaint their save was supposed to produce
+   * flicker back to what it replaced.
+   *
+   * `loadSeqRef` is incremented on every CALL, not every resolution, so
+   * "latest wins" means latest STARTED, matching what the operator actually
+   * did last. A response applies its result only if no newer call has started
+   * since — stale calls still run to completion (nothing to cancel — the
+   * request itself keeps executing on the network), they just no longer write
+   * `payload`, `error` or `loading`.
+   */
+  const loadSeqRef = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = (loadSeqRef.current += 1);
     setLoading(true);
     setError("");
     try {
@@ -109,15 +145,17 @@ export function SetupWizardClient({
       if (!response.ok || !("traversal" in body)) {
         throw new Error(errorMessageFrom(body, "Failed to load the setup wizard"));
       }
+      if (seq !== loadSeqRef.current) return; // a newer load has since started; drop this stale result
       setPayload(body);
     } catch (loadError) {
+      if (seq !== loadSeqRef.current) return;
       setError(
         loadError instanceof Error
           ? loadError.message
           : "Failed to load the setup wizard",
       );
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, []);
 
@@ -136,6 +174,20 @@ export function SetupWizardClient({
     return () => {
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [load]);
+
+  // C12: an inline pane saved without the operator leaving the tab, so neither
+  // listener above can have fired. Unconditional — unlike the two of them, this
+  // event is only dispatched after a write has already succeeded, so there is
+  // no visibility test worth making.
+  useEffect(() => {
+    function reread() {
+      void load();
+    }
+    window.addEventListener(SETUP_READINESS_INPUT_CHANGED_EVENT, reread);
+    return () => {
+      window.removeEventListener(SETUP_READINESS_INPUT_CHANGED_EVENT, reread);
     };
   }, [load]);
 
@@ -378,28 +430,46 @@ export function SetupWizardClient({
               onPublishActivity={setLaunchPinned}
             />
           ) : activeStep ? (
-            <SetupWizardStepFrame
-              step={activeStep}
-              canEdit={canChangeSetupProgress(permissionMatrix)}
-              saving={saving}
-              previousStep={neighbours.previous}
-              nextStep={neighbours.next}
-              launchUnlocked={view.allResolved}
-              providerTesting={
-                activeStep.action
-                  ? providerRunning === activeStep.action.provider
-                  : false
-              }
-              providerResult={
-                activeStep.action
-                  ? (providerResults[activeStep.action.provider] ?? null)
-                  : null
-              }
-              onNavigate={select}
-              onOpenLaunch={() => select(SETUP_WIZARD_LAUNCH_ID)}
-              onProgress={(action) => void updateProgress(action, activeStep.id)}
-              onProviderTest={(provider) => void runProviderTest(provider)}
-            />
+            // The frame and the pane are SIBLINGS in one column, in this order.
+            // The pane sits below because the frame carries the step's identity
+            // — its title, its state badge and C11's defaulted banner. Only
+            // ONE of the two panes proved here changes what that banner means:
+            // club-time-zone's is the installed-default copy, whose "check it
+            // below" sentence now points at something for the first time.
+            // club-config's is the read-from-deployment copy (see
+            // `defaultedBannerCopy` in `setup-wizard-step-frame.tsx`), which
+            // never said "below" in the first place. See `setup-wizard-panes.tsx`
+            // for why the pane can not be moved inside the frame instead.
+            <div className="space-y-4">
+              <SetupWizardStepFrame
+                step={activeStep}
+                canEdit={canChangeSetupProgress(permissionMatrix)}
+                saving={saving}
+                previousStep={neighbours.previous}
+                nextStep={neighbours.next}
+                launchUnlocked={view.allResolved}
+                providerTesting={
+                  activeStep.action
+                    ? providerRunning === activeStep.action.provider
+                    : false
+                }
+                providerResult={
+                  activeStep.action
+                    ? (providerResults[activeStep.action.provider] ?? null)
+                    : null
+                }
+                onNavigate={select}
+                onOpenLaunch={() => select(SETUP_WIZARD_LAUNCH_ID)}
+                onProgress={(action) =>
+                  void updateProgress(action, activeStep.id)
+                }
+                onProviderTest={(provider) => void runProviderTest(provider)}
+              />
+              <SetupWizardStepPane
+                stepId={activeStep.id}
+                permissionMatrix={permissionMatrix}
+              />
+            </div>
           ) : (
             <section className="rounded-md border bg-card p-5 text-sm text-muted-foreground">
               There is nothing to set up: every module that contributes a setup

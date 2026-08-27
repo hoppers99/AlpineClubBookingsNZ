@@ -10,6 +10,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { emitSetupReadinessInputChanged } from "@/lib/setup-readiness-events";
 import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
@@ -133,6 +134,12 @@ export function ClubIdentityPanel() {
       if (!response.ok) throw new Error();
       setSettings((await response.json()).settings);
       toast.success("Club identity updated.");
+      // The club's name is what the `club-config` readiness check reads, and
+      // C12 mounts this panel inside the setup wizard — where the operator
+      // never leaves the tab, so the wizard's focus refetch cannot fire. This
+      // says only that a setting a check reads was persisted; it names no
+      // wizard and does nothing on a page that is not listening.
+      emitSetupReadinessInputChanged();
     } catch {
       toast.error("Could not update club identity.");
     } finally {

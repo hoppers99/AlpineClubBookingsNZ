@@ -618,3 +618,34 @@ export function setupWizardNeighbours(
 export function canChangeSetupProgress(matrix: AdminPermissionMatrix): boolean {
   return matrix.support === "edit";
 }
+
+/**
+ * Whether this admin may see the step's INLINE PANE at all (C12, #238 fix
+ * round F1).
+ *
+ * A pane is the step's own settings section, embedded — so it is gated on the
+ * same area `SETUP_STEP_PERMISSION_AREA` already names for the "Open the
+ * settings for this step" link, at `view`, the level every pane's own banner
+ * already requires to render anything at all (`content: view` can inspect
+ * `ClubIdentityPanel`; `edit` is what unlocks its Save).
+ *
+ * **Why the gate lives here and not on the pane component itself.** A viewer
+ * who lacks even VIEW on the step's area — the shipped shape for
+ * `ADMIN_BOOKINGS`, `ADMIN_MEMBERSHIP` and `FINANCE_ADMIN`, none of which
+ * carry `content` — was never offered a route to `/admin/appearance/identity`
+ * in the first place, so `/api/admin/club-identity`'s GET 403s the instant
+ * the pane mounts and asks for it. `ClubIdentityPanel` cannot save itself
+ * from that: it has no `permissionMatrix` to read, only the session-derived
+ * `useAdminAreaEditAccess`, which answers the EDIT question and never the
+ * VIEW one this gate needs. The wizard client already holds `permissionMatrix`
+ * from the server, so the mount site is where the answer is cheaply
+ * available, and checking it there runs before the pane's own fetch ever
+ * fires. Not mounting the pane leaves the step frame exactly as it rendered
+ * before C12 — its own link-out and its own copy, unchanged.
+ */
+export function canViewSetupStepPane(
+  matrix: AdminPermissionMatrix,
+  stepId: SetupStepId,
+): boolean {
+  return matrix[SETUP_STEP_PERMISSION_AREA[stepId]] !== "none";
+}

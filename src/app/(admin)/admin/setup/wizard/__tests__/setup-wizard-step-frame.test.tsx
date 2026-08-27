@@ -363,6 +363,33 @@ describe("SetupWizardStepFrame", () => {
   });
 
   /*
+    F5b (#238 fix round). The read-from-deployment copy used to close with
+    "rather than chosen in the wizard" — true when it shipped, but C12 gives
+    `club-config` (this same class) an inline pane, and the instant an operator
+    saves a value there it genuinely WAS chosen in the wizard. The step still,
+    correctly, stays `defaulted` until "Mark this step done" — D14/D15's model
+    is unchanged — so the banner's copy has to stay true for that saved-but-
+    unconfirmed state rather than assert something an inline save just falsified.
+    "Hasn't been confirmed" is the fix: true regardless of where the value came
+    from.
+  */
+  it("says the value hasn't been confirmed, not that it was never chosen in the wizard", () => {
+    renderFrame({
+      step: detail({
+        id: "club-config" as SetupStepId,
+        title: "Club Configuration",
+        href: "/admin/appearance/identity",
+        permissionArea: "content",
+        isDefaulted: true,
+        state: "defaulted",
+      }),
+    });
+    const notice = screen.getByTestId("setup-wizard-step-defaulted");
+    expect(notice.textContent).toMatch(/hasn't been confirmed as this club's own answer yet/i);
+    expect(notice.textContent).not.toMatch(/rather than chosen in the wizard/i);
+  });
+
+  /*
     THE FALLBACK BRANCH, exercised directly (#237 fix round). The lookup is
     keyed `SETUP_STEP_DEFAULTED_EVIDENCE[step.id]`, and `step.id` is typed as
     the closed union — but the PAYLOAD this component actually renders crosses
