@@ -170,6 +170,108 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
 };
 
 /**
+ * WHERE A DEFAULTED STEP'S FACTS CAME FROM (D14/D15, #237 fix round).
+ *
+ * A step is `defaulted` when its readiness check passes and nobody confirmed it.
+ * That is one state, and it has two completely different causes — which the
+ * frame shipped one sentence for, and the sentence was false for half of them:
+ *
+ * > "…it was set when the site was installed, not chosen for your club. Check it
+ * > below, change it if it is wrong…"
+ *
+ * True of a seeded timezone. FALSE of `environment-role`, where it called a
+ * deliberate `APP_ENVIRONMENT_ROLE=production` declaration an unchosen installer
+ * default — directly above the panel's own "declared PRODUCTION — the club's
+ * live site". False again of `runtime-env`, which has no settings page at all,
+ * so "change it below" pointed at a list of variable names.
+ *
+ * ## The two classes, and how a step joins one
+ *
+ * Read the step's readiness check and ask **what evidence satisfies it**:
+ *
+ * - `installed-default` — a row in THIS CLUB's database that the installer's
+ *   seed filled in with a shipped value, editable on the page the step links to.
+ *   The timezone, the age tiers, the cancellation tiers, the module switches, a
+ *   bed count. "Set when the site was installed" is literally what happened.
+ * - `read-from-deployment` — the deployment's environment variables, its
+ *   committed configuration, or a provider connection whoever installed the site
+ *   wired up. No seed invents a Stripe key or an `APP_ENVIRONMENT_ROLE`, the
+ *   value may well have been chosen deliberately, and the wizard often cannot
+ *   change it at all. So the copy asks the operator to REVIEW the facts rather
+ *   than telling them nobody chose them.
+ *
+ * A `Record` over the id union rather than a substring heuristic on the step id
+ * or a sniff at whether the check has an `href`, and for the same reason
+ * {@link SETUP_STEP_PERMISSION_AREA} above is one: a step added by a later child
+ * fails the TYPECHECK here until somebody decides which sentence it should show.
+ * A heuristic would decide silently, and it decided wrongly for exactly the four
+ * steps this fix exists for.
+ *
+ * It is also kept OFF `SetupWizardStepDetail`, unlike `permissionArea`. The
+ * whole finding was a step being paired with the wrong copy, and a field on the
+ * detail is a field a test fixture can set — so the pairing would then be
+ * assertable only against itself. The frame reads this table by step id, so a
+ * test naming `environment-role` exercises the real mapping and a swapped entry
+ * here fails it.
+ *
+ * Two entries worth the sentence they cost:
+ *
+ * - **`club-config` is `read-from-deployment`.** Since this issue's own seed fix
+ *   it can only pass through a committed primary `config/club.json` or a
+ *   persisted identity row (a real edit, or a config-transfer import) — never a
+ *   placeholder the installer invented. "Not chosen for your club" would be the
+ *   false half of the old sentence again, about the club's own name.
+ * - **`address-autocomplete` and `finance-dashboard` are `read-from-deployment`
+ *   despite being module switches.** Neither can reach `complete` on the seeded
+ *   switch alone: one also needs Addy credentials from the environment, the
+ *   other a live operational Xero connection. The evidence that satisfies the
+ *   check is the deployment's, so the copy is the deployment's.
+ * - **`feature-flags` is `read-from-deployment`.** Its check carries no `href`
+ *   and no `links` at all — module activation is edited on `/admin/modules`,
+ *   which the check does not link to — so "check it below" would point at
+ *   nothing. Its only reachable defaulted path is an administrator who has
+ *   already saved Admin > Modules and never confirmed this step: the seed
+ *   writes no `AdminModuleSettings` row at all, so a fresh install without one
+ *   reads `warning`, not `defaulted`. The value was therefore chosen by a
+ *   person, just not in the wizard — `environment-role`'s shape, not an
+ *   installer placeholder.
+ * - **`seed-admin` is `installed-default`.** Its check is satisfied by a row
+ *   the installer's own seed created in THIS CLUB'S database
+ *   (`SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD`), editable on the page it links
+ *   to (`/admin/members`) — class A's own written rule, applied literally
+ *   rather than by a heuristic about what "installed" tends to look like.
+ */
+export type SetupStepDefaultedEvidence =
+  | "installed-default"
+  | "read-from-deployment";
+
+export const SETUP_STEP_DEFAULTED_EVIDENCE: Record<
+  SetupStepId,
+  SetupStepDefaultedEvidence
+> = {
+  "club-config": "read-from-deployment",
+  "club-time-zone": "installed-default",
+  "environment-role": "read-from-deployment",
+  "runtime-env": "read-from-deployment",
+  "auth-secret-strength": "read-from-deployment",
+  "seed-admin": "installed-default",
+  "feature-flags": "read-from-deployment",
+  lodges: "installed-default",
+  "booking-policies": "installed-default",
+  "membership-cancellation": "installed-default",
+  "age-tiers": "installed-default",
+  "seasons-rates": "installed-default",
+  "site-style": "installed-default",
+  stripe: "read-from-deployment",
+  "email-ses": "read-from-deployment",
+  sentry: "read-from-deployment",
+  "address-autocomplete": "read-from-deployment",
+  "xero-operational": "read-from-deployment",
+  "finance-dashboard": "read-from-deployment",
+  "xero-mappings": "installed-default",
+};
+
+/**
  * The three effective states `resolveEnvironmentRole()` can answer, aliased
  * from `environment-role.ts` rather than copied structurally.
  *
@@ -268,6 +370,13 @@ export interface SetupWizardRailStep {
   readonly isReachable: boolean;
   readonly isStale: boolean;
   readonly isDeferred: boolean;
+  /**
+   * The step's check passes and nobody confirmed it (D14, #237). Carried
+   * alongside `state` for the same reason `isStale` and `isDeferred` are: the
+   * state machine's precedence is lossy, and the rail's label rebuilds the full
+   * picture from these flags.
+   */
+  readonly isDefaulted: boolean;
   readonly permissionArea: AdminPermissionArea;
 }
 
@@ -319,7 +428,21 @@ export interface SetupWizardView {
   readonly navigationFrontierStepId: SetupStepId | null;
   /** D9's launch-panel unlock. Straight from the traversal (#219 F9). */
   readonly allResolved: boolean;
-  /** Titles of everything not complete — mockup 6 states these plainly. */
+  /**
+   * Titles of everything not CONFIRMED — mockup 6 states these plainly. Since
+   * D14 (#237) that includes defaulted steps.
+   *
+   * **`deferred` rides on each entry because the reader must partition on it,
+   * and an earlier version of this note said it need not.** That note argued the
+   * launch panel is the only reader and renders only once `allResolved` is true,
+   * which no defaulted step permits — so every entry would be a deferral and its
+   * "by your own choice" heading was safe. True of the UNPINNED panel only. The
+   * shell's `launchPinned` keeps the panel mounted across a refetch on purpose
+   * (unmounting mid-publish would discard the answer), and inside that window a
+   * step can go stale or a newly-enabled module can contribute one — neither
+   * chosen by anybody. The panel therefore partitions on this flag rather than
+   * relying on a guarantee it only has some of the time.
+   */
   readonly outstanding: readonly { id: SetupStepId; title: string; deferred: boolean }[];
 }
 
@@ -374,6 +497,7 @@ export function buildSetupWizardView(
       isReachable: step.isReachable,
       isStale: step.isStale,
       isDeferred: step.isDeferred,
+      isDefaulted: step.isDefaulted,
       permissionArea: SETUP_STEP_PERMISSION_AREA[step.id],
     };
   });

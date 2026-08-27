@@ -109,6 +109,12 @@ export function SetupPageClient({
   );
   const [readiness, setReadiness] = useState<SetupReadiness | null>(null);
   const [progress, setProgress] = useState<SetupProgressState | null>(null);
+  /**
+   * The WIZARD's percentage, as the server computed it (#237 fix round). Held
+   * as `number | null` rather than defaulted to 0: a payload without the key is
+   * an older server or a stub, and "0%" would be a claim this page cannot make.
+   */
+  const [wizardPercent, setWizardPercent] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [savingStep, setSavingStep] = useState<string | null>(null);
@@ -130,6 +136,11 @@ export function SetupPageClient({
       }
       setReadiness(body.readiness);
       setProgress(body.progress);
+      setWizardPercent(
+        typeof body.wizardPercentComplete === "number"
+          ? body.wizardPercentComplete
+          : null,
+      );
     } catch (loadError) {
       setError(
         loadError instanceof Error
@@ -166,11 +177,6 @@ export function SetupPageClient({
       check.status === "blocked" &&
       check.progress !== "skipped",
   );
-  const completedSteps = allChecks.filter(
-    (check) => check.status === "complete" || check.progress === "completed",
-  ).length;
-  const completionPercent =
-    allChecks.length > 0 ? Math.round((completedSteps / allChecks.length) * 100) : 0;
   const setupCompleted = Boolean(progress?.completedAt);
   const overallStatus = setupCompleted ? "complete" : readiness?.status ?? "not_started";
 
@@ -379,10 +385,34 @@ export function SetupPageClient({
                   {overallStatus.replace("_", " ")}
                 </p>
               </div>
+              {/*
+                THE PROGRESS TILE IS THE WIZARD'S NUMBER, NOT A SECOND ONE
+                (#237 fix round). It used to count
+                `status === "complete" || progress === "completed"` — the union
+                D14 split apart — so this tile said 56% about the same fresh
+                install the wizard, one click away, honestly called 0%. D7 makes
+                the wizard the owner of progress and this page's own comment
+                below forbids a competing display; a tile deriving its own
+                percentage was exactly that.
+
+                The number now comes off `wizardPercentComplete`, which the route
+                takes from `buildSetupWizardTraversal`. The cards underneath keep
+                their own statuses and that is not a contradiction: they answer
+                "is this installation configured?", where a shipped default
+                genuinely IS configured, and the caption below says which
+                question this number answers.
+              */}
               <div className="rounded-md border bg-card p-4">
                 <p className="text-sm font-medium text-muted-foreground">Progress</p>
-                <p className="mt-2 text-2xl font-semibold text-foreground">
-                  {completionPercent}%
+                <p
+                  className="mt-2 text-2xl font-semibold text-foreground"
+                  data-testid="setup-progress-percent"
+                >
+                  {wizardPercent === null ? "—" : `${wizardPercent}%`}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Steps somebody has confirmed — the same number the setup
+                  wizard shows.
                 </p>
               </div>
               <div className="rounded-md border bg-card p-4">

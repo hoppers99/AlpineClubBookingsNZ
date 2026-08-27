@@ -153,9 +153,15 @@ test("reopening a step locks the launch panel again", async () => {
   const resolved = await readTraversal(adminContext.request);
   expect(resolved.allResolved).toBe(true);
 
-  // Reopen a DEFERRED step, not merely the first id: a step whose own readiness
-  // check passes is complete whatever the progress record says, so reopening
-  // one of those would resolve nothing and this test would pass vacuously.
+  // Reopen a DEFERRED step, not merely the first id. Under D14 (#237) either
+  // choice would in fact re-block the launch panel — a step reopened onto its
+  // own passing readiness check is DEFAULTED, and a defaulted step is
+  // unresolved (D15) — but the deferred one is still the right target, because
+  // it is the state whose reopening this test is named for and the only one
+  // guaranteed to exist here (the previous test skipped everything outstanding).
+  // Before #237 the distinction was load-bearing rather than tidy: a step whose
+  // check passed read as complete whatever the progress record said, so
+  // reopening one resolved nothing and this test passed vacuously.
   const deferred = resolved.steps.find((step) => step.isDeferred);
   expect(deferred, "the previous test left deferred steps behind").toBeTruthy();
   const response = await adminContext.request.patch("/api/admin/setup/progress", {

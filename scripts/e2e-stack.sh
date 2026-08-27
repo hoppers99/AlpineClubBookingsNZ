@@ -87,6 +87,9 @@ prepare() {
   echo "==> Relativizing booking seasons so seeded fixtures never expire (#2117)"
   DATABASE_URL="$HOST_DATABASE_URL" npx tsx e2e/setup/relativize-seasons.ts
 
+  echo "==> Seeding the club identity the product seed no longer writes without a primary config/club.json (#237)"
+  DATABASE_URL="$HOST_DATABASE_URL" npx tsx e2e/setup/seed-club-identity.ts
+
   echo "==> Enabling the modules the E2E journeys need"
   DATABASE_URL="$HOST_DATABASE_URL" npx tsx e2e/setup/enable-e2e-modules.ts
 

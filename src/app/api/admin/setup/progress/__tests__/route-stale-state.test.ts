@@ -311,9 +311,12 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
     // does to the steps above it. The answer this ships, recorded here because
     // nothing else states it: DEFERRING INVALIDATES ITS DEPENDENTS, and it does
     // so without changing what either array means. `skip` removes the step from
-    // `completedStepIds`, and `isSetupStepComplete` treats a skipped step as not
-    // complete, so an unsatisfied prerequisite falls out of the rules already
-    // there rather than needing one of its own. The alternative — treating a
+    // `completedStepIds`, and a skipped step is not `operatorConfirmed`
+    // (`resolveSetupStepCompletion`, since D14 replaced the single
+    // `isSetupStepComplete` predicate), so an unsatisfied prerequisite falls out
+    // of the rules already there rather than needing one of its own. Deferral
+    // is neither answer: it confirms nothing and says nothing about the check.
+    // The alternative — treating a
     // deferral as "settled enough" — would let a club defer the step everything
     // hangs off and see no consequence anywhere.
     expect(persisted().skippedStepIds).toEqual(["age-tiers"]);

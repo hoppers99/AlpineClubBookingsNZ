@@ -29,6 +29,7 @@ function step(
     isReachable: true,
     isStale: false,
     isDeferred: false,
+    isDefaulted: false,
     permissionArea: "support",
     ...overrides,
   };
@@ -51,6 +52,7 @@ const groups: SetupWizardRailGroup[] = [
     description: "Capacity, rates, seasons.",
     steps: [
       step("looked", { state: "stale", isStale: true }),
+      step("defaulted-here", { state: "defaulted", isDefaulted: true }),
       step("untouched", { state: "not-started" }),
       step("locked", { state: "not-started", isReachable: false }),
     ],
@@ -78,12 +80,20 @@ describe("SetupWizardRail", () => {
     renderRail();
     expect(screen.getByText("Foundation")).toBeTruthy();
     expect(screen.getByText("Booking Rules")).toBeTruthy();
-    for (const id of ["done", "here", "skipped", "looked", "untouched", "locked"]) {
+    for (const id of [
+      "done",
+      "here",
+      "skipped",
+      "looked",
+      "defaulted-here",
+      "untouched",
+      "locked",
+    ]) {
       expect(screen.getByTestId(`setup-wizard-rail-row-${id}`)).toBeTruthy();
     }
   });
 
-  it("renders the five states distinguishably", () => {
+  it("renders the six states distinguishably", () => {
     renderRail();
     const stateOf = (id: string) =>
       screen.getByTestId(`setup-wizard-rail-row-${id}`).getAttribute("data-state");
@@ -91,6 +101,10 @@ describe("SetupWizardRail", () => {
     expect(stateOf("here")).toBe("current");
     expect(stateOf("skipped")).toBe("deferred");
     expect(stateOf("looked")).toBe("stale");
+    // D14 (#237): a default is in place and nobody confirmed it. Its own state,
+    // not a reuse of not-started — the two are different situations, and the
+    // rail is what tells an operator which one they are looking at.
+    expect(stateOf("defaulted-here")).toBe("defaulted");
     expect(stateOf("untouched")).toBe("not-started");
 
     // …and says so in words as well as in colour, because colour alone is not a
@@ -99,6 +113,7 @@ describe("SetupWizardRail", () => {
     expect(screen.getByText("Up next")).toBeTruthy();
     expect(screen.getByText("Needs another look")).toBeTruthy();
     expect(screen.getByText("Skipped for now")).toBeTruthy();
+    expect(screen.getByText("Default in place")).toBeTruthy();
   });
 
   // The traversal's `current` wins over `deferred` and `stale`, and
@@ -131,6 +146,35 @@ describe("SetupWizardRail", () => {
     );
     expect(screen.getByText("Up next — skipped for now")).toBeTruthy();
     expect(screen.getByText("Up next — needs another look")).toBeTruthy();
+  });
+
+  // The one combination D14 (#237) adds, and the one an operator meets first:
+  // the resume point on a fresh install is current AND defaulted. `current`
+  // wins the state precedence, so without the accumulated label the row would
+  // read like an ordinary next step and the fact that something is already set
+  // — possibly wrongly — would never reach the rail at all.
+  it("still says a current step is sitting on a default", () => {
+    cleanup();
+    render(
+      <SetupWizardRail
+        groups={[
+          {
+            id: "foundation",
+            title: "Foundation",
+            description: "",
+            steps: [
+              step("defaulted-here", { state: "current", isDefaulted: true }),
+            ],
+          },
+        ]}
+        percentComplete={0}
+        currentStepId={"defaulted-here" as SetupStepId}
+        selectedId={"defaulted-here" as SetupStepId}
+        launchUnlocked={false}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Up next — a default is in place")).toBeTruthy();
   });
 
   // The three combinations the single-branch label dropped a fact from. Each is
@@ -201,6 +245,11 @@ describe("SetupWizardRail", () => {
               // Deferral deliberately does NOT take the surface: it is the
               // operator's own choice and it does not cap the frontier.
               step("skipped-here", { state: "current", isDeferred: true }),
+              // Nor does `defaulted`, even though it DOES cap the frontier —
+              // this is the row the wizard is sending the operator to next, so
+              // they cannot walk past the warning the way they could past a
+              // stale row further down (D14, #237).
+              step("defaulted-here", { state: "current", isDefaulted: true }),
             ],
           },
         ]}
@@ -218,6 +267,7 @@ describe("SetupWizardRail", () => {
     expect(visual("stale-here")).toBe("stale");
     expect(visual("plain-here")).toBe("current");
     expect(visual("skipped-here")).toBe("current");
+    expect(visual("defaulted-here")).toBe("current");
     // The underlying state is untouched — the rail draws it differently, it
     // does not relabel the state machine.
     expect(

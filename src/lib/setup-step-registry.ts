@@ -129,8 +129,8 @@ export const SETUP_STEP_REGISTRY: readonly SetupStepEntry[] =
  * here rather than imported from `setup-readiness.ts` so the registry stays free
  * of an import cycle with the module that derives `SETUP_STEP_IDS` from it;
  * `setup-step-registry.test.ts` pins the two together behaviourally by counting
- * a real readiness result with `isSetupStepComplete` and comparing that to the
- * readiness summary's own `complete` figure.
+ * a real readiness result with `resolveSetupStepCompletion` and comparing that
+ * to the readiness summary's own `complete` figure.
  */
 export interface SetupStepCompletionInput {
   readonly status: "complete" | "warning" | "blocked" | "not_started";
@@ -138,12 +138,39 @@ export interface SetupStepCompletionInput {
 }
 
 /**
- * Whether a step counts as complete. The `readiness-check` rule is exactly the
- * predicate `buildSetupReadiness` already uses for its `complete` summary
- * figure: the check passed on its own, OR the operator marked it done. Skipping
- * alone does not make a step complete — a check that already passes stays
- * complete even when deferred; epic #213 D4 keeps a deferred step that has NOT
- * yet passed outstanding, and only a disabled module removes a step altogether.
+ * The TWO answers a step's completion question has, kept apart (epic #213
+ * **D14**).
+ *
+ * Until #237 there was one answer and one predicate — `isSetupStepComplete`,
+ * `status === "complete" || progress === "completed"` — which made a passing
+ * readiness check and an operator's own record INTERCHANGEABLE evidence. They
+ * are not the same claim, and treating them as one is what let a fresh seed
+ * open the wizard 56% of the way through a journey nobody had walked: the seed
+ * writes defaults, the defaults satisfy nine checks, and the wizard reported
+ * that as progress. D14 splits them and counts only the operator's record.
+ *
+ * - `derivedSatisfied` — the step's own readiness check passes. Nobody said so;
+ *   the system worked it out. It is a real fact and it is shown (the wizard's
+ *   "defaulted" state), but it is not a confirmation and it does not count
+ *   toward D7's percentage.
+ * - `operatorConfirmed` — a person marked this step done. This is the one that
+ *   counts, and it is the only one that does.
+ *
+ * SKIPPING IS NEITHER. "Skip for now" is D4's deferral: it buys passage past a
+ * step and leaves it visibly outstanding, so it neither confirms the step nor
+ * says anything about whether the check passes.
+ */
+export interface SetupStepCompletionAnswer {
+  readonly derivedSatisfied: boolean;
+  readonly operatorConfirmed: boolean;
+}
+
+/**
+ * Resolve both halves of {@link SetupStepCompletionAnswer} for one step.
+ *
+ * ONE function returning both rather than two predicates, so the exhaustiveness
+ * guard below is written once and a second `completion` source cannot be
+ * handled in one half and forgotten in the other.
  *
  * Takes the LOOSE `SetupStepDefinition` shape rather than the narrowed
  * `SetupStepEntry` (widened by #219, C4). It reads only `completion`, and the
@@ -151,14 +178,29 @@ export interface SetupStepCompletionInput {
  * `SetupStepId` — the same reason `findSetupStepRegistryViolations` below takes
  * the loose shape. Every existing caller passes an entry, which still satisfies
  * this.
+ *
+ * ## The readiness summary did NOT move with this split (#237)
+ *
+ * `buildSetupReadiness`'s `summary.complete` still counts
+ * `status === "complete" || progress === "completed"` — which is exactly the
+ * UNION of the two answers here. That is deliberate and the pin in
+ * `setup-step-registry.test.ts` is re-drawn over the union rather than deleted:
+ * `/admin/setup`'s cards and `npm run setup:check` answer "is this installation
+ * configured?", where a defaulted timezone genuinely IS configured, while the
+ * wizard answers "has the operator been through this?". D14 exists to stop
+ * those two questions sharing one number; making the readiness figure follow
+ * the wizard's answer would have re-merged them one layer down.
  */
-export function isSetupStepComplete(
+export function resolveSetupStepCompletion(
   entry: SetupStepDefinition,
   input: SetupStepCompletionInput,
-): boolean {
+): SetupStepCompletionAnswer {
   switch (entry.completion) {
     case "readiness-check":
-      return input.status === "complete" || input.progress === "completed";
+      return {
+        derivedSatisfied: input.status === "complete",
+        operatorConfirmed: input.progress === "completed",
+      };
     default: {
       // Exhaustiveness guard: `tsconfig` has neither `noImplicitReturns` nor a
       // switch-exhaustiveness lint rule, so nothing else fails the build the

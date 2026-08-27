@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /*
@@ -2014,5 +2016,53 @@ describe("clubTimeZoneSelfHealStep — the upgrade keeps the zone already in use
       timeZone: "Australia/Sydney",
     });
     expect(harness.identity.findUnique).toHaveBeenCalled();
+  });
+});
+
+/*
+  THE SEED HAS TO OBEY THIS MODULE'S OWN RULE (#237, epic #213 D16).
+
+  `runConfigSelfHeal`'s fallback guard refuses to persist a club.json-derived
+  value into a create-if-absent row unless the effective config resolved to a
+  real primary `config/club.json`. Freezing a fallback would make the
+  placeholder identity DB-first authoritative and unrecoverable without an admin
+  edit, because both writers are create-only.
+
+  `prisma/seed.ts` wrote the identity row unconditionally and so broke that rule
+  from the other side: a fresh install with no committed club.json got "Example
+  Mountain Club" persisted as though somebody had configured it, which is what
+  made step 1 of the setup wizard report itself complete during UAT.
+
+  Scanned from disk, in the shape `club-time-zone-backfill.test.ts` already uses
+  for the timezone block. Being a disk scan it has no import edge to
+  `prisma/seed.ts`, so `vitest related` cannot select it from a diff to that
+  file — CI-caught by design, the same trade-off `docs/TESTING.md` records for
+  the other contract scanners.
+*/
+describe("prisma/seed.ts club-identity write", () => {
+  const seedSource = readFileSync(
+    path.resolve(process.cwd(), "prisma/seed.ts"),
+    "utf8",
+  );
+
+  it("is gated on the same provenance the self-heal gates on", () => {
+    const gate = seedSource.indexOf('if (clubConfigSource === "primary")');
+    const write = seedSource.indexOf("prisma.clubIdentitySettings.upsert(");
+
+    expect(seedSource).toContain(
+      'import { clubConfig, clubConfigSource } from "../src/config/club"',
+    );
+    expect(gate).toBeGreaterThan(-1);
+    // The write is INSIDE the gate, not merely somewhere after a gate that
+    // guards something else.
+    expect(write).toBeGreaterThan(gate);
+    expect(write - gate).toBeLessThan(1200);
+  });
+
+  it("writes the identity row exactly once, so the gate cannot be bypassed", () => {
+    // A second, ungated `clubIdentitySettings` write anywhere in the seed would
+    // restore the defect while leaving the gate above looking correct.
+    const writes = seedSource.match(/prisma\.clubIdentitySettings\.\w+\(/g) ?? [];
+    expect(writes).toEqual(["prisma.clubIdentitySettings.upsert("]);
   });
 });

@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   CircleDashed,
   CircleDot,
+  CircleHelp,
   Lock,
   RefreshCw,
   Rocket,
@@ -61,6 +62,12 @@ function StateIcon({ state }: { state: SetupWizardStepState }) {
       return <RefreshCw className="h-4 w-4 shrink-0 text-warning-11" />;
     case "deferred":
       return <SkipForward className="h-4 w-4 shrink-0 text-warning-11" />;
+    // D14 (#237): a default is in place and nobody has confirmed it. Its own
+    // glyph rather than a reuse of the not-started dashed circle, because the
+    // two are genuinely different situations for an operator — one has nothing
+    // in it, the other has something in it that may well be wrong.
+    case "defaulted":
+      return <CircleHelp className="h-4 w-4 shrink-0 text-warning-11" />;
     case "not-started":
       return <CircleDashed className="h-4 w-4 shrink-0 text-muted-foreground" />;
   }
@@ -73,12 +80,19 @@ function StateIcon({ state }: { state: SetupWizardStepState }) {
  * completed this, then something upstream changed and it needs another look",
  * and that sentence is the one an operator can act on. "Stale" is the codebase's
  * word for it and stays in the code.
+ *
+ * "Default in place" rather than "defaulted", for the same reason, and in the
+ * register the club-time-zone check already reached for when it hand-rolled this
+ * distinction ("the club's timezone is Pacific/Auckland, but nothing has
+ * confirmed it"). It states what is true — there IS a value, and it may be
+ * perfectly right — without claiming anybody has agreed to it (D14, #237).
  */
 export const SETUP_WIZARD_STATE_LABEL: Record<SetupWizardStepState, string> = {
   complete: "Done",
   current: "Up next",
   stale: "Needs another look",
   deferred: "Skipped for now",
+  defaulted: "Default in place",
   "not-started": "Not started",
 };
 
@@ -113,6 +127,13 @@ export const SETUP_WIZARD_STATE_LABEL: Record<SetupWizardStepState, string> = {
  * step that still CAPS THE FRONTIER (#219 F2) while looking, in the old wording,
  * like an ordinary skipped step the operator had already dealt with.
  *
+ * `isDefaulted` (D14, #237) joins the accumulation on the same footing and adds
+ * exactly ONE row — `current` + defaulted, reading "Up next — a default is in
+ * place". It cannot combine with the other two: `defaulted` requires that the
+ * operator has neither confirmed the step (which is what `stale` is intersected
+ * against) nor skipped it (which is what `deferred` is). So the resume point on
+ * a fresh install is the only place the qualifier shows.
+ *
  * It also says "up next" rather than "you are here": the row the operator is
  * LOOKING at is the selected one, marked separately by `aria-current="step"` and
  * the highlight, and the two are different rows the moment somebody walks past a
@@ -127,6 +148,8 @@ export function setupWizardStepLabel(step: SetupWizardRailStep): string {
   // facts the state did NOT say need appending.
   if (step.isStale && step.state !== "stale") qualifiers.push("needs another look");
   if (step.isDeferred && step.state !== "deferred") qualifiers.push("skipped for now");
+  if (step.isDefaulted && step.state !== "defaulted")
+    qualifiers.push("a default is in place");
   if (qualifiers.length === 0) return position;
   return `${position} — ${qualifiers.join(", ")}`;
 }
@@ -146,6 +169,16 @@ export function setupWizardStepLabel(step: SetupWizardRailStep): string {
  * seconds earlier by pressing the button, and it does not cap the frontier — so
  * the amber it earns is the amber of an ordinary `deferred` row, and where it
  * coincides with `current` the position is the more useful thing to show.
+ *
+ * NEITHER DOES `defaulted` (D14, #237), even though it DOES cap the frontier —
+ * so the frontier is not what the rule turns on. Staleness takes the surface
+ * because it is a warning about work already done that has quietly stopped being
+ * true, and an operator can walk past a merely-textual warning on a row they
+ * were not heading for. A defaulted step that is also current is the row the
+ * wizard is sending them to next: they cannot walk past it, the step frame states
+ * the default in full on arrival, and repainting the resume point amber on a
+ * fresh install would tint most of the rail on the one journey where nothing has
+ * gone wrong yet. The label still carries both facts.
  */
 function railVisualState(step: SetupWizardRailStep): SetupWizardStepState {
   return step.state === "current" && step.isStale ? "stale" : step.state;
@@ -165,8 +198,13 @@ function stateClasses(state: SetupWizardStepState, selected: boolean): string {
       return "border-transparent text-foreground hover:border-border";
     case "current":
       return "border-brand-gold/60 text-foreground";
+    // `defaulted` shares the amber of the other two outstanding-but-populated
+    // states: something IS set here and it wants a person's eye on it. The icon
+    // and the label are what tell the three apart, and `data-visual-state`
+    // publishes the answer so a test never has to read a class name.
     case "stale":
     case "deferred":
+    case "defaulted":
       return "border-warning-6 bg-warning-3 text-warning-11";
     case "not-started":
       return "border-transparent text-muted-foreground hover:border-border";

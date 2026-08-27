@@ -346,6 +346,11 @@ export function SetupWizardLaunchPanel({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  // See the comment at the two lists below for why this is partitioned rather
+  // than rendered as one.
+  const deferredOutstanding = view.outstanding.filter((item) => item.deferred);
+  const unchosenOutstanding = view.outstanding.filter((item) => !item.deferred);
+
   const canEditSite = permissionMatrix.content === "edit";
   // The server's answer wins for as long as this panel holds one, because the
   // payload behind `isSiteVisible` is a read that may predate the publish.
@@ -392,18 +397,48 @@ export function SetupWizardLaunchPanel({
         </p>
       </div>
 
-      {view.outstanding.length > 0 ? (
+      {/*
+        PARTITIONED ON `deferred`, BECAUSE THE HEADING MAKES A CLAIM (#237 fix
+        round). "By your own choice" is true of a skipped step and of nothing
+        else, and the list is not always all skipped steps: `launchPinned` keeps
+        this panel mounted through a refetch — it has to, or a publish in flight
+        would unmount mid-request — so a step that goes stale, or one a
+        newly-enabled module contributes, can arrive here having been chosen by
+        nobody. Rendering it under that heading told the operator they had
+        skipped something they never saw.
+
+        When the panel is NOT pinned this partition is inert: `allResolved`
+        gates the panel and no non-deferred step survives it. That is the
+        ordinary case, and it renders exactly as it did.
+      */}
+      {deferredOutstanding.length > 0 ? (
         <div
           className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11"
           data-testid="setup-wizard-outstanding"
         >
           <p className="font-medium">Still outstanding, by your own choice:</p>
           <ul className="mt-1 space-y-1">
-            {view.outstanding.map((item) => (
-              <li key={item.id}>
-                {item.title}
-                {item.deferred ? " — skipped for now" : ""}
-              </li>
+            {deferredOutstanding.map((item) => (
+              <li key={item.id}>{item.title} — skipped for now</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {unchosenOutstanding.length > 0 ? (
+        <div
+          className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11"
+          data-testid="setup-wizard-outstanding-unchosen"
+        >
+          <p className="font-medium">Outstanding, and not by your choice:</p>
+          <p className="mt-1">
+            These came up while this panel was open — a step went back to
+            needing another look, or a module you switched on brought its own
+            steps with it. Nothing here was skipped, so go back and settle them.
+          </p>
+          <ul className="mt-1 space-y-1">
+            {unchosenOutstanding.map((item) => (
+              <li key={item.id}>{item.title}</li>
             ))}
           </ul>
         </div>

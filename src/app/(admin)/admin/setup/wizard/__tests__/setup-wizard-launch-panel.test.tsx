@@ -96,6 +96,61 @@ describe("SetupWizardLaunchPanel", () => {
     const outstanding = screen.getByTestId("setup-wizard-outstanding");
     expect(outstanding.textContent).toContain("Error Monitoring");
     expect(outstanding.textContent).toContain("skipped for now");
+    // Nothing unchosen, so the second list is absent entirely.
+    expect(screen.queryByTestId("setup-wizard-outstanding-unchosen")).toBeNull();
+  });
+
+  /*
+    "BY YOUR OWN CHOICE" IS A CLAIM, AND IT IS NOT ALWAYS TRUE OF THE WHOLE LIST
+    (#237 fix round). `launchPinned` in the shell keeps this panel mounted across
+    a refetch — it must, or a publish in flight would unmount mid-request — so a
+    step that has gone stale, or one a newly-enabled module contributes, can
+    arrive in `outstanding` having been chosen by nobody. Under the old single
+    heading the operator was told they had skipped something they had never seen.
+
+    Mutation-verified: rendering `view.outstanding` under the one heading again
+    fails this.
+  */
+  it("does not claim an unchosen outstanding step was skipped", () => {
+    stubPublishFetch();
+    renderPanel({
+      view: viewWith([
+        { id: "sentry" as SetupStepId, title: "Error Monitoring", deferred: true },
+        {
+          id: "club-time-zone" as SetupStepId,
+          title: "Club Time Zone",
+          deferred: false,
+        },
+      ]),
+    });
+
+    const chosen = screen.getByTestId("setup-wizard-outstanding");
+    expect(chosen.textContent).toContain("Error Monitoring");
+    expect(chosen.textContent).not.toContain("Club Time Zone");
+
+    const unchosen = screen.getByTestId("setup-wizard-outstanding-unchosen");
+    expect(unchosen.textContent).toContain("Club Time Zone");
+    expect(unchosen.textContent).not.toContain("Error Monitoring");
+    expect(unchosen.textContent).toMatch(/not by your choice/i);
+    expect(unchosen.textContent).toMatch(/nothing here was skipped/i);
+  });
+
+  it("renders only the unchosen list when nothing was skipped", () => {
+    stubPublishFetch();
+    renderPanel({
+      view: viewWith([
+        {
+          id: "club-time-zone" as SetupStepId,
+          title: "Club Time Zone",
+          deferred: false,
+        },
+      ]),
+    });
+
+    expect(screen.queryByTestId("setup-wizard-outstanding")).toBeNull();
+    expect(
+      screen.getByTestId("setup-wizard-outstanding-unchosen").textContent,
+    ).toContain("Club Time Zone");
   });
 
   // #220 review F3. The old panel GET the whole club theme on mount and PUT it

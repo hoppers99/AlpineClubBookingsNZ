@@ -18,7 +18,10 @@ import {
 } from "@/components/admin/view-only-action";
 import { SetupStepLinks } from "@/components/admin/setup-step-links";
 import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
-import type { SetupWizardStepDetail } from "@/lib/setup-wizard-view";
+import {
+  SETUP_STEP_DEFAULTED_EVIDENCE,
+  type SetupWizardStepDetail,
+} from "@/lib/setup-wizard-view";
 import { setupWizardStepLabel } from "./setup-wizard-rail";
 
 /**
@@ -89,9 +92,55 @@ function areaLabel(area: SetupWizardStepDetail["permissionArea"]): string {
   );
 }
 
+/**
+ * The defaulted banner's copy, chosen by where the step's facts came from
+ * (#237 fix round). `SETUP_STEP_DEFAULTED_EVIDENCE` holds the classification and
+ * the reasoning; this holds the two sentences.
+ *
+ * Read by STEP ID rather than off a field on the step, deliberately — see that
+ * table's docblock: the defect being fixed is a step wearing the wrong sentence,
+ * and a fixture-settable field would make the pairing untestable.
+ *
+ * Both name the two ways past the step, because D15 makes this state block the
+ * journey and an operator who cannot decide today needs telling how to move.
+ * Neither says "change it below" where the step links to nothing.
+ */
+function defaultedBannerCopy(step: SetupWizardStepDetail): string {
+  // Checked FOR "installed-default", not for "read-from-deployment", so an id
+  // this table does not (yet) recognise — a payload from a rolling deploy or
+  // an old client bundle sitting on a step a newer server has reclassified —
+  // lands on the non-committal register below rather than on the more
+  // specific claim that the site's own installer set this value.
+  if (SETUP_STEP_DEFAULTED_EVIDENCE[step.id] === "installed-default") {
+    return (
+      "A default is in place here and nothing has confirmed it — it was set when " +
+      "the site was installed, not chosen for your club. Check it below, change " +
+      "it if it is wrong, then mark this step done. If you would rather decide " +
+      "later, skip it for now."
+    );
+  }
+  // The register is the environment-role check's: these facts may have been
+  // declared on purpose by whoever installed the site, so this asks for a
+  // review and never calls them unchosen. Saying otherwise put "not chosen for
+  // your club" directly above "declared PRODUCTION — the club's live site".
+  return (
+    "Nothing has confirmed this step yet. What it reports was read from this " +
+    "deployment's own configuration and environment rather than chosen in the " +
+    "wizard — check that it is right for your club, then mark this step done. " +
+    "If you would rather decide later, skip it for now."
+  );
+}
+
 function stateBadgeVariant(step: SetupWizardStepDetail) {
   if (step.state === "complete") return "success" as const;
-  if (step.state === "stale" || step.state === "deferred") return "warning" as const;
+  if (
+    step.state === "stale" ||
+    step.state === "deferred" ||
+    // D14 (#237): outstanding and populated, like the two above it.
+    step.state === "defaulted"
+  ) {
+    return "warning" as const;
+  }
   if (step.state === "current") return "outline" as const;
   return "secondary" as const;
 }
@@ -181,6 +230,19 @@ export function SetupWizardStepFrame({
             it is done or no longer applies.
           </p>
         ) : null}
+        {/* D14/D15 (#237). Say what is actually true — there IS a value, it may
+            well be right — and ask, rather than assert that anybody agreed to
+            it. WHICH sentence depends on where the step's facts came from; see
+            `defaultedBannerCopy` above, and
+            `SETUP_STEP_DEFAULTED_EVIDENCE` for the classification. */}
+        {step.isDefaulted ? (
+          <p
+            data-testid="setup-wizard-step-defaulted"
+            className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11"
+          >
+            {defaultedBannerCopy(step)}
+          </p>
+        ) : null}
 
         {step.message ? (
           <p className="text-sm text-muted-foreground">{step.message}</p>
@@ -267,6 +329,18 @@ export function SetupWizardStepFrame({
             {providerTest.label}
           </ViewOnlyActionButton>
         ) : null}
+        {/*
+          "MARK THIS STEP DONE" IS THE EXISTING TRANSITION, AND D15 ADDS NO NEW
+          VERB (#237). The question was asked and settled: a defaulted step needs
+          a way for a person to say "yes, that default is right for us", and the
+          answer is `complete` — the same PATCH, the same wording, the same
+          button, whatever state the step is in. A second control ("Confirm the
+          default", say) would have meant a second progress verb, a second audit
+          event and a rule about which of the two counts; `completedStepIds` is
+          already exactly the record D14 needs, which is why the split cost the
+          schema nothing. The defaulted banner above therefore names THIS button
+          rather than offering its own.
+        */}
         {step.progress !== "completed" ? (
           <ViewOnlyActionButton
             type="button"

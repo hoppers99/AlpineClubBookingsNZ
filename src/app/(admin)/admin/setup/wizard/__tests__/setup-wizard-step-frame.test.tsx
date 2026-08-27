@@ -3,7 +3,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_VIEW_ONLY_SECTION_HEADING } from "@/components/admin/view-only-action";
-import type { SetupStepId } from "@/lib/setup-step-registry";
+import { buildSetupReadiness } from "@/lib/setup-readiness";
+import { SETUP_STEP_IDS, type SetupStepId } from "@/lib/setup-step-registry";
 import type { SetupWizardStepDetail } from "@/lib/setup-wizard-view";
 import { SetupWizardStepFrame } from "@/app/(admin)/admin/setup/wizard/setup-wizard-step-frame";
 
@@ -31,6 +32,7 @@ function detail(overrides: Partial<SetupWizardStepDetail> = {}): SetupWizardStep
     isReachable: true,
     isStale: false,
     isDeferred: false,
+    isDefaulted: false,
     permissionArea: "bookings",
     ...overrides,
   };
@@ -62,6 +64,19 @@ function renderFrame(
   );
   return { onProgress, onNavigate, onOpenLaunch, onProviderTest };
 }
+
+/**
+ * Step ids whose REAL readiness check carries neither an `href` nor any
+ * `links` — derived from the production check builder rather than
+ * hardcoded, so a check that later loses (or gains) its destination is
+ * picked up here automatically instead of a fixed id list silently going
+ * stale. Computed once: `buildSetupReadiness` is a pure read over the real
+ * config/env, so every render in the test below can share it.
+ */
+const STEP_IDS_WITH_NO_CONTROL: SetupStepId[] = buildSetupReadiness()
+  .categories.flatMap((category) => category.checks)
+  .filter((check) => !check.href && (check.links?.length ?? 0) === 0)
+  .map((check) => check.id as SetupStepId);
 
 /** A step whose readiness check declares a provider test — Stripe's. */
 function providerStep(overrides: Partial<SetupWizardStepDetail> = {}) {
@@ -280,5 +295,190 @@ describe("SetupWizardStepFrame", () => {
     cleanup();
     renderFrame({ step: detail({ isStale: true, state: "stale" }) });
     expect(screen.getByText(/give it another look/)).toBeTruthy();
+  });
+
+  /*
+    D14/D15 (#237). The defaulted notice is the frame's whole job on this state:
+    the rail can only carry three words, and what an operator needs here is that
+    a value IS set, that nobody chose it, and what to do about it. D15 makes the
+    state stop the journey, so the notice has to name BOTH ways past it — an
+    operator blocked by a default they cannot decide today would otherwise be
+    left with no stated way forward.
+  */
+  it("says a default is in place, and names both ways past it", () => {
+    renderFrame({ step: detail({ isDefaulted: true, state: "defaulted" }) });
+    const notice = screen.getByTestId("setup-wizard-step-defaulted");
+    expect(notice.textContent).toMatch(/nothing has confirmed it/i);
+    expect(notice.textContent).toMatch(/mark this step done/i);
+    expect(notice.textContent).toMatch(/skip it for now/i);
+  });
+
+  /*
+    THE DEFAULTED NOTICE HAS TWO CLASSES OF COPY (#237 fix round), because the
+    state has two causes and one sentence was false for half of them. A seeded
+    timezone really was "set when the site was installed, not chosen for your
+    club"; `APP_ENVIRONMENT_ROLE=production` is a deliberate declaration, and
+    calling it an unchosen installer default sat directly above the panel's own
+    "declared PRODUCTION — the club's live site".
+
+    These drive the mapping through the STEP ID, not through a fixture field, so
+    swapping either entry in `SETUP_STEP_DEFAULTED_EVIDENCE` fails them.
+    Mutation-verified both ways round.
+  */
+  it("tells a seeded default from a fact read off the deployment", () => {
+    // `club-time-zone`: a row the seed wrote with a shipped value, editable on
+    // the page this step links to.
+    renderFrame({
+      step: detail({
+        id: "club-time-zone" as SetupStepId,
+        title: "Club Time Zone",
+        href: "/admin/club-time",
+        permissionArea: "support",
+        isDefaulted: true,
+        state: "defaulted",
+      }),
+    });
+    const seeded = screen.getByTestId("setup-wizard-step-defaulted");
+    expect(seeded.textContent).toMatch(/set when the site was installed/i);
+    expect(seeded.textContent).toMatch(/not chosen for your club/i);
+    cleanup();
+
+    // `environment-role`: read from this deployment's environment, and possibly
+    // declared on purpose by whoever installed the site.
+    renderFrame({
+      step: detail({
+        id: "environment-role" as SetupStepId,
+        title: "Environment Role",
+        href: "/admin/environment",
+        permissionArea: "support",
+        isDefaulted: true,
+        state: "defaulted",
+      }),
+    });
+    const deployment = screen.getByTestId("setup-wizard-step-defaulted");
+    expect(deployment.textContent).toMatch(
+      /read from this deployment's own configuration and environment/i,
+    );
+    expect(deployment.textContent).toMatch(/check that it is right for your club/i);
+  });
+
+  /*
+    THE FALLBACK BRANCH, exercised directly (#237 fix round). The lookup is
+    keyed `SETUP_STEP_DEFAULTED_EVIDENCE[step.id]`, and `step.id` is typed as
+    the closed union — but the PAYLOAD this component actually renders crosses
+    a network boundary, where an old client bundle or a rolling deploy can hand
+    it an id this build's table does not carry an entry for. `undefined` is
+    neither `"installed-default"` nor `"read-from-deployment"`, so the branch
+    that answers has to be the non-committal one: claiming "set when the site
+    was installed" about a step this build cannot even classify would be a
+    stronger, less deniable claim than the truth supports.
+  */
+  it("renders the non-committal register for an id the evidence table does not recognise", () => {
+    renderFrame({
+      step: detail({
+        id: "an-unrecognised-step-id" as SetupStepId,
+        title: "Unrecognised Step",
+        href: "/admin/somewhere",
+        permissionArea: "support",
+        isDefaulted: true,
+        state: "defaulted",
+      }),
+    });
+    const notice = screen.getByTestId("setup-wizard-step-defaulted");
+    expect(notice.textContent).toMatch(
+      /read from this deployment's own configuration and environment/i,
+    );
+    expect(notice.textContent).toMatch(/check that it is right for your club/i);
+    expect(notice.textContent).not.toMatch(/set when the site was installed/i);
+  });
+
+  /*
+    THE SENTENCE THAT MUST NEVER APPEAR ON THIS STEP, named rather than implied.
+    A declared production role is the club's live site, said so in the panel
+    beneath this notice; "not chosen for your club" contradicts that message on
+    the same screen, which is what the review found.
+  */
+  it("never calls the environment role an unchosen installer default", () => {
+    renderFrame({
+      step: detail({
+        id: "environment-role" as SetupStepId,
+        title: "Environment Role",
+        href: "/admin/environment",
+        permissionArea: "support",
+        isDefaulted: true,
+        state: "defaulted",
+      }),
+    });
+    const notice = screen.getByTestId("setup-wizard-step-defaulted");
+    expect(notice.textContent).not.toMatch(/not chosen for your club/i);
+    expect(notice.textContent).not.toMatch(/set when the site was installed/i);
+  });
+
+  /*
+    A step whose real readiness check carries no `href` and no `links` — the
+    work has no destination this screen can name — links NOWHERE. "Change it
+    below" would point at nothing on such a step, which is the second half of
+    the finding this generalises: not just `runtime-env` (editing `.env` and
+    restarting), but EVERY step in that shape, present or future, derived from
+    the real check builder above rather than named one at a time. Fails if a
+    future href-less, link-less step is ever classified `installed-default` in
+    `SETUP_STEP_DEFAULTED_EVIDENCE` — that copy is the one that says "below".
+  */
+  it("does not offer to change something below on any step with no control", () => {
+    // Guards the guard: if this list ever went empty (every check grew an
+    // `href`, say), the loop below would pass on zero iterations and this test
+    // would stop meaning anything without failing.
+    expect(STEP_IDS_WITH_NO_CONTROL.length).toBeGreaterThan(0);
+    for (const id of STEP_IDS_WITH_NO_CONTROL) {
+      renderFrame({
+        step: detail({
+          id,
+          title: id,
+          href: undefined,
+          links: [],
+          permissionArea: "support",
+          isDefaulted: true,
+          state: "defaulted",
+        }),
+      });
+      const notice = screen.getByTestId("setup-wizard-step-defaulted");
+      expect(notice.textContent).not.toMatch(/below/i);
+      // …and still names both ways past the step, which D15 requires of every
+      // variant of this notice.
+      expect(notice.textContent).toMatch(/mark this step done/i);
+      expect(notice.textContent).toMatch(/skip it for now/i);
+      cleanup();
+    }
+  });
+
+  /*
+    EVERY step id has a sentence, and the table is exhaustive by TYPE — a step
+    added by a later child fails the typecheck rather than falling back to the
+    wrong class silently. This is the runtime half of that: no id may render an
+    empty or undefined notice.
+  */
+  it("has copy for every step in the registry", () => {
+    for (const id of SETUP_STEP_IDS) {
+      renderFrame({
+        step: detail({ id, isDefaulted: true, state: "defaulted" }),
+      });
+      const text =
+        screen.getByTestId("setup-wizard-step-defaulted").textContent ?? "";
+      expect(text.length).toBeGreaterThan(80);
+      expect(text).toMatch(/mark this step done/i);
+      cleanup();
+    }
+  });
+
+  it("reads the defaulted notice off the FLAG, not off the state", () => {
+    // The state machine's precedence is lossy — `current` hides `defaulted` —
+    // and the resume point on a fresh install is exactly that combination. A
+    // notice branched on `state === "defaulted"` would therefore be invisible on
+    // the one step every operator meets first.
+    renderFrame({ step: detail({ state: "current" }) });
+    expect(screen.queryByTestId("setup-wizard-step-defaulted")).toBeNull();
+    cleanup();
+    renderFrame({ step: detail({ isDefaulted: true, state: "current" }) });
+    expect(screen.queryByTestId("setup-wizard-step-defaulted")).not.toBeNull();
   });
 });
