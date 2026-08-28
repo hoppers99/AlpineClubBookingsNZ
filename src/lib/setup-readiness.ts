@@ -1799,6 +1799,14 @@ function buildSeasonRateCheck(
  * lodge (#1982), so making a second check argue about the same fact is how two
  * plausible derivations drift apart.
  *
+ * They do move the WORDING, which is a different thing (C19 #250, UAT R2-7).
+ * An active lodge with no beds gets its own sentence rather than the ordinary
+ * open-for-booking one, because "open for booking (0 rooms, 0 beds)" reads as a
+ * contradiction and covers two opposite situations — an override lodge that is
+ * fine, and a lodge with capacity 0 that nobody can book — in the same seven
+ * words. The arm is on `activeBedCount`, not on the room count: beds are what
+ * `getLodgeCapacityStatus` counts.
+ *
  * ## Per-lodge completeness, reported separately from the club's
  *
  * `links` carries one entry per lodge, pointing at that lodge's own setup flow.
@@ -1839,6 +1847,31 @@ function buildLodgesCheck(
     const inventory = `${lodge.activeRoomCount} room${lodge.activeRoomCount === 1 ? "" : "s"}, ${lodge.activeBedCount} bed${lodge.activeBedCount === 1 ? "" : "s"}`;
     const flag = lodge.isDefault ? ", the club default" : "";
     if (lodge.active) {
+      /*
+        UAT R2-7: "open for booking (0 rooms, 0 beds)" read as self-contradictory
+        to the operator who met it, and they were right to distrust it. With no
+        active beds `getLodgeCapacityStatus` resolves this lodge's capacity to
+        its per-lodge `LodgeSettings.capacity` override, and to 0 without one
+        (#1982, "never silently overbook") — so the line as written covered a
+        correctly-configured override lodge and a lodge nobody can book with the
+        same seven words.
+
+        It says which it CANNOT tell, rather than picking one. The override is
+        not in this snapshot (`lodges` carries the counts and the flags, not the
+        capacity), and putting it there to make a stronger claim would duplicate
+        the verdict `buildClubConfigCheck` already owns for the default lodge
+        (#1982) — the second derivation this module's docblock exists to refuse.
+        So the honest sentence names the fact it holds and the setting that
+        decides the rest.
+
+        Still no change to the STATUS: see "Room and bed counts are REPORTED,
+        never judged" above, which is about the verdict and stays true. A
+        bed-less lodge can be correctly configured, so this is a sentence an
+        operator reads, not a check that fails.
+      */
+      if (lodge.activeBedCount === 0) {
+        return `${lodge.name}: open for booking, but no beds are set up (${inventory})${flag} — members can only book it if this lodge has a capacity override set. Add its rooms and beds, or check the override is what you meant.`;
+      }
       return `${lodge.name}: open for booking (${inventory})${flag}.`;
     }
     /*
