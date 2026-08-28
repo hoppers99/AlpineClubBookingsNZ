@@ -11,7 +11,6 @@ import {
   buildSetupWizardView,
   canChangeSetupProgress,
   resolveInitialStepId,
-  setupWizardNeighbours,
   type SetupWizardPayload,
 } from "@/lib/setup-wizard-view";
 import {
@@ -292,7 +291,8 @@ export function SetupWizardClient({
   // they are sitting, watched the screen change under them for no reason — the
   // module owning it was switched off, or somebody else settled the step and
   // moved the frontier. Landing them somewhere else without a word is the same
-  // defect as the Back button's teleport, one refetch later.
+  // defect the frame's own Back control used to teleport with, before C21
+  // (#252) retired it in favour of the rail — one refetch later.
   //
   // C13 (#239) is why the notice no longer says the step changed "elsewhere":
   // an operator standing on `address-autocomplete` can now switch that very
@@ -382,14 +382,6 @@ export function SetupWizardClient({
     view && activeStepId && activeStepId !== SETUP_WIZARD_LAUNCH_ID
       ? (view.steps.find((step) => step.id === activeStepId) ?? null)
       : null;
-
-  const neighbours = useMemo(
-    () =>
-      view && activeStep
-        ? setupWizardNeighbours(view, activeStep.id)
-        : { previous: null, next: null },
-    [view, activeStep],
-  );
 
   async function updateProgress(
     action: SetupWizardProgressAction,
@@ -585,9 +577,6 @@ export function SetupWizardClient({
                 step={activeStep}
                 canEdit={canChangeSetupProgress(permissionMatrix)}
                 saving={saving}
-                previousStep={neighbours.previous}
-                nextStep={neighbours.next}
-                launchUnlocked={view.allResolved}
                 providerTesting={
                   activeStep.action
                     ? providerRunning === activeStep.action.provider
@@ -598,8 +587,6 @@ export function SetupWizardClient({
                     ? (providerResults[activeStep.action.provider] ?? null)
                     : null
                 }
-                onNavigate={select}
-                onOpenLaunch={() => select(SETUP_WIZARD_LAUNCH_ID)}
                 onProgress={(action) =>
                   void updateProgress(action, activeStep.id)
                 }

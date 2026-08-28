@@ -306,6 +306,21 @@ describe("SetupWizardRail", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  // C21 (#252): the frontier's own explanation sentence — formerly the step
+  // frame's disabled-Continue tooltip — RELOCATES to a locked row's `title`
+  // once Continue is gone, so the Lock icon is not left saying nothing about
+  // why. Mutation-verified: dropping the `title` attribute, or setting it on
+  // a REACHABLE row instead, fails one of the two assertions below.
+  it("explains why a locked row is locked, and only a locked row", () => {
+    renderRail();
+    expect(
+      screen.getByTestId("setup-wizard-rail-row-locked").getAttribute("title"),
+    ).toBe("Finish or skip this step before moving on.");
+    expect(
+      screen.getByTestId("setup-wizard-rail-row-untouched").getAttribute("title"),
+    ).toBeNull();
+  });
+
   // The scroll mechanics. jsdom lays nothing out — every element reports a zero
   // height — so what a component test CAN pin is the structure and the rule,
   // and the visual half is verified in a browser. Both halves were wrong: the
