@@ -17,5 +17,6 @@
 
   **Admin → Age Group Settings itself is unchanged in what it does.** The
   editor moved into a component the wizard can also mount, which leaves the
-  page a thin shell around it — nothing about the page's own layout or
-  behaviour changed.
+  page a thin shell around it. One small visual reordering rides along: for a
+  view-only admin the page title now sits above the read-only explanation
+  banner rather than below it — same controls, same behaviour.
