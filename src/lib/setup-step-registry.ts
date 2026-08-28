@@ -78,6 +78,55 @@ export type SetupStepOwner = ModuleKey | typeof CORE_STEP_OWNER;
 export type SetupStepCompletionSource = "readiness-check";
 
 /**
+ * WHO CAN ACT ON THIS ENTRY (epic #213, **D17**, child C15 #246).
+ *
+ * Until D17 every readiness check was also a wizard step, and UAT round 2 found
+ * what that costs: three consecutive screens — `environment-role`, `runtime-env`,
+ * `auth-secret-strength` — that an operator sitting in the wizard cannot act on
+ * at all, and is made to click through to reach the ones they can. Their subject
+ * is the DEPLOYMENT, and the person who can change a deployment's `.env` is by
+ * definition not the person reading this screen: if they were, they would have
+ * restarted the server rather than pressed "Mark this step done".
+ *
+ * - `operator` — an administrator can move this from not-done to done by their
+ *   own action, inside this application. It is a step: it is on the rail, it
+ *   counts toward D7's percentage, it caps D2's frontier, and it is one of the
+ *   things `allResolved` is about.
+ * - `environment` — the check reports a fact about the DEPLOYMENT that no
+ *   in-app action changes. It is not a step. It never appears on the rail,
+ *   contributes nothing to the percentage or the frontier, and cannot be
+ *   confirmed, skipped or reopened; it is REPORTED, on the wizard's
+ *   Server-environment panel, with a remedy addressed to whoever runs the
+ *   server.
+ *
+ * **REQUIRED, not optional-with-a-default, and that is the whole point.** This
+ * registry's founding complaint is a flat array that "gained three hand-added
+ * ids in a fortnight and said nothing about who owned them" (see the module doc
+ * above). A `kind` defaulting to `"operator"` would decide this question
+ * silently for every step somebody adds without thinking about it — and
+ * "silently deciding a question nobody was asked" is the exact defect the
+ * registry exists to prevent. This epic already pays that tax three times over
+ * (`SETUP_STEP_PERMISSION_AREA`, `SETUP_STEP_DEFAULTED_EVIDENCE` and
+ * `SETUP_STEP_PANES` are all exhaustive Records for the same reason), so a new
+ * step fails the typecheck here until a person decides which side of the line it
+ * is on. The cost is one field on twenty declarations, paid once.
+ *
+ * **Why a field and not an exclusion set in the traversal.** An exclusion set
+ * was the cheaper option and it is rejected on this registry's own founding rule
+ * ("Derived, not parallel"): it is a second list, in exactly the shape the flat
+ * array was, and it would be UNREACHABLE from three places that need the
+ * answer — `buildSetupReadiness`, the setup-progress route's validator, and
+ * `npm run setup:check` — so "may an operator confirm this?" would have three
+ * answers depending on which module you asked.
+ *
+ * **It is a plain string literal**, deliberately, so `npm run setup:check` (a
+ * `tsx` entrypoint) imports this module as happily as the React tree does. This
+ * is why `kind` lives here and `SETUP_STEP_PANES` — which carries
+ * `ComponentType`s — could not.
+ */
+export type SetupStepKind = "operator" | "environment";
+
+/**
  * The shape a definition is authored in. `id` and `prerequisites` are `string`
  * rather than `SetupStepId` because `SetupStepId` is derived FROM the
  * definitions — narrowing them here would be circular. `SetupStepEntry` below is
@@ -86,6 +135,8 @@ export type SetupStepCompletionSource = "readiness-check";
 export interface SetupStepDefinition {
   readonly id: string;
   readonly ownerModule: SetupStepOwner;
+  /** Operator step or deployment fact — see {@link SetupStepKind}. */
+  readonly kind: SetupStepKind;
   readonly prerequisites: readonly string[];
   readonly order: number;
   readonly completion: SetupStepCompletionSource;
@@ -400,6 +451,46 @@ export function findSetupStepRegistryViolations(
       if (!prerequisiteModuleIsSafe) {
         violations.push(
           `Setup step "${dependent.id}" (module "${dependent.ownerModule}") depends on prerequisite "${prerequisite.id}" (module "${prerequisite.ownerModule}"): the dependent can be applicable while its prerequisite's module is disabled`,
+        );
+      }
+    }
+  }
+
+  // D17 (#246): an `environment` entry has LEFT the journey — it is not on the
+  // rail, the operator cannot confirm it, and the progress route refuses every
+  // transition on it. So it can be neither end of a prerequisite edge, and both
+  // directions are a genuine trap rather than a tidiness rule:
+  //
+  // - An operator step that DEPENDS on an environment fact is unfinishable
+  //   through the wizard. Staleness is computed from "is my prerequisite
+  //   confirmed?", nobody can ever confirm an environment fact, and no screen in
+  //   the wizard offers a control that would — so the dependent goes stale the
+  //   moment it is confirmed and stays stale forever, with nothing an operator
+  //   can do about it. That is worse than the wrong journey order: it is a
+  //   journey with no end.
+  // - An environment fact that DECLARES a prerequisite is asserting an ordering
+  //   over something that has no position in the journey to be ordered against.
+  //   The panel renders every fact at once.
+  //
+  // Every prerequisite list is empty today, so this guards the future rather
+  // than the present — which is the cheapest moment to write it, because there
+  // is no existing edge to argue about.
+  for (const definition of definitions) {
+    if (definition.kind !== "environment") continue;
+    if (definition.prerequisites.length > 0) {
+      violations.push(
+        `Setup step "${definition.id}" is an environment fact but declares prerequisites (${definition.prerequisites.join(", ")}); an environment fact has no position in the journey to order against`,
+      );
+    }
+  }
+  for (const dependent of definitions) {
+    for (const prerequisiteId of dependent.prerequisites) {
+      const prerequisite = definitionsById.get(prerequisiteId);
+      // Unknown prerequisites are already reported above.
+      if (!prerequisite) continue;
+      if (prerequisite.kind === "environment") {
+        violations.push(
+          `Setup step "${dependent.id}" depends on prerequisite "${prerequisite.id}", which is an environment fact: nobody can confirm an environment fact, so the dependent would go stale on it permanently`,
         );
       }
     }

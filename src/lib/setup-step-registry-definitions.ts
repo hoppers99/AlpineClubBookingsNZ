@@ -94,6 +94,47 @@ import type { SetupStepDefinition } from "@/lib/setup-step-registry";
  * Do not encode the editorial ordering of the journey as prerequisites: that is
  * what `order` is for, and a false prerequisite would block navigation (D2) on
  * a step an operator has no reason to complete first.
+ *
+ * ## `kind`: which five are environment facts, and why (D17, C15 #246)
+ *
+ * `SetupStepKind`'s own docblock in `setup-step-registry.ts` states the rule —
+ * `environment` is a fact about the DEPLOYMENT that no in-app action changes.
+ * Applying it here settles sixteen entries mechanically and four by judgement.
+ * The four are written down because each one looks like it could go the other
+ * way, and a later reader deserves the evidence rather than a re-argument:
+ *
+ * - **`stripe` and `xero-operational` are OPERATOR, and the checks decide it,
+ *   not taste.** Both say so in as many words — `buildStripeCheck`:
+ *   "Credentials are stored in-app (encrypted); no STRIPE_* env vars are used",
+ *   and `buildOperationalXeroCheck` the same for `XERO_*`. Their statuses come
+ *   from `SetupDatabaseSnapshot` fields, and `getSetupRequiredEnvNames()`
+ *   explicitly lists both providers as NO LONGER requiring environment
+ *   variables (#2082 / #2079). So an administrator's own click, inside this
+ *   app, at `/admin/stripe/setup` and `/admin/xero/setup`, is what turns these
+ *   green. Filing them as environment facts would put a "send this to whoever
+ *   runs your server" remedy on a screen the server operator has nothing to do
+ *   with. An OAuth connect is still an operator act; it is simply one performed
+ *   through a credential wizard rather than a settings form.
+ * - **`address-autocomplete` is a hybrid and stays OPERATOR.** Its check needs
+ *   the module flag AND `ADDY_API_KEY`/`ADDY_API_SECRET` from the environment.
+ *   The operator half is decisive because it is SUFFICIENT: switching the
+ *   module off makes the credentials irrelevant and the check reports
+ *   accordingly, so an administrator can reach a settled answer by their own
+ *   action without anybody touching a `.env`. That is what an operator step is,
+ *   and the module toggle it needs is one checkbox on the pane this step
+ *   already mounts.
+ * - **`finance-dashboard` is a hybrid and stays OPERATOR.** Module flag plus
+ *   `operationalXeroConnected`. Neither input is the environment's: the second
+ *   is another OPERATOR step's fact — and per the paragraph above it is a
+ *   shared FIELD rather than a prerequisite, which is why this stays an
+ *   ordinary step with no edge declared.
+ *
+ * The remaining sixteen are mechanical. `environment-role` (`APP_ENVIRONMENT_ROLE`
+ * plus the database safer override), `runtime-env` (`process.env` alone),
+ * `auth-secret-strength` (`AUTH_SECRET`), `email-ses` (`USE_AWS_SES`/`SMTP_*`/
+ * `EMAIL_FROM`) and `sentry` (four `SENTRY_*` variables) read the deployment and
+ * nothing else; the other eleven read rows in this club's own database that an
+ * administrator edits from an admin page. Five environment, fifteen operator.
  */
 const CORE_SETUP_STEP_DEFINITIONS = [
   {
@@ -106,6 +147,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
     // `SETUP_STEP_DEFINITIONS` from this file. Every `ownerModule: "core"`
     // below is the same deliberate literal.
     ownerModule: "core",
+    kind: "operator",
     prerequisites: [],
     order: 10,
     completion: "readiness-check",
@@ -113,6 +155,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
   {
     id: "club-time-zone",
     ownerModule: "core",
+    kind: "operator",
     prerequisites: [],
     order: 20,
     completion: "readiness-check",
@@ -132,6 +175,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
     // of the environment ones.
     id: "environment-role",
     ownerModule: "core",
+    kind: "environment",
     prerequisites: [],
     order: 25,
     completion: "readiness-check",
@@ -139,6 +183,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
   {
     id: "runtime-env",
     ownerModule: "core",
+    kind: "environment",
     prerequisites: [],
     order: 30,
     completion: "readiness-check",
@@ -146,6 +191,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
   {
     id: "auth-secret-strength",
     ownerModule: "core",
+    kind: "environment",
     prerequisites: [],
     order: 40,
     completion: "readiness-check",
@@ -153,6 +199,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
   {
     id: "seed-admin",
     ownerModule: "core",
+    kind: "operator",
     prerequisites: [],
     order: 50,
     completion: "readiness-check",
@@ -163,6 +210,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
     // switch off the only step that can switch it back on.
     id: "feature-flags",
     ownerModule: "core",
+    kind: "operator",
     prerequisites: [],
     order: 60,
     completion: "readiness-check",
@@ -185,6 +233,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
     // not a shared verdict.
     id: "lodges",
     ownerModule: "core",
+    kind: "operator",
     prerequisites: [],
     order: 65,
     completion: "readiness-check",
@@ -192,6 +241,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
   {
     id: "booking-policies",
     ownerModule: "core",
+    kind: "operator",
     prerequisites: [],
     order: 70,
     completion: "readiness-check",
@@ -199,6 +249,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
   {
     id: "membership-cancellation",
     ownerModule: "core",
+    kind: "operator",
     prerequisites: [],
     order: 80,
     completion: "readiness-check",
@@ -206,6 +257,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
   {
     id: "age-tiers",
     ownerModule: "core",
+    kind: "operator",
     prerequisites: [],
     order: 90,
     completion: "readiness-check",
@@ -213,6 +265,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
   {
     id: "seasons-rates",
     ownerModule: "core",
+    kind: "operator",
     prerequisites: [],
     order: 100,
     completion: "readiness-check",
@@ -233,6 +286,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
     // explicitly forbidden from taking.
     id: "site-style",
     ownerModule: "core",
+    kind: "operator",
     prerequisites: [],
     order: 105,
     completion: "readiness-check",
@@ -243,6 +297,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
     // path's flag, so it does not own this step.
     id: "stripe",
     ownerModule: "core",
+    kind: "operator",
     prerequisites: [],
     order: 110,
     completion: "readiness-check",
@@ -250,6 +305,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
   {
     id: "email-ses",
     ownerModule: "core",
+    kind: "environment",
     prerequisites: [],
     order: 120,
     completion: "readiness-check",
@@ -257,6 +313,7 @@ const CORE_SETUP_STEP_DEFINITIONS = [
   {
     id: "sentry",
     ownerModule: "core",
+    kind: "environment",
     prerequisites: [],
     order: 130,
     completion: "readiness-check",
