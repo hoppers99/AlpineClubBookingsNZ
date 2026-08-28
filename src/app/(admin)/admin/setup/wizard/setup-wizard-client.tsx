@@ -563,10 +563,13 @@ export function SetupWizardClient({
             // The frame and the pane are SIBLINGS in one column, in this order.
             // The pane sits below because the frame carries the step's identity
             // — its title, its state badge and C11's defaulted banner. Of the
-            // four steps with a pane, only `club-time-zone` changes what that
-            // banner MEANS: its is the installed-default copy, whose "check it
-            // below" sentence now points at something for the first time. The
-            // other three (`club-config`, and C13's `feature-flags` and
+            // five steps with a pane, two change what that banner MEANS:
+            // `club-time-zone` and C19's `lodges` both carry the
+            // installed-default copy, whose "check it below" sentence points at
+            // something real on a step that has a pane — and on `lodges` the
+            // thing it points at is the seeded "<Club> Lodge" name the pane's
+            // own paragraph asks about (UAT R2-7). The other three
+            // (`club-config`, and C13's `feature-flags` and
             // `address-autocomplete`) all carry the read-from-deployment copy
             // (see `defaultedBannerCopy` in `setup-wizard-step-frame.tsx`),
             // which never said "below" in the first place. See
