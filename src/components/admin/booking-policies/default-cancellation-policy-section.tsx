@@ -369,6 +369,12 @@ export function DefaultCancellationPolicySection() {
         const data = await res.json()
         throw new Error(data.error || "Failed to save")
       }
+      // The write succeeded: removing an override changes
+      // `cancellationPolicyCount`, the exact fact the wizard's booking-policies
+      // step reads (C17, #248). This path deliberately bypasses `section.save()`
+      // (see the doc comment above), so it needs its own emit rather than
+      // inheriting the one in `save`.
+      emitSetupReadinessInputChanged()
       setCreatingOverride(false)
       await reload()
       section.setSuccess("Override removed — this lodge uses the club-wide rules")

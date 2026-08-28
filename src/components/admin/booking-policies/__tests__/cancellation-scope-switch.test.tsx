@@ -74,6 +74,7 @@ vi.mock("../policy-scope-select", () => ({
 }));
 
 import { DefaultCancellationPolicySection } from "../default-cancellation-policy-section";
+import { SETUP_READINESS_INPUT_CHANGED_EVENT } from "@/lib/setup-readiness-events";
 
 const CLUB_RULES = [
   {
@@ -522,5 +523,103 @@ describe("the frame outlives the loading state (#2142 review)", () => {
 
     await waitFor(() => expect(screen.getByText("Default Policy")).toBeTruthy());
     expect(screen.queryByText(/Could not load the policy/i)).toBeNull();
+  });
+});
+
+// #248 fix round: `handleRemoveOverride` PUTs a real change —
+// `cancellationPolicyCount` drops, the exact fact the wizard's booking-policies
+// step reads — but deliberately bypasses `section.save()` (see that function's
+// doc comment), so it needs its own emit rather than inheriting `save`'s.
+describe("handleRemoveOverride announces the setup-readiness event only on success (#248)", () => {
+  const LODGE_ONE_OVERRIDE = [
+    {
+      daysBeforeStay: 3,
+      refundPercentage: 25,
+      creditRefundPercentage: 25,
+      fixedFeeCents: 0,
+      creditFixedFeeCents: 0,
+    },
+  ];
+
+  /** Routes GETs by scope like `stubFetch`, but lets the PUT outcome vary. */
+  function stubRemoval(putResult: "ok" | "fail") {
+    const fetchMock = vi.fn<
+      (url: string, init?: RequestInit) => Promise<Response>
+    >(async (url, init) => {
+      if (init?.method === "PUT") {
+        return putResult === "ok"
+          ? jsonResponse({ rules: [] })
+          : new Response(JSON.stringify({ error: "Failed to save" }), {
+              status: 500,
+            });
+      }
+      if (url.includes("lodgeId=lodge-1")) {
+        return jsonResponse({ rules: LODGE_ONE_OVERRIDE });
+      }
+      return jsonResponse({
+        rules: CLUB_RULES,
+        nonMemberHoldEnabled: true,
+        nonMemberHoldDays: 7,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  async function goToLodgeOneOverride() {
+    await renderClubWide();
+    switchScopeTo("lodge-1");
+    await waitFor(() =>
+      expect(screen.getByText("Lodge One Override")).toBeTruthy(),
+    );
+  }
+
+  it("emits admin:setup-readiness-input-changed after a successful removal", async () => {
+    stubRemoval("ok");
+    await goToLodgeOneOverride();
+
+    const listener = vi.fn();
+    window.addEventListener(SETUP_READINESS_INPUT_CHANGED_EVENT, listener);
+    try {
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Remove override (use club-wide rules)",
+        }),
+      );
+
+      await waitFor(() =>
+        expect(
+          screen.getByText(/Override removed — this lodge uses the club-wide rules/i),
+        ).toBeTruthy(),
+      );
+      expect(listener).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener(SETUP_READINESS_INPUT_CHANGED_EVENT, listener);
+    }
+  });
+
+  it("does not emit when the removal PUT fails", async () => {
+    stubRemoval("fail");
+    await goToLodgeOneOverride();
+
+    const listener = vi.fn();
+    window.addEventListener(SETUP_READINESS_INPUT_CHANGED_EVENT, listener);
+    try {
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Remove override (use club-wide rules)",
+        }),
+      );
+
+      await waitFor(() =>
+        expect(screen.getByText(/Failed to save/i)).toBeTruthy(),
+      );
+      expect(listener).not.toHaveBeenCalled();
+      // Sanity: the removal card must still be showing the override, not the
+      // no-override state a stray reload would have produced.
+      expect(screen.getByText("Lodge One Override")).toBeTruthy();
+    } finally {
+      window.removeEventListener(SETUP_READINESS_INPUT_CHANGED_EVENT, listener);
+    }
   });
 });
