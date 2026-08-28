@@ -30,7 +30,10 @@
   The same refusal covers the older **Finish setup** button on the Site Style
   page, which writes the same flag by a different route. An ordinary Save there
   is untouched, so an undeclared installation can still work on its colours while
-  somebody sorts the declaration out.
+  somebody sorts the declaration out — though on a club that still shows the
+  legacy setup surfaces the last step's only button IS **Finish setup**, so the
+  colours have to be stored with **Save and next** from an earlier step, which
+  writes the whole styling exactly as it always did.
 
   Nothing changes for a club that is already set up and already open, and no
   existing setting, record or permission moves.
