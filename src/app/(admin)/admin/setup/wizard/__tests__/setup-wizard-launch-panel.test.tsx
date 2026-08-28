@@ -291,7 +291,14 @@ describe("SetupWizardLaunchPanel", () => {
     const anchors = role.querySelectorAll("a");
     expect(anchors.length).toBe(1);
     expect(anchors[0].getAttribute("href")).toBe("/admin/environment");
-    // …and it does not gate the other lever.
+    // …and it does not gate the other lever IN THIS COMPONENT. Since C16 (#247)
+    // the SERVER refuses a publish while the role is UNKNOWN
+    // (`INV-CONFIG-006`), and this panel deliberately keeps no copy of that
+    // rule: it offers the button and renders whatever comes back. So the control
+    // being present on an UNKNOWN role is the assertion rather than an
+    // oversight — a client-side disable here would be a second copy of the gate,
+    // free to drift from it, which is the defect #247 was fixing in the first
+    // place.
     expect(screen.getByTestId("setup-wizard-make-site-visible")).toBeTruthy();
   });
 

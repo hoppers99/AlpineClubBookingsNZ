@@ -31,9 +31,12 @@ import { resolveEnvironmentRole } from "@/lib/environment-role";
  *
  * A declared `NON_PRODUCTION` installation PUBLISHES FREELY. That is not an
  * oversight: an internal staging site is legitimately visible and non-production
- * forever, which is exactly what the wizard's launch panel already tells the
- * operator ("the two are independent"). The gate is on the role being UNKNOWN,
- * never on it being a copy.
+ * forever. The gate is on the role being UNKNOWN, never on it being a copy —
+ * which is the precise form of D9's "two independent levers" that survives this
+ * change. The levers are independent of each other's ANSWER; they were never
+ * independent of there being one. The wizard's launch panel and
+ * `docs/guides/setup.md` both state it that way, and both were corrected here
+ * from the unqualified claim.
  *
  * ## Why it is a module and not two copies of four lines
  *

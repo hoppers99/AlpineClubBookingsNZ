@@ -59,9 +59,20 @@ import type {
  *   naming what is paused and where to declare it. No control is offered: this
  *   is pinned by "keeps the environment-role lever consume-only and
  *   independent" and mutation-verified.
- * - **The two are independent.** A configured internal staging site is
- *   legitimately visible AND non-production forever, so neither lever gates the
- *   other and neither is presented as unfinished business.
+ * - **A DECLARED role never gates publishing — but an undeclared one does**
+ *   (C16, #247). D9's "two independent levers" holds for the answer and not for
+ *   its absence, and the distinction is the whole of `INV-CONFIG-006`. A
+ *   configured internal staging site is legitimately visible AND non-production
+ *   forever, so lever 2 reading *non-production* — or *production* — leaves
+ *   lever 1 exactly as free as it ever was, and neither is presented as
+ *   unfinished business. What is refused is publishing while lever 2 reads *not
+ *   configured*, because that is not an answer, it is the absence of one: an
+ *   installation nobody has declared may be a copy restored from the club's live
+ *   database. The refusal is the SERVER's — `site-visibility-gate.ts`, asked by
+ *   both request-path writers of `ClubTheme.completedAt` — so this panel still
+ *   offers the button and renders what came back, rather than growing a second
+ *   copy of the rule that could drift from it. `docs/guides/setup.md` states the
+ *   same distinction to the operator in the same words.
  * - **Outstanding work is stated, not hidden** (mockup 6). A club that skipped
  *   steps can still open, and is told exactly what it skipped.
  */

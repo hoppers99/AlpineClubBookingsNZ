@@ -58,9 +58,10 @@ describe("refuseSiteVisibilityWhileEnvironmentUnknown (#247)", () => {
 
   it("lets a declared NON-PRODUCTION installation publish too", async () => {
     // Deliberate, and not an oversight: an internal staging site is legitimately
-    // visible and non-production forever. The wizard's launch panel says exactly
-    // that ("the two are independent"), and a gate that refused here would make
-    // the panel's own claim false.
+    // visible and non-production forever. This is the precise form of D9's "two
+    // independent levers" that survives #247 — the levers are independent of
+    // each other's ANSWER, never of there being one — and a gate that refused
+    // here would break the half of the claim that is still true.
     declareEnvironmentRole("non-production");
     await expect(refuseSiteVisibilityWhileEnvironmentUnknown()).resolves.toBeNull();
   });
