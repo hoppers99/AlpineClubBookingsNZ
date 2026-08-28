@@ -127,6 +127,44 @@ export type SetupStepCompletionSource = "readiness-check";
 export type SetupStepKind = "operator" | "environment";
 
 /**
+ * WHETHER THIS ENTRY CAN HOLD THE PUBLISH BUTTON SHUT (epic #213, **D17**, C15
+ * #246).
+ *
+ * Three of the five environment facts describe a deployment a club must not
+ * open its public site on top of: nothing has declared whether this
+ * installation is the live site or a copy, a required runtime variable is
+ * missing or malformed, or the auth secret is weak enough that the site cannot
+ * store a Stripe or Xero credential. The other two — email transport and
+ * Sentry — are worth an amber row and nothing more.
+ *
+ * - `none` — this entry never holds publish shut. Every operator step
+ *   (`allResolved` is the gate that speaks for those — D9 keeps the three facts
+ *   separate and this must not re-merge them) and the two advisory facts.
+ * - `blocks-until-complete` — while this fact's readiness check is anything
+ *   other than `complete`, `launchBlockedBy` names it and the launch panel
+ *   refuses to publish.
+ *
+ * **`!== "complete"` is the whole predicate, and it lands exactly on the three
+ * conditions D17 names** rather than approximating them: `runtime-env` is
+ * `complete` iff no variable is missing or malformed; `auth-secret-strength` is
+ * `complete` iff the secret is not weak; `environment-role` is `complete` for
+ * both confirmed roles and `blocked` for UNKNOWN. Its one other branch —
+ * "database state was not checked" — needs `db` to be absent, which only
+ * `npm run setup:check` without database access produces and the wizard's own
+ * payload never can. That branch therefore fails closed on a path the publish
+ * button cannot be reached from, which is the harmless direction.
+ *
+ * **REQUIRED on every entry, like `kind`, and for the same reason.** The unsafe
+ * silence here is the opposite of the one `kind` guards: a defaulted `none`
+ * would let somebody add a genuine launch precondition and have it quietly not
+ * gate anything. `findSetupStepRegistryViolations` additionally refuses an
+ * OPERATOR step that claims to gate launch — that question is `allResolved`'s,
+ * and a step answering it twice is D14's one-number-two-meanings defect a layer
+ * up.
+ */
+export type SetupStepLaunchGate = "none" | "blocks-until-complete";
+
+/**
  * The shape a definition is authored in. `id` and `prerequisites` are `string`
  * rather than `SetupStepId` because `SetupStepId` is derived FROM the
  * definitions — narrowing them here would be circular. `SetupStepEntry` below is
@@ -137,6 +175,8 @@ export interface SetupStepDefinition {
   readonly ownerModule: SetupStepOwner;
   /** Operator step or deployment fact — see {@link SetupStepKind}. */
   readonly kind: SetupStepKind;
+  /** Whether this entry can hold publish shut — see {@link SetupStepLaunchGate}. */
+  readonly launchGate: SetupStepLaunchGate;
   readonly prerequisites: readonly string[];
   readonly order: number;
   readonly completion: SetupStepCompletionSource;
@@ -475,6 +515,22 @@ export function findSetupStepRegistryViolations(
   // Every prerequisite list is empty today, so this guards the future rather
   // than the present — which is the cheapest moment to write it, because there
   // is no existing edge to argue about.
+  // D9 keeps setup-done, site-visible and environment-role separate, and the
+  // publish gate is the place they could most easily be re-merged. An operator
+  // step that claimed to gate launch would be answering `allResolved`'s
+  // question a second time, in a second place, with a second predicate — which
+  // is D14's one-number-two-meanings defect one layer up.
+  for (const definition of definitions) {
+    if (
+      definition.kind === "operator" &&
+      definition.launchGate !== "none"
+    ) {
+      violations.push(
+        `Setup step "${definition.id}" is an operator step but declares launchGate "${definition.launchGate}"; whether operator steps hold publish shut is allResolved's question, and only an environment fact may gate launch separately (D9/D17)`,
+      );
+    }
+  }
+
   for (const definition of definitions) {
     if (definition.kind !== "environment") continue;
     if (definition.prerequisites.length > 0) {

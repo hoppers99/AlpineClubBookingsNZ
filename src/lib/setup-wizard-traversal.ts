@@ -8,6 +8,7 @@ import {
   type SetupStepCompletionInput,
   type SetupStepDefinition,
   type SetupStepId,
+  type SetupStepKind,
   type SetupStepOwner,
 } from "@/lib/setup-step-registry";
 
@@ -253,10 +254,85 @@ export interface SetupWizardTraversalStep<Id extends string = SetupStepId> {
   readonly isReachable: boolean;
 }
 
+/**
+ * One environment fact, for the wizard's Server-environment panel (D17, C15
+ * #246).
+ *
+ * Deliberately THIN — an id, who owns it, where it sits, and the verdict its
+ * readiness check reached. Everything a person reads (title, message, the
+ * remedy addressed to whoever runs the server, the provider test) is the VIEW
+ * layer's, assembled from the same readiness check every rail step's copy comes
+ * from. This module is pure and has no readiness result: giving it copy would
+ * make it the second place a fact's wording lives.
+ */
+export interface SetupWizardEnvironmentFact<Id extends string = SetupStepId> {
+  readonly id: Id;
+  readonly ownerModule: SetupStepOwner;
+  readonly order: number;
+  readonly status: SetupStepReadinessStatus;
+  /**
+   * This fact is holding publish shut: it declared
+   * `launchGate: "blocks-until-complete"` and its check is not `complete`.
+   * Every such id also appears in `launchBlockedBy`; it is carried per-fact so
+   * the panel can mark the offending row without re-deriving the rule.
+   */
+  readonly blocksLaunch: boolean;
+}
+
 export interface SetupWizardTraversal<Id extends string = SetupStepId> {
-  /** Applicable steps only, in registry declaration order. */
+  /**
+   * The OPERATOR steps that apply, in registry declaration order — the rail,
+   * the frontier, the percentage's denominator and `allResolved`'s subject.
+   *
+   * Since D17 (#246) this is a SUBSET of `applicableStepIds`, and the
+   * difference is exactly `environmentFacts`. Before D17 the two were the same
+   * list, and the whole point of the split is that an operator is no longer
+   * walked through three screens they cannot act on.
+   */
   readonly steps: readonly SetupWizardTraversalStep<Id>[];
+  /**
+   * EVERY applicable entry — operator steps and environment facts alike — in
+   * registry declaration order.
+   *
+   * **It deliberately did NOT narrow with `steps` under D17 (#246).** This is
+   * the field the readiness cards and `npm run setup:check` are married to:
+   * `setup-surface-registry-parity.test.ts` compares it against
+   * `getApplicableSetupStepIds` and against the cards' own check list across
+   * eight named module states, and that marriage is what C8 exists to enforce.
+   * The cards answer "is this installation configured?", where a deployment
+   * fact is squarely in scope; only the WIZARD's question ("has the operator
+   * been through this?") narrows. Narrowing here would have broken the one
+   * contract holding three surfaces to a single derivation, to save deriving a
+   * list this function already has.
+   */
   readonly applicableStepIds: readonly Id[];
+  /**
+   * The applicable ENVIRONMENT facts, in registry declaration order (D17, C15
+   * #246) — `applicableStepIds` minus `steps`, and the Server-environment
+   * panel's whole data set.
+   *
+   * Derived in this same pass, from the same registry, by the same
+   * applicability filter that produced the steps: one derivation, two
+   * audiences. A second reader computing "the applicable entries whose kind is
+   * environment" for itself is the drift this field exists to prevent.
+   */
+  readonly environmentFacts: readonly SetupWizardEnvironmentFact<Id>[];
+  /**
+   * The environment facts holding publish shut (D17, C15 #246): declared
+   * `launchGate: "blocks-until-complete"` and not `complete`.
+   *
+   * **Kept out of `allResolved`, deliberately.** D9's "setup-done, site-visible
+   * and environment-role are three separate facts" is the rule, and folding a
+   * deployment fault into `allResolved` would re-create D14's
+   * one-number-two-meanings defect a layer up: the launch panel would stop
+   * rendering, so the operator would lose the very screen that tells them what
+   * is wrong. The panel still unlocks on `allResolved`; the PUBLISH BUTTON is
+   * what this list refuses, with the reason stated beside it.
+   *
+   * Empty is the ordinary answer, and an empty environment fact set produces it
+   * trivially — nothing here fails closed on a club that has none.
+   */
+  readonly launchBlockedBy: readonly Id[];
   readonly staleStepIds: readonly Id[];
   /** Not complete — deferred, stale and DEFAULTED alike (#219 AC 4, D14). */
   readonly outstandingStepIds: readonly Id[];
@@ -322,6 +398,26 @@ function applicableEntries<Id extends string>(
     (entry) =>
       entry.ownerModule === CORE_STEP_OWNER || flags[entry.ownerModule],
   );
+}
+
+/**
+ * The applicable entries of one KIND (D17, C15 #246).
+ *
+ * Written as a filter over `applicableEntries`' result rather than folded INTO
+ * that function, and the distinction is load-bearing rather than stylistic.
+ * `applicableEntries` above is contractually the same predicate as
+ * `getApplicableSetupStepIds` — the readiness cards, the hub cards and this
+ * traversal are married to it by `setup-surface-registry-parity.test.ts` across
+ * eight module states. Narrowing it by `kind` would silently narrow the CARDS'
+ * step set too, hiding a deployment fact from the surface whose whole question
+ * is "is this installation configured?". The journey narrows here, one layer
+ * down, and nothing else does.
+ */
+function entriesOfKind<Id extends string>(
+  entries: readonly SetupStepDefinitionOf<Id>[],
+  kind: SetupStepKind,
+): readonly SetupStepDefinitionOf<Id>[] {
+  return entries.filter((entry) => entry.kind === kind);
 }
 
 /**
@@ -465,7 +561,16 @@ function computeStaleSetupStepIds<Id extends string = SetupStepId>(
   // name; a caller cannot reach this line with a narrowed Id and no registry.
   const registry = (input.registry ??
     SETUP_STEP_REGISTRY) as readonly SetupStepDefinitionOf<Id>[];
-  const entries = applicableEntries(registry, input.moduleSettings);
+  // D17 (#246): staleness is a property of the JOURNEY — "was done and now
+  // needs another look" — and an environment fact was never done, because
+  // nobody can confirm one. Excluding them here is correct rather than merely
+  // convenient: left in, every environment fact would sit permanently in the
+  // `complete`-set complement and be considered as a dependent on every pass,
+  // for a result that can never change.
+  const entries = entriesOfKind(
+    applicableEntries(registry, input.moduleSettings),
+    "operator",
+  );
   const applicable = new Set<string>(entries.map((entry) => entry.id));
   // F3: the WHOLE registry's ids, not the module-filtered `applicable` set —
   // this is what tells a genuinely unknown prerequisite apart from one that is
@@ -521,9 +626,37 @@ export function buildSetupWizardTraversal<Id extends string = SetupStepId>(
   // above are what make this fallback sound.
   const registry = (input.registry ??
     SETUP_STEP_REGISTRY) as readonly SetupStepDefinitionOf<Id>[];
-  const entries = applicableEntries(registry, input.moduleSettings);
+  // D17 (#246), and this is the WHOLE engine change. `applicable` is the cards'
+  // set and stays exactly what it was; `entries` — the journey — is its
+  // operator half. Everything downstream is built from `entries` as it always
+  // was, so `currentIndex`, the frontier, `steps`, `blockingStepIds`,
+  // `allResolved` and `percentComplete` all narrow together without another
+  // line being touched. That single seam is why the field costs twenty
+  // declarations and almost nothing here.
+  const applicable = applicableEntries(registry, input.moduleSettings);
+  const entries = entriesOfKind(applicable, "operator");
   const answers = completionAnswers(entries, input);
   const confirmed = operatorConfirmedIds(answers);
+
+  const environmentFacts = entriesOfKind(applicable, "environment").map(
+    (entry): SetupWizardEnvironmentFact<Id> => {
+      const status = input.readinessStatuses?.[entry.id] ?? "not_started";
+      return {
+        id: entry.id,
+        ownerModule: entry.ownerModule,
+        order: entry.order,
+        status,
+        // `!== "complete"` is the whole predicate — see `SetupStepLaunchGate`
+        // in the registry for why that lands exactly on D17's three named
+        // conditions rather than approximating them. `not_started` (no
+        // readiness result was supplied at all) counts as not complete, which
+        // is the fail-closed direction: a caller that could not read the
+        // deployment must not thereby unlock a publish.
+        blocksLaunch:
+          entry.launchGate === "blocks-until-complete" && status !== "complete",
+      };
+    },
+  );
 
   const suppliedStale = input.staleStepIds;
   const stale = new Set<Id>(
@@ -639,7 +772,14 @@ export function buildSetupWizardTraversal<Id extends string = SetupStepId>(
 
   return {
     steps,
-    applicableStepIds: facts.map((fact) => fact.entry.id),
+    // NOT `facts.map(...)` any more (D17, #246): `facts` is the operator half,
+    // and this field is the cards' whole set. See its docblock for why the two
+    // parted company here rather than in `applicableEntries`.
+    applicableStepIds: applicable.map((entry) => entry.id),
+    environmentFacts,
+    launchBlockedBy: environmentFacts
+      .filter((fact) => fact.blocksLaunch)
+      .map((fact) => fact.id),
     staleStepIds: facts
       .filter((fact) => fact.stale)
       .map((fact) => fact.entry.id),

@@ -144,6 +144,7 @@ export const ADDRESS_AUTOCOMPLETE_SETUP_STEPS = [
   {
     id: "address-autocomplete",
     kind: "operator",
+    launchGate: "none",
     prerequisites: [],
     order: 140,
     completion: "readiness-check",
@@ -154,6 +155,7 @@ export const XERO_INTEGRATION_SETUP_STEPS = [
   {
     id: "xero-operational",
     kind: "operator",
+    launchGate: "none",
     prerequisites: [],
     order: 150,
     completion: "readiness-check",
@@ -167,6 +169,7 @@ export const XERO_INTEGRATION_SETUP_STEPS = [
     // declaration changes no card today.
     id: "xero-mappings",
     kind: "operator",
+    launchGate: "none",
     prerequisites: [],
     order: 170,
     completion: "readiness-check",
@@ -177,6 +180,7 @@ export const FINANCE_DASHBOARD_SETUP_STEPS = [
   {
     id: "finance-dashboard",
     kind: "operator",
+    launchGate: "none",
     prerequisites: [],
     order: 160,
     completion: "readiness-check",
