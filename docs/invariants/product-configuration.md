@@ -492,8 +492,13 @@ home for that explanation and is not repeated here.
 - **The refusal is a 409 and it is operator-readable.** The caller holds the
   privilege and the same request will succeed once the installation is declared,
   so it is a conflict with the state of the installation rather than a permission
-  failure. The message names `APP_ENVIRONMENT_ROLE` and Admin › Environment, and
-  carries no value, connection string or provider identifier.
+  failure. The message names a repair for **each of UNKNOWN's three causes** —
+  set `APP_ENVIRONMENT_ROLE`, switch the safer override on for a copy, and, for
+  the override the database would not yield, apply the pending migrations or
+  restore database access — because the third is reachable on an installation
+  that is otherwise serving and neither of the other two repairs it. It names
+  the invariant it enforces, and carries no value, connection string or provider
+  identifier.
 - Decided on #247 (Wizard C16) under fork epic #213, consuming #3034's resolver.
   That issue holds the narrative; this entry holds only the rule. Operator
   guides: [`environment-role.md`](../guides/environment-role.md) and

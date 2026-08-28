@@ -220,6 +220,13 @@ describe("POST /api/admin/site-style/complete-setup", () => {
 
       expect(body.error).toContain("APP_ENVIRONMENT_ROLE");
       expect(body.error).toContain("Admin › Environment");
+      // All three of UNKNOWN's causes reach an operator through this route, so
+      // all three repairs travel with it — including the one neither
+      // declaration fixes. The wording itself is settled in
+      // `site-visibility-gate.test.ts`; this pins that the whole message
+      // arrives here rather than a shortened one.
+      expect(body.error).toContain("prisma migrate deploy");
+      expect(body.error).toContain("INV-CONFIG-006");
       // The launch panel throws on `!response.ok || body.isComplete !== true`
       // and renders `body.error`, so a refusal must NOT come back claiming the
       // site is live.

@@ -124,7 +124,7 @@ describe("refuseSiteVisibilityWhileEnvironmentUnknown (#247)", () => {
     ).resolves.not.toBeNull();
   });
 
-  it("names both repairs and no secrets", async () => {
+  it("names all THREE repairs, the invariant, and no secrets", async () => {
     undeclareEnvironmentRole();
 
     const refusal = await refuseSiteVisibilityWhileEnvironmentUnknown();
@@ -133,8 +133,34 @@ describe("refuseSiteVisibilityWhileEnvironmentUnknown (#247)", () => {
     expect(body.error).toContain("APP_ENVIRONMENT_ROLE");
     expect(body.error).toContain("Admin › Environment");
     expect(body.error).toContain("nothing was changed");
-    // Secret-free by construction: it names a variable and a screen, never a
-    // value, a connection string or a provider identifier.
+    // THE THIRD CAUSE HAS ITS OWN REPAIR, and it is the one an operator cannot
+    // guess. UNKNOWN also covers "the safer override could not be read" — an
+    // un-migrated database or one refusing the query — which is reachable on an
+    // installation that is otherwise serving and is fixed by neither of the
+    // other two. A message naming only those two sends somebody who has already
+    // set the variable correctly back to check the thing that is not wrong.
+    expect(body.error).toContain("prisma migrate deploy");
+    expect(body.error).toContain("restore database access");
+    // AGENTS.md: a guard names the id it enforces in its failure message, as
+    // `INV-CONFIG-005`'s Xero refusals do.
+    expect(body.error).toContain("INV-CONFIG-006");
+    // Secret-free by construction: it names a variable, a screen and a migration
+    // command, never a value, a connection string or a provider identifier.
     expect(body.error).not.toMatch(/postgres|password|sk_|whsec_|Bearer/i);
+  });
+
+  it("gives the SAME message to the unreadable-override case it now names", async () => {
+    // The three causes share one message on purpose — the resolver collapses
+    // them to one answer and the gate follows it — so this pins that the case
+    // the third repair was written for really does receive that repair, rather
+    // than the wording being true only of the undeclared case above.
+    declareEnvironmentRole("production");
+    mockFindUnique.mockRejectedValue(new Error("relation does not exist"));
+
+    const refusal = await refuseSiteVisibilityWhileEnvironmentUnknown();
+    const body = (await refusal?.json()) as { error: string };
+
+    expect(body.error).toBe(SITE_VISIBILITY_UNKNOWN_ROLE_ERROR);
+    expect(body.error).toContain("prisma migrate deploy");
   });
 });

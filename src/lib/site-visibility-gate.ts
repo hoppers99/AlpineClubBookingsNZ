@@ -52,20 +52,43 @@ import { resolveEnvironmentRole } from "@/lib/environment-role";
  */
 
 /**
- * The operator-facing refusal. Names both repairs because the resolver's UNKNOWN
- * covers both faults, and names the screen that can tell them apart rather than
- * restating the resolver's own notes — the wizard's launch panel already renders
- * those beneath this error, and `/admin/environment` renders them in full.
+ * The operator-facing refusal. THREE causes, THREE repairs — one each, because
+ * the resolver's UNKNOWN covers three faults and only two of them are repaired
+ * by touching a declaration:
  *
- * Secret-free by construction: it names an environment variable and a screen,
- * never a value, a connection string or a provider identifier.
+ *  - nothing declared the role, and
+ *  - the declaration is a word the resolver will not interpret — both fixed by
+ *    setting `APP_ENVIRONMENT_ROLE`, or by switching the safer override on for a
+ *    copy; and
+ *  - **the safer override could not be READ** — an un-migrated database, a
+ *    Prisma client generated before the model existed, or the database refusing
+ *    the query. This one is reachable on an installation that is otherwise
+ *    serving, and neither of the first two repairs touches it: an operator who
+ *    has already set `APP_ENVIRONMENT_ROLE` correctly, and is told only to set
+ *    it, has been sent to check the one thing that is not wrong.
+ *
+ * An earlier version named two and said "which of the two is missing", which
+ * `docs/guides/setup.md`'s own troubleshooting row had already got right. The
+ * repair wording follows `environment-role.ts`'s `UNREADABLE_OVERRIDE_NOTE` so
+ * an operator meets one instruction rather than two phrasings of it.
+ *
+ * It names the invariant it enforces, per AGENTS.md ("Guards should name the id
+ * they enforce in their failure message") and after `INV-CONFIG-005`'s Xero
+ * refusals, which do the same. This ONE constant is what both writers of
+ * `ClubTheme.completedAt` return, so the id reaches both 409s.
+ *
+ * Secret-free by construction: it names an environment variable, a screen and a
+ * migration command, never a value, a connection string or a provider
+ * identifier.
  */
 export const SITE_VISIBILITY_UNKNOWN_ROLE_ERROR =
   "The public site was not made visible and nothing was changed: this " +
   "installation has not been confirmed as production or non-production. Set " +
   "APP_ENVIRONMENT_ROLE in this deployment's environment, or switch the safer " +
-  "override on at Admin › Environment if this is a copy, then try again. " +
-  "Admin › Environment reports which of the two is missing.";
+  "override on at Admin › Environment if this is a copy. If that is already " +
+  "done, the override itself could not be read: apply the pending migrations " +
+  "(prisma migrate deploy) or restore database access. Then try again. " +
+  "Admin › Environment reports which of the three it is (INV-CONFIG-006).";
 
 /**
  * `null` when the site may be published, or the refusal response when it may
