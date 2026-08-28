@@ -464,12 +464,25 @@ home for that explanation and is not repeated here.
   role, and is refused while that role is UNKNOWN.** The one place that answers
   is `refuseSiteVisibilityWhileEnvironmentUnknown()` in
   [`site-visibility-gate.ts`](../../src/lib/site-visibility-gate.ts), and BOTH
-  writers of `ClubTheme.completedAt` call it before their first write: the
-  wizard launch panel's `POST /api/admin/site-style/complete-setup`, and
+  **request-path** writers of `ClubTheme.completedAt` call it before their first
+  write: the wizard launch panel's
+  `POST /api/admin/site-style/complete-setup`, and
   `PUT /api/admin/site-style` with `completeSetup: true`, which `saveClubTheme`
   still honours for the legacy site-style wizard. A gate on one route only would
   be a one-line bypass, because the rule is about the transition rather than
-  about a route.
+  about a route. `site-visibility-gate-census.test.ts` scans `src/` and fails a
+  third caller of either completion writer that does not ask the gate, so
+  "both" stays true rather than merely having been true.
+- **Two DIRECT-DATABASE writers are deliberately out of scope, and they are
+  named so the "both" above is not read as "all".** `prisma/seed.ts` under
+  `SEED_THEME_COMPLETE=1` stamps the default palette complete so a seeded stack
+  renders the real public chrome, and `e2e/helpers/setup-state.ts` flips the
+  column both ways on the staging database for the `pre-setup` Playwright
+  project — the application can complete setup and can never un-complete it, so
+  there is no route for that harness to drive. Both hold database credentials
+  and were pointed at that database on purpose. A gate in application code
+  could not stop either and does not pretend to: what this invariant defends is
+  a *request* reaching the transition.
 - **A DECLARED role never gates publishing — either of the two.** An internal
   staging site is legitimately visible and non-production forever, and the
   wizard's launch panel tells the operator exactly that. The refusal is on the

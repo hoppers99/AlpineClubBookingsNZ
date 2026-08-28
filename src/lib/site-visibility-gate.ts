@@ -37,9 +37,10 @@ import { resolveEnvironmentRole } from "@/lib/environment-role";
  *
  * ## Why it is a module and not two copies of four lines
  *
- * There are TWO writers of `ClubTheme.completedAt`, and the issue's own
- * description of the hazard ("a content officer, or curl, can publish the public
- * site with the environment role UNKNOWN") is true of both:
+ * There are TWO REQUEST-PATH writers of `ClubTheme.completedAt` — two ways a
+ * caller arriving over HTTP can publish — and the issue's own description of the
+ * hazard ("a content officer, or curl, can publish the public site with the
+ * environment role UNKNOWN") is true of both:
  *
  *  - `POST /api/admin/site-style/complete-setup`, the wizard launch panel's
  *    one-column transition; and
@@ -49,6 +50,26 @@ import { resolveEnvironmentRole } from "@/lib/environment-role";
  *
  * Gating only the first would have left the second as a one-line bypass of the
  * gate, so both call this and the refusal cannot drift between them.
+ * `site-visibility-gate-census.test.ts` scans `src/` for the completion writers
+ * and fails a third route that reaches one of them without asking here, because
+ * "both call it" is a claim that goes stale the moment somebody adds a route.
+ *
+ * ## The two DIRECT-DATABASE writers, which this gate deliberately does not see
+ *
+ * "Request-path" is a real qualification and not a hedge. Two paths outside the
+ * application stamp `completedAt` by writing the row, and neither is in scope:
+ *
+ *  - `prisma/seed.ts` under `SEED_THEME_COMPLETE=1`, which stamps the default
+ *    palette complete so a seeded stack renders the real public chrome; and
+ *  - `e2e/helpers/setup-state.ts`, which flips it both ways on the staging
+ *    database for the `pre-setup` Playwright project — the app can complete
+ *    setup and can never un-complete it, so there is no route to drive.
+ *
+ * Both are deliberate operator/harness tools that run with database credentials
+ * in hand, against a database they were pointed at on purpose. A gate here could
+ * not stop either one and should not try: somebody who can write the row can
+ * write the row, and the thing being defended against is a *request* — a content
+ * officer or a `curl` — reaching the transition through the application.
  */
 
 /**
