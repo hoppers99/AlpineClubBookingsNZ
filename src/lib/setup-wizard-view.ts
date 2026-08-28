@@ -32,9 +32,10 @@ import type {
  *    integrations → finance). If a later child interleaves them, this module
  *    keeps its stated behaviour: a step appears under the category its readiness
  *    check belongs to, steps within a group stay in journey order, and groups
- *    appear in the readiness result's own category order. Back/Continue always
- *    follow the FLAT journey order, never the grouped one, because that is the
- *    order D2's frontier is computed in.
+ *    appear in the readiness result's own category order. Resume and the
+ *    frontier always follow the FLAT journey order, never the grouped one,
+ *    because that is the order D2's frontier is computed in. (Back/Continue
+ *    used to walk it too — retired in #252; the rail is the navigation now.)
  */
 
 type SetupReadinessCategory = SetupReadiness["categories"][number];
@@ -429,7 +430,7 @@ export interface SetupWizardStepDetail extends SetupWizardRailStep {
 export interface SetupWizardView {
   /** Rail rows, grouped by readiness category. Empty groups are dropped. */
   readonly groups: readonly SetupWizardRailGroup[];
-  /** Every applicable step in JOURNEY order — what Back/Continue walk. */
+  /** Every applicable step in JOURNEY order — what resume and the frontier walk. */
   readonly steps: readonly SetupWizardStepDetail[];
   /** D7's percentage, copied from the traversal and never recomputed. */
   readonly percentComplete: number;
