@@ -5,6 +5,7 @@ import logger from "@/lib/logger";
 import { PUBLIC_LAYOUT_CACHE_TAGS } from "@/lib/public-layout-cache";
 import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 import { requireAdmin } from "@/lib/session-guards";
+import { refuseSiteVisibilityWhileEnvironmentUnknown } from "@/lib/site-visibility-gate";
 
 /**
  * Make the public site visible — and change nothing else (#220 review F3).
@@ -30,6 +31,12 @@ import { requireAdmin } from "@/lib/session-guards";
  * stored while the layout was painting the holding screen must not outlive it.
  * `primeEmailPalette()` is deliberately absent — no colour changed here, so
  * there is nothing for the email palette to re-read.
+ *
+ * C16 (#247) ADDS A SECOND GATE, and it is not a permission one. `content: edit`
+ * answers "may this administrator publish"; it says nothing about whether this
+ * INSTALLATION is the one that should be publishing. The environment gate answers
+ * that, and lives in `site-visibility-gate.ts` because the site-style PUT
+ * performs the same transition and must refuse identically.
  */
 export async function POST() {
   const guard = await requireAdmin({
@@ -38,6 +45,15 @@ export async function POST() {
   if (!guard.ok) return guard.response;
 
   try {
+    // INSIDE the try, deliberately. `resolveEnvironmentRole()` does not throw —
+    // it answers UNKNOWN instead — so this is not a case being handled but a
+    // direction being chosen: if it ever did throw, the catch below refuses with
+    // a logged 500 and still writes nothing, which is the same side of the gate.
+    // Outside the try it would be an unhandled rejection that publishes nothing
+    // either, but says so only in the framework's own log.
+    const refusal = await refuseSiteVisibilityWhileEnvironmentUnknown();
+    if (refusal) return refusal;
+
     const isComplete = await markClubThemeSetupComplete(guard.session.user.id);
 
     revalidatePublicSite(PUBLIC_LAYOUT_CACHE_TAGS.theme);

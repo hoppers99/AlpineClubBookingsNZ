@@ -79,7 +79,7 @@ vi.mock("@/lib/setup-step-registry", async (importOriginal) => {
 });
 
 import { PATCH } from "@/app/api/admin/setup/progress/route";
-import type { SetupReadiness } from "@/lib/setup-readiness";
+import { SETUP_STEP_IDS, type SetupReadiness } from "@/lib/setup-readiness";
 
 /**
  * Setup-step staleness through the FULL write path (epic #213, C2/#217).
@@ -91,7 +91,43 @@ import type { SetupReadiness } from "@/lib/setup-readiness";
  * put back, that the two stale transitions are audited only when the set really
  * moves, and that a set which could not be computed refuses the whole
  * transition rather than being replaced with an answer nobody computed.
+ *
+ * C16 (#247) CHANGED WHAT A BLOCKED `finish` LOOKS LIKE FROM OUT HERE, and the
+ * tests below moved with it. A `finish` arriving while anything is stale is now
+ * refused BEFORE the write rather than written with `completedAt` withheld:
+ * every stale step is a blocking step, so the finish gate reaches it first. The
+ * withheld-write behaviour is still in the route as its last line of defence,
+ * and is pinned — along with the gate itself — in `route-finish-gate.test.ts`.
+ * What remains here is staleness.
  */
+
+/**
+ * Every registered step confirmed — since #247 the only progress state a
+ * `finish` may be granted from, because anything nobody has confirmed or skipped
+ * blocks it. Built from `SETUP_STEP_IDS` rather than written as a literal, so a
+ * new registry step cannot quietly turn these into refusal tests.
+ */
+function everyStepConfirmed(): string[] {
+  return [...SETUP_STEP_IDS];
+}
+
+/**
+ * The one progress state that is stale AND otherwise finished: every step
+ * confirmed except `age-tiers`, which is DEFERRED. Deferring a prerequisite
+ * invalidates its dependents (pinned below), so `stripe` and `sentry` go stale
+ * while the deferral itself buys `age-tiers` passage — leaving the stale pair as
+ * the only thing standing between this club and a finished record.
+ *
+ * It has to be built this way since #247. Completing `age-tiers` instead settles
+ * the chain and nothing is stale at all, which is why the earlier
+ * three-ids-completed fixtures no longer reach the case they were written for.
+ */
+function everyStepConfirmedButAgeTiersDeferred() {
+  return {
+    completedStepIds: everyStepConfirmed().filter((id) => id !== "age-tiers"),
+    skippedStepIds: ["age-tiers"],
+  };
+}
 
 function patch(body: unknown) {
   return new NextRequest("http://localhost/api/admin/setup/progress", {
@@ -196,25 +232,29 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
     ]);
   });
 
-  it("reverts the record-level completed flag while anything is stale, finish included", async () => {
+  it("does not let a club with stale work be told it has finished", async () => {
     mockFindUnique.mockResolvedValue(
       storedRow({
-        completedStepIds: ["stripe", "sentry"],
+        ...everyStepConfirmedButAgeTiersDeferred(),
         staleStepIds: ["stripe", "sentry"],
       }),
     );
 
-    await PATCH(patch({ action: "finish" }));
+    const response = await PATCH(patch({ action: "finish" }));
 
-    // The readiness cards render "Setup Complete" from `completedAt`. A club
-    // with outstanding stale work must not be told it has finished.
-    expect(persisted().completedAt).toBeNull();
-    expect(persisted().completedByMemberId).toBeNull();
+    // The readiness cards render "Setup Complete" from `completedAt`, and a club
+    // with outstanding stale work must not be told it has finished. #217 did
+    // that by writing the transition with `completedAt` withheld; since #247 the
+    // request is refused outright and nothing is written at all — a stale step
+    // is a blocking step, so the finish gate answers first. Both directions
+    // satisfy the inherited criterion; this is the stronger one.
+    expect(response.status).toBe(409);
+    expect(mockUpsert).not.toHaveBeenCalled();
   });
 
   it("still stamps the record when nothing is stale", async () => {
     mockFindUnique.mockResolvedValue(
-      storedRow({ completedStepIds: ["age-tiers", "stripe", "sentry"] }),
+      storedRow({ completedStepIds: everyStepConfirmed() }),
     );
 
     await PATCH(patch({ action: "finish" }));
@@ -352,29 +392,30 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
     expect(persisted().completedByMemberId).toBeNull();
   });
 
-  it("records WHY a finish did not take effect, on the finish row itself", async () => {
+  it("records NOTHING for a finish that did not take effect", async () => {
     mockFindUnique.mockResolvedValue(
       storedRow({
-        completedStepIds: ["stripe", "sentry"],
+        ...everyStepConfirmedButAgeTiersDeferred(),
         staleStepIds: ["stripe", "sentry"],
       }),
     );
 
     await PATCH(patch({ action: "finish" }));
 
-    // The set did not move, so neither stale row is written — and without the
-    // blocking list on the finish row itself the trail would read "Setup marked
-    // finished" against a record that is not marked finished, with nothing
-    // anywhere saying why.
-    expect(auditFor("setup_progress.finished")).toMatchObject({
-      metadata: { action: "finish", staleStepIds: ["stripe", "sentry"] },
-    });
+    // #217 wrote the transition with the blocking list in its metadata, because
+    // the row would otherwise read "Setup marked finished" against a record that
+    // is not marked finished. #247 removes the need for that explanation from
+    // this direction: the transition never happens, so there is no row to
+    // explain — the refusal carries the reason to the operator instead, and the
+    // audit trail is not asked to describe a write that did not occur.
+    expect(auditFor("setup_progress.finished")).toBeNull();
     expect(auditFor("setup_progress.steps_marked_stale")).toBeNull();
+    expect(mockLogAudit).not.toHaveBeenCalled();
   });
 
   it("leaves the finish row unadorned when the finish really did take effect", async () => {
     mockFindUnique.mockResolvedValue(
-      storedRow({ completedStepIds: ["age-tiers", "stripe", "sentry"] }),
+      storedRow({ completedStepIds: everyStepConfirmed() }),
     );
 
     await PATCH(patch({ action: "finish" }));

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
 import { recordSetupProgressTransition } from "@/lib/setup-progress-audit";
-import { recomputeSetupStaleStepIds } from "@/lib/setup-progress-staleness";
+import { recomputeSetupProgressDerivation } from "@/lib/setup-progress-staleness";
 import {
   SETUP_STEP_IDS,
   normalizeSetupProgress,
@@ -18,6 +18,15 @@ import {
  * prerequisite graph on every write. What gets RECORDED about any of it lives in
  * `setup-progress-audit.ts`; how the stale set is computed, and which way each
  * failure falls, lives in `setup-progress-staleness.ts`.
+ *
+ * ## Two refusals, one shape (C2/#217 and C16/#247)
+ *
+ * `finish` is the one transition whose truth the server can check, and since
+ * #247 it does: it refuses while any applicable step is neither complete nor
+ * deliberately deferred. The other four are the operator's own bookkeeping about
+ * their own checklist and are not second-guessed. Both refusals — the stale
+ * recompute's 503 and the finish gate's 409 — write nothing, record nothing, and
+ * say why, so a refused request leaves the row exactly as it found it.
  *
  * ## The read-modify-write window, and why it stays unguarded
  *
@@ -48,6 +57,18 @@ const progressSchema = z.discriminatedUnion("action", [
 
 function withoutStep(ids: string[], stepId: SetupStepId) {
   return ids.filter((id) => id !== stepId);
+}
+
+/**
+ * `"a", "b"` — the same quoting `setup-progress-audit.ts` uses for its own step
+ * lists, so an operator reading the refusal and then the audit trail sees one
+ * format. Registry ids rather than titles: the refusal is #247's acceptance
+ * criterion ("the blocking ids named"), the ids are what the wizard's own URLs
+ * and audit rows carry, and resolving titles here would need the registry's
+ * copy on a path that currently needs none of it.
+ */
+function quoteStepIds(ids: readonly string[]): string {
+  return ids.map((id) => `"${id}"`).join(", ");
 }
 
 export async function PATCH(request: NextRequest) {
@@ -126,10 +147,11 @@ export async function PATCH(request: NextRequest) {
   // complete afterwards, so nothing CAN be stale, and that is a computed answer
   // rather than a guess — it holds even when the recompute below cannot run.
   let staleStepIds: readonly string[];
+  let blockingStepIds: readonly string[] = [];
   if (parsed.data.action === "reset") {
     staleStepIds = [];
   } else {
-    const recomputed = await recomputeSetupStaleStepIds({
+    const recomputed = await recomputeSetupProgressDerivation({
       progress: { completedStepIds, skippedStepIds },
     });
     // FAIL TOWARD STALE (#217 AC 6), BY REFUSING THE WHOLE TRANSITION — the
@@ -152,7 +174,42 @@ export async function PATCH(request: NextRequest) {
         { status: 503 },
       );
     }
-    staleStepIds = recomputed;
+    staleStepIds = recomputed.staleStepIds;
+    blockingStepIds = recomputed.blockingStepIds;
+  }
+
+  // THE SERVER DECIDES WHETHER SETUP MAY BE FINISHED (C16, #247).
+  //
+  // Until #247 the only thing standing between a `curl` and a stamped
+  // `completedAt` was the readiness page's `disabled` prop, so the C10 nudge
+  // banner could be silenced by a request that skipped the button. The gate is
+  // this handler's own reasoning generalised: the 503 above says a value it
+  // cannot honestly COMPUTE must not be stored, and this says a value it can
+  // compute to be UNTRUE must not be stored either. Both refuse the whole
+  // transition rather than storing a softened version of it, and both write
+  // nothing and audit nothing — the no-write refusal shape #217 settled.
+  //
+  // The set is the traversal's own `blockingStepIds`, over the snapshot the
+  // recompute above already read: not complete, and not deliberately deferred.
+  // A club that means to open with work outstanding still can — it defers those
+  // steps, exactly as the wizard's launch panel already requires — so this
+  // refuses only what nobody has looked at or settled.
+  //
+  // PRE-C15 THIS IS STRICTER THAN IT WILL BE. The environment steps are in the
+  // applicable set today, so an installation that has not declared itself cannot
+  // finish. That is the safe direction to be early in, and it narrows on its own
+  // when C15 lands: nothing here names a step, so the gate follows whatever the
+  // registry and the module flags make applicable.
+  if (parsed.data.action === "finish" && blockingStepIds.length > 0) {
+    return NextResponse.json(
+      {
+        error:
+          "Setup cannot be marked complete while these steps are outstanding: " +
+          `${quoteStepIds(blockingStepIds)}. Finish or skip each one, then try ` +
+          "again. Nothing was changed.",
+      },
+      { status: 409 },
+    );
   }
 
   // The record-level "Setup Complete" flag reverts while anything is stale
@@ -162,6 +219,17 @@ export async function PATCH(request: NextRequest) {
   // covers `finish` as well: finishing while a step needs another look records
   // the transition and leaves the record incomplete, rather than stamping a
   // completion the wizard's own launch panel would refuse to offer.
+  //
+  // C16 (#247) SUBSUMES IT FOR `finish` AND IT STAYS ANYWAY. Every stale step is
+  // a blocking step (`setup-progress-staleness.ts` states why that holds by
+  // construction), so a `finish` carrying a non-empty stale set is now refused
+  // above and never reaches this line; and every other action already nulled
+  // `completedAt` in the switch. So this is currently unreachable — kept, not
+  // deleted, because it is the LAST line of defence on an inherited acceptance
+  // criterion and the gate above is the one that can narrow. C15 narrows the
+  // blocking set; a future child could narrow it further. If either ever narrows
+  // it below the stale set, this is what still stops a stale record being
+  // stamped complete, and two lines is a cheap place to be wrong.
   if (staleStepIds.length > 0) {
     completedAt = null;
     completedByMemberId = null;
