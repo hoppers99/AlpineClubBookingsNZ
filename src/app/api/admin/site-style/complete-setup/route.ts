@@ -32,7 +32,8 @@ import { refuseSiteVisibilityWhileEnvironmentUnknown } from "@/lib/site-visibili
  * `primeEmailPalette()` is deliberately absent — no colour changed here, so
  * there is nothing for the email palette to re-read.
  *
- * C16 (#247) ADDS A SECOND GATE, and it is not a permission one. `content: edit`
+ * C16 (#247) ADDS A SECOND GATE — `INV-CONFIG-006` — and it is not a permission
+ * one. `content: edit`
  * answers "may this administrator publish"; it says nothing about whether this
  * INSTALLATION is the one that should be publishing. The environment gate answers
  * that, and lives in `site-visibility-gate.ts` because the site-style PUT

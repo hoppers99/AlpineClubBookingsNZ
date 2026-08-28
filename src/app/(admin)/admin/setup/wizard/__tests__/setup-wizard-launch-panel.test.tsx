@@ -26,18 +26,22 @@ afterEach(() => {
  * so a stubbed fetch that answers anything but this call is a test asserting
  * against a request the component must never make.
  */
-function stubPublishFetch(options: { ok?: boolean } = {}) {
+function stubPublishFetch(
+  options: { ok?: boolean; status?: number; error?: string } = {},
+) {
   const post = vi.fn();
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     post({ url: String(url), method: init?.method, body: init?.body });
     const ok = options.ok ?? true;
     return {
       ok,
-      status: ok ? 200 : 500,
+      status: options.status ?? (ok ? 200 : 500),
       json: async () =>
         ok
           ? { isComplete: true }
-          : { error: "Failed to make the public site visible" },
+          : {
+              error: options.error ?? "Failed to make the public site visible",
+            },
     };
   });
   vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
@@ -230,6 +234,33 @@ describe("SetupWizardLaunchPanel", () => {
     // than a success nobody can read.
     expect(onPublishActivity).toHaveBeenCalledWith(true);
     expect(onPublishActivity).not.toHaveBeenCalledWith(false);
+  });
+
+  it("shows the SERVER's reason for a refusal, not its own fallback (#247)", async () => {
+    // C16's acceptance criterion, and the reason it needs a test of its own: the
+    // case above answers with the very sentence the panel would have invented
+    // anyway, so it passes just as happily against a component that discards
+    // `body.error`. This one refuses with a message the panel could not have
+    // produced, so only the real error path can put it on screen — which is what
+    // makes the server's environment refusal readable by an operator instead of
+    // arriving as "Failed to make the public site visible".
+    stubPublishFetch({
+      ok: false,
+      status: 409,
+      error:
+        "The public site was not made visible and nothing was changed: this " +
+        "installation has not been confirmed as production or non-production.",
+    });
+    renderPanel();
+
+    fireEvent.click(screen.getByTestId("setup-wizard-make-site-visible"));
+
+    expect(
+      await screen.findByText(/has not been confirmed as production/),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText(/^Failed to make the public site visible$/),
+    ).toBeNull();
   });
 
   /**

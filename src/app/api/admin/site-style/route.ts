@@ -63,7 +63,8 @@ export async function PUT(request: NextRequest) {
     );
   }
 
-  // C16 (#247): this PUT is the OTHER writer of `ClubTheme.completedAt` —
+  // C16 (#247), `INV-CONFIG-006`: this PUT is the OTHER writer of
+  // `ClubTheme.completedAt` —
   // `saveClubTheme` stamps it when `completeSetup` is true, which is the legacy
   // site-style wizard's "Finish setup" button — so it carries the same
   // environment gate the dedicated complete-setup route does. Gating one and not

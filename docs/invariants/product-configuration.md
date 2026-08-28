@@ -457,3 +457,44 @@ home for that explanation and is not repeated here.
   only the rule. Operator guide:
   [`environment-role.md`](../guides/environment-role.md); Xero topology:
   [`xero/ARCHITECTURE.md`](../xero/ARCHITECTURE.md).
+
+## INV-CONFIG-006
+
+- **Making the club's public site visible consumes `INV-CONFIG-003`'s canonical
+  role, and is refused while that role is UNKNOWN.** The one place that answers
+  is `refuseSiteVisibilityWhileEnvironmentUnknown()` in
+  [`site-visibility-gate.ts`](../../src/lib/site-visibility-gate.ts), and BOTH
+  writers of `ClubTheme.completedAt` call it before their first write: the
+  wizard launch panel's `POST /api/admin/site-style/complete-setup`, and
+  `PUT /api/admin/site-style` with `completeSetup: true`, which `saveClubTheme`
+  still honours for the legacy site-style wizard. A gate on one route only would
+  be a one-line bypass, because the rule is about the transition rather than
+  about a route.
+- **A DECLARED role never gates publishing — either of the two.** An internal
+  staging site is legitimately visible and non-production forever, and the
+  wizard's launch panel tells the operator exactly that. The refusal is on the
+  ABSENCE of an answer, not on the answer being "a copy".
+- **UNKNOWN is the fail-closed answer already, so the gate needs no error
+  handling of its own.** An absent declaration, a declaration the resolver
+  refuses to interpret, and a safer override the database would not yield all
+  resolve to UNKNOWN rather than to a confident PRODUCTION, and
+  `resolveEnvironmentRole()` never throws. Refusing a live site costs an
+  operator one environment variable and a retry; publishing from an undeclared
+  copy — the restored-production-dump premise this whole family exists for —
+  puts a second version of the club's site in front of the public, and there is
+  no transition back that the public did not already see.
+- **The whole request is refused, never the completion half alone.** The
+  site-style PUT carries theme columns beside the flag; dropping the flag and
+  saving the rest would leave a client believing the site is live when it is
+  not. An ordinary theme save — `completeSetup` absent or false — is not gated at
+  all, so an undeclared installation can still store its colours while it sorts
+  its declaration out.
+- **The refusal is a 409 and it is operator-readable.** The caller holds the
+  privilege and the same request will succeed once the installation is declared,
+  so it is a conflict with the state of the installation rather than a permission
+  failure. The message names `APP_ENVIRONMENT_ROLE` and Admin › Environment, and
+  carries no value, connection string or provider identifier.
+- Decided on #247 (Wizard C16) under fork epic #213, consuming #3034's resolver.
+  That issue holds the narrative; this entry holds only the rule. Operator
+  guides: [`environment-role.md`](../guides/environment-role.md) and
+  [`setup.md`](../guides/setup.md).

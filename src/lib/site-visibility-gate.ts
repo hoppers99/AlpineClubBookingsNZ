@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { resolveEnvironmentRole } from "@/lib/environment-role";
 
 /**
- * The environment gate on MAKING THE PUBLIC SITE VISIBLE (epic #213, C16/#247).
+ * The environment gate on MAKING THE PUBLIC SITE VISIBLE — `INV-CONFIG-006`
+ * (epic #213, C16/#247), consuming `INV-CONFIG-003`'s canonical role.
  *
  * Publishing is the moment an installation stops showing the holding screen and
  * starts serving the club's public pages to anybody who visits it. Until #247

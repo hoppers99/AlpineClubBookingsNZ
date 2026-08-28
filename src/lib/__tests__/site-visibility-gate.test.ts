@@ -27,7 +27,8 @@ import {
 } from "@/lib/site-visibility-gate";
 
 /**
- * The environment gate on publishing the public site (epic #213, C16/#247).
+ * The environment gate on publishing the public site — `INV-CONFIG-006`
+ * (epic #213, C16/#247).
  *
  * The gate is four lines, so what is worth testing is not the branch but the
  * POLARITY: which of the resolver's answers let the site go live, and — the part
