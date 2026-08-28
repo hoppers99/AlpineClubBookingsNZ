@@ -48,6 +48,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   canEdit: vi.fn<() => boolean | undefined>(() => true),
+  push: vi.fn<(href: string) => void>(),
   session: {
     data: { user: { accessRoles: ["ADMIN"] } } as unknown,
     status: "authenticated" as "authenticated" | "loading" | "unauthenticated",
@@ -61,6 +62,17 @@ vi.mock("@/hooks/use-admin-area-edit-access", () => ({
 
 vi.mock("next-auth/react", () => ({
   useSession: () => ({ data: mocks.session.data, status: mocks.session.status }),
+}));
+
+/*
+  C19 (#250): `LodgesSection` calls `useRouter` — creating a lodge drops the
+  operator straight into that lodge's own guided setup — and jsdom mounts no
+  app router. Nothing else this file renders imports `next/navigation`, so the
+  mock covers exactly the one hook, and `push` is a spy rather than a real
+  navigation that would tear the tree down mid-assertion.
+*/
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mocks.push, replace: vi.fn(), refresh: vi.fn() }),
 }));
 
 vi.mock("sonner", () => ({
@@ -1007,5 +1019,235 @@ describe("the C12 area gate composes for the modules panes", () => {
           ),
         ),
     ).toBe(true);
+  });
+});
+
+/*
+  ---------------------------------------------------------------------------
+  C19 (#250) — the lodges pane. UAT R2-7 is the reason it exists: this step
+  carried the readiness lines, a link to `/admin/lodges` and a link per lodge
+  into its own setup flow, and nothing an operator could actually do.
+
+  Three things are pinned below that the modules block above cannot speak for.
+
+  1. **The registry entry is real, and the section it names is the one that
+     mounts.** Asserted through the rendered DOM rather than off the table, so
+     a `lodges` entry pointing at some other component fails here.
+
+  2. **The per-lodge six-step flow is STILL A LINK.** That is the design, not a
+     shortfall, so it is pinned as such: the pane must not have grown a second
+     copy of `/admin/lodges/[id]/setup` inside itself.
+
+  3. **Activation announces itself.** Whether a lodge is open for booking IS
+     this step's verdict, so a successful activate has to make the wizard
+     re-read — and must still not tick the step off, which stays C11's one
+     explicit gesture.
+  ---------------------------------------------------------------------------
+*/
+
+type LodgeFixture = {
+  id: string;
+  name: string;
+  slug: string;
+  active: boolean;
+  address: string | null;
+  doorCode: string | null;
+  travelNote: string | null;
+};
+
+function lodgeFixture(overrides: Partial<LodgeFixture> = {}): LodgeFixture {
+  return {
+    id: "lodge-1",
+    name: "Example Mountain Club Lodge",
+    slug: "example-mountain-club-lodge",
+    active: false,
+    address: null,
+    doorCode: null,
+    travelNote: null,
+    ...overrides,
+  };
+}
+
+/**
+ * `lodge: edit` on top of `support: edit` — the shape that both clears the
+ * pane's mount gate (`SETUP_STEP_PERMISSION_AREA.lodges === "lodge"`) and can
+ * work the section's own controls.
+ */
+const lodgeEditor = {
+  ...emptyAdminPermissionMatrix(),
+  support: "edit" as const,
+  lodge: "edit" as const,
+};
+
+/**
+ * One stateful stub for the journey read, the lodge list and the other-clubs
+ * list, so a PATCH really does change what the next list read reports.
+ *
+ * `/api/admin/other-lodges` is answered because `LodgesSection` mounts
+ * `OtherLodgesPanel` — the vouched child whose banner the section carries.
+ * Left to fall through to the journey payload it would have parsed the wizard's
+ * response as a lodge list.
+ */
+function stubLodgesFetch(initial: LodgeFixture[]) {
+  let lodges = initial.map((lodge) => ({ ...lodge }));
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    const target = String(url);
+    if (target === "/api/admin/other-lodges") {
+      return { ok: true, status: 200, json: async () => ({ lodges: [] }) };
+    }
+    if (target === "/api/admin/lodges") {
+      return { ok: true, status: 200, json: async () => ({ lodges }) };
+    }
+    if (target.startsWith("/api/admin/lodges/")) {
+      const id = target.slice("/api/admin/lodges/".length);
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        active?: boolean;
+        name?: string;
+      };
+      lodges = lodges.map((lodge) =>
+        lodge.id === id
+          ? {
+              ...lodge,
+              active: body.active ?? lodge.active,
+              name: body.name ?? lodge.name,
+            }
+          : lodge,
+      );
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        isSiteVisible: false,
+        readiness: readinessWith([["lodges", "Lodges"]]),
+        traversal: traversalWith(["lodges"]),
+      }),
+    };
+  });
+  vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+  return fetchMock;
+}
+
+describe("lodges mounts the real lodge list inline (C19, R2-7)", () => {
+  it("registers a pane at all, where the step used to offer only links", () => {
+    // MUTATION PROBE: put `lodges: null` back and this fails first — which is
+    // exactly the state R2-7 was reported against.
+    expect(SETUP_STEP_PANES.lodges).not.toBeNull();
+  });
+
+  it("renders the section's own list, badge and controls under the step frame", async () => {
+    stubLodgesFetch([lodgeFixture()]);
+    render(<SetupWizardClient permissionMatrix={lodgeEditor} />);
+
+    expect(
+      await screen.findByText("Example Mountain Club Lodge"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("setup-wizard-step-pane").getAttribute("data-step-id"),
+    ).toBe("lodges");
+    // The list's own state badge, the add-a-lodge affordance, and the rename
+    // the pane's orientation paragraph points at.
+    expect(screen.getByText("Inactive")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Add lodge/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Edit/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Activate/ })).toBeInTheDocument();
+  });
+
+  it("keeps the per-lodge six-step flow a LINK, not a second embedded flow", async () => {
+    stubLodgesFetch([lodgeFixture()]);
+    render(<SetupWizardClient permissionMatrix={lodgeEditor} />);
+
+    await screen.findByText("Example Mountain Club Lodge");
+    const configure = screen.getByRole("link", { name: /Configure/ });
+    expect(configure).toHaveAttribute("href", "/admin/lodges/lodge-1");
+    // Nothing from the per-lodge flow itself has been dragged in with the
+    // section: its steps are rooms, lockers, seasons and chores.
+    expect(screen.queryByText(/Rooms & beds/i)).not.toBeInTheDocument();
+  });
+
+  it("re-reads the journey when a lodge is activated, without ticking the step off", async () => {
+    /*
+      Whether a lodge is open for booking is this step's whole verdict, so the
+      badge, the detail lines and the per-lodge link labels are all stale the
+      instant the PATCH lands. Neither of the shell's focus/visibility triggers
+      fires for a save that never left the tab — the announcement is what makes
+      it catch up.
+
+      MUTATION PROBE: drop `emitSetupReadinessInputChanged()` from `setActive`
+      and the second journey read never happens.
+    */
+    const fetchMock = stubLodgesFetch([lodgeFixture()]);
+    render(<SetupWizardClient permissionMatrix={lodgeEditor} />);
+
+    await screen.findByText("Example Mountain Club Lodge");
+    expect(callsTo(fetchMock, "/api/admin/setup/wizard")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /Activate/ }));
+
+    await waitFor(() =>
+      expect(callsTo(fetchMock, "/api/admin/setup/wizard")).toHaveLength(2),
+    );
+    expect(callsTo(fetchMock, "/api/admin/setup/progress")).toHaveLength(0);
+    // The section re-read its own list too, so the row's badge caught up.
+    await waitFor(() =>
+      expect(screen.getByText("Active")).toBeInTheDocument(),
+    );
+  });
+
+  it("mounts the section read-only, under its own banner, for a lodge:view admin", async () => {
+    mocks.canEdit.mockReturnValue(false);
+    stubLodgesFetch([lodgeFixture()]);
+    render(
+      <SetupWizardClient
+        permissionMatrix={{
+          ...emptyAdminPermissionMatrix(),
+          support: "edit",
+          lodge: "view",
+        }}
+      />,
+    );
+
+    await screen.findByText("Example Mountain Club Lodge");
+    expect(
+      (screen.getByRole("button", { name: /Activate/ }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      screen
+        .getAllByTestId("admin-view-only-banner")
+        .some((banner) =>
+          banner.textContent?.includes(
+            "can view the lodge properties but cannot change them",
+          ),
+        ),
+    ).toBe(true);
+    // The frame's progress control is governed by `support` and is unaffected.
+    expect(
+      (
+        screen.getByRole("button", {
+          name: /Mark this step done/,
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+  });
+
+  it("withholds the pane entirely from an admin with no lodge access at all", async () => {
+    // F1's rule (#238): mounting a section whose own fetch will 403 hands the
+    // viewer a dead Retry under a banner naming an unrelated permission.
+    expect(canViewSetupStepPane(emptyAdminPermissionMatrix(), "lodges")).toBe(
+      false,
+    );
+    stubLodgesFetch([lodgeFixture()]);
+    render(
+      <SetupWizardClient
+        permissionMatrix={{ ...emptyAdminPermissionMatrix(), support: "edit" }}
+      />,
+    );
+
+    await screen.findByTestId("setup-wizard-step-frame");
+    expect(
+      screen.queryByTestId("setup-wizard-step-pane"),
+    ).not.toBeInTheDocument();
   });
 });
