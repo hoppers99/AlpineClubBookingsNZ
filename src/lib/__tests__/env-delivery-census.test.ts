@@ -253,6 +253,13 @@ const DELIBERATELY_NOT_DELIVERED: Record<string, string> = {
   // and no production file under `src/` names it at all, so it never reaches the
   // intersection this census judges.
 
+  // A seed-time flag consumed by prisma/seed.ts (outside src/) when the
+  // operator pre-launches a demo theme; the app container never reads it. Its
+  // name appears in src/ only in the site-visibility gate's scoped-writers
+  // docblock (#247), which is prose about the seed, not a read.
+  SEED_THEME_COMPLETE:
+    "seed-script flag read by prisma/seed.ts at seed time; named in src/ only in a docblock",
+
   // Stripe credentials are DB-only since #2082 — captured in-app and stored
   // encrypted. The names survive only in docblocks saying they are not read.
   STRIPE_SECRET_KEY: "DB-only since #2082; no STRIPE_* env var is read",

@@ -18,6 +18,7 @@ import logger from "@/lib/logger";
 import { requireAdmin } from "@/lib/session-guards";
 import { PUBLIC_LAYOUT_CACHE_TAGS } from "@/lib/public-layout-cache";
 import { revalidatePublicSite } from "@/lib/public-content-revalidation";
+import { refuseSiteVisibilityWhileEnvironmentUnknown } from "@/lib/site-visibility-gate";
 
 /**
  * Prisma's transaction contention codes: P2028 (transaction API error, which
@@ -60,6 +61,27 @@ export async function PUT(request: NextRequest) {
       { error: "Invalid input", details: parsed.error.flatten() },
       { status: 400 },
     );
+  }
+
+  // C16 (#247), `INV-CONFIG-006`: this PUT is the OTHER writer of
+  // `ClubTheme.completedAt` —
+  // `saveClubTheme` stamps it when `completeSetup` is true, which is the legacy
+  // site-style wizard's "Finish setup" button — so it carries the same
+  // environment gate the dedicated complete-setup route does. Gating one and not
+  // the other would have left a one-line bypass of the gate, and the hazard #247
+  // names ("a content officer, or curl, can publish the public site with the
+  // environment role UNKNOWN") is a property of the transition rather than of
+  // either route.
+  //
+  // The WHOLE request is refused, theme columns included, rather than the
+  // completion half being quietly dropped: silently doing something other than
+  // what was asked is how a client comes to believe the site is live when it is
+  // not. An ordinary save (`completeSetup` absent or false) is untouched, so the
+  // operator can still store their colours and finish once the installation is
+  // declared.
+  if (parsed.data.completeSetup) {
+    const refusal = await refuseSiteVisibilityWhileEnvironmentUnknown();
+    if (refusal) return refusal;
   }
 
   // #2322: the 64KB inline-logo budget applies to a CHANGED value only. A

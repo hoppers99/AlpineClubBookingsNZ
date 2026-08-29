@@ -432,7 +432,12 @@ above for how to choose.
    default turns out to be the right one. It carries two separate things:
    - **Make the public site visible** — until you do this, visitors see the
      holding screen rather than the club's pages. This is the only place in the
-     wizard that publishes the site.
+     wizard that publishes the site. **It is refused while nothing has declared
+     what this installation is**: if the role below reads *not configured*, the
+     button reports that nothing was changed and names what to set. An
+     installation nobody has declared might be a copy restored from the club's
+     live database, and publishing one would put a second version of the club's
+     site in front of the public.
    - **Confirm what this instance is for** — names the role (production,
      non-production, or not configured), says which source decided it (the
      deployment's own `APP_ENVIRONMENT_ROLE`, or an administrator's safer
@@ -445,10 +450,12 @@ above for how to choose.
      application email is currently being held back for environment-safety
      reasons and links through to **Admin → Environment** for the full
      picture. If nothing has declared the role yet, a banner explains what is
-     paused (member email and Xero writes, both) and exactly what to set. This
-     lever does not gate the one above: an internal test site that is
-     deliberately visible and deliberately not production is a perfectly
-     normal, permanent state.
+     paused (member email and Xero writes, both) and exactly what to set. A
+     **declared** role does not gate the one above, whichever of the two it is:
+     an internal test site that is deliberately visible and deliberately not
+     production is a perfectly normal, permanent state, and publishing it is
+     allowed. Only *not configured* stops the site going live, because that is
+     not an answer — it is the absence of one.
 
    Anything you skipped is listed on that panel in plain words rather than
    quietly dropped.
@@ -535,10 +542,12 @@ find surprising:
 
 Each change is recorded in the [Audit Log](audit-log.md) under its own event
 type — one for steps that started needing another look, one for steps that
-stopped — so you can see when it happened and which step caused it. If you press
-**Finish setup** while something still needs another look, that is recorded too,
-along with which steps held it back, so the trail explains why the club is not
-showing as finished.
+stopped — so you can see when it happened and which step caused it. Pressing
+**Mark Setup Complete** while something still needs another look is **refused**:
+nothing is written, nothing is recorded, and the message names the steps that
+held it back. Setup being finished is a claim about the club, so the software
+will not record one it can see is untrue — and there is no half-finished record
+left behind to explain afterwards.
 
 **If the wizard cannot work the list out, it changes nothing.** Deciding which
 steps need another look means reading the rest of the installation's settings,
@@ -659,6 +668,8 @@ or run `npm run config:self-heal`.
 | **Ready to open** stays locked in the wizard | Something is still outstanding and has not been skipped — including any step showing **Default in place**, which needs confirming or skipping like any other | Work down the rail; anything you genuinely do not need can be skipped, which counts as settled |
 | A wizard step's Done / Skip / Reopen buttons are all disabled | Your role has view-only access to **Support**, which is what recording progress needs — on every step, not just this one | Ask an admin with Support edit access to record it. Note this is separate from being able to make the change itself, which needs the settings page's own area |
 | The rail still shows a module's steps after switching it off | The wizard has not re-read the journey yet | Return to the wizard's tab, or press **Refresh** |
+| **Mark Setup Complete** answers "these steps are outstanding" and does nothing | Steps remain that nobody has finished or skipped. The button used to grey itself out on a narrower rule than the server applies, so it can look available when it is not | Open the wizard and settle the named steps — finishing them, or skipping the ones that do not apply. Nothing was written, so pressing it again once they are settled is all that is needed |
+| **Make the public site visible** says the installation has not been confirmed | Nothing has declared whether this is the club's live site or a copy: `APP_ENVIRONMENT_ROLE` is unset, holds a value that is neither `production` nor `non-production`, or the safer override could not be read | Set `APP_ENVIRONMENT_ROLE` in this deployment's environment and restart, or — for a copy — switch the safer override on at **Admin → Environment**. If that is already right it is the third cause, which neither of those repairs: apply any pending database migrations (`prisma migrate deploy`), or restore the application's database access. That page names which of the three it is. See [Environment role](environment-role.md) |
 
 ## Related links
 

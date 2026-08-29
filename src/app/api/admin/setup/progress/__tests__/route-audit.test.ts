@@ -22,15 +22,16 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
-// C2 (#217) made the route recompute the stale set on every write. That
+// C2 (#217) made the route recompute the stale set on every write, and C16
+// (#247) widened that one recompute to answer with the blocking set too. The
 // computation has its own tests (`setup-progress-staleness.test.ts`) and its own
 // route-level tests (`route-stale-state.test.ts`); stubbing it to "nothing is
-// stale" here keeps THIS file about the five transition event types, and pins
-// that an ordinary transition still writes exactly one audit row.
-const mockRecomputeSetupStaleStepIds = vi.fn();
+// stale and nothing blocks" here keeps THIS file about the five transition event
+// types, and pins that an ordinary transition still writes exactly one audit row.
+const mockRecomputeSetupProgressDerivation = vi.fn();
 vi.mock("@/lib/setup-progress-staleness", () => ({
-  recomputeSetupStaleStepIds: (...args: unknown[]) =>
-    mockRecomputeSetupStaleStepIds(...args),
+  recomputeSetupProgressDerivation: (...args: unknown[]) =>
+    mockRecomputeSetupProgressDerivation(...args),
 }));
 
 import { prisma } from "@/lib/prisma";
@@ -67,7 +68,10 @@ beforeEach(() => {
     ok: true as const,
     session: { user: { id: "admin1" } },
   });
-  mockRecomputeSetupStaleStepIds.mockResolvedValue([]);
+  mockRecomputeSetupProgressDerivation.mockResolvedValue({
+    staleStepIds: [],
+    blockingStepIds: [],
+  });
   mockFindUnique.mockResolvedValue({
     id: "default",
     completedStepIds: [],
@@ -196,7 +200,8 @@ describe("PATCH /api/admin/setup/progress audit trail (#219)", () => {
    * graph that is not itself stubbed by a `vi.mock` above — ever reached
    * `prisma.clubTheme.*`, that property is `undefined` on the mock and the
    * call would throw synchronously — so a 200 response here is itself part of
-   * the proof. This does NOT prove anything about `recomputeSetupStaleStepIds`,
+   * the proof. This does NOT prove anything about
+   * `recomputeSetupProgressDerivation`,
    * `requireAdmin` or `logAudit`'s own production bodies: those are stubbed
    * above and never run their real implementations in this test. Mutation-
    * verified: temporarily adding a `prisma.clubTheme.update(...)` call to the
@@ -288,7 +293,10 @@ describe("PATCH /api/admin/setup/progress refuses an environment fact (D17, #246
         ok: true as const,
         session: { user: { id: "admin1" } },
       });
-      mockRecomputeSetupStaleStepIds.mockResolvedValue([]);
+      mockRecomputeSetupProgressDerivation.mockResolvedValue({
+        staleStepIds: [],
+        blockingStepIds: [],
+      });
       mockFindUnique.mockResolvedValue({
         id: "default",
         completedStepIds: [],

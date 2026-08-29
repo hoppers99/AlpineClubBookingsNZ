@@ -23,9 +23,10 @@
   Two new Audit Log event types record it: one for steps that started needing
   another look, one for steps that stopped. Both are in the **system** category
   alongside the existing setup-progress entries, so exactly the same people can
-  read them and nobody's access changes. Pressing **Finish setup** while
-  something still needs another look is recorded with the list of steps that held
-  it back, so the trail explains why the club is not showing as finished.
+  read them and nobody's access changes. (Pressing **Finish setup** while
+  something still needs another look was originally recorded with the list of
+  steps that held it back; #247 in this same release refuses the click outright
+  instead, so there is no such entry — the reason goes to the person who clicked.)
 
   **If the list cannot be worked out, nothing is changed.** Deciding which steps
   need another look means reading the rest of the installation's settings, and

@@ -31,7 +31,7 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import {
-  recomputeSetupStaleStepIds,
+  recomputeSetupProgressDerivation,
   setupReadinessStatusesOf,
   storedSetupStaleStepIds,
 } from "@/lib/setup-progress-staleness";
@@ -40,7 +40,9 @@ import { SETUP_STEP_REGISTRY } from "@/lib/setup-step-registry";
 import type { SetupStepDefinitionOf } from "@/lib/setup-wizard-entries";
 
 /**
- * The WRITE side of setup-step staleness (epic #213, C2/#217).
+ * The WRITE side of setup-step staleness (epic #213, C2/#217), and — since C16
+ * (#247) widened the same one-snapshot answer — the blocking set the progress
+ * route's finish gate refuses on.
  *
  * Everything about the cascade itself is C4's and is pinned by
  * `setup-wizard-traversal.test.ts`. What is tested here is what C2 added around
@@ -99,26 +101,26 @@ beforeEach(() => {
   mockBuildSetupReadiness.mockReturnValue(noChecksPass());
 });
 
-describe("recomputeSetupStaleStepIds (#217)", () => {
+describe("recomputeSetupProgressDerivation (#217, widened by #247)", () => {
   it("stores the FULL TRANSITIVE CLOSURE, not the direct dependents", async () => {
     // s1 is outstanding, so s2 is stale; s3 depends on s2, so s3 is stale too.
     // A direct-dependents-only store would say ["s2"] and the traversal — which
     // does NOT re-cascade a supplied set — would then report s3 as complete.
     await expect(
-      recomputeSetupStaleStepIds({
+      recomputeSetupProgressDerivation({
         progress: { completedStepIds: ["s2", "s3"], skippedStepIds: [] },
         registry: CHAIN,
       }),
-    ).resolves.toEqual(["s2", "s3"]);
+    ).resolves.toMatchObject({ staleStepIds: ["s2", "s3"] });
   });
 
   it("returns the empty set when the graph really is satisfied", async () => {
     await expect(
-      recomputeSetupStaleStepIds({
+      recomputeSetupProgressDerivation({
         progress: { completedStepIds: ["s1", "s2", "s3"], skippedStepIds: [] },
         registry: CHAIN,
       }),
-    ).resolves.toEqual([]);
+    ).resolves.toMatchObject({ staleStepIds: [] });
   });
 
   it("does not treat a step nobody has started as stale (a step an update ADDS is not stale)", async () => {
@@ -127,23 +129,23 @@ describe("recomputeSetupStaleStepIds (#217)", () => {
     // needs another look". Nothing here is recorded complete except s1, so s3
     // being brand new must contribute nothing to the stored set.
     await expect(
-      recomputeSetupStaleStepIds({
+      recomputeSetupProgressDerivation({
         progress: { completedStepIds: ["s1"], skippedStepIds: [] },
         registry: CHAIN,
       }),
-    ).resolves.toEqual([]);
+    ).resolves.toMatchObject({ staleStepIds: [] });
   });
 
   it("never subtracts from the completed set — staleness is additive bookkeeping", async () => {
     const progress = { completedStepIds: ["s2", "s3"], skippedStepIds: [] };
-    await recomputeSetupStaleStepIds({ progress, registry: CHAIN });
+    await recomputeSetupProgressDerivation({ progress, registry: CHAIN });
     expect(progress.completedStepIds).toEqual(["s2", "s3"]);
   });
 
   it("returns null — not [] — when the set cannot be computed at all", async () => {
     mockGetSetupDatabaseSnapshot.mockRejectedValue(new Error("database unavailable"));
     await expect(
-      recomputeSetupStaleStepIds({
+      recomputeSetupProgressDerivation({
         progress: { completedStepIds: ["s2", "s3"], skippedStepIds: [] },
         registry: CHAIN,
       }),
@@ -157,11 +159,11 @@ describe("recomputeSetupStaleStepIds (#217)", () => {
     // set and therefore out of the cascade.
     mockGetSetupDatabaseSnapshot.mockResolvedValue({ adminModuleSettings: undefined });
     await expect(
-      recomputeSetupStaleStepIds({
+      recomputeSetupProgressDerivation({
         progress: { completedStepIds: ["s2"], skippedStepIds: [] },
         registry: CHAIN,
       }),
-    ).resolves.toEqual(["s2"]);
+    ).resolves.toMatchObject({ staleStepIds: ["s2"] });
   });
 
   it("yields nothing stale for the REAL registry, whatever the club has completed", async () => {
@@ -174,13 +176,71 @@ describe("recomputeSetupStaleStepIds (#217)", () => {
       true,
     );
     await expect(
-      recomputeSetupStaleStepIds({
+      recomputeSetupProgressDerivation({
         progress: {
           completedStepIds: SETUP_STEP_REGISTRY.map((entry) => entry.id),
           skippedStepIds: [],
         },
       }),
-    ).resolves.toEqual([]);
+    ).resolves.toMatchObject({ staleStepIds: [] });
+  });
+
+  /**
+   * C16 (#247): the second half of the same answer. These are about the
+   * RELATIONSHIP between the two sets, which is what the finish gate rests on —
+   * the traversal's own blocking rules are C4's and are pinned in
+   * `setup-wizard-traversal.test.ts`.
+   */
+  it("reports every outstanding step as blocking, stale or merely untouched", async () => {
+    const derivation = await recomputeSetupProgressDerivation({
+      progress: { completedStepIds: ["s2", "s3"], skippedStepIds: [] },
+      registry: CHAIN,
+    });
+
+    // s1 was never touched; s2 and s3 are confirmed but stale. All three block.
+    expect(derivation?.blockingStepIds).toEqual(["s1", "s2", "s3"]);
+  });
+
+  it("keeps every stale step inside the blocking set — the containment the gate rests on", async () => {
+    const derivation = await recomputeSetupProgressDerivation({
+      progress: { completedStepIds: ["s2", "s3"], skippedStepIds: [] },
+      registry: CHAIN,
+    });
+
+    // Stated as a property rather than a literal, because it is what lets the
+    // route's finish gate subsume its stale half-gate: staleness clears
+    // `complete`, and the blocking predicate is `!complete && (stale ||
+    // !deferred)`, so a stale step can never fall outside this set.
+    for (const id of derivation?.staleStepIds ?? []) {
+      expect(derivation?.blockingStepIds).toContain(id);
+    }
+    expect(derivation?.staleStepIds).not.toEqual([]);
+  });
+
+  it("does not count a DEFERRED step as blocking — a club may open with work skipped", async () => {
+    const derivation = await recomputeSetupProgressDerivation({
+      progress: { completedStepIds: ["s1", "s2"], skippedStepIds: ["s3"] },
+      registry: CHAIN,
+    });
+
+    expect(derivation).toEqual({ staleStepIds: [], blockingStepIds: [] });
+  });
+
+  it("blocks on a step whose check merely passes, until somebody confirms it", async () => {
+    // D15: a default in place is not a confirmation. `s1`'s own check passes,
+    // which makes it `defaulted` rather than complete, and a defaulted step
+    // blocks exactly as an untouched one does — so the finish gate refuses an
+    // installation nobody has actually walked through.
+    mockBuildSetupReadiness.mockReturnValue({
+      categories: [{ checks: [{ id: "s1", status: "complete" }] }],
+    } as unknown as SetupReadiness);
+
+    const derivation = await recomputeSetupProgressDerivation({
+      progress: { completedStepIds: [], skippedStepIds: [] },
+      registry: CHAIN,
+    });
+
+    expect(derivation?.blockingStepIds).toContain("s1");
   });
 });
 
