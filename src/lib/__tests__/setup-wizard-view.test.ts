@@ -77,6 +77,7 @@ function viewFor(
   progress: { completedStepIds?: string[]; skippedStepIds?: string[] } = {},
   moduleSettings?: Parameters<typeof buildSetupWizardTraversal>[0]["moduleSettings"],
   database: SetupDatabaseSnapshot | undefined = seededSnapshot(),
+  env: Record<string, string> = {},
 ): SetupWizardView {
   const normalised = normalizeSetupProgress({
     completedStepIds: progress.completedStepIds ?? [],
@@ -97,7 +98,7 @@ function viewFor(
   // check complete on a bare fixture, so the CI env collapsed the "opens a
   // fresh install … however many checks pass" fixture's defaulted population to
   // zero — passing locally, failing on every CI run (PR #241).
-  const readiness = buildSetupReadiness({ progress: normalised, env: {}, database });
+  const readiness = buildSetupReadiness({ progress: normalised, env, database });
   const readinessStatuses: Partial<
     Record<SetupStepId, (typeof readiness.categories)[number]["checks"][number]["status"]>
   > = {};
@@ -456,6 +457,256 @@ describe("buildSetupWizardView — the environment half", () => {
     // A warning, not a `blocked` — which is exactly why the gate is written as
     // "anything but complete" rather than as a status test.
     expect(secret?.remedy?.send).toContain("AUTH_SECRET");
+  });
+});
+
+/*
+  THE PUBLISH GATE'S REACHABLE STATES (C15 #246 fix round, review finding F2).
+
+  The gate is `status !== "complete"`, which means every branch a gated check
+  can reach that is not green holds the public site shut. That is the right
+  predicate and it is WIDER than the three conditions D17's own prose named:
+  `environment-role` turned out to have a fifth branch (#3035 — declared
+  PRODUCTION while ALSO declaring a local capture mailbox), which gates publish
+  correctly and was answered with the wrong remedy, because nobody had counted
+  the branches.
+
+  So this is a census with teeth. For each gated fact it drives the REAL
+  readiness builder through every branch that can reach the wizard, and asserts
+  the status set it observes is exactly the one declared below. A future branch
+  that changes a gated check's verdict fails here rather than silently widening
+  the gate — and the assertion message says what the author now owes: a decision
+  about whether publish should be held in that state, and a remedy row for it.
+
+  Not a source regex, deliberately. A regex over `setup-readiness.ts` would pin
+  the shape of the code rather than the behaviour, and would pass a branch that
+  returns an existing status for a new reason — which is precisely the #3035
+  case.
+*/
+describe("the publish gate's reachable statuses (D17, F2)", () => {
+  const productionRole = (): SetupDatabaseSnapshot["environmentRole"] => ({
+    role: "PRODUCTION",
+    decidedBy: "deployment-declaration",
+    declaration: { kind: "production" },
+    databaseOverride: { kind: "none" },
+    notes: [],
+  });
+
+  const nonProductionRole = (): SetupDatabaseSnapshot["environmentRole"] => ({
+    role: "NON_PRODUCTION",
+    decidedBy: "deployment-declaration",
+    declaration: { kind: "non-production" },
+    databaseOverride: { kind: "none" },
+    notes: [],
+  });
+
+  const unknownRole = (): SetupDatabaseSnapshot["environmentRole"] => ({
+    role: "UNKNOWN",
+    decidedBy: "unresolved",
+    declaration: { kind: "absent" },
+    databaseOverride: { kind: "none" },
+    notes: [],
+  });
+
+  const completeRuntimeEnv = {
+    DATABASE_URL: "postgresql://user:pass@localhost:5432/db",
+    NEXTAUTH_URL: "https://club.example.nz",
+    CRON_SECRET: "a-cron-secret-value",
+    SEED_ADMIN_EMAIL: "admin@example.nz",
+    SEED_ADMIN_PASSWORD: "a-seed-admin-password",
+    AUTH_SECRET: "0123456789abcdef0123456789abcdef0123456789abcdef",
+  };
+
+  /**
+   * Every branch of every GATED fact that the wizard's own payload can reach,
+   * named, with the status it produces.
+   *
+   * `environment-role`'s "database state was not checked" branch is deliberately
+   * absent: it needs the snapshot to carry no `environmentRole` at all, which
+   * only `npm run setup:check` without database access produces —
+   * `/api/admin/setup/wizard` always passes a snapshot and
+   * `resolveEnvironmentRole()` always answers. The scenario below that omits the
+   * whole database is the closest reachable thing and is listed under its own
+   * name, so the exclusion is stated rather than assumed.
+   */
+  const gatingStatusSets: Record<
+    string,
+    readonly {
+      readonly label: string;
+      readonly status: "complete" | "warning" | "blocked" | "not_started";
+      readonly database: SetupDatabaseSnapshot | undefined;
+      readonly env: Record<string, string>;
+    }[]
+  > = {
+    "environment-role": [
+      {
+        label: "declared PRODUCTION, mail going out",
+        status: "complete",
+        database: {
+          ...seededSnapshot(),
+          environmentRole: productionRole(),
+          withheldEmail: {
+            available: true,
+            count: 0,
+            mostRecentAt: null,
+            captureInProduction: 0,
+          },
+        },
+        env: completeRuntimeEnv,
+      },
+      {
+        label: "declared NON_PRODUCTION",
+        status: "complete",
+        database: { ...seededSnapshot(), environmentRole: nonProductionRole() },
+        env: completeRuntimeEnv,
+      },
+      {
+        label: "UNKNOWN — nothing has declared it",
+        status: "blocked",
+        database: { ...seededSnapshot(), environmentRole: unknownRole() },
+        env: completeRuntimeEnv,
+      },
+      {
+        label: "declared PRODUCTION but capturing its mail (#3035)",
+        status: "warning",
+        database: {
+          ...seededSnapshot(),
+          environmentRole: productionRole(),
+          withheldEmail: {
+            available: true,
+            count: 7,
+            mostRecentAt: "2026-06-30T00:00:00.000Z",
+            captureInProduction: 7,
+          },
+        },
+        env: completeRuntimeEnv,
+      },
+      {
+        label: "no snapshot at all — setup:check without a database",
+        status: "warning",
+        database: undefined,
+        env: completeRuntimeEnv,
+      },
+    ],
+    "runtime-env": [
+      {
+        label: "every required variable set and well formed",
+        status: "complete",
+        database: { ...seededSnapshot(), environmentRole: productionRole() },
+        env: completeRuntimeEnv,
+      },
+      {
+        label: "a required variable missing",
+        status: "blocked",
+        database: { ...seededSnapshot(), environmentRole: productionRole() },
+        env: { ...completeRuntimeEnv, CRON_SECRET: "" },
+      },
+    ],
+    "auth-secret-strength": [
+      {
+        label: "a strong secret",
+        status: "complete",
+        database: { ...seededSnapshot(), environmentRole: productionRole() },
+        env: completeRuntimeEnv,
+      },
+      {
+        label: "a weak secret",
+        status: "warning",
+        database: { ...seededSnapshot(), environmentRole: productionRole() },
+        env: { ...completeRuntimeEnv, AUTH_SECRET: "too-short" },
+      },
+    ],
+  };
+
+  it("covers every fact that can hold the publish button shut", () => {
+    // The census's own completeness. A NEW gating fact — or an existing one
+    // reclassified into the gate — has no scenarios here, so it fails with the
+    // instruction rather than being quietly ungoverned.
+    const gated = SETUP_STEP_REGISTRY.filter(
+      (entry) => entry.launchGate === "blocks-until-complete",
+    ).map((entry) => entry.id);
+
+    expect(gated.sort()).toEqual(Object.keys(gatingStatusSets).sort());
+    for (const id of gated) {
+      expect(
+        gatingStatusSets[id]?.length ?? 0,
+        `"${id}" holds the publish button shut and no branch of it is exercised here — widening the launch gate needs an owner decision and a SETUP_ENVIRONMENT_REMEDY row for every state it can be met in`,
+      ).toBeGreaterThan(1);
+    }
+  });
+
+  it("reaches exactly the declared statuses, and no others", () => {
+    for (const [id, scenarios] of Object.entries(gatingStatusSets)) {
+      const observed = new Set<string>();
+      for (const scenario of scenarios) {
+        const view = viewFor({}, undefined, scenario.database, scenario.env);
+        const row = view.environment.find((entry) => entry.id === id);
+        expect(row, `${id} is not on the panel at all`).toBeTruthy();
+        expect(
+          row?.status,
+          `"${id}" in the state "${scenario.label}" no longer reads ${scenario.status}. A gated check's verdicts decide when the public site is held shut, so a changed or added branch needs an owner decision and a remedy row before it lands`,
+        ).toBe(scenario.status);
+        expect(
+          row?.blocksLaunch,
+          `"${id}" in the state "${scenario.label}" must hold publish shut iff it is not complete`,
+        ).toBe(scenario.status !== "complete");
+        observed.add(scenario.status);
+      }
+      expect(
+        [...observed].sort(),
+        `the reachable status set for "${id}" moved`,
+      ).toEqual([...new Set(scenarios.map((s) => s.status))].sort());
+    }
+  });
+
+  it("hands every reachable non-green state a remedy that fits its CAUSE", () => {
+    // F1's finding, and the reason the census exists. Both non-green states of
+    // `environment-role` gate publish; only one of them is fixed by setting
+    // APP_ENVIRONMENT_ROLE, and telling the other operator to set a variable
+    // that is already set correctly sends them to the wrong place entirely.
+    for (const [id, scenarios] of Object.entries(gatingStatusSets)) {
+      for (const scenario of scenarios) {
+        if (scenario.status === "complete") continue;
+        const view = viewFor({}, undefined, scenario.database, scenario.env);
+        const row = view.environment.find((entry) => entry.id === id);
+        expect(
+          row?.remedy,
+          `"${id}" in the state "${scenario.label}" holds the site shut and offers no remedy`,
+        ).toBeTruthy();
+      }
+    }
+  });
+
+  it("tells a capturing live site to fix its TRANSPORT, not to set the role", () => {
+    const capturing = gatingStatusSets["environment-role"].find(
+      (scenario) => scenario.status === "warning" && scenario.database,
+    );
+    expect(capturing, "the #3035 scenario is missing").toBeTruthy();
+
+    const view = viewFor({}, undefined, capturing?.database, capturing?.env);
+    const row = view.environment.find((entry) => entry.id === "environment-role");
+    expect(row?.status).toBe("warning");
+    expect(row?.blocksLaunch).toBe(true);
+    // The cause-aware override, in its own words.
+    expect(row?.remedy).toEqual(
+      SETUP_ENVIRONMENT_REMEDY_BY_STATUS["environment-role"]?.warning,
+    );
+    expect(row?.remedy?.send).toContain("USE_LOCAL_CAPTURE");
+    // …and pointedly NOT the base remedy's instruction, which is the whole bug.
+    expect(row?.remedy?.send).not.toContain("Set APP_ENVIRONMENT_ROLE to");
+    expect(row?.remedy).not.toEqual(SETUP_ENVIRONMENT_REMEDY["environment-role"]);
+  });
+
+  it("still gives the UNDECLARED role the set-the-variable remedy", () => {
+    // The converse, so the override cannot swallow the branch it was carved out
+    // of: `blocked` must still resolve to the base entry.
+    const undeclared = gatingStatusSets["environment-role"].find(
+      (scenario) => scenario.status === "blocked",
+    );
+    const view = viewFor({}, undefined, undeclared?.database, undeclared?.env);
+    const row = view.environment.find((entry) => entry.id === "environment-role");
+    expect(row?.remedy).toEqual(SETUP_ENVIRONMENT_REMEDY["environment-role"]);
+    expect(row?.remedy?.send).toContain("APP_ENVIRONMENT_ROLE");
   });
 });
 

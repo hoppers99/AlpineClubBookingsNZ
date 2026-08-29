@@ -284,6 +284,29 @@ describe("the pane registry", () => {
       ).toBe(true);
     }
   });
+
+  it("gives an ENVIRONMENT fact no pane, because nothing would ever mount it", () => {
+    /*
+      The other half of D17's silent-loss class (C15 #246 fix round, review
+      finding F7). A pane is mounted BESIDE the step frame, and an environment
+      fact has no step frame — it is a row on the Server-environment panel. So a
+      pane declared against a fact is dead code that reads as a live feature:
+      somebody writes it, the table accepts it, and no screen ever renders it.
+      The type cannot say this (the Record is total over every id, deliberately),
+      so this does.
+    */
+    const environmentIds = SETUP_STEP_REGISTRY.filter(
+      (entry) => entry.kind === "environment",
+    ).map((entry) => entry.id);
+    expect(environmentIds.length).toBe(5);
+
+    for (const id of environmentIds) {
+      expect(
+        SETUP_STEP_PANES[id],
+        `"${id}" is an environment fact and declares a pane; the wizard has nowhere to mount it, so it would never render`,
+      ).toBeNull();
+    }
+  });
 });
 
 describe("club-config renders the real club identity editor inline", () => {

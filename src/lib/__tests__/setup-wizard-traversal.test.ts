@@ -1402,6 +1402,41 @@ describe("setup wizard traversal: the operator/environment split (D17, #246)", (
     expect(canNavigateToSetupStep(traversal, "env1")).toBe(false);
   });
 
+  /*
+    AN ENVIRONMENT PREREQUISITE IS SILENTLY IGNORED, NOT PERMANENTLY STALE
+    (C15 #246 fix round, review finding F3).
+
+    `findSetupStepRegistryViolations` refuses this edge, and its message used to
+    say the dependent would go stale forever. It would not: `computeStale…`
+    narrows to `kind: "operator"` before it walks prerequisites, so an
+    environment prerequisite is known-but-not-applicable and that arm returns
+    false. This pins the real behaviour, which is what makes the registry
+    guard's corrected message honest — and it is why that guard is worth
+    having, because a declared ordering that does NOTHING surfaces nowhere.
+  */
+  it("ignores an environment prerequisite entirely, rather than pinning its dependent stale", () => {
+    const registry = syntheticRegistry([
+      { id: "env1", kind: "environment", launchGate: "blocks-until-complete" },
+      { id: "s1", prerequisites: ["env1"] },
+    ]);
+    const traversal = traverse({
+      registry,
+      progress: progressOf(["s1"]),
+      // The prerequisite is as unsatisfied as it can be and the dependent is
+      // confirmed — the exact shape that WOULD go stale on an operator
+      // prerequisite.
+      readinessStatuses: { env1: "blocked", s1: "complete" },
+    });
+
+    expect(traversal.staleStepIds).toEqual([]);
+    expect(traversal.steps.find((step) => step.id === "s1")?.state).toBe(
+      "complete",
+    );
+    // …and the fact still gates the publish, which is the one thing the edge
+    // does not change.
+    expect(traversal.launchBlockedBy).toEqual(["env1"]);
+  });
+
   it("drops an environment fact whose owning module is off (D4)", () => {
     // Applicability runs FIRST and the kind filter second, so a module's
     // environment fact disappears with the module exactly as its steps do.

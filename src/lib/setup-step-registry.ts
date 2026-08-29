@@ -144,15 +144,39 @@ export type SetupStepKind = "operator" | "environment";
  *   other than `complete`, `launchBlockedBy` names it and the launch panel
  *   refuses to publish.
  *
- * **`!== "complete"` is the whole predicate, and it lands exactly on the three
- * conditions D17 names** rather than approximating them: `runtime-env` is
- * `complete` iff no variable is missing or malformed; `auth-secret-strength` is
- * `complete` iff the secret is not weak; `environment-role` is `complete` for
- * both confirmed roles and `blocked` for UNKNOWN. Its one other branch —
- * "database state was not checked" — needs `db` to be absent, which only
- * `npm run setup:check` without database access produces and the wizard's own
- * payload never can. That branch therefore fails closed on a path the publish
- * button cannot be reached from, which is the harmless direction.
+ * **`!== "complete"` is the whole predicate, and the honest way to read it is
+ * "anything the check does not call green holds publish shut" — which is WIDER
+ * than the three conditions D17's own sentence names.** `runtime-env` is
+ * `complete` iff no variable is missing or malformed, and
+ * `auth-secret-strength` iff the secret is not weak; both have exactly the two
+ * outcomes. `environment-role` has FIVE branches, and enumerating them is the
+ * only way to see what the gate really covers (C15 #246 fix round, review
+ * finding F1 — the docblock used to name three and quietly own four):
+ *
+ * 1. **PRODUCTION, mail going out** — `complete`. Publish allowed.
+ * 2. **NON_PRODUCTION**, declared or administrator-forced — `complete`. An
+ *    internal test site that is deliberately visible and deliberately not
+ *    production is a normal, permanent state (D9).
+ * 3. **UNKNOWN** — `blocked`. The condition D17 names, and the reason the gate
+ *    exists: nothing has said which installation this is, so email and Xero
+ *    writes fail closed and a publish would open a site in that state.
+ * 4. **PRODUCTION, but a local capture mailbox is also declared** (#3035) —
+ *    `warning`, and therefore ALSO gated. The direction is right: a live club
+ *    whose mail goes to a capture mailbox that forwards nothing is in a total
+ *    mail outage, and opening the public site on top of that is the thing to
+ *    prevent. What was wrong until this fix round was the COPY — the remedy
+ *    told the operator to set `APP_ENVIRONMENT_ROLE`, which is already set
+ *    correctly on this branch. `SETUP_ENVIRONMENT_REMEDY_BY_STATUS` in
+ *    `setup-wizard-environment-view.ts` now answers it in its own words.
+ * 5. **"Database state was not checked"** — `warning`, so gated too, but
+ *    unreachable from the publish button: it needs `db` to be absent, which
+ *    only `npm run setup:check` without database access produces and the
+ *    wizard's own payload never can.
+ *
+ * A gated check that grows a sixth branch widens the publish gate silently, so
+ * `gatingStatusSets` in `setup-wizard-view.test.ts` pins each gated fact's
+ * REACHABLE status set and fails with a message saying a widening needs a
+ * decision and a remedy row.
  *
  * **REQUIRED on every entry, like `kind`, and for the same reason.** The unsafe
  * silence here is the opposite of the one `kind` guards: a defaulted `none`
@@ -501,13 +525,18 @@ export function findSetupStepRegistryViolations(
   // transition on it. So it can be neither end of a prerequisite edge, and both
   // directions are a genuine trap rather than a tidiness rule:
   //
-  // - An operator step that DEPENDS on an environment fact is unfinishable
-  //   through the wizard. Staleness is computed from "is my prerequisite
-  //   confirmed?", nobody can ever confirm an environment fact, and no screen in
-  //   the wizard offers a control that would — so the dependent goes stale the
-  //   moment it is confirmed and stays stale forever, with nothing an operator
-  //   can do about it. That is worse than the wrong journey order: it is a
-  //   journey with no end.
+  // - An operator step that DEPENDS on an environment fact declares an ordering
+  //   the wizard then QUIETLY IGNORES. This bullet used to say the dependent
+  //   went stale permanently; the code says otherwise, and the code is the
+  //   milder and more insidious of the two (C15 #246 fix round, review finding
+  //   F3). `computeStaleSetupStepIds` narrows its entries to `kind: "operator"`
+  //   before it walks prerequisites, so an environment prerequisite is `known`
+  //   but not `applicable` — which is the "excluded by a disabled module" arm,
+  //   and that arm returns false. The edge is therefore a silent no-op: the
+  //   author gets no staleness, no error and no clue, and the dependent behaves
+  //   exactly as if the prerequisite had never been declared. A rule that does
+  //   nothing is worse than one that does the wrong thing, because nothing
+  //   surfaces it — so it is refused at the registry instead.
   // - An environment fact that DECLARES a prerequisite is asserting an ordering
   //   over something that has no position in the journey to be ordered against.
   //   The panel renders every fact at once.
@@ -546,7 +575,7 @@ export function findSetupStepRegistryViolations(
       if (!prerequisite) continue;
       if (prerequisite.kind === "environment") {
         violations.push(
-          `Setup step "${dependent.id}" depends on prerequisite "${prerequisite.id}", which is an environment fact: nobody can confirm an environment fact, so the dependent would go stale on it permanently`,
+          `Setup step "${dependent.id}" depends on prerequisite "${prerequisite.id}", which is an environment fact: the staleness pass walks operator steps only, so this edge would be silently ignored — the ordering you declared would do nothing at all`,
         );
       }
     }

@@ -912,9 +912,15 @@ describe("setup step registry guards", () => {
     existing declaration to argue about.
   */
   it("refuses an operator step that depends on an environment fact", () => {
-    // The trap: nobody can confirm an environment fact, so a dependent that is
-    // confirmed goes stale on it and stays stale forever, with no control
-    // anywhere in the wizard that could clear it. A journey with no end.
+    /*
+      The trap, CORRECTED in C15's fix round (review finding F3). It is not that
+      the dependent goes stale forever: `computeStaleSetupStepIds` narrows its
+      entries to `kind: "operator"` before it walks prerequisites, so an
+      environment prerequisite is known-but-not-applicable and that arm returns
+      false. The edge is a SILENT NO-OP — the author declares an ordering, gets
+      no error, and gets no ordering — which is the failure worth refusing,
+      because nothing else would ever surface it.
+    */
     const violations = findSetupStepRegistryViolations([
       stepDefinition("runtime-env", {
         kind: "environment",
@@ -928,7 +934,12 @@ describe("setup step registry guards", () => {
     expect(violations).toHaveLength(1);
     expect(violations[0]).toContain('"seed-admin"');
     expect(violations[0]).toContain("environment fact");
-    expect(violations[0]).toContain("permanently");
+    // The word the message must carry is the REAL failure mode, not the one the
+    // guard was first written believing in.
+    expect(violations[0]).toContain("silently ignored");
+    // The behaviour that word describes is asserted where the staleness pass
+    // lives — "an environment prerequisite is silently ignored, not permanently
+    // stale" in `setup-wizard-traversal.test.ts`.
   });
 
   it("refuses an environment fact that declares prerequisites", () => {

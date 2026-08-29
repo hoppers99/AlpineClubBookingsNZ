@@ -130,6 +130,11 @@ export type SetupReadinessCheck = SetupReadinessCategory["checks"][number];
  * TYPECHECK here until somebody decides which officer owns it. A default would
  * quietly make that decision as "support", which is the widest area in the
  * product.
+ *
+ * **Its five ENVIRONMENT-fact entries are still read at runtime** (D17, C15
+ * #246), unlike the other two tables keyed over this union: the panel's row
+ * carries `permissionArea` and states "that page belongs to …" beneath its
+ * link. Nothing here went vestigial when the facts left the rail.
  */
 export const SETUP_STEP_PERMISSION_AREA: Record<
   SetupStepId,
@@ -220,6 +225,16 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
  * fails the TYPECHECK here until somebody decides which sentence it should show.
  * A heuristic would decide silently, and it decided wrongly for exactly the four
  * steps this fix exists for.
+ *
+ * **Its five ENVIRONMENT-fact entries are VESTIGIAL since D17 (C15 #246), and
+ * are kept for type-totality only.** "Defaulted" means a check passed and nobody
+ * confirmed it; nobody can confirm a fact, facts never reach the step frame, and
+ * the frame is the only reader of this table. So `environment-role`,
+ * `runtime-env`, `auth-secret-strength`, `email-ses` and `sentry` can no longer
+ * be reached through it at runtime. They stay because this is a total `Record`
+ * and deleting an entry would be a typecheck error — and because a fact
+ * reclassified back to `operator` would need its answer again, from somebody who
+ * had thought about it rather than from a default.
  *
  * It is also kept OFF `SetupWizardStepDetail`, unlike `permissionArea`. The
  * whole finding was a step being paired with the wrong copy, and a field on the
