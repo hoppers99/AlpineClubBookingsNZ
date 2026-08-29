@@ -15,9 +15,12 @@ import {
   SETUP_STEP_REGISTRY,
   type SetupStepId,
 } from "@/lib/setup-step-registry";
-import { buildSetupWizardTraversal } from "@/lib/setup-wizard-traversal";
 import {
   SETUP_ENVIRONMENT_REMEDY,
+  SETUP_ENVIRONMENT_REMEDY_BY_STATUS,
+} from "@/lib/setup-wizard-environment-view";
+import { buildSetupWizardTraversal } from "@/lib/setup-wizard-traversal";
+import {
   SETUP_STEP_PERMISSION_AREA,
   buildSetupWizardView,
   canChangeSetupProgress,

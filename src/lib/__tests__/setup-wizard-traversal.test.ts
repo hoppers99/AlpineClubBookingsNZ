@@ -15,14 +15,16 @@ import {
   type SetupStepLaunchGate,
   type SetupStepOwner,
 } from "@/lib/setup-step-registry";
+import type {
+  SetupStepDefinitionOf,
+  SetupWizardTraversalProgress,
+} from "@/lib/setup-wizard-entries";
 import {
   buildSetupWizardTraversal,
   canNavigateToSetupStep,
   deriveStaleSetupStepIds,
-  type SetupStepDefinitionOf,
   type SetupWizardStepState,
   type SetupWizardTraversalInput,
-  type SetupWizardTraversalProgress,
 } from "@/lib/setup-wizard-traversal";
 
 /**

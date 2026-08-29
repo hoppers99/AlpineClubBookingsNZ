@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_VIEW_ONLY_SECTION_HEADING } from "@/components/admin/view-only-action";
 import type { SetupStepId } from "@/lib/setup-step-registry";
-import type { SetupWizardEnvironmentRow } from "@/lib/setup-wizard-view";
+import type { SetupWizardEnvironmentRow } from "@/lib/setup-wizard-environment-view";
 import { SetupWizardEnvironmentPanel } from "@/app/(admin)/admin/setup/wizard/setup-wizard-environment-panel";
 
 /**

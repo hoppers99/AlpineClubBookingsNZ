@@ -9,11 +9,13 @@ import {
   SETUP_STEP_REGISTRY,
   type SetupStepId,
 } from "@/lib/setup-step-registry";
+import type {
+  SetupStepDefinitionOf,
+  SetupWizardTraversalProgress,
+} from "@/lib/setup-wizard-entries";
 import {
   deriveStaleSetupStepIds,
-  type SetupStepDefinitionOf,
   type SetupWizardTraversalInput,
-  type SetupWizardTraversalProgress,
 } from "@/lib/setup-wizard-traversal";
 
 /**

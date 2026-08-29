@@ -14,7 +14,7 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
-import type { SetupWizardEnvironmentRow } from "@/lib/setup-wizard-view";
+import type { SetupWizardEnvironmentRow } from "@/lib/setup-wizard-environment-view";
 import type { SetupWizardProviderTestResult } from "./setup-wizard-step-frame";
 
 /**

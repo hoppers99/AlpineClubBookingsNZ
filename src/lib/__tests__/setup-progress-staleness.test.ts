@@ -37,7 +37,7 @@ import {
 } from "@/lib/setup-progress-staleness";
 import type { SetupReadiness } from "@/lib/setup-readiness";
 import { SETUP_STEP_REGISTRY } from "@/lib/setup-step-registry";
-import type { SetupStepDefinitionOf } from "@/lib/setup-wizard-traversal";
+import type { SetupStepDefinitionOf } from "@/lib/setup-wizard-entries";
 
 /**
  * The WRITE side of setup-step staleness (epic #213, C2/#217).

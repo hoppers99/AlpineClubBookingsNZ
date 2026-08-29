@@ -1,16 +1,21 @@
 import { type ModuleSettingsValues } from "@/config/modules";
-import { normalizeClubModuleSettings } from "@/lib/module-settings";
 import {
-  CORE_STEP_OWNER,
   SETUP_STEP_REGISTRY,
-  resolveSetupStepCompletion,
-  type SetupStepCompletionAnswer,
-  type SetupStepCompletionInput,
-  type SetupStepDefinition,
   type SetupStepId,
-  type SetupStepKind,
   type SetupStepOwner,
 } from "@/lib/setup-step-registry";
+import {
+  applicableEntries,
+  buildSetupWizardEnvironmentFacts,
+  completionAnswers,
+  entriesOfKind,
+  operatorConfirmedIds,
+  progressStateOf,
+  type SetupStepDefinitionOf,
+  type SetupStepReadinessStatus,
+  type SetupWizardEnvironmentFact,
+  type SetupWizardTraversalProgress,
+} from "@/lib/setup-wizard-entries";
 
 /**
  * The setup wizard's TRAVERSAL layer (epic #213, child C4).
@@ -107,13 +112,22 @@ import {
  * The staleness rules below are exercised against synthetic registries, which is
  * the only way to test them until a genuine prerequisite is declared.
  *
+ * ## Where the pieces live
+ *
+ * C15's fix round moved the ENTRY layer — applicability, the operator/environment
+ * `kind` split, the progress and completion helpers, and the environment facts
+ * themselves — into `setup-wizard-entries.ts`, for size. Nothing moved gained a
+ * second caller: this module's one pass still calls each of them once. The
+ * environment facts' COPY lives one layer further out again, in
+ * `setup-wizard-environment-view.ts`.
+ *
  * ## Guarantees
  *
- * - **Applicability matches C1 exactly.** The rule is restated here because this
- *   module must also work over a SYNTHETIC registry (a test's, and later a
- *   module-contributed one from C3), which `getApplicableSetupStepIds` cannot
- *   take. A test asserts the two agree over the real registry for every
- *   module-flag permutation that matters, so the restatement cannot drift.
+ * - **Applicability matches C1 exactly** — `applicableEntries` in
+ *   `setup-wizard-entries.ts`, which states why the rule is restated there
+ *   rather than imported. A test asserts the two agree over the real registry
+ *   for every module-flag permutation that matters, so the restatement cannot
+ *   drift.
  * - **Presentation order is the registry's declaration order**, unchanged and
  *   never re-sorted. C1 makes declaration order and `order` agree and fails the
  *   build when they do not.
@@ -131,34 +145,6 @@ import {
  * `buildSetupWizardTraversal` and `canNavigateToSetupStep` exist, are tested,
  * and have no production caller until C5 introduces one.
  */
-
-/** The readiness verdict half of C1's completion predicate. */
-export type SetupStepReadinessStatus = SetupStepCompletionInput["status"];
-
-/**
- * A step declaration narrowed to a known id union. `SetupStepEntry` is the
- * `Id = SetupStepId` case; a synthetic registry supplies its own union (or
- * plain `string`), which is what lets every rule below be tested against a
- * prerequisite graph the real registry does not have.
- */
-export interface SetupStepDefinitionOf<Id extends string>
-  extends Omit<SetupStepDefinition, "id" | "prerequisites"> {
-  readonly id: Id;
-  readonly prerequisites: readonly Id[];
-}
-
-/**
- * The `SetupProgress` arrays, structurally. Declared rather than imported from
- * `setup-readiness.ts` so this module has no import edge to the 1,900-line
- * readiness builder; `SetupProgressState` satisfies it as it stands.
- *
- * Both arrays are `readonly string[]`, not `readonly Id[]`, on purpose — see the
- * unknown-id guarantee above.
- */
-export interface SetupWizardTraversalProgress {
-  readonly completedStepIds: readonly string[];
-  readonly skippedStepIds: readonly string[];
-}
 
 export interface SetupWizardTraversalInput<Id extends string = SetupStepId> {
   readonly progress: SetupWizardTraversalProgress;
@@ -254,31 +240,6 @@ export interface SetupWizardTraversalStep<Id extends string = SetupStepId> {
   readonly isReachable: boolean;
 }
 
-/**
- * One environment fact, for the wizard's Server-environment panel (D17, C15
- * #246).
- *
- * Deliberately THIN — an id, who owns it, where it sits, and the verdict its
- * readiness check reached. Everything a person reads (title, message, the
- * remedy addressed to whoever runs the server, the provider test) is the VIEW
- * layer's, assembled from the same readiness check every rail step's copy comes
- * from. This module is pure and has no readiness result: giving it copy would
- * make it the second place a fact's wording lives.
- */
-export interface SetupWizardEnvironmentFact<Id extends string = SetupStepId> {
-  readonly id: Id;
-  readonly ownerModule: SetupStepOwner;
-  readonly order: number;
-  readonly status: SetupStepReadinessStatus;
-  /**
-   * This fact is holding publish shut: it declared
-   * `launchGate: "blocks-until-complete"` and its check is not `complete`.
-   * Every such id also appears in `launchBlockedBy`; it is carried per-fact so
-   * the panel can mark the offending row without re-deriving the rule.
-   */
-  readonly blocksLaunch: boolean;
-}
-
 export interface SetupWizardTraversal<Id extends string = SetupStepId> {
   /**
    * The OPERATOR steps that apply, in registry declaration order — the rail,
@@ -370,107 +331,6 @@ export interface SetupWizardTraversal<Id extends string = SetupStepId> {
    * a fresh install reads 0% however many checks its defaults satisfy.
    */
   readonly percentComplete: number;
-}
-
-/**
- * DELIBERATELY THE SAME PREDICATE AS `getApplicableSetupStepIds` in
- * `setup-step-registry.ts`, and deliberately not a call to it: that one answers
- * over the real registry and returns ids, this one filters an arbitrary
- * `registry` argument and returns entries, which is what lets this module be
- * tested against a fixture registry. Two copies of a rule normally drift; this
- * pair cannot go unnoticed, because `setup-surface-registry-parity.test.ts`
- * asserts the readiness cards, the hub cards and this traversal all report the
- * same step set for eight named module states (#223 AC1). Change one and that
- * suite fails.
- */
-function applicableEntries<Id extends string>(
-  registry: readonly SetupStepDefinitionOf<Id>[],
-  moduleSettings: ModuleSettingsValues | null | undefined,
-): readonly SetupStepDefinitionOf<Id>[] {
-  // C1's three-state contract, restated: UNKNOWN fails open. Hiding setup work
-  // on the one run that could not read the club's configuration is the wrong
-  // direction to be wrong in — a step shown unnecessarily costs a glance, a
-  // step hidden wrongly is never done.
-  if (moduleSettings === undefined) return registry;
-
-  const flags = normalizeClubModuleSettings(moduleSettings);
-  return registry.filter(
-    (entry) =>
-      entry.ownerModule === CORE_STEP_OWNER || flags[entry.ownerModule],
-  );
-}
-
-/**
- * The applicable entries of one KIND (D17, C15 #246).
- *
- * Written as a filter over `applicableEntries`' result rather than folded INTO
- * that function, and the distinction is load-bearing rather than stylistic.
- * `applicableEntries` above is contractually the same predicate as
- * `getApplicableSetupStepIds` — the readiness cards, the hub cards and this
- * traversal are married to it by `setup-surface-registry-parity.test.ts` across
- * eight module states. Narrowing it by `kind` would silently narrow the CARDS'
- * step set too, hiding a deployment fact from the surface whose whole question
- * is "is this installation configured?". The journey narrows here, one layer
- * down, and nothing else does.
- */
-function entriesOfKind<Id extends string>(
-  entries: readonly SetupStepDefinitionOf<Id>[],
-  kind: SetupStepKind,
-): readonly SetupStepDefinitionOf<Id>[] {
-  return entries.filter((entry) => entry.kind === kind);
-}
-
-/**
- * The operator's own marking for a step. Precedence matches
- * `buildProgressState` in `setup-readiness.ts`: completed beats skipped, so an
- * id somehow present in both arrays reads as completed there and here alike.
- */
-function progressStateOf(
-  id: string,
-  progress: SetupWizardTraversalProgress,
-): SetupStepCompletionInput["progress"] {
-  if (progress.completedStepIds.includes(id)) return "completed";
-  if (progress.skippedStepIds.includes(id)) return "skipped";
-  return "open";
-}
-
-/**
- * Both completion answers for every applicable step, resolved once. Keyed by id
- * rather than returned as two sets, so a caller cannot read one half for one
- * step and the other half for another.
- */
-function completionAnswers<Id extends string>(
-  entries: readonly SetupStepDefinitionOf<Id>[],
-  input: SetupWizardTraversalInput<Id>,
-): Map<Id, SetupStepCompletionAnswer> {
-  const answers = new Map<Id, SetupStepCompletionAnswer>();
-  for (const entry of entries) {
-    const status = input.readinessStatuses?.[entry.id] ?? "not_started";
-    answers.set(
-      entry.id,
-      resolveSetupStepCompletion(entry, {
-        status,
-        progress: progressStateOf(entry.id, input.progress),
-      }),
-    );
-  }
-  return answers;
-}
-
-/**
- * The steps the OPERATOR has confirmed (D14, #237) — what `recordedCompleteIds`
- * was called while it also held steps nobody had recorded anything about. It is
- * the set staleness is intersected against, `percentComplete` counts, and
- * `currentStepId` walks past.
- */
-function operatorConfirmedIds<Id extends string>(
-  answers: ReadonlyMap<Id, SetupStepCompletionAnswer>,
-): Set<Id> {
-  const confirmed = new Set<Id>();
-  for (const [id, answer] of answers) {
-    if (answer.operatorConfirmed) confirmed.add(id);
-  }
-  return confirmed;
 }
 
 /**
@@ -576,7 +436,9 @@ function computeStaleSetupStepIds<Id extends string = SetupStepId>(
   // this is what tells a genuinely unknown prerequisite apart from one that is
   // merely excluded by a disabled module.
   const known = new Set<string>(registry.map((entry) => entry.id));
-  const complete = operatorConfirmedIds(completionAnswers(entries, input));
+  const complete = operatorConfirmedIds(
+    completionAnswers(entries, input.progress, input.readinessStatuses),
+  );
 
   // Fixpoint rather than a topological walk: declaration order is guaranteed to
   // put a prerequisite before its dependent in the REAL registry (C1 fails the
@@ -635,27 +497,15 @@ export function buildSetupWizardTraversal<Id extends string = SetupStepId>(
   // declarations and almost nothing here.
   const applicable = applicableEntries(registry, input.moduleSettings);
   const entries = entriesOfKind(applicable, "operator");
-  const answers = completionAnswers(entries, input);
+  const answers = completionAnswers(
+    entries,
+    input.progress,
+    input.readinessStatuses,
+  );
   const confirmed = operatorConfirmedIds(answers);
-
-  const environmentFacts = entriesOfKind(applicable, "environment").map(
-    (entry): SetupWizardEnvironmentFact<Id> => {
-      const status = input.readinessStatuses?.[entry.id] ?? "not_started";
-      return {
-        id: entry.id,
-        ownerModule: entry.ownerModule,
-        order: entry.order,
-        status,
-        // `!== "complete"` is the whole predicate — see `SetupStepLaunchGate`
-        // in the registry for why that lands exactly on D17's three named
-        // conditions rather than approximating them. `not_started` (no
-        // readiness result was supplied at all) counts as not complete, which
-        // is the fail-closed direction: a caller that could not read the
-        // deployment must not thereby unlock a publish.
-        blocksLaunch:
-          entry.launchGate === "blocks-until-complete" && status !== "complete",
-      };
-    },
+  const environmentFacts = buildSetupWizardEnvironmentFacts(
+    applicable,
+    input.readinessStatuses,
   );
 
   const suppliedStale = input.staleStepIds;
