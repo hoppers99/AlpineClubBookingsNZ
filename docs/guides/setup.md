@@ -262,8 +262,8 @@ above for how to choose.
    where that work is actually done.
 
    **Some steps also carry the real editor, right there beneath the check.**
-   **Club Configuration**, **Club Time Zone**, **Feature Flags** and **Address
-   Autocomplete** have one today. The form you
+   **Club Configuration**, **Club Time Zone**, **Feature Flags**, **Address
+   Autocomplete** and **First Admin** have one today. The form you
    get is the same one that step's own settings page shows, saving to the same
    place, so nothing is stored twice and nothing behaves differently for having
    been reached from here. Editing is still staged: you change the fields, then
@@ -282,7 +282,29 @@ above for how to choose.
    cannot use, its own banner says so above its fields; the progress buttons
    sit in the frame above the editor and are unaffected. **Club Time Zone** is stricter than
    most: it is a full-administrator setting, and anybody else is told so in
-   place of the form.
+   place of the form. **First Admin** is stricter for the same reason —
+   handing somebody administrator access is a full administrator's decision, so
+   a membership officer is told so instead of being offered a form the save
+   would refuse.
+
+   **First Admin is the one that CREATES rather than edits, and it is worth
+   knowing what it does and does not do.** Every other editor here changes a
+   setting you can see. This one makes a new administrator account: an email
+   address, a first and last name, and whether to send that person a setup
+   invite. Leave the invite ticked unless you have a reason not to — the new
+   account is created with a password nobody knows, so without an invite they
+   cannot sign in until somebody sends one. If the email cannot be sent (mail is
+   often not configured yet at this point in setup) you are told so, and the
+   account is still there: the step counts it either way.
+
+   **It does not retire the account the installer created.** That account is
+   what you are almost certainly signed in as, and turning it off from inside
+   the wizard would sign you out of the wizard. Retiring it is a separate piece
+   of work, done deliberately from **Admin → Members** once somebody else can
+   get in. The step is satisfied by *any* active administrator, so it reads
+   complete before you create anybody — creating a real person's account is
+   about not running the club from a shared installer login, not about clearing
+   a red badge.
 
    **The module toggles are the one editor that changes the journey itself.**
    **Feature Flags** and **Address Autocomplete** share ONE editor — the module

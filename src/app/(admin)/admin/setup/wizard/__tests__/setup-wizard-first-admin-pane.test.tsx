@@ -81,7 +81,7 @@ import { SetupWizardFirstAdminPane } from "@/app/(admin)/admin/setup/wizard/setu
 function stubCreate(
   response: { ok?: boolean; status?: number; body?: unknown } = {},
 ) {
-  const fetchMock = vi.fn(async () => ({
+  const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
     ok: response.ok ?? true,
     status: response.status ?? 201,
     json: async () => response.body ?? { id: "m1", email: "kaia@example.test" },

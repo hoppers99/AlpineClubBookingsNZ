@@ -19,7 +19,7 @@ vi.mock("@/lib/logger", () => ({
   so the `where` it is given can be read back.
 */
 const { memberCount, mockPrisma } = vi.hoisted(() => {
-  const memberCount = vi.fn(async () => 0);
+  const memberCount = vi.fn(async (_args?: { where?: unknown }) => 0);
   const emptyDelegate = new Proxy(
     {},
     {
