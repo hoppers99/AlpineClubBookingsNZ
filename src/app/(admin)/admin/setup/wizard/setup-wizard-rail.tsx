@@ -235,6 +235,16 @@ function RailRow({
 
   // Unreachable: no button, no handler, no tab stop. D2's rule is the control's
   // absence rather than a guard somewhere downstream of a click.
+  //
+  // The `title` is the frontier's own explanation sentence, RELOCATED here
+  // (C21, #252) rather than reworded. It used to live on the step frame's
+  // Continue button, shown only when Continue itself was disabled — one
+  // sentence, reachable only by hovering a control that did nothing on the
+  // happy path. Continue is gone; the Lock icon it used to explain would
+  // otherwise say nothing about why. `title` is a mouse/keyboard-focus
+  // tooltip AND the accessible name a screen reader announces for an element
+  // with no other text naming it, which is what makes it the right carrier
+  // for a `div` that is deliberately not a button.
   if (!step.isReachable) {
     return (
       <div
@@ -243,7 +253,7 @@ function RailRow({
         data-state={step.state}
         data-reachable="false"
         aria-disabled="true"
-        title="Finish the steps before this one first."
+        title="Finish or skip this step before moving on."
         className={cn(shared, "cursor-not-allowed border-transparent opacity-50")}
       >
         <Lock className="h-4 w-4 shrink-0 text-muted-foreground" />

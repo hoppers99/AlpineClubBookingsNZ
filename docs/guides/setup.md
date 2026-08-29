@@ -337,11 +337,18 @@ above for how to choose.
    not "unlock" anything by itself. Changing a step's progress, and running a
    test, both need **Support** edit access; the settings page each step links
    to is governed by its own area, which the wizard names underneath the link.
-5. **Mark this step done**, **Skip for now**, or **Reopen** it, then
-   **Continue**. Skipping buys you passage past a step; it does not hide it. A
+5. **Mark this step done**, **Skip for now**, or **Reopen** it. There is no
+   separate step-through control: marking or skipping the step you are on is
+   what unlocks the next row in the rail, and clicking that row — or any other
+   unlocked one — is how you move around the journey. If you are simply
+   resting where the wizard put you (rather than having clicked a specific
+   row yourself), marking that step done carries you straight to the next
+   one, because the wizard is only ever showing you wherever the journey has
+   got to. Skipping buys you passage past a step; it does not hide it. A
    skipped step stays on the rail and on the outstanding list until it is done
    or no longer applies. You cannot skip *ahead* of a step you have not settled
-   one way or the other — those rows are greyed and will not open.
+   one way or the other — those rows are greyed, name why when you point at
+   them, and will not open.
 6. Switching a module off removes its steps entirely (a module you have declined
    has nothing to configure). Change one in the wizard's own module toggles —
    the **Feature Flags** or **Address Autocomplete** step — and the rail redraws
