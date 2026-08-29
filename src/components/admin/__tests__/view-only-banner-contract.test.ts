@@ -377,12 +377,26 @@ const FIGURES = {
    * banner the panel itself renders, so `optOuts` and `staticOptOuts` move by
    * the same one and the vouched split is untouched. Re-measured on this tree,
    * not added to the previous total.
+   *
+   * 347 -> 348 (#251, the wizard's First Admin pane): ONE control, the Create
+   * button on `setup-wizard-first-admin-pane.tsx`. It is the only pane in the
+   * wizard that is BUILT rather than embedded — every other one mounts a
+   * settings section that already carries its own furniture — so it is also the
+   * only one that adds a call site at all. A STATIC opt-out under the banner
+   * that same file renders, so `optOuts` and `staticOptOuts` move by the same
+   * one and the vouched split is untouched; `bannerComponents` 93 -> 94. The
+   * file's OTHER early return — the "full administrators only" refusal — mounts
+   * no banner on purpose and sits above the branch that does, which is the shape
+   * the branch-coverage test below allows for a terminal unavailable state.
+   * Re-measured on this merged tree with
+   * `npx vitest run view-only-banner-contract`, which reports
+   * 348 / 295 / 261.
    */
-  callSites: 347,
+  callSites: 348,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 294,
+  optOuts: 295,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 260,
+  staticOptOuts: 261,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *
@@ -421,8 +435,12 @@ const FIGURES = {
    * 92 -> 93 (#246): the Server-environment panel heads its own section with
    * one. It states the narrower thing the panel actually gates — support edit
    * runs a provider test; every fact on the page is readable without it.
+   *
+   * 93 -> 94 (#251): the wizard's First Admin pane heads its own with one. It
+   * states `membership`, which is both the step's permission area and the
+   * `POST /api/admin/members` guard its single control writes through.
    */
-  bannerComponents: 93,
+  bannerComponents: 94,
   /**
    * Admin files that render an `AdminViewOnlyNotice` and NO
    * `ViewOnlyActionButton` — the first of the three cases in which the older

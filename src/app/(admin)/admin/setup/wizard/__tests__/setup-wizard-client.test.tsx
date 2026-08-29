@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -17,6 +17,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  * tests are about the shell, and a session that gated the panes would hide the
  * very composition they now exercise. The gated directions are pinned in
  * `setup-wizard-panes.test.tsx`, which drives this same handle.
+ *
+ * C17 (#248) adds a third: `GroupDiscountSection`, composed into
+ * `BookingPoliciesWizardPane`, reads `useClubIdentity()` and throws outside a
+ * `<ClubIdentityProvider>` the same way `useSession` does. Only the two tests
+ * below that put the wizard on `booking-policies` wrap in one — every other
+ * fixture here mounts a step whose pane never reaches this hook.
  */
 const sessionMock = vi.hoisted(() => ({
   data: { user: { accessRoles: ["ADMIN"] } } as unknown,
@@ -27,6 +33,8 @@ vi.mock("next-auth/react", () => ({
   useSession: () => ({ data: sessionMock.data, status: sessionMock.status }),
 }));
 
+import { ClubIdentityProvider } from "@/components/club-identity-provider";
+import { clubIdentity } from "@/config/club-identity";
 import { emptyAdminPermissionMatrix } from "@/lib/admin-permissions";
 import { SETUP_READINESS_INPUT_CHANGED_EVENT } from "@/lib/setup-readiness-events";
 import type { SetupReadiness } from "@/lib/setup-readiness";
@@ -203,6 +211,46 @@ function stubFetch(
         }),
       };
     }
+    // C17 (#248): `BookingPoliciesWizardPane` composes two more panes that
+    // fetch for themselves — pre-empted here for the same reason as the two
+    // above. `/api/admin/lodges` is `DefaultCancellationPolicySection`'s own
+    // scope switch resolving with no lodges, so it renders club-wide only.
+    if (String(url) === "/api/admin/lodges") {
+      return { ok: true, status: 200, json: async () => ({ lodges: [] }) };
+    }
+    if (String(url) === "/api/admin/booking-policies/cancellation") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          rules: [
+            {
+              daysBeforeStay: 14,
+              refundPercentage: 100,
+              creditRefundPercentage: 100,
+              fixedFeeCents: 0,
+              creditFixedFeeCents: 0,
+            },
+          ],
+          nonMemberHoldEnabled: true,
+          nonMemberHoldDays: 7,
+          waitlistCrossLodgeOrder: "OWN_LODGE_FIRST",
+        }),
+      };
+    }
+    if (String(url) === "/api/admin/booking-policies/group-discount") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          minGroupSize: 5,
+          summerOnly: true,
+          enabled: false,
+          applyToEdits: true,
+          configured: true,
+        }),
+      };
+    }
     if (String(url).startsWith("/api/admin/site-style")) {
       if (options.publish) return options.publish();
       return { ok: true, status: 200, json: async () => ({ isComplete: true }) };
@@ -361,7 +409,7 @@ describe("SetupWizardClient", () => {
     });
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
-    // `runtime-env`/`seed-admin` carry no C12 pane, so the only fetches in
+    // `runtime-env` carries no C12 pane (`seed-admin` gained one in C20, but it issues no fetch on mount), so the only fetches in
     // this test are the wizard reads under test — nothing else to route.
     render(<SetupWizardClient permissionMatrix={admin} />);
 
@@ -432,27 +480,40 @@ describe("SetupWizardClient", () => {
         traversal: traversalWith(["booking-policies"], { currentIndex: 0 }),
       },
     ]);
+    // `bookings: edit` clears `canViewSetupStepPane`, so this mounts
+    // `BookingPoliciesWizardPane` — see the file docblock for why this is one
+    // of the two renders here wrapped in `ClubIdentityProvider`.
     render(
-      <SetupWizardClient
-        permissionMatrix={{
-          ...emptyAdminPermissionMatrix(),
-          bookings: "edit",
-          support: "view",
-        }}
-      />,
+      <ClubIdentityProvider value={clubIdentity}>
+        <SetupWizardClient
+          permissionMatrix={{
+            ...emptyAdminPermissionMatrix(),
+            bookings: "edit",
+            support: "view",
+          }}
+        />
+      </ClubIdentityProvider>,
     );
     const button = (await screen.findByRole("button", {
       name: /Mark this step done/,
     })) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    expect(screen.getByTestId("admin-view-only-banner").textContent).toContain(
-      "Support edit access is required",
-    );
+    // Scoped to the FRAME: `BookingPoliciesWizardPane`'s two sections each
+    // render their own `admin-view-only-banner` too (the sanctioned
+    // stacked-sections case), and a bare `getByTestId` would now find three.
+    const frame = screen.getByTestId("setup-wizard-step-frame");
+    expect(
+      within(frame).getByTestId("admin-view-only-banner").textContent,
+    ).toContain("Support edit access is required");
   });
 
   it("enables them for a support editor on a step whose settings are another area's", async () => {
     // The mirror-image failure: the old gate DISABLED this, withholding a
     // transition the server would have accepted.
+    //
+    // `bookings` is unset here (`emptyAdminPermissionMatrix()` -> "none"), so
+    // `canViewSetupStepPane` stays false and `BookingPoliciesWizardPane` never
+    // mounts — no `ClubIdentityProvider` needed for this one.
     stubFetch([
       {
         readiness: readinessWith([["booking-policies", "Booking Policy"]]),

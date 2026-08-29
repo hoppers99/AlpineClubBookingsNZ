@@ -1799,6 +1799,14 @@ function buildSeasonRateCheck(
  * lodge (#1982), so making a second check argue about the same fact is how two
  * plausible derivations drift apart.
  *
+ * They do move the WORDING, which is a different thing (C19 #250, UAT R2-7).
+ * An active lodge with no beds gets its own sentence rather than the ordinary
+ * open-for-booking one, because "open for booking (0 rooms, 0 beds)" reads as a
+ * contradiction and covers two opposite situations — an override lodge that is
+ * fine, and a lodge with capacity 0 that nobody can book — in the same seven
+ * words. The arm is on `activeBedCount`, not on the room count: beds are what
+ * `getLodgeCapacityStatus` counts.
+ *
  * ## Per-lodge completeness, reported separately from the club's
  *
  * `links` carries one entry per lodge, pointing at that lodge's own setup flow.
@@ -1839,6 +1847,19 @@ function buildLodgesCheck(
     const inventory = `${lodge.activeRoomCount} room${lodge.activeRoomCount === 1 ? "" : "s"}, ${lodge.activeBedCount} bed${lodge.activeBedCount === 1 ? "" : "s"}`;
     const flag = lodge.isDefault ? ", the club default" : "";
     if (lodge.active) {
+      /*
+        UAT R2-7, and the "REPORTED, never judged" section of this function's
+        docblock is where the reasoning lives. In short: with no active beds
+        `getLodgeCapacityStatus` resolves capacity to the per-lodge override and
+        to 0 without one (#1982), so the short line covered both an override
+        lodge that is fine and a lodge nobody can book. This names the fact the
+        snapshot holds and the setting that decides the rest — the override is
+        not in the snapshot, and claiming more would duplicate the verdict
+        `buildClubConfigCheck` already owns for the default lodge.
+      */
+      if (lodge.activeBedCount === 0) {
+        return `${lodge.name}: open for booking, but no beds are set up (${inventory})${flag} — members can only book it if this lodge has a capacity override set. Add its rooms and beds, or check the override is what you meant.`;
+      }
       return `${lodge.name}: open for booking (${inventory})${flag}.`;
     }
     /*

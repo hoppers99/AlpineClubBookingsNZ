@@ -284,12 +284,15 @@ above for how to choose.
    where that work is actually done.
 
    **Some steps also carry the real editor, right there beneath the check.**
-   **Club Configuration**, **Club Time Zone**, **Feature Flags** and **Address
-   Autocomplete** have one today. The form you
+   **Club Configuration**, **Club Time Zone**, **Feature Flags**, **Address
+   Autocomplete**, **Age And Membership Rules**, **Booking Policies**,
+   **Lodges** and **First Admin** have one today. The form you
    get is the same one that step's own settings page shows, saving to the same
    place, so nothing is stored twice and nothing behaves differently for having
-   been reached from here. Editing is still staged: you change the fields, then
-   press the section's own Save, and nothing is written as you go. The link to
+   been reached from here. Editing is mostly staged: you change the fields, then
+   press the section's own Save, and nothing is written as you go — the one
+   exception is the Lodges list's **Activate**/**Deactivate**, which is a single
+   deliberate action rather than a field, and writes when you press it. The link to
    the full settings page stays, because that page usually holds more than this
    one section — Club Identity sits beside the lodge's public details and the
    club contact. The step's check re-reads itself the moment a save succeeds, so
@@ -304,7 +307,29 @@ above for how to choose.
    cannot use, its own banner says so above its fields; the progress buttons
    sit in the frame above the editor and are unaffected. **Club Time Zone** is stricter than
    most: it is a full-administrator setting, and anybody else is told so in
-   place of the form.
+   place of the form. **First Admin** is stricter for the same reason —
+   handing somebody administrator access is a full administrator's decision, so
+   a membership officer is told so instead of being offered a form the save
+   would refuse.
+
+   **First Admin is the one that CREATES rather than edits, and it is worth
+   knowing what it does and does not do.** Every other editor here changes a
+   setting you can see. This one makes a new administrator account: an email
+   address, a first and last name, and whether to send that person a setup
+   invite. Leave the invite ticked unless you have a reason not to — the new
+   account is created with a password nobody knows, so without an invite they
+   cannot sign in until somebody sends one. If the email cannot be sent (mail is
+   often not configured yet at this point in setup) you are told so, and the
+   account is still there: the step counts it either way.
+
+   **It does not retire the account the installer created.** That account is
+   what you are almost certainly signed in as, and turning it off from inside
+   the wizard would sign you out of the wizard. Retiring it is a separate piece
+   of work, done deliberately from **Admin → Members** once somebody else can
+   get in. The step is satisfied by *any* active administrator, so it reads
+   complete before you create anybody — creating a real person's account is
+   about not running the club from a shared installer login, not about clearing
+   a red badge.
 
    **The module toggles are the one editor that changes the journey itself.**
    **Feature Flags** and **Address Autocomplete** share ONE editor — the module
@@ -340,17 +365,41 @@ above for how to choose.
    the public site visible; that only happens from **Ready to open** below, or
    from Site Style's own Finish-setup control.
 
-   **Lodges** is the other step of that shape, and the one that reports on more
-   than one thing at once. It does not embed a lodge editor: it lists every
-   lodge the club has with its own state — open for booking, or still to be
-   activated — with its active room and bed counts, and a link straight into
-   that lodge's own guided setup. Its check passes when every lodge is open
-   for booking, and warns while any one of them is still closed. Room and bed
-   counts are shown but never decide the verdict: a lodge can legitimately run
-   on a capacity override with no beds recorded. **A lodge's own completeness
-   is reported separately from the club's** — however many lodges you have,
-   this is one step of the journey, so adding a second lodge does not make the
-   percentage go backwards.
+   **Lodges** is the step that reports on more than one thing at once, and it
+   carries an editor of a slightly different shape. The list from **Admin →
+   Lodges** is right there: every lodge the club has with its own state — open
+   for booking, or still to be activated — and beside each one an **Edit** to
+   rename it or change its address, door code and travel note, an
+   **Activate**/**Deactivate**, and a **Configure** into that lodge's own
+   guided setup. **Add lodge** at the top creates another one.
+
+   **A fresh install is seeded with one lodge named after the club** —
+   "*your club's name* Lodge" — because the installer had nothing better to
+   call it. If that is not what the building is actually called, press **Edit**
+   beside it and give it its real name; nothing else in the product will do
+   that for you.
+
+   **What this step does not embed is the per-lodge guided setup itself**, and
+   that is deliberate rather than unfinished. Rooms and beds, lockers, seasons
+   and chores are a flow of their own, several screens long, and it is the
+   better place to do that work — so this step sends you there by link, from
+   the **Configure** button on each row or from the per-lodge links in the
+   check above.
+
+   Deactivating a lodge that still has future bookings, waitlist entries,
+   hut-leader assignments or bound kiosk accounts asks you to confirm first,
+   and tells you what it found. Confirming stops new bookings; it does not
+   delete anything that already exists.
+
+   The step's check passes when every lodge is open for booking, and warns
+   while any one of them is still closed. Room and bed counts are shown but
+   never decide the verdict: a lodge can legitimately run on a capacity
+   override with no beds recorded. A lodge that is **open with no beds** says
+   so in its own words rather than reading as a contradiction — whether members
+   can book it then depends on that override, which is the one thing this check
+   cannot see. **A lodge's own completeness is reported separately from the
+   club's** — however many lodges you have, this is one step of the journey, so
+   adding a second lodge does not make the percentage go backwards.
 4. Stripe, Email, Sentry and Operational Xero each add a **Test** button here —
    the same provider test the checklist offers, calling the same check. The
    result panel shows the outcome, but the step's verdict, the rail and the

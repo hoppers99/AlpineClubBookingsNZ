@@ -11,6 +11,13 @@ site. From here you add a lodge, edit its identity, deactivate it, or open its
 plus per-lodge display settings as a section when the `lobbyDisplay` module is on).
 Find it at **Admin → Setup & Configuration → Lodges** (`/admin/lodges`).
 
+**The same list also appears inside the setup wizard**, on its **Lodges** step
+([Setting up the site](setup.md)). It is one editor in two places rather than
+two editors: the same list, the same **Edit**, **Add lodge** and
+**Activate**/**Deactivate**, writing through the same routes and governed by the
+same permission. Whichever you reach it from, a lodge's own configuration hub
+and its guided setup are opened by link, as below.
+
 Lodges are a **lodge** permission area: lodge view to read, lodge **edit** to add,
 edit, or deactivate. Member-facing screens only change once a **second active
 lodge** exists — a single-lodge club sees no lodge pickers.

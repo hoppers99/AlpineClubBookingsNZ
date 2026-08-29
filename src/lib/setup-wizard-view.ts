@@ -273,11 +273,29 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
  *   something below now — the module toggles themselves — and it changes
  *   nothing here, because the class is decided by where the evidence came
  *   from and that is unchanged.
- * - **`seed-admin` is `installed-default`.** Its check is satisfied by a row
- *   the installer's own seed created in THIS CLUB'S database
+ * - **`seed-admin` WAS `installed-default` and is now `read-from-deployment`
+ *   (C20, #251, UAT R2-6).** The old entry read: "satisfied by a row the
+ *   installer's own seed created in THIS CLUB'S database
  *   (`SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD`), editable on the page it links
- *   to (`/admin/members`) — class A's own written rule, applied literally
- *   rather than by a heuristic about what "installed" tends to look like.
+ *   to — class A's own written rule, applied literally". Its own parenthetical
+ *   is what falsifies it. Class A is a row the seed filled in with a SHIPPED
+ *   value; that admin's address and password are neither shipped nor invented
+ *   by the installer — they are two environment variables of this deployment,
+ *   supplied by whoever installed the site, which is class B's definition word
+ *   for word. `club-config` is the same shape and was classified the same way
+ *   for the same reason: a persisted row is still class B when the value in it
+ *   came from the deployment rather than from a shipped default.
+ *
+ *   R2-6 found it from the other end — the `installed-default` banner promises
+ *   "Check it below, change it if it is wrong", and this step had nothing
+ *   below at all. C20 puts a pane there, and that does NOT rescue the old
+ *   class: the pane CREATES a second administrator, so an operator told to
+ *   "change it if it is wrong" still cannot see or change the seeded account
+ *   the sentence is about (retiring it is deferred to its own decision). The
+ *   `read-from-deployment` sentence asks them to check the facts are right for
+ *   the club and then confirm, which is exactly what the pane supports. The
+ *   class did not change because a pane arrived — it was misapplied from the
+ *   start, and the pane is only what made the misapplication visible.
  */
 export type SetupStepDefaultedEvidence =
   | "installed-default"
@@ -292,7 +310,7 @@ export const SETUP_STEP_DEFAULTED_EVIDENCE: Record<
   "environment-role": "read-from-deployment",
   "runtime-env": "read-from-deployment",
   "auth-secret-strength": "read-from-deployment",
-  "seed-admin": "installed-default",
+  "seed-admin": "read-from-deployment",
   "feature-flags": "read-from-deployment",
   lodges: "installed-default",
   "booking-policies": "installed-default",
