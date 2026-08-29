@@ -3,16 +3,20 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * INV-CONFIG-006 is COMPLETE, not merely true today (epic #213, C16/#247).
+ * INV-CONFIG-006 is COMPLETE, not merely true today (epic #213, C16/#247;
+ * widened from the environment role alone to all three registry launch-gating
+ * facts by C15's fix round on the same issue).
  *
- * The invariant's load-bearing claim is not "the gate refuses UNKNOWN" — that is
- * `site-visibility-gate.test.ts`, four lines, settled. It is that **every
- * request-path writer of `ClubTheme.completedAt` asks the gate**. That claim is
- * about a set of call sites, so nothing in the type system can hold it: a third
- * route calling `markClubThemeSetupComplete` compiles perfectly, passes every
- * existing test, and publishes the club's public site from an installation
- * nothing has declared. That is the exact hazard #247 exists for, arriving
- * through a door the fix did not know about.
+ * The invariant's load-bearing claim is not "the gate refuses an unready
+ * deployment" — that polarity is `site-visibility-gate.test.ts`'s job,
+ * settled per fact. It is that **every request-path writer of
+ * `ClubTheme.completedAt` asks the gate**. That claim is about a set of call
+ * sites, so nothing in the type system can hold it: a third route calling
+ * `markClubThemeSetupComplete` compiles perfectly, passes every existing test,
+ * and publishes the club's public site from an installation nothing has
+ * declared (or one whose runtime environment is broken, or whose auth secret
+ * is weak). That is the exact hazard #247 exists for, arriving through a door
+ * the fix did not know about.
  *
  * So this is a census, in the shape
  * `environment-role-inference-census.test.ts` and `audit-writer-census.test.ts`
@@ -22,7 +26,7 @@ import { describe, expect, it } from "vitest";
  * ## What it checks, exactly
  *
  * A file that CALLS `saveClubTheme(` or `markClubThemeSetupComplete(` must also
- * call `refuseSiteVisibilityWhileEnvironmentUnknown(`. It does not check the
+ * call `refuseSiteVisibilityWhileLaunchBlocked(`. It does not check the
  * order of the two, nor that the gate guards the right branch — a text census
  * cannot, and `site-style-api.test.ts` and the complete-setup route's own tests
  * pin both properties at the two known sites. What it can do, and what nothing
@@ -53,7 +57,7 @@ const SRC = path.resolve(process.cwd(), "src");
 const EXTENSIONS = new Set([".ts", ".tsx"]);
 
 /** The gate every request-path completion writer has to ask. */
-const GATE = "refuseSiteVisibilityWhileEnvironmentUnknown";
+const GATE = "refuseSiteVisibilityWhileLaunchBlocked";
 
 /**
  * The two functions that can set `ClubTheme.completedAt` from application code.

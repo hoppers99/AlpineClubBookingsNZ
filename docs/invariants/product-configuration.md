@@ -460,9 +460,11 @@ home for that explanation and is not repeated here.
 
 ## INV-CONFIG-006
 
-- **Making the club's public site visible consumes `INV-CONFIG-003`'s canonical
-  role, and is refused while that role is UNKNOWN.** The one place that answers
-  is `refuseSiteVisibilityWhileEnvironmentUnknown()` in
+- **Making the club's public site visible consumes THREE registry facts —
+  `INV-CONFIG-003`'s canonical role, the runtime environment contract, and the
+  auth secret's strength — and is refused while any one of them is not
+  `"complete"`.** The one place that answers is
+  `refuseSiteVisibilityWhileLaunchBlocked()` in
   [`site-visibility-gate.ts`](../../src/lib/site-visibility-gate.ts), and BOTH
   **request-path** writers of `ClubTheme.completedAt` call it before their first
   write: the wizard launch panel's
@@ -472,7 +474,42 @@ home for that explanation and is not repeated here.
   be a one-line bypass, because the rule is about the transition rather than
   about a route. `site-visibility-gate-census.test.ts` scans `src/` and fails a
   third caller of either completion writer that does not ask the gate, so
-  "both" stays true rather than merely having been true.
+  "both" stays true rather than merely having been true. Until #246 this gate
+  asked only about the role; D17 decided all three of the registry's
+  `launchGate: "blocks-until-complete"` facts — `environment-role`,
+  `runtime-env`, `auth-secret-strength` — hold the wizard's own publish button
+  shut (`setup-wizard-launch-panel.tsx`'s `launchBlockedBy`), and a
+  hand-rolled call was still able to publish past the other two, which #246
+  closes.
+- **The gate reuses the SAME check functions the wizard computes
+  `launchBlockedBy` from — `buildEnvironmentRoleCheck`, `buildRuntimeEnvCheck`,
+  `buildAuthSecretStrengthCheck`, all exported from
+  [`setup-readiness.ts`](../../src/lib/setup-readiness.ts) — rather than a
+  second hand-written derivation, so the two can never disagree about which
+  facts block.** It calls them over narrow, targeted inputs
+  (`resolveEnvironmentRole()`, `readWithheldApplicationEmail()`, and
+  `process.env`) rather than the wizard's full ~20-query
+  `SetupDatabaseSnapshot`, because those are the only inputs the three checks
+  actually read. The 409 body names the one blocking fact and its remedy,
+  reused verbatim from `SETUP_ENVIRONMENT_REMEDY` /
+  `SETUP_ENVIRONMENT_REMEDY_BY_STATUS` (`setup-wizard-environment-view.ts`) via
+  its exported `resolveEnvironmentRemedy`, so the wizard's Server-environment
+  panel and this refusal say the same thing about the same fault.
+  `environment-role` keeps its own long-standing message
+  (`SITE_VISIBILITY_UNKNOWN_ROLE_ERROR`) for its UNKNOWN sub-case, and its
+  status-aware remedy for the declared-production-while-capturing-mail
+  sub-case (#3035) — never the UNKNOWN message, which would send that operator
+  to re-check a variable that is already correct.
+- **Ordering is deterministic and single-cause, not aggregated.**
+  `environment-role` is asked first (nothing about a deployment's runtime
+  contract is worth reporting to an operator who does not yet know whether
+  this installation is the live site or a copy), then `runtime-env`, then
+  `auth-secret-strength`; the first non-complete fact decides the whole
+  response and the rest are never even computed. This gate is a SAFETY NET for
+  a caller that skipped the wizard's own launch panel, which already lists
+  every blocking fact at once — naming one true blocker keeps the 409 body
+  short, and a caller that fixes it and retries meets the next one in the same
+  order.
 - **Two DIRECT-DATABASE writers are deliberately out of scope, and they are
   named so the "both" above is not read as "all".** `prisma/seed.ts` under
   `SEED_THEME_COMPLETE=1` stamps the default palette complete so a seeded stack
@@ -503,16 +540,21 @@ home for that explanation and is not repeated here.
   all, so an undeclared installation can still store its colours while it sorts
   its declaration out.
 - **The refusal is a 409 and it is operator-readable.** The caller holds the
-  privilege and the same request will succeed once the installation is declared,
-  so it is a conflict with the state of the installation rather than a permission
-  failure. The message names a repair for **each of UNKNOWN's three causes** —
-  set `APP_ENVIRONMENT_ROLE`, switch the safer override on for a copy, and, for
-  the override the database would not yield, apply the pending migrations or
-  restore database access — because the third is reachable on an installation
-  that is otherwise serving and neither of the other two repairs it. It names
-  the invariant it enforces, and carries no value, connection string or provider
-  identifier.
-- Decided on #247 (Wizard C16) under fork epic #213, consuming #3034's resolver.
-  That issue holds the narrative; this entry holds only the rule. Operator
-  guides: [`environment-role.md`](../guides/environment-role.md) and
+  privilege and the same request will succeed once the blocking fact is fixed,
+  so it is a conflict with the state of the installation rather than a
+  permission failure. For `environment-role` the message names a repair for
+  **each of UNKNOWN's three causes** — set `APP_ENVIRONMENT_ROLE`, switch the
+  safer override on for a copy, and, for the override the database would not
+  yield, apply the pending migrations or restore database access — because the
+  third is reachable on an installation that is otherwise serving and neither
+  of the other two repairs it. For `runtime-env` and `auth-secret-strength` the
+  message is the remedy register's own `send` and `why` text for that fact. In
+  every case the message names the invariant it enforces, and carries no value,
+  connection string or provider identifier.
+- Decided on #247 (Wizard C16) under fork epic #213, consuming #3034's
+  resolver, then widened from the role alone to all three registry
+  launch-gating facts on #246 (Wizard C15's fix round on the same issue, D17
+  review finding F4). Those issues hold the narrative; this entry holds only
+  the rule. Operator guides:
+  [`environment-role.md`](../guides/environment-role.md) and
   [`setup.md`](../guides/setup.md).

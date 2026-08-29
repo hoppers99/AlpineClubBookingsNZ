@@ -300,7 +300,12 @@ export function computeMembershipTypeRateGaps(input: {
   return gaps;
 }
 
-interface SetupStepCheck {
+/**
+ * Exported for `site-visibility-gate.ts` (epic #213, C15 fix round on #247),
+ * which types the three launch-gating checks it calls directly against this
+ * rather than an inferred/duplicated shape.
+ */
+export interface SetupStepCheck {
   id: SetupStepId;
   title: string;
   description: string;
@@ -349,7 +354,13 @@ export interface SetupReadiness {
   generatedAt: string;
 }
 
-type Env = Record<string, string | undefined>;
+/**
+ * Exported for `site-visibility-gate.ts` (epic #213, C15 fix round on #247):
+ * the SAME shape `buildSetupReadiness` reads `process.env` as, so the launch
+ * gate's targeted derivation (below) takes the identical input type rather
+ * than inventing its own.
+ */
+export type Env = Record<string, string | undefined>;
 
 interface ClubConfigReadResult {
   sourcePath: string;
@@ -1171,9 +1182,17 @@ const ENVIRONMENT_ROLE_VERSUS_RUNTIME_ROLE_DETAIL =
  *
  * Deliberately clock-free: nothing here formats a date, so the answer is the
  * same at every instant.
+ *
+ * Takes a `Pick` rather than the whole `SetupDatabaseSnapshot` (widened for
+ * `site-visibility-gate.ts`, epic #213, C15 fix round on #247): the body below
+ * reads only `environmentRole` and `withheldEmail`, and the launch gate needs
+ * this ONE check without paying for the other ~19 queries
+ * `getSetupDatabaseSnapshot` batches for the rest of the wizard. Every existing
+ * caller already passes a full snapshot, which satisfies the narrower type
+ * structurally, so this is a widening rather than a behaviour change.
  */
-function buildEnvironmentRoleCheck(
-  db: SetupDatabaseSnapshot | undefined,
+export function buildEnvironmentRoleCheck(
+  db: Pick<SetupDatabaseSnapshot, "environmentRole" | "withheldEmail"> | undefined,
   progress: SetupProgressState,
 ): SetupStepCheck {
   const base = {
@@ -1318,7 +1337,13 @@ function buildEnvironmentRoleCheck(
   );
 }
 
-function buildRuntimeEnvCheck(
+/**
+ * Exported alongside {@link buildEnvironmentRoleCheck} for the same reason
+ * (`site-visibility-gate.ts`, epic #213, C15 fix round on #247): a pure
+ * env-var check that needs no database snapshot at all, so the launch gate
+ * can call it directly rather than re-deriving its polarity.
+ */
+export function buildRuntimeEnvCheck(
   env: Env,
   progress: SetupProgressState,
 ): SetupStepCheck {
@@ -1370,8 +1395,12 @@ function buildRuntimeEnvCheck(
  * here. When AUTH_SECRET/NEXTAUTH_SECRET is entirely absent the runtime-env
  * check already blocks, so this stays "complete" in that case to avoid a
  * duplicate finding.
+ *
+ * Exported for the same reason as {@link buildRuntimeEnvCheck} — the launch
+ * gate's targeted derivation (`site-visibility-gate.ts`, C15 fix round on
+ * #247) calls this directly rather than re-deriving the weakness rule.
  */
-function buildAuthSecretStrengthCheck(
+export function buildAuthSecretStrengthCheck(
   env: Env,
   progress: SetupProgressState,
 ): SetupStepCheck {

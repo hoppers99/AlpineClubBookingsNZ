@@ -305,8 +305,13 @@ export function buildSetupWizardEnvironmentRow(
  * reader to stop reading it. Otherwise the cause-aware override wins over the
  * base entry, which is what {@link SETUP_ENVIRONMENT_REMEDY_BY_STATUS} exists
  * for.
+ *
+ * Exported for `site-visibility-gate.ts` (epic #213, C15 fix round on #247):
+ * the launch gate's 409 body reuses this SAME lookup — status-aware override
+ * first, base entry second — rather than re-deriving which remedy wins, so the
+ * gate's operator-facing text can never drift from the panel's.
  */
-function resolveEnvironmentRemedy(
+export function resolveEnvironmentRemedy(
   id: SetupStepId,
   status: SetupReadinessCheck["status"],
 ): SetupEnvironmentRemedy | null {

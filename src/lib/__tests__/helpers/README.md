@@ -124,6 +124,34 @@ also [`../../../../docs/TESTING.md`](../../../../docs/TESTING.md)).
 Import it directly rather than through the barrel, like `focus.ts` — it pulls in
 `@testing-library/react`.
 
+## A healthy runtime environment for the launch gate
+
+```ts
+import { stubHealthyLaunchGateEnv } from "@/lib/__tests__/helpers/setup-launch-gate";
+
+beforeEach(() => {
+  mocks.environmentSafetyFindUnique.mockResolvedValue(null);
+  declareEnvironmentRole("production");
+  stubHealthyLaunchGateEnv();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+```
+
+For any suite exercising a SUCCESSFUL publish through `saveClubTheme`'s
+`completeSetup: true` branch or `POST /api/admin/site-style/complete-setup`.
+`refuseSiteVisibilityWhileLaunchBlocked` (`@/lib/site-visibility-gate`) checks
+`runtime-env` and `auth-secret-strength` alongside the environment role, and
+those two read `process.env` directly — none of `DATABASE_URL`,
+`NEXTAUTH_URL`, `CRON_SECRET`, `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD` or a
+strong `AUTH_SECRET` are set by default in the unit suite, so an otherwise
+correct "publish succeeds" test refuses 409 without this. Call it alongside
+`declareEnvironmentRole`, after any `vi.unstubAllEnvs()` the suite already
+does. Import it directly rather than through the barrel, like
+`environment-role.ts`.
+
 ## Club time zone premise
 
 ```ts
