@@ -368,12 +368,25 @@ const FIGURES = {
    * banner that file already renders — and gated, unlike the readiness cards'
    * plain `Button`, because `POST /api/admin/setup/provider-test` infers
    * `support: edit`, which is exactly what `canEdit` already answers there.
+   *
+   * 346 -> 347 (#251, the wizard's First Admin pane): ONE control, the Create
+   * button on `setup-wizard-first-admin-pane.tsx`. It is the only pane in the
+   * wizard that is BUILT rather than embedded — every other one mounts a
+   * settings section that already carries its own furniture — so it is also the
+   * only one that adds a call site at all. A STATIC opt-out under the banner
+   * that same file renders, so `optOuts` and `staticOptOuts` move by the same
+   * one and the vouched split is untouched; `bannerComponents` 92 -> 93. The
+   * file's OTHER early return — the "full administrators only" refusal — mounts
+   * no banner on purpose and sits above the branch that does, which is the shape
+   * the branch-coverage test below allows for a terminal unavailable state.
+   * Re-measured with `npx vitest run view-only-banner-contract`, which reports
+   * 347 / 294 / 260.
    */
-  callSites: 346,
+  callSites: 347,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 293,
+  optOuts: 294,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 259,
+  staticOptOuts: 260,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *
@@ -408,8 +421,12 @@ const FIGURES = {
    * 91 -> 92 (#223): the setup-surfaces section heads its own with one, rendered
    * above its loading branch so a failed first load never mounts the section
    * together with an already-populated alert.
+   *
+   * 92 -> 93 (#251): the wizard's First Admin pane heads its own with one. It
+   * states `membership`, which is both the step's permission area and the
+   * `POST /api/admin/members` guard its single control writes through.
    */
-  bannerComponents: 92,
+  bannerComponents: 93,
   /**
    * Admin files that render an `AdminViewOnlyNotice` and NO
    * `ViewOnlyActionButton` — the first of the three cases in which the older

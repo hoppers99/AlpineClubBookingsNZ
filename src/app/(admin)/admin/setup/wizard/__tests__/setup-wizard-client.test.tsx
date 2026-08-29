@@ -403,7 +403,7 @@ describe("SetupWizardClient", () => {
     });
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
-    // `runtime-env`/`seed-admin` carry no C12 pane, so the only fetches in
+    // `runtime-env` carries no C12 pane (`seed-admin` gained one in C20, but it issues no fetch on mount), so the only fetches in
     // this test are the wizard reads under test — nothing else to route.
     render(<SetupWizardClient permissionMatrix={admin} />);
 
