@@ -1848,26 +1848,14 @@ function buildLodgesCheck(
     const flag = lodge.isDefault ? ", the club default" : "";
     if (lodge.active) {
       /*
-        UAT R2-7: "open for booking (0 rooms, 0 beds)" read as self-contradictory
-        to the operator who met it, and they were right to distrust it. With no
-        active beds `getLodgeCapacityStatus` resolves this lodge's capacity to
-        its per-lodge `LodgeSettings.capacity` override, and to 0 without one
-        (#1982, "never silently overbook") — so the line as written covered a
-        correctly-configured override lodge and a lodge nobody can book with the
-        same seven words.
-
-        It says which it CANNOT tell, rather than picking one. The override is
-        not in this snapshot (`lodges` carries the counts and the flags, not the
-        capacity), and putting it there to make a stronger claim would duplicate
-        the verdict `buildClubConfigCheck` already owns for the default lodge
-        (#1982) — the second derivation this module's docblock exists to refuse.
-        So the honest sentence names the fact it holds and the setting that
-        decides the rest.
-
-        Still no change to the STATUS: see "Room and bed counts are REPORTED,
-        never judged" above, which is about the verdict and stays true. A
-        bed-less lodge can be correctly configured, so this is a sentence an
-        operator reads, not a check that fails.
+        UAT R2-7, and the "REPORTED, never judged" section of this function's
+        docblock is where the reasoning lives. In short: with no active beds
+        `getLodgeCapacityStatus` resolves capacity to the per-lodge override and
+        to 0 without one (#1982), so the short line covered both an override
+        lodge that is fine and a lodge nobody can book. This names the fact the
+        snapshot holds and the setting that decides the rest — the override is
+        not in the snapshot, and claiming more would duplicate the verdict
+        `buildClubConfigCheck` already owns for the default lodge.
       */
       if (lodge.activeBedCount === 0) {
         return `${lodge.name}: open for booking, but no beds are set up (${inventory})${flag} — members can only book it if this lodge has a capacity override set. Add its rooms and beds, or check the override is what you meant.`;

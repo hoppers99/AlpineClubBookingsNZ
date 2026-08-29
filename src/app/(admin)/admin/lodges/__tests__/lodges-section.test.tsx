@@ -161,7 +161,10 @@ describe("deactivating a lodge that still has dependencies", () => {
       return { ok: true, status: 200, body: { lodges: [] } };
     });
     const emits = countReadinessEmits();
-    const confirm = vi.fn(() => true);
+    // Typed with the argument `window.confirm` really takes, so the assertion
+    // on the message below reads a parameter the mock's own type knows about
+    // rather than indexing an empty tuple.
+    const confirm = vi.fn((_message?: string) => true);
     vi.stubGlobal("confirm", confirm);
 
     render(<LodgesSection />);
