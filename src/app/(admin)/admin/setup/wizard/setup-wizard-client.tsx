@@ -14,11 +14,13 @@ import {
   type SetupWizardPayload,
 } from "@/lib/setup-wizard-view";
 import {
+  SETUP_WIZARD_ENVIRONMENT_ID,
   SETUP_WIZARD_LAUNCH_ID,
   SetupWizardRail,
   type SetupWizardRailSelection,
 } from "./setup-wizard-rail";
 import { SetupWizardLaunchPanel } from "./setup-wizard-launch-panel";
+import { SetupWizardEnvironmentPanel } from "./setup-wizard-environment-panel";
 import { SetupWizardStepPane } from "./setup-wizard-panes";
 import {
   SetupWizardStepFrame,
@@ -278,6 +280,14 @@ export function SetupWizardClient({
   // for the rail.
   const activeStepId = useMemo(() => {
     if (!view) return null;
+    // The environment panel is ALWAYS reachable (D17, #246) — nothing gates
+    // reading a fact — so unlike the launch sentinel this needs no unlock
+    // check. It survives a refetch for the same reason a step selection does.
+    if (selectedId === SETUP_WIZARD_ENVIRONMENT_ID) {
+      return view.environment.length > 0
+        ? SETUP_WIZARD_ENVIRONMENT_ID
+        : view.currentStepId;
+    }
     if (selectedId === SETUP_WIZARD_LAUNCH_ID) {
       return view.allResolved || launchPinned
         ? SETUP_WIZARD_LAUNCH_ID
@@ -315,11 +325,15 @@ export function SetupWizardClient({
   useEffect(() => {
     if (!view || selectedId === null) return;
     const resolved =
-      selectedId === SETUP_WIZARD_LAUNCH_ID
-        ? view.allResolved || launchPinned
-          ? SETUP_WIZARD_LAUNCH_ID
+      selectedId === SETUP_WIZARD_ENVIRONMENT_ID
+        ? view.environment.length > 0
+          ? SETUP_WIZARD_ENVIRONMENT_ID
           : view.currentStepId
-        : resolveInitialStepId(view, selectedId);
+        : selectedId === SETUP_WIZARD_LAUNCH_ID
+          ? view.allResolved || launchPinned
+            ? SETUP_WIZARD_LAUNCH_ID
+            : view.currentStepId
+          : resolveInitialStepId(view, selectedId);
     if (resolved === selectedId) return;
     setSelectedId(null);
     reportMoved();
@@ -364,6 +378,11 @@ export function SetupWizardClient({
     // point where the guard above has already required `selectedId === null`.
     if (previous === null) return;
     if (previous === activeStepId) return;
+    // Nor an environment-panel arm, and for a stronger reason than the launch
+    // one above: that panel is ALWAYS reachable (D17, #246), so nothing can
+    // move an operator off it involuntarily and there is no such move to
+    // apologise for.
+    if (previous === SETUP_WIZARD_ENVIRONMENT_ID) return;
     if (view.steps.some((step) => step.id === previous)) return;
     reportMoved();
   }, [view, selectedId, activeStepId, reportMoved]);
@@ -379,7 +398,10 @@ export function SetupWizardClient({
   }, []);
 
   const activeStep =
-    view && activeStepId && activeStepId !== SETUP_WIZARD_LAUNCH_ID
+    view &&
+    activeStepId &&
+    activeStepId !== SETUP_WIZARD_LAUNCH_ID &&
+    activeStepId !== SETUP_WIZARD_ENVIRONMENT_ID
       ? (view.steps.find((step) => step.id === activeStepId) ?? null)
       : null;
 
@@ -542,10 +564,25 @@ export function SetupWizardClient({
             currentStepId={view.currentStepId}
             selectedId={activeStepId}
             launchUnlocked={view.allResolved}
+            environmentCount={view.environment.length}
+            environmentNeedsAttention={view.environment.some(
+              (row) => row.status !== "complete",
+            )}
             onSelect={select}
           />
 
-          {activeStepId === SETUP_WIZARD_LAUNCH_ID ? (
+          {activeStepId === SETUP_WIZARD_ENVIRONMENT_ID ? (
+            <SetupWizardEnvironmentPanel
+              rows={view.environment}
+              // The same gate the step frame's provider test uses: a test
+              // writes an audit row, so it is `support: edit`, which is the one
+              // answer for the whole wizard (see `canChangeSetupProgress`).
+              canEdit={canChangeSetupProgress(permissionMatrix)}
+              providerRunning={providerRunning}
+              providerResults={providerResults}
+              onProviderTest={(provider) => void runProviderTest(provider)}
+            />
+          ) : activeStepId === SETUP_WIZARD_LAUNCH_ID ? (
             <SetupWizardLaunchPanel
               view={view}
               isSiteVisible={payload?.isSiteVisible ?? false}

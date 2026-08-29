@@ -282,6 +282,100 @@ export const SETUP_STEP_DEFAULTED_EVIDENCE: Record<
 };
 
 /**
+ * WHAT TO DO ABOUT AN ENVIRONMENT FACT THAT IS NOT GREEN (epic #213, **D17**,
+ * C15 #246) — the operator-first remedy register UAT round 2 finding R2-3 asked
+ * for.
+ *
+ * R2-3's complaint was that the wizard told an administrator what was wrong with
+ * a deployment and then offered them no way to act on it, as though they had
+ * simply not got round to it. The fix is not softer wording: it is to answer the
+ * question the reader actually has, in this order.
+ *
+ * - `who` — **who does this**, said first and said plainly. For every one of
+ *   these it is not the person reading the screen, and saying so immediately is
+ *   what turns "another thing I have failed to do" into "a message I need to
+ *   send". It is the single most important line on the row.
+ * - `send` — **the one line to send them.** Written to be copied into an email
+ *   or a chat message and acted on by somebody who is not looking at this
+ *   screen, so it names the variable, the file and the restart, and it assumes
+ *   no knowledge of the wizard.
+ * - `why` — **the consequence, collapsed.** Rendered behind a disclosure,
+ *   because an operator forwarding a line to their deployer does not need it,
+ *   and an operator deciding whether it is urgent does.
+ */
+export interface SetupEnvironmentRemedy {
+  readonly who: string;
+  readonly send: string;
+  readonly why: string;
+}
+
+/**
+ * The register itself, keyed by environment-fact id.
+ *
+ * A `Partial` Record rather than a total one, and this is the one place in this
+ * file where that is the RIGHT shape rather than a shortcut. The other three
+ * tables here (`SETUP_STEP_PERMISSION_AREA`, `SETUP_STEP_DEFAULTED_EVIDENCE`,
+ * and `SETUP_STEP_PANES` next door) are total over `SetupStepId` because every
+ * step needs an answer and a missing one is a decision nobody made. This table
+ * is keyed over the same id union but is only ever consulted for entries whose
+ * registry `kind` is `environment` — a remedy for `booking-policies` would be
+ * meaningless, and a total Record would demand fifteen of them. The registry's
+ * own `kind` field is what makes the partiality safe: it, not this table,
+ * decides which ids reach here, and `environmentRegisterCoversEveryFact` in
+ * `setup-wizard-view.test.ts` fails the build if an environment fact is ever
+ * declared without a row.
+ *
+ * ## Where these words come from
+ *
+ * Each `send` line is the operator-facing restatement of what the readiness
+ * check itself found, NOT a second source of truth about the deployment. The
+ * check's own `details` still render beside it and still carry the specifics
+ * (which variable, which fault) — `runtime-env`, for instance, already produces
+ * one "Fix …" line per fault. So these sentences say who and roughly what;
+ * the details say exactly what.
+ *
+ * `environment-role`'s remedy names THREE causes rather than one, and that is
+ * deliberate rather than hedging. `environment-role.ts`'s own precedence rule
+ * resolves BOTH "nothing declared it" and "declared, but the safer-override
+ * record could not be read" to the same UNKNOWN answer — an unreadable override
+ * fails closed even under a declared production. Telling the second operator to
+ * set a variable that is already set sends them looking in the wrong place; the
+ * launch panel's existing UNKNOWN block (`setup-wizard-launch-panel.tsx`) had
+ * to learn the same lesson in #224's fix round, and this row is written to
+ * agree with it. The third cause is the variable-name confusion the panel also
+ * warns about.
+ */
+export const SETUP_ENVIRONMENT_REMEDY: Partial<
+  Record<SetupStepId, SetupEnvironmentRemedy>
+> = {
+  "environment-role": {
+    who: "Whoever runs your server sets this — it cannot be switched on from this screen, because a copy of the live database must never be able to declare itself the live site.",
+    send: "Set APP_ENVIRONMENT_ROLE to production (the club's live site) or non-production (a copy) in this deployment's .env, then restart.",
+    why: "Until it is declared, email to members and writes to the club's Xero organisation do not run at all — guessing wrong would mean emailing real members from a test copy, so it fails closed instead. If the variable is already set, the safer override's own database record may be unreadable instead: repair with prisma migrate deploy or restored database access. Note APP_RUNTIME_ROLE is a different variable — on the staging stack it holds the literal word \"staging\" — and changing it does not declare the environment role.",
+  },
+  "runtime-env": {
+    who: "Whoever runs your server fixes this. Every one of these is a variable in the deployment's own configuration.",
+    send: "One or more required variables are missing or malformed in this deployment's .env — the exact list is below. Set them and restart.",
+    why: "These are the application's own contract with its deployment: the database connection, the site's own address, the cron secret the scheduled jobs authenticate with, and the seed administrator details. The site runs without some of them, which is why you can read this screen at all — but a club that opens with its cron secret unset has no scheduled jobs running, so nothing that happens overnight happens.",
+  },
+  "auth-secret-strength": {
+    who: "Whoever runs your server fixes this.",
+    send: "Generate a strong AUTH_SECRET for this deployment and restart. A good value: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
+    why: "Sign-in, two-factor authentication and the encryption of every stored credential all derive from this one secret. Until it is strong, this site refuses to store a Stripe or Xero credential at all — so the payment and accounting steps of this wizard cannot be completed.",
+  },
+  "email-ses": {
+    who: "Whoever runs your server sets this up.",
+    send: "This deployment has no working email transport — set EMAIL_FROM and either the SES or the SMTP relay settings, then restart.",
+    why: "Nothing that needs to reach a member by email will: booking confirmations, membership applications, password resets. The club can still be set up and opened without it, which is why this does not hold the site shut, but it should be fixed before real members use it.",
+  },
+  sentry: {
+    who: "Optional, and whoever runs your server sets it up if you want it.",
+    send: "If you want error reports from this site, set SENTRY_DSN, NEXT_PUBLIC_SENTRY_DSN, SENTRY_ORG and SENTRY_PROJECT in this deployment's .env, then restart.",
+    why: "Sentry collects the technical detail of an error when something goes wrong, so a fault can be diagnosed from the report rather than from a member's description of it. Nothing about running the club depends on it.",
+  },
+};
+
+/**
  * The three effective states `resolveEnvironmentRole()` can answer, aliased
  * from `environment-role.ts` rather than copied structurally.
  *
@@ -427,11 +521,82 @@ export interface SetupWizardStepDetail extends SetupWizardRailStep {
   readonly status: SetupReadinessCheck["status"];
 }
 
+/**
+ * One row of the Server-environment panel (epic #213, **D17**, C15 #246).
+ *
+ * The environment counterpart of {@link SetupWizardStepDetail}, and deliberately
+ * NOT that type with fields blanked out. A step detail carries a journey state,
+ * reachability, staleness, deferral and a defaulted flag — every one of which is
+ * meaningless here, because nobody walks to a fact and nobody confirms one. A
+ * row carrying them would invite a reader to ask what a "deferred" environment
+ * fact is.
+ *
+ * What it does carry is what a person needs in order to get the fact FIXED, in
+ * the shape R2-3 asked for: who does it, the one line to send them, then the
+ * reasoning. `remedy` is the first two; `details` is the check's own list, which
+ * is where the specifics already live.
+ */
+export interface SetupWizardEnvironmentRow {
+  readonly id: SetupStepId;
+  readonly title: string;
+  readonly description: string;
+  /** The readiness check's own verdict. `complete` is a green row. */
+  readonly status: SetupReadinessCheck["status"];
+  /** Whether this row is holding the publish button shut. */
+  readonly blocksLaunch: boolean;
+  /**
+   * The check's message — the green sentence, or what is wrong. Rendered
+   * whatever the status, so a healthy deployment reads as a statement of fact
+   * rather than as an absence of complaint.
+   */
+  readonly message: string;
+  /** The check's own detail list: the specific variables, the specific faults. */
+  readonly details: readonly string[];
+  /**
+   * The OPERATOR-FIRST remedy, and `null` on a green row.
+   *
+   * Named separately from `details` because it answers a different question.
+   * The check's details say what is wrong with the deployment; this says what
+   * the person reading the wizard should DO about it, and the honest answer is
+   * almost always "you cannot fix this from here — send this line to whoever
+   * runs your server". See {@link SETUP_ENVIRONMENT_REMEDY}.
+   */
+  readonly remedy: SetupEnvironmentRemedy | null;
+  readonly href?: string;
+  /**
+   * The fact's provider test, when its readiness check declares one.
+   *
+   * **This field is why D17 does not silently delete two controls.** `email-ses`
+   * and `sentry` both declare a `provider-test` action ("Test Email", "Test
+   * Sentry"), and until D17 those reached an operator through their wizard
+   * STEP. Moving the fact off the rail without carrying its action here would
+   * remove a live capability rather than relocate it — which is exactly the
+   * regression `setup-surface-registry-parity.test.ts`'s ACTION guard was
+   * written for in #223, and why that guard now spans both surfaces. It is also
+   * the most useful control on the panel: it is how an operator finds out
+   * whether the deployer's fix actually worked, without leaving the wizard.
+   */
+  readonly action?: SetupReadinessCheck["action"];
+  readonly permissionArea: AdminPermissionArea;
+}
+
 export interface SetupWizardView {
   /** Rail rows, grouped by readiness category. Empty groups are dropped. */
   readonly groups: readonly SetupWizardRailGroup[];
   /** Every applicable step in JOURNEY order — what resume and the frontier walk. */
   readonly steps: readonly SetupWizardStepDetail[];
+  /**
+   * The Server-environment panel's rows, in registry order (D17, C15 #246) —
+   * the facts the operator is TOLD, as against the steps they walk.
+   */
+  readonly environment: readonly SetupWizardEnvironmentRow[];
+  /**
+   * Rows holding the publish button shut, straight from the traversal's
+   * `launchBlockedBy` (never re-derived here — same rule as `percentComplete`).
+   * A subset of `environment`, carried resolved so the launch panel can name
+   * them without a second pass.
+   */
+  readonly launchBlockedBy: readonly SetupWizardEnvironmentRow[];
   /** D7's percentage, copied from the traversal and never recomputed. */
   readonly percentComplete: number;
   readonly currentStepId: SetupStepId | null;
@@ -512,6 +677,38 @@ export function buildSetupWizardView(
     };
   });
 
+  /*
+    THE PANEL'S ROWS (D17, C15 #246) — a second small pass over the SAME two
+    maps the steps above were built from, so a fact's title, message and details
+    are the readiness check's, exactly as a step's are. The traversal already
+    decided which entries these are and which of them hold publish shut; this
+    reads those decisions rather than making them again.
+  */
+  const environment = traversal.environmentFacts.map(
+    (fact): SetupWizardEnvironmentRow => {
+      const check = checksById.get(fact.id);
+      return {
+        id: fact.id,
+        title: check?.title ?? fact.id,
+        description: check?.description ?? "",
+        status: check?.status ?? "not_started",
+        blocksLaunch: fact.blocksLaunch,
+        message: check?.message ?? "",
+        details: check?.details ?? [],
+        // A green row needs no remedy — there is nothing to remedy, and
+        // printing "send this to your deployer" beside a working deployment is
+        // how a panel trains its reader to stop reading it.
+        remedy:
+          check?.status === "complete"
+            ? null
+            : (SETUP_ENVIRONMENT_REMEDY[fact.id] ?? null),
+        href: check?.href,
+        action: check?.action,
+        permissionArea: SETUP_STEP_PERMISSION_AREA[fact.id],
+      };
+    },
+  );
+
   const groups = readiness.categories
     .map((category) => ({
       id: category.id,
@@ -526,6 +723,16 @@ export function buildSetupWizardView(
   return {
     groups,
     steps,
+    environment,
+    // Resolved against the rows rather than re-derived: the traversal owns the
+    // rule, and a `find` that missed would be a silent unlock, so an id with no
+    // row is dropped only because the traversal cannot produce one — every id
+    // in `launchBlockedBy` came from `environmentFacts`, which `environment` is
+    // a total mapping of.
+    launchBlockedBy: traversal.launchBlockedBy.flatMap((id) => {
+      const row = environment.find((candidate) => candidate.id === id);
+      return row ? [row] : [];
+    }),
     percentComplete: traversal.percentComplete,
     currentStepId: traversal.currentStepId,
     navigationFrontierStepId: traversal.navigationFrontierStepId,
