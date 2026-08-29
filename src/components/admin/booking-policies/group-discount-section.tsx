@@ -14,6 +14,7 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
+import { emitSetupReadinessInputChanged } from "@/lib/setup-readiness-events"
 import { PolicyFeedback } from "./policy-feedback"
 
 // Reference implementation of the canonical settings-section pattern
@@ -113,6 +114,13 @@ export function GroupDiscountSection() {
         const data = await res.json()
         throw new Error(data.error || "Failed to save")
       }
+      // The write succeeded: `groupDiscountConfigured` is what the setup
+      // wizard's booking-policies step reads (C17, #248). This section is
+      // embedded in the wizard, where the operator never leaves the tab, so
+      // the shell's own focus refetch cannot fire — see
+      // `setup-readiness-events.ts` for why the announcement points this way
+      // round.
+      emitSetupReadinessInputChanged()
       return toDraft(await res.json())
     },
     successMessage: "Group discount settings saved",
