@@ -153,25 +153,23 @@ export type SetupStepKind = "operator" | "environment";
  * only way to see what the gate really covers (C15 #246 fix round, review
  * finding F1 — the docblock used to name three and quietly own four):
  *
- * 1. **PRODUCTION, mail going out** — `complete`. Publish allowed.
- * 2. **NON_PRODUCTION**, declared or administrator-forced — `complete`. An
- *    internal test site that is deliberately visible and deliberately not
- *    production is a normal, permanent state (D9).
- * 3. **UNKNOWN** — `blocked`. The condition D17 names, and the reason the gate
- *    exists: nothing has said which installation this is, so email and Xero
- *    writes fail closed and a publish would open a site in that state.
+ * 1. **PRODUCTION, mail going out** — `complete`.
+ * 2. **NON_PRODUCTION**, declared or administrator-forced — `complete`. A test
+ *    site that is deliberately visible and deliberately not production is a
+ *    normal, permanent state (D9).
+ * 3. **UNKNOWN** — `blocked`. The condition D17 names: nothing has said which
+ *    installation this is, email and Xero writes fail closed, and a publish
+ *    would open a site in that state.
  * 4. **PRODUCTION, but a local capture mailbox is also declared** (#3035) —
- *    `warning`, and therefore ALSO gated. The direction is right: a live club
- *    whose mail goes to a capture mailbox that forwards nothing is in a total
- *    mail outage, and opening the public site on top of that is the thing to
- *    prevent. What was wrong until this fix round was the COPY — the remedy
- *    told the operator to set `APP_ENVIRONMENT_ROLE`, which is already set
- *    correctly on this branch. `SETUP_ENVIRONMENT_REMEDY_BY_STATUS` in
- *    `setup-wizard-environment-view.ts` now answers it in its own words.
+ *    `warning`, and therefore ALSO gated. The direction is right (a live club
+ *    whose mail forwards nowhere should not open its public site); the COPY was
+ *    wrong until this fix round, because the remedy told that operator to set
+ *    `APP_ENVIRONMENT_ROLE`, which is already correct on this branch.
+ *    `SETUP_ENVIRONMENT_REMEDY_BY_STATUS` in `setup-wizard-environment-view.ts`
+ *    now answers it in its own words.
  * 5. **"Database state was not checked"** — `warning`, so gated too, but
  *    unreachable from the publish button: it needs `db` to be absent, which
- *    only `npm run setup:check` without database access produces and the
- *    wizard's own payload never can.
+ *    only `npm run setup:check` without database access produces.
  *
  * A gated check that grows a sixth branch widens the publish gate silently, so
  * `gatingStatusSets` in `setup-wizard-view.test.ts` pins each gated fact's
@@ -527,16 +525,14 @@ export function findSetupStepRegistryViolations(
   //
   // - An operator step that DEPENDS on an environment fact declares an ordering
   //   the wizard then QUIETLY IGNORES. This bullet used to say the dependent
-  //   went stale permanently; the code says otherwise, and the code is the
-  //   milder and more insidious of the two (C15 #246 fix round, review finding
-  //   F3). `computeStaleSetupStepIds` narrows its entries to `kind: "operator"`
-  //   before it walks prerequisites, so an environment prerequisite is `known`
-  //   but not `applicable` — which is the "excluded by a disabled module" arm,
-  //   and that arm returns false. The edge is therefore a silent no-op: the
-  //   author gets no staleness, no error and no clue, and the dependent behaves
-  //   exactly as if the prerequisite had never been declared. A rule that does
-  //   nothing is worse than one that does the wrong thing, because nothing
-  //   surfaces it — so it is refused at the registry instead.
+  //   went stale permanently; the code says otherwise, and the truth is the
+  //   more insidious of the two (C15 #246 fix round, review finding F3).
+  //   `computeStaleSetupStepIds` narrows to `kind: "operator"` before walking
+  //   prerequisites, so an environment prerequisite is `known` but not
+  //   `applicable` — the "excluded by a disabled module" arm, which returns
+  //   false. The edge is a silent no-op: no staleness, no error, no clue, and
+  //   the dependent behaves as if nothing had been declared. A rule that does
+  //   nothing surfaces nowhere, so it is refused here instead.
   // - An environment fact that DECLARES a prerequisite is asserting an ordering
   //   over something that has no position in the journey to be ordered against.
   //   The panel renders every fact at once.
