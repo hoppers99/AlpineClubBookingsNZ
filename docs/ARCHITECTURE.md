@@ -1547,6 +1547,14 @@ that mounts the real `ClubIdentityPanel`) — heads its own with another. C13
 `/admin/modules` now mounts as a shell, and it is registered against TWO step
 ids (`feature-flags` and `address-autocomplete`) — the first entry in the table
 where two steps share one component, which is what the render site's
+`key={stepId}` exists for. C19 (#250) added `LodgesWizardPane` the same way,
+wrapping the zero-prop `LodgesSection` that `/admin/lodges` now mounts as a
+shell — and that one is where the banner rule earns its keep twice over, because
+the section also VOUCHES for `OtherLodgesPanel`
+(`ancestorRendersViewOnlyBanner`). A vouch is verified against the file its
+render site sits in, so leaving the banner behind on the page would have mounted
+an unbannered panel in the wizard; banner and vouched child move together, or
+neither moves. That is
 `key={stepId}` exists for. C20 (#251) added `SetupWizardFirstAdminPane` for
 `seed-admin` — the one entry in the table that is BUILT rather than mounting an
 existing settings section, because the member editor is a per-record surface

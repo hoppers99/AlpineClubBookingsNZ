@@ -10,7 +10,13 @@ const EXPECTED_DIRECT_CONSUMERS = [
   "src/app/(admin)/admin/display/templates/page.tsx",
   "src/app/(admin)/admin/lodges/[id]/page.tsx",
   "src/app/(admin)/admin/lodges/[id]/setup/page.tsx",
-  "src/app/(admin)/admin/lodges/page.tsx",
+  // C19 (#250) lifted the lodge list out of `lodges/page.tsx` into a zero-prop
+  // section the setup wizard mounts inline. The direct fetch changed FILE, not
+  // what it reads or who may call it — `GET /api/admin/lodges` still narrows
+  // its payload below `lodge:view` (#2925) and this is still the list screen's
+  // own read. The page it left is now a shell with no fetch, so it correctly
+  // drops off this census.
+  "src/app/(admin)/admin/lodges/lodges-section.tsx",
   "src/app/(authenticated)/book/whole-lodge/_components/whole-lodge-request-form.tsx",
   "src/components/admin/lodge-details-panel.tsx",
   "src/components/admin/notice-audience-picker.tsx",

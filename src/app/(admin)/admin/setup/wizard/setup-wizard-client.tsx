@@ -563,18 +563,13 @@ export function SetupWizardClient({
             // The frame and the pane are SIBLINGS in one column, in this order.
             // The pane sits below because the frame carries the step's identity
             // — its title, its state badge and C11's defaulted banner. Of the
-            // steps with a pane, only `club-time-zone` changes what that banner
-            // MEANS: its is the installed-default copy, whose "check it below"
-            // sentence now points at something for the first time. Every other
-            // pane's step carries the read-from-deployment copy (which never
-            // said "below" in the first place) — including `seed-admin`, which
-            // C20 (#251) RECLASSIFIED into that copy rather than let its pane
-            // inherit a "change it if it is wrong" promise a create form
-            // cannot keep. No count is quoted here on purpose: the mapping is
-            // `SETUP_STEP_DEFAULTED_EVIDENCE` in `setup-wizard-view.ts` and the
-            // sentences are `defaultedBannerCopy` in
-            // `setup-wizard-step-frame.tsx`; read them there rather than trust
-            // a tally in a comment that every new pane would have to bump. See
+            // steps with a pane — two change what that banner MEANS:
+            // `club-time-zone` and C19's `lodges` both carry the
+            // installed-default copy, whose "check it below" sentence points at
+            // something real on a step that has a pane. Every other
+            // pane's step carries the read-from-deployment copy (C20's
+            // `seed-admin` included — its create form issues no fetch on
+            // mount, so it adds no request noise here).
             // `setup-wizard-panes.tsx` for why the pane can not be moved inside
             // the frame instead.
             <div className="space-y-4">
