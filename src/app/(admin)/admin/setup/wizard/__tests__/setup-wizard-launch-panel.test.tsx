@@ -114,11 +114,11 @@ describe("SetupWizardLaunchPanel", () => {
     stubPublishFetch();
     renderPanel({
       view: viewWith([
-        { id: "sentry" as SetupStepId, title: "Error Monitoring", deferred: true },
+        { id: "seasons-rates" as SetupStepId, title: "Seasons And Rates", deferred: true },
       ]),
     });
     const outstanding = screen.getByTestId("setup-wizard-outstanding");
-    expect(outstanding.textContent).toContain("Error Monitoring");
+    expect(outstanding.textContent).toContain("Seasons And Rates");
     expect(outstanding.textContent).toContain("skipped for now");
     // Nothing unchosen, so the second list is absent entirely.
     expect(screen.queryByTestId("setup-wizard-outstanding-unchosen")).toBeNull();
@@ -139,7 +139,7 @@ describe("SetupWizardLaunchPanel", () => {
     stubPublishFetch();
     renderPanel({
       view: viewWith([
-        { id: "sentry" as SetupStepId, title: "Error Monitoring", deferred: true },
+        { id: "seasons-rates" as SetupStepId, title: "Seasons And Rates", deferred: true },
         {
           id: "club-time-zone" as SetupStepId,
           title: "Club Time Zone",
@@ -149,12 +149,12 @@ describe("SetupWizardLaunchPanel", () => {
     });
 
     const chosen = screen.getByTestId("setup-wizard-outstanding");
-    expect(chosen.textContent).toContain("Error Monitoring");
+    expect(chosen.textContent).toContain("Seasons And Rates");
     expect(chosen.textContent).not.toContain("Club Time Zone");
 
     const unchosen = screen.getByTestId("setup-wizard-outstanding-unchosen");
     expect(unchosen.textContent).toContain("Club Time Zone");
-    expect(unchosen.textContent).not.toContain("Error Monitoring");
+    expect(unchosen.textContent).not.toContain("Seasons And Rates");
     expect(unchosen.textContent).toMatch(/not by your choice/i);
     expect(unchosen.textContent).toMatch(/nothing here was skipped/i);
   });
@@ -219,6 +219,148 @@ describe("SetupWizardLaunchPanel", () => {
   // The visibility display is now a PROP off the wizard payload, which the
   // shell refetches on focus — so it follows the club rather than freezing at
   // whatever the panel's own fetch saw when it mounted.
+  /*
+    D17's PUBLISH GATE (#246).
+
+    Mutation-verified: dropping `environmentBlocksPublish` from the button's
+    `disabled` leaves every one of these failing. That probe is why they exist —
+    the gate shipped with no unit coverage at all until it was run.
+  */
+  it("REFUSES THE PUBLISH while an environment fact holds the site shut", () => {
+    const { post } = stubPublishFetch();
+    renderPanel({
+      view: viewWith(
+        [],
+        [
+          environmentRow({
+            id: "environment-role" as SetupStepId,
+            title: "Production Or Non-Production",
+            status: "blocked",
+            blocksLaunch: true,
+            message: "Nothing says whether this installation is the live site.",
+            remedy: {
+              who: "Whoever runs your server sets this.",
+              send: "Set APP_ENVIRONMENT_ROLE and restart.",
+              why: "A copy that publishes emails real members.",
+            },
+          }),
+        ],
+      ),
+    });
+    const button = screen.getByTestId(
+      "setup-wizard-make-site-visible",
+    ) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("says WHY the publish is refused, and whose job it is", () => {
+    // An operator at a disabled button is asking one question. Answering it
+    // only on the environment panel would make them go looking.
+    stubPublishFetch();
+    renderPanel({
+      view: viewWith(
+        [],
+        [
+          environmentRow({
+            id: "environment-role" as SetupStepId,
+            title: "Production Or Non-Production",
+            status: "blocked",
+            blocksLaunch: true,
+            remedy: {
+              who: "Whoever runs your server sets this.",
+              send: "Set APP_ENVIRONMENT_ROLE and restart.",
+              why: "A copy that publishes emails real members.",
+            },
+          }),
+        ],
+      ),
+    });
+    const notice = screen.getByTestId(
+      "setup-wizard-launch-environment-blocked",
+    );
+    expect(notice.textContent).toContain("Production Or Non-Production");
+    expect(notice.textContent).toContain("Whoever runs your server");
+    // …and points at the screen that carries the line to send.
+    expect(notice.textContent).toContain("About this server");
+  });
+
+  it("STILL RENDERS THE PANEL when the publish is refused", () => {
+    // The reason the gate is on the button and not on `allResolved`: an
+    // operator refused a publish must still be able to read the refusal.
+    stubPublishFetch();
+    renderPanel({
+      view: viewWith(
+        [],
+        [
+          environmentRow({
+            status: "blocked",
+            blocksLaunch: true,
+            remedy: {
+              who: "Whoever runs your server fixes this.",
+              send: "Set CRON_SECRET and restart.",
+              why: "Nothing overnight runs.",
+            },
+          }),
+        ],
+      ),
+    });
+    expect(screen.getByTestId("setup-wizard-launch-panel")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: /Ready to open/i }),
+    ).toBeTruthy();
+  });
+
+  it("publishes normally when the facts are amber but non-gating", () => {
+    // email-ses and sentry: worth an amber row, never a reason to keep a club
+    // shut. A gate that fired on any non-green fact would block every club
+    // without Sentry, which is most of them.
+    const { post } = stubPublishFetch();
+    renderPanel({
+      view: viewWith(
+        [],
+        [
+          environmentRow({
+            id: "sentry" as SetupStepId,
+            status: "warning",
+            blocksLaunch: false,
+            remedy: {
+              who: "Optional.",
+              send: "Set the SENTRY_* variables.",
+              why: "Diagnostics only.",
+            },
+          }),
+        ],
+      ),
+    });
+    const button = screen.getByTestId(
+      "setup-wizard-make-site-visible",
+    ) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    expect(
+      screen.queryByTestId("setup-wizard-launch-environment-blocked"),
+    ).toBeNull();
+    fireEvent.click(button);
+    expect(post).toHaveBeenCalled();
+  });
+
+  it("shows no refusal notice on a site that is already live", () => {
+    stubPublishFetch();
+    renderPanel({
+      isSiteVisible: true,
+      view: viewWith(
+        [],
+        [environmentRow({ status: "blocked", blocksLaunch: true })],
+      ),
+    });
+    // Publishing has already happened; telling somebody they cannot do a thing
+    // they have done is noise.
+    expect(
+      screen.queryByTestId("setup-wizard-launch-environment-blocked"),
+    ).toBeNull();
+  });
+
   it("reports an already-visible site from the payload, not from its own fetch", () => {
     const { post } = stubPublishFetch();
     renderPanel({ isSiteVisible: true });
