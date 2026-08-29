@@ -10,7 +10,7 @@ import {
   type SetupStepId,
 } from "@/lib/setup-step-registry";
 import {
-  deriveStaleSetupStepIds,
+  buildSetupWizardTraversal,
   type SetupStepDefinitionOf,
   type SetupWizardTraversalInput,
   type SetupWizardTraversalProgress,
@@ -22,10 +22,16 @@ import {
  * C4 left one seam — `SetupWizardTraversalInput.staleStepIds` — and said C2
  * would swap the derivation behind it for a read of a stored column. This
  * module is that swap, and it is deliberately two small functions rather than
- * one: **`recomputeSetupStaleStepIds` decides what to store**, and
+ * one: **`recomputeSetupProgressDerivation` decides what to store**, and
  * **`storedSetupStaleStepIds` decides whether the stored answer may be
  * trusted**. The progress route calls the first, the wizard read route calls
  * the second, and nothing else calls either.
+ *
+ * C16 (#247) widened the first function's ANSWER without widening its work: it
+ * now returns the whole traversal's verdict — the stale set it always returned,
+ * plus the blocking set the finish gate needs — from the one snapshot it was
+ * already reading. See {@link recomputeSetupProgressDerivation} for why that is
+ * one computation rather than two agreeing ones.
  *
  * ## Why store it at all, given C4 could already derive it
  *
@@ -59,8 +65,8 @@ import {
  * fails toward stale rather than toward complete. There are two separate
  * failures and they are answered differently:
  *
- * - **The write cannot compute the set** (`recomputeSetupStaleStepIds` returns
- *   `null`): the caller writes NOTHING and refuses the transition, per #217's
+ * - **The write cannot compute the set** (`recomputeSetupProgressDerivation`
+ *   returns `null`): the caller writes NOTHING and refuses the transition, per #217's
  *   AC-6 resolution amendment. This column cannot represent "unknown" — Prisma
  *   list columns cannot be optional, so it is `NOT NULL DEFAULT []` and `[]`
  *   asserts "computed: nothing is stale". There is therefore no value a failed
@@ -122,7 +128,7 @@ export function setupReadinessStatusesOf(
   return statuses;
 }
 
-export interface RecomputeSetupStaleStepIdsInput {
+export interface RecomputeSetupProgressDerivationInput {
   /** The progress arrays AS THEY WILL BE STORED — after the transition, not before. */
   readonly progress: SetupWizardTraversalProgress;
   /**
@@ -141,8 +147,41 @@ export interface RecomputeSetupStaleStepIdsInput {
 }
 
 /**
- * The stale set to store for `progress`, or `null` when it could not be
- * computed at all.
+ * What one recompute answers: the set to STORE, and the set that BLOCKS.
+ *
+ * Both come out of a single `buildSetupWizardTraversal` pass over one snapshot,
+ * which is the point of returning them together (C16, #247). The alternative —
+ * deriving staleness here and letting the route build its own traversal for the
+ * blocking set — would run the same derivation twice and give the route two
+ * answers it would then have to keep consistent by hand.
+ *
+ * The relationship between them is worth stating because a later change could
+ * break it silently: **every stale step is a blocking step**. The traversal's
+ * blocking predicate is `!complete && (stale || !deferred)`, and staleness
+ * clears `complete`, so `staleStepIds ⊆ blockingStepIds` holds by construction
+ * rather than by coincidence. That is what makes the progress route's finish
+ * gate subsume its older stale half-gate rather than duplicate it.
+ */
+export interface SetupProgressDerivation {
+  /**
+   * The full transitive closure to write to `SetupProgress.staleStepIds`. Same
+   * value `deriveStaleSetupStepIds` would return for this input: with no stored
+   * set supplied the traversal derives it with that very function, and reports
+   * it back in registry order.
+   */
+  readonly staleStepIds: string[];
+  /**
+   * Applicable steps that are neither complete nor deliberately deferred —
+   * `SetupWizardTraversal.blockingStepIds`, the same list the wizard's launch
+   * panel reads to decide whether it may offer to open. The finish gate refuses
+   * while this is non-empty.
+   */
+  readonly blockingStepIds: readonly string[];
+}
+
+/**
+ * The derivation to store and gate on for `progress`, or `null` when it could
+ * not be computed at all.
  *
  * `null` is a third answer and not an error — "could not compute", which this
  * function's return type can express and the column it feeds cannot. The caller
@@ -187,9 +226,9 @@ export interface RecomputeSetupStaleStepIdsInput {
  * Revisit if the snapshot grows expensive enough to matter, and narrow it by
  * making the missing fields UNREADABLE rather than zero if you do.
  */
-export async function recomputeSetupStaleStepIds(
-  input: RecomputeSetupStaleStepIdsInput,
-): Promise<string[] | null> {
+export async function recomputeSetupProgressDerivation(
+  input: RecomputeSetupProgressDerivationInput,
+): Promise<SetupProgressDerivation | null> {
   let readiness: SetupReadiness;
   let moduleSettings: SetupWizardTraversalInput<string>["moduleSettings"];
   try {
@@ -212,12 +251,23 @@ export async function recomputeSetupStaleStepIds(
     return null;
   }
 
-  return deriveStaleSetupStepIds<string>({
+  // NO `staleStepIds` ARGUMENT, deliberately: this is the write path, so the
+  // traversal must DERIVE the set rather than be handed the stored one it is
+  // about to replace. `traversal.staleStepIds` is then exactly what
+  // `deriveStaleSetupStepIds` returns for this input — the traversal calls that
+  // same derivation and reports it back in registry order — so widening the
+  // answer here changed no stored value.
+  const traversal = buildSetupWizardTraversal<string>({
     progress: input.progress,
     moduleSettings,
     readinessStatuses: setupReadinessStatusesOf(readiness),
     registry: input.registry ?? SETUP_STEP_REGISTRY,
   });
+
+  return {
+    staleStepIds: [...traversal.staleStepIds],
+    blockingStepIds: traversal.blockingStepIds,
+  };
 }
 
 /**

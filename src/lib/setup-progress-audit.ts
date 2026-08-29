@@ -112,14 +112,31 @@ export interface RecordSetupProgressTransitionInput {
 export function recordSetupProgressTransition(
   input: RecordSetupProgressTransitionInput,
 ): void {
-  // A `finish` THAT DID NOT TAKE EFFECT EXPLAINS ITSELF ON ITS OWN ROW. The
-  // record-level completion is withheld while anything is stale (#217's
+  // A `finish` THAT DID NOT TAKE EFFECT WOULD EXPLAIN ITSELF ON ITS OWN ROW.
+  // The record-level completion is withheld while anything is stale (#217's
   // inherited acceptance criterion), so a reader would otherwise find
   // "Setup marked finished" recorded against a record that is not marked
-  // finished, with nothing on the row saying why. The blocking set travels in
-  // the metadata. It is NOT the same thing as the two rows below, which record
-  // the set MOVING — a finish blocked by a set that was already stale moves
-  // nothing and would write neither.
+  // finished, with nothing on the row saying why. The blocking set would travel
+  // in the metadata. It is NOT the same thing as the two rows below, which
+  // record the set MOVING — a finish blocked by a set that was already stale
+  // moves nothing and would write neither.
+  //
+  // C16 (#247) MADE THIS BRANCH UNREACHABLE, AND IT STAYS. Every stale step is a
+  // blocking step (`setup-progress-staleness.ts` states why `stale ⊆ blocking`
+  // holds by construction), so the route's finish gate now refuses such a
+  // request outright: it writes no row, and therefore calls this function not at
+  // all. Nothing reaching here as a `finish` can carry a non-empty stale set.
+  //
+  // Kept as defence in depth, for the same reason and on the same terms as the
+  // route's own stale half-gate: this is the AUDIT layer's copy of the
+  // obligation, and the gate above it is the half that can narrow. C15 narrows
+  // the blocking set and a later child could narrow it further; if either ever
+  // narrows it below the stale set, a blocked finish starts landing again and
+  // this is what still keeps its row from reading as a completion nobody can
+  // explain. Pinned directly at this layer by `setup-progress-audit.test.ts`,
+  // which hands it the combination the route can no longer produce — the same
+  // shape as `route-finish-gate.test.ts`'s escape-hatch test — because an
+  // unreachable branch with no coverage is a branch that quietly stops working.
   const withheldFinishMetadata =
     input.payload.action === "finish" && input.nextStaleStepIds.length > 0
       ? { staleStepIds: [...input.nextStaleStepIds] }

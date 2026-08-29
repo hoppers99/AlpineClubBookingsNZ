@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CLUB_THEME_VALUES } from "@/lib/club-theme-schema";
 
 const mocks = vi.hoisted(() => ({
@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   primeEmailPalette: vi.fn(),
   invalidatePublicLayoutConfig: vi.fn(),
   revalidatePublicSite: vi.fn(),
+  environmentSafetyFindUnique: vi.fn(),
 }));
 
 vi.mock("@/lib/public-layout-cache", () => ({
@@ -72,6 +73,13 @@ vi.mock("@/lib/prisma", () => ({
     auditLog: {
       create: mocks.auditLogCreate,
     },
+    // C16 (#247): a `completeSetup: true` save is the site-publish transition,
+    // so the route now resolves the environment role first. The delegate has to
+    // be here — a missing one is an UNREADABLE override, which resolves UNKNOWN
+    // and would refuse every completion test in this file.
+    environmentSafetySettings: {
+      findUnique: (...args: unknown[]) => mocks.environmentSafetyFindUnique(...args),
+    },
     $executeRaw: mocks.executeRaw,
     $transaction: (
       fn: (tx: typeof txClient) => unknown,
@@ -92,6 +100,11 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { PUT } from "@/app/api/admin/site-style/route";
+import {
+  declareEnvironmentRole,
+  expectEnvironmentRolePremise,
+  undeclareEnvironmentRole,
+} from "@/lib/__tests__/helpers/environment-role";
 
 function request(body: unknown) {
   return new NextRequest("http://localhost/api/admin/site-style", {
@@ -131,6 +144,15 @@ describe("site style admin API", () => {
       fn(txClient),
     );
     mocks.primeEmailPalette.mockResolvedValue(undefined);
+    // A declared production installation with no safer override — the state a
+    // club's live site is in, and the one the completion tests below mean to run
+    // in (C16, #247).
+    mocks.environmentSafetyFindUnique.mockResolvedValue(null);
+    declareEnvironmentRole("production");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("lets a club with an 860KB stored logo save an unrelated change (#2322)", async () => {
@@ -444,5 +466,66 @@ describe("site style admin API", () => {
     expect(response.status).toBe(400);
     expect(mocks.clubThemeUpsert).not.toHaveBeenCalled();
     expect(mocks.primeEmailPalette).not.toHaveBeenCalled();
+  });
+
+  /**
+   * C16 (#247). This PUT is the OTHER writer of `ClubTheme.completedAt`, and
+   * #247's hazard — "a content officer, or curl, can publish the public site
+   * with the environment role UNKNOWN" — is a property of that transition, not
+   * of the route that happens to perform it. Gating the dedicated complete-setup
+   * endpoint and leaving this one would have made the gate a one-line bypass.
+   *
+   * The gate's own polarity is settled in `site-visibility-gate.test.ts`; these
+   * pin that this handler consults it, on the right requests only, before it
+   * writes.
+   */
+  describe("the environment gate on completeSetup (#247)", () => {
+    it("refuses a completeSetup save while nothing has declared this installation", async () => {
+      undeclareEnvironmentRole();
+      await expectEnvironmentRolePremise("UNKNOWN");
+
+      const response = await PUT(
+        request({ ...DEFAULT_CLUB_THEME_VALUES, completeSetup: true }),
+      );
+      const body = (await response.json()) as { error?: string; theme?: unknown };
+
+      expect(response.status).toBe(409);
+      expect(body.error).toContain("APP_ENVIRONMENT_ROLE");
+      // Refused before the write: no theme columns, no caches, no palette, no
+      // audit row. THE WHOLE REQUEST is refused rather than the completion half
+      // being dropped, so a client cannot come away believing the site is live.
+      expect(body.theme).toBeUndefined();
+      expect(mocks.clubThemeUpsert).not.toHaveBeenCalled();
+      expect(mocks.primeEmailPalette).not.toHaveBeenCalled();
+      expect(mocks.revalidatePublicSite).not.toHaveBeenCalled();
+      expect(mocks.auditLogCreate).not.toHaveBeenCalled();
+    });
+
+    it("leaves an ORDINARY theme save alone on the very same installation", async () => {
+      undeclareEnvironmentRole();
+      await expectEnvironmentRolePremise("UNKNOWN");
+
+      const response = await PUT(
+        request({ ...DEFAULT_CLUB_THEME_VALUES, brandGold: "#123456" }),
+      );
+
+      // The gate is on publishing, never on editing. An undeclared installation
+      // must still be able to store its colours — otherwise the operator's only
+      // route out of the refusal above would be blocked by the refusal itself.
+      expect(response.status).toBe(200);
+      expect(mocks.clubThemeUpsert).toHaveBeenCalled();
+    });
+
+    it("refuses a completeSetup save whose safer override could not be read", async () => {
+      mocks.environmentSafetyFindUnique.mockRejectedValue(new Error("no relation"));
+      await expectEnvironmentRolePremise("UNKNOWN");
+
+      const response = await PUT(
+        request({ ...DEFAULT_CLUB_THEME_VALUES, completeSetup: true }),
+      );
+
+      expect(response.status).toBe(409);
+      expect(mocks.clubThemeUpsert).not.toHaveBeenCalled();
+    });
   });
 });
