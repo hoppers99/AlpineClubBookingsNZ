@@ -79,15 +79,20 @@ environment role, the runtime variables, the auth secret, email delivery and
 Sentry. Those are reported on the wizard's own **About this server** screen
 instead of being walked through as steps, because their remedy is a change to
 the server's configuration by whoever runs it, not something anybody can press a
-button for from here. The other fifteen are the journey. See
+button for from here. The other fifteen are the journey — **eleven of them on a
+default install**, because four belong to modules that ship switched off and
+appear only when you turn one on. See
 [About this server](#about-this-server-the-facts-you-cannot-change-from-here)
 below.
 
 So the checklist card for **Runtime Environment** and the wizard's row for it
 report the same verdict in the same words; only the wizard's treatment of it
 differs, because only the wizard is asking you to *do* something. **The
-percentage counts the fifteen**, and the checklist's Progress tile displays the
-wizard's own figure rather than working out a second one.
+percentage counts the steps that apply to your club** — the eleven on a default
+install, up to fifteen with every module on — and the checklist's Progress tile
+displays the wizard's own figure rather than working out a second one. That is
+also why it is a percentage rather than "x of y": switching a module on changes
+the denominator, and a count that moved would read as though work had been lost.
 
 The two surfaces do answer two *different* questions, though, and each says
 which. The percentage answers **how far through this has somebody been** — it
@@ -442,8 +447,8 @@ the button they refuse:
 
 | Fact | Holds the site shut? | Because |
 | --- | --- | --- |
-| Production or non-production | **Yes** | Nothing has declared whether this installation is the club's live site or a copy, so it is treated as neither and holds all member email back. A copy that published would email real members |
-| Runtime environment | **Yes** | A required variable is missing or malformed. A club that opened with its cron secret unset would have nothing running overnight |
+| Production or non-production | **Yes** | Nothing has declared whether this installation is the club's live site or a copy, so it is treated as neither and holds all member email back. A copy that published would email real members. It also holds the site shut in one other state: the installation *is* declared the live site but still sends its mail to a capture mailbox, so no member email goes out at all |
+| Runtime environment | **Yes** | A required variable is missing or malformed, and every one of them must be set before the club opens. That is exactly why this is a gate: the site RUNS without some of them — which is how you are reading this screen — so nothing else would ever catch it. A club that opened with its cron secret unset would look completely normal and have nothing running overnight |
 | Auth secret strength | **Yes** | Sign-in, two-factor and every stored credential derive from it. Until it is strong the site refuses to store a Stripe or Xero credential at all |
 | Email delivery | No | Nothing that needs to reach a member by email will, so fix it before real members use the site — but it does not stop you opening |
 | Sentry | No | Optional error reporting. Nothing about running the club depends on it |

@@ -368,12 +368,21 @@ const FIGURES = {
    * banner that file already renders — and gated, unlike the readiness cards'
    * plain `Button`, because `POST /api/admin/setup/provider-test` infers
    * `support: edit`, which is exactly what `canEdit` already answers there.
+   *
+   * 346 -> 347 (#246, the Server-environment panel): D17 moves five readiness
+   * checks off the wizard rail onto their own panel, and `email-ses` and
+   * `sentry` carry a provider test each. ONE call site, not two — the panel's
+   * row component renders one control conditionally on `row.action`, exactly as
+   * the step frame does for the four it inherited. A STATIC opt-out under the
+   * banner the panel itself renders, so `optOuts` and `staticOptOuts` move by
+   * the same one and the vouched split is untouched. Re-measured on this tree,
+   * not added to the previous total.
    */
-  callSites: 346,
+  callSites: 347,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 293,
+  optOuts: 294,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 259,
+  staticOptOuts: 260,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *
@@ -408,8 +417,12 @@ const FIGURES = {
    * 91 -> 92 (#223): the setup-surfaces section heads its own with one, rendered
    * above its loading branch so a failed first load never mounts the section
    * together with an already-populated alert.
+   *
+   * 92 -> 93 (#246): the Server-environment panel heads its own section with
+   * one. It states the narrower thing the panel actually gates — support edit
+   * runs a provider test; every fact on the page is readable without it.
    */
-  bannerComponents: 92,
+  bannerComponents: 93,
   /**
    * Admin files that render an `AdminViewOnlyNotice` and NO
    * `ViewOnlyActionButton` — the first of the three cases in which the older

@@ -41,5 +41,6 @@
   find out whether a fix your server administrator has just made actually worked.
 
   If you upgraded a club that had already marked one of these five done, that
-  record is simply ignored rather than lost, and nothing about your setup
-  percentage or your **Setup complete** flag is recalculated behind your back.
+  record is simply ignored rather than lost. Nothing stored is rewritten and your
+  **Setup complete** flag is untouched — the displayed percentage simply divides
+  by the shorter list from now on, which is the one-off change described above.
