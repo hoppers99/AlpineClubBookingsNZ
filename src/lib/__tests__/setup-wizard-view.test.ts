@@ -514,7 +514,11 @@ describe("the publish gate's reachable statuses (D17, F2)", () => {
     CRON_SECRET: "a-cron-secret-value",
     SEED_ADMIN_EMAIL: "admin@example.nz",
     SEED_ADMIN_PASSWORD: "a-seed-admin-password",
-    AUTH_SECRET: "0123456789abcdef0123456789abcdef0123456789abcdef",
+    // Deliberately NOT a random-looking hex string: the strength check is
+    // length-plus-blocklist only (integration-crypto.ts), so a repeated
+    // character satisfies it without reading as a real secret to the
+    // gitleaks scan — the shape every sibling fixture here already uses.
+    AUTH_SECRET: "a".repeat(48),
   };
 
   /**
