@@ -6,6 +6,7 @@ import { ClubIdentityPanel } from "@/components/admin/club-identity-panel";
 import { ClubTimeZonePanel } from "@/components/admin/club-time-zone-panel";
 import { ModulesSection } from "@/app/(admin)/admin/modules/modules-section";
 import { LodgesSection } from "@/app/(admin)/admin/lodges/lodges-section";
+import { SetupWizardFirstAdminPane } from "./setup-wizard-first-admin-pane";
 import { AgeTierSection } from "@/app/(admin)/admin/age-tier-settings/age-tier-section";
 import { isFullAdmin } from "@/lib/access-roles";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
@@ -404,10 +405,16 @@ export const SETUP_STEP_PANES: Record<SetupStepId, ComponentType | null> = {
   // The secret's strength is a property of `AUTH_SECRET` in the environment.
   // An admin form that set it would be a secret typed into a browser.
   "auth-secret-strength": null,
-  // The member editor is a per-record admin surface, not a settings section:
-  // it needs a chosen member before it can render anything, so there is no
-  // zero-prop section to embed. `/admin/members` stays the link out.
-  "seed-admin": null,
+  // C20 (#251): the ONE pane in this table that is BUILT rather than embedded.
+  // The member editor is a per-record admin surface, not a settings section —
+  // it needs a chosen member before it can render anything — so there is no
+  // zero-prop section to embed and D8's parity rule has nothing to point at.
+  // `SetupWizardFirstAdminPane` is therefore the smallest form that can satisfy
+  // the step (create only; retiring the seeded account is its own decision),
+  // and its own file carries the reasoning — including which column the
+  // readiness check counts, which is the trap this step hides.
+  // `/admin/members` stays the link out.
+  "seed-admin": SetupWizardFirstAdminPane,
   // C13 (#239): the module toggles, and the moment mockup 2 promised — switching
   // a module on redraws the rail beside it. This step had no pane AND no link
   // (its check carries neither `href` nor `links`), so it was the one step the

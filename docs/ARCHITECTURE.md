@@ -1119,12 +1119,12 @@ Booking Policies sections (#2142) and is now the **default across the admin
 tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left.
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
-figures rather than trusting a hand count: **92 components render a banner, and
-293 of the 346 `ViewOnlyActionButton` call sites opt out** of the per-button
+figures rather than trusting a hand count: **93 components render a banner, and
+294 of the 347 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 293 split by WHICH rule
-covers them: **259** pass the literal
+test currently pins, which is the only authority.) Those 294 split by WHICH rule
+covers them: **260** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **34**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 29 by a parent's own JSX render site (#2168), 5 by the
@@ -1555,6 +1555,14 @@ the section also VOUCHES for `OtherLodgesPanel`
 render site sits in, so leaving the banner behind on the page would have mounted
 an unbannered panel in the wizard; banner and vouched child move together, or
 neither moves. That is
+`key={stepId}` exists for. C20 (#251) added `SetupWizardFirstAdminPane` for
+`seed-admin` — the one entry in the table that is BUILT rather than mounting an
+existing settings section, because the member editor is a per-record surface
+inside a dialog and there is nothing zero-prop to embed. It is therefore also
+the only pane that renders its own banner AND replicates a Full-Admin swap: its
+step's area is `membership` (matching `POST /api/admin/members`), which admits a
+Membership Officer whose create that route would then refuse on #1012's
+separation-of-duties gate. That is
 not the stacked-sibling question above waiting on a decision: changing a step's
 PROGRESS is one API for the whole journey, enforced at `support: edit`, while
 doing the step's WORK is governed by that step's own area, and a club-defined
