@@ -194,8 +194,12 @@ export function SetupWizardFirstAdminPane() {
         toast.error(body?.error ?? "Could not create the administrator.");
         return;
       }
+      // The success copy only claims the invite went out when the server did
+      // not warn otherwise — a 201-with-warning means the member exists but
+      // the email did not leave, and saying "has been sent" beside that
+      // warning would contradict it.
       toast.success(
-        sendInvite
+        sendInvite && !body?.warning
           ? "Administrator created and the setup invite has been sent."
           : "Administrator created.",
       );

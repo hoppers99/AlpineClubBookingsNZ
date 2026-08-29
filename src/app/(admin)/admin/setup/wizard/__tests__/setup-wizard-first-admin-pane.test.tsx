@@ -327,6 +327,9 @@ describe("the setup invite", () => {
     expect(toast.warning).toHaveBeenCalledWith(
       "Member created but invite email failed to send: no SES",
     );
+    // The success copy must not claim the invite went out beside a warning
+    // saying it did not (#251 review).
+    expect(toast.success).toHaveBeenCalledWith("Administrator created.");
     expect(toast.error).not.toHaveBeenCalled();
     await waitFor(() => expect(heard).toHaveBeenCalledTimes(1));
     window.removeEventListener(SETUP_READINESS_INPUT_CHANGED_EVENT, heard);
