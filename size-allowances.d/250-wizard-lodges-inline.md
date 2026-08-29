@@ -1,31 +1,34 @@
-# File-size allowances for #223
+# File-size allowances for #250
 
-CARRIED FORWARD FROM `size-allowances.d/221-lodges-step.md`, which this change
-deletes — the same hand-over #221 performed on #222's file, and for the same
-mechanical reason: one file may hold only one allowance, so an epic child that
-grows a file a sibling already declared has to restate the sibling's reasoning
-rather than add a second entry beside it. The two entries this change does not
-alter are reproduced below unchanged in substance, because against `origin/main`
-— the base the `verify` job's ratchet actually judges — this branch still
-carries its siblings' growth, and deleting their reasoning would make the CI
-base fail with no explanation on record. All of it goes inert the moment the
-epic merges and the new lengths become the base ref.
+CARRIED FORWARD FROM `size-allowances.d/223-setup-surface-coexistence.md`, which
+this change deletes — the same hand-over #223 performed on #221's file, and #221
+on #222's, for the same mechanical reason: one file may hold only one allowance,
+so an epic child that grows a file a sibling already declared has to restate the
+sibling's reasoning rather than add a second entry beside it. Only the
+`setup-readiness.ts` entry changes; the four below it are reproduced unchanged in
+substance, because against `origin/main` — the base the `verify` job's ratchet
+actually judges — this branch still carries its siblings' growth, and deleting
+their reasoning would make the CI base fail with no explanation on record. All of
+it goes inert the moment the epic merges and the new lengths become the base ref.
 
-NO ENTRY FOR `setup-page-client.tsx`, and that is deliberate rather than an
-omission. C8's review round grew it past the 700-line ceiling for the FIRST
-time, which no allowance may carry — correctly, since crossing a budget is the
-moment to split rather than to declare. So it was split: the readiness cards
-moved to `setup-readiness-checks.tsx` and the shared payload shape to
-`setup-readiness-types.tsx`, both well inside the budget, and the page itself
-came back to 491 LOC — below where it started. The split was available and
-genuine: those cards render in exactly one branch of the legacy-surfaces
-switch, so a hundred and fifty lines the hidden position never reaches were
-sitting inside the component that chooses between the two.
+NOT AN ENTRY: `lodges-section.tsx`. C19 lifts the lodge editor out of
+`admin/lodges/page.tsx` into a section, and the section inherits the page's
+length rather than adding to it — the page falls to a 33-line shell, and the two
+together are within a few lines of the one file they replace. Neither is over
+budget, so neither is declared here.
 
 file: src/lib/setup-readiness.ts
-lines: 2599
-reason: #223 adds the registry applicability filter to `buildSetupReadiness` —
-  four lines of code, and the reasoning that keeps them safe. That reasoning is
+lines: 2620
+reason: #250 adds the zero-bed arm to `buildLodgesCheck`'s detail-line builder —
+  one branch, its sentence, and the docblock paragraph saying why it changes the
+  WORDING and deliberately not the verdict. It exists precisely because the arms
+  it sits beside were indistinguishable: an active lodge with no beds read
+  exactly like one with beds, and UAT R2-7 is an operator saying so. Splitting
+  the check out would put the distinction in a different file from the lines it
+  is a distinction between.
+  #223's reasoning, still load-bearing against the CI base: it adds the
+  registry applicability filter to `buildSetupReadiness` — four lines of code,
+  and the reasoning that keeps them safe. That reasoning is
   the three-state module contract (`undefined` fails open, `null` is the
   first-install defaults), which is the one thing a future `?? null` here would
   break silently, hiding setup work from the exact run that could not read the

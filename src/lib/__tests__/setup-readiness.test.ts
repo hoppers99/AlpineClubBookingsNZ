@@ -2242,8 +2242,46 @@ describe("setup-readiness — the lodges step (#221)", () => {
       lodges: [lodge({ activeRoomCount: 0, activeBedCount: 0 })],
     });
     expect(check.status).toBe("complete");
-    expect(check.details).toContain(
+  });
+
+  it("does not say a bed-less open lodge is simply 'open for booking' (R2-7)", () => {
+    /*
+      The operator who met "open for booking (0 rooms, 0 beds)" read it as
+      self-contradictory, and the line really did cover two opposite situations
+      at once: with no active beds `getLodgeCapacityStatus` resolves capacity to
+      the per-lodge override, and to 0 without one (#1982). So the sentence names
+      the fact the snapshot holds and the setting that decides the rest — it
+      does not claim the lodge is unbookable, because an override lodge is
+      correctly configured and this check cannot see the override.
+    */
+    const { check } = lodgesCheck({
+      ...completeDatabase,
+      lodges: [lodge({ activeRoomCount: 0, activeBedCount: 0 })],
+    });
+
+    const line = check.details?.find((detail) =>
+      detail.startsWith("Example Lodge:"),
+    );
+    expect(line).toContain("no beds are set up");
+    expect(line).toContain("capacity override");
+    // MUTATION PROBE: drop the zero-bed arm and this fails — the line reverts
+    // to the bare open-for-booking sentence the finding is about.
+    expect(line).not.toBe(
       "Example Lodge: open for booking (0 rooms, 0 beds), the club default.",
+    );
+    // It stays a REPORT, not a verdict. The counts still do not move the status.
+    expect(check.status).toBe("complete");
+  });
+
+  it("leaves the ordinary open-for-booking line alone once a lodge has beds", () => {
+    // The arm is on the BED count, not the room count: beds are what
+    // `getLodgeCapacityStatus` counts. A lodge with beds keeps the short line.
+    const { check } = lodgesCheck({
+      ...completeDatabase,
+      lodges: [lodge({ activeRoomCount: 0, activeBedCount: 6 })],
+    });
+    expect(check.details).toContain(
+      "Example Lodge: open for booking (0 rooms, 6 beds), the club default.",
     );
   });
 

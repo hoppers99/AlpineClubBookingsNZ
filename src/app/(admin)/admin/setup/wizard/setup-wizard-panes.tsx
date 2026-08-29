@@ -5,10 +5,15 @@ import { useSession } from "next-auth/react";
 import { ClubIdentityPanel } from "@/components/admin/club-identity-panel";
 import { ClubTimeZonePanel } from "@/components/admin/club-time-zone-panel";
 import { ModulesSection } from "@/app/(admin)/admin/modules/modules-section";
+import { LodgesSection } from "@/app/(admin)/admin/lodges/lodges-section";
+import { SetupWizardFirstAdminPane } from "./setup-wizard-first-admin-pane";
+import { AgeTierSection } from "@/app/(admin)/admin/age-tier-settings/age-tier-section";
 import { isFullAdmin } from "@/lib/access-roles";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
 import { canViewSetupStepPane } from "@/lib/setup-wizard-view";
 import type { SetupStepId } from "@/lib/setup-step-registry";
+import { DefaultCancellationPolicySection } from "@/components/admin/booking-policies/default-cancellation-policy-section";
+import { GroupDiscountSection } from "@/components/admin/booking-policies/group-discount-section";
 
 /**
  * The wizard's per-step inline editors (epic #213, child C12; owner decision
@@ -204,6 +209,175 @@ function ModulesWizardPane() {
 }
 
 /**
+ * The lodge list, in the wizard (`lodges`).
+ *
+ * **The step UAT R2-7 was about** (D18, C19 #250). An operator standing here
+ * asked "and how do I set up a lodge here???" of a screen that carried the
+ * readiness lines, a link to `/admin/lodges` and a link per lodge into its own
+ * setup flow — and nothing to actually do. `LodgesSection` is the whole of the
+ * old `/admin/lodges` page: the list with each lodge's open/closed state, the
+ * rename form, add-a-lodge, and activate/deactivate with its dependency
+ * confirm.
+ *
+ * **The per-lodge six-step flow stays a LINK, and that is the point rather than
+ * a shortfall.** `/admin/lodges/[id]/setup` is a guided flow of its own —
+ * rooms, lockers, seasons, chores, activation — so embedding it would be a
+ * wizard inside a wizard, which is not the shape D16 asked to prove and is the
+ * same reason the four provider setups have no pane. It is also the best setup
+ * screen the product has, so the honest move is to send the operator to it. The
+ * step frame above still lists one link per lodge, and every row in the section
+ * carries its own "Configure".
+ *
+ * **Two banners, and no nesting.** `LodgesSection` heads itself with the
+ * lodge-area banner, exactly as `ModulesSection` does, and it must: the section
+ * vouches for `OtherLodgesPanel` (`ancestorRendersViewOnlyBanner`), and a vouch
+ * is verified against the file the render site sits in. The pane is still a
+ * SIBLING of the step frame, never a child — see this module's docblock.
+ *
+ * The heading sits OUTSIDE the section and renders unconditionally, for the
+ * mount-order reason spelled out on `ClubIdentityWizardPane`. The orientation
+ * paragraph names the seeded `"<Club> Lodge"` rename the way this file's
+ * club-identity copy orients the operator on the club name: R2-7's own second
+ * wrinkle was that the seeded lodge name is an unconfirmed installer default
+ * with nothing anywhere prompting anybody to change it. The rename is one
+ * "Edit" away in the list below, so the paragraph says so.
+ */
+function LodgesWizardPane() {
+  return (
+    <section className="space-y-3 rounded-md border bg-card p-5">
+      <div className="space-y-1">
+        <h3 className="text-lg font-semibold text-foreground">Lodges</h3>
+        <p className="text-sm text-muted-foreground">
+          The same editor as Admin &rarr; Lodges. A fresh install is seeded with
+          one lodge named after the club — &ldquo;
+          <span className="italic">your club&rsquo;s name</span> Lodge&rdquo; —
+          so if that is not what the building is called, press Edit beside it and
+          give it its real name. Each lodge&rsquo;s rooms, beds, seasons and
+          chores are set up in its own guided flow, which the Configure button
+          and the links above both open. Saving here does not tick this step off
+          — use &ldquo;Mark this step done&rdquo; above when you are happy with
+          it.
+        </p>
+      </div>
+      <LodgesSection />
+    </section>
+  );
+}
+
+/**
+ * The age-tier boundary editor, in the wizard (`age-tiers`).
+ *
+ * `AgeTierSection` is C18's (#249) repeat of the C13 move above: zero props,
+ * fetches `/api/admin/age-tier-settings` for itself, resolves `bookings`
+ * edit access for itself, and heads itself with its own view-only banner.
+ * `/admin/age-tier-settings` mounts exactly the same component under its own
+ * `AdminPageHeader`; this pane supplies the subordinate heading in its place,
+ * for the mount-order reason spelled out on `ClubIdentityWizardPane`.
+ *
+ * SIMPLER than the modules pane: this step owns no OTHER step's existence, so
+ * there is no rail-redraw or self-removal case to narrate here — saving
+ * changes what the `age-tiers` check itself reports, nothing else in the
+ * journey.
+ *
+ * **The orientation paragraph carries the pane copy caveat (dossier B.4).**
+ * `buildAgeTierCheck` (`setup-readiness.ts`) is two checks in one: whether
+ * tiers are configured at all, which this section fully controls, and
+ * whether any membership type set to "subscription required based on age
+ * tier" actually has a tier that requires one
+ * (`basedOnAgeTierTypesWithoutSubscribingTier`). That second half is fixed on
+ * `/admin/membership-types`, a screen this pane never touches — so a perfect
+ * save here can still leave the step amber, and an operator who only looks
+ * at this pane has no way to discover why. The paragraph says so, the same
+ * way `ModulesWizardPane`'s names the address-autocomplete split rather than
+ * leaving it to be found by trial and error.
+ */
+function AgeTierWizardPane() {
+  return (
+    <section className="space-y-3 rounded-md border bg-card p-5">
+      <div className="space-y-1">
+        <h3 className="text-lg font-semibold text-foreground">
+          Age and membership rules
+        </h3>
+        <p className="text-sm text-muted-foreground">
+          The same editor as Admin &rarr; Age Group Settings. This step can
+          still read amber after a save: it also checks that every
+          membership type requiring a subscription based on age tier has a
+          tier that actually requires one, and that flag is set on Admin
+          &rarr; Membership Types, not here. Saving does not tick this step
+          off — use &ldquo;Mark this step done&rdquo; above when you are
+          happy with it.
+        </p>
+      </div>
+      <AgeTierSection />
+    </section>
+  );
+}
+
+/**
+ * The default cancellation policy and the group discount sections, in the
+ * wizard (`booking-policies`).
+ *
+ * D16 deferred this step to backlog: "`/admin/booking-policies` is several
+ * independent staged sections rather than one, so which of them the step
+ * embeds is its own decision." C17 (#248, dossier §B.3) makes that decision.
+ * The hub (`/admin/booking-policies/page.tsx`) links to SIX independent
+ * sections, but `buildBookingPolicyCheck` in `setup-readiness.ts` reads only
+ * three facts — `cancellationPolicyCount`, `bookingDefaultsConfigured` and
+ * `groupDiscountConfigured` — and all three are written by exactly two of the
+ * six: {@link DefaultCancellationPolicySection} (the cancellation rules, and —
+ * on its CLUB-WIDE save only — `bookingDefaults`, confirmed by grep that
+ * `tx.bookingDefaults.upsert` in
+ * `api/admin/booking-policies/cancellation/route.ts` is the ONLY writer of
+ * that table; a lodge-override save never reaches it) and
+ * {@link GroupDiscountSection}. The other four — date-specific periods,
+ * minimum stay, adult-member hosting, public booking requests — change
+ * nothing the check reads. Embedding them would be an editor whose Save
+ * visibly moves nothing (the R2-2 shape this design avoids), so they stay
+ * behind the step's existing `href` to the hub.
+ *
+ * **Both sections keep their OWN banner — the sanctioned stacked-sections
+ * case**, not a gap to fix: `docs/ARCHITECTURE.md` -> "Admin/member layer",
+ * "Once per section, NOT once per screen" names `/admin/security` and
+ * `/admin/booking-requests` as existing pages where several banner-bearing
+ * sections sit side by side, each rendering its own. This wrapper renders NO
+ * banner of its own — nothing here composes a third sentence, and the
+ * `view-only-banner-contract.test.ts` published census (`bannerComponents`)
+ * is untouched by this file.
+ *
+ * **The area gate composes.** `SETUP_STEP_PERMISSION_AREA["booking-policies"]`
+ * is `"bookings"`, and both sections gate their own read/write on
+ * `useAdminAreaEditAccess("bookings")` — the SAME area — so
+ * `canViewSetupStepPane`'s mount gate and each section's own gate can never
+ * disagree about which permission this screen is asking for.
+ *
+ * The heading sits OUTSIDE both sections and renders unconditionally, for the
+ * mount-order reason spelled out on `ClubIdentityWizardPane`.
+ */
+function BookingPoliciesWizardPane() {
+  return (
+    <section className="space-y-3 rounded-md border bg-card p-5">
+      <div className="space-y-1">
+        <h3 className="text-lg font-semibold text-foreground">
+          Booking policies
+        </h3>
+        <p className="text-sm text-muted-foreground">
+          These two sections are what this step&apos;s checklist reads: the
+          default cancellation policy (its refund rules, the non-member hold,
+          and the cross-lodge waitlist order) and the group discount. Minimum
+          night stay, date-specific cancellation periods, adult-member
+          hosting, and public booking requests live on their own screens —
+          use &ldquo;Open the settings for this step&rdquo; above to reach
+          them. Saving here does not tick the step off — use &ldquo;Mark this
+          step done&rdquo; above when you are happy with it.
+        </p>
+      </div>
+      <DefaultCancellationPolicySection />
+      <GroupDiscountSection />
+    </section>
+  );
+}
+
+/**
  * Step id -> the editor the wizard mounts beneath its frame, or `null` with the
  * reason there is none.
  *
@@ -231,31 +405,38 @@ export const SETUP_STEP_PANES: Record<SetupStepId, ComponentType | null> = {
   // The secret's strength is a property of `AUTH_SECRET` in the environment.
   // An admin form that set it would be a secret typed into a browser.
   "auth-secret-strength": null,
-  // The member editor is a per-record admin surface, not a settings section:
-  // it needs a chosen member before it can render anything, so there is no
-  // zero-prop section to embed. `/admin/members` stays the link out.
-  "seed-admin": null,
+  // C20 (#251): the ONE pane in this table that is BUILT rather than embedded.
+  // The member editor is a per-record admin surface, not a settings section —
+  // it needs a chosen member before it can render anything — so there is no
+  // zero-prop section to embed and D8's parity rule has nothing to point at.
+  // `SetupWizardFirstAdminPane` is therefore the smallest form that can satisfy
+  // the step (create only; retiring the seeded account is its own decision),
+  // and its own file carries the reasoning — including which column the
+  // readiness check counts, which is the trap this step hides.
+  // `/admin/members` stays the link out.
+  "seed-admin": SetupWizardFirstAdminPane,
   // C13 (#239): the module toggles, and the moment mockup 2 promised — switching
   // a module on redraws the rail beside it. This step had no pane AND no link
   // (its check carries neither `href` nor `links`), so it was the one step the
   // wizard offered no route out of at all.
   "feature-flags": ModulesWizardPane,
-  // The club's buildings are a LIST, and each one is set up through its own
-  // multi-page per-lodge flow (C6, #221). The step already renders one link
-  // per lodge; embedding would mean embedding a whole flow, not a section.
-  lodges: null,
+  // C19 (#250): the lodge list, its rename form, add-a-lodge and the
+  // activate/deactivate control. The club's buildings are a LIST and each one
+  // is set up through its own multi-page per-lodge flow (C6, #221) — so the
+  // FLOW stays a link, as it always was, and what the pane embeds is the
+  // section around it. UAT R2-7 is why: this step offered two kinds of link and
+  // nothing to do.
+  lodges: LodgesWizardPane,
 
-  // --- Booking rules ---
-  // Deferred to the D16 backlog, and larger than the two proved here:
-  // `/admin/booking-policies` is several independent staged sections rather
-  // than one, so which of them the step embeds is its own decision.
-  "booking-policies": null,
+  "booking-policies": BookingPoliciesWizardPane,
   // Backlog, same round. `/admin/setup/cancellation` is itself one of the
   // legacy setup drill-downs C8's switch hides, so the shape of its section
   // has to settle before a pane can point at it.
   "membership-cancellation": null,
-  // Backlog (D16 names age tiers explicitly). Wait for the C13 re-walk.
-  "age-tiers": null,
+  // C18 (#249): the age-tier boundary editor, C13's move repeated. See
+  // `AgeTierWizardPane` for the pane-copy caveat this step needed that
+  // `feature-flags` and `club-config` did not.
+  "age-tiers": AgeTierWizardPane,
   // Backlog (D16 names seasons explicitly). Wait for the C13 re-walk.
   "seasons-rates": null,
 
