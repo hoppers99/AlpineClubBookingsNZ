@@ -237,6 +237,10 @@ function traversalWith(ids: SetupStepId[]): SetupWizardTraversal<SetupStepId> {
       isReachable: index === 0,
     })),
     applicableStepIds: ids,
+    // D17 (#246): every id these pane fixtures name is an operator step, so
+    // the environment half is empty here by construction.
+    environmentFacts: [],
+    launchBlockedBy: [],
     staleStepIds: [],
     outstandingStepIds: ids,
     blockingStepIds: ids,
@@ -338,6 +342,29 @@ describe("the pane registry", () => {
         entry === null || typeof entry === "function",
         `${id} must be a component or an explicit null`,
       ).toBe(true);
+    }
+  });
+
+  it("gives an ENVIRONMENT fact no pane, because nothing would ever mount it", () => {
+    /*
+      The other half of D17's silent-loss class (C15 #246 fix round, review
+      finding F7). A pane is mounted BESIDE the step frame, and an environment
+      fact has no step frame — it is a row on the Server-environment panel. So a
+      pane declared against a fact is dead code that reads as a live feature:
+      somebody writes it, the table accepts it, and no screen ever renders it.
+      The type cannot say this (the Record is total over every id, deliberately),
+      so this does.
+    */
+    const environmentIds = SETUP_STEP_REGISTRY.filter(
+      (entry) => entry.kind === "environment",
+    ).map((entry) => entry.id);
+    expect(environmentIds.length).toBe(5);
+
+    for (const id of environmentIds) {
+      expect(
+        SETUP_STEP_PANES[id],
+        `"${id}" is an environment fact and declares a pane; the wizard has nowhere to mount it, so it would never render`,
+      ).toBeNull();
     }
   });
 });
@@ -653,6 +680,10 @@ function traversalFor(
       isReachable: true,
     })),
     applicableStepIds: ids,
+    // D17 (#246): every id these pane fixtures name is an operator step, so
+    // the environment half is empty here by construction.
+    environmentFacts: [],
+    launchBlockedBy: [],
     staleStepIds: [],
     outstandingStepIds: ids.filter((id) => id !== "club-config"),
     blockingStepIds: ids.filter((id) => id !== "club-config"),

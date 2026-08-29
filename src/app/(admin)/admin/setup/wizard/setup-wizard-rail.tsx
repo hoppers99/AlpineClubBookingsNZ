@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AlertTriangle,
   CheckCircle2,
   CircleDashed,
   CircleDot,
@@ -9,6 +10,7 @@ import {
   Lock,
   RefreshCw,
   Rocket,
+  ServerCog,
   SkipForward,
 } from "lucide-react";
 import type { SetupStepId } from "@/lib/setup-step-registry";
@@ -50,7 +52,21 @@ import { cn } from "@/lib/utils";
 /** The sentinel the launch panel occupies at the end of the rail (D9). */
 export const SETUP_WIZARD_LAUNCH_ID = "__launch__";
 
-export type SetupWizardRailSelection = SetupStepId | typeof SETUP_WIZARD_LAUNCH_ID;
+/**
+ * The sentinel the Server-environment panel occupies (D17, C15 #246).
+ *
+ * A sentinel rather than a step id, exactly like the launch panel's, and for
+ * the same reason: it is a SURFACE the rail can select, not an entry in the
+ * journey. It carries no state icon, is always reachable, and never counts
+ * toward the percentage — because there is nothing to do there, only something
+ * to read.
+ */
+export const SETUP_WIZARD_ENVIRONMENT_ID = "__environment__";
+
+export type SetupWizardRailSelection =
+  | SetupStepId
+  | typeof SETUP_WIZARD_LAUNCH_ID
+  | typeof SETUP_WIZARD_ENVIRONMENT_ID;
 
 function StateIcon({ state }: { state: SetupWizardStepState }) {
   switch (state) {
@@ -309,6 +325,8 @@ export function SetupWizardRail({
   currentStepId,
   selectedId,
   launchUnlocked,
+  environmentCount,
+  environmentNeedsAttention,
   onSelect,
 }: {
   groups: readonly SetupWizardRailGroup[];
@@ -316,6 +334,14 @@ export function SetupWizardRail({
   currentStepId: SetupStepId | null;
   selectedId: SetupWizardRailSelection | null;
   launchUnlocked: boolean;
+  /**
+   * How many environment facts this club has (D17, #246). Zero hides the rail
+   * entry altogether — a deployment with nothing to report should not offer a
+   * screen that says so.
+   */
+  environmentCount: number;
+  /** Any environment fact is not green, so the entry carries a quiet marker. */
+  environmentNeedsAttention: boolean;
   onSelect: (id: SetupWizardRailSelection) => void;
 }) {
   const currentRowRef = useRef<HTMLElement | null>(null);
@@ -410,6 +436,56 @@ export function SetupWizardRail({
                 ))}
               </div>
             ))}
+
+            {/*
+              THE ENVIRONMENT PANEL'S ENTRY (D17, C15 #246), under its own
+              heading and BELOW the journey's groups.
+
+              Under its own heading because it is not a group of steps: the
+              category headings above name parts of the operator's work, and
+              putting deployment facts under one of them is exactly the
+              conflation D17 undoes. Below the journey because it is reference
+              material — an operator reads it when something is wrong or when
+              they want to know what they have been handed, not as the next
+              thing to do. And ALWAYS reachable, unlike the launch entry, since
+              there is nothing to unlock: reading a fact has no prerequisite.
+            */}
+            {environmentCount > 0 ? (
+              <div className="space-y-1">
+                <p className="px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Server environment
+                </p>
+                <button
+                  type="button"
+                  data-testid="setup-wizard-rail-row-environment"
+                  data-reachable="true"
+                  data-needs-attention={
+                    environmentNeedsAttention ? "true" : "false"
+                  }
+                  aria-current={
+                    selectedId === SETUP_WIZARD_ENVIRONMENT_ID
+                      ? "step"
+                      : undefined
+                  }
+                  onClick={() => onSelect(SETUP_WIZARD_ENVIRONMENT_ID)}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left transition-colors",
+                    selectedId === SETUP_WIZARD_ENVIRONMENT_ID
+                      ? "border-brand-gold bg-muted text-foreground"
+                      : "border-transparent text-foreground hover:border-border",
+                  )}
+                >
+                  {environmentNeedsAttention ? (
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-warning-11" />
+                  ) : (
+                    <ServerCog className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-sm">
+                    About this server
+                  </span>
+                </button>
+              </div>
+            ) : null}
 
             <div className="space-y-1">
               <p className="px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">

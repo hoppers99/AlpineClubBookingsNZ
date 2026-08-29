@@ -5,7 +5,7 @@ import logger from "@/lib/logger";
 import { PUBLIC_LAYOUT_CACHE_TAGS } from "@/lib/public-layout-cache";
 import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 import { requireAdmin } from "@/lib/session-guards";
-import { refuseSiteVisibilityWhileEnvironmentUnknown } from "@/lib/site-visibility-gate";
+import { refuseSiteVisibilityWhileLaunchBlocked } from "@/lib/site-visibility-gate";
 
 /**
  * Make the public site visible — and change nothing else (#220 review F3).
@@ -35,9 +35,13 @@ import { refuseSiteVisibilityWhileEnvironmentUnknown } from "@/lib/site-visibili
  * C16 (#247) ADDS A SECOND GATE — `INV-CONFIG-006` — and it is not a permission
  * one. `content: edit`
  * answers "may this administrator publish"; it says nothing about whether this
- * INSTALLATION is the one that should be publishing. The environment gate answers
- * that, and lives in `site-visibility-gate.ts` because the site-style PUT
- * performs the same transition and must refuse identically.
+ * INSTALLATION is ready to. The launch gate answers that, and lives in
+ * `site-visibility-gate.ts` because the site-style PUT performs the same
+ * transition and must refuse identically. D17 (C15's fix round on #247) widens
+ * it from the environment role alone to all three registry facts the wizard's
+ * own launch panel gates on — `environment-role`, `runtime-env` and
+ * `auth-secret-strength` — so a hand-rolled call here can no longer publish a
+ * site the wizard's own button would refuse.
  */
 export async function POST() {
   const guard = await requireAdmin({
@@ -46,13 +50,15 @@ export async function POST() {
   if (!guard.ok) return guard.response;
 
   try {
-    // INSIDE the try, deliberately. `resolveEnvironmentRole()` does not throw —
-    // it answers UNKNOWN instead — so this is not a case being handled but a
-    // direction being chosen: if it ever did throw, the catch below refuses with
-    // a logged 500 and still writes nothing, which is the same side of the gate.
-    // Outside the try it would be an unhandled rejection that publishes nothing
-    // either, but says so only in the framework's own log.
-    const refusal = await refuseSiteVisibilityWhileEnvironmentUnknown();
+    // INSIDE the try, deliberately. Every check this gate calls fails soft —
+    // `resolveEnvironmentRole()` answers UNKNOWN rather than throwing, and the
+    // other two read only `process.env` — so this is not a case being handled
+    // but a direction being chosen: if one of them ever did throw, the catch
+    // below refuses with a logged 500 and still writes nothing, which is the
+    // same side of the gate. Outside the try it would be an unhandled
+    // rejection that publishes nothing either, but says so only in the
+    // framework's own log.
+    const refusal = await refuseSiteVisibilityWhileLaunchBlocked();
     if (refusal) return refusal;
 
     const isComplete = await markClubThemeSetupComplete(guard.session.user.id);

@@ -78,6 +78,115 @@ export type SetupStepOwner = ModuleKey | typeof CORE_STEP_OWNER;
 export type SetupStepCompletionSource = "readiness-check";
 
 /**
+ * WHO CAN ACT ON THIS ENTRY (epic #213, **D17**, child C15 #246).
+ *
+ * Until D17 every readiness check was also a wizard step, and UAT round 2 found
+ * what that costs: three consecutive screens — `environment-role`, `runtime-env`,
+ * `auth-secret-strength` — that an operator sitting in the wizard cannot act on
+ * at all, and is made to click through to reach the ones they can. Their subject
+ * is the DEPLOYMENT, and the person who can change a deployment's `.env` is by
+ * definition not the person reading this screen: if they were, they would have
+ * restarted the server rather than pressed "Mark this step done".
+ *
+ * - `operator` — an administrator can move this from not-done to done by their
+ *   own action, inside this application. It is a step: it is on the rail, it
+ *   counts toward D7's percentage, it caps D2's frontier, and it is one of the
+ *   things `allResolved` is about.
+ * - `environment` — the check reports a fact about the DEPLOYMENT that no
+ *   in-app action changes. It is not a step. It never appears on the rail,
+ *   contributes nothing to the percentage or the frontier, and cannot be
+ *   confirmed, skipped or reopened; it is REPORTED, on the wizard's
+ *   Server-environment panel, with a remedy addressed to whoever runs the
+ *   server.
+ *
+ * **REQUIRED, not optional-with-a-default, and that is the whole point.** This
+ * registry's founding complaint is a flat array that "gained three hand-added
+ * ids in a fortnight and said nothing about who owned them" (see the module doc
+ * above). A `kind` defaulting to `"operator"` would decide this question
+ * silently for every step somebody adds without thinking about it — and
+ * "silently deciding a question nobody was asked" is the exact defect the
+ * registry exists to prevent. This epic already pays that tax three times over
+ * (`SETUP_STEP_PERMISSION_AREA`, `SETUP_STEP_DEFAULTED_EVIDENCE` and
+ * `SETUP_STEP_PANES` are all exhaustive Records for the same reason), so a new
+ * step fails the typecheck here until a person decides which side of the line it
+ * is on. The cost is one field on twenty declarations, paid once.
+ *
+ * **Why a field and not an exclusion set in the traversal.** An exclusion set
+ * was the cheaper option and it is rejected on this registry's own founding rule
+ * ("Derived, not parallel"): it is a second list, in exactly the shape the flat
+ * array was, and it would be UNREACHABLE from three places that need the
+ * answer — `buildSetupReadiness`, the setup-progress route's validator, and
+ * `npm run setup:check` — so "may an operator confirm this?" would have three
+ * answers depending on which module you asked.
+ *
+ * **It is a plain string literal**, deliberately, so `npm run setup:check` (a
+ * `tsx` entrypoint) imports this module as happily as the React tree does. This
+ * is why `kind` lives here and `SETUP_STEP_PANES` — which carries
+ * `ComponentType`s — could not.
+ */
+export type SetupStepKind = "operator" | "environment";
+
+/**
+ * WHETHER THIS ENTRY CAN HOLD THE PUBLISH BUTTON SHUT (epic #213, **D17**, C15
+ * #246).
+ *
+ * Three of the five environment facts describe a deployment a club must not
+ * open its public site on top of: nothing has declared whether this
+ * installation is the live site or a copy, a required runtime variable is
+ * missing or malformed, or the auth secret is weak enough that the site cannot
+ * store a Stripe or Xero credential. The other two — email transport and
+ * Sentry — are worth an amber row and nothing more.
+ *
+ * - `none` — this entry never holds publish shut. Every operator step
+ *   (`allResolved` is the gate that speaks for those — D9 keeps the three facts
+ *   separate and this must not re-merge them) and the two advisory facts.
+ * - `blocks-until-complete` — while this fact's readiness check is anything
+ *   other than `complete`, `launchBlockedBy` names it and the launch panel
+ *   refuses to publish.
+ *
+ * **`!== "complete"` is the whole predicate, and the honest way to read it is
+ * "anything the check does not call green holds publish shut" — which is WIDER
+ * than the three conditions D17's own sentence names.** `runtime-env` is
+ * `complete` iff no variable is missing or malformed, and
+ * `auth-secret-strength` iff the secret is not weak; both have exactly the two
+ * outcomes. `environment-role` has FIVE branches, and enumerating them is the
+ * only way to see what the gate really covers (C15 #246 fix round, review
+ * finding F1 — the docblock used to name three and quietly own four):
+ *
+ * 1. **PRODUCTION, mail going out** — `complete`.
+ * 2. **NON_PRODUCTION**, declared or administrator-forced — `complete`. A test
+ *    site that is deliberately visible and deliberately not production is a
+ *    normal, permanent state (D9).
+ * 3. **UNKNOWN** — `blocked`. The condition D17 names: nothing has said which
+ *    installation this is, email and Xero writes fail closed, and a publish
+ *    would open a site in that state.
+ * 4. **PRODUCTION, but a local capture mailbox is also declared** (#3035) —
+ *    `warning`, and therefore ALSO gated. The direction is right (a live club
+ *    whose mail forwards nowhere should not open its public site); the COPY was
+ *    wrong until this fix round, because the remedy told that operator to set
+ *    `APP_ENVIRONMENT_ROLE`, which is already correct on this branch.
+ *    `SETUP_ENVIRONMENT_REMEDY_BY_STATUS` in `setup-wizard-environment-view.ts`
+ *    now answers it in its own words.
+ * 5. **"Database state was not checked"** — `warning`, so gated too, but
+ *    unreachable from the publish button: it needs `db` to be absent, which
+ *    only `npm run setup:check` without database access produces.
+ *
+ * A gated check that grows a sixth branch widens the publish gate silently, so
+ * `gatingStatusSets` in `setup-wizard-view.test.ts` pins each gated fact's
+ * REACHABLE status set and fails with a message saying a widening needs a
+ * decision and a remedy row.
+ *
+ * **REQUIRED on every entry, like `kind`, and for the same reason.** The unsafe
+ * silence here is the opposite of the one `kind` guards: a defaulted `none`
+ * would let somebody add a genuine launch precondition and have it quietly not
+ * gate anything. `findSetupStepRegistryViolations` additionally refuses an
+ * OPERATOR step that claims to gate launch — that question is `allResolved`'s,
+ * and a step answering it twice is D14's one-number-two-meanings defect a layer
+ * up.
+ */
+export type SetupStepLaunchGate = "none" | "blocks-until-complete";
+
+/**
  * The shape a definition is authored in. `id` and `prerequisites` are `string`
  * rather than `SetupStepId` because `SetupStepId` is derived FROM the
  * definitions — narrowing them here would be circular. `SetupStepEntry` below is
@@ -86,6 +195,10 @@ export type SetupStepCompletionSource = "readiness-check";
 export interface SetupStepDefinition {
   readonly id: string;
   readonly ownerModule: SetupStepOwner;
+  /** Operator step or deployment fact — see {@link SetupStepKind}. */
+  readonly kind: SetupStepKind;
+  /** Whether this entry can hold publish shut — see {@link SetupStepLaunchGate}. */
+  readonly launchGate: SetupStepLaunchGate;
   readonly prerequisites: readonly string[];
   readonly order: number;
   readonly completion: SetupStepCompletionSource;
@@ -400,6 +513,65 @@ export function findSetupStepRegistryViolations(
       if (!prerequisiteModuleIsSafe) {
         violations.push(
           `Setup step "${dependent.id}" (module "${dependent.ownerModule}") depends on prerequisite "${prerequisite.id}" (module "${prerequisite.ownerModule}"): the dependent can be applicable while its prerequisite's module is disabled`,
+        );
+      }
+    }
+  }
+
+  // D17 (#246): an `environment` entry has LEFT the journey — it is not on the
+  // rail, the operator cannot confirm it, and the progress route refuses every
+  // transition on it. So it can be neither end of a prerequisite edge, and both
+  // directions are a genuine trap rather than a tidiness rule:
+  //
+  // - An operator step that DEPENDS on an environment fact declares an ordering
+  //   the wizard then QUIETLY IGNORES. This bullet used to say the dependent
+  //   went stale permanently; the code says otherwise, and the truth is the
+  //   more insidious of the two (C15 #246 fix round, review finding F3).
+  //   `computeStaleSetupStepIds` narrows to `kind: "operator"` before walking
+  //   prerequisites, so an environment prerequisite is `known` but not
+  //   `applicable` — the "excluded by a disabled module" arm, which returns
+  //   false. The edge is a silent no-op: no staleness, no error, no clue, and
+  //   the dependent behaves as if nothing had been declared. A rule that does
+  //   nothing surfaces nowhere, so it is refused here instead.
+  // - An environment fact that DECLARES a prerequisite is asserting an ordering
+  //   over something that has no position in the journey to be ordered against.
+  //   The panel renders every fact at once.
+  //
+  // Every prerequisite list is empty today, so this guards the future rather
+  // than the present — which is the cheapest moment to write it, because there
+  // is no existing edge to argue about.
+  // D9 keeps setup-done, site-visible and environment-role separate, and the
+  // publish gate is the place they could most easily be re-merged. An operator
+  // step that claimed to gate launch would be answering `allResolved`'s
+  // question a second time, in a second place, with a second predicate — which
+  // is D14's one-number-two-meanings defect one layer up.
+  for (const definition of definitions) {
+    if (
+      definition.kind === "operator" &&
+      definition.launchGate !== "none"
+    ) {
+      violations.push(
+        `Setup step "${definition.id}" is an operator step but declares launchGate "${definition.launchGate}"; whether operator steps hold publish shut is allResolved's question, and only an environment fact may gate launch separately (D9/D17)`,
+      );
+    }
+  }
+
+  for (const definition of definitions) {
+    if (definition.kind !== "environment") continue;
+    if (definition.prerequisites.length > 0) {
+      violations.push(
+        `Setup step "${definition.id}" is an environment fact but declares prerequisites (${definition.prerequisites.join(", ")}); an environment fact has no position in the journey to order against`,
+      );
+    }
+  }
+  for (const dependent of definitions) {
+    for (const prerequisiteId of dependent.prerequisites) {
+      const prerequisite = definitionsById.get(prerequisiteId);
+      // Unknown prerequisites are already reported above.
+      if (!prerequisite) continue;
+      if (prerequisite.kind === "environment") {
+        violations.push(
+          `Setup step "${dependent.id}" depends on prerequisite "${prerequisite.id}", which is an environment fact: the staleness pass walks operator steps only, so this edge would be silently ignored — the ordering you declared would do nothing at all`,
         );
       }
     }

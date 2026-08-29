@@ -68,12 +68,31 @@ is not.
 
 The wizard is the destination: it is where a club's setup is meant to be done,
 and the checklist is the map you keep for later. Neither can tell you something
-the other would contradict. **Both derive the list of steps from the same
-place**, so the number of outstanding items, and which items they are, are the
-same answer shown two ways — the wizard as a percentage down its rail, the
-checklist as cards grouped by category. **The percentage itself is one number
-shown twice**: the checklist's Progress tile displays the wizard's own figure
-rather than working out a second one.
+the other would contradict. **Both read the same list of checks from the same
+place**, so no item can exist on one surface and not the other, and the
+checklist as cards grouped by category shows every one of them.
+
+**The wizard divides that list in two, and this is the one difference between
+the surfaces worth knowing.** Five of the checks are not things an
+administrator can do: they report the state of the server the site runs on — the
+environment role, the runtime variables, the auth secret, email delivery and
+Sentry. Those are reported on the wizard's own **About this server** screen
+instead of being walked through as steps, because their remedy is a change to
+the server's configuration by whoever runs it, not something anybody can press a
+button for from here. The other fifteen are the journey — **eleven of them on a
+default install**, because four belong to modules that ship switched off and
+appear only when you turn one on. See
+[About this server](#about-this-server-the-facts-you-cannot-change-from-here)
+below.
+
+So the checklist card for **Runtime Environment** and the wizard's row for it
+report the same verdict in the same words; only the wizard's treatment of it
+differs, because only the wizard is asking you to *do* something. **The
+percentage counts the steps that apply to your club** — the eleven on a default
+install, up to fifteen with every module on — and the checklist's Progress tile
+displays the wizard's own figure rather than working out a second one. That is
+also why it is a percentage rather than "x of y": switching a module on changes
+the denominator, and a count that moved would read as though work had been lost.
 
 The two surfaces do answer two *different* questions, though, and each says
 which. The percentage answers **how far through this has somebody been** — it
@@ -175,9 +194,11 @@ enough — every sub-page is captured and detailed where it lives.
 
 2. Work through the **checklist categories**. A check can be marked done or
    skipped, and provider checks offer a **test** button (Stripe, SMTP, Sentry,
-   Xero) that pings the live service and reports the result — the wizard's step
-   for each of those four offers the same button, so retiring the checklist does
-   not take it away. Marking a check
+   Xero) that pings the live service and reports the result — the wizard offers
+   the same button for all four, so retiring the checklist does not take it
+   away. Stripe and Xero carry theirs on their own wizard step; SMTP and Sentry
+   carry theirs on the **About this server** screen, which is where those two
+   are reported. Marking a check
    done, skipping it, reopening it, finishing setup and resetting progress are
    each recorded in the [Audit Log](audit-log.md) under their own event type
    and in the **system** category, so you can see who changed what and when.
@@ -200,7 +221,8 @@ above for how to choose.
    wizard** — or go straight to `/admin/setup/wizard`. It opens at the step you
    left off at, not back at the beginning.
 2. The **rail** down the left carries the whole journey, grouped under the same
-   headings as the checklist. Each row says where that step stands:
+   headings as the checklist, with **About this server** below it and **Finish**
+   at the foot. Each journey row says where that step stands:
 
    | The row says | It means |
    | --- | --- |
@@ -221,13 +243,13 @@ above for how to choose.
      to any of it: these are the shipped defaults rather than your club's
      decisions, and some of them will be wrong for you. The step tells you the
      value is there, and points at the page where you change it.
-   - **A fact read off this deployment.** The environment role, the runtime
-     variables, the auth secret, the administrator account the install created,
-     a payment or email provider whoever set the site up connected. These may
-     well have been chosen deliberately — the wizard has no way to know, and for
-     several of them there is nothing on the page to change, because the value
-     lives in the server's configuration. So the step asks you to review what it
-     reports rather than telling you nobody chose it.
+   - **A fact read off this deployment.** The administrator account the install
+     created, or a payment provider whoever set the site up connected. These may
+     well have been chosen deliberately — the wizard has no way to know — so the
+     step asks you to review what it reports rather than telling you nobody
+     chose it. (The facts with *nothing* on the page to change, because the
+     value lives only in the server's configuration, are not steps at all any
+     more: they are on **About this server**.)
 
    Either way the wizard walks you to the step, says what it found, and asks you
    to look. **Marking the step done is how you confirm it** — that is the record
@@ -438,6 +460,59 @@ above for how to choose.
    Anything you skipped is listed on that panel in plain words rather than
    quietly dropped.
 
+   **Ready to open unlocking is not the same as being able to publish.** If one
+   of the three gating facts on [About this server](#about-this-server-the-facts-you-cannot-change-from-here)
+   is not right, the panel still opens — you can read everything on it — but
+   **Make the public site visible** is refused, with the reason and whose job it
+   is stated beside the button. That separation is the point: the screen that
+   explains a refusal is no use if the refusal hides it.
+
+#### About this server: the facts you cannot change from here
+
+Five of the twenty checks describe the **server this site runs on** rather than
+the club's own settings, and the wizard keeps them apart from the journey. They
+are on their own screen, **About this server**, reached from the rail below the
+journey's headings.
+
+They are there because of what happened when they were not. An administrator
+setting a club up met three screens in a row — the environment role, the runtime
+variables, the auth secret — that they could not act on, and had to click past
+all three to reach the next thing they could. Their own presence in the wizard
+proved the site was running; what the screens were actually reporting was the
+contents of a file on a server they had no access to. Being asked to "mark done"
+something you cannot change reads as a failing of yours, and it is not one.
+
+So each row on that screen says, in this order:
+
+1. **Who does this** — and for all five it is whoever installed and runs the
+   site, not the person reading the screen.
+2. **The one line to send them** — written to be copied into an email or a
+   message and acted on by somebody who is not looking at the wizard. It names
+   the variable, the file and the restart.
+3. **Why it matters**, tucked behind a "Why this matters" toggle, because you do
+   not need it in order to forward the line above.
+
+A row that is fine stays on the screen and reads green. That is deliberate: a
+screen that only appeared when something was wrong would leave you unable to
+tell "all fine" from "not checked yet".
+
+**None of these stop you working through the wizard.** You can set the whole
+club up with the server's email transport unconfigured. **Three of them stop you
+opening the public site**, and the wizard says so both on this screen and beside
+the button they refuse:
+
+| Fact | Holds the site shut? | Because |
+| --- | --- | --- |
+| Production or non-production | **Yes** | Nothing has declared whether this installation is the club's live site or a copy, so it is treated as neither and holds all member email back. A copy that published would email real members. It also holds the site shut in one other state: the installation *is* declared the live site but still sends its mail to a capture mailbox, so no member email goes out at all |
+| Runtime environment | **Yes** | A required variable is missing or malformed, and every one of them must be set before the club opens. That is exactly why this is a gate: the site RUNS without some of them — which is how you are reading this screen — so nothing else would ever catch it. A club that opened with its cron secret unset would look completely normal and have nothing running overnight |
+| Auth secret strength | **Yes** | Sign-in, two-factor and every stored credential derive from it. Until it is strong the site refuses to store a Stripe or Xero credential at all |
+| Email delivery | No | Nothing that needs to reach a member by email will, so fix it before real members use the site — but it does not stop you opening |
+| Sentry | No | Optional error reporting. Nothing about running the club depends on it |
+
+**Email delivery** and **Sentry** each carry their **test** button here — the
+same one the checklist offers — which is how you check whether a fix your
+deployer has just made actually worked, without leaving the wizard.
+
 #### When a finished step needs another look
 
 Some steps only make sense once an earlier one is settled. If you go back and
@@ -589,6 +664,7 @@ or run `npm run config:self-heal`.
 | **Club Time Zone** shows a warning about confirming the zone | The server's `TZ` named no actual place, so `Pacific/Auckland` was recorded rather than guessed at from a value that names no location | If the club is in New Zealand, acknowledge the step. If not, set the real zone at [`/admin/club-time`](club-time.md) — this is the case that would otherwise put a non-NZ club's times out by hours |
 | Setup shows incomplete after go-live | Optional checks were left unskipped | Mark genuinely-skipped checks as skipped so the summary reflects reality |
 | A wizard step will not open | It is further ahead than you have reached | Settle the steps before it — finish them, or skip the ones that do not apply |
+| **Make the public site visible** is greyed out on **Ready to open** | One of the three gating facts on **About this server** is not right — nothing has declared whether this is the live site or a copy, a required runtime variable is missing, or the auth secret is weak | Open **About this server** in the rail, send the line it gives you to whoever runs the site, and try again once they have restarted it |
 | **Ready to open** stays locked in the wizard | Something is still outstanding and has not been skipped — including any step showing **Default in place**, which needs confirming or skipping like any other | Work down the rail; anything you genuinely do not need can be skipped, which counts as settled |
 | A wizard step's Done / Skip / Reopen buttons are all disabled | Your role has view-only access to **Support**, which is what recording progress needs — on every step, not just this one | Ask an admin with Support edit access to record it. Note this is separate from being able to make the change itself, which needs the settings page's own area |
 | The rail still shows a module's steps after switching it off | The wizard has not re-read the journey yet | Return to the wizard's tab, or press **Refresh** |

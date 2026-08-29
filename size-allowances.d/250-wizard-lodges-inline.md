@@ -18,8 +18,23 @@ together are within a few lines of the one file they replace. Neither is over
 budget, so neither is declared here.
 
 file: src/lib/setup-readiness.ts
-lines: 2620
-reason: #250 adds the zero-bed arm to `buildLodgesCheck`'s detail-line builder —
+lines: 2649
+reason: #246's fix round (D17 review finding F4) exports three functions this
+  file already had — `buildEnvironmentRoleCheck`, `buildRuntimeEnvCheck`,
+  `buildAuthSecretStrengthCheck` — plus the `SetupStepCheck` and `Env` types
+  their signatures use, so `site-visibility-gate.ts`'s widened launch gate can
+  call the SAME check functions the wizard computes `launchBlockedBy` from
+  rather than re-deriving their polarity. The growth is the `export` keywords,
+  a widened `Pick<...>` parameter type on the first function (it needed only
+  two of `SetupDatabaseSnapshot`'s fields, not the whole snapshot), and one
+  short docblock paragraph per export saying why it is reachable from outside
+  this file now. There is no seam to split these three functions out to: they
+  are three of the twenty individual check builders this file's own docblock
+  already explains are assembled together at the foot of the file, and moving
+  three of twenty to a new file would separate them from the copy pattern
+  (`SetupStatus`, `SetupStepCheck`, `applyProgress`) every other builder here
+  shares.
+  #250 adds the zero-bed arm to `buildLodgesCheck`'s detail-line builder —
   one branch, its sentence, and the docblock paragraph saying why it changes the
   WORDING and deliberately not the verdict. It exists precisely because the arms
   it sits beside were indistinguishable: an active lodge with no beds read

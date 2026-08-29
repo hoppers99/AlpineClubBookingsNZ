@@ -68,6 +68,8 @@ function renderRail(overrides: Partial<Parameters<typeof SetupWizardRail>[0]> = 
       currentStepId={"here" as SetupStepId}
       selectedId={"here" as SetupStepId}
       launchUnlocked={false}
+      environmentCount={0}
+      environmentNeedsAttention={false}
       onSelect={onSelect}
       {...overrides}
     />,
@@ -141,6 +143,8 @@ describe("SetupWizardRail", () => {
         currentStepId={"skipped-here" as SetupStepId}
         selectedId={"skipped-here" as SetupStepId}
         launchUnlocked={false}
+        environmentCount={0}
+        environmentNeedsAttention={false}
         onSelect={vi.fn()}
       />,
     );
@@ -171,6 +175,8 @@ describe("SetupWizardRail", () => {
         currentStepId={"defaulted-here" as SetupStepId}
         selectedId={"defaulted-here" as SetupStepId}
         launchUnlocked={false}
+        environmentCount={0}
+        environmentNeedsAttention={false}
         onSelect={vi.fn()}
       />,
     );
@@ -217,6 +223,8 @@ describe("SetupWizardRail", () => {
         currentStepId={"all-three" as SetupStepId}
         selectedId={"all-three" as SetupStepId}
         launchUnlocked={false}
+        environmentCount={0}
+        environmentNeedsAttention={false}
         onSelect={vi.fn()}
       />,
     );
@@ -257,6 +265,8 @@ describe("SetupWizardRail", () => {
         currentStepId={"stale-here" as SetupStepId}
         selectedId={null}
         launchUnlocked={false}
+        environmentCount={0}
+        environmentNeedsAttention={false}
         onSelect={vi.fn()}
       />,
     );

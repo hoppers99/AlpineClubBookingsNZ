@@ -387,17 +387,26 @@ function BookingPoliciesWizardPane() {
  * 'Record<SetupStepId, ...>'") when exactly one step is missing an entry, or
  * TS2739 ("Type ... is missing the following properties from type ...: <id>,
  * <id>, ...") when a later change adds several steps at once.
+ *
+ * **The five ENVIRONMENT-fact entries are VESTIGIAL since D17 (C15 #246) and
+ * are kept for type-totality only.** A pane is mounted beside the STEP FRAME,
+ * and a fact has no step frame — it is a row on the Server-environment panel —
+ * so nothing can reach one of those entries at runtime. Their `null`s stay
+ * because the `Record` is total, and `setup-wizard-panes.test.tsx` now fails the
+ * build if one ever becomes a component, because that would be dead code wearing
+ * the shape of a feature.
  */
 export const SETUP_STEP_PANES: Record<SetupStepId, ComponentType | null> = {
   // --- Foundation ---
   "club-config": ClubIdentityWizardPane,
   "club-time-zone": ClubTimeZoneWizardPane,
-  // No pane YET, not "never": `/admin/environment` mounts a zero-prop
-  // `EnvironmentSafetyPanel` behind the same Full-Admin swap this file
-  // replicates for `club-time-zone` — the same embeddable shape, and its
-  // safer override genuinely changes the resolved role (the readiness
-  // check's own text already says half the answer is a database setting).
-  // Deferred to the D16 backlog rather than proved alongside the two here.
+  // No pane, and since D17 (#246) not "yet" either: this is an environment
+  // FACT, so there is no step frame to mount a pane beneath. The earlier note
+  // is kept because it stays true of the shape — `/admin/environment` mounts a
+  // zero-prop `EnvironmentSafetyPanel` behind the same Full-Admin swap this
+  // file replicates for `club-time-zone`, and its safer override genuinely
+  // changes the resolved role — so a future decision to embed it would have to
+  // reclassify the entry first.
   "environment-role": null,
   // Reports the running process's own configuration. There is nothing on this
   // screen that could edit it — the fix is a deployment change and a restart.

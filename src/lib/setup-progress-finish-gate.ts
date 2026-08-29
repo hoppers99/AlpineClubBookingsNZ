@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { recomputeSetupProgressDerivation } from "@/lib/setup-progress-staleness";
-import type { SetupWizardTraversalProgress } from "@/lib/setup-wizard-traversal";
+import type { SetupWizardTraversalProgress } from "@/lib/setup-wizard-entries";
 
 /**
  * The two refusals that stand between a setup-progress transition and the write

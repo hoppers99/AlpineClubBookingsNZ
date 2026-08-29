@@ -105,6 +105,7 @@ import {
   expectEnvironmentRolePremise,
   undeclareEnvironmentRole,
 } from "@/lib/__tests__/helpers/environment-role";
+import { stubHealthyLaunchGateEnv } from "@/lib/__tests__/helpers/setup-launch-gate";
 
 function request(body: unknown) {
   return new NextRequest("http://localhost/api/admin/site-style", {
@@ -149,6 +150,11 @@ describe("site style admin API", () => {
     // in (C16, #247).
     mocks.environmentSafetyFindUnique.mockResolvedValue(null);
     declareEnvironmentRole("production");
+    // C15 fix round on #247: the gate now also checks `runtime-env` and
+    // `auth-secret-strength`, both read straight from `process.env`, so every
+    // completeSetup test below that means to reach a successful publish needs
+    // a healthy deployment declared alongside the role.
+    stubHealthyLaunchGateEnv();
   });
 
   afterEach(() => {

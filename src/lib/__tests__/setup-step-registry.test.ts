@@ -68,6 +68,36 @@ const EXPECTED_STEP_IDS = [
   "xero-mappings",
 ];
 
+/*
+  THE D17 CLASSIFICATION, WRITTEN OUT (#246) — the single literal home for
+  "which entries are deployment facts". `setup-wizard-traversal.test.ts` derives
+  its operator list from the registry on purpose and points here, so this is the
+  one place a reclassification has to be typed by a person.
+
+  Written out for the same reason `EXPECTED_STEP_IDS` above is: a pin that
+  recomputes itself from the thing it pins proves nothing. Moving a step across
+  this line changes what the wizard walks, what the percentage divides by, and —
+  for the three gating ones — whether a club can publish its public site, so it
+  is exactly the kind of change that must be deliberate rather than incidental.
+*/
+const EXPECTED_ENVIRONMENT_STEP_IDS = [
+  "environment-role",
+  "runtime-env",
+  "auth-secret-strength",
+  "email-ses",
+  "sentry",
+];
+
+// The three of those five that hold the publish button shut while their check
+// is not `complete` (`launchGate: "blocks-until-complete"`). Email transport
+// and Sentry are amber-only: a club with no error reporting is not a club that
+// must not open.
+const EXPECTED_LAUNCH_GATING_STEP_IDS = [
+  "environment-role",
+  "runtime-env",
+  "auth-secret-strength",
+];
+
 // The steps the registry considers applicable to a club on the FIRST-INSTALL
 // defaults — the state every new club is actually in, where xeroIntegration,
 // financeDashboard and addressAutocomplete are all off. Written out for the
@@ -156,6 +186,36 @@ function stepIdsOnTheCards(
 describe("setup step registry", () => {
   it("derives SETUP_STEP_IDS as today's 20 ids in today's order", () => {
     expect([...SETUP_STEP_IDS]).toEqual(EXPECTED_STEP_IDS);
+  });
+
+  it("classifies every step, and this is the list (D17, #246)", () => {
+    expect(
+      SETUP_STEP_REGISTRY.filter((entry) => entry.kind === "environment").map(
+        (entry) => entry.id,
+      ),
+    ).toEqual(EXPECTED_ENVIRONMENT_STEP_IDS);
+    // The other fifteen, by construction rather than by a second list: the two
+    // halves must partition the registry, so a step that somehow declared
+    // neither kind would fail here as well as failing the typecheck.
+    expect(
+      SETUP_STEP_REGISTRY.filter((entry) => entry.kind === "operator").length +
+        EXPECTED_ENVIRONMENT_STEP_IDS.length,
+    ).toBe(SETUP_STEP_IDS.length);
+  });
+
+  it("lets exactly three environment facts hold publish shut (D17, #246)", () => {
+    expect(
+      SETUP_STEP_REGISTRY.filter(
+        (entry) => entry.launchGate === "blocks-until-complete",
+      ).map((entry) => entry.id),
+    ).toEqual(EXPECTED_LAUNCH_GATING_STEP_IDS);
+  });
+
+  it("keeps the shipped registry free of every violation, including D17's", () => {
+    // The contract test the guards exist for. Named again here because D17
+    // (#246) added two: an environment fact may not sit on either end of a
+    // prerequisite edge, and an operator step may not claim to gate launch.
+    expect(findSetupStepRegistryViolations(SETUP_STEP_REGISTRY)).toEqual([]);
   });
 
   it("derives every id positionally from its declaration", () => {
@@ -565,6 +625,8 @@ describe("setup step registry guards", () => {
   ): SetupStepDefinition => ({
     id,
     ownerModule: CORE_STEP_OWNER,
+    kind: "operator",
+    launchGate: "none",
     prerequisites: [],
     order: 10,
     completion: "readiness-check",
@@ -842,6 +904,83 @@ describe("setup step registry guards", () => {
       ]),
     ).toEqual([]);
   });
+
+  /*
+    D17's TWO GUARDS (#246). Both protect the future rather than the present —
+    every prerequisite list is empty today and no operator step gates launch —
+    which is exactly the cheapest moment to write them, because there is no
+    existing declaration to argue about.
+  */
+  it("refuses an operator step that depends on an environment fact", () => {
+    /*
+      The trap, CORRECTED in C15's fix round (review finding F3). It is not that
+      the dependent goes stale forever: `computeStaleSetupStepIds` narrows its
+      entries to `kind: "operator"` before it walks prerequisites, so an
+      environment prerequisite is known-but-not-applicable and that arm returns
+      false. The edge is a SILENT NO-OP — the author declares an ordering, gets
+      no error, and gets no ordering — which is the failure worth refusing,
+      because nothing else would ever surface it.
+    */
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("runtime-env", {
+        kind: "environment",
+        launchGate: "blocks-until-complete",
+      }),
+      stepDefinition("seed-admin", {
+        order: 20,
+        prerequisites: ["runtime-env"],
+      }),
+    ]);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain('"seed-admin"');
+    expect(violations[0]).toContain("environment fact");
+    // The word the message must carry is the REAL failure mode, not the one the
+    // guard was first written believing in.
+    expect(violations[0]).toContain("silently ignored");
+    // The behaviour that word describes is asserted where the staleness pass
+    // lives — "an environment prerequisite is silently ignored, not permanently
+    // stale" in `setup-wizard-traversal.test.ts`.
+  });
+
+  it("refuses an environment fact that declares prerequisites", () => {
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("club-config"),
+      stepDefinition("runtime-env", {
+        order: 20,
+        kind: "environment",
+        prerequisites: ["club-config"],
+      }),
+    ]);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain('"runtime-env"');
+    expect(violations[0]).toContain("no position in the journey");
+  });
+
+  it("refuses an operator step that claims to gate launch", () => {
+    // D9 keeps setup-done, site-visible and environment-role separate. Whether
+    // operator steps hold publish shut is `allResolved`'s question, and a step
+    // answering it a second time is D14's one-number-two-meanings defect again.
+    const violations = findSetupStepRegistryViolations([
+      stepDefinition("club-config", { launchGate: "blocks-until-complete" }),
+    ]);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain('"club-config"');
+    expect(violations[0]).toContain("allResolved");
+  });
+
+  it("accepts an environment fact declared the way the real ones are", () => {
+    expect(
+      findSetupStepRegistryViolations([
+        stepDefinition("club-config"),
+        stepDefinition("runtime-env", {
+          order: 20,
+          kind: "environment",
+          launchGate: "blocks-until-complete",
+        }),
+        stepDefinition("sentry", { order: 30, kind: "environment" }),
+      ]),
+    ).toEqual([]);
+  });
 });
 
 /**
@@ -868,6 +1007,8 @@ describe("setup step registry — module-contributed assembly (C3, #218)", () =>
   ): SetupStepDefinition => ({
     id,
     ownerModule: CORE_STEP_OWNER,
+    kind: "operator",
+    launchGate: "none",
     prerequisites: [],
     order: 10,
     completion: "readiness-check",

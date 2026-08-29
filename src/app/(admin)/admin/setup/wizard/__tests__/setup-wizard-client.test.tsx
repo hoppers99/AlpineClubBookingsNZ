@@ -137,6 +137,12 @@ function traversalWith(
       isReachable: index < currentIndex || index <= frontierIndex,
     })),
     applicableStepIds: ids as SetupStepId[],
+    // D17 (#246): these fixtures are all-operator journeys, so the environment
+    // half is empty and nothing holds publish shut. The panel's own behaviour is
+    // exercised in `setup-wizard-environment-panel.test.tsx`, and the shell's
+    // gate on `launchBlockedBy` by the tests named for it below.
+    environmentFacts: [],
+    launchBlockedBy: [],
     staleStepIds: [],
     outstandingStepIds: options.allResolved ? [] : (ids.slice(currentIndex) as SetupStepId[]),
     blockingStepIds: options.allResolved ? [] : (ids.slice(currentIndex) as SetupStepId[]),

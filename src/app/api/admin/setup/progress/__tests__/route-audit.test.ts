@@ -100,10 +100,13 @@ describe("PATCH /api/admin/setup/progress audit trail (#219)", () => {
       'Setup step "stripe" marked complete',
     ],
     [
+      // An OPERATOR step, since D17 (#246). This case named `sentry` until
+      // that change made it an environment fact, which the route now refuses
+      // with 422 — see the describe block at the end of this file.
       "deferring a step",
-      { action: "skip", stepId: "sentry" },
+      { action: "skip", stepId: "booking-policies" },
       "setup_progress.step_deferred",
-      'Setup step "sentry" deferred for now',
+      'Setup step "booking-policies" deferred for now',
     ],
     [
       "reopening a step",
@@ -219,5 +222,99 @@ describe("PATCH /api/admin/setup/progress audit trail (#219)", () => {
     // The write this route made was to SetupProgress only — never a second call
     // reaching for a `clubTheme` property the mock does not define.
     expect(mockUpsert).toHaveBeenCalledTimes(1);
+  });
+});
+
+/*
+  D17's REFUSAL (#246). The schema still accepts these ids — `SETUP_STEP_IDS` is
+  whole and its literal-tuple-ness is load-bearing — so the refusal is this
+  handler's, and these tests are what say so.
+*/
+describe("PATCH /api/admin/setup/progress refuses an environment fact (D17, #246)", () => {
+  const environmentIds = [
+    "environment-role",
+    "runtime-env",
+    "auth-secret-strength",
+    "email-ses",
+    "sentry",
+  ];
+
+  it.each(environmentIds)("refuses complete on %s with 422", async (stepId) => {
+    const response = await PATCH(patch({ action: "complete", stepId }));
+    expect(response.status).toBe(422);
+  });
+
+  it.each(["skip", "reopen"] as const)(
+    "refuses %s on an environment fact too",
+    async (action) => {
+      const response = await PATCH(patch({ action, stepId: "runtime-env" }));
+      expect(response.status).toBe(422);
+    },
+  );
+
+  it("writes NOTHING — no row, and no audit row claiming an impossible event", async () => {
+    // The whole point of the refusal. The traversal would have ignored the id,
+    // so the operator would see no change either way; what a bare acceptance
+    // would leave behind is an audit entry saying somebody confirmed a fact
+    // nobody can confirm.
+    const response = await PATCH(
+      patch({ action: "complete", stepId: "runtime-env" }),
+    );
+    expect(response.status).toBe(422);
+    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLogAudit).not.toHaveBeenCalled();
+    // Refused before the read, so a broken deployment cannot even cost a query.
+    expect(mockFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("says what the operator should do instead", async () => {
+    const response = await PATCH(
+      patch({ action: "complete", stepId: "auth-secret-strength" }),
+    );
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain("Server environment");
+    expect(body.error).toContain("whoever runs the server");
+  });
+
+  it("still accepts an OPERATOR step, so the refusal is not a blanket one", async () => {
+    const response = await PATCH(
+      patch({ action: "complete", stepId: "stripe" }),
+    );
+    expect(response.status).toBe(200);
+    expect(mockUpsert).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the whole-journey transitions alone", async () => {
+    // `finish` and `reset` carry no stepId at all, so the guard must not
+    // mistake their absent one for a refusable id.
+    for (const action of ["finish", "reset"] as const) {
+      vi.clearAllMocks();
+      mockRequireAdmin.mockResolvedValue({
+        ok: true as const,
+        session: { user: { id: "admin1" } },
+      });
+      mockRecomputeSetupProgressDerivation.mockResolvedValue({
+        staleStepIds: [],
+        blockingStepIds: [],
+      });
+      mockFindUnique.mockResolvedValue({
+        id: "default",
+        completedStepIds: [],
+        skippedStepIds: [],
+        staleStepIds: [],
+        completedAt: null,
+        completedByMemberId: null,
+      });
+      mockUpsert.mockResolvedValue({
+        id: "default",
+        completedStepIds: [],
+        skippedStepIds: [],
+        staleStepIds: [],
+        completedAt: null,
+        completedByMemberId: null,
+      });
+      const response = await PATCH(patch({ action }));
+      expect(response.status, action).toBe(200);
+    }
   });
 });

@@ -75,6 +75,16 @@ import type {
  *   same distinction to the operator in the same words.
  * - **Outstanding work is stated, not hidden** (mockup 6). A club that skipped
  *   steps can still open, and is told exactly what it skipped.
+ * - **A broken SERVER refuses the publish, and says why** (D17, C15 #246).
+ *   Three of the five environment facts describe a deployment a club must not
+ *   open on top of — nothing has declared whether this is the live site or a
+ *   copy, a required runtime variable is missing or malformed, or the auth
+ *   secret is too weak to store a credential. `view.launchBlockedBy` names
+ *   whichever of them is not green, the publish button is disabled while that
+ *   list is non-empty, and the reason is stated beside the button rather than
+ *   only on the Server-environment panel. The gate is on the BUTTON and
+ *   pointedly not on this panel's own rendering: an operator refused a publish
+ *   needs the screen that explains the refusal to still be there.
  */
 
 /** The words `/admin/environment` uses, so the two screens agree (C9, #224). */
@@ -363,6 +373,27 @@ export function SetupWizardLaunchPanel({
   const unchosenOutstanding = view.outstanding.filter((item) => !item.deferred);
 
   const canEditSite = permissionMatrix.content === "edit";
+  /*
+    D17's PUBLISH GATE (#246). Straight off the view, never re-derived: the
+    traversal owns which environment facts hold the site shut, and a second
+    predicate here would be the drift `launchBlockedBy` exists to prevent.
+
+    IT GATES THE BUTTON, NOT THIS PANEL. The panel still renders on
+    `allResolved` alone, because an operator refused a publish needs to be able
+    to read WHY — unmounting the screen that explains the refusal is the one
+    outcome worse than the refusal itself. This is also why the gate is not
+    folded into `allResolved` upstream (D9's three separate facts; see the
+    field's docblock in `setup-wizard-traversal.ts`).
+
+    The SERVER is not gated here and is not gated by this child. C15 gates the
+    control; closing `POST /api/admin/site-style/complete-setup` against a
+    publish it should refuse is C16's, in a sibling lane. So this is a client
+    guard over a server that will still accept a hand-rolled request — an
+    honest statement of what has and has not shipped, not a claim of
+    enforcement.
+  */
+  const launchBlockedBy = view.launchBlockedBy;
+  const environmentBlocksPublish = launchBlockedBy.length > 0;
   // The server's answer wins for as long as this panel holds one, because the
   // payload behind `isSiteVisible` is a read that may predate the publish.
   const visible = published || isSiteVisible;
@@ -483,13 +514,45 @@ export function SetupWizardLaunchPanel({
           </p>
         )}
         {error ? <p className="text-sm text-danger-11">{error}</p> : null}
+
+        {/*
+          THE REASON, WHERE THE REFUSAL IS (D17, #246). An operator standing at
+          a disabled publish button is asking one question, and it is answered
+          here rather than only on the environment panel they would otherwise
+          have to go looking for.
+        */}
+        {!visible && environmentBlocksPublish ? (
+          <div
+            className="space-y-1 rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11"
+            data-testid="setup-wizard-launch-environment-blocked"
+          >
+            <p className="font-medium">
+              The public site cannot be made visible yet — this server is not
+              ready for it.
+            </p>
+            <ul className="mt-1 space-y-1">
+              {launchBlockedBy.map((row) => (
+                <li key={row.id}>
+                  <span className="font-medium">{row.title}</span>
+                  {row.remedy ? ` — ${row.remedy.who}` : null}
+                </li>
+              ))}
+            </ul>
+            <p>
+              None of this is yours to change from here. See{" "}
+              <strong>About this server</strong> in the list on the left for the
+              line to send to whoever runs it.
+            </p>
+          </div>
+        ) : null}
+
         {visible ? null : (
           <ViewOnlyActionButton
             type="button"
             size="sm"
             canEdit={canEditSite}
             describeReason={false}
-            disabled={saving}
+            disabled={saving || environmentBlocksPublish}
             onClick={makeSiteVisible}
             data-testid="setup-wizard-make-site-visible"
           >

@@ -11,16 +11,20 @@ import {
   findSetupStepRegistryViolations,
   getApplicableSetupStepIds,
   type SetupStepId,
+  type SetupStepKind,
+  type SetupStepLaunchGate,
   type SetupStepOwner,
 } from "@/lib/setup-step-registry";
+import type {
+  SetupStepDefinitionOf,
+  SetupWizardTraversalProgress,
+} from "@/lib/setup-wizard-entries";
 import {
   buildSetupWizardTraversal,
   canNavigateToSetupStep,
   deriveStaleSetupStepIds,
-  type SetupStepDefinitionOf,
   type SetupWizardStepState,
   type SetupWizardTraversalInput,
-  type SetupWizardTraversalProgress,
 } from "@/lib/setup-wizard-traversal";
 
 /**
@@ -44,6 +48,15 @@ type Spec = {
   readonly id: string;
   readonly ownerModule?: SetupStepOwner;
   readonly prerequisites?: readonly string[];
+  /**
+   * D17 (#246). Defaults to `"operator"` HERE and only here: every navigation
+   * rule in this file is about the journey, and the journey is operator steps,
+   * so a fixture that had to spell that out on every entry would bury the rule
+   * each test is actually about. The REGISTRY's own field is required precisely
+   * so that no real declaration gets this default — see `SetupStepKind`.
+   */
+  readonly kind?: SetupStepKind;
+  readonly launchGate?: SetupStepLaunchGate;
 };
 
 /** Orders are positional, so a registry declared here always satisfies C1's sort rule. */
@@ -53,6 +66,8 @@ function syntheticRegistry(
   return specs.map((spec, index) => ({
     id: spec.id,
     ownerModule: spec.ownerModule ?? CORE_STEP_OWNER,
+    kind: spec.kind ?? "operator",
+    launchGate: spec.launchGate ?? "none",
     prerequisites: spec.prerequisites ?? [],
     order: (index + 1) * 10,
     completion: "readiness-check" as const,
@@ -62,6 +77,27 @@ function syntheticRegistry(
 function linear(...ids: readonly string[]) {
   return syntheticRegistry(ids.map((id) => ({ id })));
 }
+
+/**
+ * The real registry's OPERATOR steps, in journey order — what the wizard walks
+ * since D17 (#246), as against `SETUP_STEP_IDS`, which is still every applicable
+ * entry and is what the readiness cards walk.
+ *
+ * DERIVED here rather than written out, deliberately, and the LITERAL pin lives
+ * in `setup-step-registry.test.ts` ("classifies every step, and this is the
+ * list"). Two literal copies of the classification would be two things to keep
+ * in step; and this file's subject is the journey's BEHAVIOUR — that the walk
+ * is the operator half, whatever that half turns out to be — not which entries
+ * are in it. Reclassify a step and the registry suite fails by name, which is
+ * where a reader looking for "who decided this" should land.
+ */
+const OPERATOR_STEP_IDS = SETUP_STEP_REGISTRY.filter(
+  (entry) => entry.kind === "operator",
+).map((entry) => entry.id);
+
+const ENVIRONMENT_STEP_IDS = SETUP_STEP_REGISTRY.filter(
+  (entry) => entry.kind === "environment",
+).map((entry) => entry.id);
 
 function progressOf(
   completedStepIds: readonly string[] = [],
@@ -138,9 +174,19 @@ describe("setup wizard traversal: applicability agrees with C1 (#219)", () => {
 
   it("keeps the registry's declaration order and never re-sorts", () => {
     const traversal = buildSetupWizardTraversal({ progress: progressOf() });
-    expect(traversal.steps.map((step) => step.id)).toEqual([...SETUP_STEP_IDS]);
+    // The OPERATOR half since D17 (#246), and still in registry declaration
+    // order within it — a filter preserves order, a `sort()` would not, and the
+    // journey's order is the registry's positions.
+    expect(traversal.steps.map((step) => step.id)).toEqual(OPERATOR_STEP_IDS);
     expect(traversal.steps.map((step) => step.order)).toEqual(
-      SETUP_STEP_REGISTRY.map((entry) => entry.order),
+      SETUP_STEP_REGISTRY.filter((entry) => entry.kind === "operator").map(
+        (entry) => entry.order,
+      ),
+    );
+    expect(traversal.environmentFacts.map((fact) => fact.order)).toEqual(
+      SETUP_STEP_REGISTRY.filter((entry) => entry.kind === "environment").map(
+        (entry) => entry.order,
+      ),
     );
   });
 
@@ -203,12 +249,14 @@ describe("setup wizard traversal: applicability agrees with C1 (#219)", () => {
     positional assertion for `environment-role` specifically is the test after
     this one.
   */
-  it.each([...SETUP_STEP_IDS])(
+  it.each([...OPERATOR_STEP_IDS])(
     "treats %s as unstarted, applicable and the resume point when the saved progress predates it",
     (addedId) => {
       // Every OTHER step complete: the record of a club that finished setup on
       // the previous version and has just been updated.
-      const progress = progressOf(SETUP_STEP_IDS.filter((id) => id !== addedId));
+      const progress = progressOf(
+        OPERATOR_STEP_IDS.filter((id) => id !== addedId),
+      );
       const traversal = buildSetupWizardTraversal({
         progress,
         // No readiness check passes on its own, so completeness comes only from
@@ -218,9 +266,11 @@ describe("setup wizard traversal: applicability agrees with C1 (#219)", () => {
       });
 
       // Nothing crashed, nothing was dropped, and the new step did not displace
-      // the ones the club had already done.
+      // the ones the club had already done. `applicableStepIds` is still the
+      // WHOLE applicable set — D17 (#246) narrowed the journey and pointedly
+      // not this field, which the readiness cards are married to.
       expect(traversal.applicableStepIds).toEqual([...SETUP_STEP_IDS]);
-      expect(traversal.steps).toHaveLength(SETUP_STEP_IDS.length);
+      expect(traversal.steps).toHaveLength(OPERATOR_STEP_IDS.length);
 
       const added = traversal.steps.find((step) => step.id === addedId);
       expect(added?.isComplete).toBe(false);
@@ -234,26 +284,52 @@ describe("setup wizard traversal: applicability agrees with C1 (#219)", () => {
       expect(traversal.outstandingStepIds).toEqual([addedId]);
       expect(traversal.allResolved).toBe(false);
       expect(traversal.percentComplete).toBe(
-        Math.round(((SETUP_STEP_IDS.length - 1) / SETUP_STEP_IDS.length) * 100),
+        Math.round(
+          ((OPERATOR_STEP_IDS.length - 1) / OPERATOR_STEP_IDS.length) * 100,
+        ),
       );
     },
   );
 
-  it("keeps environment-role third in the journey, where upstream ships it", () => {
-    // The registry derives `SETUP_STEP_IDS` POSITIONALLY, so this is the pin
-    // that the merge of upstream's eighteenth step preserved the checklist order
-    // its readiness cards are written against rather than appending it.
+  /*
+    THE D17 SPLIT AT THE JOURNEY LEVEL (#246).
+
+    This replaces "keeps environment-role third in the journey", which pinned
+    that upstream's eighteenth step was SLOTTED IN at position three rather than
+    appended (ENV-SAFETY 1, #3034). The registry still keeps it third — that half
+    of the old pin lives on in `setup-step-registry.test.ts`'s positional
+    `EXPECTED_STEP_IDS` — but the JOURNEY no longer visits it, which is the whole
+    of D17: UAT round 2 found positions three, four and five of the walk were
+    three consecutive screens an operator cannot act on.
+  */
+  it("walks the operator steps and reports the environment facts separately", () => {
     const traversal = buildSetupWizardTraversal({
       progress: progressOf(),
       readinessStatuses: {},
     });
+
+    // The three dead screens are gone from the front of the walk: what used to
+    // be positions 3, 4 and 5 are now `seed-admin` and the rest of the club's
+    // own setup.
     expect(traversal.steps.map((step) => step.id).slice(0, 4)).toEqual([
       "club-config",
       "club-time-zone",
-      "environment-role",
-      "runtime-env",
+      "seed-admin",
+      "feature-flags",
     ]);
+
+    // Not merely absent from the rail — present, in order, on the panel.
+    expect(traversal.environmentFacts.map((fact) => fact.id)).toEqual(
+      ENVIRONMENT_STEP_IDS,
+    );
+    // The two sets partition the applicable set exactly: nothing was dropped on
+    // the way through, and nothing is in both places.
+    expect([
+      ...traversal.steps.map((step) => step.id),
+      ...traversal.environmentFacts.map((fact) => fact.id),
+    ].sort()).toEqual([...traversal.applicableStepIds].sort());
   });
+
 });
 
 describe("setup wizard traversal: the real registry has no stale steps (#219)", () => {
@@ -295,7 +371,10 @@ describe("setup wizard traversal: the real registry has no stale steps (#219)", 
     expect(first.isReachable).toBe(true);
     expect(second.isReachable).toBe(false);
     expect(traversal.percentComplete).toBe(0);
-    expect(traversal.outstandingStepIds).toEqual([...SETUP_STEP_IDS]);
+    // The operator steps only, since D17 (#246): an environment fact is not
+    // outstanding WORK — nobody can do it from here — so listing it as such on
+    // the launch panel would tell an operator they had left something undone.
+    expect(traversal.outstandingStepIds).toEqual(OPERATOR_STEP_IDS);
   });
 
   it("opens everything and reports 100% once every step is complete", () => {
@@ -1250,5 +1329,216 @@ describe("setup wizard traversal: allResolved and blockingStepIds (#219 F9, D9's
     const traversal = traverse({ registry: [], progress: progressOf() });
     expect(traversal.blockingStepIds).toEqual([]);
     expect(traversal.allResolved).toBe(true);
+  });
+});
+
+/*
+  D17's SPLIT, TESTED ON SYNTHETIC REGISTRIES (#246).
+
+  The real-registry pins above say the split happened and in which order; these
+  say what the RULE is, on registries that can be shaped to exercise it. Both
+  halves matter: the real registry declares three gating facts today and cannot
+  be made to declare a fourth without editing it, so the gate's own behaviour —
+  each status, each `launchGate`, an environment fact contributed by a disabled
+  module — has to be exercised here.
+*/
+describe("setup wizard traversal: the operator/environment split (D17, #246)", () => {
+  const mixed = syntheticRegistry([
+    { id: "s1" },
+    { id: "env1", kind: "environment", launchGate: "blocks-until-complete" },
+    { id: "s2" },
+    { id: "env2", kind: "environment" },
+  ]);
+
+  it("is a valid registry", () => {
+    expect(findSetupStepRegistryViolations(mixed)).toEqual([]);
+  });
+
+  it("walks only the operator steps, and reports the facts separately", () => {
+    const traversal = traverse({ registry: mixed });
+    expect(traversal.steps.map((step) => step.id)).toEqual(["s1", "s2"]);
+    expect(traversal.environmentFacts.map((fact) => fact.id)).toEqual([
+      "env1",
+      "env2",
+    ]);
+  });
+
+  it("keeps applicableStepIds WHOLE — the cards' set never narrowed", () => {
+    // The one field D17 deliberately did not touch. If this ever narrows,
+    // `setup-surface-registry-parity.test.ts` is the suite that will say so
+    // loudest, and it will be right: the readiness cards read this.
+    const traversal = traverse({ registry: mixed });
+    expect(traversal.applicableStepIds).toEqual(["s1", "env1", "s2", "env2"]);
+  });
+
+  it("counts only operator steps in the percentage", () => {
+    // Two of the four entries are facts, so confirming ONE of the two steps is
+    // 50%, not 25%. The old denominator is the three dead screens UAT round 2
+    // complained about, expressed as arithmetic.
+    const traversal = traverse({
+      registry: mixed,
+      progress: progressOf(["s1"]),
+    });
+    expect(traversal.percentComplete).toBe(50);
+  });
+
+  it("resolves without any environment fact being confirmed", () => {
+    // The heart of it: an operator finishes the journey by doing the things
+    // they can do. Nobody has confirmed env1 or env2 and nobody ever can.
+    const traversal = traverse({
+      registry: mixed,
+      progress: progressOf(["s1", "s2"]),
+    });
+    expect(traversal.allResolved).toBe(true);
+    expect(traversal.blockingStepIds).toEqual([]);
+    expect(traversal.outstandingStepIds).toEqual([]);
+    expect(traversal.currentStepId).toBeNull();
+  });
+
+  it("never makes an environment fact stale, current, or reachable", () => {
+    const traversal = traverse({ registry: mixed });
+    expect(traversal.staleStepIds).toEqual([]);
+    expect(traversal.currentStepId).toBe("s1");
+    expect(canNavigateToSetupStep(traversal, "env1")).toBe(false);
+  });
+
+  /*
+    AN ENVIRONMENT PREREQUISITE IS SILENTLY IGNORED, NOT PERMANENTLY STALE
+    (C15 #246 fix round, review finding F3).
+
+    `findSetupStepRegistryViolations` refuses this edge, and its message used to
+    say the dependent would go stale forever. It would not: `computeStale…`
+    narrows to `kind: "operator"` before it walks prerequisites, so an
+    environment prerequisite is known-but-not-applicable and that arm returns
+    false. This pins the real behaviour, which is what makes the registry
+    guard's corrected message honest — and it is why that guard is worth
+    having, because a declared ordering that does NOTHING surfaces nowhere.
+  */
+  it("ignores an environment prerequisite entirely, rather than pinning its dependent stale", () => {
+    const registry = syntheticRegistry([
+      { id: "env1", kind: "environment", launchGate: "blocks-until-complete" },
+      { id: "s1", prerequisites: ["env1"] },
+    ]);
+    const traversal = traverse({
+      registry,
+      progress: progressOf(["s1"]),
+      // The prerequisite is as unsatisfied as it can be and the dependent is
+      // confirmed — the exact shape that WOULD go stale on an operator
+      // prerequisite.
+      readinessStatuses: { env1: "blocked", s1: "complete" },
+    });
+
+    expect(traversal.staleStepIds).toEqual([]);
+    expect(traversal.steps.find((step) => step.id === "s1")?.state).toBe(
+      "complete",
+    );
+    // …and the fact still gates the publish, which is the one thing the edge
+    // does not change.
+    expect(traversal.launchBlockedBy).toEqual(["env1"]);
+  });
+
+  it("drops an environment fact whose owning module is off (D4)", () => {
+    // Applicability runs FIRST and the kind filter second, so a module's
+    // environment fact disappears with the module exactly as its steps do.
+    const registry = syntheticRegistry([
+      { id: "s1" },
+      {
+        id: "env1",
+        kind: "environment",
+        ownerModule: "xeroIntegration",
+        launchGate: "blocks-until-complete",
+      },
+    ]);
+    const traversal = traverse({
+      registry,
+      moduleSettings: { ...ALL_MODULES_ON, xeroIntegration: false },
+    });
+    expect(traversal.environmentFacts).toEqual([]);
+    // And it cannot hold publish shut from beyond the grave.
+    expect(traversal.launchBlockedBy).toEqual([]);
+    expect(traversal.applicableStepIds).toEqual(["s1"]);
+  });
+});
+
+describe("setup wizard traversal: launchBlockedBy (D17, #246)", () => {
+  const gated = syntheticRegistry([
+    { id: "s1" },
+    { id: "gate", kind: "environment", launchGate: "blocks-until-complete" },
+    { id: "advisory", kind: "environment" },
+  ]);
+
+  it("blocks launch while a gating fact is not complete", () => {
+    const traversal = traverse({
+      registry: gated,
+      readinessStatuses: { gate: "blocked", advisory: "warning" },
+    });
+    expect(traversal.launchBlockedBy).toEqual(["gate"]);
+    expect(
+      traversal.environmentFacts.find((fact) => fact.id === "gate")
+        ?.blocksLaunch,
+    ).toBe(true);
+  });
+
+  it.each(["blocked", "warning", "not_started"] as const)(
+    "treats %s on a gating fact as blocking — anything but complete",
+    (status) => {
+      const traversal = traverse({
+        registry: gated,
+        readinessStatuses: { gate: status },
+      });
+      expect(traversal.launchBlockedBy).toEqual(["gate"]);
+    },
+  );
+
+  it("clears once the gating fact is complete", () => {
+    const traversal = traverse({
+      registry: gated,
+      readinessStatuses: { gate: "complete", advisory: "blocked" },
+    });
+    expect(traversal.launchBlockedBy).toEqual([]);
+  });
+
+  it("never blocks on an advisory fact, however bad its status", () => {
+    // email-ses and sentry in the real registry: amber, and amber only. A
+    // club with no error reporting is not a club that must not open.
+    const traversal = traverse({
+      registry: gated,
+      readinessStatuses: { gate: "complete", advisory: "blocked" },
+    });
+    expect(
+      traversal.environmentFacts.find((fact) => fact.id === "advisory")
+        ?.blocksLaunch,
+    ).toBe(false);
+  });
+
+  it("LEAVES allResolved ALONE — D9's three separate facts", () => {
+    // The pin against the tempting simplification. Folding the gate into
+    // allResolved would unmount the launch panel, taking away the one screen
+    // that tells the operator what is wrong and who can fix it.
+    const traversal = traverse({
+      registry: gated,
+      progress: progressOf(["s1"]),
+      readinessStatuses: { gate: "blocked" },
+    });
+    expect(traversal.allResolved).toBe(true);
+    expect(traversal.launchBlockedBy).toEqual(["gate"]);
+  });
+
+  it("is empty for a registry with no environment facts at all", () => {
+    const traversal = traverse({ registry: linear("s1", "s2") });
+    expect(traversal.environmentFacts).toEqual([]);
+    expect(traversal.launchBlockedBy).toEqual([]);
+  });
+
+  it("blocks on the REAL registry's three gating facts and no others", () => {
+    // The classification's consequence, read off the shipped registry: with
+    // nothing green, exactly environment-role, runtime-env and
+    // auth-secret-strength hold publish shut. email-ses and sentry do not.
+    const traversal = buildSetupWizardTraversal({ progress: progressOf() });
+    expect(traversal.launchBlockedBy).toEqual([
+      "environment-role",
+      "runtime-env",
+      "auth-secret-strength",
+    ]);
   });
 });

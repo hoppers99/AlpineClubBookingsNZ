@@ -65,6 +65,10 @@ description = "The repeating-hex placeholder used for AUTH_SECRET/NEXTAUTH_SECRE
 regexes = ['''^(?:0123456789abcdef){4}$''']
 
 [[allowlists]]
+description = "The SAME repeating-hex placeholder as the entry above, at three repeats rather than four — 48 characters, the length the auth-secret strength check wants (32 minimum). It entered history as an AUTH_SECRET fixture in #246's environment-facts tests; the tree now uses the repeated-character form every sibling fixture uses, but the literal stays in that pull request's own commits, which the history scan reads. Anchored to the exact 48-character value: a fourth repeat is the entry above, and any other hex string still fails the gate."
+regexes = ['''^(?:0123456789abcdef){3}$''']
+
+[[allowlists]]
 description = "The three Stripe TEST-mode placeholders this repository writes down, as exact literals: the diagnostics knowledge-bundle fixtures, the Playwright environment's publishable placeholder, and the booking-payment wrapper's fixture key. Any OTHER Stripe test key still fails the gate — `sk_test_` is a real test-mode credential and only these three named strings are forgiven. Live keys (`sk_live_`, `pk_live_`, `rk_live_`) are never allowlisted by shape. 51 findings across history."
 regexes = [
   '''^sk_test_placeholder$''',

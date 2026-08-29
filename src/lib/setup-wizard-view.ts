@@ -3,6 +3,10 @@ import type { EnvironmentRole, EnvironmentRoleDecidedBy } from "@/lib/environmen
 import type { WithheldApplicationEmail } from "@/lib/environment-safety-withheld";
 import type { SetupReadiness } from "@/lib/setup-readiness";
 import type { SetupStepId } from "@/lib/setup-step-registry";
+import {
+  buildSetupWizardEnvironmentRow,
+  type SetupWizardEnvironmentRow,
+} from "@/lib/setup-wizard-environment-view";
 import type {
   SetupWizardStepState,
   SetupWizardTraversal,
@@ -36,6 +40,15 @@ import type {
  *    frontier always follow the FLAT journey order, never the grouped one,
  *    because that is the order D2's frontier is computed in. (Back/Continue
  *    used to walk it too — retired in #252; the rail is the navigation now.)
+ *
+ * ## The environment half lives next door
+ *
+ * D17 (C15 #246) gave this marriage a second audience — the Server-environment
+ * panel's rows — and C15's fix round moved its types, its remedy register and
+ * its per-fact mapper into `setup-wizard-environment-view.ts`, for size. The
+ * dependency points one way only, and this module still assembles both halves
+ * from the SAME check index, in the same call: nothing about a fact is derived
+ * twice.
  */
 
 type SetupReadinessCategory = SetupReadiness["categories"][number];
@@ -117,6 +130,11 @@ export type SetupReadinessCheck = SetupReadinessCategory["checks"][number];
  * TYPECHECK here until somebody decides which officer owns it. A default would
  * quietly make that decision as "support", which is the widest area in the
  * product.
+ *
+ * **Its five ENVIRONMENT-fact entries are still read at runtime** (D17, C15
+ * #246), unlike the other two tables keyed over this union: the panel's row
+ * carries `permissionArea` and states "that page belongs to …" beneath its
+ * link. Nothing here went vestigial when the facts left the rail.
  */
 export const SETUP_STEP_PERMISSION_AREA: Record<
   SetupStepId,
@@ -207,6 +225,16 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
  * fails the TYPECHECK here until somebody decides which sentence it should show.
  * A heuristic would decide silently, and it decided wrongly for exactly the four
  * steps this fix exists for.
+ *
+ * **Its five ENVIRONMENT-fact entries are VESTIGIAL since D17 (C15 #246), and
+ * are kept for type-totality only.** "Defaulted" means a check passed and nobody
+ * confirmed it; nobody can confirm a fact, facts never reach the step frame, and
+ * the frame is the only reader of this table. So `environment-role`,
+ * `runtime-env`, `auth-secret-strength`, `email-ses` and `sentry` can no longer
+ * be reached through it at runtime. They stay because this is a total `Record`
+ * and deleting an entry would be a typecheck error — and because a fact
+ * reclassified back to `operator` would need its answer again, from somebody who
+ * had thought about it rather than from a default.
  *
  * It is also kept OFF `SetupWizardStepDetail`, unlike `permissionArea`. The
  * whole finding was a step being paired with the wrong copy, and a field on the
@@ -450,6 +478,18 @@ export interface SetupWizardView {
   readonly groups: readonly SetupWizardRailGroup[];
   /** Every applicable step in JOURNEY order — what resume and the frontier walk. */
   readonly steps: readonly SetupWizardStepDetail[];
+  /**
+   * The Server-environment panel's rows, in registry order (D17, C15 #246) —
+   * the facts the operator is TOLD, as against the steps they walk.
+   */
+  readonly environment: readonly SetupWizardEnvironmentRow[];
+  /**
+   * Rows holding the publish button shut, straight from the traversal's
+   * `launchBlockedBy` (never re-derived here — same rule as `percentComplete`).
+   * A subset of `environment`, carried resolved so the launch panel can name
+   * them without a second pass.
+   */
+  readonly launchBlockedBy: readonly SetupWizardEnvironmentRow[];
   /** D7's percentage, copied from the traversal and never recomputed. */
   readonly percentComplete: number;
   readonly currentStepId: SetupStepId | null;
@@ -530,6 +570,21 @@ export function buildSetupWizardView(
     };
   });
 
+  /*
+    THE PANEL'S ROWS (D17, C15 #246) — a second small pass over the SAME two
+    maps the steps above were built from, so a fact's title, message and details
+    are the readiness check's, exactly as a step's are. The traversal already
+    decided which entries these are and which of them hold publish shut; this
+    reads those decisions rather than making them again.
+  */
+  const environment = traversal.environmentFacts.map((fact) =>
+    buildSetupWizardEnvironmentRow(
+      fact,
+      checksById.get(fact.id),
+      SETUP_STEP_PERMISSION_AREA[fact.id],
+    ),
+  );
+
   const groups = readiness.categories
     .map((category) => ({
       id: category.id,
@@ -544,6 +599,16 @@ export function buildSetupWizardView(
   return {
     groups,
     steps,
+    environment,
+    // Resolved against the rows rather than re-derived: the traversal owns the
+    // rule, and a `find` that missed would be a silent unlock, so an id with no
+    // row is dropped only because the traversal cannot produce one — every id
+    // in `launchBlockedBy` came from `environmentFacts`, which `environment` is
+    // a total mapping of.
+    launchBlockedBy: traversal.launchBlockedBy.flatMap((id) => {
+      const row = environment.find((candidate) => candidate.id === id);
+      return row ? [row] : [];
+    }),
     percentComplete: traversal.percentComplete,
     currentStepId: traversal.currentStepId,
     navigationFrontierStepId: traversal.navigationFrontierStepId,

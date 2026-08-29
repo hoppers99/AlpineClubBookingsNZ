@@ -25,7 +25,10 @@ import {
   getApplicableSetupStepIds,
 } from "@/lib/setup-step-registry";
 import { buildSetupWizardTraversal } from "@/lib/setup-wizard-traversal";
-import { buildSetupWizardView } from "@/lib/setup-wizard-view";
+import {
+  buildSetupWizardView,
+  type SetupWizardView,
+} from "@/lib/setup-wizard-view";
 
 /**
  * THE SHARED-DERIVATION CONTRACT (epic #213, child C8, #223).
@@ -460,7 +463,21 @@ describe("legacy setup surfaces — the visibility switch (#223 AC3, AC4)", () =
     declares an action has a wizard step carrying it, and no step claims an
     action its check never declared.
   */
-  it("carries every check's ACTION onto its wizard step — no control loses its home", () => {
+  it("carries every check's ACTION onto its wizard SURFACE — no control loses its home", () => {
+    /*
+      D17 (#246) MOVED TWO OF THESE, AND THIS GUARD HAD TO FOLLOW OR BE WRONG.
+
+      The rule has always been "every control the readiness cards offered has a
+      home on the wizard", and until D17 there was one such home: the step's own
+      frame. D17 gives an environment fact a different one — a row on the
+      Server-environment panel — and `email-ses` and `sentry` both moved onto it.
+
+      So this now asks the SAME question over both surfaces rather than over the
+      rail alone. Narrowing it to the rail would have made it pass while two
+      live provider tests quietly disappeared, which is precisely the #223
+      regression it was written for; widening it to "somewhere on the wizard" is
+      what keeps its meaning intact across the move.
+    */
     const readiness = cardStepIds(databaseSnapshot(moduleFlags()));
     const view = buildSetupWizardView(
       readiness,
@@ -469,7 +486,18 @@ describe("legacy setup surfaces — the visibility switch (#223 AC3, AC4)", () =
         moduleSettings: moduleFlags(),
       }),
     );
-    const stepsById = new Map(view.steps.map((step) => [step.id, step]));
+    const carriersById = new Map<
+      string,
+      { action?: SetupWizardView["steps"][number]["action"]; surface: string }
+    >([
+      ...view.steps.map(
+        (step) => [step.id, { action: step.action, surface: "rail step" }] as const,
+      ),
+      ...view.environment.map(
+        (row) =>
+          [row.id, { action: row.action, surface: "environment panel row" }] as const,
+      ),
+    ]);
 
     const withActions = readiness.categories
       .flatMap((category) => category.checks)
@@ -486,15 +514,32 @@ describe("legacy setup surfaces — the visibility switch (#223 AC3, AC4)", () =
     ]);
 
     for (const check of withActions) {
-      const step = stepsById.get(check.id);
+      const carrier = carriersById.get(check.id);
       expect(
-        step?.action,
-        `the ${check.id} check declares a ${check.action?.type} action, but its wizard step carries none — hiding the readiness cards would delete that control rather than relocate it (epic #213 D8)`,
+        carrier?.action,
+        `the ${check.id} check declares a ${check.action?.type} action, but its wizard ${carrier?.surface ?? "surface"} carries none — hiding the readiness cards would delete that control rather than relocate it (epic #213 D8/D17)`,
       ).toEqual(check.action);
     }
+
+    // …and the split is real rather than incidental: two of the four now live
+    // on the panel. Pinned so that quietly folding the facts back into the rail
+    // fails HERE as well as in the traversal suite.
+    expect(
+      withActions
+        .map((check) => carriersById.get(check.id)?.surface)
+        .filter((surface) => surface === "environment panel row"),
+    ).toHaveLength(2);
   });
 
   it("claims no ACTION the readiness check does not declare", () => {
+    /*
+      The converse of the guard above, and it spans BOTH surfaces for the same
+      reason that one does (C15 #246 fix round, review finding F5). Checked over
+      the rail alone it would have said nothing about the two provider tests D17
+      moved onto the panel — so a panel row that invented a control, or kept one
+      after its check dropped it, would have passed. A guard that only runs one
+      way round on one of two surfaces is half a guard.
+    */
     const readiness = cardStepIds(databaseSnapshot(moduleFlags()));
     const view = buildSetupWizardView(
       readiness,
@@ -510,8 +555,60 @@ describe("legacy setup surfaces — the visibility switch (#223 AC3, AC4)", () =
     );
 
     for (const step of view.steps) {
-      expect(step.action).toEqual(actionsById.get(step.id));
+      expect(step.action, `rail step "${step.id}"`).toEqual(
+        actionsById.get(step.id),
+      );
     }
+    for (const row of view.environment) {
+      expect(row.action, `environment panel row "${row.id}"`).toEqual(
+        actionsById.get(row.id),
+      );
+    }
+    // …and neither loop is vacuous: both surfaces really do carry an action.
+    expect(view.steps.filter((step) => step.action).length).toBeGreaterThan(0);
+    expect(view.environment.filter((row) => row.action).length).toBe(2);
+  });
+
+  /*
+    THE SILENT-LOSS CLASS, closed at the surface it can be lost on (C15 #246 fix
+    round, review finding F7).
+
+    A rail step carries `links` — the lodges step's one link per lodge — and an
+    environment ROW carries none, because there is nothing on a deployment fact
+    for a per-lodge destination to address. That is a deliberate omission, and
+    an omission is exactly the kind of thing that goes wrong quietly: a check
+    that grew a `links` list after being reclassified as a fact would simply
+    stop rendering it, with no error anywhere. `action` had this shape once
+    already and it took #223 to find it.
+  */
+  it("declares no LINKS on a check that is an environment fact", () => {
+    const readiness = cardStepIds(databaseSnapshot(moduleFlags()));
+    const environmentIds = new Set(
+      SETUP_STEP_REGISTRY.filter((entry) => entry.kind === "environment").map(
+        (entry) => entry.id,
+      ),
+    );
+
+    const stranded = readiness.categories
+      .flatMap((category) => category.checks)
+      .filter(
+        (check) =>
+          environmentIds.has(check.id) && (check.links?.length ?? 0) > 0,
+      )
+      .map((check) => check.id);
+
+    expect(
+      stranded,
+      "an environment fact declares links, and SetupWizardEnvironmentRow carries none — the Server-environment panel would drop them silently. Either the entry belongs back on the rail, or the row needs to learn about links",
+    ).toEqual([]);
+    /*
+      Anti-vacuity, and it is the SUBJECT set that has to be non-empty rather
+      than the links themselves: on this fixture no check declares any (the
+      lodges step's per-lodge links need lodges in the snapshot), so requiring
+      one would pin the fixture instead of the rule. What would make this guard
+      meaningless is having nothing to check, so that is what is asserted.
+    */
+    expect(environmentIds.size).toBe(5);
   });
 
   it("CHANGES NO DATA: the readiness derivation is identical in both positions", () => {

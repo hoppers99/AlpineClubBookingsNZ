@@ -91,14 +91,14 @@ describe("GET /api/admin/setup/wizard — the stale seam (#217)", () => {
   it("passes the stored set through rather than deriving it", async () => {
     mockFindUnique.mockResolvedValue(
       storedRow({
-        completedStepIds: ["stripe", "sentry"],
-        staleStepIds: ["stripe", "sentry"],
+        completedStepIds: ["stripe", "age-tiers"],
+        staleStepIds: ["stripe", "age-tiers"],
       }),
     );
 
     const response = await GET();
     expect(response.status).toBe(200);
-    expect(suppliedStaleStepIds()).toEqual(["stripe", "sentry"]);
+    expect(suppliedStaleStepIds()).toEqual(["stripe", "age-tiers"]);
   });
 
   it("passes a stored EMPTY set as [], which means computed-nothing-stale", async () => {
