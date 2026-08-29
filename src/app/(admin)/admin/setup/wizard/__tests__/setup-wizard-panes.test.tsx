@@ -93,6 +93,8 @@ import { canViewSetupStepPane } from "@/lib/setup-wizard-view";
 import type { SetupWizardTraversal } from "@/lib/setup-wizard-traversal";
 import { SetupWizardClient } from "@/app/(admin)/admin/setup/wizard/setup-wizard-client";
 import { SETUP_STEP_PANES } from "@/app/(admin)/admin/setup/wizard/setup-wizard-panes";
+import { ClubIdentityProvider } from "@/components/club-identity-provider";
+import { clubIdentity } from "@/config/club-identity";
 
 /**
  * `support: edit`, and `content: edit` too — a full editor of both areas, so
@@ -1170,5 +1172,171 @@ describe("age-tiers mounts the real age-tier editor", () => {
     ).toBe("age-tiers");
     expect(screen.queryByTestId("setup-wizard-step-pane")).toBeNull();
     expect(callsTo(fetchMock, "/api/admin/age-tier-settings")).toHaveLength(0);
+  });
+});
+
+const bookingsViewerOnly = {
+  ...emptyAdminPermissionMatrix(),
+  support: "edit" as const,
+  bookings: "view" as const,
+};
+
+function renderBookingPoliciesWizard(
+  matrix: ReturnType<typeof emptyAdminPermissionMatrix>,
+) {
+  return render(
+    <ClubIdentityProvider value={clubIdentity}>
+      <SetupWizardClient permissionMatrix={matrix} />
+    </ClubIdentityProvider>,
+  );
+}
+
+describe("booking-policies mounts the cancellation and group-discount sections", () => {
+  it("renders both sections' own fields, under one pane container", async () => {
+    stubFetch([["booking-policies", "Booking Policies"]]);
+    renderBookingPoliciesWizard(bookingsEditor);
+
+    expect(
+      (await screen.findByTestId("setup-wizard-step-pane")).getAttribute(
+        "data-step-id",
+      ),
+    ).toBe("booking-policies");
+    expect(
+      await screen.findByLabelText("Members First booking policy"),
+    ).toBeTruthy();
+    expect(await screen.findByLabelText("Enabled")).toBeTruthy();
+    expect(screen.getByText("Default Policy")).toBeTruthy();
+    expect(screen.getByText("Group Discount")).toBeTruthy();
+  });
+
+  it("saves the cancellation section through its own API, and makes the wizard re-read without ticking the step off", async () => {
+    const fetchMock = stubFetch([["booking-policies", "Booking Policies"]]);
+    renderBookingPoliciesWizard(bookingsEditor);
+
+    await screen.findByLabelText("Members First booking policy");
+    expect(callsTo(fetchMock, "/api/admin/setup/wizard")).toHaveLength(1);
+
+    // The cancellation section renders first, so its "Edit" is index 0.
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    // STAGED: toggling the checkbox writes nothing until Save.
+    fireEvent.click(screen.getByLabelText("Members First booking policy"));
+    expect(
+      callsTo(fetchMock, "/api/admin/booking-policies/cancellation").filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === "PUT",
+      ),
+    ).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Save Default Policy" }));
+
+    await waitFor(() =>
+      expect(
+        callsTo(fetchMock, "/api/admin/booking-policies/cancellation").filter(
+          ([, init]) => (init as RequestInit | undefined)?.method === "PUT",
+        ),
+      ).toHaveLength(1),
+    );
+    // C11's model, unchanged: the save does not tick the step off — only one
+    // extra journey read, and no progress write.
+    await waitFor(() =>
+      expect(callsTo(fetchMock, "/api/admin/setup/wizard")).toHaveLength(2),
+    );
+    expect(callsTo(fetchMock, "/api/admin/setup/progress")).toHaveLength(0);
+  });
+
+  it("saves the group-discount section through its own API, and makes the wizard re-read without ticking the step off", async () => {
+    const fetchMock = stubFetch([["booking-policies", "Booking Policies"]]);
+    renderBookingPoliciesWizard(bookingsEditor);
+
+    // Both sections loaded, so the group-discount "Edit" is reliably index 1.
+    await screen.findByLabelText("Members First booking policy");
+    await screen.findByLabelText("Enabled");
+    expect(callsTo(fetchMock, "/api/admin/setup/wizard")).toHaveLength(1);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[1]);
+    fireEvent.click(screen.getByLabelText("Enabled"));
+    fireEvent.click(screen.getByRole("button", { name: "Save Group Discount" }));
+
+    await waitFor(() =>
+      expect(
+        callsTo(fetchMock, "/api/admin/booking-policies/group-discount").filter(
+          ([, init]) => (init as RequestInit | undefined)?.method === "PUT",
+        ),
+      ).toHaveLength(1),
+    );
+    await waitFor(() =>
+      expect(callsTo(fetchMock, "/api/admin/setup/wizard")).toHaveLength(2),
+    );
+    expect(callsTo(fetchMock, "/api/admin/setup/progress")).toHaveLength(0);
+  });
+
+  it("shows each section's OWN view-only banner, and a dead Edit on both, for a bookings:view admin", async () => {
+    /*
+      The sanctioned stacked-sections case: TWO banners on this one pane,
+      naming the same "bookings" area twice — not #2168's collapsed shape,
+      because nothing here vouches for either section (neither destructures
+      `ancestorRendersViewOnlyBanner`, and the wrapper renders no banner of its
+      own to vouch WITH).
+    */
+    mocks.canEdit.mockReturnValue(false);
+    stubFetch([["booking-policies", "Booking Policies"]]);
+    renderBookingPoliciesWizard(bookingsViewerOnly);
+
+    await screen.findByLabelText("Members First booking policy");
+    await screen.findByLabelText("Enabled");
+
+    const banners = screen.getAllByTestId("admin-view-only-banner");
+    expect(
+      banners.some((banner) =>
+        banner.textContent?.includes(
+          "can view the cancellation policy but cannot change it",
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      banners.some((banner) =>
+        banner.textContent?.includes(
+          "can view the group discount policy but cannot change it",
+        ),
+      ),
+    ).toBe(true);
+
+    const editButtons = screen.getAllByRole("button", {
+      name: "Edit",
+    }) as HTMLButtonElement[];
+    expect(editButtons).toHaveLength(2);
+    for (const button of editButtons) {
+      expect(button.disabled).toBe(true);
+    }
+
+    // The OTHER permission question on this screen: changing the step's
+    // PROGRESS is gated on `support`, not `bookings`, and this admin holds
+    // `support: edit`.
+    const markDone = screen.getByRole("button", {
+      name: /Mark this step done/,
+    }) as HTMLButtonElement;
+    expect(markDone.disabled).toBe(false);
+  });
+
+  it("keeps the pane OUTSIDE the step frame", async () => {
+    stubFetch([["booking-policies", "Booking Policies"]]);
+    renderBookingPoliciesWizard(bookingsEditor);
+
+    const pane = await screen.findByTestId("setup-wizard-step-pane");
+    const frame = screen.getByTestId("setup-wizard-step-frame");
+    expect(pane.getAttribute("data-step-id")).toBe("booking-policies");
+    expect(frame.contains(pane)).toBe(false);
+  });
+
+  it("composes the area gate on `bookings`, matching both sections' own gate", () => {
+    const viewer = { ...emptyAdminPermissionMatrix(), bookings: "view" as const };
+    expect(canViewSetupStepPane(viewer, "booking-policies")).toBe(true);
+
+    const outsider = emptyAdminPermissionMatrix();
+    expect(outsider.bookings).toBe("none");
+    expect(canViewSetupStepPane(outsider, "booking-policies")).toBe(false);
+  });
+
+  it("registers a real pane, not the D16-backlog null", () => {
+    expect(SETUP_STEP_PANES["booking-policies"]).not.toBeNull();
   });
 });
