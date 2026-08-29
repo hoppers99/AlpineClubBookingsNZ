@@ -13,7 +13,6 @@ import {
   buildSetupWizardView,
   canChangeSetupProgress,
   resolveInitialStepId,
-  setupWizardNeighbours,
   type SetupWizardView,
 } from "@/lib/setup-wizard-view";
 
@@ -66,52 +65,6 @@ function viewFor(
     readinessStatuses,
   });
   return buildSetupWizardView(readiness, traversal);
-}
-
-/**
- * A view with a HAND-CHOSEN reachability pattern, for the pure navigation
- * helpers only.
- *
- * The real-builders rule above is about the marriage of readiness and traversal,
- * and `setupWizardNeighbours` is not part of it — it is a pure walk over
- * `view.steps`. The pattern that matters (a LOCKED step sitting in front of a
- * reachable one) is a state the real traversal genuinely produces, because a
- * stale step re-caps the frontier under steps that are complete and therefore
- * still reachable on their own account (#219 F2) — but reproducing it through
- * the builders would take a fixture whose staleness is incidental to what is
- * being asserted here.
- */
-function stubView(
-  steps: { id: string; isReachable: boolean }[],
-): SetupWizardView {
-  const details = steps.map((step) => ({
-    id: step.id as SetupStepId,
-    title: step.id,
-    state: "not-started" as const,
-    isReachable: step.isReachable,
-    isStale: false,
-    isDeferred: false,
-    isDefaulted: false,
-    permissionArea: "support" as const,
-    categoryId: "foundation",
-    categoryTitle: "Foundation",
-    description: "",
-    message: "",
-    details: [] as string[],
-    links: [] as { label: string; href: string }[],
-    required: false,
-    progress: "open" as const,
-    status: "not_started" as const,
-  }));
-  return {
-    groups: [],
-    steps: details,
-    percentComplete: 0,
-    currentStepId: details[0]?.id ?? null,
-    navigationFrontierStepId: details[0]?.id ?? null,
-    allResolved: false,
-    outstanding: [],
-  };
 }
 
 describe("SETUP_STEP_PERMISSION_AREA (D12)", () => {
@@ -309,59 +262,12 @@ describe("a step's settings link reaches a real editor (#223)", () => {
   });
 });
 
+// C21 (#252) retired `setupWizardNeighbours` along with the Back/Continue
+// controls it drove — the rail is the sole navigation now, and its own
+// unreachable-row gate is what `setup-wizard-rail.test.tsx` pins. What
+// remains here is the one navigation helper that survives: resolving a
+// requested-but-unreachable (or unknown) step id back to the current one.
 describe("navigation helpers", () => {
-  it("walks the flat journey order, not the grouped one", () => {
-    const view = viewFor();
-    const second = view.steps[1];
-    const neighbours = setupWizardNeighbours(view, second.id);
-    expect(neighbours.previous?.id).toBe(view.steps[0].id);
-    expect(neighbours.next?.id).toBe(view.steps[2].id);
-  });
-
-  it("returns an unreachable next step rather than null", () => {
-    // The caller disables Continue on `next.isReachable === false`; returning
-    // null would make "blocked" and "end of journey" indistinguishable, and the
-    // end of the journey is where D9's launch panel lives.
-    const view = viewFor();
-    const frontierIndex = view.steps.findIndex(
-      (step) => step.id === view.navigationFrontierStepId,
-    );
-    const beyond = view.steps[frontierIndex + 1];
-    if (!beyond) return; // every step reachable: nothing to assert here
-    expect(beyond.isReachable).toBe(false);
-    expect(setupWizardNeighbours(view, view.steps[frontierIndex].id).next?.id).toBe(
-      beyond.id,
-    );
-  });
-
-  // Back is SYMMETRIC with Continue: it targets a step the operator may
-  // actually open, and is simply absent when there is none. The old
-  // `steps[index - 1]` teleported — the client resolves an unreachable target
-  // back to `currentStepId`, so Back could move somebody somewhere they never
-  // asked to go, with nothing on screen saying so.
-  //
-  // Mutation-verified: restoring `previous: view.steps[index - 1] ?? null`
-  // fails both assertions below.
-  it("walks Back to the nearest EARLIER REACHABLE step, skipping locked ones", () => {
-    const view = stubView([
-      { id: "a", isReachable: true },
-      { id: "b", isReachable: false },
-      { id: "c", isReachable: false },
-      { id: "d", isReachable: true },
-    ]);
-    expect(setupWizardNeighbours(view, "d" as SetupStepId).previous?.id).toBe("a");
-  });
-
-  it("has no Back at all when nothing earlier is reachable", () => {
-    const view = stubView([
-      { id: "a", isReachable: false },
-      { id: "b", isReachable: true },
-    ]);
-    expect(setupWizardNeighbours(view, "b" as SetupStepId).previous).toBeNull();
-    // …and the first step never had one.
-    expect(setupWizardNeighbours(view, "a" as SetupStepId).previous).toBeNull();
-  });
-
   it("resolves an unreachable or unknown requested step back to the current one", () => {
     const view = viewFor();
     expect(resolveInitialStepId(view, "not-a-step")).toBe(view.currentStepId);

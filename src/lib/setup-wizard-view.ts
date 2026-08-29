@@ -32,9 +32,10 @@ import type {
  *    integrations → finance). If a later child interleaves them, this module
  *    keeps its stated behaviour: a step appears under the category its readiness
  *    check belongs to, steps within a group stay in journey order, and groups
- *    appear in the readiness result's own category order. Back/Continue always
- *    follow the FLAT journey order, never the grouped one, because that is the
- *    order D2's frontier is computed in.
+ *    appear in the readiness result's own category order. Resume and the
+ *    frontier always follow the FLAT journey order, never the grouped one,
+ *    because that is the order D2's frontier is computed in. (Back/Continue
+ *    used to walk it too — retired in #252; the rail is the navigation now.)
  */
 
 type SetupReadinessCategory = SetupReadiness["categories"][number];
@@ -429,7 +430,7 @@ export interface SetupWizardStepDetail extends SetupWizardRailStep {
 export interface SetupWizardView {
   /** Rail rows, grouped by readiness category. Empty groups are dropped. */
   readonly groups: readonly SetupWizardRailGroup[];
-  /** Every applicable step in JOURNEY order — what Back/Continue walk. */
+  /** Every applicable step in JOURNEY order — what resume and the frontier walk. */
   readonly steps: readonly SetupWizardStepDetail[];
   /** D7's percentage, copied from the traversal and never recomputed. */
   readonly percentComplete: number;
@@ -560,50 +561,6 @@ export function resolveInitialStepId(
     if (match) return match.id;
   }
   return view.currentStepId ?? view.steps[0]?.id ?? null;
-}
-
-export interface SetupWizardNeighbours {
-  readonly previous: SetupWizardStepDetail | null;
-  readonly next: SetupWizardStepDetail | null;
-}
-
-/**
- * The Back/Continue targets for a step, in FLAT journey order.
- *
- * The two are deliberately ASYMMETRIC in what they return, because the caller
- * needs to distinguish different things at the two ends:
- *
- * - `next` is returned whether or not it is reachable; the caller disables
- *   Continue on `next.isReachable === false`, which is D2's "you cannot jump
- *   ahead past a step that is not done" expressed as a control rather than as a
- *   redirect. Returning `null` instead would make a blocked Continue and the end
- *   of the journey indistinguishable, and the end of the journey is where D9's
- *   launch panel lives.
- * - `previous` is the nearest EARLIER REACHABLE step, skipping over any that are
- *   not, and `null` when there is none — so Back is simply disabled. Handing back
- *   `steps[index - 1]` unconditionally was a silent teleport: the client's
- *   fallback resolves an unreachable target back to `currentStepId`, so pressing
- *   Back on a step whose immediate predecessor was locked moved the operator
- *   somewhere they did not ask to go, with nothing on screen saying so. Behind
- *   the frontier an unreachable predecessor is normally impossible — everything
- *   before the frontier is walkable — but a *stale* step re-caps the frontier
- *   under it (#219 F2), which puts later, already-reachable steps in front of a
- *   locked one, and that is not an exotic state: it is what an upgrade does.
- */
-export function setupWizardNeighbours(
-  view: SetupWizardView,
-  stepId: SetupStepId | null,
-): SetupWizardNeighbours {
-  const index = view.steps.findIndex((step) => step.id === stepId);
-  if (index === -1) return { previous: null, next: null };
-  let previousIndex = index - 1;
-  while (previousIndex >= 0 && !view.steps[previousIndex].isReachable) {
-    previousIndex -= 1;
-  }
-  return {
-    previous: previousIndex >= 0 ? view.steps[previousIndex] : null,
-    next: view.steps[index + 1] ?? null,
-  };
 }
 
 /**
