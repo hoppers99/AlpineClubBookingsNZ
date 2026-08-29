@@ -1,8 +1,6 @@
 "use client";
 
 import {
-  ArrowLeft,
-  ArrowRight,
   CheckCircle2,
   ExternalLink,
   Loader2,
@@ -53,9 +51,11 @@ import { setupWizardStepLabel } from "./setup-wizard-rail";
  * D12's view-only pattern: ONE `AdminViewOnlySectionBanner` heads the controls
  * and every gated control is a `ViewOnlyActionButton` with
  * `describeReason={false}`, which is the canonical shape (the banner is in this
- * same file, so no vouch is involved). Back and Continue are NOT gated — moving
- * around the journey is not an edit, and a view-only officer reviewing another
- * area's steps must still be able to walk it.
+ * same file, so no vouch is involved). Moving around the journey is not an edit
+ * and was never gated — C21 (#252) retired the frame's own Back/Continue
+ * controls in favour of the rail, whose rows are ungated for exactly the same
+ * reason: a view-only officer reviewing another area's steps must still be able
+ * to walk it.
  *
  * ## The provider test (C8, #223)
  *
@@ -157,28 +157,18 @@ export function SetupWizardStepFrame({
   step,
   canEdit,
   saving,
-  previousStep,
-  nextStep,
-  launchUnlocked,
   providerTesting,
   providerResult,
-  onNavigate,
-  onOpenLaunch,
   onProgress,
   onProviderTest,
 }: {
   step: SetupWizardStepDetail;
   canEdit: boolean;
   saving: boolean;
-  previousStep: SetupWizardStepDetail | null;
-  nextStep: SetupWizardStepDetail | null;
-  launchUnlocked: boolean;
   /** A test for THIS step's provider is in flight. */
   providerTesting: boolean;
   /** The last answer for this step's provider, or null if none yet. */
   providerResult: SetupWizardProviderTestResult | null;
-  onNavigate: (stepId: SetupWizardStepDetail["id"]) => void;
-  onOpenLaunch: () => void;
   onProgress: (action: SetupWizardProgressAction) => void;
   onProviderTest: (
     provider: NonNullable<SetupWizardStepDetail["action"]>["provider"],
@@ -187,17 +177,6 @@ export function SetupWizardStepFrame({
   // Read once, so the button and the result panel below cannot disagree about
   // whether this step has a test at all.
   const providerTest = step.action;
-  // D2 at the control: Continue is dead unless the next step is reachable. At
-  // the END of the list there is no next step, and Continue instead opens the
-  // launch panel — but only once the traversal says everything is resolved, so
-  // a club with a blocking step cannot walk off the end into it.
-  const continueTarget = nextStep
-    ? nextStep.isReachable
-      ? () => onNavigate(nextStep.id)
-      : null
-    : launchUnlocked
-      ? onOpenLaunch
-      : null;
 
   return (
     <section
@@ -395,35 +374,6 @@ export function SetupWizardStepFrame({
             Reopen
           </ViewOnlyActionButton>
         ) : null}
-
-        <div className="ml-auto flex gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            data-testid="setup-wizard-back"
-            disabled={!previousStep}
-            onClick={() => previousStep && onNavigate(previousStep.id)}
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            data-testid="setup-wizard-continue"
-            disabled={!continueTarget}
-            title={
-              continueTarget
-                ? undefined
-                : "Finish or skip this step before moving on."
-            }
-            onClick={() => continueTarget?.()}
-          >
-            Continue
-            <ArrowRight className="h-4 w-4" />
-          </Button>
-        </div>
       </div>
     </section>
   );

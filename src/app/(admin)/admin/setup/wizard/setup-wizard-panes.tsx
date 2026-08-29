@@ -4,13 +4,14 @@ import type { ComponentType } from "react";
 import { useSession } from "next-auth/react";
 import { ClubIdentityPanel } from "@/components/admin/club-identity-panel";
 import { ClubTimeZonePanel } from "@/components/admin/club-time-zone-panel";
-import { DefaultCancellationPolicySection } from "@/components/admin/booking-policies/default-cancellation-policy-section";
-import { GroupDiscountSection } from "@/components/admin/booking-policies/group-discount-section";
 import { ModulesSection } from "@/app/(admin)/admin/modules/modules-section";
+import { AgeTierSection } from "@/app/(admin)/admin/age-tier-settings/age-tier-section";
 import { isFullAdmin } from "@/lib/access-roles";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
 import { canViewSetupStepPane } from "@/lib/setup-wizard-view";
 import type { SetupStepId } from "@/lib/setup-step-registry";
+import { DefaultCancellationPolicySection } from "@/components/admin/booking-policies/default-cancellation-policy-section";
+import { GroupDiscountSection } from "@/components/admin/booking-policies/group-discount-section";
 
 /**
  * The wizard's per-step inline editors (epic #213, child C12; owner decision
@@ -206,6 +207,55 @@ function ModulesWizardPane() {
 }
 
 /**
+ * The age-tier boundary editor, in the wizard (`age-tiers`).
+ *
+ * `AgeTierSection` is C18's (#249) repeat of the C13 move above: zero props,
+ * fetches `/api/admin/age-tier-settings` for itself, resolves `bookings`
+ * edit access for itself, and heads itself with its own view-only banner.
+ * `/admin/age-tier-settings` mounts exactly the same component under its own
+ * `AdminPageHeader`; this pane supplies the subordinate heading in its place,
+ * for the mount-order reason spelled out on `ClubIdentityWizardPane`.
+ *
+ * SIMPLER than the modules pane: this step owns no OTHER step's existence, so
+ * there is no rail-redraw or self-removal case to narrate here — saving
+ * changes what the `age-tiers` check itself reports, nothing else in the
+ * journey.
+ *
+ * **The orientation paragraph carries the pane copy caveat (dossier B.4).**
+ * `buildAgeTierCheck` (`setup-readiness.ts`) is two checks in one: whether
+ * tiers are configured at all, which this section fully controls, and
+ * whether any membership type set to "subscription required based on age
+ * tier" actually has a tier that requires one
+ * (`basedOnAgeTierTypesWithoutSubscribingTier`). That second half is fixed on
+ * `/admin/membership-types`, a screen this pane never touches — so a perfect
+ * save here can still leave the step amber, and an operator who only looks
+ * at this pane has no way to discover why. The paragraph says so, the same
+ * way `ModulesWizardPane`'s names the address-autocomplete split rather than
+ * leaving it to be found by trial and error.
+ */
+function AgeTierWizardPane() {
+  return (
+    <section className="space-y-3 rounded-md border bg-card p-5">
+      <div className="space-y-1">
+        <h3 className="text-lg font-semibold text-foreground">
+          Age and membership rules
+        </h3>
+        <p className="text-sm text-muted-foreground">
+          The same editor as Admin &rarr; Age Group Settings. This step can
+          still read amber after a save: it also checks that every
+          membership type requiring a subscription based on age tier has a
+          tier that actually requires one, and that flag is set on Admin
+          &rarr; Membership Types, not here. Saving does not tick this step
+          off — use &ldquo;Mark this step done&rdquo; above when you are
+          happy with it.
+        </p>
+      </div>
+      <AgeTierSection />
+    </section>
+  );
+}
+
+/**
  * The default cancellation policy and the group discount sections, in the
  * wizard (`booking-policies`).
  *
@@ -311,17 +361,15 @@ export const SETUP_STEP_PANES: Record<SetupStepId, ComponentType | null> = {
   // per lodge; embedding would mean embedding a whole flow, not a section.
   lodges: null,
 
-  // --- Booking rules ---
-  // C17 (#248): the two of the hub's six sections that the step's own verdict
-  // actually reads — see `BookingPoliciesWizardPane`'s docblock for which two
-  // and why the other four stay behind the link.
   "booking-policies": BookingPoliciesWizardPane,
   // Backlog, same round. `/admin/setup/cancellation` is itself one of the
   // legacy setup drill-downs C8's switch hides, so the shape of its section
   // has to settle before a pane can point at it.
   "membership-cancellation": null,
-  // Backlog (D16 names age tiers explicitly). Wait for the C13 re-walk.
-  "age-tiers": null,
+  // C18 (#249): the age-tier boundary editor, C13's move repeated. See
+  // `AgeTierWizardPane` for the pane-copy caveat this step needed that
+  // `feature-flags` and `club-config` did not.
+  "age-tiers": AgeTierWizardPane,
   // Backlog (D16 names seasons explicitly). Wait for the C13 re-walk.
   "seasons-rates": null,
 

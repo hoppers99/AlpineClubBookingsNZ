@@ -9,7 +9,10 @@ import type { SetupWizardStepDetail } from "@/lib/setup-wizard-view";
 import { SetupWizardStepFrame } from "@/app/(admin)/admin/setup/wizard/setup-wizard-step-frame";
 
 /**
- * The step frame (epic #213, C5): D12's view-only gating and D2's Continue rule.
+ * The step frame (epic #213, C5): D12's view-only gating. C21 (#252) retired
+ * the frame's own Back/Continue controls — the rail is the sole navigation —
+ * so this file no longer covers D2's Continue rule; `setup-wizard-rail.test.tsx`
+ * covers the frontier gate that replaced it.
  */
 
 afterEach(cleanup);
@@ -42,27 +45,20 @@ function renderFrame(
   overrides: Partial<Parameters<typeof SetupWizardStepFrame>[0]> = {},
 ) {
   const onProgress = vi.fn();
-  const onNavigate = vi.fn();
-  const onOpenLaunch = vi.fn();
   const onProviderTest = vi.fn();
   render(
     <SetupWizardStepFrame
       step={detail()}
       canEdit
       saving={false}
-      previousStep={null}
-      nextStep={null}
-      launchUnlocked={false}
       providerTesting={false}
       providerResult={null}
-      onNavigate={onNavigate}
-      onOpenLaunch={onOpenLaunch}
       onProgress={onProgress}
       onProviderTest={onProviderTest}
       {...overrides}
     />,
   );
-  return { onProgress, onNavigate, onOpenLaunch, onProviderTest };
+  return { onProgress, onProviderTest };
 }
 
 /**
@@ -141,43 +137,6 @@ describe("SetupWizardStepFrame", () => {
     expect(
       screen.getByTestId("setup-wizard-step-settings-area").textContent,
     ).toContain("Bookings & Beds");
-  });
-
-  it("still lets a view-only officer walk the journey", () => {
-    const previous = detail({ id: "age-tiers" as SetupStepId, title: "Age Tiers" });
-    const { onNavigate } = renderFrame({ canEdit: false, previousStep: previous });
-    const back = screen.getByTestId("setup-wizard-back") as HTMLButtonElement;
-    expect(back.disabled).toBe(false);
-    fireEvent.click(back);
-    expect(onNavigate).toHaveBeenCalledWith("age-tiers");
-  });
-
-  // D2 at the control: Continue is dead past the frontier. Mutation-verified:
-  // removing the `nextStep.isReachable` branch fails this test.
-  it("refuses to continue past an unreachable next step", () => {
-    const next = detail({
-      id: "seasons-rates" as SetupStepId,
-      isReachable: false,
-      state: "not-started",
-    });
-    const { onNavigate } = renderFrame({ nextStep: next });
-    const button = screen.getByTestId("setup-wizard-continue") as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
-    fireEvent.click(button);
-    expect(onNavigate).not.toHaveBeenCalled();
-  });
-
-  it("continues into the launch panel only at the end and only once resolved", () => {
-    const locked = renderFrame({ launchUnlocked: false });
-    expect(
-      (screen.getByTestId("setup-wizard-continue") as HTMLButtonElement).disabled,
-    ).toBe(true);
-    expect(locked.onOpenLaunch).not.toHaveBeenCalled();
-
-    cleanup();
-    const open = renderFrame({ launchUnlocked: true });
-    fireEvent.click(screen.getByTestId("setup-wizard-continue"));
-    expect(open.onOpenLaunch).toHaveBeenCalled();
   });
 
   /*
