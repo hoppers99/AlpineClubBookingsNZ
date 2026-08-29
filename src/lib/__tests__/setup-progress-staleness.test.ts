@@ -54,9 +54,33 @@ import type { SetupStepDefinitionOf } from "@/lib/setup-wizard-traversal";
 
 /** A three-step chain: s3 depends on s2, which depends on s1. */
 const CHAIN: readonly SetupStepDefinitionOf<string>[] = [
-  { id: "s1", ownerModule: "core", prerequisites: [], order: 10, completion: "readiness-check" },
-  { id: "s2", ownerModule: "core", prerequisites: ["s1"], order: 20, completion: "readiness-check" },
-  { id: "s3", ownerModule: "core", prerequisites: ["s2"], order: 30, completion: "readiness-check" },
+  {
+    id: "s1",
+    ownerModule: "core",
+    kind: "operator",
+    launchGate: "none",
+    prerequisites: [],
+    order: 10,
+    completion: "readiness-check",
+  },
+  {
+    id: "s2",
+    ownerModule: "core",
+    kind: "operator",
+    launchGate: "none",
+    prerequisites: ["s1"],
+    order: 20,
+    completion: "readiness-check",
+  },
+  {
+    id: "s3",
+    ownerModule: "core",
+    kind: "operator",
+    launchGate: "none",
+    prerequisites: ["s2"],
+    order: 30,
+    completion: "readiness-check",
+  },
 ];
 
 /**

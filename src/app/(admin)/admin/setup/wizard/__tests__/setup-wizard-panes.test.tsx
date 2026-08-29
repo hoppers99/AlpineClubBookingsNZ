@@ -184,6 +184,10 @@ function traversalWith(ids: SetupStepId[]): SetupWizardTraversal<SetupStepId> {
       isReachable: index === 0,
     })),
     applicableStepIds: ids,
+    // D17 (#246): every id these pane fixtures name is an operator step, so
+    // the environment half is empty here by construction.
+    environmentFacts: [],
+    launchBlockedBy: [],
     staleStepIds: [],
     outstandingStepIds: ids,
     blockingStepIds: ids,
@@ -593,6 +597,10 @@ function traversalFor(
       isReachable: true,
     })),
     applicableStepIds: ids,
+    // D17 (#246): every id these pane fixtures name is an operator step, so
+    // the environment half is empty here by construction.
+    environmentFacts: [],
+    launchBlockedBy: [],
     staleStepIds: [],
     outstandingStepIds: ids.filter((id) => id !== "club-config"),
     blockingStepIds: ids.filter((id) => id !== "club-config"),
