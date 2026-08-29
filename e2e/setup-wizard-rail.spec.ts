@@ -42,6 +42,17 @@ interface WizardTraversal {
   navigationFrontierStepId: string | null;
   percentComplete: number;
   steps: { id: string; state: string; isReachable: boolean }[];
+  /**
+   * D17 (#246). Since the split, `applicableStepIds` is the CARDS' set — every
+   * applicable entry — while `steps` is the journey the rail renders. This spec
+   * walks `steps` for that reason; see the rail assertion below.
+   */
+  environmentFacts: { id: string; status: string; blocksLaunch: boolean }[];
+}
+
+/** The journey's ids, which is exactly the set the rail renders rows for. */
+function journeyStepIds(traversal: WizardTraversal): string[] {
+  return traversal.steps.map((step) => step.id);
 }
 
 async function readTraversal(request: APIRequestContext): Promise<WizardTraversal> {
@@ -91,10 +102,32 @@ test("the rail carries the journey, and the frontier stops a jump ahead", async 
     `${traversal.percentComplete}%`,
   );
 
-  // Every applicable step has a row, under a category heading.
-  for (const id of traversal.applicableStepIds) {
+  // Every OPERATOR step has a row, under a category heading.
+  //
+  // Walks `steps`, not `applicableStepIds` (D17, #246): those two parted
+  // company when the environment facts came off the rail, and the rail renders
+  // the first. Iterating `applicableStepIds` here would demand a rail row for
+  // `runtime-env` and fail — correctly, since there is deliberately none.
+  for (const id of journeyStepIds(traversal)) {
     await expect(page.getByTestId(`setup-wizard-rail-row-${id}`)).toBeAttached();
   }
+
+  // …and the converse, which is the half a "does every id have a row?" loop can
+  // never catch: no environment fact has a rail row, and the panel that holds
+  // them instead is reachable. Without this, folding the facts back onto the
+  // rail would pass every assertion above.
+  expect(
+    traversal.environmentFacts.length,
+    "the registry declares environment facts, so this assertion is not vacuous",
+  ).toBeGreaterThan(0);
+  for (const fact of traversal.environmentFacts) {
+    await expect(
+      page.getByTestId(`setup-wizard-rail-row-${fact.id}`),
+    ).toHaveCount(0);
+  }
+  await expect(
+    page.getByTestId("setup-wizard-rail-row-environment"),
+  ).toHaveAttribute("data-reachable", "true");
   // The category headings the rail groups under. `.first()` because the step
   // frame states the current step's category too, and both are the same word.
   await expect(page.getByText("Foundation", { exact: true }).first()).toBeVisible();
@@ -152,7 +185,11 @@ test("skipping a step buys passage and leaves it visibly outstanding (D4)", asyn
 
   const before = await readTraversal(adminContext.request);
   const current = String(before.currentStepId);
-  const resumeIndex = before.applicableStepIds.indexOf(current);
+  // The JOURNEY's positions (D17, #246) — `applicableStepIds` also carries the
+  // environment facts now, and an index into it would slice a list the
+  // reachability map below says nothing about.
+  const journey = journeyStepIds(before);
+  const resumeIndex = journey.indexOf(current);
   const reachability = new Map(before.steps.map((step) => [step.id, step.isReachable]));
 
   // The skip target is derived, not assumed: the first APPLICABLE step after
@@ -170,7 +207,7 @@ test("skipping a step buys passage and leaves it visibly outstanding (D4)", asyn
   // reachable (non-blocking, per the very isReachable read above) — so
   // skipping `current` changes nothing about any of them, and the derived
   // target is the one row whose reachability the skip actually flips.
-  const nextId = before.applicableStepIds
+  const nextId = journey
     .slice(resumeIndex + 1)
     .find((id) => reachability.get(id) === false);
 

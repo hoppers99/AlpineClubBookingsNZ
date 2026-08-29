@@ -26,6 +26,13 @@ interface WizardTraversal {
   currentStepId: string | null;
   allResolved: boolean;
   steps: { id: string; state: string; isReachable: boolean; isDeferred: boolean }[];
+  /**
+   * D17 (#246). The walk below iterates `steps`, which since the split is the
+   * OPERATOR half — so it skips fewer things, never sends an environment id at
+   * the progress route's new 422, and still arrives at `allResolved`.
+   */
+  environmentFacts: { id: string; status: string; blocksLaunch: boolean }[];
+  launchBlockedBy: string[];
 }
 
 async function resetSetupProgress(request: APIRequestContext) {
@@ -147,6 +154,57 @@ test("the launch panel unlocks once every step is resolved, and states what was 
   await expect(role.getByRole("button")).toHaveCount(0);
 
   await page.close();
+});
+
+/*
+  D17 (#246). The journey above resolved WITHOUT any environment fact being
+  confirmed — which is the split working, and is why the walk skipped fewer
+  steps than it used to. These two tests cover the other end of it.
+*/
+test("the environment facts are reported on their own panel, not walked", async () => {
+  const traversal = await readTraversal(adminContext.request);
+  expect(
+    traversal.environmentFacts.length,
+    "the registry declares environment facts",
+  ).toBeGreaterThan(0);
+
+  // Not in the journey at all — the assertion the whole child exists for.
+  const journeyIds = traversal.steps.map((step) => step.id);
+  for (const fact of traversal.environmentFacts) {
+    expect(journeyIds).not.toContain(fact.id);
+  }
+  // …but still in the applicable set, because the readiness cards read that one.
+  for (const fact of traversal.environmentFacts) {
+    expect(traversal.applicableStepIds).toContain(fact.id);
+  }
+
+  const page = await adminContext.newPage();
+  await page.goto("/admin/setup/wizard");
+  await page.getByTestId("setup-wizard-rail-row-environment").click();
+
+  const panel = page.getByTestId("setup-wizard-environment-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText(/not steps for you to complete/i);
+  for (const fact of traversal.environmentFacts) {
+    await expect(
+      page.getByTestId(`setup-wizard-environment-row-${fact.id}`),
+    ).toBeVisible();
+  }
+
+  await page.close();
+});
+
+test("the progress route refuses a transition on an environment fact", async () => {
+  const traversal = await readTraversal(adminContext.request);
+  const fact = traversal.environmentFacts[0];
+  const response = await adminContext.request.patch(
+    "/api/admin/setup/progress",
+    { data: { action: "complete", stepId: fact.id } },
+  );
+  expect(
+    response.status(),
+    `completing "${fact.id}" should be refused, not accepted`,
+  ).toBe(422);
 });
 
 test("reopening a step locks the launch panel again", async () => {
