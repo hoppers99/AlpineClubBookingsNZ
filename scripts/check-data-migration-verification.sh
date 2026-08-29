@@ -134,7 +134,13 @@ fail() {
 
 is_grandfathered() {
   local name="$1" allowed
-  for allowed in "${GRANDFATHERED_UNVERIFIED_DATA_MIGRATIONS[@]}"; do
+  # ${arr[@]+"${arr[@]}"} rather than "${arr[@]}": bash < 4.4 (macOS ships
+  # 3.2.57) raises "unbound variable" under `set -u` when a declared-but-empty
+  # array is expanded this way, even though the array itself is set. The
+  # `+word` alternate-value form only substitutes when the parameter is set,
+  # so an empty array quietly expands to nothing on 3.2 and behaves exactly
+  # like the plain expansion once the array is non-empty (#242).
+  for allowed in ${GRANDFATHERED_UNVERIFIED_DATA_MIGRATIONS[@]+"${GRANDFATHERED_UNVERIFIED_DATA_MIGRATIONS[@]}"}; do
     [ "$name" = "$allowed" ] && return 0
   done
   return 1
@@ -274,7 +280,7 @@ if [ "$GRANDFATHERED_COUNT" != "$EXPECTED_GRANDFATHERED_COUNT" ]; then
     "EXPECTED_GRANDFATHERED_COUNT in the same commit. Removing one (by writing its fixture) drops the number."
 fi
 
-for grandfathered in "${GRANDFATHERED_UNVERIFIED_DATA_MIGRATIONS[@]}"; do
+for grandfathered in ${GRANDFATHERED_UNVERIFIED_DATA_MIGRATIONS[@]+"${GRANDFATHERED_UNVERIFIED_DATA_MIGRATIONS[@]}"}; do
   # A new data-rewriting migration cannot be grandfathered: the list enumerates
   # historical debt, it is not an exemption a fresh migration can append itself to
   # (#2418, R7). The prefix is the 14-digit timestamp before the first '_'.
@@ -290,7 +296,7 @@ for grandfathered in "${GRANDFATHERED_UNVERIFIED_DATA_MIGRATIONS[@]}"; do
     continue
   fi
   found=0
-  for name in "${classified[@]}"; do
+  for name in ${classified[@]+"${classified[@]}"}; do
     [ "$name" = "$grandfathered" ] && found=1 && break
   done
   if [ "$found" = "0" ]; then
