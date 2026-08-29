@@ -262,8 +262,8 @@ above for how to choose.
    where that work is actually done.
 
    **Some steps also carry the real editor, right there beneath the check.**
-   **Club Configuration**, **Club Time Zone**, **Feature Flags** and **Address
-   Autocomplete** have one today. The form you
+   **Club Configuration**, **Club Time Zone**, **Feature Flags**, **Address
+   Autocomplete** and **Age And Membership Rules** have one today. The form you
    get is the same one that step's own settings page shows, saving to the same
    place, so nothing is stored twice and nothing behaves differently for having
    been reached from here. Editing is still staged: you change the fields, then
