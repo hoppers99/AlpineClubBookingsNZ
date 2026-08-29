@@ -50,10 +50,18 @@ vi.mock("@/lib/setup-readiness", async (importOriginal) => {
 /**
  * A prerequisite graph over the REAL step ids.
  *
- * `stripe` depends on `age-tiers`, and `sentry` depends on `stripe`, with every
- * entry keeping its real `ownerModule` and `order` (the registry declares those
- * three in that order, so the "a prerequisite is presented before its dependent"
- * rule still holds). Real ids matter here: the route validates its body with
+ * `seasons-rates` depends on `age-tiers`, and `stripe` depends on
+ * `seasons-rates`, with every entry keeping its real `ownerModule` and `order`
+ * (the registry declares those three in that order — 90, 100, 110 — so the "a
+ * prerequisite is presented before its dependent" rule still holds).
+ *
+ * ALL THREE ARE `core` OPERATOR STEPS, and since D17 (#246) that is a
+ * requirement rather than a coincidence. This chain used to end on `sentry`,
+ * which is now an environment fact: staleness is computed over the operator
+ * half of the registry alone, so a chain ending there would silently stop
+ * cascading and this whole file would be testing nothing. It is also a
+ * declaration the registry's own guard would now reject outright — an
+ * environment fact may sit on neither end of a prerequisite edge. Real ids matter here: the route validates its body with
  * `z.enum(SETUP_STEP_IDS)` and `normalizeSetupProgress` drops ids the registry
  * does not know, so a synthetic `s1`/`s2`/`s3` chain could not reach the code
  * under test at all. This is the only way to exercise the write path end to end
@@ -64,8 +72,8 @@ vi.mock("@/lib/setup-step-registry", async (importOriginal) => {
   // binding in this file, so a module-scope constant read here is a temporal
   // dead-zone error at import time rather than at assertion time.
   const prerequisites: Record<string, readonly string[]> = {
-    stripe: ["age-tiers"],
-    sentry: ["stripe"],
+    "seasons-rates": ["age-tiers"],
+    stripe: ["seasons-rates"],
   };
   const actual =
     await importOriginal<typeof import("@/lib/setup-step-registry")>();
@@ -153,34 +161,34 @@ beforeEach(() => {
 describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
   it("persists the full transitive closure when a prerequisite is reopened", async () => {
     mockFindUnique.mockResolvedValue(
-      storedRow({ completedStepIds: ["age-tiers", "stripe", "sentry"] }),
+      storedRow({ completedStepIds: ["age-tiers", "seasons-rates", "stripe"] }),
     );
 
     const response = await PATCH(patch({ action: "reopen", stepId: "age-tiers" }));
     expect(response.status).toBe(200);
 
-    // `stripe` depends on the reopened step; `sentry` depends on `stripe`, so it
+    // `seasons-rates` depends on the reopened step; `stripe` depends on `seasons-rates`, so it
     // is stale too. Storing only the direct dependent would leave the traversal
-    // reporting `sentry` as complete — it does not re-cascade a supplied set.
-    expect(persisted().staleStepIds).toEqual(["stripe", "sentry"]);
+    // reporting `stripe` as complete — it does not re-cascade a supplied set.
+    expect(persisted().staleStepIds).toEqual(["seasons-rates", "stripe"]);
   });
 
   it("never clears the completion record when it marks a step stale", async () => {
     mockFindUnique.mockResolvedValue(
-      storedRow({ completedStepIds: ["age-tiers", "stripe", "sentry"] }),
+      storedRow({ completedStepIds: ["age-tiers", "seasons-rates", "stripe"] }),
     );
     await PATCH(patch({ action: "reopen", stepId: "age-tiers" }));
 
     // AC 4: the reopened step leaves the completed set because the OPERATOR
-    // reopened it; `stripe` and `sentry` stay in it and are merely flagged.
-    expect(persisted().completedStepIds).toEqual(["stripe", "sentry"]);
+    // reopened it; `seasons-rates` and `stripe` stay in it and are merely flagged.
+    expect(persisted().completedStepIds).toEqual(["seasons-rates", "stripe"]);
   });
 
   it("clears the stale flag when the prerequisite is settled again, with no re-entry", async () => {
     mockFindUnique.mockResolvedValue(
       storedRow({
-        completedStepIds: ["stripe", "sentry"],
-        staleStepIds: ["stripe", "sentry"],
+        completedStepIds: ["seasons-rates", "stripe"],
+        staleStepIds: ["seasons-rates", "stripe"],
       }),
     );
 
@@ -188,10 +196,10 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
 
     expect(persisted().staleStepIds).toEqual([]);
     // "Returns to complete without re-entry": nothing had to be done to
-    // `stripe` or `sentry` themselves, and they are still recorded complete.
+    // `seasons-rates` or `stripe` themselves, and they are still recorded complete.
     expect(persisted().completedStepIds).toEqual([
+      "seasons-rates",
       "stripe",
-      "sentry",
       "age-tiers",
     ]);
   });
@@ -199,8 +207,8 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
   it("reverts the record-level completed flag while anything is stale, finish included", async () => {
     mockFindUnique.mockResolvedValue(
       storedRow({
-        completedStepIds: ["stripe", "sentry"],
-        staleStepIds: ["stripe", "sentry"],
+        completedStepIds: ["seasons-rates", "stripe"],
+        staleStepIds: ["seasons-rates", "stripe"],
       }),
     );
 
@@ -214,7 +222,7 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
 
   it("still stamps the record when nothing is stale", async () => {
     mockFindUnique.mockResolvedValue(
-      storedRow({ completedStepIds: ["age-tiers", "stripe", "sentry"] }),
+      storedRow({ completedStepIds: ["age-tiers", "seasons-rates", "stripe"] }),
     );
 
     await PATCH(patch({ action: "finish" }));
@@ -226,7 +234,7 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
 
   it("records the marked-stale transition under its own event type", async () => {
     mockFindUnique.mockResolvedValue(
-      storedRow({ completedStepIds: ["age-tiers", "stripe", "sentry"] }),
+      storedRow({ completedStepIds: ["age-tiers", "seasons-rates", "stripe"] }),
     );
 
     await PATCH(patch({ action: "reopen", stepId: "age-tiers" }));
@@ -237,11 +245,11 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
       actorMemberId: "admin1",
       entityType: "SetupProgress",
       entityId: "default",
-      summary: 'Setup steps "stripe", "sentry" now need another look',
+      summary: 'Setup steps "seasons-rates", "stripe" now need another look',
       metadata: {
         action: "reopen",
         stepId: "age-tiers",
-        stepIds: ["stripe", "sentry"],
+        stepIds: ["seasons-rates", "stripe"],
       },
     });
     // The transition that caused it is still recorded on its own account.
@@ -251,8 +259,8 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
   it("records the stale-cleared transition under a different event type", async () => {
     mockFindUnique.mockResolvedValue(
       storedRow({
-        completedStepIds: ["stripe", "sentry"],
-        staleStepIds: ["stripe", "sentry"],
+        completedStepIds: ["seasons-rates", "stripe"],
+        staleStepIds: ["seasons-rates", "stripe"],
       }),
     );
 
@@ -260,8 +268,8 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
 
     expect(auditFor("setup_progress.steps_stale_cleared")).toMatchObject({
       category: "system",
-      summary: 'Setup steps "stripe", "sentry" no longer need another look',
-      metadata: { stepIds: ["stripe", "sentry"] },
+      summary: 'Setup steps "seasons-rates", "stripe" no longer need another look',
+      metadata: { stepIds: ["seasons-rates", "stripe"] },
     });
     expect(auditFor("setup_progress.steps_marked_stale")).toBeNull();
   });
@@ -279,8 +287,8 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
   it("records no stale transition when a NON-EMPTY set survives a successful recompute unchanged", async () => {
     mockFindUnique.mockResolvedValue(
       storedRow({
-        completedStepIds: ["stripe", "sentry"],
-        staleStepIds: ["stripe", "sentry"],
+        completedStepIds: ["seasons-rates", "stripe"],
+        staleStepIds: ["seasons-rates", "stripe"],
       }),
     );
 
@@ -288,7 +296,7 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
     // prerequisite, so the recompute RUNS, succeeds, and returns the same set.
     await PATCH(patch({ action: "complete", stepId: "club-config" }));
 
-    expect(persisted().staleStepIds).toEqual(["stripe", "sentry"]);
+    expect(persisted().staleStepIds).toEqual(["seasons-rates", "stripe"]);
     // The pair above only covers a set that moved from empty. Without these two
     // the suite passes on a route that re-announces the whole standing stale set
     // on every unrelated click — one audit row per step, per click, for as long
@@ -301,7 +309,7 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
 
   it("cascades staleness when a prerequisite is DEFERRED rather than reopened", async () => {
     mockFindUnique.mockResolvedValue(
-      storedRow({ completedStepIds: ["age-tiers", "stripe", "sentry"] }),
+      storedRow({ completedStepIds: ["age-tiers", "seasons-rates", "stripe"] }),
     );
 
     await PATCH(patch({ action: "skip", stepId: "age-tiers" }));
@@ -320,16 +328,16 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
     // deferral as "settled enough" — would let a club defer the step everything
     // hangs off and see no consequence anywhere.
     expect(persisted().skippedStepIds).toEqual(["age-tiers"]);
-    expect(persisted().completedStepIds).toEqual(["stripe", "sentry"]);
-    expect(persisted().staleStepIds).toEqual(["stripe", "sentry"]);
+    expect(persisted().completedStepIds).toEqual(["seasons-rates", "stripe"]);
+    expect(persisted().staleStepIds).toEqual(["seasons-rates", "stripe"]);
     expect(auditFor("setup_progress.step_deferred")).not.toBeNull();
   });
 
   it("does not restore the completion record when the stale set empties", async () => {
     mockFindUnique.mockResolvedValue(
       storedRow({
-        completedStepIds: ["stripe", "sentry"],
-        staleStepIds: ["stripe", "sentry"],
+        completedStepIds: ["seasons-rates", "stripe"],
+        staleStepIds: ["seasons-rates", "stripe"],
         completedAt: new Date("2026-06-01T00:00:00.000Z"),
         completedByMemberId: "admin0",
       }),
@@ -355,8 +363,8 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
   it("records WHY a finish did not take effect, on the finish row itself", async () => {
     mockFindUnique.mockResolvedValue(
       storedRow({
-        completedStepIds: ["stripe", "sentry"],
-        staleStepIds: ["stripe", "sentry"],
+        completedStepIds: ["seasons-rates", "stripe"],
+        staleStepIds: ["seasons-rates", "stripe"],
       }),
     );
 
@@ -367,14 +375,14 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
     // finished" against a record that is not marked finished, with nothing
     // anywhere saying why.
     expect(auditFor("setup_progress.finished")).toMatchObject({
-      metadata: { action: "finish", staleStepIds: ["stripe", "sentry"] },
+      metadata: { action: "finish", staleStepIds: ["seasons-rates", "stripe"] },
     });
     expect(auditFor("setup_progress.steps_marked_stale")).toBeNull();
   });
 
   it("leaves the finish row unadorned when the finish really did take effect", async () => {
     mockFindUnique.mockResolvedValue(
-      storedRow({ completedStepIds: ["age-tiers", "stripe", "sentry"] }),
+      storedRow({ completedStepIds: ["age-tiers", "seasons-rates", "stripe"] }),
     );
 
     await PATCH(patch({ action: "finish" }));
@@ -388,8 +396,8 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
   it("refuses the whole transition — writing and recording nothing — when the recompute cannot run", async () => {
     mockFindUnique.mockResolvedValue(
       storedRow({
-        completedStepIds: ["stripe", "sentry"],
-        staleStepIds: ["stripe", "sentry"],
+        completedStepIds: ["seasons-rates", "stripe"],
+        staleStepIds: ["seasons-rates", "stripe"],
       }),
     );
     mockGetSetupDatabaseSnapshot.mockRejectedValue(new Error("no database"));
@@ -415,11 +423,11 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
     // The dangerous direction, and the one the `?? currentStale` fallback got
     // exactly wrong. The stored set is empty, so falling back to it wrote `[]` —
     // an assertion that nothing is stale, made about the one request whose whole
-    // effect is to make `stripe` and `sentry` stale. Fail-toward-complete, which
+    // effect is to make `seasons-rates` and `stripe` stale. Fail-toward-complete, which
     // is AC 6 inverted rather than merely unmet.
     mockFindUnique.mockResolvedValue(
       storedRow({
-        completedStepIds: ["age-tiers", "stripe", "sentry"],
+        completedStepIds: ["age-tiers", "seasons-rates", "stripe"],
         staleStepIds: [],
       }),
     );
@@ -435,8 +443,8 @@ describe("PATCH /api/admin/setup/progress — stale state (#217)", () => {
   it("empties the stale set on reset even when the recompute cannot run", async () => {
     mockFindUnique.mockResolvedValue(
       storedRow({
-        completedStepIds: ["stripe", "sentry"],
-        staleStepIds: ["stripe", "sentry"],
+        completedStepIds: ["seasons-rates", "stripe"],
+        staleStepIds: ["seasons-rates", "stripe"],
       }),
     );
     mockGetSetupDatabaseSnapshot.mockRejectedValue(new Error("no database"));

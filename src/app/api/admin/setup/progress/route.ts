@@ -9,13 +9,18 @@ import {
   normalizeSetupProgress,
   type SetupStepId,
 } from "@/lib/setup-readiness";
+import { SETUP_STEP_REGISTRY } from "@/lib/setup-step-registry";
 
 /**
  * The setup wizard's one write (epic #213, C4/#219 and C2/#217).
  *
  * Five transitions the operator can ask for, and one derived answer they cannot:
  * `staleStepIds`, which this route recomputes from the step registry's
- * prerequisite graph on every write. What gets RECORDED about any of it lives in
+ * prerequisite graph on every write.
+ *
+ * Three of those five name a step, and since D17 (C15 #246) they are refused
+ * with 422 on an ENVIRONMENT id — see `ENVIRONMENT_STEP_IDS` below for why the
+ * schema still accepts the id and this handler still turns it down. What gets RECORDED about any of it lives in
  * `setup-progress-audit.ts`; how the stale set is computed, and which way each
  * failure falls, lives in `setup-progress-staleness.ts`.
  *
@@ -50,6 +55,40 @@ function withoutStep(ids: string[], stepId: SetupStepId) {
   return ids.filter((id) => id !== stepId);
 }
 
+/**
+ * The ids nobody may confirm, skip or reopen (epic #213, **D17**, C15 #246).
+ *
+ * `SETUP_STEP_IDS` stays WHOLE — it is derived positionally from the registry
+ * and its literal-tuple-ness is load-bearing for the `z.enum` above, so the
+ * schema still accepts `runtime-env` as a syntactically valid step id. This is
+ * the semantic half of the answer, and it is a real refusal rather than
+ * tidiness:
+ *
+ * - The traversal would IGNORE the resulting id anyway (its unknown-id rule),
+ *   so the transition changes nothing an operator can see — but
+ *   `recordSetupProgressTransition` would still write an audit row saying
+ *   somebody confirmed a fact nobody is able to confirm. An audit log that
+ *   records impossible events is worse than one that records fewer.
+ * - It fails closed on the wizard's own contract. Nothing in the shipped UI can
+ *   send one of these (there is no control on the environment panel that
+ *   would), so a request carrying one is either a stale client from before this
+ *   change or a hand-rolled call — and in both cases the honest answer is that
+ *   the step is not the operator's to mark.
+ *
+ * 422 rather than 400: the body is well formed and the id is real. What is
+ * wrong is the request's MEANING, which is what 422 is for, and the distinction
+ * is worth keeping because a 400 here would read as "you sent nonsense" to
+ * somebody who sent a valid registry id.
+ *
+ * Derived from the registry rather than listed, so a reclassification cannot
+ * leave this set behind.
+ */
+const ENVIRONMENT_STEP_IDS: ReadonlySet<string> = new Set(
+  SETUP_STEP_REGISTRY.filter((entry) => entry.kind === "environment").map(
+    (entry) => entry.id,
+  ),
+);
+
 export async function PATCH(request: NextRequest) {
   const guard = await requireAdmin();
   if (!guard.ok) return guard.response;
@@ -66,6 +105,19 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json(
       { error: "Invalid input", details: parsed.error.flatten() },
       { status: 400 },
+    );
+  }
+
+  if (
+    "stepId" in parsed.data &&
+    ENVIRONMENT_STEP_IDS.has(parsed.data.stepId)
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "That is a fact about the server this site runs on, not a step to complete — it is reported in the wizard's Server environment panel and is changed by whoever runs the server.",
+      },
+      { status: 422 },
     );
   }
 
