@@ -130,7 +130,12 @@ type LodgeFormState = {
    * lines and directly tested; it is deliberately not replicated in the lodge
    * setup wizard, where a second copy bought no reachable safety and made the
    * page reject any lodge fixture that omitted `doorCode`.
-   */
+   * Cross-tab staleness is a stated limit, not solved here: a second admin's
+ * change in another tab shows only after this section's next mount — the
+ * partial-field PATCH keeps the clobber risk low (unlike ModulesSection's
+ * full-record PUT, which is why that section grew a focus refetch and this
+ * one has not).
+ */
   detailFields: readonly LodgeDetailField[];
 };
 
