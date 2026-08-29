@@ -46,15 +46,39 @@ function stubPublishFetch(options: { ok?: boolean } = {}) {
 
 function viewWith(
   outstanding: SetupWizardView["outstanding"] = [],
+  environment: SetupWizardView["environment"] = [],
 ): SetupWizardView {
   return {
     groups: [],
     steps: [],
+    environment,
+    // D17 (#246): derived from the rows the caller supplied, so a test cannot
+    // set up a view where a row says it blocks and the list disagrees — the
+    // real `buildSetupWizardView` cannot produce one either.
+    launchBlockedBy: environment.filter((row) => row.blocksLaunch),
     percentComplete: 100,
     currentStepId: null,
     navigationFrontierStepId: null,
     allResolved: true,
     outstanding,
+  };
+}
+
+/** One environment row, defaulting to a green one that holds nothing shut. */
+function environmentRow(
+  overrides: Partial<SetupWizardView["environment"][number]> = {},
+): SetupWizardView["environment"][number] {
+  return {
+    id: "runtime-env" as SetupStepId,
+    title: "Runtime Environment",
+    description: "The deployment's own variables.",
+    status: "complete",
+    blocksLaunch: false,
+    message: "Required runtime variables are present and well formed.",
+    details: [],
+    remedy: null,
+    permissionArea: "support",
+    ...overrides,
   };
 }
 

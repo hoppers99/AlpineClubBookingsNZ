@@ -5,10 +5,19 @@ import {
   emptyAdminPermissionMatrix,
   getAdminRouteRequirement,
 } from "@/lib/admin-permissions";
-import { buildSetupReadiness, normalizeSetupProgress } from "@/lib/setup-readiness";
-import { SETUP_STEP_IDS, type SetupStepId } from "@/lib/setup-step-registry";
+import {
+  buildSetupReadiness,
+  normalizeSetupProgress,
+  type SetupDatabaseSnapshot,
+} from "@/lib/setup-readiness";
+import {
+  SETUP_STEP_IDS,
+  SETUP_STEP_REGISTRY,
+  type SetupStepId,
+} from "@/lib/setup-step-registry";
 import { buildSetupWizardTraversal } from "@/lib/setup-wizard-traversal";
 import {
+  SETUP_ENVIRONMENT_REMEDY,
   SETUP_STEP_PERMISSION_AREA,
   buildSetupWizardView,
   canChangeSetupProgress,
@@ -29,9 +38,42 @@ const allModulesOn = Object.fromEntries(
   MODULE_KEYS.map((key) => [key, true]),
 ) as ModuleSettingsValues;
 
+/**
+ * A database snapshot in which a SEED has filled in some defaults and nobody has
+ * confirmed anything — the D14/D15 "defaulted" scenario, made explicit.
+ *
+ * It became necessary with D17 (#246). This suite used to reach the defaulted
+ * state by accident: on a bare `env: {}` fixture the ONE check that passed was
+ * `auth-secret-strength` (see the note in `viewFor` below), and D17 moved that
+ * one onto the Server-environment panel — so the operator half of the journey
+ * had no passing check left and "however many checks pass" became a fixture
+ * where none did. Rather than reinstate the accident, this states the scenario
+ * the tests are actually about: a club whose seed wrote age tiers and a
+ * cancellation policy, and whose operator has agreed to neither.
+ */
+function seededSnapshot(): SetupDatabaseSnapshot {
+  return {
+    adminCount: 0,
+    ageTierSettingCount: 4,
+    seasonCount: 0,
+    cancellationPolicyCount: 0,
+    bookingDefaultsConfigured: false,
+    groupDiscountConfigured: false,
+    membershipCancellationSettingsConfigured: false,
+    membershipCancellationXeroGroupCount: 0,
+    membershipCancellationArchiveContacts: false,
+    operationalXeroConnected: false,
+    operationalXeroTokenExpiresAt: null,
+    xeroAccountMappingCount: 0,
+    xeroHutFeeItemMappingCount: 0,
+    xeroEntranceFeeMappingCount: 0,
+  };
+}
+
 function viewFor(
   progress: { completedStepIds?: string[]; skippedStepIds?: string[] } = {},
   moduleSettings?: Parameters<typeof buildSetupWizardTraversal>[0]["moduleSettings"],
+  database: SetupDatabaseSnapshot | undefined = seededSnapshot(),
 ): SetupWizardView {
   const normalised = normalizeSetupProgress({
     completedStepIds: progress.completedStepIds ?? [],
@@ -52,7 +94,7 @@ function viewFor(
   // check complete on a bare fixture, so the CI env collapsed the "opens a
   // fresh install … however many checks pass" fixture's defaulted population to
   // zero — passing locally, failing on every CI run (PR #241).
-  const readiness = buildSetupReadiness({ progress: normalised, env: {} });
+  const readiness = buildSetupReadiness({ progress: normalised, env: {}, database });
   const readinessStatuses: Partial<
     Record<SetupStepId, (typeof readiness.categories)[number]["checks"][number]["status"]>
   > = {};
@@ -173,8 +215,11 @@ describe("buildSetupWizardView", () => {
   });
 
   it("states a deferred step as outstanding, and says it was skipped", () => {
-    const view = viewFor({ skippedStepIds: ["sentry"] });
-    const entry = view.outstanding.find((item) => item.id === "sentry");
+    // An OPERATOR step since D17 (#246). This named `sentry` until that change
+    // made it an environment fact — which cannot be deferred, is not part of
+    // `outstanding`, and whose progress transition the route now refuses (422).
+    const view = viewFor({ skippedStepIds: ["seasons-rates"] });
+    const entry = view.outstanding.find((item) => item.id === "seasons-rates");
     expect(entry).toBeDefined();
     expect(entry?.deferred).toBe(true);
   });
@@ -190,33 +235,224 @@ describe("buildSetupWizardView", () => {
     MOCKUP 7'S SCENARIO, at the view layer: a club that finished setup on the
     previous version, updated, and now has a step it has never seen. The
     traversal suite proves the STATE is right for every id; this proves the
-    RENDERED ROW is right for the step that actually arrived this way
-    (`environment-role`, ENV-SAFETY 1 #3034), because `buildSetupWizardView`
-    falls back to rendering a bare id when readiness and the registry disagree
-    about a step — a fallback that is deliberate, quiet, and exactly what a
-    half-done merge would leave behind.
+    RENDERED ROW is right, because `buildSetupWizardView` falls back to
+    rendering a bare id when readiness and the registry disagree about a step —
+    a fallback that is deliberate, quiet, and exactly what a half-done merge
+    would leave behind.
+
+    The subject is `site-style` (epic #213, C7, #222): a step that genuinely
+    arrived mid-epic and slotted into the middle of a journey clubs were already
+    part-way through, which is the property under test. It named
+    `environment-role` (ENV-SAFETY 1, #3034) until D17 (#246) made that an
+    environment fact — the same scenario for a FACT is the test immediately
+    below, so both halves of the split keep this coverage rather than one of
+    them inheriting it.
   */
   it("renders a step added by an update as a real rail row, not a bare id", () => {
+    const before = SETUP_STEP_IDS.filter((id) => id !== "site-style");
+    const view = viewFor({ completedStepIds: [...before] });
+
+    const added = view.steps.find((step) => step.id === "site-style");
+    expect(added, "the new step is missing from the journey entirely").toBeTruthy();
+    // Titled and categorised from the readiness check, not from the id.
+    expect(added?.title).not.toBe("site-style");
+    expect(added?.categoryId).toBe("website");
+    expect(added?.permissionArea).toBe("content");
+    // In its own group, in journey position — between the booking rules and the
+    // integrations, which is where C7 slotted it without renumbering anything.
+    const journey = view.steps.map((step) => step.id);
+    expect(journey.indexOf("site-style")).toBeGreaterThan(
+      journey.indexOf("seasons-rates"),
+    );
+    expect(journey.indexOf("site-style")).toBeLessThan(journey.indexOf("stripe"));
+    // And it is stated as outstanding rather than silently swallowed.
+    expect(view.outstanding.map((item) => item.id)).toContain("site-style");
+    expect(view.allResolved).toBe(false);
+  });
+
+  /*
+    THE SAME SCENARIO FOR AN ENVIRONMENT FACT (D17, #246) — and the reason the
+    test above could not simply be re-pointed and left at that.
+
+    `environment-role` is the step that actually arrived by an update
+    (ENV-SAFETY 1, #3034), and it is now a fact. A club updating INTO D17 has a
+    progress row naming ids that are no longer steps at all, so this pins that
+    such a club is not shown a bare id, is not told it has outstanding work it
+    cannot do, and is not blocked from finishing — the fact simply appears on
+    the panel, titled from its own readiness check.
+  */
+  it("renders a fact added by an update as a real panel row, and never as outstanding", () => {
     const before = SETUP_STEP_IDS.filter((id) => id !== "environment-role");
     const view = viewFor({ completedStepIds: [...before] });
 
-    const added = view.steps.find((step) => step.id === "environment-role");
-    expect(added, "the new step is missing from the journey entirely").toBeTruthy();
-    // Titled and categorised from the readiness check, not from the id.
-    expect(added?.title).not.toBe("environment-role");
-    expect(added?.categoryId).toBe("foundation");
-    expect(added?.categoryTitle).toBe("Foundation");
-    expect(added?.permissionArea).toBe("support");
-    // Third in the rail's Foundation group, where upstream ships it.
-    const foundation = view.groups.find((group) => group.id === "foundation");
-    expect(foundation?.steps.map((step) => step.id).slice(0, 3)).toEqual([
-      "club-config",
-      "club-time-zone",
+    const fact = view.environment.find((row) => row.id === "environment-role");
+    expect(fact, "the fact is missing from the panel entirely").toBeTruthy();
+    expect(fact?.title).not.toBe("environment-role");
+    expect(fact?.permissionArea).toBe("support");
+
+    // It is not on the rail, not in the journey, and not outstanding work.
+    expect(view.steps.map((step) => step.id)).not.toContain("environment-role");
+    expect(view.outstanding.map((item) => item.id)).not.toContain(
       "environment-role",
+    );
+    // A stored "completed" for an id that is no longer a step is simply
+    // ignored, exactly as one for a removed step is — it does not resurrect the
+    // id, and it does not make the fact read green.
+    expect(fact?.status).not.toBe("complete");
+    // …and because nothing has declared the role, it holds the publish shut and
+    // carries a remedy addressed to somebody other than the reader.
+    expect(fact?.blocksLaunch).toBe(true);
+    expect(view.launchBlockedBy.map((row) => row.id)).toContain(
+      "environment-role",
+    );
+    expect(fact?.remedy?.who).toContain("Whoever runs your server");
+  });
+});
+
+/*
+  THE PANEL'S OWN VIEW MODEL (D17, C15 #246).
+*/
+describe("buildSetupWizardView — the environment half", () => {
+  it("carries the registry's five facts, and nothing else", () => {
+    const view = viewFor();
+    expect(view.environment.map((row) => row.id)).toEqual([
+      "environment-role",
+      "runtime-env",
+      "auth-secret-strength",
+      "email-ses",
+      "sentry",
     ]);
-    // And it is stated as outstanding rather than silently swallowed.
-    expect(view.outstanding.map((item) => item.id)).toContain("environment-role");
-    expect(view.allResolved).toBe(false);
+    // The two halves partition the applicable set — nothing is on both
+    // surfaces, and nothing fell between them.
+    const stepIds = new Set(view.steps.map((step) => step.id));
+    for (const row of view.environment) {
+      expect(stepIds.has(row.id)).toBe(false);
+    }
+  });
+
+  it("KEEPS THE TWO PROVIDER TESTS — the split relocates controls, never deletes them", () => {
+    // The finding this whole design turns on: `email-ses` and `sentry` are two
+    // of the four checks that declare a provider test, and both moved off the
+    // rail. Losing the action here would be the #223 regression all over again.
+    const view = viewFor();
+    const byId = new Map(view.environment.map((row) => [row.id, row]));
+    expect(byId.get("email-ses")?.action).toMatchObject({
+      type: "provider-test",
+      provider: "smtp",
+    });
+    expect(byId.get("sentry")?.action).toMatchObject({
+      type: "provider-test",
+      provider: "sentry",
+    });
+  });
+
+  it("gives every non-green fact a remedy, and every green one none", () => {
+    const view = viewFor();
+    for (const row of view.environment) {
+      if (row.status === "complete") {
+        expect(row.remedy, `${row.id} is green and should carry no remedy`).toBeNull();
+      } else {
+        expect(row.remedy, `${row.id} is not green and needs a remedy`).toBeTruthy();
+        // R2-3's order: who FIRST, then the line to send them, then why.
+        expect(row.remedy?.who.length).toBeGreaterThan(0);
+        expect(row.remedy?.send.length).toBeGreaterThan(0);
+        expect(row.remedy?.why.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("registers a remedy for EVERY environment fact the registry declares", () => {
+    // The guard that makes `SETUP_ENVIRONMENT_REMEDY`'s partiality safe. It is
+    // keyed over `SetupStepId` but only ever consulted for environment ids, so
+    // the type system cannot demand completeness — this does.
+    for (const entry of SETUP_STEP_REGISTRY) {
+      if (entry.kind !== "environment") continue;
+      expect(
+        SETUP_ENVIRONMENT_REMEDY[entry.id],
+        `environment fact "${entry.id}" has no remedy — an operator would be told what is wrong and not who fixes it`,
+      ).toBeTruthy();
+    }
+  });
+
+  it("names no remedy for a step that is not an environment fact", () => {
+    // The other direction: a stale entry left behind by a reclassification
+    // would be dead copy nobody could reach, and dead copy rots.
+    const environmentIds = new Set(
+      SETUP_STEP_REGISTRY.filter((entry) => entry.kind === "environment").map(
+        (entry) => entry.id,
+      ),
+    );
+    for (const id of Object.keys(SETUP_ENVIRONMENT_REMEDY)) {
+      expect(environmentIds.has(id as SetupStepId), id).toBe(true);
+    }
+  });
+
+  it("titles and details every row from its readiness check", () => {
+    const view = viewFor();
+    for (const row of view.environment) {
+      expect(row.title, row.id).not.toBe(row.id);
+      expect(row.message.length, row.id).toBeGreaterThan(0);
+    }
+  });
+
+  it("blocks the launch on the gating facts, and on neither advisory one", () => {
+    const view = viewFor();
+    // Two of the three on THIS fixture. `auth-secret-strength` reads green on a
+    // bare `env: {}` — the check's own no-duplicate-finding rule, described in
+    // `viewFor` above — so it is not blocking here, and the test below is the
+    // one that exercises it. Asserting all three here would have been asserting
+    // the fixture, not the rule.
+    expect(view.launchBlockedBy.map((row) => row.id)).toEqual([
+      "environment-role",
+      "runtime-env",
+    ]);
+    const byId = new Map(view.environment.map((row) => [row.id, row]));
+    expect(byId.get("auth-secret-strength")?.status).toBe("complete");
+    // The advisories are genuinely not green here, so their exclusion from the
+    // gate is a real answer rather than a vacuous one.
+    expect(byId.get("email-ses")?.status).not.toBe("complete");
+    expect(byId.get("sentry")?.status).not.toBe("complete");
+    expect(byId.get("email-ses")?.blocksLaunch).toBe(false);
+    expect(byId.get("sentry")?.blocksLaunch).toBe(false);
+  });
+
+  it("blocks the launch on a WEAK auth secret", () => {
+    // The third gating fact, on a deployment that has one and it is too short —
+    // the state CI's own `verify` job runs in (`AUTH_SECRET: ci-auth-secret`),
+    // and the one where this site cannot store a Stripe or Xero credential.
+    const progress = normalizeSetupProgress({
+      completedStepIds: [],
+      skippedStepIds: [],
+      completedAt: null,
+      completedByMemberId: null,
+    });
+    const readiness = buildSetupReadiness({
+      progress,
+      env: { AUTH_SECRET: "too-short" },
+      database: seededSnapshot(),
+    });
+    const readinessStatuses: Partial<
+      Record<SetupStepId, (typeof readiness.categories)[number]["checks"][number]["status"]>
+    > = {};
+    for (const category of readiness.categories) {
+      for (const check of category.checks) readinessStatuses[check.id] = check.status;
+    }
+    const view = buildSetupWizardView(
+      readiness,
+      buildSetupWizardTraversal({ progress, readinessStatuses }),
+    );
+
+    const secret = view.environment.find(
+      (row) => row.id === "auth-secret-strength",
+    );
+    expect(secret?.status).toBe("warning");
+    expect(secret?.blocksLaunch).toBe(true);
+    expect(view.launchBlockedBy.map((row) => row.id)).toContain(
+      "auth-secret-strength",
+    );
+    // A warning, not a `blocked` — which is exactly why the gate is written as
+    // "anything but complete" rather than as a status test.
+    expect(secret?.remedy?.send).toContain("AUTH_SECRET");
   });
 });
 

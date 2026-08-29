@@ -25,7 +25,10 @@ import {
   getApplicableSetupStepIds,
 } from "@/lib/setup-step-registry";
 import { buildSetupWizardTraversal } from "@/lib/setup-wizard-traversal";
-import { buildSetupWizardView } from "@/lib/setup-wizard-view";
+import {
+  buildSetupWizardView,
+  type SetupWizardView,
+} from "@/lib/setup-wizard-view";
 
 /**
  * THE SHARED-DERIVATION CONTRACT (epic #213, child C8, #223).
@@ -460,7 +463,21 @@ describe("legacy setup surfaces — the visibility switch (#223 AC3, AC4)", () =
     declares an action has a wizard step carrying it, and no step claims an
     action its check never declared.
   */
-  it("carries every check's ACTION onto its wizard step — no control loses its home", () => {
+  it("carries every check's ACTION onto its wizard SURFACE — no control loses its home", () => {
+    /*
+      D17 (#246) MOVED TWO OF THESE, AND THIS GUARD HAD TO FOLLOW OR BE WRONG.
+
+      The rule has always been "every control the readiness cards offered has a
+      home on the wizard", and until D17 there was one such home: the step's own
+      frame. D17 gives an environment fact a different one — a row on the
+      Server-environment panel — and `email-ses` and `sentry` both moved onto it.
+
+      So this now asks the SAME question over both surfaces rather than over the
+      rail alone. Narrowing it to the rail would have made it pass while two
+      live provider tests quietly disappeared, which is precisely the #223
+      regression it was written for; widening it to "somewhere on the wizard" is
+      what keeps its meaning intact across the move.
+    */
     const readiness = cardStepIds(databaseSnapshot(moduleFlags()));
     const view = buildSetupWizardView(
       readiness,
@@ -469,7 +486,18 @@ describe("legacy setup surfaces — the visibility switch (#223 AC3, AC4)", () =
         moduleSettings: moduleFlags(),
       }),
     );
-    const stepsById = new Map(view.steps.map((step) => [step.id, step]));
+    const carriersById = new Map<
+      string,
+      { action?: SetupWizardView["steps"][number]["action"]; surface: string }
+    >([
+      ...view.steps.map(
+        (step) => [step.id, { action: step.action, surface: "rail step" }] as const,
+      ),
+      ...view.environment.map(
+        (row) =>
+          [row.id, { action: row.action, surface: "environment panel row" }] as const,
+      ),
+    ]);
 
     const withActions = readiness.categories
       .flatMap((category) => category.checks)
@@ -486,12 +514,21 @@ describe("legacy setup surfaces — the visibility switch (#223 AC3, AC4)", () =
     ]);
 
     for (const check of withActions) {
-      const step = stepsById.get(check.id);
+      const carrier = carriersById.get(check.id);
       expect(
-        step?.action,
-        `the ${check.id} check declares a ${check.action?.type} action, but its wizard step carries none — hiding the readiness cards would delete that control rather than relocate it (epic #213 D8)`,
+        carrier?.action,
+        `the ${check.id} check declares a ${check.action?.type} action, but its wizard ${carrier?.surface ?? "surface"} carries none — hiding the readiness cards would delete that control rather than relocate it (epic #213 D8/D17)`,
       ).toEqual(check.action);
     }
+
+    // …and the split is real rather than incidental: two of the four now live
+    // on the panel. Pinned so that quietly folding the facts back into the rail
+    // fails HERE as well as in the traversal suite.
+    expect(
+      withActions
+        .map((check) => carriersById.get(check.id)?.surface)
+        .filter((surface) => surface === "environment panel row"),
+    ).toHaveLength(2);
   });
 
   it("claims no ACTION the readiness check does not declare", () => {
