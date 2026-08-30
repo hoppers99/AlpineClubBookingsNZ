@@ -130,11 +130,27 @@ describe("SETUP_STEP_PERMISSION_AREA (D12)", () => {
     );
   });
 
-  it("keeps the two counter-intuitive mappings the rule produces", () => {
-    // Both follow from "the area that governs the page the work is done on",
-    // and both read wrongly if you go by the step's subject matter instead.
+  it("keeps the one counter-intuitive mapping the rule produces", () => {
+    // Follows from "the area that governs the page the work is done on", and
+    // reads wrongly if you go by the step's subject matter instead: the
+    // administrator account is created and repaired on `/admin/members`.
     expect(SETUP_STEP_PERMISSION_AREA["seed-admin"]).toBe("membership");
-    expect(SETUP_STEP_PERMISSION_AREA["membership-cancellation"]).toBe("support");
+  });
+
+  it("maps membership-cancellation to membership, not the href's support prefix (C22, #260 fix round)", () => {
+    // WAS `support`, from reading only the check's `href`
+    // (`/admin/setup/cancellation`) — a link-out hub with no editor of its
+    // own, the same mistake `club-config` carried until #223. The real
+    // editor, `MembershipCancellationSettingsPanel`, and the API it saves
+    // through are both registered under `membership` in
+    // `ROUTE_AREA_PREFIXES`, and the panel gates its own edit access on that
+    // same area (its own `#1940` comment) — so `membership` is both the
+    // admission answer and the editorial one. See this table's own docblock
+    // for the full evidence, including the 403 the old entry produced once
+    // C22 gave the step a pane.
+    expect(SETUP_STEP_PERMISSION_AREA["membership-cancellation"]).toBe(
+      "membership",
+    );
   });
 });
 
