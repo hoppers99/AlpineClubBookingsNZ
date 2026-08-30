@@ -78,23 +78,42 @@ escape hatch at all.
 
 ## They cannot rot, and they are disposable
 
-An allowance is **one-shot**. Once the pull request merges, the grown length
-*is* the length on `origin/main`, so the same file needs no allowance next time.
-Two rules keep that true:
+An allowance is **one-shot** in the sense that matters: once the pull request
+merges, the grown length *is* the length on `origin/main`, so the same file
+needs no allowance to reach it again. Two rules keep that true:
 
 - an allowance only has effect on the change that **introduces** it — the
-  allowance file itself has to be part of that change's diff. After merge it is
-  inert, and cannot be reached for by a later pull request;
-- an allowance this change did not need **fails the check**, so one cannot be
-  left lying around to be re-used. If you split the file after writing the
-  allowance, delete the entry.
+  allowance file itself has to be part of that change's diff;
+- an allowance a run did not need to permit anything is reported as **INERT**
+  rather than refused (#234) — named in the check's output, never a failure.
+  That covers the ordinary case (you wrote it, then split the file instead, or
+  it turned out not to be needed) and the stacked-branch case below alike: a
+  live entry is inert whenever the file it names is at or under the length it
+  declares, whether that is because *this* diff never grew the file past its
+  ceiling or because the growth already happened in an earlier commit this run
+  only carries forward. It is not free rein, though: the entry still has to
+  name a real, in-scope production file, and a nonexistent or out-of-scope
+  path **still fails** — inert only ever describes a satisfied promise, never
+  an unreadable one.
 
-Merged files can therefore be swept from this directory in bulk at any time,
-the same way compiled changelog fragments are. Nothing depends on them.
+Because an unneeded entry is harmless rather than refused, **you do not have
+to delete one to make the gate pass.** Merged files can still be swept from
+this directory in bulk at any time, the same way compiled changelog fragments
+are — nothing depends on them — but there is no dance where a spent entry has
+to be deleted to satisfy one base and then breaks another that still needs it.
 
-One consequence worth knowing: after merging `main` into a long-lived branch,
-an allowance that came in with `main` may report as unused if your branch also
-shrank the file it named. Deleting it is the right fix and is safe.
+**Why that dance used to be necessary, and no longer is.** An epic's child
+branches stack on the epic's integration branch (see `AGENTS.md`), so once one
+child's allowance file merges there, it stays part of every later child's diff
+against `origin/main` — the check reads `origin/main`, not the integration
+branch, so the file the sibling grew reads as newly arrived every time. Before
+#234 that failed as "an allowance the check did not need," and deleting the
+entry to silence it then broke `verify` on the *sibling's own* pull request,
+which judges `origin/main` and still needed exactly the growth the deleted
+entry described — no single edit could satisfy both bases at once. Reporting
+a satisfied entry as inert instead of refusing it removes the dilemma: the
+entry can simply stay, correctly inert everywhere it is no longer needed and
+still honoured everywhere it is.
 
 ## Where the rules live
 
