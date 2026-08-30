@@ -106,6 +106,39 @@ export function renderAppliedAllowances(
   ].join("\n");
 }
 
+/**
+ * Live entries that did not need to permit anything, printed on SUCCESS as
+ * well as on failure — same reason `renderAppliedAllowances` is (#234).
+ *
+ * An entry lands here rather than in `renderAppliedAllowances` when the file
+ * it names is already at or under the length it declares: either this run's
+ * own diff never grew the file past its ceiling, or the growth it describes
+ * already happened in an earlier commit this run is only carrying forward
+ * (a sibling that already merged into the same integration branch). Neither
+ * is a mistake, so neither fails — but a reviewer should still be able to see
+ * it, the same way applied growth is visible rather than a silent escape.
+ */
+export function renderInertAllowances(
+  inert: readonly SizeAllowance[],
+): string {
+  if (inert.length === 0) return "";
+  return [
+    "",
+    `INERT — ${inert.length} allowance(s) this run did not need to apply`,
+    "",
+    ...inert.flatMap((allowance) => [
+      `  ${allowance.file}  <=  ${allowance.lines} LOC declared`,
+      `      declared: ${allowance.source}`,
+      "",
+    ]),
+    "  Each is already satisfied: the file is at or under the length it names,",
+    "  whether because this diff did not grow it or because an earlier commit",
+    "  already did. Nothing to do — it costs nothing to leave and is safe to",
+    "  sweep up in bulk whenever the file it names is swept.",
+    "",
+  ].join("\n");
+}
+
 export function renderReport(findings: readonly ComputedFinding[]): string {
   const out: string[] = [];
   for (const severity of ["unusable", "regression"] as const) {
@@ -288,6 +321,7 @@ export function run(root: string, argv: readonly string[]): number {
         `since ${against}, ${tail}\n`,
     );
     process.stdout.write(renderAppliedAllowances(result.allowancesApplied));
+    process.stdout.write(renderInertAllowances(result.inertAllowances));
     return 0;
   }
 
@@ -298,6 +332,7 @@ export function run(root: string, argv: readonly string[]): number {
   );
   process.stderr.write(renderReport(findings));
   process.stderr.write(renderAppliedAllowances(result.allowancesApplied));
+  process.stderr.write(renderInertAllowances(result.inertAllowances));
   process.stderr.write(
     [
       "",

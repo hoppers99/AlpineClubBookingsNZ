@@ -851,19 +851,191 @@ describe("the deliberate escape: a declared allowance", () => {
     );
   });
 
-  it("says so when a change declares an allowance nothing needed", () => {
-    // Either a mistake or a file that shrank, and both are worth seeing. It
-    // FAILS rather than merely printing, because an allowance left lying around
-    // is the seed of the shared ledger this whole change deletes.
-    const { repo, base } = overBudgetRepo();
-    repo.write("src/lib/keep.ts", 11);
-    repo.allow("2980-big.md", `file: src/lib/big.ts\nlines: 1200\nreason: ${REASON}\n`);
-    repo.commit("an unrelated change, with a spare allowance");
+  describe("#234 — a satisfied allowance is inert, not refused", () => {
+    /**
+     * Both failure shapes #234 exists to close were observed live on epic #213:
+     * a spent allowance failed the gate for the NEXT branch off the same
+     * integration branch ("declares an allowance the check did not need"), and
+     * deleting it to satisfy that base then broke `verify`, which judges
+     * `origin/main` — a base the deleted entry was still covering. The fix:
+     * an entry whose target is a real, in-scope file at or under the length it
+     * declares is reported as INERT rather than refused, regardless of whether
+     * the growth it describes happened on THIS diff or an ancestor commit this
+     * run only carries forward.
+     */
 
-    const result = captureRun(repo.root, ["--base", base]);
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("declares an allowance the check did not need");
-    expect(result.stderr).toContain(`delete the entry from ${ALLOWANCE_DIR}/2980-big.md`);
+    it("spent-entry-inert: a live allowance the check did not need is reported, never refused", () => {
+      // The exact shape of the first failure on #213: the allowance file is
+      // part of THIS diff (so it is "live"), but the file it names never
+      // crossed its ceiling here — either because this change never touched
+      // it, or because the growth it describes already happened in a commit
+      // this run does not itself introduce. Before #234 this failed with
+      // "declares an allowance the check did not need"; now it is inert.
+      const { repo, base } = overBudgetRepo();
+      repo.write("src/lib/keep.ts", 11);
+      repo.allow("2980-big.md", `file: src/lib/big.ts\nlines: 1200\nreason: ${REASON}\n`);
+      repo.commit("an unrelated change, carrying a now-spent allowance");
+
+      const result = captureRun(repo.root, ["--base", base]);
+      expect(result.stderr).toBe("");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("INERT");
+      expect(result.stdout).toContain("src/lib/big.ts  <=  1200 LOC declared");
+      expect(result.stdout).toContain(`declared: ${ALLOWANCE_DIR}/2980-big.md`);
+      expect(result.stdout).not.toContain("declares an allowance the check did not need");
+    });
+
+    it("spent-entry-inert: also satisfied when the file has since shrunk further below the declared length", () => {
+      // "At or under", not "exactly equal" — the file need not have used the
+      // whole allowance for the entry to be harmless.
+      const { repo, base } = overBudgetRepo();
+      repo.write("src/lib/big.ts", 1150);
+      repo.allow("2980-big.md", `file: src/lib/big.ts\nlines: 1200\nreason: ${REASON}\n`);
+      repo.commit("shrank it further, allowance still on record");
+
+      const result = captureRun(repo.root, ["--base", base]);
+      expect(result.stderr).toBe("");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("INERT");
+      expect(result.stdout).toContain("src/lib/big.ts  <=  1200 LOC declared");
+    });
+
+    it("still-needed-entry-honoured: one entry inert, a sibling entry in the SAME file still required", () => {
+      // The exact two-entry shape from #213's #222 allowance file: one entry
+      // (club-theme-schema) read as unused for the next child, the other
+      // (setup-readiness) was still covering real growth. Both must be judged
+      // independently — an inert neighbour must not excuse, or be confused
+      // with, one that is still doing its job.
+      const repo = newRepo();
+      repo.write("src/lib/big.ts", 1200);
+      repo.write("src/lib/other.ts", 1200);
+      repo.write("src/lib/keep.ts", 10);
+      const base = repo.commit("base");
+
+      // big.ts: untouched since base — this entry has nothing left to permit.
+      // other.ts: genuinely grows past its ceiling on THIS diff.
+      repo.write("src/lib/other.ts", 1300);
+      repo.allow(
+        "2980-two.md",
+        `file: src/lib/big.ts\nlines: 1200\nreason: ${REASON}\n\n` +
+          `file: src/lib/other.ts\nlines: 1300\nreason: ${REASON}\n`,
+      );
+      repo.commit("one spent entry alongside one still-needed entry");
+
+      const result = captureRun(repo.root, ["--base", base]);
+      expect(result.stderr).toBe("");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("INERT");
+      expect(result.stdout).toContain("src/lib/big.ts  <=  1200 LOC declared");
+      expect(result.stdout).toContain("ALLOWED GROWTH");
+      expect(result.stdout).toContain("src/lib/other.ts  ->  1300 LOC");
+    });
+
+    it("typo'd-path-still-errors: a live allowance naming a path that does not exist still fails", () => {
+      // The class "inert" must never swallow: a genuine typo in `file:` must
+      // read as an error, not as a satisfied entry. A nonexistent file has 0
+      // lines by `countLines`'s own contract, which is "at or under" ANY
+      // declared length — so this is checked by existence, not by line count.
+      const { repo, base } = overBudgetRepo();
+      repo.write("src/lib/keep.ts", 11);
+      repo.allow(
+        "2980-typo.md",
+        `file: src/lib/dose-not-exist.ts\nlines: 900\nreason: ${REASON}\n`,
+      );
+      repo.commit("an allowance for a path that was never real");
+
+      const result = captureRun(repo.root, ["--base", base]);
+      expect(result.code).toBe(1);
+      expect(result.stdout).not.toContain("INERT");
+      expect(result.stderr).toContain("src/lib/dose-not-exist.ts");
+      expect(result.stderr).toContain("not a production file this policy covers");
+      expect(result.stderr).toContain("check it for a typo");
+    });
+
+    it("typo'd-path-still-errors: a live allowance naming a real file OUTSIDE the policy's scope still fails", () => {
+      // Existence alone is not enough either — the same guard has to catch a
+      // path that resolves to something real but out of scope (a doc, a test
+      // file), which is just as much a typo as a path with no file at all.
+      const { repo, base } = overBudgetRepo();
+      repo.write("README.md", 5);
+      repo.write("src/lib/keep.ts", 11);
+      repo.allow(
+        "2980-outofscope.md",
+        `file: README.md\nlines: 5\nreason: ${REASON}\n`,
+      );
+      repo.commit("an allowance naming a real but out-of-scope file");
+
+      const result = captureRun(repo.root, ["--base", base]);
+      expect(result.code).toBe(1);
+      expect(result.stdout).not.toContain("INERT");
+      expect(result.stderr).toContain("README.md");
+      expect(result.stderr).toContain("not a production file this policy covers");
+    });
+
+    it("first-crossing-still-refused: a first-time crossing with a matching allowance is still refused, not inert", () => {
+      // Pins that the new tail-loop leniency cannot leak into the main loop's
+      // bypass check. Here `current` equals the declared length EXACTLY — the
+      // one condition that would make a live entry inert if reached at all —
+      // but the file is crossing its budget for the FIRST time, so the
+      // dedicated refusal has to fire before the entry is ever judged as
+      // satisfied. Unaffected by #234: this branch of the main loop is
+      // untouched, and this test is the regression guard for that.
+      const repo = newRepo();
+      repo.write("src/lib/mod.ts", 600);
+      repo.write("src/lib/keep.ts", 10);
+      const base = repo.commit("base");
+      repo.write("src/lib/mod.ts", 800);
+      repo.allow("2980-mod.md", `file: src/lib/mod.ts\nlines: 800\nreason: ${REASON}\n`);
+      repo.commit("crossed its budget for the first time, with a matching allowance");
+
+      const result = captureRun(repo.root, ["--base", base]);
+      expect(result.code).toBe(1);
+      expect(result.stdout).not.toContain("INERT");
+      expect(result.stderr).toContain(
+        "an allowance cannot carry a file over its budget for the first time",
+      );
+    });
+
+    it("undeclared-growth-still-fails: growth with no covering entry at all is unaffected by #234", () => {
+      // The base case #234 must never touch: no allowance in play means the
+      // tail loop this PR changed is never reached, and the file must still
+      // be refused exactly as before.
+      const { repo, base } = overBudgetRepo();
+      repo.write("src/lib/big.ts", 1300);
+      repo.commit("grew, with nothing said about it");
+
+      const result = captureRun(repo.root, ["--base", base]);
+      expect(result.code).toBe(1);
+      expect(result.stdout).not.toContain("INERT");
+      expect(result.stderr).toContain("an already-oversized file grew");
+    });
+
+    it("JUDGEMENT CALL: an entry whose declared length now understates the file still errors, even though nothing on this diff alone crossed a ceiling", () => {
+      // The one genuinely ambiguous shape found while building this. Relative
+      // to the base THIS run judges, the file did not grow at all (it is
+      // below its base-ref length, so the main loop's ceiling check never
+      // fires) — but it is still LONGER than this stale entry declares. That
+      // is not "at or under its declared length", so it is judged NOT inert:
+      // the entry no longer describes the file, and saying so (update the
+      // number, or delete it) is worth more than silence, even though no
+      // other rule in this gate would have caught the file on this diff.
+      const repo = newRepo();
+      repo.write("src/lib/big.ts", 1400);
+      repo.write("src/lib/keep.ts", 10);
+      const base = repo.commit("base");
+      // Shrinks a little relative to base (needs no allowance for THAT), but
+      // is still bigger than what this carried-over entry declares.
+      repo.write("src/lib/big.ts", 1350);
+      repo.allow("2980-stale.md", `file: src/lib/big.ts\nlines: 1300\nreason: ${REASON}\n`);
+      repo.commit("shrank overall, but past what the stale entry says");
+
+      const result = captureRun(repo.root, ["--base", base]);
+      expect(result.code).toBe(1);
+      expect(result.stdout).not.toContain("INERT");
+      expect(result.stderr).toContain("src/lib/big.ts");
+      expect(result.stderr).toContain("no longer describes the file");
+      expect(result.stderr).toContain("set `lines: 1350`");
+    });
   });
 
   it("is one-shot: a merged allowance is inert for the next change", () => {

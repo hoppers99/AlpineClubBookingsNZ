@@ -510,20 +510,49 @@ format and the rules. In short:
 
 - it names the **file**, its **new length** and the **reason**, because a bare
   "allow growth" marker is not something a reviewer can weigh;
-- the recorded length must be the file's **real** length. The check fails if it
-  is not, which is what stops an allowance drifting away from the tree the way
-  the old ledger did, and stops one being written once and reached for later;
-- it is **one-shot**. It only has effect on the change that introduces it, so
-  after merge it is inert — the grown length *is* the base ref by then, and the
-  file can be swept out of the directory in bulk whenever somebody tidies, the
-  same way compiled changelog fragments are;
-- an allowance the check **did not need** fails too, rather than passing
-  quietly. That is either a mistake or a file that shrank, and leaving one lying
-  around is how a per-change note turns back into a stored exceptions list;
+- when an entry is what is actively letting a file cross its ceiling on THIS
+  diff, the recorded length must be the file's **real** length exactly. The
+  check fails if it is not, which is what stops an allowance drifting away
+  from the tree the way the old ledger did, and stops one being written once
+  and reached for later for a different growth;
+- it only has effect on a change whose diff carries the allowance FILE itself
+  — the `.md` file has to be part of that diff, not just the production file
+  it names;
+- an entry a run did not need to permit anything is reported as **INERT**
+  rather than refused (#234): named in the check's output, never a failure,
+  whenever the file it names is a real, in-scope production file at or under
+  the length it declares. That covers both an ordinary mistake (the growth
+  never happened, or the file shrank) and a stacked branch's own file
+  carrying forward a sibling's already-merged allowance — see "Why there is
+  no delete-and-restate dance any more" below. It is not a blanket pass: a
+  path that does not exist, or names something outside the policy's scope,
+  still fails, and an entry that IS actively explaining growth on this diff
+  still needs its exact-match check above;
 - it may **not** cover a new file, a file renamed into the budgeted scope, or a
   file crossing its budget for the first time. Each is refused by name. An
   allowance lets an already-over-budget file grow; it is not a way to arrive
   over budget.
+
+#### Why there is no delete-and-restate dance any more (#234)
+
+Epic children stack on the epic's integration branch (`AGENTS.md` →
+"Orchestration Model"), so once one child's allowance file merges there, it
+stays part of every later child's diff against `origin/main` — this check
+always reads `origin/main`, never the integration branch, so a sibling's
+already-merged growth reads as newly arrived every time a later child runs
+the gate. Before #234 an inert entry like that failed as "an allowance the
+check did not need," and deleting it to silence that failure then broke
+`verify` on the sibling's OWN pull request, which judges `origin/main` and
+still needed exactly the growth the just-deleted entry described. No single
+edit to the file could satisfy both bases, so lanes on epic #213 were left
+deleting and restating the same entry repeatedly.
+
+Reporting a satisfied entry as inert instead of refusing it removes the
+dilemma outright: the entry can simply stay. It reads as inert everywhere it
+is no longer needed and as honoured growth everywhere it still is, and
+merged allowance files remain safe to sweep from the directory in bulk
+whenever somebody tidies, the same way compiled changelog fragments are —
+nothing depends on them either way.
 
 **`npm run quality:budget:update` is gone** (#2979) — if you remember typing it,
 or find it in an old branch or an old pull request comment, the allowance above
