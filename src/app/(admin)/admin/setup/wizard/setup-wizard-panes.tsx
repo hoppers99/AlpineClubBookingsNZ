@@ -14,6 +14,7 @@ import { canViewSetupStepPane } from "@/lib/setup-wizard-view";
 import type { SetupStepId } from "@/lib/setup-step-registry";
 import { DefaultCancellationPolicySection } from "@/components/admin/booking-policies/default-cancellation-policy-section";
 import { GroupDiscountSection } from "@/components/admin/booking-policies/group-discount-section";
+import { MembershipCancellationSettingsPanel } from "@/components/admin/membership-cancellation-settings-panel";
 
 /**
  * The wizard's per-step inline editors (epic #213, child C12; owner decision
@@ -378,6 +379,66 @@ function BookingPoliciesWizardPane() {
 }
 
 /**
+ * The membership cancellation editor, in the wizard (`membership-cancellation`,
+ * C22 #260).
+ *
+ * `MembershipCancellationSettingsPanel` is the same zero-prop, self-fetching,
+ * self-gating shape C12/C13/C18 already proved: it fetches
+ * `/api/admin/membership-cancellation-settings` for itself, resolves
+ * `membership` edit access for itself (`useAdminAreaEditAccess("membership")`,
+ * its own `#1940` comment), and heads itself with its own view-only banner.
+ * `/admin/membership-cancellation` mounts exactly the same component inside a
+ * `Card`; this pane supplies the subordinate heading in its place, for the
+ * mount-order reason spelled out on `ClubIdentityWizardPane`.
+ *
+ * **The area wrinkle the issue named is fixed in the MAPPING, not here.**
+ * `SETUP_STEP_PERMISSION_AREA["membership-cancellation"]` used to read
+ * `support`, because the step's readiness check links to
+ * `/admin/setup/cancellation` — but that page is a link-out hub with no editor
+ * of its own, the same shape `club-config`'s `#223` fix corrected. The real
+ * editor and the API it saves through are both `membership`-area, and the
+ * panel already gates itself on `membership`, so the mapping was corrected to
+ * `membership` instead (`setup-wizard-view.ts` carries the full evidence).
+ * That is what keeps the step frame's "That page belongs to Membership" and
+ * this panel's own "Membership edit access is required" in agreement — and it
+ * is also what fixes a real bug the wrong mapping had, not only a copy
+ * mismatch: under the old `support` entry, a Support Officer (`support` but no
+ * `membership` at all) cleared `canViewSetupStepPane`'s gate and then had this
+ * panel's own `GET /api/admin/membership-cancellation-settings` 403 the
+ * instant it mounted — exactly the failure that gate exists to prevent for
+ * every other step. A support-only viewer now gets the ordinary link-out
+ * fallback instead, the same as any step whose area they lack.
+ *
+ * No cross-page caveat to name, unlike `AgeTierWizardPane`:
+ * `buildMembershipCancellationCheck` (`setup-readiness.ts`) reads only
+ * whether a `MembershipCancellationSetting` row exists at all, and this
+ * panel's `PUT` always upserts one — so a save here fully resolves the step's
+ * own check, with nothing left to fix on a different screen.
+ *
+ * The heading sits OUTSIDE the panel and renders unconditionally, for the
+ * mount-order reason spelled out on `ClubIdentityWizardPane`.
+ */
+function MembershipCancellationWizardPane() {
+  return (
+    <section className="space-y-3 rounded-md border bg-card p-5">
+      <div className="space-y-1">
+        <h3 className="text-lg font-semibold text-foreground">
+          Membership cancellation
+        </h3>
+        <p className="text-sm text-muted-foreground">
+          The same editor as Admin &rarr; Membership Cancellation: the
+          cancellation warning copy, the rejoin-process text, and which Xero
+          contact groups get archived when a cancellation is approved. Saving
+          does not tick this step off — use &ldquo;Mark this step done&rdquo;
+          above when you are happy with it.
+        </p>
+      </div>
+      <MembershipCancellationSettingsPanel />
+    </section>
+  );
+}
+
+/**
  * Step id -> the editor the wizard mounts beneath its frame, or `null` with the
  * reason there is none.
  *
@@ -438,10 +499,13 @@ export const SETUP_STEP_PANES: Record<SetupStepId, ComponentType | null> = {
   lodges: LodgesWizardPane,
 
   "booking-policies": BookingPoliciesWizardPane,
-  // Backlog, same round. `/admin/setup/cancellation` is itself one of the
-  // legacy setup drill-downs C8's switch hides, so the shape of its section
-  // has to settle before a pane can point at it.
-  "membership-cancellation": null,
+  // C22 (#260): the cancellation-warning/rejoin-copy/Xero-archive editor.
+  // `/admin/setup/cancellation` (the check's `href`) is a link-out hub, not
+  // the editor — see `MembershipCancellationWizardPane` and
+  // `SETUP_STEP_PERMISSION_AREA["membership-cancellation"]` in
+  // `setup-wizard-view.ts` for why that also moved this entry's area from
+  // `support` to `membership`.
+  "membership-cancellation": MembershipCancellationWizardPane,
   // C18 (#249): the age-tier boundary editor, C13's move repeated. See
   // `AgeTierWizardPane` for the pane-copy caveat this step needed that
   // `feature-flags` and `club-config` did not.
