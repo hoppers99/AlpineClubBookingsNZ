@@ -1119,12 +1119,12 @@ Booking Policies sections (#2142) and is now the **default across the admin
 tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left.
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
-figures rather than trusting a hand count: **89 components render a banner, and
-285 of the 338 `ViewOnlyActionButton` call sites opt out** of the per-button
+figures rather than trusting a hand count: **94 components render a banner, and
+295 of the 348 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 268 split by WHICH rule
-covers them: **251** pass the literal
+test currently pins, which is the only authority.) Those 295 split by WHICH rule
+covers them: **261** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **34**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 29 by a parent's own JSX render site (#2168), 5 by the
@@ -1536,6 +1536,55 @@ sibling case differs in kind (side-by-side sections of equal weight, each with
 its own scope, rather than one page's worth of per-record cards). Until that is
 decided, do not dedupe siblings ad hoc, and do not write docs that promise one
 banner per screen.
+
+**The setup wizard is the sibling case where the two banners are demonstrably
+about different things** (epic #213, C12). Its step frame heads its progress
+controls with one banner, and the inline editor mounted beside the frame —
+`setup-wizard-panes.tsx`, an exhaustive `Record<SetupStepId, ComponentType |
+null>` whose `club-config` entry is `ClubIdentityWizardPane` (the thin wrapper
+that mounts the real `ClubIdentityPanel`) — heads its own with another. C13
+(#239) added `ModulesWizardPane`, wrapping the zero-prop `ModulesSection` that
+`/admin/modules` now mounts as a shell, and it is registered against TWO step
+ids (`feature-flags` and `address-autocomplete`) — the first entry in the table
+where two steps share one component, which is what the render site's
+`key={stepId}` exists for. C19 (#250) added `LodgesWizardPane` the same way,
+wrapping the zero-prop `LodgesSection` that `/admin/lodges` now mounts as a
+shell — and that one is where the banner rule earns its keep twice over, because
+the section also VOUCHES for `OtherLodgesPanel`
+(`ancestorRendersViewOnlyBanner`). A vouch is verified against the file its
+render site sits in, so leaving the banner behind on the page would have mounted
+an unbannered panel in the wizard; banner and vouched child move together, or
+neither moves. That is
+`key={stepId}` exists for. C20 (#251) added `SetupWizardFirstAdminPane` for
+`seed-admin` — the one entry in the table that is BUILT rather than mounting an
+existing settings section, because the member editor is a per-record surface
+inside a dialog and there is nothing zero-prop to embed. It is therefore also
+the only pane that renders its own banner AND replicates a Full-Admin swap: its
+step's area is `membership` (matching `POST /api/admin/members`), which admits a
+Membership Officer whose create that route would then refuse on #1012's
+separation-of-duties gate. That is
+not the stacked-sibling question above waiting on a decision: changing a step's
+PROGRESS is one API for the whole journey, enforced at `support: edit`, while
+doing the step's WORK is governed by that step's own area, and a club-defined
+role holding `support: view` plus `content: edit` — combining both is how a club
+would build this, since a Content Officer alone never reaches
+`/admin/setup/wizard` at all — genuinely sees a dead frame above an editable
+pane. Each route enforces its own answer by path and method, so a wrong
+client-side gate produces an honest 403 rather than a confused deputy.
+**Which is exactly why the pane is rendered as a SIBLING of
+`SetupWizardStepFrame` and never as a child of it:** inside the frame it would be
+the nesting defect above — one card, two live regions, the same class of sentence
+twice. The static contract test (`view-only-banner-contract.test.ts`) is a scan
+over imports, so it catches a DIRECT import of a banner-bearing pane into the
+frame but cannot see where a rendered pane ends up in the tree; the realistic
+refactor — moving the render CALL into the frame while the pane keeps importing
+through `setup-wizard-panes.tsx` — is caught instead by the jsdom containment
+assertion in `setup-wizard-panes.test.tsx` ("keeps the pane OUTSIDE the step
+frame"), which asserts `frame.contains(pane)` directly. The render site is in
+`setup-wizard-client.tsx`, which renders no banner of its own. A pane whose
+section is Full-Admin-only rather than area-gated (`club-time-zone`, whose panel
+deliberately renders no banner at all) replicates its page shell's `isFullAdmin`
+swap instead of growing one.
 
 **Known limitation, accepted by the owner as Decision 1 on #2160.** Gated
 controls keep the `disabled` attribute rather than moving to

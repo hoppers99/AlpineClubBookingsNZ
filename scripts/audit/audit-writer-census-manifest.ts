@@ -330,7 +330,18 @@ export const AUDIT_CENSUS_TOTALS = {
   // `npx tsx scripts/audit/audit-writer-census.ts` on this tree (454 sites,
   // 2109 files scanned), not by adding one to the literal above — which is the
   // only way this file has ever been right after a merge.
-  // 454 -> 455 (ENV-SAFETY 1, #3034): the environment-safety override writer.
+  // 454 -> 455 (#220): `markClubThemeSetupComplete` in `src/lib/club-theme.ts`
+  // gained a `site_style.updated` write. The launch panel's completeSetup call
+  // (#220 F3) flips only `completedAt` under the same row lock `saveClubTheme`
+  // uses, rather than replaying the whole PUT body, so that narrower path needs
+  // its own audit row instead of completing setup silently. Category `admin` at
+  // the site, matching `PUT /api/admin/site-style`'s write for the same
+  // transition (`site_style.updated`, `admin`, `important`), so it does not join
+  // `UNCATEGORISED_AUDIT_WRITERS` below, and it is a new writer categorised at
+  // the source rather than a reclassification, so it joins none of the four
+  // per-site-pinned maps either.
+  // 455 -> 456 (ENV-SAFETY 1, #3034, arriving with the merge of `main`): the
+  // environment-safety override writer.
   // `ENVIRONMENT_SAFETY_OVERRIDE_UPDATED` records who forced this installation to
   // be treated as a copy, or stopped forcing it, and the before/after value of the
   // one flag. Written with `buildStructuredAuditLogCreateArgs` through
@@ -342,9 +353,54 @@ export const AUDIT_CENSUS_TOTALS = {
   // `security`, because this changes what the installation DOES rather than who may
   // sign in or what they may reach; the read gate is identical for both anyway. So
   // it does not join `UNCATEGORISED_AUDIT_WRITERS` below. Measured by RUNNING
-  // `npx tsx scripts/audit/audit-writer-census.ts` on this tree (455 sites, 2116
-  // files scanned), not by adding one to the literal below.
-  writeSites: 455,
+  // `npx tsx scripts/audit/audit-writer-census.ts` on this MERGED tree (456
+  // sites), not by adding one to either side's 455 — `main` and this epic branch
+  // each reached 455 by adding a DIFFERENT writer, so only a measurement on the
+  // merged tree gives the right total.
+  // 456 -> 458 (setup wizard C2, #217): the two stale-transition writers in
+  // `src/lib/setup-progress-audit.ts`, which is where EVERY setup-progress audit
+  // write lives — the progress route calls that module and writes none itself,
+  // so a reader following this note to the route would find no `logAudit` there.
+  // `setup_progress.steps_marked_stale` and `setup_progress.steps_stale_cleared`
+  // record which finished setup steps an upstream change put back in question,
+  // and which have stopped needing another look. TWO SITES RATHER THAN ONE, and
+  // both cheaper shapes were worse: a single row with a computed action loses
+  // information when one request does both at once (the set is recomputed over
+  // the whole prerequisite graph, so one transition can invalidate one branch
+  // while a readiness check that has started passing clears another), and a loop
+  // over an array of event objects would have counted as one site while making
+  // its category `forwarded` — this census resolves a top-level `category` on an
+  // inline literal, never on a loop variable, so the cheaper count would have
+  // cost exactly the property the census exists to measure.
+  // Both are `logAudit` and both are categorised `system` at the site, matching
+  // the five setup-progress transition writers beside them that #219 split out:
+  // `docs/guides/audit-log.md` files "Setup, backups, platform-level events"
+  // there, and `INV-PRIV-012` files a row by its affected domain, which is the
+  // club's setup rather than an administrator's own settings. So neither joins
+  // `UNCATEGORISED_AUDIT_WRITERS` below, and neither is a reclassification, so
+  // neither joins any of the four per-site-pinned maps. NO EXISTING ROW CHANGES
+  // AUDIENCE and `INV-OPS-012`'s backfill obligation does not arise — these are
+  // new rows in a category that already existed, not old rows moved into one.
+  // 458 -> 459 (setup wizard C8, #223): `setup_surfaces.legacy_visibility_changed`
+  // in `src/app/api/admin/setup/surfaces/route.ts`, the writer for the setting
+  // that hides the legacy readiness cards and the four /admin/setup drill-down
+  // hubs (epic #213 D8). ONE SITE, not two: unlike the stale pair above there is
+  // one boolean and one transition, and the row carries `from`/`to` so a
+  // hide and a re-show are the same action read in opposite directions rather
+  // than two action strings to keep in step. `logAudit`, categorised `system` at
+  // the site, matching the seven setup writers beside it — `INV-PRIV-012` files a
+  // row by its affected domain and `docs/guides/audit-log.md` files "Setup,
+  // backups, platform-level events" there, and the affected domain is the club's
+  // setup journey rather than an administrator's own settings or the
+  // installation's identity (which is why it is NOT the `admin` that
+  // `CLUB_TIME_ZONE_UPDATED` and the environment-safety override take). So it
+  // joins neither `UNCATEGORISED_AUDIT_WRITERS` below nor any of the four
+  // per-site-pinned maps, and NO EXISTING ROW CHANGES AUDIENCE — this is a new
+  // row in a category that already existed, so `INV-OPS-012`'s backfill
+  // obligation does not arise.
+  // Measured by RUNNING `npx tsx scripts/audit/audit-writer-census.ts` on this
+  // tree (459 sites), not by adding one to the literal below.
+  writeSites: 459,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -385,7 +441,20 @@ export const AUDIT_CENSUS_TOTALS = {
     // sign create/rotate/pause/resume, queue triage and photo disclosure/deletion,
     // and the two submit records. None sits inside the submit transaction, so a
     // failed audit write never fails a submitted report.
-    logAudit: { total: 255, uncategorised: 0 },
+    // 255 -> 256 (#220): `markClubThemeSetupComplete`'s `site_style.updated`
+    // write, above. `logAudit`, matching the sibling write in the PUT route it
+    // mirrors, and fire-and-forget for the same reason: nothing downstream
+    // depends on the row existing before the response returns.
+    // 256 -> 258 (setup wizard C2, #217): the two stale-transition writers,
+    // above. `logAudit`, matching the five setup-progress transition writers in
+    // the same route, and fire-and-forget for the same reason: they are written
+    // AFTER the upsert commits, so a failed write never fails the operator's
+    // transition and a rolled-back transition records nothing.
+    // 258 -> 259 (setup wizard C8, #223): the setup-surfaces visibility writer,
+    // above. `logAudit`, and fire-and-forget for the same reason as its
+    // neighbours: it runs AFTER the upsert commits, so a failed audit write
+    // never fails the operator's save and a rolled-back save records nothing.
+    logAudit: { total: 259, uncategorised: 0 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     // 104 -> 105 (#2649): the return-to-waitlist repair, above.
@@ -626,7 +695,14 @@ export const AUDIT_CENSUS_TOTALS = {
     // investigating "why did the nightly job run an hour late" needs to find.
     // Retention is unchanged from every other `admin` row: `critical`, seven
     // years, because the action name normalises to no access-event word.
-    // 103 -> 104 (ENV-SAFETY 1, #3034): ENVIRONMENT_SAFETY_OVERRIDE_UPDATED. THIS
+    // 103 -> 104 (#220): `markClubThemeSetupComplete`'s `site_style.updated`
+    // write, above. `admin` is the answer the sibling PUT-route write for the
+    // same transition already gives, so this widens nobody's access — it is the
+    // same row a support-only operator could already read when setup completed
+    // through the old whole-body PUT path, now also reachable through the
+    // narrower launch-panel path.
+    // 104 -> 105 (ENV-SAFETY 1, #3034, arriving with the merge of `main`):
+    // ENVIRONMENT_SAFETY_OVERRIDE_UPDATED. THIS
     // IS A WIDENING OF WHO CAN READ WHAT, by one site, and it is stated rather than
     // counted: `admin` is readable with `support:view` ALONE, so one more write site
     // becomes correlatable at support level. What that row contains is the
@@ -636,7 +712,7 @@ export const AUDIT_CENSUS_TOTALS = {
     // disclosure. `security` was considered and rejected: this changes what the
     // installation DOES, not who may sign in or what they may reach, and its read
     // gate is `support:view` either way.
-    admin: 104,
+    admin: 105,
     // 16 -> 19 (#2581 child 2): `member.password-reset-sent` and
     // `member.setup-invite-sent` (decision 3 — the affected domain is the
     // CREDENTIAL, not the mailing), plus the `member.bulk-set-role` branch
@@ -715,7 +791,22 @@ export const AUDIT_CENSUS_TOTALS = {
     privacy: 19,
     // UNCHANGED by #2581 child 2. `system` is for genuine platform events with
     // no narrower business domain, and none of the 82 was one.
-    system: 4,
+    //
+    // 4 -> 6 (setup wizard C2, #217): `setup_progress.steps_marked_stale` and
+    // `setup_progress.steps_stale_cleared`. `system` is readable with
+    // `support:view` alone, so this DOES move the weakest-gate count two sites
+    // — and it widens nobody's access, because the rows say which setup steps
+    // need another look and the five setup-progress rows beside them, in the
+    // same category and about the same journey, are already readable by exactly
+    // the same operator. Nothing here names a member, a booking or an amount.
+    // 6 -> 7 (setup wizard C8, #223): `setup_surfaces.legacy_visibility_changed`.
+    // `system` is readable with `support:view` alone, so this DOES move the
+    // weakest-gate count one site — and it widens nobody's access, because the
+    // row says which setup SURFACES a club has chosen to show and the seven
+    // setup rows beside it, in the same category and about the same journey, are
+    // already readable by exactly the same operator. Nothing here names a
+    // member, a booking or an amount.
+    system: 7,
   },
 } as const;
 

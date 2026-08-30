@@ -1261,7 +1261,26 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // the site and named in none of the four per-site maps, so it lands unpinned
     // like every other new feature's writer. 454 sites measured minus 127 pinned;
     // `pinned` is unchanged, which is the point — no existing classification moved.
-    ).toEqual({ pinned: 127, unpinned: 328 });
+    // 327 -> 328 (#220): `markClubThemeSetupComplete`'s `site_style.updated`
+    // write. Categorised `admin` at the site and named in none of the four
+    // per-site maps, so it lands unpinned like every other new feature's writer.
+    // 455 sites measured minus 127 pinned; `pinned` is unchanged.
+    // 328 -> 329 (main merged into epic/213): `main` independently reached 328 by
+    // adding the environment-safety writer (ENV-SAFETY 1, #3034), also unpinned.
+    // The merged tree therefore carries BOTH new sites, so the total is the one
+    // the census actually measures — 456 sites minus 127 pinned — not either
+    // side's 328. `pinned` is unchanged on both sides, so no classification moved.
+    // 329 -> 331 (setup wizard C2, #217): the two stale-transition writers.
+    // Categorised `system` at the site and named in none of the four per-site
+    // maps, so they land unpinned like every other new feature's writers. 458
+    // sites measured minus 127 pinned; `pinned` is unchanged, so no existing
+    // classification moved here either.
+    // 331 -> 332 (setup wizard C8, #223): the setup-surfaces visibility writer.
+    // Categorised `system` at the site and named in none of the four per-site
+    // maps, so it lands unpinned like every other new feature's writer. 459
+    // sites measured minus 127 pinned; `pinned` is unchanged, so no existing
+    // classification moved here either.
+    ).toEqual({ pinned: 127, unpinned: 332 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

@@ -123,12 +123,36 @@ describe("POST /api/admin/chores", () => {
     });
   });
 
-  it("rejects creating a chore at an unknown or inactive lodge", async () => {
-    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: false });
+  /*
+    #221 changed the answer here. These admin routes configure a lodge's own
+    inventory, so they moved onto `resolveOptionalConfigurableLodgeId`: an
+    INACTIVE lodge is accepted, because a lodge created through the admin route
+    now starts inactive and its rooms, lockers, seasons and chores have to be
+    buildable before it is activated. An UNKNOWN lodge is still refused. Nothing
+    bookable widens — `Lodge.active` is enforced at the booking surfaces.
+  */
+  it("creates a chore at an INACTIVE lodge, which is the one being set up (#221)", async () => {
+    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-2" });
 
     const req = new NextRequest("http://localhost/api/admin/chores", {
       method: "POST",
       body: JSON.stringify({ name: "Sweep Deck", lodgeId: "lodge-2" }),
+    });
+
+    const res = await POST(req);
+
+    expect(res.status).toBe(201);
+    expect(mockChoreCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({ name: "Sweep Deck", lodgeId: "lodge-2" }),
+    });
+  });
+
+  it("still rejects creating a chore at a lodge that does not exist", async () => {
+    mockLodgeFindUnique.mockResolvedValue(null);
+
+    const req = new NextRequest("http://localhost/api/admin/chores", {
+      method: "POST",
+      body: JSON.stringify({ name: "Sweep Deck", lodgeId: "nope" }),
     });
 
     const res = await POST(req);
@@ -173,11 +197,24 @@ describe("GET /api/admin/chores", () => {
     );
   });
 
-  it("rejects listing chores at an unknown or inactive lodge (Low 2)", async () => {
-    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: false });
+  it("lists chores at an INACTIVE lodge, so its setup page is readable (#221)", async () => {
+    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-2" });
 
     const res = await GET(
       new NextRequest("http://localhost/api/admin/chores?lodgeId=lodge-2")
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockChoreFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { lodgeId: "lodge-2" } })
+    );
+  });
+
+  it("still rejects listing chores at a lodge that does not exist (Low 2)", async () => {
+    mockLodgeFindUnique.mockResolvedValue(null);
+
+    const res = await GET(
+      new NextRequest("http://localhost/api/admin/chores?lodgeId=nope")
     );
 
     expect(res.status).toBe(400);

@@ -1,9 +1,14 @@
+import { redirect } from "next/navigation";
 import { Activity, BadgeInfo, Building2, ListChecks, Puzzle } from "lucide-react";
 import {
   AdminHubPage,
   type AdminHubSection,
 } from "@/components/admin-hub-page";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
+import {
+  areLegacySetupSurfacesHidden,
+  loadSetupSurfaceSettings,
+} from "@/lib/setup-surface-settings";
 import { loadAdminSetupPermissionMatrix } from "../permission-matrix";
 
 const sections: AdminHubSection[] = [
@@ -50,6 +55,13 @@ const sections: AdminHubSection[] = [
 ];
 
 export default async function FoundationsSetupHubPage() {
+  // Epic #213 D8, C8 (#223): retired, so absent rather than deleted. The
+  // redirect, the reason a 404 would be the wrong answer, and why this is
+  // checked per page rather than in the proxy are all stated once, on
+  // `areLegacySetupSurfacesHidden`.
+  if (areLegacySetupSurfacesHidden(await loadSetupSurfaceSettings())) {
+    redirect("/admin/setup");
+  }
   const [features, permissionMatrix] = await Promise.all([
     loadEffectiveModuleFlags(),
     loadAdminSetupPermissionMatrix(),
@@ -63,7 +75,7 @@ export default async function FoundationsSetupHubPage() {
       features={features}
       permissionMatrix={permissionMatrix}
       backHref="/admin/setup"
-      backLabel="Setup Wizard"
+      backLabel="Setup checklist"
     />
   );
 }

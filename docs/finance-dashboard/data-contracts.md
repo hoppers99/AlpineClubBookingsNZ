@@ -16,7 +16,7 @@ If any metric definition changes, update this file in the same PR.
 
 - Includes all viewer permissions
 - Can trigger manual finance syncs and diagnostics from `/finance`
-- Can save finance report mappings and run historical dashboard backfills from Admin Setup when also an admin
+- Can save finance report mappings and run historical dashboard backfills from `/finance`; this resolves through `hasAdminAreaAccess` (`area: "finance", level: "edit"`) alone, with no separate ADMIN role required
 - Intended for selected admins only unless explicitly broadened
 
 ## Xero Connection Contract

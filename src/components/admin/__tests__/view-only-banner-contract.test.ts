@@ -333,12 +333,70 @@ const FIGURES = {
    * add eleven gated controls. Main's three and this branch's eleven are
    * DISJOINT, so the merged figure is 338 — MEASURED by re-running this census
    * on the merged tree, never by adding one branch's delta to the other's total.
+   *
+   * 338 -> 342 (#220, the setup wizard shell): the wizard's step frame gates its
+   * three progress transitions, and its launch panel gates the one control that
+   * makes the public site visible. All four are STATIC opt-outs — each of the
+   * two files renders its own banner — so `optOuts` and `staticOptOuts` move by
+   * the same four and the vouched split is untouched.
+   *
+   * 342 -> 343 (#221, the lodges setup step): the per-lodge setup flow's finish
+   * step gates the control that ACTIVATES the new lodge — a new lodge is now
+   * created inactive, so that button is the one place a lodge becomes bookable.
+   * A STATIC opt-out: `lodges/[id]/setup/page.tsx` already heads the whole flow
+   * with one banner, hoisted above its early returns and rendered in every
+   * branch, and its five sibling controls opt out the same way. So `optOuts`
+   * and `staticOptOuts` move by the same one and the vouched split is untouched.
+   *
+   * 343 -> 345 (#223, the setup-surfaces section): the switch that hides the
+   * legacy readiness cards and the four /admin/setup drill-down hubs gates its
+   * Edit and its Save. TWO controls, not three — Cancel is a plain `Button`,
+   * as it is in every sibling staged section, because discarding a draft takes
+   * nothing away from a view-only admin. Both are STATIC opt-outs: the new
+   * `setup-surfaces-section.tsx` renders its own banner, above its loading
+   * branch, in every state. So `optOuts` and `staticOptOuts` move by the same
+   * two and the vouched split is untouched. Site Style's "Finish setup" control
+   * changed BEHAVIOUR in the same issue but is deliberately still ONE call site
+   * branching on the flag, so it contributes nothing here.
+   *
+   * 345 -> 346 (#223 fix round, the wizard's provider test): the same issue's
+   * coverage-parity rule cuts the other way too. The four provider tests
+   * (Stripe, Email, Sentry, Operational Xero) rendered only in the readiness-card
+   * branch the switch hides, so the wizard's step frame now composes the one its
+   * step declares. ONE call site, because it is one control rendered
+   * conditionally on `step.action` rather than four. A STATIC opt-out under the
+   * banner that file already renders — and gated, unlike the readiness cards'
+   * plain `Button`, because `POST /api/admin/setup/provider-test` infers
+   * `support: edit`, which is exactly what `canEdit` already answers there.
+   *
+   * 346 -> 347 (#246, the Server-environment panel): D17 moves five readiness
+   * checks off the wizard rail onto their own panel, and `email-ses` and
+   * `sentry` carry a provider test each. ONE call site, not two — the panel's
+   * row component renders one control conditionally on `row.action`, exactly as
+   * the step frame does for the four it inherited. A STATIC opt-out under the
+   * banner the panel itself renders, so `optOuts` and `staticOptOuts` move by
+   * the same one and the vouched split is untouched. Re-measured on this tree,
+   * not added to the previous total.
+   *
+   * 347 -> 348 (#251, the wizard's First Admin pane): ONE control, the Create
+   * button on `setup-wizard-first-admin-pane.tsx`. It is the only pane in the
+   * wizard that is BUILT rather than embedded — every other one mounts a
+   * settings section that already carries its own furniture — so it is also the
+   * only one that adds a call site at all. A STATIC opt-out under the banner
+   * that same file renders, so `optOuts` and `staticOptOuts` move by the same
+   * one and the vouched split is untouched; `bannerComponents` 93 -> 94. The
+   * file's OTHER early return — the "full administrators only" refusal — mounts
+   * no banner on purpose and sits above the branch that does, which is the shape
+   * the branch-coverage test below allows for a terminal unavailable state.
+   * Re-measured on this merged tree with
+   * `npx vitest run view-only-banner-contract`, which reports
+   * 348 / 295 / 261.
    */
-  callSites: 338,
+  callSites: 348,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 285,
+  optOuts: 295,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 251,
+  staticOptOuts: 261,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *
@@ -366,8 +424,23 @@ const FIGURES = {
    *
    * 85 -> 89 (#2780 merged with main): the four maintenance-report admin
    * surfaces each head their section with one. Measured, not added up.
+   *
+   * 89 -> 91 (#220): the setup wizard's step frame and its launch panel each
+   * head their own section with one.
+   *
+   * 91 -> 92 (#223): the setup-surfaces section heads its own with one, rendered
+   * above its loading branch so a failed first load never mounts the section
+   * together with an already-populated alert.
+   *
+   * 92 -> 93 (#246): the Server-environment panel heads its own section with
+   * one. It states the narrower thing the panel actually gates — support edit
+   * runs a provider test; every fact on the page is readable without it.
+   *
+   * 93 -> 94 (#251): the wizard's First Admin pane heads its own with one. It
+   * states `membership`, which is both the step's permission area and the
+   * `POST /api/admin/members` guard its single control writes through.
    */
-  bannerComponents: 89,
+  bannerComponents: 94,
   /**
    * Admin files that render an `AdminViewOnlyNotice` and NO
    * `ViewOnlyActionButton` — the first of the three cases in which the older

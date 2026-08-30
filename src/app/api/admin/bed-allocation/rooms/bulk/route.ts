@@ -12,7 +12,7 @@ import {
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { logAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
-import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
+import { resolveOptionalConfigurableLodgeId } from "@/lib/lodges";
 import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
 // requireAdmin() is enforced by requireBedInventoryWrite().
@@ -45,13 +45,19 @@ export async function POST(request: Request) {
       );
     }
 
-    const lodgeId = await resolveOptionalActiveLodgeId(
+    // #221: the CONFIGURATION resolver, not the active-only one. A lodge created
+    // through the admin route starts inactive and is activated at the end of its
+    // per-lodge setup flow, so this write has to reach a lodge that is not active
+    // yet — that is the whole point of it. Nothing here becomes bookable: the
+    // booking surfaces enforce `Lodge.active` themselves. An unknown id is still
+    // refused. See docs/multi-lodge/lodge-scoping-contract.md.
+    const lodgeId = await resolveOptionalConfigurableLodgeId(
       prisma,
       body.data.lodgeId,
     );
     if (!lodgeId) {
       return NextResponse.json(
-        { error: "Lodge not found or not active" },
+        { error: "Lodge not found" },
         { status: 400 },
       );
     }

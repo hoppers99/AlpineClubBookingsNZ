@@ -16,6 +16,34 @@ whose backing pages enforce their own permission areas — so which cards you ca
 open depends on your role. It is the natural starting point after a fresh
 install and the map to everything else in Setup & Configuration.
 
+**A banner elsewhere in admin points you here while setup isn't finished, or
+the public site isn't open yet.** Everywhere in the admin area *except* the
+Setup pages themselves, an admin who can open the setup wizard sees a small
+banner with a link straight to `/admin/setup/wizard`. It shows for anyone the
+wizard itself would admit — a support officer working their own steps
+included, not full administrators only. It never singles out one
+configuration area (earlier it wrongly named Site Style specifically,
+regardless of what was actually still outstanding), and it never points
+anywhere but the wizard, because the wizard's own **Ready to open** screen is
+what actually launches the public site.
+
+The banner reads one of two ways, depending on what's still outstanding:
+
+- While the setup journey itself is unfinished, it says so and invites you to
+  pick up where you left off.
+- Once the journey is marked finished but the public website hasn't been
+  opened yet — finishing the journey and opening the site are two separate,
+  deliberate steps — it says setup is marked finished and the public website
+  still needs opening, with the same link to the wizard.
+
+It clears only once both are true: the journey is finished **and** the site is
+open. It can also **reappear** after that: marking setup complete is not a
+one-way door. Completing, skipping, or reopening any step — including well
+after launch, on a club that has been live for months — un-sets the journey's
+finished flag (the same rule that withdraws **Setup complete** while a step
+needs another look; see "When a finished step needs another look" below), so
+the banner can come back until the journey is marked finished again.
+
 ## When you'd use it
 
 - You've just stood up a fork and want a guided checklist of what still needs
@@ -26,6 +54,132 @@ install and the map to everything else in Setup & Configuration.
   sidebar.
 
 ## Step-by-step
+
+### Which setup surface to use, and when
+
+There are two ways into the same work, and one page that looks like a third but
+is not.
+
+| Surface | Use it when | Where |
+| --- | --- | --- |
+| **The setup wizard** | You are setting a club up, coming back to finish, or have just upgraded and want to be told what is new | `/admin/setup/wizard` |
+| **The readiness checklist and hub cards** | You already know what you are looking for and want to go straight to it | `/admin/setup` |
+| **Alpine Central Server setup** | *Not a setup surface at all* — see below | `/admin/alpine-server/setup` |
+
+The wizard is the destination: it is where a club's setup is meant to be done,
+and the checklist is the map you keep for later. Neither can tell you something
+the other would contradict. **Both read the same list of checks from the same
+place**, so no item can exist on one surface and not the other, and the
+checklist as cards grouped by category shows every one of them.
+
+**The wizard divides that list in two, and this is the one difference between
+the surfaces worth knowing.** Five of the checks are not things an
+administrator can do: they report the state of the server the site runs on — the
+environment role, the runtime variables, the auth secret, email delivery and
+Sentry. Those are reported on the wizard's own **About this server** screen
+instead of being walked through as steps, because their remedy is a change to
+the server's configuration by whoever runs it, not something anybody can press a
+button for from here. The other fifteen are the journey — **eleven of them on a
+default install**, because four belong to modules that ship switched off and
+appear only when you turn one on. See
+[About this server](#about-this-server-the-facts-you-cannot-change-from-here)
+below.
+
+So the checklist card for **Runtime Environment** and the wizard's row for it
+report the same verdict in the same words; only the wizard's treatment of it
+differs, because only the wizard is asking you to *do* something. **The
+percentage counts the steps that apply to your club** — the eleven on a default
+install, up to fifteen with every module on — and the checklist's Progress tile
+displays the wizard's own figure rather than working out a second one. That is
+also why it is a percentage rather than "x of y": switching a module on changes
+the denominator, and a count that moved would read as though work had been lost.
+
+The two surfaces do answer two *different* questions, though, and each says
+which. The percentage answers **how far through this has somebody been** — it
+counts the steps a person has confirmed. A checklist card answers **is this part
+of the installation configured**, which a setting the installer filled in
+genuinely is. So a brand-new club can show cards reading complete beside a
+progress figure of 0%, and neither is wrong: several things are configured, and
+nobody has confirmed any of them. What cannot happen is one question getting two
+answers.
+
+Once you are satisfied the wizard covers what your club needs, you can **retire
+the checklist** so there is one way in — see
+[Retiring the checklist and the setup hubs](#retiring-the-checklist-and-the-setup-hubs)
+below.
+
+That shared derivation has one consequence worth knowing: **switching a module
+off removes its setup steps from both surfaces.** Turn Xero off in
+[Modules](modules.md) and the Operational Xero and Xero Mappings steps stop
+appearing, and the progress percentage recalculates around what is left; with
+**both** Xero and the finance dashboard off there is no finance setup left at
+all, so the Finance hub card goes too. Nothing is deleted and nothing is
+remembered — the module toggle is the only record that the club said no, so
+turning it back on brings the steps straight back with whatever progress had
+already been recorded against them. This is also why progress reads as a
+percentage rather than "x of y": the total moves as modules do.
+
+### Retiring the checklist and the setup hubs
+
+The checklist came first and the wizard replaced it. When you are ready, one
+setting puts the older surfaces away.
+
+1. Go to **Admin → Setup & Configuration → Setup** and scroll to **Setup
+   surfaces** at the foot of the page.
+2. Choose **Edit**, tick **Hide the readiness checklist and the setup hubs**,
+   then **Save**. Support edit access is required; an officer without it sees
+   the setting but cannot change it.
+
+**What goes:** the readiness cards on that page, the four hub cards for Initial
+Setup, Finance, Booking Rules and Operational Integrations, and the checklist's
+own summary tiles (Overall, Progress, Blocked, Skipped) — the wizard's rail is
+where progress is reported once the checklist has gone, and the page's heading
+changes from "Setup checklist" to "Setup" to say so. Three of those four hub
+pages send you back to the Setup page if you follow an old bookmark; **Finance
+sends you to the finance dashboard** at `/finance`, which is where its report
+mappings live (and back to the Setup page instead if the Finance Dashboard
+module is switched off, since there is then no dashboard to send you to).
+
+**Site Style's own "Finish setup" button goes too** — that button published the
+public site, and once the surfaces are hidden the wizard's **Ready to open**
+screen is the single place that happens. Site Style still saves your colours,
+fonts and logo exactly as before; saving simply no longer makes the site live.
+
+**One consequence of that is worth knowing before you switch it.** The wizard's
+Ready-to-open screen sits inside `/admin/setup/wizard`, which needs **Support**
+access; the Site Style page needs **Content**. So after retirement, an admin
+whose role is content-only can still edit and **Save** the site's styling, but
+can no longer make the public site live — that now needs somebody with Support
+access, working through the wizard. Before retirement both levers exist and
+either will do it. This is deliberate (owner decision, 26 Aug 2026): the point of
+retiring the surfaces is that publishing becomes one considered act in one
+place, and a second lever kept for convenience would undo that.
+
+**What stays, and why:** the setup wizard, the Setup page itself (which is where
+the switch lives, so you can always undo this), the lodge capacity card,
+**Mark Setup Complete**, and the three hub cards the wizard does not replace —
+**Membership & Members**, **Cancellation** and **Email Messages /
+Notifications**. The wizard offers no route to those, so hiding them would take a
+capability away rather than move it. Mark Setup Complete stays for the same
+reason and is worth spelling out, because it looks like something the wizard
+replaced: it finishes the **setup journey**, whereas the wizard's Ready-to-open
+screen publishes the **public site**. Those are two different things, and only
+the second has a home in the wizard.
+
+**Nothing is deleted and nothing is lost.** No setting changes, no step's
+progress changes, and everything the hidden pages opened is still reachable —
+from the wizard's steps, from the sidebar, or by typing the address. Switch it
+back and the checklist and hubs return exactly as they were. The change is
+recorded in the [Audit Log](audit-log.md) with who made it and which way, under
+the **system** category with the rest of the setup events.
+
+**Alpine Central Server setup is not a competitor to either.** Despite living at
+a `/setup` path, `/admin/alpine-server/setup` is a **provider-connection page** —
+the sibling of Xero Setup and Stripe's credential capture, not of this checklist.
+It reads none of the setup-progress machinery, contributes no readiness check
+and no wizard step, and finishing it does not move your setup percentage. If you
+are looking for the club's setup progress, it is not there. See
+[Integrations](integrations.md) for what that page does.
 
 ### Work the checklist and jump to a sub-area
 
@@ -40,10 +194,404 @@ enough — every sub-page is captured and detailed where it lives.
 
 2. Work through the **checklist categories**. A check can be marked done or
    skipped, and provider checks offer a **test** button (Stripe, SMTP, Sentry,
-   Xero) that pings the live service and reports the result.
+   Xero) that pings the live service and reports the result — the wizard offers
+   the same button for all four, so retiring the checklist does not take it
+   away. Stripe and Xero carry theirs on their own wizard step; SMTP and Sentry
+   carry theirs on the **About this server** screen, which is where those two
+   are reported. Marking a check
+   done, skipping it, reopening it, finishing setup and resetting progress are
+   each recorded in the [Audit Log](audit-log.md) under their own event type
+   and in the **system** category, so you can see who changed what and when.
 3. Use the **hub cards** to open a configuration area: Initial Setup, Finance,
    Booking Rules, Operational Integrations, Membership & Members, Cancellation,
    or Email Messages / Notifications.
+
+### Or walk the guided journey instead
+
+The checklist tells you what is outstanding. The **setup wizard** walks you
+through it, one step at a time, and remembers where you got to — so it can be
+left and picked up again, and a club that set up a year ago and then upgraded is
+told what is new rather than left to find it.
+
+Both surfaces are live and derive the same step list, so nothing is lost either
+way — see [Which setup surface to use, and when](#which-setup-surface-to-use-and-when)
+above for how to choose.
+
+1. On **Admin → Setup & Configuration → Setup**, choose **Open the setup
+   wizard** — or go straight to `/admin/setup/wizard`. It opens at the step you
+   left off at, not back at the beginning.
+2. The **rail** down the left carries the whole journey, grouped under the same
+   headings as the checklist, with **About this server** below it and **Finish**
+   at the foot. Each journey row says where that step stands:
+
+   | The row says | It means |
+   | --- | --- |
+   | Done | You marked this step done |
+   | Up next | Where the wizard will resume you |
+   | Needs another look | You finished it, but something it depends on has changed since |
+   | Skipped for now | You chose to pass over it. It stays on the list as outstanding |
+   | Default in place | The step's check passes, but nobody has confirmed it — see below |
+   | Not started | Nothing has happened here yet |
+
+   **Default in place** is the one worth understanding, because a fresh install
+   starts with several of them. It means the step's check passes and nobody has
+   said so — and there are two quite different reasons a step can be in that
+   position, so the wizard says which one you are looking at:
+
+   - **A setting the installer filled in.** A time zone, a set of age tiers, a
+     cancellation policy, a bed count. Genuinely useful, but nobody has agreed
+     to any of it: these are the shipped defaults rather than your club's
+     decisions, and some of them will be wrong for you. The step tells you the
+     value is there, and points at the page where you change it.
+   - **A fact read off this deployment.** The administrator account the install
+     created, or a payment provider whoever set the site up connected. These may
+     well have been chosen deliberately — the wizard has no way to know — so the
+     step asks you to review what it reports rather than telling you nobody
+     chose it. (The facts with *nothing* on the page to change, because the
+     value lives only in the server's configuration, are not steps at all any
+     more: they are on **About this server**.)
+
+   Either way the wizard walks you to the step, says what it found, and asks you
+   to look. **Marking the step done is how you confirm it** — that is the record
+   that a person checked this, and it is the only thing that moves the progress
+   bar. If you would rather decide later, **Skip for now** takes you past it and
+   leaves it on the outstanding list. A default on its own does not let you walk
+   past: the wizard stops there the same way it stops at a step nothing has
+   happened on.
+
+   Progress reads as a **percentage** rather than "x of y" on purpose: the
+   number of steps changes as you switch modules on and off, and a count would
+   look as though work had been lost. It stays visible while the rail scrolls.
+
+   **A brand-new club starts at 0%, and that is the honest number.** The
+   percentage counts the steps you have confirmed, never the ones the installer
+   happened to fill in — otherwise a club that had made no decisions at all
+   would be told it was halfway through, which is exactly what used to happen.
+   The same is true of a **restored or cloned installation**: importing a
+   configuration bundle writes settings, but it is not a person walking the
+   journey, so the wizard opens at 0% with those settings shown as defaults
+   until somebody here confirms them. See
+   [Configuration transfer](../config-transfer/README.md) for that case.
+
+   One thing worth knowing if you go looking for this behaviour on a database
+   you already have: **a club name that was recorded before this release stays
+   recorded.** The installer and the application's start-up repair both only
+   ever fill in a missing value, so re-running either changes nothing that is
+   already there. Change it at **Admin → Appearance → Club Identity**; seeing a
+   genuinely fresh install takes a genuinely empty database.
+3. The right-hand pane shows the step's live check — what is outstanding, in the
+   same words the checklist uses — with a link through to the settings page
+   where that work is actually done.
+
+   **Some steps also carry the real editor, right there beneath the check.**
+   **Club Configuration**, **Club Time Zone**, **Feature Flags**, **Address
+   Autocomplete**, **Age And Membership Rules**, **Booking Policies**,
+   **Lodges**, **Seasons And Rates**, **First Admin** and **Membership
+   Cancellation** have one today. The form you
+   get is the same one that step's own settings page shows, saving to the same
+   place, so nothing is stored twice and nothing behaves differently for having
+   been reached from here. Editing is mostly staged: you change the fields, then
+   press the section's own Save, and nothing is written as you go — the one
+   exception is the Lodges list's **Activate**/**Deactivate**, which is a single
+   deliberate action rather than a field, and writes when you press it. The link to
+   the full settings page stays, because that page usually holds more than this
+   one section — Club Identity sits beside the lodge's public details and the
+   club contact. The step's check re-reads itself the moment a save succeeds, so
+   what it reports catches up with what you just changed without a reload.
+
+   Two things this does **not** change. Saving the form does not tick the step
+   off: **Mark this step done** is still the one action that says a person
+   agreed, because that is what the green badge and the percentage mean. And the
+   two permissions on the screen stay separate — recording progress needs
+   **Support** edit, while the editor is governed by its own area — so being
+   able to do one and not the other is normal. Where the editor is the one you
+   cannot use, its own banner says so above its fields; the progress buttons
+   sit in the frame above the editor and are unaffected. **Club Time Zone** is stricter than
+   most: it is a full-administrator setting, and anybody else is told so in
+   place of the form. **First Admin** is stricter for the same reason —
+   handing somebody administrator access is a full administrator's decision, so
+   a membership officer is told so instead of being offered a form the save
+   would refuse.
+
+   **First Admin is the one that CREATES rather than edits, and it is worth
+   knowing what it does and does not do.** Every other editor here changes a
+   setting you can see. This one makes a new administrator account: an email
+   address, a first and last name, and whether to send that person a setup
+   invite. Leave the invite ticked unless you have a reason not to — the new
+   account is created with a password nobody knows, so without an invite they
+   cannot sign in until somebody sends one. If the email cannot be sent (mail is
+   often not configured yet at this point in setup) you are told so, and the
+   account is still there: the step counts it either way.
+
+   **It does not retire the account the installer created.** That account is
+   what you are almost certainly signed in as, and turning it off from inside
+   the wizard would sign you out of the wizard. Retiring it is a separate piece
+   of work, done deliberately from **Admin → Members** once somebody else can
+   get in. The step is satisfied by *any* active administrator, so it reads
+   complete before you create anybody — creating a real person's account is
+   about not running the club from a shared installer login, not about clearing
+   a red badge.
+
+   **The module toggles are the one editor that changes the journey itself.**
+   **Feature Flags** and **Address Autocomplete** share ONE editor — the module
+   grid from **Admin → Modules** — because Address Autocomplete is a single
+   checkbox on that grid rather than a screen of its own. Whichever of the two
+   steps you are on, you get the whole grid.
+
+   A module that is switched off contributes no
+   setup steps, so ticking **Xero integration** and saving makes its two steps
+   appear in the rail beside you, and clearing it makes them go away again.
+   The percentage moves at the same time, because the number of steps it is
+   dividing by has just changed — which is the reason progress here is a
+   percentage and never "3 of 12" (see below).
+
+   One case is worth knowing about before it surprises you. **Address
+   Autocomplete is the only step whose own module's checkbox is on the grid
+   underneath it**, so clearing that checkbox while you are standing on that
+   step deletes the step you are on. The wizard moves you to the next
+   outstanding one and tells you it has, rather than silently changing the
+   screen. Nothing can disappear from BEHIND you: every module-owned step sits
+   later in the journey than the two steps this editor appears on.
+
+   Switching a module off on `/admin/modules` in another tab still works
+   exactly as it did — the rail catches up when you come back to the wizard's
+   tab, with no page reload.
+
+   The wizard never becomes a second place to store a setting. **Website
+   Styling** is a step of exactly this shape: it
+   links to [Site Style](site-style.md) rather than embedding a second colour
+   picker, and **its check passes** the moment any colour, font, logo or Raw
+   CSS differs from the shipped defaults — whether that was saved from Site Style
+   directly or by following this step's link. Finishing this step never makes
+   the public site visible; that only happens from **Ready to open** below, or
+   from Site Style's own Finish-setup control.
+
+   **Lodges** is the step that reports on more than one thing at once, and it
+   carries an editor of a slightly different shape. The list from **Admin →
+   Lodges** is right there: every lodge the club has with its own state — open
+   for booking, or still to be activated — and beside each one an **Edit** to
+   rename it or change its address, door code and travel note, an
+   **Activate**/**Deactivate**, and a **Configure** into that lodge's own
+   guided setup. **Add lodge** at the top creates another one.
+
+   **A fresh install is seeded with one lodge named after the club** —
+   "*your club's name* Lodge" — because the installer had nothing better to
+   call it. If that is not what the building is actually called, press **Edit**
+   beside it and give it its real name; nothing else in the product will do
+   that for you.
+
+   **What this step does not embed is the per-lodge guided setup itself**, and
+   that is deliberate rather than unfinished. Rooms and beds, lockers, seasons
+   and chores are a flow of their own, several screens long, and it is the
+   better place to do that work — so this step sends you there by link, from
+   the **Configure** button on each row or from the per-lodge links in the
+   check above.
+
+   Deactivating a lodge that still has future bookings, waitlist entries,
+   hut-leader assignments or bound kiosk accounts asks you to confirm first,
+   and tells you what it found. Confirming stops new bookings; it does not
+   delete anything that already exists.
+
+   The step's check passes when every lodge is open for booking, and warns
+   while any one of them is still closed. Room and bed counts are shown but
+   never decide the verdict: a lodge can legitimately run on a capacity
+   override with no beds recorded. A lodge that is **open with no beds** says
+   so in its own words rather than reading as a contradiction — whether members
+   can book it then depends on that override, which is the one thing this check
+   cannot see. **A lodge's own completeness is reported separately from the
+   club's** — however many lodges you have, this is one step of the journey, so
+   adding a second lodge does not make the percentage go backwards.
+4. Stripe, Email, Sentry and Operational Xero each add a **Test** button here —
+   the same provider test the checklist offers, calling the same check. The
+   result panel shows the outcome, but the step's verdict, the rail and the
+   percentage only move once the underlying credential state itself changes —
+   a passing test on credentials that are already correctly configured does
+   not "unlock" anything by itself. Changing a step's progress, and running a
+   test, both need **Support** edit access; the settings page each step links
+   to is governed by its own area, which the wizard names underneath the link.
+5. **Mark this step done**, **Skip for now**, or **Reopen** it. There is no
+   separate step-through control: marking or skipping the step you are on is
+   what unlocks the next row in the rail, and clicking that row — or any other
+   unlocked one — is how you move around the journey. If you are simply
+   resting where the wizard put you (rather than having clicked a specific
+   row yourself), marking that step done carries you straight to the next
+   one, because the wizard is only ever showing you wherever the journey has
+   got to. Skipping buys you passage past a step; it does not hide it. A
+   skipped step stays on the rail and on the outstanding list until it is done
+   or no longer applies. You cannot skip *ahead* of a step you have not settled
+   one way or the other — those rows are greyed, name why when you point at
+   them, and will not open.
+6. Switching a module off removes its steps entirely (a module you have declined
+   has nothing to configure). Change one in the wizard's own module toggles —
+   the **Feature Flags** or **Address Autocomplete** step — and the rail redraws
+   as you save it. Change one on the **Modules** page in another tab and the
+   rail redraws when you come back to the wizard's tab.
+7. Once every step is **confirmed or skipped**, **Ready to open** unlocks at
+   the foot of the rail. A step still showing **Default in place** keeps it
+   locked, which is deliberate: a club should not arrive at "ready to open"
+   without a person having looked at each decision, even where the installed
+   default turns out to be the right one. It carries two separate things:
+   - **Make the public site visible** — until you do this, visitors see the
+     holding screen rather than the club's pages. This is the only place in the
+     wizard that publishes the site. **It is refused while nothing has declared
+     what this installation is**: if the role below reads *not configured*, the
+     button reports that nothing was changed and names what to set. An
+     installation nobody has declared might be a copy restored from the club's
+     live database, and publishing one would put a second version of the club's
+     site in front of the public.
+   - **Confirm what this instance is for** — names the role (production,
+     non-production, or not configured), says which source decided it (the
+     deployment's own `APP_ENVIRONMENT_ROLE`, or an administrator's safer
+     override), and states plainly what a non-production installation
+     withholds: no email to members, and every Xero contact it touches has its
+     address replaced so Xero cannot reach a member from here either. Nothing
+     here is switched on from a screen — that is declared in the environment
+     (`.env`) and never from the wizard, so a copy of the live database can
+     never declare itself the live site — but the panel does say how much
+     application email is currently being held back for environment-safety
+     reasons and links through to **Admin → Environment** for the full
+     picture. If nothing has declared the role yet, a banner explains what is
+     paused (member email and Xero writes, both) and exactly what to set. A
+     **declared** role does not gate the one above, whichever of the two it is:
+     an internal test site that is deliberately visible and deliberately not
+     production is a perfectly normal, permanent state, and publishing it is
+     allowed. Only *not configured* stops the site going live, because that is
+     not an answer — it is the absence of one.
+
+   Anything you skipped is listed on that panel in plain words rather than
+   quietly dropped.
+
+   **Ready to open unlocking is not the same as being able to publish.** If one
+   of the three gating facts on [About this server](#about-this-server-the-facts-you-cannot-change-from-here)
+   is not right, the panel still opens — you can read everything on it — but
+   **Make the public site visible** is refused, with the reason and whose job it
+   is stated beside the button. That separation is the point: the screen that
+   explains a refusal is no use if the refusal hides it.
+
+#### About this server: the facts you cannot change from here
+
+Five of the twenty checks describe the **server this site runs on** rather than
+the club's own settings, and the wizard keeps them apart from the journey. They
+are on their own screen, **About this server**, reached from the rail below the
+journey's headings.
+
+They are there because of what happened when they were not. An administrator
+setting a club up met three screens in a row — the environment role, the runtime
+variables, the auth secret — that they could not act on, and had to click past
+all three to reach the next thing they could. Their own presence in the wizard
+proved the site was running; what the screens were actually reporting was the
+contents of a file on a server they had no access to. Being asked to "mark done"
+something you cannot change reads as a failing of yours, and it is not one.
+
+So each row on that screen says, in this order:
+
+1. **Who does this** — and for all five it is whoever installed and runs the
+   site, not the person reading the screen.
+2. **The one line to send them** — written to be copied into an email or a
+   message and acted on by somebody who is not looking at the wizard. It names
+   the variable, the file and the restart.
+3. **Why it matters**, tucked behind a "Why this matters" toggle, because you do
+   not need it in order to forward the line above.
+
+A row that is fine stays on the screen and reads green. That is deliberate: a
+screen that only appeared when something was wrong would leave you unable to
+tell "all fine" from "not checked yet".
+
+**None of these stop you working through the wizard.** You can set the whole
+club up with the server's email transport unconfigured. **Three of them stop you
+opening the public site**, and the wizard says so both on this screen and beside
+the button they refuse:
+
+| Fact | Holds the site shut? | Because |
+| --- | --- | --- |
+| Production or non-production | **Yes** | Nothing has declared whether this installation is the club's live site or a copy, so it is treated as neither and holds all member email back. A copy that published would email real members. It also holds the site shut in one other state: the installation *is* declared the live site but still sends its mail to a capture mailbox, so no member email goes out at all |
+| Runtime environment | **Yes** | A required variable is missing or malformed, and every one of them must be set before the club opens. That is exactly why this is a gate: the site RUNS without some of them — which is how you are reading this screen — so nothing else would ever catch it. A club that opened with its cron secret unset would look completely normal and have nothing running overnight |
+| Auth secret strength | **Yes** | Sign-in, two-factor and every stored credential derive from it. Until it is strong the site refuses to store a Stripe or Xero credential at all |
+| Email delivery | No | Nothing that needs to reach a member by email will, so fix it before real members use the site — but it does not stop you opening |
+| Sentry | No | Optional error reporting. Nothing about running the club depends on it |
+
+**Email delivery** and **Sentry** each carry their **test** button here — the
+same one the checklist offers — which is how you check whether a fix your
+deployer has just made actually worked, without leaving the wizard.
+
+#### When a finished step needs another look
+
+Some steps only make sense once an earlier one is settled. If you go back and
+reopen one of those earlier steps, anything that depended on it — and anything
+that depended on *that* — moves to **Needs another look**.
+
+Four things are worth knowing about that state, because it is the one people
+find surprising:
+
+- **It is remembered.** The wizard writes down which steps went back into
+  question, so closing the tab, coming back tomorrow, or another officer opening
+  the wizard all show the same picture rather than a fresh guess each time.
+- **Nothing you did is thrown away.** A step that needs another look is still
+  recorded as done. The wizard is asking you to confirm it still reads correctly
+  now the thing underneath it has changed — not telling you to do it again. When
+  the step it depends on is settled, it goes quietly back to **Done** without
+  your having to open it at all.
+- **It counts as outstanding while it lasts**, so it holds the percentage back
+  and keeps **Ready to open** locked. That is the point: a club is not finished
+  setting up while something is waiting to be checked.
+- **"Setup complete" is withdrawn while anything needs another look.** If you
+  had already finished setup, the wizard stops showing **Setup complete** while
+  steps need another look, and once they are settled an administrator finishes
+  setup again from the checklist. A club should never be told it has finished
+  over work that is still open — and the club, not the software, decides when it
+  is finished, so the flag is never quietly put back.
+
+Each change is recorded in the [Audit Log](audit-log.md) under its own event
+type — one for steps that started needing another look, one for steps that
+stopped — so you can see when it happened and which step caused it. Pressing
+**Mark Setup Complete** while something still needs another look is **refused**:
+nothing is written, nothing is recorded, and the message names the steps that
+held it back. Setup being finished is a claim about the club, so the software
+will not record one it can see is untrue — and there is no half-finished record
+left behind to explain afterwards.
+
+**If the wizard cannot work the list out, it changes nothing.** Deciding which
+steps need another look means reading the rest of the installation's settings,
+and if that read fails — a database hiccup, say — the wizard refuses the change
+and says so rather than saving it with the list guessed at. Nothing is recorded
+and nothing is logged, so pressing the button again once the problem clears does
+exactly what you asked the first time.
+
+**One thing the wizard does not notice on its own.** The list of steps needing
+another look is worked out when you mark a step done, defer it, reopen it, or
+finish or reset the checklist — not continuously. So if a setting a completed
+step depends on is changed on its own settings page rather than through the
+wizard, the steps *downstream* of it are not moved to **Needs another look**
+until the next time somebody makes one of those wizard changes. The step whose
+own check the setting broke does show it straight away, because that is read
+live. In practice this cannot arise yet — no step depends on another today — and
+it is revisited when modules start contributing their own steps.
+
+Upgrading the platform does **not** put finished steps back into question. A
+step that a new release *adds* arrives as **Not started**, which is a different
+thing: nobody has done it yet, rather than somebody having done it and something
+having changed underneath it.
+
+**What you can change depends on your role, and there are two different
+answers.** The wizard is reachable by anyone who can reach the Setup page, and
+everyone can read and walk the whole journey.
+
+- **Marking a step done, skipping it, or reopening it** needs **Support** edit
+  access. That is one answer for the whole journey rather than one per step,
+  because all three are the same underlying action — the same one the readiness
+  checklist's own buttons perform. Without it those three buttons are disabled,
+  and one banner at the top of the step says so.
+- **Doing the step's actual work** happens on the settings page the step links
+  to, and needs edit access to **that page's** area — which the wizard names
+  underneath the link. So a Support officer can record that a step is done but
+  may still need a Bookings or Finance officer to make the change itself; and an
+  officer who can make the change may need someone with Support access to tick
+  it off.
+
+Two of those settings pages ask for more than their area implies: **Club Time
+Zone** is full-administrator only whatever your Support level, and **Runtime
+Environment** is edited in the deployment's `.env` file rather than on any
+screen.
 
 ## Settings reference
 
@@ -53,22 +601,43 @@ the areas it links to:
 | Hub card | Opens | Its permission area |
 | --- | --- | --- |
 | Initial Setup | Install checklist, club identity, modules, lodge records, health (`/admin/setup/foundations`) | support |
-| Finance | Finance reporting, Xero setup, sync tools, report mappings — collapsed by default (`/admin/setup/finance`) | finance |
+| Finance | Finance reporting, Xero setup, sync tools (`/admin/setup/finance`). Report mappings are **not** here — they live on the finance dashboard, `/finance` | finance |
 | Booking Rules | Booking policy, seasons, age groups, promos, inventory, copy (`/admin/setup/booking-rules`) | bookings, lodge |
 | Operational Integrations | Provider readiness, Xero connection, modules, delivery health (`/admin/setup/integrations`) | support, finance |
 | Membership & Members | Membership types, member fields, subscription lockout ([membership-setup](membership-setup.md)) | membership |
 | Cancellation | Cancellation settings, request queues, message copy (`/admin/setup/cancellation`) | membership, support |
 | Email Messages / Notifications | Delivery rules, recipients, templates, member copy ([notifications](notifications.md)) | support |
 
+One setting lives on the Setup page itself rather than behind a hub card:
+
+| Setting | What it controls | Default | Where |
+| --- | --- | --- | --- |
+| Hide the readiness checklist and the setup hubs | Whether this club still sees the older setup surfaces at all — the readiness cards, the four drill-down hubs, and Site Style's "Finish setup" button | Shown (not hidden) | **Setup surfaces** at the foot of `/admin/setup`; support edit |
+
+A hub card appears only while there is still something behind it: your role can
+open it, its area's module is on, at least one of the checklist steps it
+covers still applies to this club, **and** the surfaces have not been retired
+(the last of those applies to the four hubs the wizard replaces, never to the
+other three). Membership & Members and Email Messages /
+Notifications cover no checklist step at all — they are ongoing club
+configuration rather than first-install readiness — so those two are governed by
+permissions and modules only, and never disappear because of a module toggle.
+
 Provider tests cover Stripe, SMTP (email), Sentry, and Xero. Each check is
 **complete**, **warning**, **blocked**, or **not started**.
 
-One checklist step does not sit behind a hub card, because it is a single
-setting: **Club Time Zone** links straight to [`/admin/club-time`](club-time.md).
-On a fresh install it reads **blocked** until a time zone is recorded, so setup
-cannot be finished without one. After an upgrade it usually reads *complete* and
-names the zone — the application records the zone it was already effectively
-using the first time it starts, so nothing needs choosing.
+Three checklist steps do not sit behind a hub card. Two are a single setting
+rather than a settings area: **Club Time Zone** links straight to
+[`/admin/club-time`](club-time.md), and **Website Styling** links straight to
+[`/admin/site-style`](site-style.md). The third, **Lodges**, links to
+[`/admin/lodges`](lodges.md) and additionally offers one link per lodge into
+that lodge's own guided setup, because a club's lodges are a list rather than a
+setting.
+
+Club Time Zone: on a fresh install it reads **blocked** until a time zone is
+recorded, so setup cannot be finished without one. After an upgrade it usually
+reads *complete* and names the zone — the application records the zone it was
+already effectively using the first time it starts, so nothing needs choosing.
 
 Two other answers are worth recognising. A **warning** means the zone could not be
 confirmed: the server's `TZ` named no actual place (`UTC`, `Etc/UTC`), so
@@ -83,10 +652,25 @@ or run `npm run config:self-heal`.
 | --- | --- | --- |
 | A provider test fails | The credentials/config for that provider are missing or wrong | Fix them per [`CONFIGURATION.md`](../../CONFIGURATION.md); re-run the test |
 | A hub card is missing or greyed | Your role lacks the card's permission area | Ask a full admin, or an admin with that area, to complete it |
+| The **Finance** hub card has disappeared | Every step behind it belongs to a module that is switched off — with both Xero and the finance dashboard off there is no finance setup left to do, so the card goes rather than opening a page with nothing in it | Switch the module back on in [Modules](modules.md); the card and its steps return together |
+| A readiness card you remember is no longer listed | Its module was switched off. A module contributes no steps while it is off, on either surface | Check [Modules](modules.md). Nothing was lost — turning it back on restores the step and any progress recorded against it |
+| The whole checklist and all four hubs have gone at once | Somebody retired them — this is the **Setup surfaces** setting, not a fault | Setup → **Setup surfaces** at the foot of the page → Edit → untick → Save. The [Audit Log](audit-log.md) shows who changed it and when |
+| A bookmark to Initial Setup / Booking Rules / Operational Integrations lands on the Setup page | Those hubs are retired for this club, and the route redirects rather than erroring | Use the wizard, which covers them; or bring the hubs back under **Setup surfaces** |
+| A bookmark to Finance lands on the finance dashboard | Same reason, different destination: the Finance hub's report mappings moved to `/finance`, so that is where the redirect goes | Use the dashboard's **Report mappings** section; or bring the hub back under **Setup surfaces** |
+| **Finance Report Mappings** is not in the Finance hub any more | It moved to the finance dashboard, so it is reachable without Support access and survives retiring the hubs | Open `/finance` and expand **Report mappings** at the foot of the page |
+| The **Save** button on Site Style no longer makes the site live | The surfaces have been retired, so publishing is the wizard's **Ready to open** screen — which needs Support access | Ask an admin with Support access to open the wizard and publish; or bring the surfaces back under **Setup surfaces** |
+| Site Style's **Finish setup** button is now just **Save** | The setup surfaces are retired, so publishing the public site happens only from the wizard's **Ready to open** screen | Style the site here as usual, then open the site from the wizard |
 | A check stays "blocked" | A required dependency isn't in place | Open the linked area and resolve the named requirement |
 | **Club Time Zone** stays blocked right after an upgrade | The application has not restarted since the migration, so the zone has not been recorded yet. The zone in use is still the right one | Restart the application, or run `npm run config:self-heal`. See the [Club Time Zone guide](club-time.md) |
 | **Club Time Zone** shows a warning about confirming the zone | The server's `TZ` named no actual place, so `Pacific/Auckland` was recorded rather than guessed at from a value that names no location | If the club is in New Zealand, acknowledge the step. If not, set the real zone at [`/admin/club-time`](club-time.md) — this is the case that would otherwise put a non-NZ club's times out by hours |
 | Setup shows incomplete after go-live | Optional checks were left unskipped | Mark genuinely-skipped checks as skipped so the summary reflects reality |
+| A wizard step will not open | It is further ahead than you have reached | Settle the steps before it — finish them, or skip the ones that do not apply |
+| **Make the public site visible** is greyed out on **Ready to open** | One of the three gating facts on **About this server** is not right — nothing has declared whether this is the live site or a copy, a required runtime variable is missing, or the auth secret is weak | Open **About this server** in the rail, send the line it gives you to whoever runs the site, and try again once they have restarted it |
+| **Ready to open** stays locked in the wizard | Something is still outstanding and has not been skipped — including any step showing **Default in place**, which needs confirming or skipping like any other | Work down the rail; anything you genuinely do not need can be skipped, which counts as settled |
+| A wizard step's Done / Skip / Reopen buttons are all disabled | Your role has view-only access to **Support**, which is what recording progress needs — on every step, not just this one | Ask an admin with Support edit access to record it. Note this is separate from being able to make the change itself, which needs the settings page's own area |
+| The rail still shows a module's steps after switching it off | The wizard has not re-read the journey yet | Return to the wizard's tab, or press **Refresh** |
+| **Mark Setup Complete** answers "these steps are outstanding" and does nothing | Steps remain that nobody has finished or skipped. The button used to grey itself out on a narrower rule than the server applies, so it can look available when it is not | Open the wizard and settle the named steps — finishing them, or skipping the ones that do not apply. Nothing was written, so pressing it again once they are settled is all that is needed |
+| **Make the public site visible** says the installation has not been confirmed | Nothing has declared whether this is the club's live site or a copy: `APP_ENVIRONMENT_ROLE` is unset, holds a value that is neither `production` nor `non-production`, or the safer override could not be read | Set `APP_ENVIRONMENT_ROLE` in this deployment's environment and restart, or — for a copy — switch the safer override on at **Admin → Environment**. If that is already right it is the third cause, which neither of those repairs: apply any pending database migrations (`prisma migrate deploy`), or restore the application's database access. That page names which of the three it is. See [Environment role](environment-role.md) |
 
 ## Related links
 

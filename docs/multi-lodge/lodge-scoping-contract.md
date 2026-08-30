@@ -739,8 +739,18 @@ Delivered by #2925 (owner decision, 17 Aug 2026); the route's own docblock
 carries the implementation reasoning and is not repeated.
 
 **Access.** Any admitted administrator, expressed as the explicit requirement
-`permission: { area: "overview", level: "view" }` — the documented "any admitted
-admin" shape in this codebase. It must stay EXPLICIT. A bare `requireAdmin()`
+`permission: "any-admin"`, which resolves to `hasAdminPortalAccess`.
+
+An earlier cut of #2925 wrote `permission: { area: "overview", level: "view" }`
+instead, on the stated grounds that every admin grid carries `overview`. Review
+measured that against the shipped presets and it is **false** — `FINANCE_USER`
+("Finance Viewer", `access-role-definitions.ts`) ships `overviewLevel: "NONE"` —
+and it would additionally have been a fresh regression for a custom grid holding
+`lodge:view` without `overview:view`, which had the full list before. So the
+requirement in the route is `"any-admin"`, not an area/level pair, and this page
+said otherwise until #221 corrected it.
+
+It must stay EXPLICIT. A bare `requireAdmin()`
 does not mean "any admin": `inferAdminAccessRequirement` reads the `x-pathname`
 and `x-request-method` headers `proxy.ts` stamps on this route and resolves them
 through `getAdminRouteRequirement`, which maps `/api/admin/lodges` to
@@ -755,8 +765,9 @@ The presets this changed, all of which hold `overview: "view"` and no `lodge`
 entry: **`ADMIN_MEMBERSHIP`**, **`FINANCE_ADMIN`** and **`ADMIN_CONTENT`**. No
 preset was edited — adding `lodge:view` to them would have widened eighteen
 other read endpoints on upgrade. A 403 is still the answer for a caller who is
-not an admitted admin, and for a club-edited or custom role holding
-`overview: "none"`, which is why `useLodgeOptions` keeps its `forbidden` state.
+not admitted to the admin portal at all — `hasAdminPortalAccess` excludes
+`finance`, so the finance-only `FINANCE_USER` remains refused here — which is
+why `useLodgeOptions` keeps its `forbidden` state.
 
 **Payload, decided from nothing rather than trimmed from `lodgeSelect`.** A
 caller WITH `lodge:view` keeps the whole record. A caller without it receives
@@ -803,6 +814,185 @@ setup wizard: a second copy bought no reachable safety, pushed a 913-line file
 past its size ceiling, and made the wizard reject any incomplete test fixture —
 it broke a passing back-link test on a lodge row that simply had not bothered to
 include `doorCode`.
+
+## Lodge Creation Defaults, And Configuring A Lodge That Is Not Yet Active
+
+Recorded here rather than in a feature guide because both halves are lodge
+RESOLUTION rules — which lodge a request may name, and what a freshly created
+row means to every scoped reader — which is the same reason the admin lodge
+list's gate and payload are recorded above. Delivered by #221 (epic #213, C6).
+
+**A lodge created through `POST /api/admin/lodges` starts INACTIVE.** The
+route's Zod field `active` defaults to `false`; the caller may still send
+`true` explicitly. Until #221 it defaulted to `true`, so a lodge with no rooms,
+no beds, no seasons and no rates was offered for booking the instant it was
+named — the gap that issue exists to close. An operator activates it from the
+per-lodge setup flow's finish step
+(`/admin/lodges/[id]/setup`), which sends the ordinary
+`PATCH /api/admin/lodges/[id]` with `{ active: true }`.
+
+**This is a request-schema default, NOT a column default.** `Lodge.active` in
+`prisma/schema.prisma` still reads `@default(true)` and is deliberately
+unchanged, so:
+
+- no migration is involved and no existing lodge's `active` value moves;
+- every writer that does not go through that route is unaffected —
+  `prisma/seed.ts` and `e2e/setup/seed-second-lodge.ts` set `active: true`
+  explicitly, `prisma/demo-seed.ts` sets it explicitly on the optional second
+  demo lodge, and the config-transfer importer
+  (`src/lib/config-transfer/categories/lodge-config.ts`, `buildLodgeData`)
+  writes `active` from the descriptor it is restoring — and note the OMITTED
+  case explicitly, because it is the one that surprises: `coerceBool(undefined)`
+  is `false`, so a descriptor with no `active` key restores an **inactive**
+  lodge. That is deliberately left as it is. Every descriptor this codebase
+  exports carries the field, so the omitted case is a hand-authored or foreign
+  file, and refusing to read "open for booking" out of silence is the safe
+  answer for one — the same direction #221 moved the create route. Install and
+  restore paths therefore keep producing active lodges, which is right: they are
+  reproducing a configured club, not half-configuring a new building.
+
+**The default lodge is unaffected, and cannot be captured by a new lodge.**
+`Lodge.isDefault` defaults to `false` and the create route never sets it, so a
+wizard-created lodge is never flagged. `getDefaultLodgeId()`'s fallbacks cannot
+reach it either while any lodge is flagged, and its second fallback is *oldest
+ACTIVE*, which an inactive new lodge is not; only the pathological third
+fallback (no flagged row, no active row at all) could, and the deactivation
+guard keeps at least one lodge active. The existing rule above still stands
+unchanged: reassign the default before deactivating a lodge, because a
+flagged-but-inactive lodge deliberately stays the default.
+
+**Two different questions about `active`, which used to have one answer.**
+`resolveOptionalActiveLodgeId` (`src/lib/lodges.ts`) refuses a lodge that is not
+active, and that is correct for anything BOOKING-facing: a booking, a policy
+check, a roster print, a hut-leader term. It was also being used by the admin
+routes that build a lodge's own inventory, which was harmless only while no
+lodge could be inactive and under configuration at the same time. Once a new
+lodge starts inactive it is exactly wrong — an inactive lodge is the one that
+most needs its rooms, lockers, seasons and chores created.
+
+So there are two resolvers, and the distinction is the rule:
+
+| Helper | Question it answers | Refuses an inactive lodge? |
+| --- | --- | --- |
+| `resolveOptionalActiveLodgeId` | may this lodge be OPERATED — booked, priced, rostered, staffed? | yes |
+| `resolveOptionalConfigurableLodgeId` | may this lodge's own configuration be READ OR WRITTEN? | no — but an unknown id is still refused |
+
+`resolveOptionalConfigurableLodgeId` is the narrower change of the two: it
+validates the id names a real lodge and falls back to the club default when the
+id is omitted, exactly like its sibling, and differs only in not consulting
+`active`. Its call sites are the admin surfaces that build a lodge's OWN
+inventory and per-lodge templates — the ones the per-lodge setup flow drives,
+plus the full editors that same flow tells the operator they can finish the job
+on. This is the complete list, and a new caller belongs on the booking-facing
+helper unless it is configuring a lodge:
+
+- `POST /api/admin/bed-allocation/rooms/bulk` (rooms and beds quick-seed)
+- `GET` and `POST /api/admin/bed-allocation/rooms` (the Rooms & Beds editor)
+- `POST /api/admin/lockers/bulk` (locker quick-seed)
+- `POST /api/admin/lockers` (the Lockers editor)
+- `POST /api/admin/seasons` (including copy-from-another-lodge)
+- `GET` and `POST /api/admin/chores` (including copy-from-another-lodge)
+- `GET` and `PUT /api/admin/lodge-settings` (the per-lodge capacity override).
+  A capacity override is part of setting a lodge up and the setup flow reaches
+  it: the finish step's "Open lodge configuration" leads to `/admin/lodges/[id]`,
+  which reads this route on load and writes the override from its own editor.
+  Under the active-only check that GET failed silently — the page swallows a
+  non-ok response — and the PUT answered "Lodge not found or not active" for a
+  lodge the operator was plainly looking at. The route calls the helper only for
+  an EXPLICIT id: an omitted `lodgeId` still means the legacy club-wide settings
+  row, so it must not take the helper's default-lodge fallback.
+
+Everything else keeps the active-only resolver, and the line is not arbitrary:
+bed allocation's board, approval and auto-allocator, the roster, hut-leader
+terms, work parties and the booking-policy editors all act on a lodge that is
+OPEN. You do not roster or allocate beds at a building nobody can book.
+
+Nothing about that widens what is bookable. `active: true` is enforced
+independently at the booking surfaces themselves (`booking-create.ts`, the
+lodge-option reads in `lodges.ts`, and display/kiosk auth), so a lodge with a
+full set of rooms and rates is still unbookable until somebody activates it.
+Copy-from-another-lodge keeps requiring the SOURCE lodge to be active — the
+per-lodge setup page only offers active lodges as sources — and only the
+destination may be inactive.
+
+**The ADR-002 presentation rule composes with this, and the composition has two
+halves that pull in opposite directions.**
+
+The first half is the one adopting clubs see. Adding a second lodge no longer
+makes lodge selectors appear across the product the moment it is named: the rule
+counts ACTIVE lodges, so on every member, booking, roster, board, report,
+display and ordinary admin surface the selectors stay hidden until the new lodge
+is activated, and the club meets them at the point the second lodge genuinely
+becomes bookable.
+
+The second half is the one that had to be built rather than inherited. On a
+**configuration** surface that rule is not merely unhelpful, it silently
+retargets the operator's writes. The five full editors the setup flow links to
+with `?lodgeId=<the-new-lodge>` — Rooms & Beds, Lockers, Seasons, Fees and
+Chores — drew their options from `useLodgeOptions("admin")`, which drops
+inactive lodges. So a club with one open lodge plus the one being set up looked
+like a single-lodge club: no selector rendered, ADR-002's normaliser reported
+the OPEN lodge through `onChange`, and every room, bed, locker, season, rate and
+chore created from there was written against the wrong lodge, unlabelled. The
+server had already answered this question the other way — those routes take
+`resolveOptionalConfigurableLodgeId` — so the two halves disagreed and only the
+client's answer was visible.
+
+The rule for a configuration surface, delivered by #221:
+
+- it asks `useLodgeOptions("configuration")`, whose list keeps inactive lodges
+  and carries `active` on each option. That scope is confined to those five
+  files, and `lodge-option-consumer-census.test.ts` pins which file may ask for
+  which scope, so a surface can only gain inactive lodges by changing a line a
+  reviewer is looking at;
+- **an inactive lodge is honoured when NAMED and never chosen when not.** The
+  normaliser's sole-lodge rule and first-lodge default both count OPEN lodges
+  only, so an admin arriving from the nav still lands on a bookable lodge; a
+  value that resolves to an inactive lodge is deliberate by construction — a
+  `?lodgeId=` link or a pick from the selector — and survives normalisation;
+- **it is never silent.** Two configurable lodges is not a single-lodge club, so
+  the selector renders, and the inactive one is labelled `(closed)` wherever it
+  appears. In the one club shape where the selector still would not render — the
+  club's only lodge being closed — `LodgeSelect` renders a named scope line
+  instead of nothing. That shape is reachable, not merely theoretical: `POST
+  /api/admin/lodges` now defaults `active` to `false` with no first-lodge
+  exception (#221), and the config-transfer importer's `buildLodgeData`
+  restores a lodge inactive whenever its descriptor omits `active`.
+
+Member, booking, display and kiosk surfaces gain nothing from any of this: their
+lists are the same active-only lists they have always been, which is the third
+thing the census test pins.
+
+## Setup Wizard: Club-Wide Readiness Beside A Per-Lodge Editor
+
+Recorded here per C23's own fix round (#261 finding 2): a reviewer grepped
+this file for the tension the wizard's `seasons-rates` step creates and found
+nothing.
+
+`buildSeasonRateCheck`'s three facts — `seasonCount`, `membershipTypeRateGaps`,
+`publicHutFeeSingleColumnSeasons` (`setup-readiness.ts`, reading
+`setup-readiness-db.ts`) — are all CLUB-WIDE, counted with no `lodgeId`
+filter. `SeasonsSection`, embedded inline on the wizard's `seasons-rates` step
+(`seasons-rates-wizard-pane.tsx`), is scoped to whichever lodge its own
+`useLodgeOptions("configuration")` picker currently names. That pairing is not
+new — `/admin/seasons` has carried the same club-wide check beside the same
+per-lodge editor since before C23 — but C23 put them on the SAME SCREEN for
+the first time, and made the mismatch reachable without an extra click:
+arriving via the wizard rail carries no `?lodgeId=`, so ADR-002's normaliser
+auto-selects the first OPEN lodge, which need not be the lodge holding the
+season the club-wide count found. A two-lodge club can then read "1 season
+configured." in the step's own detail line directly above "No seasons
+configured yet." in the section's empty-state card.
+
+**Making the check lodge-aware is a real decision and is deliberately NOT made
+here.** It carries its own trade-offs — which lodge's gaps block the step when
+lodges disagree, whether the denominator should change per lodge, and whether
+every other club-wide fact this file lists earns the same treatment — none of
+which is C23's to decide as a side effect of mounting an existing editor
+inline. The fix instead is DISCLOSURE: `SeasonsRatesWizardPane`'s orientation
+copy (`seasons-rates-wizard-pane.tsx`) states plainly that the checklist above is
+club-wide while the editor below works one lodge at a time, so the two numbers
+read as two different scopes rather than as a contradiction.
 
 ## Presentation Rule
 

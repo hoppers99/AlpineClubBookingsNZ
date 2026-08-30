@@ -14,6 +14,26 @@ export interface LodgeOption {
   id: string;
   name: string;
   travelNote?: string | null;
+  /**
+   * Whether the lodge is open for booking. Absent on every list a member,
+   * booking, display or ordinary admin surface builds, because those lists are
+   * filtered to active lodges before they get here and an absent value reads as
+   * active throughout.
+   *
+   * Present, and sometimes `false`, only on a CONFIGURATION list
+   * (`useLodgeOptions("configuration")`). A lodge created through the setup
+   * flow starts inactive (#221), and configuring it — its rooms, lockers,
+   * seasons, rates and chores — is the entire point of the period before it
+   * opens. So those five editors have to be able to name it, which means the
+   * selector has to be able to SHOW it, labelled, rather than quietly
+   * substituting an open lodge.
+   */
+  active?: boolean;
+}
+
+/** Absent `active` reads as open — see {@link LodgeOption.active}. */
+function isOpen(lodge: LodgeOption): boolean {
+  return lodge.active !== false;
 }
 
 /**
@@ -39,6 +59,13 @@ export const ALL_LODGES = "__all_lodges__";
  * from a choice that happens to pick the same lodge.
  */
 export type LodgeChangeSource = "user" | "auto";
+
+/**
+ * How a lodge that is not open for booking is labelled wherever a configuration
+ * surface offers it (#221). One constant so the selector option, the sole-lodge
+ * scope line and the tests cannot drift apart.
+ */
+export const CLOSED_SUFFIX = "(closed)";
 
 // Shared lodge selector honouring the single-lodge presentation rule
 // (docs/multi-lodge/decisions/ADR-002): when fewer than two lodges are
@@ -80,13 +107,37 @@ export function LodgeSelect({
    */
   deferDefaultSelection?: boolean;
 }) {
+  // The lodge the CALLER is currently pointed at, when it is one this list
+  // offers. Used below to tell a deliberate selection apart from a stale value.
+  const named = lodges.find((lodge) => lodge.id === value) ?? null;
+  const namedIsClosed = named !== null && !isOpen(named);
+
   useEffect(() => {
     if (loading || deferDefaultSelection) return;
-    if (lodges.length < 2) {
+    /*
+      #221 — a CLOSED lodge is only ever reached because somebody NAMED it: a
+      `?lodgeId=` configuration link from the per-lodge setup flow or the lodge
+      hub, or a pick from this selector. Nothing below ever auto-chooses one,
+      so a value that resolves to a closed lodge is deliberate by construction
+      and must survive normalisation.
+
+      Without this the sole-lodge rule fired instead: a club with one open
+      lodge plus the closed one being set up counts ONE open lodge, so the rule
+      below reported the open lodge through `onChange` — and every room, bed,
+      locker, season, rate and chore the operator then created landed on the
+      wrong lodge, with no selector on screen to show it had happened.
+    */
+    if (namedIsClosed) return;
+
+    // Everything from here is the ADR-002 rule, which counts OPEN lodges. On
+    // every non-configuration list that is the whole list, so this is the
+    // behaviour those surfaces have always had.
+    const open = lodges.filter(isOpen);
+    if (open.length < 2) {
       // ADR-002: fewer than two lodges is a single-lodge club, where there is
       // no club-wide view to choose — so even an explicit ALL_LODGES
       // normalises to the sole lodge (or to null when the list is empty).
-      const sole = lodges[0]?.id ?? null;
+      const sole = open[0]?.id ?? null;
       if (value !== sole) onChange(sole, "auto");
       return;
     }
@@ -96,13 +147,39 @@ export function LodgeSelect({
     if (
       value === null ||
       value === ALL_LODGES ||
-      !lodges.some((lodge) => lodge.id === value)
+      !open.some((lodge) => lodge.id === value)
     ) {
-      onChange(lodges[0].id, "auto");
+      onChange(open[0].id, "auto");
     }
-  }, [lodges, value, onChange, loading, allowAllLodges, deferDefaultSelection]);
+  }, [
+    lodges,
+    value,
+    onChange,
+    loading,
+    allowAllLodges,
+    deferDefaultSelection,
+    namedIsClosed,
+  ]);
 
   if (lodges.length < 2) {
+    /*
+      The single-lodge suppression is only safe while it is REDUNDANT. Standing
+      on a closed lodge it is not: the operator is editing a building nobody can
+      book, and silence there is indistinguishable from editing the open one.
+      (Reachable in a club whose one and only lodge is closed: `POST
+      /api/admin/lodges` now defaults `active` to `false` with no first-lodge
+      exception (#221), and the config-transfer importer's `buildLodgeData`
+      treats an omitted `active` field in a restored `lodge.json` descriptor
+      the same way. Both are real entry paths, not insurance against an
+      unreachable state.)
+    */
+    if (namedIsClosed) {
+      return (
+        <p className="text-sm text-muted-foreground" data-testid="lodge-scope-line">
+          {label}: {named.name} {CLOSED_SUFFIX}
+        </p>
+      );
+    }
     return null;
   }
 
@@ -122,7 +199,7 @@ export function LodgeSelect({
           ) : null}
           {lodges.map((lodge) => (
             <SelectItem key={lodge.id} value={lodge.id}>
-              {lodge.name}
+              {isOpen(lodge) ? lodge.name : `${lodge.name} ${CLOSED_SUFFIX}`}
             </SelectItem>
           ))}
         </SelectContent>
@@ -146,9 +223,33 @@ export function initialLodgeIdFromLocation(): string | null {
 }
 
 /**
- * Fetch active lodges for the current user. `scope: "member"` returns only
- * lodges the member may book; `scope: "admin"` returns every lodge (admin
- * pages pass their own endpoint data instead where they already load it).
+ * Fetch lodges for the current user.
+ *
+ * | scope | endpoint | inactive lodges |
+ * | --- | --- | --- |
+ * | `"member"` | `/api/lodges` | dropped |
+ * | `"admin"` | `/api/admin/lodges` | dropped |
+ * | `"configuration"` | `/api/admin/lodges` | KEPT, carrying `active` |
+ *
+ * `"admin"` returns every ACTIVE lodge (admin pages pass their own endpoint
+ * data instead where they already load it).
+ *
+ * `"configuration"` (#221) is for the five full editors that build a lodge's
+ * OWN inventory — Rooms & Beds, Lockers, Seasons, Fees and Chores — and for
+ * nothing else. A lodge created through the setup flow starts inactive, and
+ * those editors are exactly where its rooms, lockers, seasons, rates and chores
+ * get made; their routes already accept an inactive lodge through
+ * `resolveOptionalConfigurableLodgeId` (see
+ * `docs/multi-lodge/lodge-scoping-contract.md`). Dropping the lodge here was
+ * therefore the client half of the same question answered the opposite way, and
+ * the consequence was silent: `LodgeSelect` substituted an open lodge and the
+ * operator's writes landed on it.
+ *
+ * The split is deliberately at the SCOPE and not at the route, so that adding a
+ * consumer cannot widen anything by accident: every member, booking, roster,
+ * display and kiosk surface keeps the filtered list it has always had, and
+ * `lodge-option-consumer-census.test.ts` pins which files may ask for which
+ * scope.
  *
  * `failed` and `reload` exist so a caller can tell a FAILED list apart from an
  * empty one (#2701). Before this the two were indistinguishable — a refused or
@@ -173,7 +274,9 @@ export function initialLodgeIdFromLocation(): string | null {
  * `overview: "none"` and reach a bookings page, and that role is still refused
  * here. So the state stays, and so does every caller's handling of it.
  */
-export function useLodgeOptions(scope: "member" | "admin" = "member") {
+export type LodgeOptionScope = "member" | "admin" | "configuration";
+
+export function useLodgeOptions(scope: LodgeOptionScope = "member") {
   const [lodges, setLodges] = useState<LodgeOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
@@ -182,7 +285,9 @@ export function useLodgeOptions(scope: "member" | "admin" = "member") {
 
   useEffect(() => {
     let cancelled = false;
-    const url = scope === "admin" ? "/api/admin/lodges" : "/api/lodges";
+    // `configuration` is a wider view of the ADMIN list, not a third endpoint:
+    // the member endpoint has no business serving a lodge nobody can book.
+    const url = scope === "member" ? "/api/lodges" : "/api/admin/lodges";
     setLoading(true);
     setFailed(false);
     setForbidden(false);
@@ -204,6 +309,20 @@ export function useLodgeOptions(scope: "member" | "admin" = "member") {
       })
       .then((data) => {
         if (cancelled || data === null) return;
+        if (scope === "configuration") {
+          // Every lodge, each carrying whether it is open. `active` is normalised
+          // to a real boolean here (an endpoint that omits it means open) so a
+          // consumer never has to repeat the absent-means-open rule.
+          setLodges(
+            (data.lodges ?? []).map(({ id, name, travelNote, active }) => ({
+              id,
+              name,
+              travelNote,
+              active: active !== false,
+            })),
+          );
+          return;
+        }
         const rows = (data.lodges ?? []).filter(
           (lodge) => !("active" in lodge) || lodge.active !== false,
         );

@@ -2,11 +2,19 @@ import Link from "next/link";
 import { BackLink } from "@/components/admin/back-link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getClubThemeForAdmin } from "@/lib/club-theme";
+import { loadSetupSurfaceSettings } from "@/lib/setup-surface-settings";
 import { clubThemeFontVariableClassName } from "@/lib/club-theme-fonts";
 import { SiteStyleWizard } from "./site-style-wizard";
 
 export default async function SiteStylePage() {
-  const theme = await getClubThemeForAdmin();
+  // The legacy-surfaces switch reaches this page too (epic #213, C8 #223): its
+  // "Finish setup" control is the SECOND lever that makes the public site
+  // visible, and it retires with the surfaces it belongs to, leaving the
+  // wizard's Ready-to-open panel as the one deliberate act (D9).
+  const [theme, surfaceSettings] = await Promise.all([
+    getClubThemeForAdmin(),
+    loadSetupSurfaceSettings(),
+  ]);
 
   return (
     <div className={`space-y-8 ${clubThemeFontVariableClassName}`}>
@@ -18,8 +26,9 @@ export default async function SiteStylePage() {
           and admin area, plus the public logo.
         </p>
         <p className="mt-2 rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11">
-          The public site — including the membership application form — stays
-          hidden until this is saved.
+          {surfaceSettings.legacySurfacesHidden
+            ? "The public site — including the membership application form — stays hidden until you open it from the setup wizard's Ready to open screen. Saving here stores the styling; it does not make the site live."
+            : "The public site — including the membership application form — stays hidden until this is saved."}
         </p>
       </div>
 
@@ -48,7 +57,10 @@ export default async function SiteStylePage() {
         </CardContent>
       </Card>
 
-      <SiteStyleWizard initialTheme={theme} />
+      <SiteStyleWizard
+        initialTheme={theme}
+        legacySurfacesHidden={surfaceSettings.legacySurfacesHidden}
+      />
     </div>
   );
 }

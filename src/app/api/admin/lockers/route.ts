@@ -7,7 +7,7 @@ import { parseJsonRequestBody } from "@/lib/api-json";
 import { createAuditLog } from "@/lib/audit";
 import {
   lodgeNullTolerantScope,
-  resolveOptionalActiveLodgeId,
+  resolveOptionalConfigurableLodgeId,
 } from "@/lib/lodges";
 import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 
@@ -109,10 +109,15 @@ export async function POST(request: Request) {
     }
   }
 
-  const lodgeId = await resolveOptionalActiveLodgeId(prisma, parsed.data.lodgeId);
+  // #221: the CONFIGURATION resolver, not the active-only one — see the sibling
+  // in `@/lib/lodges` and docs/multi-lodge/lodge-scoping-contract.md. A lodge
+  // created through the admin route starts inactive and its inventory has to be
+  // buildable before it is activated. An unknown id is still refused, and
+  // nothing here becomes bookable: the booking surfaces enforce `Lodge.active`.
+  const lodgeId = await resolveOptionalConfigurableLodgeId(prisma, parsed.data.lodgeId);
   if (!lodgeId) {
     return NextResponse.json(
-      { error: "Lodge not found or not active" },
+      { error: "Lodge not found" },
       { status: 400 },
     );
   }

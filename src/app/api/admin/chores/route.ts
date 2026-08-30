@@ -5,7 +5,7 @@ import { z } from "zod"
 import { createAuditLog } from "@/lib/audit"
 import {
   lodgeNullTolerantScope,
-  resolveOptionalActiveLodgeId,
+  resolveOptionalConfigurableLodgeId,
 } from "@/lib/lodges"
 
 const choreSchema = z
@@ -54,12 +54,18 @@ export async function GET(req: NextRequest) {
   // Null-tolerant filter: rows without a lodgeId (pre-backfill or written by
   // a draining old colour during the expand deploy) show under every lodge.
   const lodgeId = req.nextUrl.searchParams.get("lodgeId")
-  // Validate an explicit lodge scope the way the POST path does (400 on
-  // unknown/inactive). Omitted lists chores across every lodge, so only
-  // validate when a lodgeId is supplied.
-  if (lodgeId && !(await resolveOptionalActiveLodgeId(prisma, lodgeId))) {
+  // Validate an explicit lodge scope the way the POST path does (400 on an
+  // unknown lodge). Omitted lists chores across every lodge, so only validate
+  // when a lodgeId is supplied.
+  // #221: the CONFIGURATION resolver, not the active-only one. A lodge created
+  // through the admin route starts inactive and is activated at the end of its
+  // per-lodge setup flow, so this write has to reach a lodge that is not active
+  // yet — that is the whole point of it. Nothing here becomes bookable: the
+  // booking surfaces enforce `Lodge.active` themselves. An unknown id is still
+  // refused. See docs/multi-lodge/lodge-scoping-contract.md.
+  if (lodgeId && !(await resolveOptionalConfigurableLodgeId(prisma, lodgeId))) {
     return NextResponse.json(
-      { error: "Lodge not found or not active" },
+      { error: "Lodge not found" },
       { status: 400 }
     )
   }
@@ -92,10 +98,16 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  const lodgeId = await resolveOptionalActiveLodgeId(prisma, requestedLodgeId);
+  // #221: the CONFIGURATION resolver, not the active-only one. A lodge created
+  // through the admin route starts inactive and is activated at the end of its
+  // per-lodge setup flow, so this write has to reach a lodge that is not active
+  // yet — that is the whole point of it. Nothing here becomes bookable: the
+  // booking surfaces enforce `Lodge.active` themselves. An unknown id is still
+  // refused. See docs/multi-lodge/lodge-scoping-contract.md.
+  const lodgeId = await resolveOptionalConfigurableLodgeId(prisma, requestedLodgeId);
   if (!lodgeId) {
     return NextResponse.json(
-      { error: "Lodge not found or not active" },
+      { error: "Lodge not found" },
       { status: 400 }
     );
   }

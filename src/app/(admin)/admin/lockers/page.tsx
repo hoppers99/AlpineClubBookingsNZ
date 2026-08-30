@@ -105,7 +105,7 @@ export default function LockersPage() {
     failed: lodgeOptionsFailed,
     forbidden: lodgeOptionsForbidden,
     reload: reloadLodgeOptions,
-  } = useLodgeOptions("admin");
+  } = useLodgeOptions("configuration");
   // Hub links (ADR-003) land pre-filtered; read synchronously so the first
   // fetch is already lodge-filtered.
   const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation);

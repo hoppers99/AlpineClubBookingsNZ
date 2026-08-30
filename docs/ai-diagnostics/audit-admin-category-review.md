@@ -584,11 +584,11 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  455
+row-producing sites:  459
 uncategorised:        0
-category values: admin 104, booking 101, xero 34, family 35, payment 37,
+category values: admin 105, booking 101, xero 34, family 35, payment 37,
                  lodge 65, account 19, security 22, privacy 19,
-                 communication 14, system 4
+                 communication 14, system 7
 ```
 
 `admin` was 96 when this page was written for #2730 (87 kept + 9 held) and is 98
@@ -614,12 +614,34 @@ maintenance-report writers (`lodge` 55 → 65, 443 → 453). Since then CT-1
 (#2989) added the club-timezone change record (`admin` 102 → 103, 453 → 454) —
 one writer, because the timezone change is a single audited event and a
 re-save of the unchanged zone deliberately records nothing at all. Since then
+two disjoint changes landed on top of 454 and, being disjoint, both count.
 ENV-SAFETY 1 (#3034) added the environment-safety override record
-(`admin` 103 → 104, 454 → 455) - again one writer, and again a no-op
-records nothing, because that route's dirty gate counts an absent settings row
-as "override off". That is the figure above, and it was taken from
+(`admin` 103 → 104, 454 → 455) - one writer, and a no-op records nothing,
+because that route's dirty gate counts an absent settings row as "override
+off". #220 added `markClubThemeSetupComplete`'s `site_style.updated` write
+(`admin` 104 → 105, 455 → 456) — the launch panel's completeSetup call now
+flips only `completedAt` under the theme row's existing lock rather than
+replaying the whole PUT body, and that narrower path needed its own audit row,
+categorised the same way the sibling PUT route's write already is. Since then
+the setup wizard's C2 (#217) added the two stale-transition records
+(`system` 4 → 6, 456 → 458) — which finished setup steps an upstream change put
+back in question, and which have stopped needing another look. They are the
+first additions to `system` since this page was written, and they are the only
+delta on this page that touches the WEAKEST gate: `system` is readable with
+`support:view` alone. It widens nobody's access all the same, because the five
+setup-progress transition rows beside them are already `system` and already
+readable by exactly that operator, and neither new row names a member, a
+booking or an amount. Since then the same epic's C8 (#223) added the
+setup-surfaces visibility record (`system` 6 → 7, 458 → 459) — which setup
+SURFACES a club has chosen to show, the readiness cards and the four
+`/admin/setup` drill-down hubs the wizard replaces. It is `system` for the same
+reason as the pair before it (the affected domain is the club's setup journey,
+not an administrator's own settings), it touches the same weakest gate, and it
+widens nobody's access for the same reason: the seven setup rows beside it are
+already `system` and already readable by exactly that operator, and it names no
+member, booking or amount. That is the figure above, and it was taken from
 `npm run audit:census` on the merged tree rather than by adding one branch's
-delta to the other's total. The category values sum to 454 rather than 455
+delta to the other's total. The category values sum to 458 rather than 459
 because one site forwards its category rather than naming one.
 
 The 22 moves are pinned **per site**, not only by that

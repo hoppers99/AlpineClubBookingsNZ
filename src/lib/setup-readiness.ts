@@ -40,33 +40,38 @@ import {
   detectLegacyProviderEnv,
 } from "@/lib/xero-config";
 import { authSecretWeaknessReason } from "@/lib/integration-crypto";
+import {
+  SETUP_STEP_IDS,
+  getApplicableSetupStepIds,
+  type SetupStepId,
+} from "@/lib/setup-step-registry";
+// A VALUE import, not type-only, and that is safe: `club-theme-schema.ts` reads
+// no database and no request — it is the same pure computation module the site-
+// style wizard's client bundle already imports. This module's synchronous-over-
+// injected-data contract (see the `environment-role.ts` note above) is about
+// `@/lib/prisma`, not about every import; nothing here touches it.
+import {
+  DEFAULT_CLUB_THEME_VALUES,
+  normaliseThemeValues,
+} from "@/lib/club-theme-schema";
 
-export const SETUP_STEP_IDS = [
-  "club-config",
-  "club-time-zone",
-  "environment-role",
-  "runtime-env",
-  "auth-secret-strength",
-  "seed-admin",
-  "feature-flags",
-  "booking-policies",
-  "membership-cancellation",
-  "age-tiers",
-  "seasons-rates",
-  "stripe",
-  "email-ses",
-  "sentry",
-  "address-autocomplete",
-  "xero-operational",
-  "finance-dashboard",
-  "xero-mappings",
-] as const;
-
-export type SetupStepId = (typeof SETUP_STEP_IDS)[number];
+// Re-exported, not re-declared (epic #213, C1). The hand-maintained array that
+// used to sit here is now derived from the step registry, which also carries
+// each step's owning module and prerequisites. Keeping both exports on this
+// module means no consumer moved.
+//
+// `environment-role` (ENV-SAFETY 1, #3034) arrived on `main` as an eighteenth
+// entry in the hand-maintained array, positioned third. It now lives in
+// `setup-step-registry-definitions.ts` at the same position, so the checklist
+// order upstream ships is preserved and this module keeps only the re-export.
+export { SETUP_STEP_IDS };
+export type { SetupStepId };
 type SetupStatus = "complete" | "warning" | "blocked" | "not_started";
 type SetupCategoryId =
   | "foundation"
+  | "lodges"
   | "booking"
+  | "website"
   | "integrations"
   | "finance";
 
@@ -180,6 +185,55 @@ export interface SetupDatabaseSnapshot {
   // skipped. Undefined when the snapshot omits it (older callers / no DB) → no
   // capacity warning is raised.
   defaultLodgeCapacity?: number | null;
+  // The persisted `ClubTheme` row (site-style step, epic #213 C7, #222), read
+  // VERBATIM — this module judges it, `setup-readiness-db.ts` only reports it,
+  // matching every other DB-backed field here. `null` means no row exists yet
+  // (a fresh install nobody has opened `/admin/site-style` on: its GET upserts a
+  // defaults row on first view, so a null here can only happen before that FIRST
+  // view). Optional so an older caller and a DB-less `setup:check` still
+  // compile — but UNLIKE every sibling field, an omitted `clubTheme` on a
+  // PRESENT snapshot does NOT read as "not checked": the check below collapses
+  // it straight to `null` and reports it exactly like a genuinely-absent row,
+  // "using the shipped defaults". Only the whole snapshot being `undefined` (no
+  // database reached at all) reaches "not checked". Caller contract:
+  // `getSetupDatabaseSnapshot` always populates this field with an object or
+  // `null`, never omits it, so the omitted case only arises for a hand-built
+  // fixture or an older caller.
+  clubTheme?: {
+    brandGold: string;
+    brandDeep: string;
+    brandSafety: string;
+    headingFontKey: string;
+    bodyFontKey: string;
+    logoUrl: string | null;
+    logoDataUrl: string | null;
+    rawCss: string;
+    // ISO string, or null — the site-LAUNCH lever (D9), owned by the wizard's
+    // launch panel and never by this step. Carried through so the check can
+    // report whether the public site is live WITHOUT that fact ever deciding
+    // whether the step itself is complete.
+    completedAt: string | null;
+  } | null;
+  // Every lodge the club has, in the canonical `lodgeOrderBy()` order (#221,
+  // epic #213 C6) — reported VERBATIM, judged in `buildLodgesCheck` below like
+  // every other DB-backed field here. Bed and room counts are ACTIVE rows only,
+  // matching what capacity actually draws on.
+  //
+  // Optional so an older caller and a DB-less `setup:check` still compile, and
+  // UNLIKE `clubTheme` an omitted value here does NOT collapse to a default:
+  // an empty array is a real and alarming answer ("this club has no lodge"),
+  // so a missing field has to read as "not checked" instead. Caller contract:
+  // `getSetupDatabaseSnapshot` always populates it, so the undefined case only
+  // arises for a hand-built fixture.
+  lodges?: {
+    id: string;
+    name: string;
+    active: boolean;
+    /** The `Lodge.isDefault` flag — the club default lodge (#1656). */
+    isDefault: boolean;
+    activeRoomCount: number;
+    activeBedCount: number;
+  }[];
 }
 
 // One membership type × season pair for the rate-gap check (#1930, E4).
@@ -246,7 +300,12 @@ export function computeMembershipTypeRateGaps(input: {
   return gaps;
 }
 
-interface SetupStepCheck {
+/**
+ * Exported for `site-visibility-gate.ts` (epic #213, C15 fix round on #247),
+ * which types the three launch-gating checks it calls directly against this
+ * rather than an inferred/duplicated shape.
+ */
+export interface SetupStepCheck {
   id: SetupStepId;
   title: string;
   description: string;
@@ -255,6 +314,17 @@ interface SetupStepCheck {
   message: string;
   details: string[];
   href?: string;
+  /*
+    Extra destinations beside the single `href` (#221, epic #213 C6). Optional
+    and empty everywhere but the lodges step, which needs ONE LINK PER LODGE —
+    `href` is a single "the settings page for this step" and cannot express a
+    list whose length is the club's own.
+
+    Deliberately not a general slot for prose with a URL in it: a `details`
+    line that names a path is unclickable text, which is how a per-lodge list
+    would otherwise have had to be written.
+  */
+  links?: { label: string; href: string }[];
   action?: {
     type: "provider-test";
     provider: "stripe" | "smtp" | "sentry" | "xero";
@@ -284,7 +354,13 @@ export interface SetupReadiness {
   generatedAt: string;
 }
 
-type Env = Record<string, string | undefined>;
+/**
+ * Exported for `site-visibility-gate.ts` (epic #213, C15 fix round on #247):
+ * the SAME shape `buildSetupReadiness` reads `process.env` as, so the launch
+ * gate's targeted derivation (below) takes the identical input type rather
+ * than inventing its own.
+ */
+export type Env = Record<string, string | undefined>;
 
 interface ClubConfigReadResult {
   sourcePath: string;
@@ -297,9 +373,25 @@ interface ClubConfigReadResult {
   issues: string[];
 }
 
+// `website` sits between `booking` and `integrations` so this list keeps
+// agreeing with the step registry's declaration order (`buildSetupWizardView`'s
+// module doc: the rail groups by category and orders within a category by
+// registry order, and the two "happen to agree" only because this walk and the
+// registry's `order` values are kept in step by hand) — `site-style` (order
+// 105) sits between the last `booking` step (`seasons-rates`, 100) and the
+// first `integrations` step (`stripe`, 110).
+//
+// `lodges` (#221, epic #213 C6) sits between `foundation` and `booking` for the
+// same reason: its single step takes `order: 65`, in the gap between the last
+// `foundation` step (`feature-flags`, 60) and the first `booking` one
+// (`booking-policies`, 70). Editorially that is also where it belongs — a
+// club's buildings are the thing the booking rules are rules ABOUT, and the
+// seasons and rates two steps later are per-lodge.
 const CATEGORY_ORDER: SetupCategoryId[] = [
   "foundation",
+  "lodges",
   "booking",
+  "website",
   "integrations",
   "finance",
 ];
@@ -313,10 +405,20 @@ const CATEGORY_META: Record<
     description:
       "Club identity, runtime env, administrator account, and feature switches.",
   },
+  lodges: {
+    title: "Lodges",
+    description:
+      "The club's buildings, and whether each one is open for booking. A lodge's own rooms, beds, seasons and chores are set up per lodge.",
+  },
   booking: {
     title: "Booking Rules",
     description:
       "Capacity, age tiers, rates, seasons, cancellation, and hold settings.",
+  },
+  website: {
+    title: "Website",
+    description:
+      "Public site colours, fonts, and logo. Page content and launching the site happen elsewhere.",
   },
   integrations: {
     title: "Operational Integrations",
@@ -531,7 +633,18 @@ function buildClubConfigCheck(
     description:
       "Club identity, contact details, bed capacity, age tiers, and default rates.",
     required: true,
-    href: "/admin/setup",
+    /*
+      THE PAGE THE WORK IS ACTUALLY DONE ON (#223 fix round). This used to link
+      to `/admin/setup`, which has never held a club-identity editor: from
+      there an operator had to find the Initial Setup hub and its Club Identity
+      cross-link. That was indirect while the hubs were shown and DEAD once they
+      are hidden — `/admin/setup` in that position offers the wizard, three
+      unrelated hubs and a settings section, and no route to the club's name at
+      all. So the step points at the editor itself, and
+      `SETUP_STEP_PERMISSION_AREA` names `content` to match, which is the area
+      `/admin/appearance` and `/api/admin/club-identity` both really enforce.
+    */
+    href: "/admin/appearance/identity",
   };
 
   // 1. A malformed primary always blocks loudly (C1/D3), whatever the DB holds.
@@ -569,7 +682,7 @@ function buildClubConfigCheck(
           ? `${dbClubName} is configured, but its default lodge has no bookable capacity yet.`
           : capacity != null
             ? `${dbClubName} is configured with ${capacity} total beds.`
-            : `${dbClubName} is configured. Set the default-lodge capacity in /admin/setup if it is not yet defined.`,
+            : `${dbClubName} is configured. Set the default-lodge capacity in Admin > Lodges if it is not yet defined.`,
         details: [
           "Source: database (ClubIdentitySettings / EmailMessageSetting)",
           `Club: ${dbClubName}`,
@@ -600,7 +713,7 @@ function buildClubConfigCheck(
           `Source: ${club.sourcePath}`,
           `Club: ${club.config.name}`,
           `Configured capacity: ${capacity} beds`,
-          "Admin edits in /admin/setup override these seed values in the database.",
+          "Admin edits in Admin > Appearance > Club Identity override these seed values in the database.",
           ...(capacityUnconfigured ? [capacityWarningDetail] : []),
         ],
       },
@@ -615,7 +728,7 @@ function buildClubConfigCheck(
         ...base,
         status: "blocked",
         message:
-          "Club identity is not configured yet. Run npm run setup:wizard or open /admin/setup to enter the club name, capacity, and age tiers.",
+          "Club identity is not configured yet. Run npm run setup:wizard, or enter the club name in Admin > Appearance > Club Identity (capacity lives in Admin > Lodges and age tiers have their own step).",
         details: [
           "Source: database (ClubIdentitySettings / EmailMessageSetting)",
           "No persisted club identity found, and no primary config/club.json is committed.",
@@ -1069,9 +1182,17 @@ const ENVIRONMENT_ROLE_VERSUS_RUNTIME_ROLE_DETAIL =
  *
  * Deliberately clock-free: nothing here formats a date, so the answer is the
  * same at every instant.
+ *
+ * Takes a `Pick` rather than the whole `SetupDatabaseSnapshot` (widened for
+ * `site-visibility-gate.ts`, epic #213, C15 fix round on #247): the body below
+ * reads only `environmentRole` and `withheldEmail`, and the launch gate needs
+ * this ONE check without paying for the other ~19 queries
+ * `getSetupDatabaseSnapshot` batches for the rest of the wizard. Every existing
+ * caller already passes a full snapshot, which satisfies the narrower type
+ * structurally, so this is a widening rather than a behaviour change.
  */
-function buildEnvironmentRoleCheck(
-  db: SetupDatabaseSnapshot | undefined,
+export function buildEnvironmentRoleCheck(
+  db: Pick<SetupDatabaseSnapshot, "environmentRole" | "withheldEmail"> | undefined,
   progress: SetupProgressState,
 ): SetupStepCheck {
   const base = {
@@ -1216,7 +1337,13 @@ function buildEnvironmentRoleCheck(
   );
 }
 
-function buildRuntimeEnvCheck(
+/**
+ * Exported alongside {@link buildEnvironmentRoleCheck} for the same reason
+ * (`site-visibility-gate.ts`, epic #213, C15 fix round on #247): a pure
+ * env-var check that needs no database snapshot at all, so the launch gate
+ * can call it directly rather than re-deriving its polarity.
+ */
+export function buildRuntimeEnvCheck(
   env: Env,
   progress: SetupProgressState,
 ): SetupStepCheck {
@@ -1268,8 +1395,12 @@ function buildRuntimeEnvCheck(
  * here. When AUTH_SECRET/NEXTAUTH_SECRET is entirely absent the runtime-env
  * check already blocks, so this stays "complete" in that case to avoid a
  * duplicate finding.
+ *
+ * Exported for the same reason as {@link buildRuntimeEnvCheck} — the launch
+ * gate's targeted derivation (`site-visibility-gate.ts`, C15 fix round on
+ * #247) calls this directly rather than re-deriving the weakness rule.
  */
-function buildAuthSecretStrengthCheck(
+export function buildAuthSecretStrengthCheck(
   env: Env,
   progress: SetupProgressState,
 ): SetupStepCheck {
@@ -1462,9 +1593,9 @@ function buildMembershipCancellationCheck(
         required: false,
         message: "Membership cancellation settings were not checked.",
         details: [
-          "Review this in /admin/setup/cancellation after migrations have run.",
+          "Review this in /admin/membership-cancellation after migrations have run.",
         ],
-        href: "/admin/setup/cancellation",
+        href: "/admin/membership-cancellation",
       },
       progress,
     );
@@ -1489,7 +1620,7 @@ function buildMembershipCancellationCheck(
           db.membershipCancellationArchiveContacts ? "enabled" : "disabled"
         }`,
       ],
-      href: "/admin/setup/cancellation",
+      href: "/admin/membership-cancellation",
     },
     progress,
   );
@@ -1653,6 +1784,300 @@ function buildSeasonRateCheck(
               : `${seasonCount} season${seasonCount === 1 ? "" : "s"} configured.`,
       details: [`Configured seasons: ${seasonCount}`, ...gapDetails, ...embedDetails],
       href: "/admin/seasons",
+    },
+    progress,
+  );
+}
+
+/**
+ * Lodges readiness (lodges step, epic #213 C6, #221).
+ *
+ * ## What "complete" means here, and why it is activation rather than fullness
+ *
+ * A club's lodges are done when every one of them is OPEN FOR BOOKING and at
+ * least one exists. That reads thin until you know what the per-lodge setup
+ * flow (`/admin/lodges/[id]/setup`) actually considers finished: every step of
+ * it — rooms, lockers, seasons, chores — is skippable by design, and its own
+ * words are that anything skipped "can be finished later from the lodge
+ * configuration page". There is no configured-ness bar to read, so inventing
+ * one here would be this module deciding a completeness rule the flow itself
+ * does not have. Since #221 the flow DOES have one honest terminal fact —
+ * activation, which the operator performs on its finish step — so that is what
+ * this check reads.
+ *
+ * The verdicts, in order:
+ *
+ * - no lodges at all — `blocked`. Unreachable through the product (the
+ *   migration seeds one, and `getDefaultLodgeId` throws without one), so it is
+ *   reported as the broken installation it would be rather than smoothed over.
+ * - lodges exist but none is active — `blocked`. Nothing is bookable. Also
+ *   near-unreachable: `findLodgeDeactivationRefusal` keeps at least one lodge
+ *   active. Both cases are cheap to state and expensive to have missed.
+ * - some lodge is inactive — `warning`. That is a lodge mid-setup, which is
+ *   exactly the state #221 introduced, and it holds the step outstanding until
+ *   somebody either finishes it or decides not to.
+ * - otherwise `complete`.
+ *
+ * ## Room and bed counts are REPORTED, never judged
+ *
+ * Each lodge's active room and bed counts appear in its detail line, because
+ * "active with no beds" is worth an operator seeing. They deliberately do not
+ * move the status. Two reasons: `LodgeSettings.capacity` is a legitimate
+ * per-lodge override, so a bed-less lodge can be correctly configured; and the
+ * club-config check above already owns the capacity verdict for the DEFAULT
+ * lodge (#1982), so making a second check argue about the same fact is how two
+ * plausible derivations drift apart.
+ *
+ * They do move the WORDING, which is a different thing (C19 #250, UAT R2-7).
+ * An active lodge with no beds gets its own sentence rather than the ordinary
+ * open-for-booking one, because "open for booking (0 rooms, 0 beds)" reads as a
+ * contradiction and covers two opposite situations — an override lodge that is
+ * fine, and a lodge with capacity 0 that nobody can book — in the same seven
+ * words. The arm is on `activeBedCount`, not on the room count: beds are what
+ * `getLodgeCapacityStatus` counts.
+ *
+ * ## Per-lodge completeness, reported separately from the club's
+ *
+ * `links` carries one entry per lodge, pointing at that lodge's own setup flow.
+ * The club-level percentage the wizard shows never absorbs a per-lodge state:
+ * this whole step is ONE step of the journey however many lodges the club has,
+ * and the per-lodge detail lives in the lines and links rather than in the
+ * denominator.
+ */
+function buildLodgesCheck(
+  db: SetupDatabaseSnapshot | undefined,
+  progress: SetupProgressState,
+): SetupStepCheck {
+  const base = {
+    id: "lodges" as const,
+    title: "Lodges",
+    description:
+      "The club's buildings. A new lodge is not open for booking until its setup is finished and it is activated.",
+    required: true,
+    href: "/admin/lodges",
+  };
+
+  const lodges = db?.lodges;
+  if (db === undefined || lodges === undefined) {
+    return applyProgress(
+      {
+        ...base,
+        status: "warning",
+        message: "Database state was not checked.",
+        details: [
+          "Run setup:check again inside an environment with database access, or review /admin/lodges after login.",
+        ],
+      },
+      progress,
+    );
+  }
+
+  const describe = (lodge: NonNullable<SetupDatabaseSnapshot["lodges"]>[number]) => {
+    const inventory = `${lodge.activeRoomCount} room${lodge.activeRoomCount === 1 ? "" : "s"}, ${lodge.activeBedCount} bed${lodge.activeBedCount === 1 ? "" : "s"}`;
+    const flag = lodge.isDefault ? ", the club default" : "";
+    if (lodge.active) {
+      /*
+        UAT R2-7, and the "REPORTED, never judged" section of this function's
+        docblock is where the reasoning lives. In short: with no active beds
+        `getLodgeCapacityStatus` resolves capacity to the per-lodge override and
+        to 0 without one (#1982), so the short line covered both an override
+        lodge that is fine and a lodge nobody can book. This names the fact the
+        snapshot holds and the setting that decides the rest — the override is
+        not in the snapshot, and claiming more would duplicate the verdict
+        `buildClubConfigCheck` already owns for the default lodge.
+      */
+      if (lodge.activeBedCount === 0) {
+        return `${lodge.name}: open for booking, but no beds are set up (${inventory})${flag} — members can only book it if this lodge has a capacity override set. Add its rooms and beds, or check the override is what you meant.`;
+      }
+      return `${lodge.name}: open for booking (${inventory})${flag}.`;
+    }
+    /*
+      A CLOSED lodge that is also the CLUB DEFAULT gets its own sentence rather
+      than a ", the club default" suffix on the ordinary closed line, because it
+      is a different fact and a worse one. `getDefaultLodgeId` returns the
+      flagged row whether or not it is open, so every lodge-scoped write that
+      omits a `lodgeId` resolves to a lodge nobody can book — and the scoping
+      contract's rule is to REASSIGN the default before closing a lodge, which
+      is an action, not a footnote. Reading it as a suffix is how it gets
+      skimmed past in a list where every other line ends the same way.
+    */
+    if (lodge.isDefault) {
+      return `${lodge.name}: NOT open for booking, AND it is the club default — anything created without naming a lodge lands here, where nobody can book it. Activate it, or make an open lodge the default (${inventory}).`;
+    }
+    return `${lodge.name}: NOT open for booking — finish its setup to activate it (${inventory})${flag}.`;
+  };
+
+  const links = lodges.map((lodge) => ({
+    label: lodge.active
+      ? `Review ${lodge.name}'s setup`
+      : `Finish setting up ${lodge.name}`,
+    href: `/admin/lodges/${encodeURIComponent(lodge.id)}/setup`,
+  }));
+
+  if (lodges.length === 0) {
+    return applyProgress(
+      {
+        ...base,
+        status: "blocked",
+        message: "This club has no lodge at all, so nothing can be booked.",
+        details: [
+          "Every installation is seeded with one lodge. If there is none, the database has not been migrated or seeded — see docs/adopters.",
+        ],
+        links,
+      },
+      progress,
+    );
+  }
+
+  const inactive = lodges.filter((lodge) => !lodge.active);
+  if (inactive.length === lodges.length) {
+    return applyProgress(
+      {
+        ...base,
+        status: "blocked",
+        message:
+          "No lodge is open for booking, so members cannot book anything.",
+        details: [...lodges.map(describe)],
+        links,
+      },
+      progress,
+    );
+  }
+
+  if (inactive.length > 0) {
+    return applyProgress(
+      {
+        ...base,
+        status: "warning",
+        message: `${inactive.length} of ${lodges.length} lodges are not open for booking yet. Finish each one's setup and activate it, or leave it closed deliberately.`,
+        details: [...lodges.map(describe)],
+        links,
+      },
+      progress,
+    );
+  }
+
+  return applyProgress(
+    {
+      ...base,
+      status: "complete",
+      message:
+        lodges.length === 1
+          ? "The club's lodge is open for booking."
+          : `All ${lodges.length} lodges are open for booking.`,
+      details: [...lodges.map(describe)],
+      links,
+    },
+    progress,
+  );
+}
+
+/**
+ * Website styling readiness (site-style step, epic #213 C7, #222).
+ *
+ * COMPLETION IS THE THEME'S OWN CONFIGURED-NESS, NEVER `completedAt`. That field
+ * is the site-LAUNCH lever, and D9 gives it to exactly one owner — the wizard's
+ * launch panel (`markClubThemeSetupComplete`), never a styling save. Reading it
+ * here would make finishing this step depend on an action this step is
+ * forbidden from taking, and would also let an operator who launches with the
+ * shipped defaults (never touching a colour) see this step marked done for
+ * work never performed. So "configured" is derived from the persisted VALUES,
+ * run through `normaliseThemeValues` first (#222 review F3) so a value the
+ * site would refuse to render — a colour that is not `#rrggbb`, a logo URL
+ * that fails `LOGO_URL_PATTERN` — reads back as its sanitised default rather
+ * than as configured: true the moment any of colours, fonts, logo or custom
+ * CSS differs from `DEFAULT_CLUB_THEME_VALUES` — which is exactly what
+ * changes the moment `saveClubTheme` is first called with real input, whether
+ * that call came from this journey's linked page or from `/admin/site-style`
+ * directly (there is only one persistence path, so there is nothing for the
+ * two surfaces to disagree about).
+ *
+ * `db.clubTheme === null` (a row genuinely absent, only possible before the
+ * FIRST view of `/admin/site-style` ever upserts one) reads identically to a
+ * row sitting at every default: nothing configured, `not started`.
+ *
+ * `required: false` — an unstyled public site is not broken, and this step
+ * legitimately never turns green for a club happy with the shipped defaults;
+ * "Skip for now" is the intended path for that club, not a change to this rule.
+ *
+ * No `action` (unlike Stripe/SES/Sentry): saving colours has no external
+ * provider to test against.
+ */
+function buildWebsiteStylingCheck(
+  db: SetupDatabaseSnapshot | undefined,
+  progress: SetupProgressState,
+): SetupStepCheck {
+  const base = {
+    id: "site-style" as const,
+    title: "Website Styling",
+    description:
+      "Public website colours, fonts, and logo. Page content and launching the site happen on their own screens.",
+    required: false,
+    href: "/admin/site-style",
+  };
+
+  if (db === undefined) {
+    return applyProgress(
+      {
+        ...base,
+        status: "warning",
+        message: "Database state was not checked.",
+        details: [
+          "Run setup:check again inside an environment with database access, or review /admin/site-style after login.",
+        ],
+      },
+      progress,
+    );
+  }
+
+  // Raw for `launched` (`completedAt` is a straight pass-through, nothing to
+  // normalise); NORMALISED for every "configured" comparison below (#222
+  // review F3) — so a persisted-but-malformed value (a logo URL that no longer
+  // matches `LOGO_URL_PATTERN`, a colour that is not `#rrggbb`) reads back as
+  // its sanitised default and does not spuriously flip this step to complete
+  // for a value the site would not actually render.
+  const rawTheme = db.clubTheme ?? null;
+  const theme = rawTheme ? normaliseThemeValues(rawTheme) : null;
+  const coloursConfigured = theme
+    ? theme.brandGold !== DEFAULT_CLUB_THEME_VALUES.brandGold ||
+      theme.brandDeep !== DEFAULT_CLUB_THEME_VALUES.brandDeep ||
+      theme.brandSafety !== DEFAULT_CLUB_THEME_VALUES.brandSafety
+    : false;
+  const fontsConfigured = theme
+    ? theme.headingFontKey !== DEFAULT_CLUB_THEME_VALUES.headingFontKey ||
+      theme.bodyFontKey !== DEFAULT_CLUB_THEME_VALUES.bodyFontKey
+    : false;
+  const logoConfigured = theme ? Boolean(theme.logoUrl || theme.logoDataUrl) : false;
+  const rawCssConfigured = theme ? theme.rawCss.trim().length > 0 : false;
+  const configured =
+    coloursConfigured || fontsConfigured || logoConfigured || rawCssConfigured;
+  const launched = rawTheme ? Boolean(rawTheme.completedAt) : false;
+
+  // The operator reading this pane must know the linked page CAN launch the
+  // site: `/admin/site-style` keeps its own pre-existing Finish-setup control,
+  // which DOES set `completedAt` (CHANGING that lever is out of scope for
+  // #222; DISCLOSING it is not). So the detail line names both places
+  // launching can actually happen, matching `docs/guides/setup.md`'s wording —
+  // while THIS step's own controls (Mark done / Skip / Reopen) still never do
+  // it, and neither does anything else on this page.
+  const launchDetail = launched
+    ? "The public website is already live."
+    : "The public website is not live yet. Launching happens from the wizard's Ready to open screen, or from Site Style's own Finish-setup control on the page this step links to.";
+
+  return applyProgress(
+    {
+      ...base,
+      status: configured ? "complete" : "warning",
+      message: configured
+        ? "Site styling has been customised."
+        : "Site styling is using the shipped defaults — customise it, or skip this step if the defaults suit the club.",
+      details: [
+        `Colours: ${coloursConfigured ? "customised" : "using the shipped default"}.`,
+        `Fonts: ${fontsConfigured ? "customised" : "using the shipped default"}.`,
+        `Logo: ${logoConfigured ? "a custom logo is stored" : "using the club name as a text fallback"}.`,
+        `Custom CSS: ${rawCssConfigured ? "present" : "none"}.`,
+        launchDetail,
+      ],
     },
     progress,
   );
@@ -2084,12 +2509,14 @@ export function buildSetupReadiness(
       buildSeedAdminCheck(input.database, progress),
       buildFeatureFlagCheck(input.database, progress),
     ],
+    lodges: [buildLodgesCheck(input.database, progress)],
     booking: [
       buildBookingPolicyCheck(input.database, progress),
       buildMembershipCancellationCheck(input.database, progress),
       buildAgeTierCheck(club, input.database, progress),
       buildSeasonRateCheck(input.database, progress),
     ],
+    website: [buildWebsiteStylingCheck(input.database, progress)],
     integrations: [
       buildStripeCheck(env, input.database, progress),
       buildEmailCheck(env, progress),
@@ -2103,15 +2530,43 @@ export function buildSetupReadiness(
     ],
   };
 
+  /*
+    THE CARDS' STEP SET IS THE REGISTRY'S APPLICABLE SET (epic #213, C8 #223).
+
+    `getApplicableSetupStepIds` is the same derivation
+    `buildSetupWizardTraversal` applies, so the cards and the wizard cannot
+    report different totals (#223 AC1). D4: a module toggled OFF contributes no
+    steps, and nothing is persisted — flipping it back on restores them.
+
+    Checks are still BUILT unconditionally and filtered after, which keeps each
+    one's own "module disabled" wording reachable on the fail-open path.
+
+    THE THREE-STATE CONTRACT IS PASSED THROUGH UNTOUCHED; collapsing it with a
+    `?? null` or `?? {}` here is the one way to get this wrong. `undefined` (no
+    snapshot — a DB-less `npm run setup:check`) FAILS OPEN and returns every
+    step; `null` is a known answer that resolves to the first-install defaults.
+  */
+  const applicableStepIds = new Set<string>(
+    getApplicableSetupStepIds(input.database?.adminModuleSettings),
+  );
+
   const categories = CATEGORY_ORDER.map((id) => {
-    const checks = checksByCategory[id];
+    const checks = checksByCategory[id].filter((check) =>
+      applicableStepIds.has(check.id),
+    );
     return {
       id,
       ...CATEGORY_META[id],
       status: worstStatus(unresolvedStatuses(checks)),
       checks,
     };
-  });
+  })
+    // A category left with no applicable step is dropped rather than rendered
+    // empty — `finance` is exactly that on a first-install club. An empty one
+    // would show a heading with nothing under it and report "complete", since
+    // `worstStatus([])` folds from "complete": "this is done" rather than
+    // "this does not apply to you".
+    .filter((category) => category.checks.length > 0);
   const allChecks = categories.flatMap((category) => category.checks);
   const skipped = allChecks.filter(
     (check) => check.progress === "skipped",

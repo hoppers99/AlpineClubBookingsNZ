@@ -3,7 +3,7 @@
 // duplicate data. Clubs customise the placeholders through the admin screens.
 import { type AgeTier, PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
-import { clubConfig } from "../src/config/club";
+import { clubConfig, clubConfigSource } from "../src/config/club";
 import {
   CLUB_CONTACT_EMAIL,
   clubDomainEmail,
@@ -327,21 +327,62 @@ async function main() {
   // runtime fallback chain; this just makes the admin card show the config
   // values as the current values. No lodge name/address is stored here (lodge
   // identity is the Lodge table's; address is migration-only).
-  await prisma.clubIdentitySettings.upsert({
-    where: { id: "default" },
-    update: {},
-    create: {
-      id: "default",
-      name: clubConfig.name,
-      shortName: clubConfig.shortName ?? null,
-      hutLeaderLabel: clubConfig.hutLeaderLabel ?? null,
-      // Normalise identically to the self-heal step (currentFacebookUrl in
-      // config-self-heal.ts): trim and collapse blank → null, so a seed-created
-      // row and a boot-healed row hold byte-identical values (#1984).
-      facebookUrl: clubConfig.socialLinks?.facebook?.trim() || null,
-    },
-  });
-  console.log("Club identity settings seeded (create-only)");
+  //
+  // GUARDED ON PROVENANCE (#237, epic #213 D16). `runConfigSelfHeal` REFUSES to
+  // persist a club.json-derived value unless the config resolved to a real
+  // primary `config/club.json` (config-self-heal.ts, the fallback guard, and
+  // `stepRequiresPrimaryClubConfig`); this write did not, and now does.
+  //
+  // AN EARLIER VERSION OF THIS NOTE CLAIMED "every other create-if-absent write
+  // in this file mirrors a boot self-heal step exactly", and that is FALSE —
+  // corrected here rather than acted on, because the two exceptions are right as
+  // they stand. `LodgeSettings.capacity` and `AgeTierSetting` below are both
+  // written unconditionally while their self-heal mirrors (`lodge-capacity` and
+  // `age-tier-settings`, neither of which sets `requiresPrimaryClubConfig:
+  // false`) are provenance-guarded. Each carries its own note saying why it
+  // stays that way; the short version is that neither writes an IDENTITY, so
+  // neither can freeze a placeholder into a DB-first authoritative answer, and
+  // both make a freshly seeded database bookable and priceable.
+  // The seed wrote it unconditionally, so an install with no committed
+  // club.json got "Example Mountain Club" frozen into the database as a
+  // DB-first authoritative identity — precisely the outcome that guard exists
+  // to prevent, and it is unrecoverable without an admin edit because both
+  // writers are create-only.
+  //
+  // It is also what the UAT walkthrough saw: the club-config readiness check is
+  // DB-first, so a placeholder name nobody chose made the first step of the
+  // setup wizard report itself complete. D14's defaulted state fixes the
+  // REPORTING of a default; this stops a fallback placeholder being written as
+  // though somebody had configured it in the first place.
+  //
+  // With the guard, seed and self-heal now agree in both directions: primary
+  // config → both write the same row, and parity holds; anything else → neither
+  // writes, and `/admin/setup` says the club identity is not configured yet,
+  // which is true.
+  if (clubConfigSource === "primary") {
+    await prisma.clubIdentitySettings.upsert({
+      where: { id: "default" },
+      update: {},
+      create: {
+        id: "default",
+        name: clubConfig.name,
+        shortName: clubConfig.shortName ?? null,
+        hutLeaderLabel: clubConfig.hutLeaderLabel ?? null,
+        // Normalise identically to the self-heal step (currentFacebookUrl in
+        // config-self-heal.ts): trim and collapse blank → null, so a seed-created
+        // row and a boot-healed row hold byte-identical values (#1984).
+        facebookUrl: clubConfig.socialLinks?.facebook?.trim() || null,
+      },
+    });
+    console.log("Club identity settings seeded (create-only)");
+  } else {
+    console.log(
+      `Club identity settings NOT seeded: config provenance is "${clubConfigSource}", ` +
+        "not a valid primary config/club.json. Set the club's name in " +
+        "Admin > Appearance > Club Identity (the boot self-heal refuses this " +
+        "write for the same reason).",
+    );
+  }
 
   // DB-first club timezone singleton (CT-1 #2989): store the zone this
   // installation is EFFECTIVELY using so a freshly seeded database matches a
@@ -401,6 +442,28 @@ async function main() {
   // gate reasoning: module off → no bed count to cap). Guarded value > 0; the
   // row is linked to the seeded default lodge so its capacity never leaks to an
   // additional lodge lacking its own row.
+  //
+  // DELIBERATELY UNGATED ON CONFIG PROVENANCE, unlike the club-identity write
+  // above (#237, and the "assess ageTierSetting" line in that issue's contract).
+  // Its self-heal mirror, `lodge-capacity`, does not opt out of the
+  // primary-`config/club.json` guard, so the two DIVERGE here and that is the
+  // decision rather than an oversight:
+  //
+  //  - the guard exists to stop a PLACEHOLDER IDENTITY becoming the club's
+  //    authoritative DB-first answer. A bed count is not an identity; a wrong
+  //    one is visibly wrong on the lodges page and editable there, and no part
+  //    of the product treats it as a name nobody may correct;
+  //  - gating it would leave a freshly seeded database resolving to capacity 0
+  //    — unbookable — on every install with no committed club.json, which since
+  //    #1987 is the NORMAL install. That includes the E2E stack, whose booking
+  //    journeys need real beds.
+  //
+  // D14 fixes the half that actually misreported: the wizard no longer counts
+  // this default as progress, so seeding it costs nobody a false 56% any more.
+  // If that reasoning ever stops holding, the fix is to make the SELF-HEAL step
+  // opt out (`requiresPrimaryClubConfig: false`, as `club-time-zone` does), not
+  // to gate this one — the seeded value must not depend on a file that is
+  // normally absent.
   if (Number.isFinite(CLUB_CONFIG_LODGE_CAPACITY) && CLUB_CONFIG_LODGE_CAPACITY > 0) {
     await prisma.lodgeSettings.upsert({
       where: { id: "default" },
@@ -632,6 +695,14 @@ async function main() {
 
   // Seed age tier settings from club config (create-if-missing so settings
   // edited by admins survive a re-run).
+  //
+  // DELIBERATELY UNGATED ON CONFIG PROVENANCE — the same divergence from its
+  // self-heal mirror (`age-tier-settings`) as the lodge capacity above, assessed
+  // under #237 and left alone for the same reasons. Age tiers are pricing bands,
+  // not an identity: a club that disagrees edits them on the fees page, and a
+  // seeded database with none prices nothing at all. What #237 changed is that
+  // the wizard now shows this step as a DEFAULT nobody confirmed rather than
+  // counting it as progress, which is the half that was actually dishonest.
   const ageTierSettings = seedAgeTierSettings();
   for (const setting of ageTierSettings) {
     await prisma.ageTierSetting.upsert({

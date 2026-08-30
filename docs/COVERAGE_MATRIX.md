@@ -113,7 +113,7 @@ a `GAP`, replace it with a relative link to that file (e.g.
 | `roster` | lodge | `ARCHITECTURE.md` (roster/chores) | [guide](guides/roster.md) | 3 |
 | `seasons` | bookings | `ARCHITECTURE.md` (seasons / season rates) | [guide](guides/seasons.md) | 1 |
 | `security` | support | `SECURITY.md`, `docs/SECURITY.md` | [guide](guides/security.md) | 4 |
-| `setup` | support | `CONFIGURATION.md`, `IMPLEMENTATION_GUIDE.md` | [guide](guides/setup.md) | 4 |
+| `setup` | support | `CONFIGURATION.md`, `IMPLEMENTATION_GUIDE.md` | [guide](guides/setup.md) — covers the readiness checklist, its drill-down hubs, and the guided **setup wizard** at `/admin/setup/wizard` (epic #213) | 4 |
 | `site-banners` | content | `ARCHITECTURE.md` (SiteBanner) | [guide](guides/site-banners.md) | 4 |
 | `site-content` | content | `PUBLIC_PAGE_CONTENT_TOKENS.md` | [guide](guides/site-content.md) | 4 |
 | `site-style` | content | — | [guide](guides/site-style.md) | 4 |

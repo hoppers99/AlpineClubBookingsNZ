@@ -13,6 +13,30 @@ vi.mock("@/lib/module-settings", () => ({
 vi.mock("@/app/(admin)/admin/setup/permission-matrix", () => ({
   loadAdminSetupPermissionMatrix: vi.fn(),
 }));
+/*
+  #223. The four `/admin/setup/*` hubs now consult the legacy-surfaces switch
+  before they render anything, so this suite has to say which position it is
+  testing. Left unstubbed, the real loader reached for a database that is not
+  there, caught its own error and failed open — so every assertion below was
+  passing through an ERROR PATH and would have gone on passing if the shown
+  branch broke. Stubbed to the shown position, which is what these tests are
+  about; the hidden position's redirect is pinned in
+  `setup-hub-page-redirect.test.ts` and, for the one hub that differs, below.
+
+  PARTIAL MOCK: `areLegacySetupSurfacesHidden` is the pure predicate the pages
+  call on whatever the loader returned, and stubbing it too would test nothing
+  but the mock.
+*/
+vi.mock("@/lib/setup-surface-settings", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/setup-surface-settings")>();
+  return { ...actual, loadSetupSurfaceSettings: vi.fn() };
+});
+vi.mock("next/navigation", () => ({
+  redirect: (path: string) => {
+    throw new Error(`NEXT_REDIRECT:${path}`);
+  },
+}));
 vi.mock("@/components/admin/finance-report-mappings-panel", () => ({
   FinanceReportMappingsPanel: () => <div>Finance mappings editor</div>,
 }));
@@ -50,6 +74,7 @@ import IntegrationsHubPage from "@/app/(admin)/admin/integrations/page";
 import MembershipSetupHubPage from "@/app/(admin)/admin/membership-setup/page";
 import { loadAdminSetupPermissionMatrix } from "@/app/(admin)/admin/setup/permission-matrix";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
+import { loadSetupSurfaceSettings } from "@/lib/setup-surface-settings";
 
 const allOn: FeatureFlags = Object.fromEntries(
   MODULE_KEYS.map((key) => [key, true]),
@@ -74,6 +99,9 @@ describe("admin setup hub pages", () => {
     vi.clearAllMocks();
     vi.mocked(loadEffectiveModuleFlags).mockResolvedValue(allOn);
     vi.mocked(loadAdminSetupPermissionMatrix).mockResolvedValue(allAreasView);
+    vi.mocked(loadSetupSurfaceSettings).mockResolvedValue({
+      legacySurfacesHidden: false,
+    });
   });
 
   it("renders the Membership & Members hub cards", async () => {
@@ -204,9 +232,11 @@ describe("admin setup hub pages", () => {
     expect(html).not.toContain("/admin/appearance/identity");
   });
 
-  it("renders a back link to the Setup Wizard on every setup sub-hub", async () => {
+  it("renders a back link to the setup checklist on every setup sub-hub", async () => {
     // The sub-hubs are drilled into from /admin/setup, so each gets the shared
-    // BackLink (label matches the destination page's heading, "Setup Wizard").
+    // BackLink, and its label MATCHES THE DESTINATION PAGE'S HEADING — which is
+    // why both moved together in #220: "Setup Wizard" was that page's h1 and is
+    // now the guided journey's name, one route along at /admin/setup/wizard.
     // Distinct from Foundations' own "Setup Checklist" card, which is a grid link.
     const pages = [
       FoundationsSetupHubPage,
@@ -217,22 +247,28 @@ describe("admin setup hub pages", () => {
     ];
     for (const Page of pages) {
       const html = await renderPage(Page);
-      expect(html).toContain("Setup Wizard");
+      expect(html).toContain("Setup checklist");
       expect(html).toContain('href="/admin/setup"');
     }
   });
 
-  it("keeps finance report mappings collapsed by default in the finance drill-down", async () => {
+  /*
+    D-C8-1. The report-mapping editor moved to `/finance`, so the finance hub no
+    longer carries it — it links to the dashboard that does. Asserted here as
+    well as on the destination because "no longer renders it" is the half a
+    render test on the new home cannot see.
+  */
+  it("no longer renders the report-mapping editor, and links to where it went", async () => {
     const html = await renderPage(FinanceSetupPage);
 
     expect(html).toContain("Finance Dashboard");
     expect(html).toContain("Xero Mappings");
-    expect(html).toContain("Finance Report Mappings");
-    expect(html).toContain("aria-expanded=\"false\"");
+    expect(html).toContain('href="/finance"');
+    expect(html).not.toContain("Finance Report Mappings");
     expect(html).not.toContain("Finance mappings editor");
   });
 
-  it("hides finance drill-down cards and mappings without finance access", async () => {
+  it("hides finance drill-down cards without finance access", async () => {
     vi.mocked(loadAdminSetupPermissionMatrix).mockResolvedValue({
       ...allAreasView,
       finance: "none",
@@ -241,9 +277,24 @@ describe("admin setup hub pages", () => {
     const html = await renderPage(FinanceSetupPage);
 
     expect(html).not.toContain("Finance Dashboard");
-    expect(html).not.toContain("Finance Report Mappings");
     expect(html).toContain(
       "Finance setup pages are not available for your current permissions",
+    );
+  });
+
+  /*
+    One hidden-position case here as well as in the redirect suite, because
+    everything else in this file now runs with the switch stubbed OFF — and a
+    stub that is never exercised in the other position is a stub that could be
+    wired to the wrong thing without anybody noticing.
+  */
+  it("redirects the finance hub to /finance when the legacy surfaces are hidden", async () => {
+    vi.mocked(loadSetupSurfaceSettings).mockResolvedValue({
+      legacySurfacesHidden: true,
+    });
+
+    await expect(renderPage(FinanceSetupPage)).rejects.toThrow(
+      "NEXT_REDIRECT:/finance",
     );
   });
 });

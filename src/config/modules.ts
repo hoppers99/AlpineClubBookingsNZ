@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import type { SetupStepDefinition } from "@/lib/setup-step-registry";
 import type { FeatureFlags } from "./schema";
 
 export const MODULE_KEYS = [
@@ -95,12 +96,96 @@ export const DEFAULT_MODULE_SETTINGS: ModuleSettingsValues = {
   alpineCentralServer: false,
 };
 
+/**
+ * One wizard setup step a module declares for itself (epic #213, child C3).
+ * Same shape as `SetupStepDefinition` (`src/lib/setup-step-registry.ts`, C1 —
+ * unchanged by this file) minus `ownerModule`, which the declaring module's own
+ * key supplies at assembly time; a module never writes its own key inside its
+ * steps.
+ *
+ * Derived with `Omit` over an `import type` — erased at compile time, so this
+ * file gains no runtime edge to `src/lib` and stays a leaf `src/config` module.
+ * `setup-step-registry.ts` is the registry's own contract and is not
+ * duplicated here; `setup-step-registry-definitions.ts` (which DOES run at
+ * runtime) is the file that reads the standalone step arrays below to build
+ * the assembled registry.
+ */
+export type ModuleSetupStepDeclaration = Omit<SetupStepDefinition, "ownerModule">;
+
 export interface ModuleDefinition {
   key: ModuleKey;
   label: string;
   description: string;
   dependencies: string[];
+  /**
+   * The wizard steps this module owns (epic #213, child C3). Most modules
+   * declare none — `undefined` and `[]` are both "owns no step". Read by
+   * `src/lib/setup-step-registry-definitions.ts`, which assembles these
+   * alongside the core steps into the registry every wizard consumer reads;
+   * that file's module doc explains why each populated array here is exported
+   * standalone (`XERO_INTEGRATION_SETUP_STEPS` and so on) rather than read off
+   * this record.
+   */
+  setupSteps?: readonly ModuleSetupStepDeclaration[];
 }
+
+// The four steps owned by a module, exported standalone and then referenced
+// (not copied) from MODULE_DEFINITIONS below. `MODULE_DEFINITIONS` is typed as
+// `Record<ModuleKey, ModuleDefinition>`, so reading `.setupSteps` off it widens
+// each step's `id` to `string` and its `order` to `number` — fine for the
+// module-settings/display consumers that only ever read `.label` and
+// `.description`, but it would silently widen `SetupStepId` in the registry to
+// a bare `string` (setup-step-registry.test.ts pins this: "keeps SetupStepId a
+// literal union rather than string"). These standalone `as const` exports are
+// what `setup-step-registry-definitions.ts` imports instead, so the registry's
+// derived id tuple stays a literal union while `MODULE_DEFINITIONS` itself
+// keeps its ordinary (mutable-friendly) interface typing.
+export const ADDRESS_AUTOCOMPLETE_SETUP_STEPS = [
+  {
+    id: "address-autocomplete",
+    kind: "operator",
+    launchGate: "none",
+    prerequisites: [],
+    order: 140,
+    completion: "readiness-check",
+  },
+] as const satisfies readonly ModuleSetupStepDeclaration[];
+
+export const XERO_INTEGRATION_SETUP_STEPS = [
+  {
+    id: "xero-operational",
+    kind: "operator",
+    launchGate: "none",
+    prerequisites: [],
+    order: 150,
+    completion: "readiness-check",
+  },
+  {
+    // Owned by `xeroIntegration` even though the mapping readiness check
+    // consults no module flag today — account and item mappings exist only to
+    // post to Xero, so with the module off there is nothing for an operator to
+    // map. See the id's history at its old declaration site (moved here by
+    // #218/C3): nothing reads applicability against it yet, so this
+    // declaration changes no card today.
+    id: "xero-mappings",
+    kind: "operator",
+    launchGate: "none",
+    prerequisites: [],
+    order: 170,
+    completion: "readiness-check",
+  },
+] as const satisfies readonly ModuleSetupStepDeclaration[];
+
+export const FINANCE_DASHBOARD_SETUP_STEPS = [
+  {
+    id: "finance-dashboard",
+    kind: "operator",
+    launchGate: "none",
+    prerequisites: [],
+    order: 160,
+    completion: "readiness-check",
+  },
+] as const satisfies readonly ModuleSetupStepDeclaration[];
 
 export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
   kiosk: {
@@ -122,6 +207,7 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
     dependencies: [
       "Finance access levels and finance data sync are configured separately.",
     ],
+    setupSteps: FINANCE_DASHBOARD_SETUP_STEPS,
   },
   waitlist: {
     key: "waitlist",
@@ -136,6 +222,7 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
     dependencies: [
       "Xero OAuth credentials, tenant tokens, and account mappings are configured outside this table.",
     ],
+    setupSteps: XERO_INTEGRATION_SETUP_STEPS,
   },
   bedAllocation: {
     key: "bedAllocation",
@@ -167,6 +254,7 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
     dependencies: [
       "ADDY_API_KEY and ADDY_API_SECRET must be configured server-side before suggestions can load.",
     ],
+    setupSteps: ADDRESS_AUTOCOMPLETE_SETUP_STEPS,
   },
   groupBookings: {
     key: "groupBookings",

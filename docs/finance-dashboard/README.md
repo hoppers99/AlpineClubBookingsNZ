@@ -16,7 +16,8 @@ roles, first-party booking data, and the single operational Xero connection.
 - Mixed-role accounts are intentional: for example, `LODGE` plus
   `FINANCE_USER` can use lodge tools and read finance data, while lodge-only
   accounts remain blocked from finance pages and APIs.
-- Admin Setup owns finance report mappings and historical backfill actions.
+- `/finance` owns finance report mappings and historical backfill actions,
+  in the Report mappings section at the foot of the page.
 - Operational Xero setup remains an admin setup concern; `/finance` does not
   link to Xero connection management.
 - `Member.financeAccessLevel` remains synchronized as `NONE`, `VIEWER`, or

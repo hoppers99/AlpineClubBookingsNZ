@@ -14,6 +14,7 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
+import { emitSetupReadinessInputChanged } from "@/lib/setup-readiness-events";
 
 interface XeroGroup {
   groupId: string;
@@ -174,6 +175,16 @@ export function MembershipCancellationSettingsPanel() {
         setSettings(toEditableSettings(body.settings));
       }
       toast.success("Membership cancellation settings saved");
+      // `buildMembershipCancellationCheck` (setup-readiness.ts) reads whether
+      // a row for these settings exists at all, and this PUT always upserts
+      // one (epic #213, C22 — this panel is now the wizard's
+      // `membership-cancellation` pane, mounted beside its step frame). The
+      // wizard never leaves this tab on a pane save, so its focus/visibility
+      // refetch cannot fire; this announcement is what makes it re-read.
+      // Unconditional and safe on this panel's other host,
+      // `/admin/membership-cancellation`, which has no listener — see
+      // `setup-readiness-events.ts` for why a panel names no page.
+      emitSetupReadinessInputChanged();
     } catch (error) {
       toast.error(
         error instanceof Error

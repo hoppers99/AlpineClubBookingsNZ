@@ -4176,10 +4176,64 @@ model SetupProgress {
   id                  String    @id @default("default")
   completedStepIds    String[]  @default([])
   skippedStepIds      String[]  @default([])
+  // Steps recorded complete that something upstream has since invalidated
+  // (epic #213, C2/#217). The THIRD state D3 asks for — distinct from done and
+  // from not-started — and it survives a page reload, which is also what gives
+  // staleness a transition instant to audit; a derived-on-read answer has none.
+  //
+  // ALWAYS THE FULL TRANSITIVE CLOSURE, never direct dependents only. The seam
+  // contract on `SetupWizardTraversalInput.staleStepIds` binds this column,
+  // because the traversal does NOT re-cascade a set it is handed. `[]` means
+  // "computed: nothing is stale" and there is no "unknown" value to store — a
+  // Prisma list column cannot be null — so a reader that cannot trust this
+  // column passes `undefined` (derive) instead of reading it.
+  //
+  // NEVER SUBTRACTS FROM `completedStepIds` (#217 AC 4): staleness says "look at
+  // this again", not "you never did it".
+  staleStepIds        String[]  @default([])
   completedAt         DateTime?
   completedByMemberId String?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
+}
+
+/// Which setup SURFACES this club is shown (setup wizard C8, #223; epic #213 D8;
+/// INV-CONFIG-001). Admin-editable singleton (id="default"), lazily created like
+/// every other settings singleton here — a club that never opens the section has
+/// no row and reads the schema default.
+///
+/// WHY ITS OWN MODEL rather than a column on SetupProgress, which is the setup
+/// singleton that already exists. SetupProgress is a RECORD OF WORK — which
+/// steps a club has completed, skipped, or had put back in question — and it is
+/// written by the progress route on every operator transition. This is a
+/// PREFERENCE about what the admin tree renders, written by an ordinary staged
+/// settings section. Sharing a row would make its `updatedAt`/`updatedByMemberId`
+/// report the wrong actor for whichever surface wrote last, exactly as
+/// ClubTimeSettings' own note says of ClubIdentitySettings, and it would put a
+/// visibility flag inside the payload three routes read to decide progress. The
+/// house pattern is one domain-scoped `id @default("default")` model per
+/// configuration domain, and this is that pattern.
+///
+/// `legacySurfacesHidden` DEFAULTS FALSE — SHOWN — and the default is the whole
+/// safety property (#223 AC4). An absent row, a table an older client has never
+/// heard of, and a database this reader could not reach all resolve to "shown",
+/// so nothing an operator has today can be taken away by an outage, a restore or
+/// a rollback; the worst a fault can do is leave a surface visible that somebody
+/// asked to hide. Flipping it changes NO data: the readiness checks, the step
+/// registry and SetupProgress are untouched either way, and turning it back off
+/// restores exactly the surfaces that were there before.
+///
+/// updatedByMemberId is a PLAIN STRING with NO foreign key (audit-only), matching
+/// ClubIdentitySettings / ClubTimeSettings / EnvironmentSafetySettings.
+/// Reads and writes resolve through src/lib/setup-surface-settings.ts.
+model SetupSurfaceSettings {
+  id                   String   @id @default("default")
+  legacySurfacesHidden Boolean  @default(false)
+  updatedByMemberId    String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @default(now()) @updatedAt
+
+  @@index([updatedByMemberId])
 }
 
 // ---------------------------------------------------------------------------

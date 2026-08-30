@@ -302,14 +302,34 @@ describe("GET /api/admin/bed-allocation/rooms lodge validation (Low 2)", () => {
     mockGetRoomsAndBedsConfiguration.mockResolvedValue({ rooms: [] });
   });
 
-  it("rejects an unknown or inactive lodgeId with 400", async () => {
-    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: false });
+  /*
+    #221: this route configures a lodge's own inventory, so it resolves the
+    lodge with `resolveOptionalConfigurableLodgeId` — an INACTIVE lodge is
+    accepted (a lodge created through the admin route now starts inactive and
+    has to be configurable before it is activated), an UNKNOWN one is still
+    refused, and nothing bookable widens because `Lodge.active` is enforced at
+    the booking surfaces.
+  */
+  it("reads an INACTIVE lodge's rooms, which is the lodge being set up (#221)", async () => {
+    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-2" });
 
     const { GET } = await import("@/app/api/admin/bed-allocation/rooms/route");
     const res = await GET(
       new Request(
         "http://localhost/api/admin/bed-allocation/rooms?lodgeId=lodge-2",
       ),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockGetRoomsAndBedsConfiguration).toHaveBeenCalled();
+  });
+
+  it("still rejects a lodgeId that names no lodge with 400", async () => {
+    mockLodgeFindUnique.mockResolvedValue(null);
+
+    const { GET } = await import("@/app/api/admin/bed-allocation/rooms/route");
+    const res = await GET(
+      new Request("http://localhost/api/admin/bed-allocation/rooms?lodgeId=nope"),
     );
 
     expect(res.status).toBe(400);

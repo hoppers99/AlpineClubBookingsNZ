@@ -176,8 +176,10 @@ deeper reference for what each category contains and the import safety model.
       school-group soft cap) keyed to a specific lodge via `lodgeId`; lodge
       identity and capacity travel through the **lodge-config** category's Lodge
       rows, not this singleton.
-    - `SetupProgress` — deployment-local setup-wizard progress (which steps THIS
-      install completed/skipped); operational install state, not club policy.
+    - `SetupProgress` — deployment-local setup-wizard progress, all three arrays
+      (which steps THIS install completed, which it skipped, and which are
+      recorded as needing another look); operational install state, not club
+      policy.
     - `AiAssistantSettings` — the deployment-specific AI monthly spend cap; an
       operational spend control a source club must never reset on a target
       (a fresh import keeps the target's own cap, #2211).
@@ -666,6 +668,18 @@ validated pipeline (`src/lib/config-transfer/bootstrap-import.ts`).
   outcome; shown as "System" in the admin audit log); a second boot with the
   same variable set sees that marker and refuses calmly without touching the
   bundle file.
+- **The setup wizard still opens at 0% afterwards, and that is correct
+  (#237).** An import writes configuration; it is not a person walking the
+  journey. Since epic #213's **D14** the wizard's percentage counts only steps
+  somebody confirmed, so a bundle-bootstrapped club opens the wizard with its
+  steps reading **Default in place** — the settings are there, nobody on *this*
+  installation has agreed to them — and **Ready to open** stays locked until
+  each has been confirmed or skipped. Nothing is wrong and nothing needs
+  redoing: walking the wizard once is how a replacement instance's operator
+  states that the restored configuration is what they mean to run. The bundle
+  deliberately carries `SetupProgress` as deployment-local state (see
+  "Implemented categories" above), so the source club's completed and skipped
+  arrays do not travel across to make this go away.
 
 Operator runbook and expected logs: `DEPLOYMENT.md` → "Config Bundle Auto-Import
 On Boot (DR / clone)".

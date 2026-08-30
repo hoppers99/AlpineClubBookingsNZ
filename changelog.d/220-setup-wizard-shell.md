@@ -1,0 +1,49 @@
+- **Setting a club up is now a guided journey rather than a checklist to
+  interpret (#220).** The Setup page has a new **Open the setup wizard** button,
+  which opens a step-by-step walkthrough of everything the club still needs
+  configured. It remembers where you got to, so it can be left and picked up
+  again later — and after an upgrade that adds new setup steps, it shows them
+  rather than leaving them to be discovered.
+
+  Down the left is the whole journey, grouped under the same headings the
+  readiness checklist uses, with each step saying plainly where it stands: done,
+  up next, needs another look, skipped for now, or not started. Progress reads as
+  a percentage rather than "x of y", because the number of steps changes as
+  modules are switched on and off and a count would look as though work had been
+  lost. Switching a module off removes its steps entirely; switching one on adds
+  them back when you return to the wizard.
+
+  Each step shows the same live check the readiness cards show, with a link
+  through to the settings page where the work is actually done — the wizard never
+  becomes a second place to store a setting. You can mark a step done, skip it
+  for now, or reopen it. Skipping buys you passage past a step but does not hide
+  it: it stays on the list as outstanding, and it is named again on the final
+  screen.
+
+  That final screen, **Ready to open**, unlocks once every step is done or
+  skipped. It carries two separate things that do not depend on each other:
+  making the public site visible — which now changes only that one setting, so
+  it can never overwrite colours or a logo somebody else changed while the
+  screen was open — and confirming what this installation is for
+  (the club's real site or a test copy). The second is declared in the
+  environment rather than switched on from a screen, so for now the panel says
+  where it lives and what is still to come. A club running an internal test site
+  that is deliberately visible and deliberately not production is a normal,
+  permanent state and is reported as one rather than nagged about.
+
+  **The readiness checklist is unchanged and stays where it is.** Both surfaces
+  read the same configuration, so nothing is lost by using either. Officers see
+  the whole journey and can walk all of it. Recording a step as done, skipped or
+  reopened needs Support edit access — the same access the checklist's own
+  buttons already need, because it is the same action — and the wizard says so
+  in one banner when you do not have it. Doing the step's actual work still
+  needs edit access to whichever area its settings page belongs to, and the
+  wizard names that area underneath the link to the page.
+
+  **The Setup page's own heading is now "Setup checklist".** It used to read
+  "Setup Wizard", and the guided journey this release adds is the thing that
+  name describes — two surfaces answering to one name, with the sub-pages' back
+  links (Cancellation, Booking Rules, Integrations, Foundations, Finance)
+  pointing at "Setup Wizard" and meaning the checklist. Those back links now say
+  **Setup checklist** too. Nothing moved: the page is at the same address and
+  does the same job.

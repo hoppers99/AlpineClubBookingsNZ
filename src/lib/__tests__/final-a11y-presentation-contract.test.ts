@@ -9,6 +9,10 @@ function source(path: string) {
 
 const migratedAdminChrome = [
   "src/app/(admin)/admin/age-tier-settings/page.tsx",
+  // C18 (#249) lifted the editor into a zero-prop section the setup wizard
+  // also embeds (`age-tier-section.tsx`); the page above is now a shell, so
+  // the token-driven chrome this scan pins lives here instead.
+  "src/app/(admin)/admin/age-tier-settings/age-tier-section.tsx",
   "src/app/(admin)/admin/lockers/page.tsx",
   "src/app/(admin)/admin/committee/page.tsx",
   "src/app/(admin)/admin/hut-leaders/page.tsx",

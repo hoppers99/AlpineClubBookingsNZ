@@ -11,6 +11,7 @@ import {
   listSelectableClubTimeZones,
 } from "@/lib/club-time-zone";
 import { formatNZDateTime } from "@/lib/nzst-date";
+import { emitSetupReadinessInputChanged } from "@/lib/setup-readiness-events";
 
 /**
  * The club-timezone maintenance panel (CT-1, #2989; epic #2988).
@@ -26,6 +27,14 @@ import { formatNZDateTime } from "@/lib/nzst-date";
  * reason. `/admin/club-time`'s page shell therefore does what
  * `/admin/config-transfer` does: it tests `isFullAdmin` and shows a short
  * "available to full administrators only" panel instead of this one.
+ *
+ * **THAT GATE TRAVELS WITH THE PANEL, and carrying it is the container's job.**
+ * Because this component holds no permission furniture of its own, mounting it
+ * anywhere new means replicating the shell test there — otherwise a Support
+ * Officer is offered a "Change time zone" button whose PUT answers 403. Two
+ * containers today: `/admin/club-time`'s page, and the setup wizard's
+ * `club-time-zone` pane (epic #213, C12), which replicates it in
+ * `club-time-zone-wizard-pane.tsx` for exactly this reason.
  *
  * IT STILL FOLLOWS THE STAGED-EDIT MODEL (`docs/ARCHITECTURE.md` -> "Admin/member
  * layer"). The panel mounts READ-ONLY showing the configured zone; changing it is
@@ -271,6 +280,12 @@ export function ClubTimeZonePanel() {
       }
       setState(payload.state);
       cancelEditing();
+      // The `club-time-zone` readiness check reads this row, and C12 mounts
+      // this panel inside the setup wizard, where the operator never leaves the
+      // tab for its focus refetch to fire. See
+      // `@/lib/setup-readiness-events` — the panel announces a fact about the
+      // database, not a call back into any particular screen.
+      emitSetupReadinessInputChanged();
     } catch {
       setError("Could not save the club time zone.");
     } finally {

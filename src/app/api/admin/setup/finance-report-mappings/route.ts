@@ -130,9 +130,10 @@ export async function PUT(request: NextRequest) {
     userAgent: auditRequest.userAgent ?? null,
   });
 
+  // The dashboard is where the editor now lives (D-C8-1), and `/admin/setup`
+  // still reports the `xero-mappings` readiness verdict a save can move.
   revalidatePath("/finance");
   revalidatePath("/admin/setup");
-  revalidatePath("/admin/setup/finance");
 
   return NextResponse.json(await getFinanceReportMappingsState());
 }

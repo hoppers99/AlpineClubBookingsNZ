@@ -28,6 +28,7 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
+import { emitSetupReadinessInputChanged } from "@/lib/setup-readiness-events"
 import type { PolicyRule } from "./types"
 
 type WaitlistCrossLodgeOrder = "OWN_LODGE_FIRST" | "MERGED"
@@ -226,6 +227,15 @@ export function DefaultCancellationPolicySection() {
         const data = await res.json()
         throw new Error(data.error || "Failed to save")
       }
+      // The write succeeded: `cancellationPolicyCount` is what the setup
+      // wizard's booking-policies step reads, and — for a CLUB-WIDE save only —
+      // so is `bookingDefaultsConfigured`, since `tx.bookingDefaults.upsert` in
+      // this route is the ONLY writer of that table (C17, #248). A lodge
+      // override save never touches it. This section is embedded in the wizard
+      // (C17), where the operator never leaves the tab, so the shell's own
+      // focus refetch cannot fire — see `setup-readiness-events.ts` for why the
+      // announcement points this way round.
+      emitSetupReadinessInputChanged()
       // The PUT echoes the stored partition back, so re-seed from THAT — the
       // route sorts and normalises the rules it persists.
       return toDraft(await res.json(), lodgeId)
@@ -359,6 +369,12 @@ export function DefaultCancellationPolicySection() {
         const data = await res.json()
         throw new Error(data.error || "Failed to save")
       }
+      // The write succeeded: removing an override changes
+      // `cancellationPolicyCount`, the exact fact the wizard's booking-policies
+      // step reads (C17, #248). This path deliberately bypasses `section.save()`
+      // (see the doc comment above), so it needs its own emit rather than
+      // inheriting the one in `save`.
+      emitSetupReadinessInputChanged()
       setCreatingOverride(false)
       await reload()
       section.setSuccess("Override removed — this lodge uses the club-wide rules")

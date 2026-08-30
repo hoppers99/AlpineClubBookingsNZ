@@ -262,8 +262,19 @@ describe("admin season routes (multi-lodge phase 7)", () => {
     expect(updateData).not.toHaveProperty("flatWholeLodgeNightCents");
   });
 
-  it("rejects a season at an unknown or inactive lodge", async () => {
-    mocks.lodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: false });
+  /*
+    #221: this route configures a lodge's own inventory, so it resolves the
+    lodge with `resolveOptionalConfigurableLodgeId` — an INACTIVE lodge is
+    accepted (a lodge created through the admin route now starts inactive and
+    has to be configurable before it is activated), an UNKNOWN one is still
+    refused, and nothing bookable widens because `Lodge.active` is enforced at
+    the booking surfaces.
+  */
+  it("creates a season at an INACTIVE lodge — copy-from-lodge depends on it (#221)", async () => {
+    // The per-lodge setup flow's copy-seasons step writes into the NEW lodge,
+    // which is closed until its finish step. Refusing here would have broken
+    // the copy the issue's own acceptance criteria require to keep working.
+    mocks.lodgeFindUnique.mockResolvedValue({ id: "lodge-2" });
 
     const res = await POST(
       jsonRequest("http://localhost/api/admin/seasons", "POST", {
@@ -273,6 +284,24 @@ describe("admin season routes (multi-lodge phase 7)", () => {
         endDate: "2026-09-30",
         membershipTypeRates: validRates,
         lodgeId: "lodge-2",
+      }),
+    );
+
+    expect(res.status).toBe(201);
+    expect(mocks.seasonCreate).toHaveBeenCalled();
+  });
+
+  it("still rejects a season at a lodge that does not exist", async () => {
+    mocks.lodgeFindUnique.mockResolvedValue(null);
+
+    const res = await POST(
+      jsonRequest("http://localhost/api/admin/seasons", "POST", {
+        name: "Winter 2026",
+        type: "WINTER",
+        startDate: "2026-06-01",
+        endDate: "2026-09-30",
+        membershipTypeRates: validRates,
+        lodgeId: "nope",
       }),
     );
 
