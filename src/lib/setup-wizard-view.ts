@@ -89,13 +89,12 @@ export type SetupReadinessCheck = SetupReadinessCategory["checks"][number];
  * Not the area of the API that records the step's progress, and not the area of
  * `/admin/setup` itself.
  *
- * That rule produces two mappings that look surprising and are correct:
- *
- * - `seed-admin` is **membership**, because the administrator account is created
- *   and repaired on `/admin/members`.
- * - `membership-cancellation` is **support**, because its editor lives on
- *   `/admin/setup/cancellation`, and `/admin/setup` is a support-area prefix —
- *   a membership officer without support cannot open that page at all.
+ * That rule produces two correct mappings that look surprising: `seed-admin`
+ * is **membership** (created and repaired on `/admin/members`), and
+ * `membership-cancellation` is **membership** too, now mechanically since its
+ * `href` was corrected (C22, #260) from `/admin/setup/cancellation` — a
+ * link-out hub under the `support`-prefixed `/admin/setup`, unreachable to a
+ * membership-only officer — to the real editor, `/admin/membership-cancellation`.
  *
  * …and it has four edges where "the page the work is done on" does not settle
  * the answer by itself. Each is assigned by judgement, and named here so a later
@@ -166,7 +165,7 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
   lodges: "lodge",
   // Booking rules.
   "booking-policies": "bookings",
-  "membership-cancellation": "support",
+  "membership-cancellation": "membership",
   "age-tiers": "bookings",
   "seasons-rates": "bookings",
   // Website styling (C7, #222). Its settings page, `/admin/site-style`, is

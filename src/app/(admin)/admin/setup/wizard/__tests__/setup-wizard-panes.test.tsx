@@ -1613,3 +1613,266 @@ describe("lodges mounts the real lodge list inline (C19, R2-7)", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// C22 (#260) — the membership cancellation editor
+// ---------------------------------------------------------------------------
+/*
+  Simplest pane in the file: like `age-tiers`, no rail-redraw or self-removal
+  case (no other step's existence depends on this one) — and unlike
+  `age-tiers` there is no cross-page caveat either:
+  `buildMembershipCancellationCheck` reads only whether a
+  `MembershipCancellationSetting` row exists, and the PUT this pane saves
+  through always upserts one, so a save here fully resolves the step's own
+  check.
+
+  What this block pins beyond the ordinary "real editor mounts and saves"
+  shape: the registry entry (a mutation reverting it to `null` fails here
+  first), the emit after save (this panel never fired one before C22 — it had
+  no reason to, mounted nowhere the wizard could be listening), and — the one
+  thing genuinely new to this child — that the pane's own area gate reads
+  `membership`, not the `support` the mapping used to carry. THAT move is the
+  fix the issue asked for, and it is fixed in the check's `href`, not by
+  hand-setting the mapping: `buildMembershipCancellationCheck`
+  (`setup-readiness.ts`) used to link to `/admin/setup/cancellation`, a
+  link-out hub rather than the editor — the same mistake `club-config` carried
+  until #223 — so `SETUP_STEP_PERMISSION_AREA["membership-cancellation"]` read
+  `support`. The `href` now points at the real editor,
+  `/admin/membership-cancellation`, and `membership` is what
+  `ROUTE_AREA_PREFIXES` mechanically resolves for it. Under the old entry a
+  custom role with support access and no membership access cleared the mount
+  gate and then had the panel's own
+  `GET /api/admin/membership-cancellation-settings` 403 the instant it
+  mounted. The corrected, mechanical answer is also what makes the step
+  frame's "That page belongs to Membership" agree with the panel's own
+  "Membership edit access is required" without either file naming the other —
+  see `setup-wizard-view.ts` for the full evidence.
+*/
+
+const MEMBERSHIP_CANCELLATION_SETTINGS = {
+  warningText: "Cancelling means losing your booking history.",
+  rejoinProcessText: "Reapply through the membership application form.",
+  xeroArchiveContactsOnCancellation: false,
+  xeroContactGroups: [] as Array<{ groupId: string; groupName: string | null }>,
+};
+
+/**
+ * `membership: edit` on top of `support: edit` — the area
+ * `SETUP_STEP_PERMISSION_AREA["membership-cancellation"]` names since C22,
+ * and what `/api/admin/membership-cancellation-settings` itself enforces on
+ * both verbs.
+ */
+const membershipEditor = {
+  ...emptyAdminPermissionMatrix(),
+  support: "edit" as const,
+  membership: "edit" as const,
+};
+
+/**
+ * One stateful stub for the journey read and the panel's own endpoint, so a
+ * PUT really does persist and the next GET reads it back.
+ */
+function stubMembershipCancellationFetch() {
+  let settings = { ...MEMBERSHIP_CANCELLATION_SETTINGS };
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    const target = String(url);
+    if (target === "/api/admin/membership-cancellation-settings") {
+      if (init?.method === "PUT") {
+        const body = JSON.parse(String(init.body)) as typeof settings;
+        settings = { ...settings, ...body };
+      }
+      return { ok: true, status: 200, json: async () => ({ settings }) };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        isSiteVisible: false,
+        readiness: readinessWith([
+          ["membership-cancellation", "Membership Cancellation"],
+        ]),
+        traversal: traversalWith(["membership-cancellation"]),
+      }),
+    };
+  });
+  vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+  return fetchMock;
+}
+
+describe("membership-cancellation mounts the real cancellation editor (C22, #260)", () => {
+  it("is registered against a component, not the D16-backlog null", () => {
+    // MUTATION PROBE: put `membership-cancellation: null` back and this fails
+    // first, before any render test even runs.
+    expect(SETUP_STEP_PANES["membership-cancellation"]).not.toBeNull();
+  });
+
+  it("renders the panel's own fields, and saves through its own API", async () => {
+    const fetchMock = stubMembershipCancellationFetch();
+    render(<SetupWizardClient permissionMatrix={membershipEditor} />);
+
+    const warning = (await screen.findByLabelText(
+      "Cancellation warning",
+    )) as HTMLTextAreaElement;
+    expect(warning.value).toBe(MEMBERSHIP_CANCELLATION_SETTINGS.warningText);
+
+    // STAGED: typing writes nothing.
+    fireEvent.change(warning, { target: { value: "New warning copy" } });
+    expect(
+      callsTo(fetchMock, "/api/admin/membership-cancellation-settings").filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === "PUT",
+      ),
+    ).toHaveLength(0);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Save Cancellation Settings/i }),
+    );
+
+    await waitFor(() =>
+      expect(
+        callsTo(fetchMock, "/api/admin/membership-cancellation-settings").filter(
+          ([, init]) => (init as RequestInit | undefined)?.method === "PUT",
+        ),
+      ).toHaveLength(1),
+    );
+  });
+
+  it("does not write setup progress when the pane saves, but does make the wizard re-read", async () => {
+    /*
+      This panel called no readiness-event emit before C22 — nothing mounted
+      it anywhere the wizard could be listening. MUTATION PROBE: drop the
+      emit from `saveSettings` and the second journey read below never
+      happens.
+    */
+    const fetchMock = stubMembershipCancellationFetch();
+    render(<SetupWizardClient permissionMatrix={membershipEditor} />);
+
+    await screen.findByLabelText("Cancellation warning");
+    expect(callsTo(fetchMock, "/api/admin/setup/wizard")).toHaveLength(1);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Save Cancellation Settings/i }),
+    );
+
+    await waitFor(() =>
+      expect(callsTo(fetchMock, "/api/admin/setup/wizard")).toHaveLength(2),
+    );
+    expect(callsTo(fetchMock, "/api/admin/setup/progress")).toHaveLength(0);
+  });
+
+  it("keeps the pane OUTSIDE the step frame", async () => {
+    stubMembershipCancellationFetch();
+    render(<SetupWizardClient permissionMatrix={membershipEditor} />);
+
+    const pane = await screen.findByTestId("setup-wizard-step-pane");
+    const frame = screen.getByTestId("setup-wizard-step-frame");
+    expect(pane.getAttribute("data-step-id")).toBe("membership-cancellation");
+    expect(frame.contains(pane)).toBe(false);
+  });
+
+  it("shows the panel's own view-only banner and a dead save for a membership:view admin, leaving the frame's progress controls alone", async () => {
+    mocks.canEdit.mockReturnValue(false);
+    stubMembershipCancellationFetch();
+    render(
+      <SetupWizardClient
+        permissionMatrix={{
+          ...emptyAdminPermissionMatrix(),
+          support: "edit",
+          membership: "view",
+        }}
+      />,
+    );
+
+    const save = (await screen.findByRole("button", {
+      name: /Save Cancellation Settings/i,
+    })) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+
+    const banners = screen.getAllByTestId("admin-view-only-banner");
+    expect(
+      banners.some((banner) =>
+        banner.textContent?.includes("Membership edit access is required"),
+      ),
+    ).toBe(true);
+
+    const markDone = screen.getByRole("button", {
+      name: /Mark this step done/,
+    }) as HTMLButtonElement;
+    expect(markDone.disabled).toBe(false);
+  });
+
+  it("composes the area gate on `membership` — the C22 fix, not the old `support` entry", () => {
+    /*
+      THE decision this issue turned on, pinned directly against the
+      production gate function so a regression back to `support` fails a
+      fast unit test rather than only a slower render one.
+    */
+    const membershipViewer = {
+      ...emptyAdminPermissionMatrix(),
+      membership: "view" as const,
+    };
+    expect(
+      canViewSetupStepPane(membershipViewer, "membership-cancellation"),
+    ).toBe(true);
+
+    const supportOnly = {
+      ...emptyAdminPermissionMatrix(),
+      support: "edit" as const,
+    };
+    expect(supportOnly.membership).toBe("none");
+    expect(
+      canViewSetupStepPane(supportOnly, "membership-cancellation"),
+    ).toBe(false);
+  });
+
+  it("mounts no pane, and makes no pane fetch, for a custom role with support access and no membership access", async () => {
+    // The rendered proof of the gate test above. Before C22 this exact
+    // matrix — `support: edit`, no `membership` key at all, reachable only
+    // through a custom `AccessRoleDefinition` (no shipped `ADMIN_ROLE_BUNDLES`
+    // preset carries `support: edit` with no `membership` at all) — cleared
+    // the old `support` mapping and mounted the panel, whose own fetch then
+    // 403'd.
+    const matrix = {
+      ...emptyAdminPermissionMatrix(),
+      support: "edit" as const,
+    };
+    expect(matrix.membership).toBe("none");
+
+    const fetchMock = stubMembershipCancellationFetch();
+    render(<SetupWizardClient permissionMatrix={matrix} />);
+
+    expect(
+      (await screen.findByTestId("setup-wizard-step-frame")).getAttribute(
+        "data-step-id",
+      ),
+    ).toBe("membership-cancellation");
+    expect(screen.queryByTestId("setup-wizard-step-pane")).toBeNull();
+    expect(
+      callsTo(fetchMock, "/api/admin/membership-cancellation-settings"),
+    ).toHaveLength(0);
+  });
+
+  it("agrees with the pane's own banner: the frame names Membership too", async () => {
+    // The wrinkle the issue named, pinned directly. `areaLabel()` in
+    // `setup-wizard-step-frame.tsx` reads `step.permissionArea` straight off
+    // `SETUP_STEP_PERMISSION_AREA`, so once the mapping reads `membership`
+    // the frame's own "That page belongs to …" line agrees with the pane's
+    // "Membership edit access is required" without either file naming the
+    // other.
+    mocks.canEdit.mockReturnValue(false);
+    stubMembershipCancellationFetch();
+    render(
+      <SetupWizardClient
+        permissionMatrix={{
+          ...emptyAdminPermissionMatrix(),
+          support: "edit",
+          membership: "view",
+        }}
+      />,
+    );
+
+    await screen.findByLabelText("Cancellation warning");
+    expect(
+      screen.getByTestId("setup-wizard-step-settings-area").textContent,
+    ).toBe("That page belongs to Membership.");
+  });
+});

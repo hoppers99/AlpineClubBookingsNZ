@@ -130,11 +130,28 @@ describe("SETUP_STEP_PERMISSION_AREA (D12)", () => {
     );
   });
 
-  it("keeps the two counter-intuitive mappings the rule produces", () => {
-    // Both follow from "the area that governs the page the work is done on",
-    // and both read wrongly if you go by the step's subject matter instead.
+  it("keeps the one counter-intuitive mapping the rule produces", () => {
+    // Follows from "the area that governs the page the work is done on", and
+    // reads wrongly if you go by the step's subject matter instead: the
+    // administrator account is created and repaired on `/admin/members`.
     expect(SETUP_STEP_PERMISSION_AREA["seed-admin"]).toBe("membership");
-    expect(SETUP_STEP_PERMISSION_AREA["membership-cancellation"]).toBe("support");
+  });
+
+  it("maps membership-cancellation to membership, mechanically from its corrected href (C22, #260 fix round)", () => {
+    // WAS `support`, because the check's `href` was `/admin/setup/cancellation`
+    // — a link-out hub with no editor of its own, the same mistake
+    // `club-config` carried until #223. `buildMembershipCancellationCheck`
+    // (`setup-readiness.ts`) now points that `href` at the real editor,
+    // `/admin/membership-cancellation`, which `ROUTE_AREA_PREFIXES` registers
+    // under `membership` — the same area the panel gates its own edit access
+    // on (its own `#1940` comment) — so `membership` is now the mechanical
+    // answer, not a hand-set override. See this table's own docblock for the
+    // full evidence, including the 403 the old entry produced once C22 gave
+    // the step a pane, and `permission-area-matches-check-href.test.ts` for
+    // the general contract this instance is one case of.
+    expect(SETUP_STEP_PERMISSION_AREA["membership-cancellation"]).toBe(
+      "membership",
+    );
   });
 });
 
@@ -739,8 +756,13 @@ describe("a step's settings link reaches a real editor (#223)", () => {
     // anything themselves once the legacy surfaces are hidden. A step whose
     // settings link — via `href` OR one of `links[]` — lands on one of these
     // is a step with no destination in the hidden position.
-    // `/admin/setup/cancellation` is deliberately excluded: it was never
-    // retired and still carries its own editor.
+    // `/admin/setup/cancellation` is deliberately excluded from `RETIRED_HUB`:
+    // it is not part of the legacy-surfaces switch and keeps its own card on
+    // the hub even when the switch is on (`setup-hub-cards.ts`) — but it is
+    // ITSELF a link-out hub with no editor, the same shape this regex exists
+    // to catch, so no step's `href` points there any more either
+    // (`membership-cancellation`'s check now links straight at the editor,
+    // C22 #260).
     const RETIRED_HUB =
       /^\/admin\/setup(\/(foundations|finance|booking-rules|integrations))?$/;
     const view = viewFor();
