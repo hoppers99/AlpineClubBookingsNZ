@@ -34,7 +34,7 @@ import { emitSetupReadinessInputChanged } from "@/lib/setup-readiness-events";
  * Officer is offered a "Change time zone" button whose PUT answers 403. Two
  * containers today: `/admin/club-time`'s page, and the setup wizard's
  * `club-time-zone` pane (epic #213, C12), which replicates it in
- * `setup-wizard-panes.tsx` for exactly this reason.
+ * `club-time-zone-wizard-pane.tsx` for exactly this reason.
  *
  * IT STILL FOLLOWS THE STAGED-EDIT MODEL (`docs/ARCHITECTURE.md` -> "Admin/member
  * layer"). The panel mounts READ-ONLY showing the configured zone; changing it is

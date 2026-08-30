@@ -973,7 +973,7 @@ nothing.
 `publicHutFeeSingleColumnSeasons` (`setup-readiness.ts`, reading
 `setup-readiness-db.ts`) — are all CLUB-WIDE, counted with no `lodgeId`
 filter. `SeasonsSection`, embedded inline on the wizard's `seasons-rates` step
-(`setup-wizard-panes.tsx`), is scoped to whichever lodge its own
+(`seasons-rates-wizard-pane.tsx`), is scoped to whichever lodge its own
 `useLodgeOptions("configuration")` picker currently names. That pairing is not
 new — `/admin/seasons` has carried the same club-wide check beside the same
 per-lodge editor since before C23 — but C23 put them on the SAME SCREEN for
@@ -990,7 +990,7 @@ lodges disagree, whether the denominator should change per lodge, and whether
 every other club-wide fact this file lists earns the same treatment — none of
 which is C23's to decide as a side effect of mounting an existing editor
 inline. The fix instead is DISCLOSURE: `SeasonsRatesWizardPane`'s orientation
-copy (`setup-wizard-panes.tsx`) states plainly that the checklist above is
+copy (`seasons-rates-wizard-pane.tsx`) states plainly that the checklist above is
 club-wide while the editor below works one lodge at a time, so the two numbers
 read as two different scopes rather than as a contradiction.
 

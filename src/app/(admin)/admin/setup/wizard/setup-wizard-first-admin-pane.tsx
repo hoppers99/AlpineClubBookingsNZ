@@ -22,12 +22,12 @@ import { emitSetupReadinessInputChanged } from "@/lib/setup-readiness-events";
  *
  * ## Why this one is BUILT rather than embedded
  *
- * Every other pane in `setup-wizard-panes.tsx` mounts a settings section that
- * already exists somewhere else — that is the parity rule D8 wrote, and it is
- * what keeps the wizard from growing a second editor for facts a real screen
- * already owns. There is no such section here, and the registry entry this
- * replaces said so precisely: the member editor is a per-record surface that
- * needs a chosen member before it can render anything, and
+ * Every other pane registered in `setup-wizard-panes.tsx` mounts a settings
+ * section that already exists somewhere else — that is the parity rule D8
+ * wrote, and it is what keeps the wizard from growing a second editor for
+ * facts a real screen already owns. There is no such section here, and the
+ * registry entry this replaces said so precisely: the member editor is a
+ * per-record surface that needs a chosen member before it can render anything, and
  * `MemberEditorDialog` is a full membership form inside a `Dialog` — a separate
  * accessibility container, seventy-odd fields, and a create path that is one
  * branch of an edit path. Mounting it here would put the club's entire
