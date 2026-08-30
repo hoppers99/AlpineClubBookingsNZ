@@ -245,6 +245,33 @@ describe("deleting and toggling a season", () => {
     expect(emits.count).toBe(1);
     emits.stop();
   });
+
+  it("reactivates a dormant season, flips the badge, and announces the readiness change (fix round, #261 finding 1)", async () => {
+    /*
+      This is the one path that moves `seasonCount`'s primary blocking
+      verdict (`seasonCount === 0` -> "blocked") from inside this section:
+      a previously-rated season that was later deactivated shows up here
+      with an Activate control, and pressing it needs no trip to Fees. The
+      toggle test above only exercises active -> inactive, which never
+      touches that verdict, so this is the path that was untested.
+
+      MUTATION PROBE: swap `{ active: !season.active }` in
+      `handleToggleActive` (`seasons-section.tsx`) for a no-op and this
+      fails first — the badge stays "Inactive" and the emit count stays 0.
+    */
+    stubFetch([lodgeFixture()], { "lodge-1": [seasonFixture({ active: false })] });
+    const emits = countReadinessEmits();
+
+    render(<SeasonsSection />);
+    await screen.findByText("Winter 2026");
+    expect(screen.getByText("Inactive")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Activate" }));
+
+    await waitFor(() => expect(screen.getByText("Active")).toBeInTheDocument());
+    expect(emits.count).toBe(1);
+    emits.stop();
+  });
 });
 
 describe("the lodge-scope pin (#2887, the C6 defect class)", () => {

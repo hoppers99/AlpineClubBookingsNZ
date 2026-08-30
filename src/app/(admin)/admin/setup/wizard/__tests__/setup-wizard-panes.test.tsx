@@ -1767,6 +1767,23 @@ describe("seasons-rates mounts the real season-window editor inline (C23, #261)"
     expect((await screen.findAllByText(/Hut Fees/)).length).toBeGreaterThan(0);
   });
 
+  it("discloses that the checklist above is club-wide while the editor below is per-lodge (fix round, #261 finding 2)", async () => {
+    // buildSeasonRateCheck's facts are club-wide (setup-readiness-db.ts) and
+    // the wizard rail hands the pane no ?lodgeId=, so ADR-002's normaliser can
+    // land on a different lodge than the one the checklist counted. The fix
+    // is disclosure, not a lodge-aware check, so this pins the copy rather
+    // than any change to setup-readiness.ts.
+    // MUTATION PROBE: delete the "club-wide" sentence from the pane's
+    // orientation paragraph in setup-wizard-panes.tsx and this fails.
+    stubSeasonsFetch([lodgeFixture({ active: true })], [seasonFixture()]);
+    render(<SetupWizardClient permissionMatrix={bookingsEditor} />);
+
+    await screen.findByText("Winter 2026");
+    expect(
+      screen.getByText(/checklist above is club-wide across every lodge/),
+    ).toBeInTheDocument();
+  });
+
   it("keeps the pane OUTSIDE the step frame", async () => {
     stubSeasonsFetch([lodgeFixture({ active: true })], [seasonFixture()]);
     render(<SetupWizardClient permissionMatrix={bookingsEditor} />);
