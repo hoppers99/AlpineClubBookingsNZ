@@ -394,11 +394,17 @@ function BookingPoliciesWizardPane() {
  * rejected alternative rather than asserting the choice.** `SeasonsSection`'s
  * own docblock (`seasons-section.tsx`) works out what `buildSeasonRateCheck`
  * actually reads: `seasonCount` is a CLUB-WIDE count of `active: true`
- * seasons, and this section can only ever move it down or sideways — creating
- * a season requires at least one rate, and rates are set at Fees → Hut Fees,
- * never here. That is the same "editor whose save does not move the badge"
- * shape `BookingPoliciesWizardPane` (C17, #248) refused to embed. The
- * difference is what sits on the OTHER side of that refusal: booking-policies
+ * seasons, and this section can move it down, sideways, or — by reactivating
+ * a previously-rated season that is currently dormant — back up; only
+ * CREATING a season (the club's first, or a lodge's first) needs a rate, and
+ * rates are set at Fees → Hut Fees, never here (fix round, #261 finding 1
+ * corrected this paragraph's earlier "can only ever move it down or sideways"
+ * claim, which was wrong: it conflated creating a season with reactivating
+ * one). So this pane's save is not quite the "editor whose save never moves
+ * the badge" shape `BookingPoliciesWizardPane` (C17, #248) refused to embed —
+ * it CAN move the badge, just not out of every blocked state. The difference
+ * from that refusal is what sits on the OTHER side of it regardless:
+ * booking-policies
  * had SIX independently owned editors on unrelated tabs, four of which touch
  * nothing the check reads at all, so excluding them lost nothing an operator
  * standing on that step could otherwise do. Seasons-rates has exactly ONE
@@ -425,6 +431,20 @@ function BookingPoliciesWizardPane() {
  * every window's dates right, nothing stale left active — can still leave the
  * step blocked or amber, because the facts that clear THOSE verdicts are set
  * at Fees → Hut Fees, not here.
+ *
+ * **Club-wide readiness figures beside a per-lodge editor — DISCLOSED, not
+ * changed** (fix round, #261 finding 2). `buildSeasonRateCheck`'s three facts
+ * are all club-wide (see `SeasonsSection`'s own docblock), while the section
+ * below is scoped to whichever lodge its picker currently names, and the
+ * wizard rail hands it no `?lodgeId=` — so a two-lodge club can land on a
+ * lodge that is not the one holding the season the step's own figures
+ * counted, and read "1 season configured." directly above "No seasons
+ * configured yet." Making the check lodge-aware is a separate decision with
+ * its own trade-offs, not this pane's to make; the fix is the orientation
+ * paragraph below saying the two numbers are different SCOPES, not a
+ * contradiction. Full reasoning:
+ * `docs/multi-lodge/lodge-scoping-contract.md` -> "Setup Wizard: Club-Wide
+ * Readiness Beside A Per-Lodge Editor".
  */
 function SeasonsRatesWizardPane() {
   return (
@@ -435,14 +455,16 @@ function SeasonsRatesWizardPane() {
         </h3>
         <p className="text-sm text-muted-foreground">
           The same editor as Admin &rarr; Seasons: each lodge&apos;s season
-          windows (name, type, dates, and active state). Adding a new season
-          and setting its nightly rates both happen at Admin &rarr; Fees
-          &rarr; Hut Fees, which this section links to — this step can still
-          read blocked or amber after a save here, because that is where the
-          facts it checks (whether any season exists, and whether every
-          membership type has a rate) are set, not on this pane. Saving here
-          does not tick the step off — use &ldquo;Mark this step done&rdquo;
-          above when you are happy with it.
+          windows (name, type, dates, and active state), one lodge at a time,
+          picked below. The checklist above is club-wide across every lodge,
+          so it can read differently from what this pane shows for the lodge
+          you have selected — that is two scopes, not a contradiction.
+          Reactivating a season that already has rates can clear this
+          step&apos;s blocked state on its own; creating a brand-new season,
+          and setting its nightly rates, both still happen at Admin &rarr;
+          Fees &rarr; Hut Fees, which this section links to. Saving here does
+          not tick the step off — use &ldquo;Mark this step done&rdquo; above
+          when you are happy with it.
         </p>
       </div>
       <SeasonsSection />

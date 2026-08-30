@@ -98,15 +98,24 @@ interface Season {
  * delete, the same announcement `ModulesSection`, `AgeTierSection` and
  * `LodgesSection` make after their own mutations.
  *
- * **It can only ever move `seasonCount` DOWN or sideways, never up from
- * zero.** Creating a season requires at least one rate (the `POST` route's own
- * contract), and rates are set at Fees → Hut Fees, not here — this section's
- * own `Alert`, unchanged from the pre-extraction page, says so. So the
- * step's PRIMARY blocking verdict (`seasonCount === 0` -> `"blocked"`) and its
- * warning verdicts (rate gaps, single-column public seasons) can never be
- * resolved from inside this section; only from Fees. `SeasonsRatesWizardPane`
- * in `setup-wizard-panes.tsx` records why that asymmetry decided the wizard
- * pane's shape.
+ * **Creating a season needs a rate, but REACTIVATING one does not — so this
+ * is not a one-way ratchet** (fix round, #261 finding 1). Creating a season
+ * requires at least one rate (the `POST` route's own contract), and rates are
+ * set at Fees → Hut Fees, not here — this section's own `Alert`, unchanged
+ * from the pre-extraction page, says so. But `GET /api/admin/seasons` returns
+ * every season regardless of `active` (no filter), and the `PUT` route above
+ * accepts `{active: true}` alone with no rate precondition — so a
+ * previously-rated season that is currently dormant (the window ended, an
+ * off-season closure) still lists here with an Activate control, and pressing
+ * it moves `seasonCount` from 0 straight to 1 without a trip to Fees. What
+ * this section can never do is CREATE the club's first season, or a lodge's
+ * first, which is the only path that still needs a rate. So the step's
+ * PRIMARY blocking verdict (`seasonCount === 0` -> `"blocked"`) CAN be
+ * resolved from inside this section when a reactivatable season exists, and
+ * only from Fees when none does; its warning verdicts (rate gaps,
+ * single-column public seasons) are never resolved here either way.
+ * `SeasonsRatesWizardPane` in `setup-wizard-panes.tsx` records why that
+ * asymmetry decided the wizard pane's shape.
  */
 export function SeasonsSection() {
   const [seasons, setSeasons] = useState<Season[]>([])
