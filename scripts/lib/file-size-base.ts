@@ -45,6 +45,8 @@
  * green. The remedy printed names the ref actually asked for.
  */
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 
 import {
   ALLOWANCE_DIR,
@@ -449,6 +451,14 @@ export type ComputedResult = {
    * escape the ledger already was.
    */
   allowancesApplied: SizeAllowance[];
+  /**
+   * Live entries this run did not need to permit anything, because the file
+   * they name is already at or under the length they declare (#234). Reported
+   * for the same reason `allowancesApplied` is: an escape nobody can see is a
+   * hazard, even a harmless one. NEVER a failure — see the note above the loop
+   * that fills this in for why treating it as one fights a stacked branch.
+   */
+  inertAllowances: SizeAllowance[];
 };
 
 /**
@@ -547,7 +557,13 @@ export function evaluateComputedRatchet(input: {
         "follow the remedy named above and re-run — this check will not report " +
         "a pass it has no evidence for",
     });
-    return { findings, baseSha: null, checkedFiles: 0, allowancesApplied: [] };
+    return {
+      findings,
+      baseSha: null,
+      checkedFiles: 0,
+      allowancesApplied: [],
+      inertAllowances: [],
+    };
   }
 
   // An allowance only has effect on the change that INTRODUCES it: the
@@ -697,28 +713,65 @@ export function evaluateComputedRatchet(input: {
     }
   }
 
-  // An allowance nobody needed is either a mistake or a file that shrank, and
-  // both are worth seeing. It FAILS rather than merely printing, for two
-  // reasons: an allowance left lying around is the seed of the shared ledger
-  // this whole change deletes, and the fix — delete three lines — is cheaper
-  // than the review it would otherwise escape.
+  // A live allowance nobody needed used to fail outright, and that is exactly
+  // what fought a stacked epic branch (#234). Once a sibling's allowance file
+  // merges into the integration branch, it stays part of every later child's
+  // diff against `origin/main` — that is what "live" means above — but the
+  // growth it was written for already happened in an ancestor commit, so
+  // nothing in THIS run's own diff ever exercises it. Failing that reading
+  // forced the entry to be deleted; deleting it then broke the sibling's OWN
+  // pull request, because `verify` there judges `origin/main`, which still
+  // needs exactly the growth the deleted entry described. Two bases, one
+  // allowance file, no way to satisfy both by editing it.
+  //
+  // So: a live entry whose target is a real, in-scope file at or under the
+  // length it declares is SATISFIED rather than unused, and is reported as
+  // INERT — named in output, never a failure, regardless of whether the file
+  // grew on THIS diff. "At or under" is deliberate: the entry promised the
+  // file could reach up to N lines, and a file that never used the whole
+  // allowance, or used it in an earlier commit this run does not itself
+  // touch, has broken nothing.
+  //
+  // Existence and scope are checked EXPLICITLY rather than inferred from the
+  // line count, because `countLines` returns 0 for a path that does not exist
+  // at all — and 0 is "at or under" any declared length. Without the explicit
+  // check, a typo'd path would read as trivially satisfied instead of as the
+  // error it is; see the `allowance-unused` branch below, which is what a
+  // typo, or a path outside the policy's scope, still falls into.
+  const inertAllowances: SizeAllowance[] = [];
   for (const allowance of liveAllowances) {
     if (used.has(allowance.file)) continue;
+
+    const current = input.countLines(input.root, allowance.file);
+    const isRealTarget =
+      existsSync(path.join(input.root, allowance.file)) &&
+      input.isProductionFile(allowance.file);
+
+    if (isRealTarget && current <= allowance.lines) {
+      inertAllowances.push(allowance);
+      continue;
+    }
+
     findings.push({
       severity: "regression",
       kind: "allowance-unused",
       file: allowance.file,
       budget: null,
       previous: `${allowance.source} records ${allowance.lines} LOC`,
-      current: `${input.countLines(input.root, allowance.file)} LOC in the tree`,
-      problem:
-        "this change declares an allowance the check did not need — the file " +
-        "did not grow past its ceiling, or is not a production file this policy " +
-        "covers, or is not in this change at all",
-      action:
-        `delete the entry from ${allowance.source}. An allowance is one-shot and ` +
-        `belongs to the change that needs it; one left behind is a stored ` +
-        `exception, which is the thing this gate no longer has`,
+      current: `${current} LOC in the tree`,
+      problem: isRealTarget
+        ? "this change declares an allowance that no longer describes the " +
+          "file — it is now longer than the entry says, without that growth " +
+          "ever crossing the file's ceiling on this diff"
+        : "this change declares an allowance for a path that is not a " +
+          "production file this policy covers — check it for a typo, or a " +
+          "file that moved or was deleted",
+      action: isRealTarget
+        ? `set \`lines: ${current}\` in ${allowance.source} to describe the ` +
+          `file as it really is, or delete the entry if it no longer needs one`
+        : `fix the path in ${allowance.source}, or delete the entry — an ` +
+          "allowance for a file this gate cannot find or does not cover is " +
+          "not describing anything",
     });
   }
 
@@ -727,5 +780,6 @@ export function evaluateComputedRatchet(input: {
     baseSha: resolved.ref,
     checkedFiles,
     allowancesApplied,
+    inertAllowances,
   };
 }
