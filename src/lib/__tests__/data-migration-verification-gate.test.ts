@@ -297,6 +297,37 @@ describe("data-migration verification coverage gate (#2418)", () => {
     expect(result.stderr).toContain("coverage passed");
   }, GATE_TIMEOUT_MS);
 
+  it("runs clean with an empty grandfather list under bash 3.2 (#242)", () => {
+    // Regression for #242: under macOS's shipped bash 3.2.57, `set -u` treats
+    // expanding a declared-but-empty array (`"${arr[@]}"`) as an unbound
+    // variable, even though the array itself was assigned — a bash < 4.4
+    // quirk fixed upstream in 4.4 but never backported, so it still bites
+    // every macOS developer machine (Apple ships 3.2 as /bin/bash). bash 5
+    // (CI's Ubuntu) expands the same construct to nothing, so this was
+    // invisible in CI while failing every local run of this gate.
+    //
+    // `grandfathered: []` (the default) leaves
+    // GRANDFATHERED_UNVERIFIED_DATA_MIGRATIONS truly empty — never appended to
+    // — which is exactly the shape that used to crash `is_grandfathered()`'s
+    // `for allowed in "${GRANDFATHERED_UNVERIFIED_DATA_MIGRATIONS[@]}"` and
+    // the coverage-honesty loop's
+    // `for grandfathered in "${GRANDFATHERED_UNVERIFIED_DATA_MIGRATIONS[@]}"`
+    // with "unbound variable" before either loop ran a single iteration. A
+    // fixture-verified data-rewriting migration guarantees `is_grandfathered`
+    // is actually called (rather than the array only ever appearing in dead
+    // code), so this reproduces the exact crash site rather than an
+    // incidental empty-array shape nothing evaluates.
+    const tree = createTree([{ name: MIGRATION_NAME, sql: REWRITE }], {
+      fixtures: [MIGRATION_NAME],
+      grandfathered: [],
+    });
+    const result = runGate(tree, { EXPECTED_GRANDFATHERED_COUNT: "0" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).not.toContain("unbound variable");
+    expect(result.stderr).toContain("coverage passed");
+    expect(result.stderr).toContain("0 grandfathered");
+  }, GATE_TIMEOUT_MS);
+
   it("passes when the data migration is grandfathered instead", () => {
     const tree = createTree([{ name: MIGRATION_NAME, sql: REWRITE }], {
       grandfathered: [MIGRATION_NAME],
