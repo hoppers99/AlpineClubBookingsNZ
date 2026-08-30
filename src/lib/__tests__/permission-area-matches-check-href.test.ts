@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 import { getAdminRouteRequirement } from "@/lib/admin-permissions";
 import { buildSetupReadiness, normalizeSetupProgress } from "@/lib/setup-readiness";
@@ -27,26 +30,21 @@ import { SETUP_STEP_PERMISSION_AREA } from "@/lib/setup-wizard-step-tables";
  * `buildMembershipCancellationCheck`). This test would have failed on that
  * state, by name, before it ever reached review.
  *
- * ## Four edges are judged, not mechanical, and are named here as an
+ * ## Five edges are judged, not mechanical, and are named here as an
  * allowlist rather than silently skipped
  *
  * `SETUP_STEP_PERMISSION_AREA`'s own docblock names and reasons about all
- * four; the one-line reasons below are a pointer back to it, not a
+ * five; the one-line reasons below are a pointer back to it, not a
  * replacement for it.
  *
- * ## A fifth this test found, that the docblock does not yet name
- *
- * `feature-flags` carries neither an `href` nor `links` at all (confirmed
- * against `buildFeatureFlagCheck` in `setup-readiness.ts`, and
- * `setup-wizard-panes.tsx`'s own comment on why that step has no destination
- * to link a pane against either) — so there is nothing for this test to
- * resolve mechanically, the same shape as `runtime-env`. Writing this test is
- * what surfaced it: `SETUP_STEP_PERMISSION_AREA`'s docblock (now in
- * `setup-wizard-step-tables.ts`, #268) still says "four edges" and does not
- * list this one, which is a pre-existing gap this fix round did
- * not introduce and is out of scope to correct here (the file is at its
- * 700-line budget) — flagged to the orchestrator to file separately rather
- * than silently left for the next reader to trip over again.
+ * The fifth, `feature-flags`, was found by writing this test and named in that
+ * docblock by #270. It had been a judged edge all along — its check carries
+ * neither an `href` nor `links` (confirmed against `buildFeatureFlagCheck` in
+ * `setup-readiness.ts`), the same shape as `runtime-env` — but the enumeration
+ * said "four" for long enough that this allowlist was the only place the edge
+ * was written down. Which is the drift the last test in this file now pins:
+ * the docblock's enumeration and this allowlist must name the same set, so
+ * neither can quietly gain an edge the other does not know about.
  */
 const JUDGED_EDGES: Partial<Record<SetupStepId, string>> = {
   "runtime-env":
@@ -58,7 +56,7 @@ const JUDGED_EDGES: Partial<Record<SetupStepId, string>> = {
   "environment-role":
     "the href resolves to support, which is the admission (and support:view read) answer, but the safer-override WRITE is Full-Admin-enforced IN ROUTE regardless of area.",
   "feature-flags":
-    "the check carries no href or links at all — the same shape as runtime-env — and setup-wizard-view.ts's docblock does not yet name it; see the note above.",
+    "the check carries no href or links at all — the same shape as runtime-env; named in the table's own docblock since #270.",
 };
 
 function checkHrefs(): Partial<Record<SetupStepId, string | undefined>> {
@@ -117,8 +115,70 @@ describe("SETUP_STEP_PERMISSION_AREA matches the check href mechanically (C22, #
 
       expect(
         SETUP_STEP_PERMISSION_AREA[id],
-        `SETUP_STEP_PERMISSION_AREA["${id}"] is "${SETUP_STEP_PERMISSION_AREA[id]}", but its check's href "${href}" mechanically resolves to "${requirement?.area}" — see setup-wizard-view.ts's own docblock rule`,
+        `SETUP_STEP_PERMISSION_AREA["${id}"] is "${SETUP_STEP_PERMISSION_AREA[id]}", but its check's href "${href}" mechanically resolves to "${requirement?.area}" — see setup-wizard-step-tables.ts's own docblock rule`,
       ).toBe(requirement?.area);
     });
   }
+});
+
+/**
+ * The enumeration and the allowlist must name the SAME set (#270).
+ *
+ * `SETUP_STEP_PERMISSION_AREA`'s docblock enumerates the judged edges in prose,
+ * and `JUDGED_EDGES` above enumerates them in code. Nothing tied the two
+ * together, and they drifted: `feature-flags` was a judged edge that only the
+ * code half knew about, while the prose half said "four" and listed four. A
+ * reader trusting the docblock — which is the half written to be read — was
+ * told something untrue.
+ *
+ * So this reads the docblock's own bullets back off disk. It is bounded to the
+ * judged-edge section deliberately: `SETUP_STEP_DEFAULTED_EVIDENCE`'s docblock
+ * further down the same file uses the identical bullet shape for a different
+ * set, and an unbounded scan would silently mix the two.
+ */
+describe("the judged-edge enumeration and the allowlist agree (#270)", () => {
+  const SECTION_START = 'edges where "the page the work is done on" does not settle';
+  const SECTION_END = "A `Record` over the id union rather than a lookup with a fallback";
+
+  function documentedJudgedEdges(): string[] {
+    const source = readFileSync(
+      path.join(process.cwd(), "src/lib/setup-wizard-step-tables.ts"),
+      "utf8",
+    );
+    const from = source.indexOf(SECTION_START);
+    const to = source.indexOf(SECTION_END);
+    expect(
+      from,
+      `could not find the judged-edge section's opening line in setup-wizard-step-tables.ts — if that prose was reworded, update SECTION_START here rather than deleting this guard`,
+    ).toBeGreaterThan(-1);
+    expect(
+      to,
+      `could not find the judged-edge section's closing paragraph in setup-wizard-step-tables.ts — if that prose was reworded, update SECTION_END here rather than deleting this guard`,
+    ).toBeGreaterThan(from);
+
+    return [
+      ...source.slice(from, to).matchAll(/^\s*\*\s+-\s+\*\*`([a-z-]+)`/gm),
+    ].map((m) => m[1]);
+  }
+
+  it("names every allowlisted edge in the docblock, and no others", () => {
+    const documented = documentedJudgedEdges();
+    expect(
+      [...documented].sort(),
+      "the docblock's enumerated judged edges and JUDGED_EDGES in this file have drifted — whichever is wrong, they must name the same set",
+    ).toEqual(Object.keys(JUDGED_EDGES).sort());
+  });
+
+  it("states the right COUNT in its own prose, not just the right list", () => {
+    const source = readFileSync(
+      path.join(process.cwd(), "src/lib/setup-wizard-step-tables.ts"),
+      "utf8",
+    );
+    const count = documentedJudgedEdges().length;
+    const words = ["zero", "one", "two", "three", "four", "five", "six", "seven"];
+    expect(
+      source,
+      `the docblock enumerates ${count} judged edges, so its prose must say "${words[count]} edges" — a stale count is what #270 was filed for`,
+    ).toContain(`it has ${words[count]} edges`);
+  });
 });
