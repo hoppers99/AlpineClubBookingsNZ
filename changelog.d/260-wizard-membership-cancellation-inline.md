@@ -9,12 +9,14 @@
   off: **Mark this step done** is still the one action that records that a
   person agreed.
 
-  **The step's own permission area also moved, from Support to Membership.**
-  The old mapping was read off the link-out hub's own URL prefix rather than
-  off where the editing actually happens, which is the same mistake the club
-  identity step's area carried until it was corrected earlier in this epic.
-  A Support Officer with no membership access could previously have opened
-  this step and watched its settings link and permission line disagree with
-  what the real editor would have required; now the step consistently names
-  Membership, and a Support Officer without membership access sees the
-  ordinary link-out instead of an editor they cannot use.
+  **The step's settings link was also corrected to point at the real editor,
+  which moves its permission area from Support to Membership.** The old link
+  went to the link-out hub, so its area was read off that hub's own URL
+  prefix rather than off where the editing actually happens — the same
+  mistake the club identity step's area carried until it was corrected
+  earlier in this epic. A custom role with support access and no membership
+  access could previously have opened this step and watched its settings
+  link and permission line disagree with what the real editor would have
+  required; now the link goes straight to the editor, the area follows it
+  mechanically, and a viewer without membership access sees the ordinary
+  link-out instead of an editor they cannot use.
