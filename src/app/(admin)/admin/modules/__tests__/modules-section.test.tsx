@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  *
  * Before this, the section fetched once on mount and never again, while the
  * setup wizard's rail beside it (mounted as `ModulesWizardPane`'s sibling,
- * `setup-wizard-panes.tsx`) live-updates on the exact same triggers
+ * `modules-wizard-pane.tsx`) live-updates on the exact same triggers
  * (`setup-wizard-client.tsx`). Left open across a whole setup session — the
  * long-lived case C13 (#239) created by putting this section inside the
  * wizard — a second admin's save in another tab could change these flags

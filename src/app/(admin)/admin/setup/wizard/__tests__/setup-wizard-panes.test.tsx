@@ -101,7 +101,7 @@ import {
   getApplicableSetupStepIds,
   type SetupStepId,
 } from "@/lib/setup-step-registry";
-import { canViewSetupStepPane } from "@/lib/setup-wizard-view";
+import { canViewSetupStepPane } from "@/lib/setup-wizard-step-tables";
 import type { SetupWizardTraversal } from "@/lib/setup-wizard-traversal";
 import { SetupWizardClient } from "@/app/(admin)/admin/setup/wizard/setup-wizard-client";
 import { SETUP_STEP_PANES } from "@/app/(admin)/admin/setup/wizard/setup-wizard-panes";
@@ -1646,7 +1646,7 @@ describe("lodges mounts the real lodge list inline (C19, R2-7)", () => {
   mounted. The corrected, mechanical answer is also what makes the step
   frame's "That page belongs to Membership" agree with the panel's own
   "Membership edit access is required" without either file naming the other —
-  see `setup-wizard-view.ts` for the full evidence.
+  see `setup-wizard-step-tables.ts` for the full evidence.
 */
 
 const MEMBERSHIP_CANCELLATION_SETTINGS = {

@@ -114,7 +114,7 @@ interface Season {
  * resolved from inside this section when a reactivatable season exists, and
  * only from Fees when none does; its warning verdicts (rate gaps,
  * single-column public seasons) are never resolved here either way.
- * `SeasonsRatesWizardPane` in `setup-wizard-panes.tsx` records why that
+ * `SeasonsRatesWizardPane` in `seasons-rates-wizard-pane.tsx` records why that
  * asymmetry decided the wizard pane's shape.
  */
 export function SeasonsSection() {

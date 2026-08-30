@@ -134,7 +134,7 @@ function normalizeAgeTierRows(rows: AgeTierRow[]): AgeTierRow[] {
  * (`basedOnAgeTierTypesWithoutSubscribingTier`, `setup-readiness.ts`
  * ~1642-1648), and that flag is fixed on `/admin/membership-types`, not
  * here. A perfectly-saved set of tiers can therefore still leave the step
- * amber — `AgeTierWizardPane` in `setup-wizard-panes.tsx` says so in its own
+ * amber — `AgeTierWizardPane` in `age-tier-wizard-pane.tsx` says so in its own
  * orientation copy, the way `ModulesWizardPane` names the address-autocomplete
  * split rather than leaving the operator to discover it.
  */

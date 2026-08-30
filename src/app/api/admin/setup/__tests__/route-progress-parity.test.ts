@@ -63,7 +63,7 @@ const allModulesOn = Object.fromEntries(
  * (#237) no installer writes a placeholder identity, so a real club only
  * reaches this value through an actual edit or a config-transfer import (see
  * `SETUP_STEP_DEFAULTED_EVIDENCE["club-config"]`, `read-from-deployment`, in
- * `setup-wizard-view.ts`). Kept anyway, ON PURPOSE: the hazard this test
+ * `setup-wizard-step-tables.ts`). Kept anyway, ON PURPOSE: the hazard this test
  * guards against is any unconfirmed check counting as progress, not only the
  * installer-defaulted ones, so a check satisfied by genuinely-chosen data has
  * to read 0% here too until somebody confirms it.

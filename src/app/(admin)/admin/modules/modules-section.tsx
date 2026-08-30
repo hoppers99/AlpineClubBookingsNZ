@@ -53,7 +53,7 @@ import {
  * needs the screen's `h1`, and the wizard — which already spends its `h1` on
  * "Setup wizard" — needs a subordinate one inside its pane. That is
  * `ClubIdentityPanel`'s arrangement exactly: `/admin/appearance/identity` heads
- * it with a `CardTitle`, `setup-wizard-panes.tsx` heads it with an `h3`, and the
+ * it with a `CardTitle`, `modules-wizard-pane.tsx` heads it with an `h3`, and the
  * panel itself carries neither. The "Reload settings"/Save toolbar therefore
  * comes with the section rather than sitting beside a heading it no longer
  * owns, so on `/admin/modules` the two buttons now open the section instead of

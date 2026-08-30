@@ -70,7 +70,7 @@ export interface SetupEnvironmentRemedy {
  *
  * A `Partial` Record rather than a total one, and this is the one place in this
  * epic's view layer where that is the RIGHT shape rather than a shortcut. The
- * three tables in `setup-wizard-view.ts` and `setup-wizard-panes.tsx`
+ * three tables in `setup-wizard-step-tables.ts` and `setup-wizard-panes.tsx`
  * (`SETUP_STEP_PERMISSION_AREA`, `SETUP_STEP_DEFAULTED_EVIDENCE` and
  * `SETUP_STEP_PANES`) are total over `SetupStepId` because every step needs an
  * answer and a missing one is a decision nobody made. This table is keyed over
