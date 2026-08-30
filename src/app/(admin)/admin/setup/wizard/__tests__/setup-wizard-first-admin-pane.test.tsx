@@ -73,7 +73,7 @@ import { toast } from "sonner";
 import { legacyRoleFromAccessRoles } from "@/lib/access-roles";
 import { emptyAdminPermissionMatrix } from "@/lib/admin-permissions";
 import { SETUP_READINESS_INPUT_CHANGED_EVENT } from "@/lib/setup-readiness-events";
-import { canViewSetupStepPane } from "@/lib/setup-wizard-view";
+import { canViewSetupStepPane } from "@/lib/setup-wizard-step-tables";
 import { SETUP_STEP_PANES } from "@/app/(admin)/admin/setup/wizard/setup-wizard-panes";
 import { SetupWizardFirstAdminPane } from "@/app/(admin)/admin/setup/wizard/setup-wizard-first-admin-pane";
 

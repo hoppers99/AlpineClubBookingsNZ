@@ -16,10 +16,8 @@ import {
 } from "@/components/admin/view-only-action";
 import { SetupStepLinks } from "@/components/admin/setup-step-links";
 import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
-import {
-  SETUP_STEP_DEFAULTED_EVIDENCE,
-  type SetupWizardStepDetail,
-} from "@/lib/setup-wizard-view";
+import { SETUP_STEP_DEFAULTED_EVIDENCE } from "@/lib/setup-wizard-step-tables";
+import type { SetupWizardStepDetail } from "@/lib/setup-wizard-view";
 import { setupWizardStepLabel } from "./setup-wizard-rail";
 
 /**

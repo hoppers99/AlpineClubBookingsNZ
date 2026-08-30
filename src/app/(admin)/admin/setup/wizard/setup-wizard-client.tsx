@@ -7,9 +7,9 @@ import { Button } from "@/components/ui/button";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
 import { SETUP_READINESS_INPUT_CHANGED_EVENT } from "@/lib/setup-readiness-events";
 import type { SetupStepId } from "@/lib/setup-step-registry";
+import { canChangeSetupProgress } from "@/lib/setup-wizard-step-tables";
 import {
   buildSetupWizardView,
-  canChangeSetupProgress,
   resolveInitialStepId,
   type SetupWizardPayload,
 } from "@/lib/setup-wizard-view";

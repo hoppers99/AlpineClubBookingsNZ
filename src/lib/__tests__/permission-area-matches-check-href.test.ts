@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { getAdminRouteRequirement } from "@/lib/admin-permissions";
 import { buildSetupReadiness, normalizeSetupProgress } from "@/lib/setup-readiness";
 import { SETUP_STEP_IDS, type SetupStepId } from "@/lib/setup-step-registry";
-import { SETUP_STEP_PERMISSION_AREA } from "@/lib/setup-wizard-view";
+import { SETUP_STEP_PERMISSION_AREA } from "@/lib/setup-wizard-step-tables";
 
 /**
- * `SETUP_STEP_PERMISSION_AREA`'s own docblock (`setup-wizard-view.ts`) states
- * THE RULE once: a step's area is the area that governs the admin page its
+ * `SETUP_STEP_PERMISSION_AREA`'s own docblock (`setup-wizard-step-tables.ts`)
+ * states THE RULE once: a step's area is the area that governs the admin page its
  * readiness check's `href` links to — not a hand-set choice, mechanically
  * derived by feeding that `href` through `getAdminRouteRequirement` (the same
  * resolver `ROUTE_AREA_PREFIXES` backs for every ordinary admin route). This
@@ -41,8 +41,9 @@ import { SETUP_STEP_PERMISSION_AREA } from "@/lib/setup-wizard-view";
  * `setup-wizard-panes.tsx`'s own comment on why that step has no destination
  * to link a pane against either) — so there is nothing for this test to
  * resolve mechanically, the same shape as `runtime-env`. Writing this test is
- * what surfaced it: `setup-wizard-view.ts`'s docblock still says "four edges"
- * and does not list this one, which is a pre-existing gap this fix round did
+ * what surfaced it: `SETUP_STEP_PERMISSION_AREA`'s docblock (now in
+ * `setup-wizard-step-tables.ts`, #268) still says "four edges" and does not
+ * list this one, which is a pre-existing gap this fix round did
  * not introduce and is out of scope to correct here (the file is at its
  * 700-line budget) — flagged to the orchestrator to file separately rather
  * than silently left for the next reader to trip over again.
