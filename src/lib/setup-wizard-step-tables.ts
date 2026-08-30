@@ -61,7 +61,7 @@ import type { SetupStepId } from "@/lib/setup-step-registry";
  * link-out hub under the `support`-prefixed `/admin/setup`, unreachable to a
  * membership-only officer — to the real editor, `/admin/membership-cancellation`.
  *
- * …and it has four edges where "the page the work is done on" does not settle
+ * …and it has five edges where "the page the work is done on" does not settle
  * the answer by itself. Each is assigned by judgement, and named here so a later
  * reader does not mistake one for a mechanical derivation:
  *
@@ -69,6 +69,12 @@ import type { SetupStepId } from "@/lib/setup-step-registry";
  *   all (the work is editing `.env` and restarting), so there is no destination
  *   page to read an area off. `support` is the deployment-health area every
  *   other environment-shaped step uses.
+ * - **`feature-flags` links nowhere either.** Its readiness check carries
+ *   neither an `href` nor `links` — the same shape as `runtime-env` — so there
+ *   is likewise no destination page to read an area off, and it takes `support`
+ *   for the same reason. Named here since #270: the enumeration said "four" for
+ *   long enough that the contract test's own allowlist was the only place this
+ *   edge was written down.
  * - **`finance-dashboard` points at `/finance`, which is not an admin route.**
  *   It is the member-facing finance surface, so `ROUTE_AREA_PREFIXES` has
  *   nothing to say about it; `finance` is the area whose officers read it.
@@ -126,7 +132,7 @@ export const SETUP_STEP_PERMISSION_AREA: Record<
   // flow the step's per-lodge links point at — are registered under `lodge` in
   // `ROUTE_AREA_PREFIXES`, and `lodge` is also the area whose officers own the
   // buildings. Admission answer and editorial answer agree, so this is one of
-  // the mechanical entries rather than one of the four judged edges above.
+  // the mechanical entries rather than one of the five judged edges above.
   lodges: "lodge",
   // Booking rules.
   "booking-policies": "bookings",
