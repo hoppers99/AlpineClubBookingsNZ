@@ -83,7 +83,7 @@ vi.mock("@/components/confirm-dialog", () => ({
   useConfirm: () => ({ confirm: vi.fn(async () => false), confirmDialog: null }),
 }))
 
-import SeasonsPage from "@/app/(admin)/admin/seasons/page"
+import { SeasonsSection } from "@/app/(admin)/admin/seasons/seasons-section"
 import ChoresPage from "@/app/(admin)/admin/chores/page"
 import LockersPage from "@/app/(admin)/admin/lockers/page"
 import { HutFeesSection } from "@/app/(admin)/admin/fees/_components/hut-fees-section"
@@ -111,7 +111,7 @@ const EDITORS: Array<{
   render: () => ReactElement
   action: RegExp
 }> = [
-  { name: "seasons", render: () => <SeasonsPage />, action: /^edit window$/i },
+  { name: "seasons", render: () => <SeasonsSection />, action: /^edit window$/i },
   { name: "chores", render: () => <ChoresPage />, action: /add chore|create chore|update chore/i },
   { name: "lockers", render: () => <LockersPage />, action: /^create locker$/i },
   { name: "hut fees", render: () => <HutFeesSection canEdit />, action: /add season|save season/i },

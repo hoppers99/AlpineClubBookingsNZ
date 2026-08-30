@@ -1876,3 +1876,219 @@ describe("membership-cancellation mounts the real cancellation editor (C22, #260
     ).toBe("That page belongs to Membership.");
   });
 });
+
+// ---------------------------------------------------------------------------
+// C23 (#261) — the season-window editor
+// ---------------------------------------------------------------------------
+/*
+  Repeats the age-tiers block-1/2/3/4 pins (registry entry, real editor +
+  save, emit-after-save, outside-the-frame, area gate), plus two this pane
+  alone needs: the Fees -> Hut Fees orientation caveat `SeasonsRatesWizardPane`
+  carries because it embeds the WHOLE section rather than the create-affordance
+  subset (see that component's docblock for the reasoning), and proof the step
+  frame's OWN "Open the settings for this step" link is what still reaches the
+  deep grid on a mature club — not a second link this pane grows.
+
+  The lodge-scope pin itself (a late PUT/DELETE/toggle response from a lodge
+  the operator has since left) is proven once, at the section boundary, in
+  `seasons-section.test.tsx` — `SeasonsSection` mounts here completely
+  unchanged, so re-proving the same race through the wizard's extra layers
+  would be the same test with more setup, not more coverage.
+*/
+
+type SeasonFixture = {
+  id: string;
+  name: string;
+  type: "WINTER" | "SUMMER";
+  startDate: string;
+  endDate: string;
+  active: boolean;
+};
+
+function seasonFixture(overrides: Partial<SeasonFixture> = {}): SeasonFixture {
+  return {
+    id: "season-1",
+    name: "Winter 2026",
+    type: "WINTER",
+    startDate: "2026-06-01T00:00:00.000Z",
+    endDate: "2026-09-30T00:00:00.000Z",
+    active: true,
+    ...overrides,
+  };
+}
+
+/**
+ * The lodge list, one lodge's season list, and the journey read. PUT/DELETE
+ * mutate `state` and a follow-up GET returns a FRESH array — React's setState
+ * bails out on reference equality otherwise, the pitfall `seasons-section.test.tsx`
+ * documents at its own stub.
+ */
+function stubSeasonsFetch(lodges: LodgeFixture[], seasons: SeasonFixture[]) {
+  const state = seasons.map((s) => ({ ...s }));
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    const target = String(url);
+    if (target === "/api/admin/lodges") {
+      return { ok: true, status: 200, json: async () => ({ lodges }) };
+    }
+    if (target.startsWith("/api/admin/seasons?lodgeId=")) {
+      return { ok: true, status: 200, json: async () => [...state] };
+    }
+    if (target.startsWith("/api/admin/seasons/")) {
+      const id = target.slice("/api/admin/seasons/".length);
+      if (init?.method === "DELETE") {
+        const idx = state.findIndex((s) => s.id === id);
+        if (idx >= 0) state.splice(idx, 1);
+        return { ok: true, status: 200, json: async () => ({ success: true }) };
+      }
+      if (init?.method === "PUT") {
+        const body = JSON.parse(String(init.body ?? "{}")) as Partial<SeasonFixture>;
+        const idx = state.findIndex((s) => s.id === id);
+        if (idx >= 0) state[idx] = { ...state[idx], ...body };
+        return { ok: true, status: 200, json: async () => state[idx] ?? {} };
+      }
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        isSiteVisible: false,
+        readiness: readinessWith([["seasons-rates", "Seasons And Rates"]]),
+        traversal: traversalWith(["seasons-rates"]),
+      }),
+    };
+  });
+  vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+  return fetchMock;
+}
+
+function findEditWindowButton() {
+  return screen.findByRole("button", { name: /^Edit window$/i });
+}
+
+describe("seasons-rates mounts the real season-window editor inline (C23, #261)", () => {
+  it("is registered against a component, not the D16-backlog null", () => {
+    // MUTATION PROBE: put `"seasons-rates": null` back and this fails first.
+    expect(SETUP_STEP_PANES["seasons-rates"]).not.toBeNull();
+  });
+
+  it("renders the section's own season list, and saves through the seasons route", async () => {
+    const fetchMock = stubSeasonsFetch([lodgeFixture({ active: true })], [seasonFixture()]);
+    render(<SetupWizardClient permissionMatrix={bookingsEditor} />);
+
+    expect(await screen.findByText("Winter 2026")).toBeInTheDocument();
+    expect(
+      callsTo(fetchMock, "/api/admin/seasons/season-1").filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === "PUT",
+      ),
+    ).toHaveLength(0);
+
+    fireEvent.click(await findEditWindowButton());
+    fireEvent.change(screen.getByLabelText("Season Name"), {
+      target: { value: "Winter 2027" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Update Season" }));
+
+    await waitFor(() =>
+      expect(
+        callsTo(fetchMock, "/api/admin/seasons/season-1").filter(
+          ([, init]) => (init as RequestInit | undefined)?.method === "PUT",
+        ),
+      ).toHaveLength(1),
+    );
+  });
+
+  it("does not write setup progress when the pane saves, but does make the wizard re-read", async () => {
+    /*
+      `SeasonsSection` calls `emitSetupReadinessInputChanged()` after a
+      successful save — this is the render-level pin of that wire-up, the
+      same shape `age-tiers` and `lodges` carry for their own sections.
+      MUTATION PROBE: drop the emit call from `handleSubmit` and the second
+      journey read never happens.
+    */
+    const fetchMock = stubSeasonsFetch([lodgeFixture({ active: true })], [seasonFixture()]);
+    render(<SetupWizardClient permissionMatrix={bookingsEditor} />);
+
+    await screen.findByText("Winter 2026");
+    expect(callsTo(fetchMock, "/api/admin/setup/wizard")).toHaveLength(1);
+
+    fireEvent.click(await findEditWindowButton());
+    fireEvent.click(screen.getByRole("button", { name: "Update Season" }));
+
+    await waitFor(() =>
+      expect(callsTo(fetchMock, "/api/admin/setup/wizard")).toHaveLength(2),
+    );
+    expect(callsTo(fetchMock, "/api/admin/setup/progress")).toHaveLength(0);
+  });
+
+  it("names the Fees -> Hut Fees caveat in its own orientation copy", async () => {
+    // The wrinkle-2 decision: this pane embeds the WHOLE section, so its copy
+    // says up front that creating a season and setting rates happen at Fees,
+    // not here — a perfect save on this pane can still leave the step blocked.
+    stubSeasonsFetch([lodgeFixture({ active: true })], [seasonFixture()]);
+    render(<SetupWizardClient permissionMatrix={bookingsEditor} />);
+
+    expect((await screen.findAllByText(/Hut Fees/)).length).toBeGreaterThan(0);
+  });
+
+  it("discloses that the checklist above is club-wide while the editor below is per-lodge (fix round, #261 finding 2)", async () => {
+    // buildSeasonRateCheck's facts are club-wide (setup-readiness-db.ts) and
+    // the wizard rail hands the pane no ?lodgeId=, so ADR-002's normaliser can
+    // land on a different lodge than the one the checklist counted. The fix
+    // is disclosure, not a lodge-aware check, so this pins the copy rather
+    // than any change to setup-readiness.ts.
+    // MUTATION PROBE: delete the "club-wide" sentence from the pane's
+    // orientation paragraph in setup-wizard-panes.tsx and this fails.
+    stubSeasonsFetch([lodgeFixture({ active: true })], [seasonFixture()]);
+    render(<SetupWizardClient permissionMatrix={bookingsEditor} />);
+
+    await screen.findByText("Winter 2026");
+    expect(
+      screen.getByText(/checklist above is club-wide across every lodge/),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the pane OUTSIDE the step frame", async () => {
+    stubSeasonsFetch([lodgeFixture({ active: true })], [seasonFixture()]);
+    render(<SetupWizardClient permissionMatrix={bookingsEditor} />);
+
+    const pane = await screen.findByTestId("setup-wizard-step-pane");
+    const frame = screen.getByTestId("setup-wizard-step-frame");
+    expect(pane.getAttribute("data-step-id")).toBe("seasons-rates");
+    expect(frame.contains(pane)).toBe(false);
+  });
+
+  it("mounts no pane for a viewer without bookings access, the area SETUP_STEP_PERMISSION_AREA names", async () => {
+    const matrix = { ...emptyAdminPermissionMatrix(), support: "edit" as const };
+    expect(matrix.bookings).toBe("none");
+    expect(canViewSetupStepPane(matrix, "seasons-rates")).toBe(false);
+
+    const fetchMock = stubSeasonsFetch([lodgeFixture({ active: true })], [seasonFixture()]);
+    render(<SetupWizardClient permissionMatrix={matrix} />);
+
+    expect(
+      (await screen.findByTestId("setup-wizard-step-frame")).getAttribute(
+        "data-step-id",
+      ),
+    ).toBe("seasons-rates");
+    expect(screen.queryByTestId("setup-wizard-step-pane")).toBeNull();
+    expect(
+      callsTo(fetchMock, "/api/admin/seasons?lodgeId=lodge-1"),
+    ).toHaveLength(0);
+  });
+
+  it("still reaches the deep grid through the step frame's OWN link, not a second one this pane grows", async () => {
+    // Records the wrinkle-2 decision structurally: `buildSeasonRateCheck`'s
+    // own `href` (the frame's generic "Open the settings for this step"
+    // button, unrelated to this fixture's placeholder target) is what still
+    // carries an operator to `/admin/seasons` for the full per-lodge history
+    // — this pane renders no second copy of that link.
+    stubSeasonsFetch([lodgeFixture({ active: true })], [seasonFixture()]);
+    render(<SetupWizardClient permissionMatrix={bookingsEditor} />);
+
+    await screen.findByText("Winter 2026");
+    expect(
+      screen.getAllByRole("link", { name: /Open the settings for this step/ }),
+    ).toHaveLength(1);
+  });
+});
+

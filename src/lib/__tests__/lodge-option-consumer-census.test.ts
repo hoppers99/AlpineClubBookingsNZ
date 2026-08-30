@@ -48,7 +48,10 @@ const EXPECTED_HOOK_CONSUMERS: Record<string, string[]> = {
     "configuration",
   ],
   "src/app/(admin)/admin/lockers/page.tsx": ["configuration"],
-  "src/app/(admin)/admin/seasons/page.tsx": ["configuration"],
+  // C23 (#261) lifted this out of `seasons/page.tsx` into a zero-prop section
+  // the setup wizard mounts inline, the same move C19 made for the lodge list
+  // above — the hook call moved FILE, not scope.
+  "src/app/(admin)/admin/seasons/seasons-section.tsx": ["configuration"],
   "src/components/admin/rooms-beds-manager.tsx": ["configuration"],
 
   // Everything else OPERATES a lodge rather than configuring one — you do not
@@ -225,7 +228,7 @@ describe("production lodge-option consumers stay in the fail-closed census (#288
       "src/app/(admin)/admin/chores/page.tsx",
       "src/app/(admin)/admin/fees/_components/hut-fees-section.tsx",
       "src/app/(admin)/admin/lockers/page.tsx",
-      "src/app/(admin)/admin/seasons/page.tsx",
+      "src/app/(admin)/admin/seasons/seasons-section.tsx",
       "src/components/admin/rooms-beds-manager.tsx",
     ]);
   });

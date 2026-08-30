@@ -963,6 +963,37 @@ Member, booking, display and kiosk surfaces gain nothing from any of this: their
 lists are the same active-only lists they have always been, which is the third
 thing the census test pins.
 
+## Setup Wizard: Club-Wide Readiness Beside A Per-Lodge Editor
+
+Recorded here per C23's own fix round (#261 finding 2): a reviewer grepped
+this file for the tension the wizard's `seasons-rates` step creates and found
+nothing.
+
+`buildSeasonRateCheck`'s three facts — `seasonCount`, `membershipTypeRateGaps`,
+`publicHutFeeSingleColumnSeasons` (`setup-readiness.ts`, reading
+`setup-readiness-db.ts`) — are all CLUB-WIDE, counted with no `lodgeId`
+filter. `SeasonsSection`, embedded inline on the wizard's `seasons-rates` step
+(`setup-wizard-panes.tsx`), is scoped to whichever lodge its own
+`useLodgeOptions("configuration")` picker currently names. That pairing is not
+new — `/admin/seasons` has carried the same club-wide check beside the same
+per-lodge editor since before C23 — but C23 put them on the SAME SCREEN for
+the first time, and made the mismatch reachable without an extra click:
+arriving via the wizard rail carries no `?lodgeId=`, so ADR-002's normaliser
+auto-selects the first OPEN lodge, which need not be the lodge holding the
+season the club-wide count found. A two-lodge club can then read "1 season
+configured." in the step's own detail line directly above "No seasons
+configured yet." in the section's empty-state card.
+
+**Making the check lodge-aware is a real decision and is deliberately NOT made
+here.** It carries its own trade-offs — which lodge's gaps block the step when
+lodges disagree, whether the denominator should change per lodge, and whether
+every other club-wide fact this file lists earns the same treatment — none of
+which is C23's to decide as a side effect of mounting an existing editor
+inline. The fix instead is DISCLOSURE: `SeasonsRatesWizardPane`'s orientation
+copy (`setup-wizard-panes.tsx`) states plainly that the checklist above is
+club-wide while the editor below works one lodge at a time, so the two numbers
+read as two different scopes rather than as a contradiction.
+
 ## Presentation Rule
 
 When exactly one active lodge exists, member and admin UI must not show

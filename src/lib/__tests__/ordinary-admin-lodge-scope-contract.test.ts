@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest"
 import { deriveSettledLodgeOptionScope } from "@/lib/lodge-option-scope"
 
 const LODGE_EDITORS = [
-  "src/app/(admin)/admin/seasons/page.tsx",
+  // C23 (#261) lifted this out of `seasons/page.tsx` into a zero-prop section.
+  "src/app/(admin)/admin/seasons/seasons-section.tsx",
   "src/app/(admin)/admin/chores/page.tsx",
   "src/app/(admin)/admin/lockers/page.tsx",
   "src/app/(admin)/admin/fees/_components/hut-fees-section.tsx",
