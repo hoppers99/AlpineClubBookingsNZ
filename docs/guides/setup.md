@@ -286,7 +286,7 @@ above for how to choose.
    **Some steps also carry the real editor, right there beneath the check.**
    **Club Configuration**, **Club Time Zone**, **Feature Flags**, **Address
    Autocomplete**, **Age And Membership Rules**, **Booking Policies**,
-   **Lodges** and **First Admin** have one today. The form you
+   **Lodges**, **Seasons And Rates** and **First Admin** have one today. The form you
    get is the same one that step's own settings page shows, saving to the same
    place, so nothing is stored twice and nothing behaves differently for having
    been reached from here. Editing is mostly staged: you change the fields, then
