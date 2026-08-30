@@ -8,6 +8,7 @@ import { ModulesSection } from "@/app/(admin)/admin/modules/modules-section";
 import { LodgesSection } from "@/app/(admin)/admin/lodges/lodges-section";
 import { SetupWizardFirstAdminPane } from "./setup-wizard-first-admin-pane";
 import { AgeTierSection } from "@/app/(admin)/admin/age-tier-settings/age-tier-section";
+import { SeasonsSection } from "@/app/(admin)/admin/seasons/seasons-section";
 import { isFullAdmin } from "@/lib/access-roles";
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
 import { canViewSetupStepPane } from "@/lib/setup-wizard-view";
@@ -378,6 +379,78 @@ function BookingPoliciesWizardPane() {
 }
 
 /**
+ * The season-window editor, in the wizard (`seasons-rates`).
+ *
+ * `SeasonsSection` is C23's (#261) repeat of the C13/C18/C19 move above: zero
+ * props, fetches `/api/admin/seasons` for itself, resolves `bookings` edit
+ * access for itself, resolves its own lodge scope, and heads itself with its
+ * own view-only banner. `/admin/seasons` mounts exactly the same component
+ * under its own `AdminPageHeader`; this pane supplies the subordinate heading
+ * in its place, for the mount-order reason spelled out on
+ * `ClubIdentityWizardPane`.
+ *
+ * **EMBEDDED WHOLE, not the "lead with a create affordance, deep grid behind
+ * the link" subset the dossier also floated — here is why, weighing the
+ * rejected alternative rather than asserting the choice.** `SeasonsSection`'s
+ * own docblock (`seasons-section.tsx`) works out what `buildSeasonRateCheck`
+ * actually reads: `seasonCount` is a CLUB-WIDE count of `active: true`
+ * seasons, and this section can only ever move it down or sideways — creating
+ * a season requires at least one rate, and rates are set at Fees → Hut Fees,
+ * never here. That is the same "editor whose save does not move the badge"
+ * shape `BookingPoliciesWizardPane` (C17, #248) refused to embed. The
+ * difference is what sits on the OTHER side of that refusal: booking-policies
+ * had SIX independently owned editors on unrelated tabs, four of which touch
+ * nothing the check reads at all, so excluding them lost nothing an operator
+ * standing on that step could otherwise do. Seasons-rates has exactly ONE
+ * section, and it already leads with the create-elsewhere affordance —
+ * `SeasonsSection`'s own `Alert`, unchanged by this extraction, is the FIRST
+ * thing it renders, pointing at Fees → Hut Fees before the lodge picker or the
+ * list. A pane that mounted nothing but a second copy of that same link would
+ * add no capability an operator does not already have from the step frame's
+ * own "Open the settings for this step" button, which `href: "/admin/seasons"`
+ * already supplies for every step, seasons-rates included. What embedding the
+ * whole section adds INSTEAD is real, bookings-area work germane to the step's
+ * own subject — fixing a window's wrong dates, retiring a season that should
+ * no longer take bookings, deleting a duplicate — none of which is orthogonal
+ * to "seasons and rates" the way minimum-night-stay or adult-member hosting
+ * were to "booking policies". On pane height: for the dominant wizard
+ * scenario — a club with no seasons yet — this section renders the `Alert`,
+ * the lodge picker and one empty-state card, which is short, not tall; the
+ * dossier's height concern only bites a returning club with many seasons
+ * already saved for the lodge it has selected, and that list is scrollable
+ * inside the wizard the same way it is on `/admin/seasons` today.
+ *
+ * The orientation paragraph carries the same caveat `AgeTierWizardPane` states
+ * for its own partially-covered check: a perfect pass through this pane —
+ * every window's dates right, nothing stale left active — can still leave the
+ * step blocked or amber, because the facts that clear THOSE verdicts are set
+ * at Fees → Hut Fees, not here.
+ */
+function SeasonsRatesWizardPane() {
+  return (
+    <section className="space-y-3 rounded-md border bg-card p-5">
+      <div className="space-y-1">
+        <h3 className="text-lg font-semibold text-foreground">
+          Seasons and rates
+        </h3>
+        <p className="text-sm text-muted-foreground">
+          The same editor as Admin &rarr; Seasons: each lodge&apos;s season
+          windows (name, type, dates, and active state). Adding a new season
+          and setting its nightly rates both happen at Admin &rarr; Fees
+          &rarr; Hut Fees, which this section links to — this step can still
+          read blocked or amber after a save here, because that is where the
+          facts it checks (whether any season exists, and whether every
+          membership type has a rate) are set, not on this pane. Saving here
+          does not tick the step off — use &ldquo;Mark this step done&rdquo;
+          above when you are happy with it.
+        </p>
+      </div>
+      <SeasonsSection />
+    </section>
+  );
+}
+
+/**
  * Step id -> the editor the wizard mounts beneath its frame, or `null` with the
  * reason there is none.
  *
@@ -446,8 +519,10 @@ export const SETUP_STEP_PANES: Record<SetupStepId, ComponentType | null> = {
   // `AgeTierWizardPane` for the pane-copy caveat this step needed that
   // `feature-flags` and `club-config` did not.
   "age-tiers": AgeTierWizardPane,
-  // Backlog (D16 names seasons explicitly). Wait for the C13 re-walk.
-  "seasons-rates": null,
+  // C23 (#261): the season-window editor, the C13/C18/C19 move repeated. See
+  // `SeasonsRatesWizardPane` for why this embeds the whole section rather
+  // than the create-affordance-plus-summary subset the issue also floated.
+  "seasons-rates": SeasonsRatesWizardPane,
 
   // --- Website ---
   // Backlog, and D16 splits it in two — colours and fonts are separate
