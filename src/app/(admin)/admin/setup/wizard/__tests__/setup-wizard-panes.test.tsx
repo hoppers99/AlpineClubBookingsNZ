@@ -1632,16 +1632,21 @@ describe("lodges mounts the real lodge list inline (C19, R2-7)", () => {
   no reason to, mounted nowhere the wizard could be listening), and — the one
   thing genuinely new to this child — that the pane's own area gate reads
   `membership`, not the `support` the mapping used to carry. THAT move is the
-  fix the issue asked for: `SETUP_STEP_PERMISSION_AREA["membership-cancellation"]`
-  read `support` because the check's `href`, `/admin/setup/cancellation`, is a
+  fix the issue asked for, and it is fixed in the check's `href`, not by
+  hand-setting the mapping: `buildMembershipCancellationCheck`
+  (`setup-readiness.ts`) used to link to `/admin/setup/cancellation`, a
   link-out hub rather than the editor — the same mistake `club-config` carried
-  until #223. Under the old entry a Support Officer (`support` but no
-  `membership` at all) cleared the mount gate and then had the panel's own
+  until #223 — so `SETUP_STEP_PERMISSION_AREA["membership-cancellation"]` read
+  `support`. The `href` now points at the real editor,
+  `/admin/membership-cancellation`, and `membership` is what
+  `ROUTE_AREA_PREFIXES` mechanically resolves for it. Under the old entry a
+  custom role with support access and no membership access cleared the mount
+  gate and then had the panel's own
   `GET /api/admin/membership-cancellation-settings` 403 the instant it
-  mounted. `membership` is the corrected answer, and it is also what makes
-  the step frame's "That page belongs to Membership" agree with the panel's
-  own "Membership edit access is required" without either file naming the
-  other — see `setup-wizard-view.ts` for the full evidence.
+  mounted. The corrected, mechanical answer is also what makes the step
+  frame's "That page belongs to Membership" agree with the panel's own
+  "Membership edit access is required" without either file naming the other —
+  see `setup-wizard-view.ts` for the full evidence.
 */
 
 const MEMBERSHIP_CANCELLATION_SETTINGS = {
@@ -1819,10 +1824,13 @@ describe("membership-cancellation mounts the real cancellation editor (C22, #260
     ).toBe(false);
   });
 
-  it("mounts no pane, and makes no pane fetch, for a Support Officer (support:edit, no membership access)", async () => {
+  it("mounts no pane, and makes no pane fetch, for a custom role with support access and no membership access", async () => {
     // The rendered proof of the gate test above. Before C22 this exact
-    // bundle — `support: edit`, no `membership` key at all — cleared the old
-    // `support` mapping and mounted the panel, whose own fetch then 403'd.
+    // matrix — `support: edit`, no `membership` key at all, reachable only
+    // through a custom `AccessRoleDefinition` (no shipped `ADMIN_ROLE_BUNDLES`
+    // preset carries `support: edit` with no `membership` at all) — cleared
+    // the old `support` mapping and mounted the panel, whose own fetch then
+    // 403'd.
     const matrix = {
       ...emptyAdminPermissionMatrix(),
       support: "edit" as const,

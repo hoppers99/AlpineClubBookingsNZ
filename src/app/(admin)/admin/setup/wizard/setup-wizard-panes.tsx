@@ -391,23 +391,26 @@ function BookingPoliciesWizardPane() {
  * `Card`; this pane supplies the subordinate heading in its place, for the
  * mount-order reason spelled out on `ClubIdentityWizardPane`.
  *
- * **The area wrinkle the issue named is fixed in the MAPPING, not here.**
- * `SETUP_STEP_PERMISSION_AREA["membership-cancellation"]` used to read
- * `support`, because the step's readiness check links to
- * `/admin/setup/cancellation` — but that page is a link-out hub with no editor
- * of its own, the same shape `club-config`'s `#223` fix corrected. The real
- * editor and the API it saves through are both `membership`-area, and the
- * panel already gates itself on `membership`, so the mapping was corrected to
- * `membership` instead (`setup-wizard-view.ts` carries the full evidence).
- * That is what keeps the step frame's "That page belongs to Membership" and
- * this panel's own "Membership edit access is required" in agreement — and it
- * is also what fixes a real bug the wrong mapping had, not only a copy
- * mismatch: under the old `support` entry, a Support Officer (`support` but no
- * `membership` at all) cleared `canViewSetupStepPane`'s gate and then had this
- * panel's own `GET /api/admin/membership-cancellation-settings` 403 the
- * instant it mounted — exactly the failure that gate exists to prevent for
- * every other step. A support-only viewer now gets the ordinary link-out
- * fallback instead, the same as any step whose area they lack.
+ * **The area wrinkle the issue named is fixed in the HREF, not the mapping.**
+ * The step's readiness check used to link to `/admin/setup/cancellation` — a
+ * link-out hub under the `support`-prefixed `/admin/setup`, unreachable to a
+ * membership-only officer, the same shape `club-config`'s `#223` fix
+ * corrected — so `SETUP_STEP_PERMISSION_AREA["membership-cancellation"]` read
+ * `support`. `buildMembershipCancellationCheck` (`setup-readiness.ts`) now
+ * points that `href` at the real editor, `/admin/membership-cancellation`,
+ * which `ROUTE_AREA_PREFIXES` registers under `membership` — the same area
+ * the panel already gates its own edit access on — so the mapping now derives
+ * mechanically instead of needing a hand-set override
+ * (`setup-wizard-view.ts` carries the full evidence). That is what keeps the
+ * step frame's "That page belongs to Membership" and this panel's own
+ * "Membership edit access is required" in agreement — and it is also what
+ * fixes a real bug the wrong mapping had, not only a copy mismatch: under the
+ * old `support` entry, a custom role with support access and no membership
+ * access cleared `canViewSetupStepPane`'s gate and then had this panel's own
+ * `GET /api/admin/membership-cancellation-settings` 403 the instant it
+ * mounted — exactly the failure that gate exists to prevent for every other
+ * step. A support-only viewer now gets the ordinary link-out fallback
+ * instead, the same as any step whose area they lack.
  *
  * No cross-page caveat to name, unlike `AgeTierWizardPane`:
  * `buildMembershipCancellationCheck` (`setup-readiness.ts`) reads only
@@ -500,11 +503,11 @@ export const SETUP_STEP_PANES: Record<SetupStepId, ComponentType | null> = {
 
   "booking-policies": BookingPoliciesWizardPane,
   // C22 (#260): the cancellation-warning/rejoin-copy/Xero-archive editor.
-  // `/admin/setup/cancellation` (the check's `href`) is a link-out hub, not
-  // the editor — see `MembershipCancellationWizardPane` and
+  // The check's `href` now points straight at it, `/admin/membership-cancellation`
+  // — see `MembershipCancellationWizardPane` and
   // `SETUP_STEP_PERMISSION_AREA["membership-cancellation"]` in
-  // `setup-wizard-view.ts` for why that also moved this entry's area from
-  // `support` to `membership`.
+  // `setup-wizard-view.ts` for why that also makes this entry's `membership`
+  // area mechanical rather than hand-set.
   "membership-cancellation": MembershipCancellationWizardPane,
   // C18 (#249): the age-tier boundary editor, C13's move repeated. See
   // `AgeTierWizardPane` for the pane-copy caveat this step needed that
